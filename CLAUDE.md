@@ -84,6 +84,15 @@ The app uses `PluginRegistry.shared` for backend and sync extension points. Regi
 - Provider-specific batch synchronization implements `ProviderSyncStrategy` and owns its own throttling state.
 - Read-only playback consumers depend on `PlaybackStateProvider`, not directly on the concrete player singleton.
 
+Provider implementations follow these structural rules:
+
+- Keep each provider implementation in one file. Do not split it merely to reduce line count.
+- Use the same internal order in every provider file: state and initialization, capability implementations, transport and mapping logic, then DTOs and helpers.
+- Extract code only when it is shared infrastructure used across providers.
+- Keep DTOs and helpers nested or file-private where practical so a large provider does not create an equally large module-wide API surface.
+- Add or update structural tests or lint rules when needed to prevent provider-specific branching from leaking into unrelated views, services, `AppState`, or sync coordination.
+- Measure duplicated logic across providers rather than file size.
+
 Do not add provider switches to unrelated views, `AppState`, or sync coordinators when the registry already owns dispatch.
 
 ### State ownership

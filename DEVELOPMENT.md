@@ -155,7 +155,7 @@ Do not grow `AppState`, `SyncCoordinator`, or `StorageService` with unrelated st
 
 1. Use Hearth values from the environment rather than new hard-coded colors or materials.
 2. Keep reusable controls in `enve/Components/` and feature-specific composition in its screen directory.
-3. Route playback and reading through `AppState.shared.playBook(book)`.
+3. Start playback and reading through `EnveEngine.shared.playback.play(book)`; use the injected `PlaybackControlling` for playback state and transport commands.
 4. Preserve `mantelInset` handling and re-inject the app environment into full-screen presentation boundaries.
 5. Exercise the workflow in the simulator and check light, dark, Dynamic Type, empty, loading, and error states that apply.
 
