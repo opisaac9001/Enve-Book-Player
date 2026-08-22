@@ -1,0 +1,24 @@
+{
+  "configurations" : [
+    {
+      "id" : "B8833D97-D4A5-4943-8484-93B0C6DC669F",
+      "name" : "Configuration 1",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+
+  },
+  "testTargets" : [
+    {
+      "target" : {
+        "containerPath" : "container:enve.xcodeproj",
+        "identifier" : "1D03D0FB2F1629110008FD58",
+        "name" : "enveTests"
+      }
+    }
+  ],
+  "version" : 1
+}

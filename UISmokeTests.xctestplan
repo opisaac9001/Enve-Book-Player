@@ -1,0 +1,24 @@
+{
+  "configurations" : [
+    {
+      "id" : "F51CC964-A766-41C5-93F0-2AB43AD4AD8A",
+      "name" : "Configuration 1",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+
+  },
+  "testTargets" : [
+    {
+      "target" : {
+        "containerPath" : "container:enve.xcodeproj",
+        "identifier" : "1D03D1052F1629110008FD58",
+        "name" : "enveUITests"
+      }
+    }
+  ],
+  "version" : 1
+}

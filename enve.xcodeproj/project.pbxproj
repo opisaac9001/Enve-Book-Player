@@ -1,0 +1,1755 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0F1E2D3C4B5A69788796A501 /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0F1E2D3C4B5A69788796A500 /* AppIntents.framework */; };
+		0F1E2D3C4B5A69788796A511 /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0F1E2D3C4B5A69788796A500 /* AppIntents.framework */; };
+		0F1E2D3C4B5A69788796A521 /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0F1E2D3C4B5A69788796A500 /* AppIntents.framework */; };
+		1D0BB04D2F3EE268001B353E /* ReadiumZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = 1D0BB04C2F3EE268001B353E /* ReadiumZIPFoundation */; };
+		1D925ADB2F2FE9C8004B6146 /* AMSMB2 in Frameworks */ = {isa = PBXBuildFile; productRef = 1D925ADA2F2FE9C8004B6146 /* AMSMB2 */; };
+		1D925ADC2F2FE9C8004B6146 /* AMSMB2 in Embed Frameworks */ = {isa = PBXBuildFile; productRef = 1D925ADA2F2FE9C8004B6146 /* AMSMB2 */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
+		1DTV0001000000000000B001 /* Pulse in Frameworks */ = {isa = PBXBuildFile; productRef = 1DTV0001000000000000A001 /* Pulse */; };
+		1DTV0001000000000000B003 /* PulseLogHandler in Frameworks */ = {isa = PBXBuildFile; productRef = 1DTV0001000000000000A003 /* PulseLogHandler */; };
+		1DTV0001000000000000B004 /* AMSMB2 in Frameworks */ = {isa = PBXBuildFile; productRef = 1DTV0001000000000000A004 /* AMSMB2 */; };
+		1DTV0001000000000000B005 /* Zip in Frameworks */ = {isa = PBXBuildFile; productRef = 1DTV0001000000000000A005 /* Zip */; };
+		1DTV0001000000000000E004 /* AMSMB2 in Embed Frameworks */ = {isa = PBXBuildFile; productRef = 1DTV0001000000000000A004 /* AMSMB2 */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
+		1DWA0001000000000000B001 /* WatchPayloads.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DWA0001000000000000F001 /* WatchPayloads.swift */; };
+		1DWA0001000000000000B002 /* WatchPayloads.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DWA0001000000000000F001 /* WatchPayloads.swift */; };
+		1DWA0001000000000000B003 /* EnveWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = 1DWA0001000000000000F002 /* EnveWatch.app */; platformFilter = ios; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		3533E550EE59C9AFE6A21268 /* ReadiumNavigator in Frameworks */ = {isa = PBXBuildFile; productRef = 5363E61448711BE6804ADDCE /* ReadiumNavigator */; };
+		50DBB753D08B4792BCD3690B /* ReadiumShared in Frameworks */ = {isa = PBXBuildFile; productRef = B751E1392A580D4FA5D946BB /* ReadiumShared */; };
+		92BF73F3EF97D98962B4CCC1 /* ReadiumAdapterGCDWebServer in Frameworks */ = {isa = PBXBuildFile; productRef = 593DA7D1FA5A837B5AA85853 /* ReadiumAdapterGCDWebServer */; };
+		A5FA57977A051369EB495CE3 /* ReadiumStreamer in Frameworks */ = {isa = PBXBuildFile; productRef = 4F91CD44C845610BAA3FE35E /* ReadiumStreamer */; };
+		AACC1100EEFF22BB33DD4402 /* UnrarKit in Frameworks */ = {isa = PBXBuildFile; productRef = AACC1100EEFF22BB33DD4401 /* UnrarKit */; };
+		B00C00010000000000000001 /* WidgetSharedState.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00C00100000000000000001 /* WidgetSharedState.swift */; };
+		B00C00010000000000000002 /* WidgetSharedState.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00C00100000000000000001 /* WidgetSharedState.swift */; };
+		B00C00010000000000000003 /* EnveBookWidgetsBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00C00100000000000000002 /* EnveBookWidgetsBundle.swift */; };
+		B00C00010000000000000004 /* HearthWidgetPalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00C00100000000000000003 /* HearthWidgetPalette.swift */; };
+		B00C00010000000000000005 /* EnveBookWidgets.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = B00C00100000000000000006 /* EnveBookWidgets.appex */; platformFilter = ios; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		B00C00010000000000000006 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B00C00100000000000000007 /* WidgetKit.framework */; };
+		B00C00010000000000000007 /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B00C00100000000000000008 /* SwiftUI.framework */; };
+		B00C00010000000000000008 /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0F1E2D3C4B5A69788796A500 /* AppIntents.framework */; };
+		B00C00010000000000000009 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = B00C00100000000000000009 /* PrivacyInfo.xcprivacy */; };
+		B1A2C3D4E5F60001293A0001 /* Pulse in Frameworks */ = {isa = PBXBuildFile; productRef = B1A2C3D4E5F60001293A0011 /* Pulse */; };
+		B1A2C3D4E5F60001293A0003 /* PulseLogHandler in Frameworks */ = {isa = PBXBuildFile; productRef = B1A2C3D4E5F60001293A0013 /* PulseLogHandler */; };
+		BBDD2200FFAA33CC44EE5502 /* StoryAlignCore in Frameworks */ = {isa = PBXBuildFile; productRef = BBDD2200FFAA33CC44EE5501 /* StoryAlignCore */; };
+		FA3A00010000000000000001 /* FluidAudio in Frameworks */ = {isa = PBXBuildFile; platformFilter = ios; productRef = FA3A00010000000000000003 /* FluidAudio */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		1D03D0FD2F1629110008FD58 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 1D03D0E52F1629100008FD58 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 1D03D0EC2F1629100008FD58;
+			remoteInfo = enve;
+		};
+		1D03D1072F1629110008FD58 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 1D03D0E52F1629100008FD58 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 1D03D0EC2F1629100008FD58;
+			remoteInfo = enve;
+		};
+		1DWA0001000000000000P001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 1D03D0E52F1629100008FD58 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 1DWA0001000000000000T001;
+			remoteInfo = EnveWatch;
+		};
+		B00C00200000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 1D03D0E52F1629100008FD58 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B00C00600000000000000001;
+			remoteInfo = EnveBookWidgets;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		1D925ADD2F2FE9C8004B6146 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				1D925ADC2F2FE9C8004B6146 /* AMSMB2 in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1DTV0001000000000000D001 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				1DTV0001000000000000E004 /* AMSMB2 in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1DWA0001000000000000D001 /* Embed Watch Content */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(CONTENTS_FOLDER_PATH)/Watch";
+			dstSubfolderSpec = 16;
+			files = (
+				1DWA0001000000000000B003 /* EnveWatch.app in Embed Watch Content */,
+			);
+			name = "Embed Watch Content";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B00C00300000000000000001 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				B00C00010000000000000005 /* EnveBookWidgets.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		0F1E2D3C4B5A69788796A500 /* AppIntents.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AppIntents.framework; path = System/Library/Frameworks/AppIntents.framework; sourceTree = SDKROOT; };
+		1D03D0ED2F1629100008FD58 /* enve.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = enve.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		1D03D0FC2F1629110008FD58 /* enveTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = enveTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		1D03D1062F1629110008FD58 /* enveUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = enveUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		1D40336D2FBEBC3100EEFBEE /* enve-tvOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "enve-tvOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		1DA51A982F9A0F1200DD9AD6 /* AllTests.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; path = AllTests.xctestplan; sourceTree = "<group>"; };
+		1DC9BF342F73BDEB004B3FA5 /* Products.storekit */ = {isa = PBXFileReference; lastKnownFileType = text; path = Products.storekit; sourceTree = "<group>"; };
+		1DWA0001000000000000F001 /* WatchPayloads.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchPayloads.swift; sourceTree = "<group>"; };
+		1DWA0001000000000000F002 /* EnveWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = EnveWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B00C00100000000000000001 /* WidgetSharedState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetSharedState.swift; sourceTree = "<group>"; };
+		B00C00100000000000000002 /* EnveBookWidgetsBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnveBookWidgetsBundle.swift; sourceTree = "<group>"; };
+		B00C00100000000000000003 /* HearthWidgetPalette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HearthWidgetPalette.swift; sourceTree = "<group>"; };
+		B00C00100000000000000004 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		B00C00100000000000000005 /* EnveBookWidgets.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = EnveBookWidgets.entitlements; sourceTree = "<group>"; };
+		B00C00100000000000000006 /* EnveBookWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = EnveBookWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		B00C00100000000000000007 /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
+		B00C00100000000000000008 /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
+		B00C00100000000000000009 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		1DTV0001000000000000C001 /* Exceptions for "enve" folder in "enve-tvOS" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				App/AppRootView.swift,
+				App/EnveApp.swift,
+				App/HearthTour.swift,
+				App/main.swift,
+				App/MantelBar.swift,
+				CarPlay/CarPlayAppDelegate.swift,
+				CarPlay/CarPlayChapters.swift,
+				CarPlay/CarPlayController.swift,
+				CarPlay/CarPlayCoverLoader.swift,
+				CarPlay/CarPlayDownloaded.swift,
+				CarPlay/CarPlayHome.swift,
+				CarPlay/CarPlayLibrarySearch.swift,
+				CarPlay/CarPlayNowPlaying.swift,
+				CarPlay/CarPlayPage.swift,
+				CarPlay/CarPlayPlayback.swift,
+				CarPlay/CarPlaySceneDelegate.swift,
+				CarPlay/CarPlayTabBar.swift,
+				Components/AmbientColor.swift,
+				Components/CoverTile.swift,
+				Components/EmberGlow.swift,
+				Components/Hearth.swift,
+				Components/HearthComponents.swift,
+				Components/HearthGlass.swift,
+				Components/Ribbon.swift,
+				Reader/Engine/ClassicReaderAppearance.swift,
+				Reader/Engine/ClassicReaderModel.swift,
+				Reader/Engine/ComicReaders.swift,
+				Reader/Engine/FoliateReaderEngineAdapter.swift,
+				Reader/Engine/ReaderAnnotationController.swift,
+				Reader/Engine/ReaderAppearance.swift,
+				Reader/Engine/ReaderAppearanceController.swift,
+				Reader/Engine/ReaderArtifactsAdapter.swift,
+				Reader/Engine/ReaderBionicScript.swift,
+				Reader/Engine/ReaderBridges.swift,
+				Reader/Engine/ReaderCompanionController.swift,
+				Reader/Engine/ReaderCompanionSnapshot.swift,
+				Reader/Engine/ReaderEngineAdapter.swift,
+				Reader/Engine/ReaderInitialLocationResolver.swift,
+				Reader/Engine/ReaderLocationController.swift,
+				Reader/Engine/ReaderLocationPipeline.swift,
+				Reader/Engine/ReaderLocatorProgress.swift,
+				Reader/Engine/ReaderNavigatorWrapper.swift,
+				Reader/Engine/ReaderPagedContentController.swift,
+				Reader/Engine/ReaderProgressController.swift,
+				Reader/Engine/ReaderPublicationSession.swift,
+				Reader/Engine/ReaderReadAloudAdapter.swift,
+				Reader/Engine/ReaderReadAloudController.swift,
+				Reader/Engine/ReaderSearchModel.swift,
+				Reader/Engine/ReaderSectionTitleResolver.swift,
+				Reader/Engine/ReaderTOCIndex.swift,
+				Reader/Engine/ReadiumFootnoteViewController.swift,
+				Screens/Admin/AdminComponents.swift,
+				Screens/Admin/AdminHubScreen.swift,
+				Screens/Admin/Audiobookshelf/AdminABSLibrariesScreen.swift,
+				Screens/Admin/Audiobookshelf/AdminABSModel.swift,
+				Screens/Admin/Audiobookshelf/AdminABSScreen.swift,
+				Screens/Admin/Audiobookshelf/AdminABSServerScreen.swift,
+				Screens/Admin/Audiobookshelf/AdminABSUsersScreen.swift,
+				Screens/Admin/BookOrbit/AdminBookOrbitScreen.swift,
+				Screens/Admin/Grimmory/AdminGrimmoryModel.swift,
+				Screens/Admin/Grimmory/AdminGrimmoryScreen.swift,
+				Screens/Admin/Grimmory/AdminGrimmoryShelvesScreen.swift,
+				Screens/Admin/Grimmory/AdminGrimmoryStatsScreen.swift,
+				Screens/Admin/Grimmory/AdminGrimmoryUsersScreen.swift,
+				Screens/Admin/Jellyfin/AdminJellyfinModel.swift,
+				Screens/Admin/Jellyfin/AdminJellyfinScreen.swift,
+				Screens/Admin/Kavita/AdminKavitaAnnotationsScreen.swift,
+				Screens/Admin/Kavita/AdminKavitaHistoryScreen.swift,
+				Screens/Admin/Kavita/AdminKavitaModel.swift,
+				Screens/Admin/Kavita/AdminKavitaScreen.swift,
+				Screens/Admin/Komga/AdminKomgaListsScreens.swift,
+				Screens/Admin/Komga/AdminKomgaModel.swift,
+				Screens/Admin/Komga/AdminKomgaScreen.swift,
+				Screens/Admin/Plex/AdminPlexModel.swift,
+				Screens/Admin/Plex/AdminPlexScreen.swift,
+				Screens/Admin/Silo/AdminSiloScreen.swift,
+				Screens/Admin/Storyteller/AdminStorytellerModel.swift,
+				Screens/Admin/Storyteller/AdminStorytellerProcessingScreen.swift,
+				Screens/Admin/Storyteller/AdminStorytellerScreen.swift,
+				Screens/Admin/Storyteller/AdminStorytellerShelfMembershipScreen.swift,
+				Screens/BookDetails/BookDetailScreen.swift,
+				Screens/BookDetails/ChapterEditorScreen.swift,
+				Screens/BookDetails/DetailBookmarksSection.swift,
+				Screens/BookDetails/DetailBookOrbitShelves.swift,
+				Screens/BookDetails/DetailChapterFetcher.swift,
+				Screens/BookDetails/DetailDebugSection.swift,
+				Screens/BookDetails/DetailDownloadButton.swift,
+				Screens/BookDetails/DetailHistorySection.swift,
+				Screens/BookDetails/DetailReadAloudFormatsSection.swift,
+				Screens/BookDetails/DetailShelfStatus.swift,
+				Screens/BookDetails/DetailSourceRecommendations.swift,
+				Screens/BookDetails/DetailSyncStatusRow.swift,
+				Screens/BookDetails/LibraryDetailListScreen.swift,
+				Screens/Collections/BookOrbitCollectionEditor.swift,
+				Screens/Collections/CollectionDetailScreen.swift,
+				Screens/Collections/CollectionsBatchAddSheet.swift,
+				Screens/Collections/CollectionsCard.swift,
+				Screens/Collections/CollectionsEditor.swift,
+				Screens/Collections/CollectionsScreen.swift,
+				Screens/Dedup/WorkHubScreen.swift,
+				Screens/Dedup/WorkSuggestionsScreen.swift,
+				Screens/Discover/DiscoverComponents.swift,
+				Screens/Discover/DiscoverDetailScreen.swift,
+				Screens/Discover/DiscoverScreen.swift,
+				Screens/Discover/DiscoverSeeAllScreen.swift,
+				Screens/Hardcover/HardcoverActivityScreen.swift,
+				Screens/Hardcover/HardcoverBookDetailScreen.swift,
+				Screens/Hardcover/HardcoverComponents.swift,
+				Screens/Hardcover/HardcoverFriendsScreen.swift,
+				Screens/Hardcover/HardcoverGoalScreen.swift,
+				Screens/Hardcover/HardcoverHistoryScreen.swift,
+				Screens/Hardcover/HardcoverHubScreen.swift,
+				Screens/Hardcover/HardcoverLinkScreen.swift,
+				Screens/Hardcover/HardcoverListsScreen.swift,
+				Screens/Hardcover/HardcoverMatchScreens.swift,
+				Screens/Hardcover/HardcoverProfileScreen.swift,
+				Screens/Hardcover/HardcoverSearchScreen.swift,
+				Screens/Hardcover/HardcoverShelfScreen.swift,
+				Screens/Hardcover/HardcoverTrendingScreen.swift,
+				Screens/Hearth/HearthQuotes.swift,
+				Screens/Hearth/HearthScreen.swift,
+				Screens/Hearth/HearthSeeAll.swift,
+				Screens/Journal/AchievementsScreen.swift,
+				Screens/Journal/BookOrbitAchievementsScreen.swift,
+				Screens/Journal/BookOrbitInsightsModel.swift,
+				Screens/Journal/BookOrbitInsightsScreen.swift,
+				Screens/Journal/BookOrbitMarginaliaModel.swift,
+				Screens/Journal/BookOrbitMarginaliaScreen.swift,
+				Screens/Journal/CompletionCenterScreen.swift,
+				Screens/Journal/EnveAchievementsCard.swift,
+				Screens/Journal/EnveAchievementsPolicy.swift,
+				Screens/Journal/GrimmoryStatsDashboard.swift,
+				Screens/Journal/HearthQuoteCard.swift,
+				Screens/Journal/JournalHeatmap.swift,
+				Screens/Journal/JournalHubModel.swift,
+				Screens/Journal/JournalInsightsScreen.swift,
+				Screens/Journal/JournalLibraryStatsModel.swift,
+				Screens/Journal/JournalLibraryStatsScreen.swift,
+				Screens/Journal/JournalListeningStatsScreen.swift,
+				Screens/Journal/JournalMarginaliaScreen.swift,
+				Screens/Journal/JournalReadingStatsScreen.swift,
+				Screens/Journal/JournalScreen.swift,
+				Screens/Journal/JournalServicesScreen.swift,
+				Screens/Journal/JournalStatsComponents.swift,
+				Screens/Journal/JournalStatsModels.swift,
+				Screens/Journal/StatsImportScreen.swift,
+				Screens/Librarian/LibrarianChatModel.swift,
+				Screens/Librarian/LibrarianChatScreen.swift,
+				Screens/Library/LibraryBrowse.swift,
+				Screens/Library/LibraryModel.swift,
+				Screens/Library/LibraryRows.swift,
+				Screens/Library/LibraryScreen.swift,
+				Screens/Matches/EbookAudiobookMatchScreen.swift,
+				Screens/Matches/MatchesComponents.swift,
+				Screens/Matches/MatchesSearchModel.swift,
+				Screens/Matches/MetadataBatchScreen.swift,
+				Screens/Matches/MetadataEditScreen.swift,
+				Screens/Matches/MetadataMatchScreen.swift,
+				Screens/Matches/OrphanedBookMatcherScreen.swift,
+				Screens/Matches/PendingMatchesScreen.swift,
+				Screens/Player/PlayerAirPlayButton.swift,
+				Screens/Player/PlayerAmbientSheet.swift,
+				Screens/Player/PlayerAudioSheet.swift,
+				Screens/Player/PlayerChapterRibbon.swift,
+				Screens/Player/PlayerClipSheets.swift,
+				Screens/Player/PlayerListSheets.swift,
+				Screens/Player/PlayerQueueSheet.swift,
+				Screens/Player/PlayerScreen.swift,
+				Screens/Player/PlayerSheets.swift,
+				Screens/Player/PlayerSleepInsightsView.swift,
+				Screens/Podcasts/PodcastBrowseScreen.swift,
+				Screens/Podcasts/PodcastsComponents.swift,
+				Screens/Podcasts/PodcastsEpisodeScreen.swift,
+				Screens/Podcasts/PodcastsHomeScreen.swift,
+				Screens/Podcasts/PodcastShowScreen.swift,
+				Screens/Podcasts/PodcastsModel.swift,
+				Screens/Podcasts/PodcastStatsScreen.swift,
+				Screens/Reader/ReaderAnnotateBar.swift,
+				Screens/Reader/ReaderAppearanceTray.swift,
+				Screens/Reader/ReaderCompanionViews.swift,
+				Screens/Reader/ReaderDefineSheet.swift,
+				Screens/Reader/ReaderExportSheet.swift,
+				Screens/Reader/ReaderOpenPreparationBanner.swift,
+				Screens/Reader/ReaderReadAloudTray.swift,
+				Screens/Reader/ReaderScreen.swift,
+				Screens/Reader/ReaderTrays.swift,
+				Screens/Reader/ReaderTTSSheet.swift,
+				Screens/Settings/AccessibilityScreen.swift,
+				Screens/Settings/AppearanceScreen.swift,
+				Screens/Settings/BookSyncScreen.swift,
+				Screens/Settings/ComicReaderSettingsScreen.swift,
+				Screens/Settings/DataManagementScreen.swift,
+				Screens/Settings/DiagnosticsScreen.swift,
+				Screens/Settings/DictionariesScreen.swift,
+				Screens/Settings/DownloadsScreen.swift,
+				Screens/Settings/HardcoverScreen.swift,
+				Screens/Settings/HiddenBooksScreen.swift,
+				Screens/Settings/HomePreferencesScreen.swift,
+				Screens/Settings/KOReaderLinksScreen.swift,
+				Screens/Settings/KOReaderScreen.swift,
+				Screens/Settings/LibraryDisplayScreen.swift,
+				Screens/Settings/MetadataKeysScreen.swift,
+				Screens/Settings/NewsScreen.swift,
+				Screens/Settings/ObsidianScreen.swift,
+				Screens/Settings/PlaybackScreen.swift,
+				Screens/Settings/RecentlyDeletedScreen.swift,
+				Screens/Settings/ReportIssueScreen.swift,
+				Screens/Settings/SettingsComponents.swift,
+				Screens/Settings/SettingsScreen.swift,
+				Screens/Settings/StorageScreen.swift,
+				Screens/Settings/StoryAlignScreen.swift,
+				Screens/Settings/SyncScreen.swift,
+				Screens/Settings/TipJarScreen.swift,
+				Screens/Settings/VideoPromoScreen.swift,
+				Screens/Sources/AddSourceScreen.swift,
+				Screens/Sources/BrowserSessionLoginView.swift,
+				Screens/Sources/DragAndDropScreen.swift,
+				Screens/Sources/KomgaLoginDelegate.swift,
+				Screens/Sources/KomgaOAuthLoginView.swift,
+				Screens/Sources/LoginDelegates.swift,
+				Screens/Sources/SourceDetailScreen.swift,
+				Screens/Sources/SourcesBrowsers.swift,
+				Screens/Sources/SourcesCloudScreen.swift,
+				Screens/Sources/SourcesComponents.swift,
+				Screens/Sources/SourcesFilesScreen.swift,
+				Screens/Sources/SourcesOPDSBulkScreen.swift,
+				Screens/Sources/SourcesPlexScreen.swift,
+				Screens/Sources/SourcesProviderFormScreen.swift,
+				Screens/Sources/SourcesQuickConnectScreen.swift,
+				Screens/Sources/SourcesSMBBrowser.swift,
+				Screens/Sources/SourcesSMBScreen.swift,
+				Screens/Vocabulary/VocabSettingsScreen.swift,
+				Screens/Vocabulary/VocabStudyScreen.swift,
+				Screens/Vocabulary/VocabularyHubScreen.swift,
+				Services/Audio/AudiobookClipService.swift,
+				Services/Audio/AudiobookClipStore.swift,
+				Services/Audiobookshelf/ABSSessionBackgroundTask.swift,
+				Services/Debug/ImportGuardrailFixtureRunner.swift,
+				Services/Debug/StorytellerReadaloudE2E.swift,
+				Services/Engine/StoryAlignEngine.swift,
+				Services/Import/ComicArchiveService.swift,
+				Services/Import/EPUBOPFCoverExtractor.swift,
+				Services/Import/FileSharingImportCoordinator.swift,
+				Services/Import/KF8Reader.swift,
+				Services/Import/LocalEbookImporter.swift,
+				Services/Import/MobiConverter.swift,
+				Services/Integrations/FeedbackCollector.swift,
+				Services/Intelligence/EbookContextService.swift,
+				Services/Local/LocalLibraryService.swift,
+				"Services/Local/LocalLibraryService+MultiFileGrouping.swift",
+				"Services/Local/LocalLibraryService+SidecarDiscovery.swift",
+				Services/Network/CloudflareSilentRefreshService.swift,
+				Services/Network/ServerPageStreamingService.swift,
+				Services/Reader/EbookSearchService.swift,
+				Services/Reader/EbookTTSService.swift,
+				Services/Reader/EPUB3SMILParser.swift,
+				Services/Reader/KokoroTTSEngine.swift,
+				Services/Reader/MediaOverlayPlaybackService.swift,
+				Services/Reader/MediaOverlayPlayer.swift,
+				Services/Reader/NeuralTTSSupport.swift,
+				Services/Reader/ReaderFontLibrary.swift,
+				Services/Reader/ReaderNotebookMerge.swift,
+				Services/Reader/ReaderNotebookSync.swift,
+				Services/Reader/SupertonicTTSEngine.swift,
+				Services/StoryAlign/StoryAlignAvailability.swift,
+				Services/StoryAlign/StoryAlignService.swift,
+				Services/StoryAlign/StorytellerReadaloudOfflinePrep.swift,
+				Services/StoryAlign/TokenSearchAlgorithm.swift,
+				Services/Sync/LinkedBookQuickSyncService.swift,
+				Services/System/ShakeDetectionService.swift,
+				Services/System/SleepDataService.swift,
+				Services/System/SleepInsightsBuilder.swift,
+				Services/Vocabulary/DefinitionLookupService.swift,
+				Services/Vocabulary/LeitnerScheduler.swift,
+				Services/Vocabulary/SentenceExtractor.swift,
+			);
+			target = 1D40336C2FBEBC3100EEFBEE /* enve-tvOS */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		1D03D0EF2F1629100008FD58 /* enve */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				1DTV0001000000000000C001 /* Exceptions for "enve" folder in "enve-tvOS" target */,
+			);
+			path = enve;
+			sourceTree = "<group>";
+		};
+		1D03D0FF2F1629110008FD58 /* enveTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = enveTests;
+			sourceTree = "<group>";
+		};
+		1D03D1092F1629110008FD58 /* enveUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = enveUITests;
+			sourceTree = "<group>";
+		};
+		1D40336E2FBEBC3200EEFBEE /* enve-tvOS */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "enve-tvOS";
+			sourceTree = "<group>";
+		};
+		1DWA0001000000000000G001 /* EnveWatch */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = EnveWatch;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		1D03D0EA2F1629100008FD58 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0F1E2D3C4B5A69788796A501 /* AppIntents.framework in Frameworks */,
+				1D925ADB2F2FE9C8004B6146 /* AMSMB2 in Frameworks */,
+				B1A2C3D4E5F60001293A0001 /* Pulse in Frameworks */,
+				B1A2C3D4E5F60001293A0003 /* PulseLogHandler in Frameworks */,
+				1D0BB04D2F3EE268001B353E /* ReadiumZIPFoundation in Frameworks */,
+				50DBB753D08B4792BCD3690B /* ReadiumShared in Frameworks */,
+				A5FA57977A051369EB495CE3 /* ReadiumStreamer in Frameworks */,
+				3533E550EE59C9AFE6A21268 /* ReadiumNavigator in Frameworks */,
+				92BF73F3EF97D98962B4CCC1 /* ReadiumAdapterGCDWebServer in Frameworks */,
+				AACC1100EEFF22BB33DD4402 /* UnrarKit in Frameworks */,
+				BBDD2200FFAA33CC44EE5502 /* StoryAlignCore in Frameworks */,
+				FA3A00010000000000000001 /* FluidAudio in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1D03D0F92F1629110008FD58 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0F1E2D3C4B5A69788796A511 /* AppIntents.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1D03D1032F1629110008FD58 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0F1E2D3C4B5A69788796A521 /* AppIntents.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1D40336A2FBEBC3100EEFBEE /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1DTV0001000000000000B001 /* Pulse in Frameworks */,
+				1DTV0001000000000000B003 /* PulseLogHandler in Frameworks */,
+				1DTV0001000000000000B004 /* AMSMB2 in Frameworks */,
+				1DTV0001000000000000B005 /* Zip in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1DWA0001000000000000FW01 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B00C00400000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B00C00010000000000000008 /* AppIntents.framework in Frameworks */,
+				B00C00010000000000000007 /* SwiftUI.framework in Frameworks */,
+				B00C00010000000000000006 /* WidgetKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		1D03D0E42F1629100008FD58 = {
+			isa = PBXGroup;
+			children = (
+				B00C00500000000000000001 /* EnveBookShared */,
+				B00C00500000000000000002 /* EnveBookWidgets */,
+				1DA51A982F9A0F1200DD9AD6 /* AllTests.xctestplan */,
+				1DC9BF342F73BDEB004B3FA5 /* Products.storekit */,
+				1D03D0EF2F1629100008FD58 /* enve */,
+				1D03D0FF2F1629110008FD58 /* enveTests */,
+				1D03D1092F1629110008FD58 /* enveUITests */,
+				1D40336E2FBEBC3200EEFBEE /* enve-tvOS */,
+				1DWA0001000000000000G001 /* EnveWatch */,
+				1D03D0EE2F1629100008FD58 /* Products */,
+				1DC997AB2F675735004B3FA5 /* Recovered References */,
+			);
+			sourceTree = "<group>";
+		};
+		1D03D0EE2F1629100008FD58 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				B00C00100000000000000006 /* EnveBookWidgets.appex */,
+				1D03D0ED2F1629100008FD58 /* enve.app */,
+				1D03D0FC2F1629110008FD58 /* enveTests.xctest */,
+				1D03D1062F1629110008FD58 /* enveUITests.xctest */,
+				1D40336D2FBEBC3100EEFBEE /* enve-tvOS.app */,
+				1DWA0001000000000000F002 /* EnveWatch.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		1DC997AB2F675735004B3FA5 /* Recovered References */ = {
+			isa = PBXGroup;
+			children = (
+				0F1E2D3C4B5A69788796A500 /* AppIntents.framework */,
+				B00C00100000000000000008 /* SwiftUI.framework */,
+				B00C00100000000000000007 /* WidgetKit.framework */,
+			);
+			name = "Recovered References";
+			sourceTree = "<group>";
+		};
+		B00C00500000000000000001 /* EnveBookShared */ = {
+			isa = PBXGroup;
+			children = (
+				B00C00100000000000000001 /* WidgetSharedState.swift */,
+				1DWA0001000000000000F001 /* WatchPayloads.swift */,
+			);
+			path = EnveBookShared;
+			sourceTree = "<group>";
+		};
+		B00C00500000000000000002 /* EnveBookWidgets */ = {
+			isa = PBXGroup;
+			children = (
+				B00C00100000000000000002 /* EnveBookWidgetsBundle.swift */,
+				B00C00100000000000000003 /* HearthWidgetPalette.swift */,
+				B00C00100000000000000004 /* Info.plist */,
+				B00C00100000000000000005 /* EnveBookWidgets.entitlements */,
+				B00C00100000000000000009 /* PrivacyInfo.xcprivacy */,
+			);
+			path = EnveBookWidgets;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		1D03D0EC2F1629100008FD58 /* enve */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1D03D1102F1629110008FD58 /* Build configuration list for PBXNativeTarget "enve" */;
+			buildPhases = (
+				1D03D0E92F1629100008FD58 /* Sources */,
+				1D03D0EA2F1629100008FD58 /* Frameworks */,
+				1D03D0EB2F1629100008FD58 /* Resources */,
+				F011A7E50000000000000001 /* Embed Foliate Runtime */,
+				1D925ADD2F2FE9C8004B6146 /* Embed Frameworks */,
+				B00C00300000000000000001 /* Embed App Extensions */,
+				1DWA0001000000000000D001 /* Embed Watch Content */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B00C00700000000000000001 /* PBXTargetDependency */,
+				1DWA0001000000000000DEP1 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				1D03D0EF2F1629100008FD58 /* enve */,
+			);
+			name = enve;
+			packageProductDependencies = (
+				1D925ADA2F2FE9C8004B6146 /* AMSMB2 */,
+				B1A2C3D4E5F60001293A0011 /* Pulse */,
+				B1A2C3D4E5F60001293A0013 /* PulseLogHandler */,
+				1D0BB04C2F3EE268001B353E /* ReadiumZIPFoundation */,
+				B751E1392A580D4FA5D946BB /* ReadiumShared */,
+				4F91CD44C845610BAA3FE35E /* ReadiumStreamer */,
+				5363E61448711BE6804ADDCE /* ReadiumNavigator */,
+				593DA7D1FA5A837B5AA85853 /* ReadiumAdapterGCDWebServer */,
+				AACC1100EEFF22BB33DD4401 /* UnrarKit */,
+				BBDD2200FFAA33CC44EE5501 /* StoryAlignCore */,
+				FA3A00010000000000000003 /* FluidAudio */,
+			);
+			productName = enve;
+			productReference = 1D03D0ED2F1629100008FD58 /* enve.app */;
+			productType = "com.apple.product-type.application";
+		};
+		1D03D0FB2F1629110008FD58 /* enveTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1D03D1132F1629110008FD58 /* Build configuration list for PBXNativeTarget "enveTests" */;
+			buildPhases = (
+				1D03D0F82F1629110008FD58 /* Sources */,
+				1D03D0F92F1629110008FD58 /* Frameworks */,
+				1D03D0FA2F1629110008FD58 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				1D03D0FE2F1629110008FD58 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				1D03D0FF2F1629110008FD58 /* enveTests */,
+			);
+			name = enveTests;
+			productName = enveTests;
+			productReference = 1D03D0FC2F1629110008FD58 /* enveTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		1D03D1052F1629110008FD58 /* enveUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1D03D1162F1629110008FD58 /* Build configuration list for PBXNativeTarget "enveUITests" */;
+			buildPhases = (
+				1D03D1022F1629110008FD58 /* Sources */,
+				1D03D1032F1629110008FD58 /* Frameworks */,
+				1D03D1042F1629110008FD58 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				1D03D1082F1629110008FD58 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				1D03D1092F1629110008FD58 /* enveUITests */,
+			);
+			name = enveUITests;
+			productName = enveUITests;
+			productReference = 1D03D1062F1629110008FD58 /* enveUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		1D40336C2FBEBC3100EEFBEE /* enve-tvOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1D4033912FBEBC3300EEFBEE /* Build configuration list for PBXNativeTarget "enve-tvOS" */;
+			buildPhases = (
+				1D4033692FBEBC3100EEFBEE /* Sources */,
+				1D40336A2FBEBC3100EEFBEE /* Frameworks */,
+				1D40336B2FBEBC3100EEFBEE /* Resources */,
+				1DTV0001000000000000D001 /* Embed Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				1D03D0EF2F1629100008FD58 /* enve */,
+				1D40336E2FBEBC3200EEFBEE /* enve-tvOS */,
+			);
+			name = "enve-tvOS";
+			packageProductDependencies = (
+				1DTV0001000000000000A001 /* Pulse */,
+				1DTV0001000000000000A003 /* PulseLogHandler */,
+				1DTV0001000000000000A004 /* AMSMB2 */,
+				1DTV0001000000000000A005 /* Zip */,
+			);
+			productName = "enve-tvOS";
+			productReference = 1D40336D2FBEBC3100EEFBEE /* enve-tvOS.app */;
+			productType = "com.apple.product-type.application";
+		};
+		1DWA0001000000000000T001 /* EnveWatch */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1DWA0001000000000000L001 /* Build configuration list for PBXNativeTarget "EnveWatch" */;
+			buildPhases = (
+				1DWA0001000000000000S001 /* Sources */,
+				1DWA0001000000000000FW01 /* Frameworks */,
+				1DWA0001000000000000R001 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				1DWA0001000000000000G001 /* EnveWatch */,
+			);
+			name = EnveWatch;
+			productName = EnveWatch;
+			productReference = 1DWA0001000000000000F002 /* EnveWatch.app */;
+			productType = "com.apple.product-type.application";
+		};
+		B00C00600000000000000001 /* EnveBookWidgets */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B00C00A000000000000000001 /* Build configuration list for PBXNativeTarget "EnveBookWidgets" */;
+			buildPhases = (
+				B00C00900000000000000001 /* Sources */,
+				B00C00400000000000000001 /* Frameworks */,
+				B00C00800000000000000001 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = EnveBookWidgets;
+			productName = EnveBookWidgets;
+			productReference = B00C00100000000000000006 /* EnveBookWidgets.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		1D03D0E52F1629100008FD58 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2640;
+				LastUpgradeCheck = 2610;
+				TargetAttributes = {
+					1D03D0EC2F1629100008FD58 = {
+						CreatedOnToolsVersion = 26.1.1;
+					};
+					1D03D0FB2F1629110008FD58 = {
+						CreatedOnToolsVersion = 26.1.1;
+						TestTargetID = 1D03D0EC2F1629100008FD58;
+					};
+					1D03D1052F1629110008FD58 = {
+						CreatedOnToolsVersion = 26.1.1;
+						TestTargetID = 1D03D0EC2F1629100008FD58;
+					};
+					1D40336C2FBEBC3100EEFBEE = {
+						CreatedOnToolsVersion = 26.4.1;
+					};
+					1DWA0001000000000000T001 = {
+						CreatedOnToolsVersion = 26.4.1;
+					};
+					B00C00600000000000000001 = {
+						CreatedOnToolsVersion = 26.4;
+					};
+				};
+			};
+			buildConfigurationList = 1D03D0E82F1629100008FD58 /* Build configuration list for PBXProject "enve" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 1D03D0E42F1629100008FD58;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				1D925AD82F2FE769004B6146 /* XCLocalSwiftPackageReference "LocalPackages/AMSMB2" */,
+				B1A2C3D4E5F60001293A0021 /* XCRemoteSwiftPackageReference "Pulse" */,
+				B1A2C3D4E5F60001293A0022 /* XCRemoteSwiftPackageReference "PulseLogHandler" */,
+				1D0BB04B2F3EE268001B353E /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
+				1DTV0001000000000000C0Z1 /* XCRemoteSwiftPackageReference "Zip" */,
+				E3544992322D09BC6BB8E392 /* XCRemoteSwiftPackageReference "swift-toolkit" */,
+				A90408000000000000000001 /* XCRemoteSwiftPackageReference "SwiftSoup" */,
+				AACC1100EEFF22BB33DD4400 /* XCLocalSwiftPackageReference "LocalPackages/UnrarKit" */,
+				BBDD2200FFAA33CC44EE5500 /* XCLocalSwiftPackageReference "LocalPackages/StoryAlign" */,
+				FA3A00010000000000000002 /* XCRemoteSwiftPackageReference "FluidAudio" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 1D03D0EE2F1629100008FD58 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				B00C00600000000000000001 /* EnveBookWidgets */,
+				1D03D0EC2F1629100008FD58 /* enve */,
+				1D03D0FB2F1629110008FD58 /* enveTests */,
+				1D03D1052F1629110008FD58 /* enveUITests */,
+				1D40336C2FBEBC3100EEFBEE /* enve-tvOS */,
+				1DWA0001000000000000T001 /* EnveWatch */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		1D03D0EB2F1629100008FD58 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1D03D0FA2F1629110008FD58 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1D03D1042F1629110008FD58 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1D40336B2FBEBC3100EEFBEE /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1DWA0001000000000000R001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B00C00800000000000000001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B00C00010000000000000009 /* PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		F011A7E50000000000000001 /* Embed Foliate Runtime */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/BuildSupport/embed-foliate-runtime.sh",
+				"$(SRCROOT)/BuildSupport/FoliateRuntime/index.html",
+				"$(SRCROOT)/BuildSupport/FoliateRuntime/reader.css",
+				"$(SRCROOT)/BuildSupport/FoliateRuntime/adapter.js",
+				"$(SRCROOT)/BuildSupport/FoliateRuntime/zip.js-LICENSE.txt",
+				"$(SRCROOT)/BuildSupport/FoliateRuntime/UPSTREAM.txt",
+				"$(SRCROOT)/ThirdParty/foliate-js/LICENSE",
+				"$(SRCROOT)/ThirdParty/foliate-js/view.js",
+				"$(SRCROOT)/ThirdParty/foliate-js/epub.js",
+				"$(SRCROOT)/ThirdParty/foliate-js/fb2.js",
+				"$(SRCROOT)/ThirdParty/foliate-js/mobi.js",
+				"$(SRCROOT)/ThirdParty/foliate-js/epubcfi.js",
+				"$(SRCROOT)/ThirdParty/foliate-js/fixed-layout.js",
+				"$(SRCROOT)/ThirdParty/foliate-js/paginator.js",
+				"$(SRCROOT)/ThirdParty/foliate-js/progress.js",
+				"$(SRCROOT)/ThirdParty/foliate-js/overlayer.js",
+				"$(SRCROOT)/ThirdParty/foliate-js/text-walker.js",
+				"$(SRCROOT)/ThirdParty/foliate-js/search.js",
+				"$(SRCROOT)/ThirdParty/foliate-js/tts.js",
+				"$(SRCROOT)/ThirdParty/foliate-js/footnotes.js",
+				"$(SRCROOT)/ThirdParty/foliate-js/vendor/zip.js",
+			);
+			name = "Embed Foliate Runtime";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/foliate_runtime_embedded.stamp",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/FoliateRuntime.bundle",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/FoliateRuntime.bundle/foliate",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/FoliateRuntime.bundle/foliate/vendor",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/FoliateRuntime.bundle/licenses",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/FoliateRuntime.bundle/index.html",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/FoliateRuntime.bundle/reader.css",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/FoliateRuntime.bundle/adapter.js",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/FoliateRuntime.bundle/foliate/view.js",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/FoliateRuntime.bundle/foliate/epub.js",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/FoliateRuntime.bundle/foliate/fb2.js",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/FoliateRuntime.bundle/foliate/mobi.js",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/FoliateRuntime.bundle/foliate/epubcfi.js",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/FoliateRuntime.bundle/foliate/fixed-layout.js",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/FoliateRuntime.bundle/foliate/paginator.js",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/FoliateRuntime.bundle/foliate/progress.js",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/FoliateRuntime.bundle/foliate/overlayer.js",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/FoliateRuntime.bundle/foliate/text-walker.js",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/FoliateRuntime.bundle/foliate/search.js",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/FoliateRuntime.bundle/foliate/tts.js",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/FoliateRuntime.bundle/foliate/footnotes.js",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/FoliateRuntime.bundle/foliate/vendor/zip.js",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/FoliateRuntime.bundle/licenses/foliate-LICENSE.txt",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/FoliateRuntime.bundle/licenses/zip.js-LICENSE.txt",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/FoliateRuntime.bundle/licenses/UPSTREAM.txt",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "/bin/sh \"$SRCROOT/BuildSupport/embed-foliate-runtime.sh\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		1D03D0E92F1629100008FD58 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B00C00010000000000000001 /* WidgetSharedState.swift in Sources */,
+				1DWA0001000000000000B001 /* WatchPayloads.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1D03D0F82F1629110008FD58 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1D03D1022F1629110008FD58 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1D4033692FBEBC3100EEFBEE /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1DWA0001000000000000S001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1DWA0001000000000000B002 /* WatchPayloads.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B00C00900000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B00C00010000000000000002 /* WidgetSharedState.swift in Sources */,
+				B00C00010000000000000003 /* EnveBookWidgetsBundle.swift in Sources */,
+				B00C00010000000000000004 /* HearthWidgetPalette.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		1D03D0FE2F1629110008FD58 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 1D03D0EC2F1629100008FD58 /* enve */;
+			targetProxy = 1D03D0FD2F1629110008FD58 /* PBXContainerItemProxy */;
+		};
+		1D03D1082F1629110008FD58 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 1D03D0EC2F1629100008FD58 /* enve */;
+			targetProxy = 1D03D1072F1629110008FD58 /* PBXContainerItemProxy */;
+		};
+		1DWA0001000000000000DEP1 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			platformFilter = ios;
+			target = 1DWA0001000000000000T001 /* EnveWatch */;
+			targetProxy = 1DWA0001000000000000P001 /* PBXContainerItemProxy */;
+		};
+		B00C00700000000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			platformFilter = ios;
+			target = B00C00600000000000000001 /* EnveBookWidgets */;
+			targetProxy = B00C00200000000000000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		1D03D10E2F1629110008FD58 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				TARGETED_DEVICE_FAMILY = "";
+			};
+			name = Debug;
+		};
+		1D03D10F2F1629110008FD58 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				TARGETED_DEVICE_FAMILY = "";
+			};
+			name = Release;
+		};
+		1D03D1112F1629110008FD58 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = enve.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 119;
+				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_TEAM = 9TT6DBK8W3;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Enve Book Player";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.books";
+				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "Enve uses your sleep data to show sleep insights and rewind audiobooks to where you fell asleep.";
+				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Enve does not write health data.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Enve needs access to your local network to discover and connect to your media servers.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Enve uses on-device speech recognition for StoryAlign read-aloud books, audiobook read-along transcripts, and clip transcripts.";
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = NO;
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = NO;
+				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphonesimulator*]" = YES;
+				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]" = YES;
+				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphoneos*]" = UIStatusBarStyleDefault;
+				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				"IPHONEOS_DEPLOYMENT_TARGET[sdk=iphoneos*]" = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
+				MACOSX_DEPLOYMENT_TARGET = 26.1;
+				MARKETING_VERSION = 1.2;
+				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enve;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = auto;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				XROS_DEPLOYMENT_TARGET = 26.1;
+			};
+			name = Debug;
+		};
+		1D03D1122F1629110008FD58 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = enve/enveRelease.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 119;
+				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_TEAM = 9TT6DBK8W3;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_CODE_COVERAGE = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_TESTABILITY = NO;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Enve Book Player";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.books";
+				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "Enve uses your sleep data to show sleep insights and rewind audiobooks to where you fell asleep.";
+				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Enve does not write health data.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Enve needs access to your local network to discover and connect to your media servers.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Enve uses on-device speech recognition for StoryAlign read-aloud books, audiobook read-along transcripts, and clip transcripts.";
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = NO;
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = NO;
+				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphonesimulator*]" = YES;
+				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]" = YES;
+				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphoneos*]" = UIStatusBarStyleDefault;
+				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
+				MACOSX_DEPLOYMENT_TARGET = 26.1;
+				MARKETING_VERSION = 1.2;
+				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enve;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = auto;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				XROS_DEPLOYMENT_TARGET = 26.1;
+			};
+			name = Release;
+		};
+		1D03D1142F1629110008FD58 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 119;
+				DEAD_CODE_STRIPPING = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.1;
+				MARKETING_VERSION = 1.2;
+				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enveTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/enve.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/enve";
+				XROS_DEPLOYMENT_TARGET = 26.1;
+			};
+			name = Debug;
+		};
+		1D03D1152F1629110008FD58 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 119;
+				DEAD_CODE_STRIPPING = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.1;
+				MARKETING_VERSION = 1.2;
+				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enveTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/enve.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/enve";
+				XROS_DEPLOYMENT_TARGET = 26.1;
+			};
+			name = Release;
+		};
+		1D03D1172F1629110008FD58 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEAD_CODE_STRIPPING = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.1;
+				MARKETING_VERSION = 1.2;
+				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enveUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = enve;
+				XROS_DEPLOYMENT_TARGET = 26.1;
+			};
+			name = Debug;
+		};
+		1D03D1182F1629110008FD58 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CURRENT_PROJECT_VERSION = 119;
+				DEAD_CODE_STRIPPING = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.1;
+				MARKETING_VERSION = 1.2;
+				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enveUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = enve;
+				XROS_DEPLOYMENT_TARGET = 26.1;
+			};
+			name = Release;
+		};
+		1D40338B2FBEBC3300EEFBEE /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "App Icon & Top Shelf Image";
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = "enve-tvOS.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 119;
+				DEVELOPMENT_TEAM = 9TT6DBK8W3;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "enve-tvOS-Info.plist";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UIRequiresFullScreen = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UIUserInterfaceStyle = Automatic;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.2;
+				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enve;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = appletvos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 3;
+				TVOS_DEPLOYMENT_TARGET = 17.0;
+			};
+			name = Debug;
+		};
+		1D40338C2FBEBC3300EEFBEE /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "App Icon & Top Shelf Image";
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = "enve-tvOS.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 119;
+				DEVELOPMENT_TEAM = 9TT6DBK8W3;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "enve-tvOS-Info.plist";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UIRequiresFullScreen = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UIUserInterfaceStyle = Automatic;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.2;
+				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enve;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = appletvos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 3;
+				TVOS_DEPLOYMENT_TARGET = 17.0;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		1DWA0001000000000000X001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = EnveWatch.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 119;
+				DEVELOPMENT_TEAM = 9TT6DBK8W3;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "EnveWatch-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = Enve;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.enve.enve;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.2;
+				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enve.watchkitapp;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 10.0;
+			};
+			name = Debug;
+		};
+		1DWA0001000000000000X002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = EnveWatch.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 119;
+				DEVELOPMENT_TEAM = 9TT6DBK8W3;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "EnveWatch-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = Enve;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.enve.enve;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.2;
+				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enve.watchkitapp;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				VALIDATE_PRODUCT = YES;
+				WATCHOS_DEPLOYMENT_TARGET = 10.0;
+			};
+			name = Release;
+		};
+		B00C00B000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = EnveBookWidgets/EnveBookWidgets.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 119;
+				DEVELOPMENT_TEAM = 9TT6DBK8W3;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = EnveBookWidgets/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.2;
+				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enve.widgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		B00C00B000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = EnveBookWidgets/EnveBookWidgets.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 119;
+				DEVELOPMENT_TEAM = 9TT6DBK8W3;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = EnveBookWidgets/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.2;
+				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enve.widgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		1D03D0E82F1629100008FD58 /* Build configuration list for PBXProject "enve" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1D03D10E2F1629110008FD58 /* Debug */,
+				1D03D10F2F1629110008FD58 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		1D03D1102F1629110008FD58 /* Build configuration list for PBXNativeTarget "enve" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1D03D1112F1629110008FD58 /* Debug */,
+				1D03D1122F1629110008FD58 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		1D03D1132F1629110008FD58 /* Build configuration list for PBXNativeTarget "enveTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1D03D1142F1629110008FD58 /* Debug */,
+				1D03D1152F1629110008FD58 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		1D03D1162F1629110008FD58 /* Build configuration list for PBXNativeTarget "enveUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1D03D1172F1629110008FD58 /* Debug */,
+				1D03D1182F1629110008FD58 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		1D4033912FBEBC3300EEFBEE /* Build configuration list for PBXNativeTarget "enve-tvOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1D40338B2FBEBC3300EEFBEE /* Debug */,
+				1D40338C2FBEBC3300EEFBEE /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		1DWA0001000000000000L001 /* Build configuration list for PBXNativeTarget "EnveWatch" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1DWA0001000000000000X001 /* Debug */,
+				1DWA0001000000000000X002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B00C00A000000000000000001 /* Build configuration list for PBXNativeTarget "EnveBookWidgets" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B00C00B000000000000000001 /* Debug */,
+				B00C00B000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		1D925AD82F2FE769004B6146 /* XCLocalSwiftPackageReference "LocalPackages/AMSMB2" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = LocalPackages/AMSMB2;
+		};
+		AACC1100EEFF22BB33DD4400 /* XCLocalSwiftPackageReference "LocalPackages/UnrarKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = LocalPackages/UnrarKit;
+		};
+		BBDD2200FFAA33CC44EE5500 /* XCLocalSwiftPackageReference "LocalPackages/StoryAlign" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = LocalPackages/StoryAlign;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		1D0BB04B2F3EE268001B353E /* XCRemoteSwiftPackageReference "ZIPFoundation" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/readium/ZIPFoundation.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 3.0.1;
+			};
+		};
+		1DTV0001000000000000C0Z1 /* XCRemoteSwiftPackageReference "Zip" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/marmelroy/Zip.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.1.2;
+			};
+		};
+		A90408000000000000000001 /* XCRemoteSwiftPackageReference "SwiftSoup" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/scinfu/SwiftSoup.git";
+			requirement = {
+				kind = revision;
+				revision = 83336847e47b2f499330c15426ad2fb180e72d9b;
+			};
+		};
+		B1A2C3D4E5F60001293A0021 /* XCRemoteSwiftPackageReference "Pulse" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/kean/Pulse";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 5.0.0;
+			};
+		};
+		B1A2C3D4E5F60001293A0022 /* XCRemoteSwiftPackageReference "PulseLogHandler" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/kean/PulseLogHandler.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 5.0.0;
+			};
+		};
+		E3544992322D09BC6BB8E392 /* XCRemoteSwiftPackageReference "swift-toolkit" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/readium/swift-toolkit.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 3.11.0;
+			};
+		};
+		FA3A00010000000000000002 /* XCRemoteSwiftPackageReference "FluidAudio" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/FluidInference/FluidAudio.git";
+			requirement = {
+				kind = revision;
+				revision = 5390df9752c8fc583596018360c5fd70d6fa6c75;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		1D0BB04C2F3EE268001B353E /* ReadiumZIPFoundation */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1D0BB04B2F3EE268001B353E /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
+			productName = ReadiumZIPFoundation;
+		};
+		1D925ADA2F2FE9C8004B6146 /* AMSMB2 */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AMSMB2;
+		};
+		1DTV0001000000000000A001 /* Pulse */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B1A2C3D4E5F60001293A0021 /* XCRemoteSwiftPackageReference "Pulse" */;
+			productName = Pulse;
+		};
+		1DTV0001000000000000A003 /* PulseLogHandler */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B1A2C3D4E5F60001293A0022 /* XCRemoteSwiftPackageReference "PulseLogHandler" */;
+			productName = PulseLogHandler;
+		};
+		1DTV0001000000000000A004 /* AMSMB2 */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AMSMB2;
+		};
+		1DTV0001000000000000A005 /* Zip */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1DTV0001000000000000C0Z1 /* XCRemoteSwiftPackageReference "Zip" */;
+			productName = Zip;
+		};
+		4F91CD44C845610BAA3FE35E /* ReadiumStreamer */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E3544992322D09BC6BB8E392 /* XCRemoteSwiftPackageReference "swift-toolkit" */;
+			productName = ReadiumStreamer;
+		};
+		5363E61448711BE6804ADDCE /* ReadiumNavigator */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E3544992322D09BC6BB8E392 /* XCRemoteSwiftPackageReference "swift-toolkit" */;
+			productName = ReadiumNavigator;
+		};
+		593DA7D1FA5A837B5AA85853 /* ReadiumAdapterGCDWebServer */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E3544992322D09BC6BB8E392 /* XCRemoteSwiftPackageReference "swift-toolkit" */;
+			productName = ReadiumAdapterGCDWebServer;
+		};
+		AACC1100EEFF22BB33DD4401 /* UnrarKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = UnrarKit;
+		};
+		B1A2C3D4E5F60001293A0011 /* Pulse */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B1A2C3D4E5F60001293A0021 /* XCRemoteSwiftPackageReference "Pulse" */;
+			productName = Pulse;
+		};
+		B1A2C3D4E5F60001293A0013 /* PulseLogHandler */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B1A2C3D4E5F60001293A0022 /* XCRemoteSwiftPackageReference "PulseLogHandler" */;
+			productName = PulseLogHandler;
+		};
+		B751E1392A580D4FA5D946BB /* ReadiumShared */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E3544992322D09BC6BB8E392 /* XCRemoteSwiftPackageReference "swift-toolkit" */;
+			productName = ReadiumShared;
+		};
+		BBDD2200FFAA33CC44EE5501 /* StoryAlignCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = StoryAlignCore;
+		};
+		FA3A00010000000000000003 /* FluidAudio */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = FA3A00010000000000000002 /* XCRemoteSwiftPackageReference "FluidAudio" */;
+			productName = FluidAudio;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 1D03D0E52F1629100008FD58 /* Project object */;
+}

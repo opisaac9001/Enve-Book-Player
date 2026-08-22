@@ -1,0 +1,108 @@
+#!/bin/sh
+set -eu
+
+repository_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+lock_file="$repository_root/.agent-lock"
+
+usage() {
+    printf 'Usage: %s status|set|verify\n' "$0" >&2
+    exit 64
+}
+
+read_secret() {
+    prompt=$1
+    if [ -t 0 ]; then
+        printf '%s' "$prompt" >&2
+        stty -echo
+        if ! IFS= read -r secret; then
+            stty echo
+            printf '\nNo password was read.\n' >&2
+            exit 1
+        fi
+        stty echo
+        printf '\n' >&2
+    else
+        if ! IFS= read -r secret; then
+            printf 'No password was read.\n' >&2
+            exit 1
+        fi
+    fi
+    printf '%s' "$secret"
+}
+
+load_lock() {
+    [ -f "$lock_file" ] || return 2
+    salt=$(sed -n 's/^salt=//p' "$lock_file" | head -n 1)
+    expected_hash=$(sed -n 's/^hash=//p' "$lock_file" | head -n 1)
+    [ -n "$salt" ] && [ -n "$expected_hash" ]
+}
+
+hash_password() {
+    printf '%s:%s' "$1" "$2" | shasum -a 256 | awk '{print $1}'
+}
+
+set_password() {
+    if [ -f "$lock_file" ]; then
+        printf 'An agent-lock password is already set. Remove the local .agent-lock file first if you intend to replace it.\n' >&2
+        exit 1
+    fi
+
+    password=$(read_secret 'Create agent-lock password: ')
+    confirmation=$(read_secret 'Confirm agent-lock password: ')
+
+    if [ "$password" != "$confirmation" ]; then
+        printf 'The passwords did not match. Nothing was saved.\n' >&2
+        exit 1
+    fi
+    if [ "${#password}" -lt 8 ]; then
+        printf 'Use at least 8 characters. Nothing was saved.\n' >&2
+        exit 1
+    fi
+
+    salt=$(openssl rand -hex 16)
+    password_hash=$(hash_password "$salt" "$password")
+    temporary_file="$lock_file.tmp.$$"
+    trap 'rm -f "$temporary_file"' EXIT HUP INT TERM
+    umask 077
+    printf 'version=1\nsalt=%s\nhash=%s\n' "$salt" "$password_hash" > "$temporary_file"
+    mv "$temporary_file" "$lock_file"
+    trap - EXIT HUP INT TERM
+    unset password confirmation password_hash
+    printf 'Agent lock configured for this checkout.\n'
+}
+
+verify_password() {
+    if ! load_lock; then
+        printf 'No agent-lock password is configured. Run ./scripts/agent-lock set first.\n' >&2
+        exit 2
+    fi
+
+    password=$(read_secret 'Agent-lock password: ')
+    actual_hash=$(hash_password "$salt" "$password")
+    unset password
+    if [ "$actual_hash" != "$expected_hash" ]; then
+        printf 'Incorrect agent-lock password.\n' >&2
+        exit 1
+    fi
+    printf 'Agent lock verified.\n'
+}
+
+case "${1:-}" in
+    status)
+        if load_lock; then
+            printf 'configured\n'
+            exit 0
+        fi
+        printf 'not configured\n'
+        exit 2
+        ;;
+    set)
+        set_password
+        ;;
+    verify)
+        verify_password
+        ;;
+    *)
+        usage
+        ;;
+esac

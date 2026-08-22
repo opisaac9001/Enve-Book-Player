@@ -1,0 +1,168 @@
+import Foundation
+
+enum HearthQuotes {
+    static let hearthSayings: [(text: String, author: String)] = [
+        ("Keep a little fire for the next chapter.", "Enve"),
+        ("The best shelf is the one that remembers where you were.", "Enve"),
+        ("Some books wait quietly. Some books pull up a chair.", "Enve"),
+        ("A good library should feel less like storage and more like weather.", "Enve"),
+        ("Save the sentence that stops you. It may know why later.", "Enve"),
+        ("When the world gets loud, make the page smaller and the room wider.", "Enve"),
+        ("Progress is not a race. It is a trail of returned bookmarks.", "Enve"),
+        ("Let the book carry the clock for a while.", "Enve"),
+        ("A story is easier to find when the house keeps the lights on.", "Enve"),
+        ("Your next chapter does not need a grand entrance. It just needs a place to start.", "Enve"),
+        ("Every unfinished book is a door left politely open.", "Enve"),
+        ("The right book changes the temperature of a room.", "Enve"),
+        ("A library is not a pile. It is a promise that you can return.", "Enve"),
+        ("The page waits without judgment. That is one of its better tricks.", "Enve"),
+        ("Good stories do not expire. They only change where they meet you.", "Enve"),
+        ("A chapter at the right time can feel like a room with a lamp on.", "Enve"),
+    ]
+
+    static let all: [(text: String, author: String)] = [
+
+        ("A reader lives a thousand lives before he dies. The man who never reads lives only one.", "George R.R. Martin"),
+        ("There is no friend as loyal as a book.", "Ernest Hemingway"),
+        ("A book is a dream that you hold in your hands.", "Neil Gaiman"),
+        ("Words are, in my not-so-humble opinion, our most inexhaustible source of magic.", "J.K. Rowling"),
+        ("It is what you read when you don't have to that determines what you will be.", "Oscar Wilde"),
+        ("Once you learn to read, you will be forever free.", "Frederick Douglass"),
+        ("The more that you read, the more things you will know.", "Dr. Seuss"),
+        ("Reading is dreaming with open eyes.", "Anissa Trisdianty"),
+        ("Not all those who wander are lost.", "J.R.R. Tolkien"),
+        ("All that is gold does not glitter.", "J.R.R. Tolkien"),
+        ("I am not afraid of storms, for I am learning how to sail my ship.", "Louisa May Alcott"),
+        ("It does not do to dwell on dreams and forget to live.", "J.K. Rowling"),
+        ("We accept the love we think we deserve.", "Stephen Chbosky"),
+        ("So it goes.", "Kurt Vonnegut"),
+        ("It was the best of times, it was the worst of times.", "Charles Dickens"),
+        ("Call me Ishmael.", "Herman Melville"),
+        ("All animals are equal, but some animals are more equal than others.", "George Orwell"),
+
+        ("A book must be the axe for the frozen sea within us.", "Franz Kafka"),
+        ("Outside of a dog, a book is man's best friend.", "Groucho Marx"),
+        ("I cannot live without books.", "Thomas Jefferson"),
+        ("If you don't like to read, you haven't found the right book.", "J.K. Rowling"),
+        ("Reading is to the mind what exercise is to the body.", "Joseph Addison"),
+        ("A room without books is like a body without a soul.", "Marcus Tullius Cicero"),
+        ("Think before you speak. Read before you think.", "Fran Lebowitz"),
+        ("We read to know we are not alone.", "C.S. Lewis"),
+        ("The reading of all good books is like a conversation with the finest minds.", "René Descartes"),
+        ("Books are a uniquely portable magic.", "Stephen King"),
+        (
+            "There is no such thing as a child who hates to read; there are only children who have not found the right book.",
+            "Frank Serafini"
+        ),
+        ("You can never get a cup of tea large enough or a book long enough to suit me.", "C.S. Lewis"),
+        ("A great book should leave you with many experiences, and slightly exhausted at the end.", "William Styron"),
+        ("To read without reflecting is like eating without digesting.", "Edmund Burke"),
+        ("Books are mirrors: we only see in them what we already have inside us.", "Carlos Ruiz Zafón"),
+        (
+            "I would be most content if my children grew up to be the kind of people who think decorating consists mostly of building enough bookshelves.",
+            "Anna Quindlen"
+        ),
+
+        ("Stories are the creative conversion of life itself into a more powerful, clearer, more meaningful experience.", "Robert McKee"),
+        ("The human species thinks in metaphors and learns through stories.", "Mary Catherine Bateson"),
+        ("There is no greater agony than bearing an untold story inside you.", "Maya Angelou"),
+        ("If history were taught in the form of stories, it would never be forgotten.", "Rudyard Kipling"),
+        ("Storytelling is the most powerful way to put ideas into the world today.", "Robert McKee"),
+        ("Narrative is radical, creating us at the very moment it is being created.", "Toni Morrison"),
+        ("A story can always break a spell.", "Terry Pratchett"),
+        (
+            "Books must be treated with respect, because words have power. Bring enough words together they can bend space and time.",
+            "Terry Pratchett"
+        ),
+        (
+            "The three rules of the Librarians of Time and Space are: 1) Silence; 2) Books must be returned by no later than the date shown; and 3) Do not interfere with the nature of causality.",
+            "Terry Pratchett"
+        ),
+        ("After nourishment, shelter and companionship, stories are the thing we need most.", "Philip Pullman"),
+
+        ("Imagination is more important than knowledge.", "Albert Einstein"),
+        ("The man who does not read has no advantage over the man who cannot read.", "Mark Twain"),
+        ("Classic: a book which people praise and don't read.", "Mark Twain"),
+        ("The books that the world calls immoral are books that show the world its own shame.", "Oscar Wilde"),
+        ("I declare after all there is no enjoyment like reading!", "Jane Austen"),
+        ("No tears in the writer, no tears in the reader.", "Robert Frost"),
+        ("A word after a word after a word is power.", "Margaret Atwood"),
+        (
+            "In the case of good books, the point is not to see how many of them you can get through, but rather how many can get through to you.",
+            "Mortimer J. Adler"
+        ),
+        (
+            "What really knocks me out is a book that, when you're all done reading it, you wish the author that wrote it was a terrific friend of yours.",
+            "J.D. Salinger"
+        ),
+        ("Sleep is good, he said, and books are better.", "George R.R. Martin"),
+        ("I took a speed-reading course and read War and Peace in twenty minutes. It involves Russia.", "Woody Allen"),
+        ("The world was hers for the reading.", "Betty Smith"),
+        ("A mind needs books as a sword needs a whetstone.", "George R.R. Martin"),
+        ("I kept always two books in my pocket: one to read, one to write in.", "Robert Louis Stevenson"),
+        ("One must always be careful of books, and what is inside them, for words have the power to change us.", "Cassandra Clare"),
+        ("It is a truth universally acknowledged...", "Jane Austen"),
+        ("Time you enjoy wasting is not wasted time.", "Marthe Troly-Curtin"),
+        ("Not everything that is faced can be changed, but nothing can be changed until it is faced.", "James Baldwin"),
+
+        ("I am a part of everything that I have read.", "Theodore Roosevelt"),
+        ("There are worse crimes than burning books. One of them is not reading them.", "Joseph Brodsky"),
+        ("Let us read and let us dance. These two amusements will never do any harm to the world.", "Voltaire"),
+        ("Good friends, good books, and a sleepy conscience: this is the ideal life.", "Mark Twain"),
+        ("Books are the quietest and most constant of friends.", "Charles W. Eliot"),
+        ("Reading gives us someplace to go when we have to stay where we are.", "Mason Cooley"),
+        ("In books I have traveled, not only to other worlds, but into my own.", "Anna Quindlen"),
+        ("The library is inhabited by spirits that come out of the pages at night.", "Isabel Allende"),
+        ("A book is a gift you can open again and again.", "Garrison Keillor"),
+        ("Any book that helps a child to form a habit of reading has done its work.", "Maya Angelou"),
+        ("Books are the mirrors of the soul.", "Virginia Woolf"),
+        ("My alma mater was books, a good library.", "Malcolm X"),
+        ("I cannot remember the books I've read any more than the meals I have eaten; even so, they have made me.", "Ralph Waldo Emerson"),
+        ("If you only read the books that everyone else is reading, you can only think what everyone else is thinking.", "Haruki Murakami"),
+        ("The books that help you most are those which make you think the most.", "Theodore Parker"),
+
+        ("We tell ourselves stories in order to live.", "Joan Didion"),
+        ("A children's story that can only be enjoyed by children is not a good children's story in the slightest.", "C.S. Lewis"),
+        ("Fantasy is hardly an escape from reality. It's a way of understanding it.", "Lloyd Alexander"),
+        (
+            "Fairy tales are more than true, not because they tell us that dragons exist, but because they tell us that dragons can be beaten.",
+            "Neil Gaiman"
+        ),
+        ("The most important things are the hardest to say.", "Stephen King"),
+        ("The scariest moment is always just before you start.", "Stephen King"),
+        ("Description begins in the writer's imagination, but should finish in the reader's.", "Stephen King"),
+        ("Get busy living, or get busy dying.", "Stephen King"),
+
+        ("I find television very educating. Every time somebody turns on the set I go and read a book.", "Groucho Marx"),
+        ("Be careful about reading health books. You may die of a misprint.", "Mark Twain"),
+        ("Never trust anyone who has not brought a book with them.", "Lemony Snicket"),
+        ("The covers of this book are too far apart.", "Ambrose Bierce"),
+        ("That's the thing about books. They let you travel without moving your feet.", "Jhumpa Lahiri"),
+        ("I would rather be poor in a cottage full of books than a king without the desire to read.", "Thomas Babington Macaulay"),
+        ("A house without books is like a room without windows.", "Horace Mann"),
+        ("Keep reading. It's one of the most marvelous adventures that anyone can have.", "Lloyd Alexander"),
+
+        ("The purpose of a writer is to keep civilization from destroying itself.", "Albert Camus"),
+        ("If you want to be a writer, you must do two things above all others: read a lot and write a lot.", "Stephen King"),
+        ("Fill your paper with the breathings of your heart.", "William Wordsworth"),
+        ("A writer only begins a book. A reader finishes it.", "Samuel Johnson"),
+        ("One day I will find the right words, and they will be simple.", "Jack Kerouac"),
+        ("Words can be like X-rays if you use them properly.", "Aldous Huxley"),
+        (
+            "Though they were merely stories, I accepted them as true because I hungered for a different life, for something new.",
+            "Richard Wright"
+        ),
+        (
+            "I've run into a number of people in my life who read, but consider fiction to be a waste of time, and I've always felt vaguely sorry for them.",
+            "Matthew Berg"
+        ),
+    ]
+
+    static var daily: (text: String, author: String) {
+        let day = Calendar.current.ordinality(of: .day, in: .era, for: .now) ?? 0
+        if day.isMultiple(of: 3) {
+            return hearthSayings[(day / 3) % hearthSayings.count]
+        }
+        return all[day % all.count]
+    }
+}

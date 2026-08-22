@@ -1,0 +1,18 @@
+{
+  "images" : [
+    {
+      "idiom" : "tv",
+      "filename" : "ts-1x.svg",
+      "scale" : "1x"
+    },
+    {
+      "idiom" : "tv",
+      "filename" : "ts-2x.svg",
+      "scale" : "2x"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}

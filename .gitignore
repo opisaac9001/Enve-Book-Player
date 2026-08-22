@@ -1,0 +1,89 @@
+# Xcode
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+DerivedData/
+build/
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+!default.pbxuser
+!default.mode1v3
+!default.mode2v3
+!default.perspectivev3
+xcuserdata/
+*.moved-aside
+*.xccheckout
+*.xcscmblueprint
+*.xcarchive
+*.xcresult
+*.profdata
+*.profraw
+
+# Swift Package Manager
+.swiftpm/
+.build/
+Packages/
+Package.pins
+Package.resolved
+!enve.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+SourcePackages/
+
+# CocoaPods
+Pods/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Local editor metadata
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Local environment and signing material
+.env
+.env.*
+!.env.example
+!.env.*.example
+Secrets.plist
+GoogleService-Info.plist
+*.cer
+*.key
+*.mobileprovision
+*.p8
+*.p12
+*.pem
+*.provisionprofile
+
+# Build logs
+*.log
+
+# App-specific
+*.ipa
+*.dSYM.zip
+*.dSYM
+enve/Configuration/DeveloperSettings.plist
+.agent-lock
+.agent-lock.tmp.*
+
+# Info.plist backups
+*.plist.bak
+
+# Merge and patch leftovers
+*.orig
+*.rej
+
+# Build output text
+build_*.txt
+build_*.log
+
+# Workplan / handoff docs
+*_WORKPLAN.md
+*_HANDOFF*.md
+AI_DEBUGGING*.md
+HANDOFF*.md

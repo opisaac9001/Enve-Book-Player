@@ -1,0 +1,76 @@
+name: Bug report
+description: Report a reproducible problem in Enve Book Player
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for taking the time to report a problem. Remove credentials, tokens, private server addresses, and personal library details before submitting.
+  - type: input
+    id: version
+    attributes:
+      label: Enve version
+      placeholder: For example, 1.2.0 (145)
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device and iOS version
+      placeholder: For example, iPhone 16 Pro on iOS 26.1
+    validations:
+      required: true
+  - type: dropdown
+    id: source
+    attributes:
+      label: Library source
+      options:
+        - Local files
+        - Audiobookshelf
+        - Plex
+        - Jellyfin
+        - Emby
+        - Booklore or Grimmory
+        - Storyteller
+        - Komga or Kavita
+        - OPDS
+        - WebDAV or SMB
+        - Silo
+        - RSS podcast
+        - Debrid service
+        - Not source-specific
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Explain what you expected and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open…
+        2. Select…
+        3. See…
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Screenshots or diagnostics
+      description: Add redacted screenshots, recordings, or logs if they help. Never include secrets or private server information.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues for the same problem.
+          required: true
+        - label: I removed credentials, tokens, private addresses, and personal media details.
+          required: true

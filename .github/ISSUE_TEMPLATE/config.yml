@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Setup help and general support
+    url: https://github.com/opisaac9001/Enve-Support/issues
+    about: Ask for help with servers, accounts, setup, or normal app use.
+  - name: Discord community
+    url: https://discord.gg/Hw4nmXRehb
+    about: Talk with the Enve community.
+  - name: Documentation
+    url: https://envemedia.com/docs/
+    about: Read setup guides and common answers.
+  - name: Security vulnerability
+    url: https://github.com/opisaac9001/Enve-Book-Player/security/advisories/new
+    about: Report a security issue privately.

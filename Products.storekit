@@ -1,0 +1,95 @@
+{
+  "identifier" : "E1F2A3B4",
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+    {
+      "displayPrice" : "0.99",
+      "familyShareable" : false,
+      "internalID" : "7001000001",
+      "localizations" : [
+        {
+          "description" : "Buy me a coffee to support development",
+          "displayName" : "Coffee Tip",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "com.enve.tip.coffee",
+      "referenceName" : "Coffee Tip",
+      "type" : "Consumable"
+    },
+    {
+      "displayPrice" : "2.99",
+      "familyShareable" : false,
+      "internalID" : "7001000002",
+      "localizations" : [
+        {
+          "description" : "Buy me a fancy coffee to support development",
+          "displayName" : "Generous Coffee Tip",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "com.enve.tip.generousCoffee",
+      "referenceName" : "Generous Coffee Tip",
+      "type" : "Consumable"
+    },
+    {
+      "displayPrice" : "4.99",
+      "familyShareable" : false,
+      "internalID" : "7001000003",
+      "localizations" : [
+        {
+          "description" : "Very generous support for development",
+          "displayName" : "Very Generous Tip",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "com.enve.tip.veryGenerous",
+      "referenceName" : "Very Generous Tip",
+      "type" : "Consumable"
+    },
+    {
+      "displayPrice" : "9.99",
+      "familyShareable" : false,
+      "internalID" : "7001000004",
+      "localizations" : [
+        {
+          "description" : "Amazing support for development",
+          "displayName" : "Extremely Generous Tip",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "com.enve.tip.extremelyGenerous",
+      "referenceName" : "Extremely Generous Tip",
+      "type" : "Consumable"
+    },
+    {
+      "displayPrice" : "4.99",
+      "familyShareable" : true,
+      "internalID" : "7001000005",
+      "localizations" : [
+        {
+          "description" : "Unlock bulk metadata matching, downloads, and library management features",
+          "displayName" : "Library Management",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "com.enve.libraryManagement",
+      "referenceName" : "Library Management",
+      "type" : "NonConsumable"
+    }
+  ],
+  "settings" : {
+    "_applicationInternalID" : "7001000000",
+    "_developerTeamID" : "",
+    "_lastSynchronizedDate" : 757382400.0
+  },
+  "subscriptionGroups" : [
+
+  ],
+  "version" : {
+    "major" : 3,
+    "minor" : 0
+  }
+}
