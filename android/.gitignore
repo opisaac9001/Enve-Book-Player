@@ -1,0 +1,29 @@
+# Android / Gradle build outputs
+*.iml
+.gradle/
+.kotlin/
+**/build/
+local.properties
+.cxx/
+.externalNativeBuild/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+
+# IDE
+.idea/
+*.hprof
+captures/
+
+# OS
+.DS_Store
+
+# Signing material
+*.jks
+*.keystore
+keystore.properties
+
+# Local agent lock (salted hash, never committed)
+.agent-lock

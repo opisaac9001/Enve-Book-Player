@@ -15,10 +15,17 @@ body:
     validations:
       required: true
   - type: input
+    id: platform
+    attributes:
+      label: Platform and operating system
+      placeholder: For example, iOS 26.1 or Android 16
+    validations:
+      required: true
+  - type: input
     id: device
     attributes:
-      label: Device and iOS version
-      placeholder: For example, iPhone 16 Pro on iOS 26.1
+      label: Device
+      placeholder: For example, iPhone 16 Pro or Pixel 9
     validations:
       required: true
   - type: dropdown

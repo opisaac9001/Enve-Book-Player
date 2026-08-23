@@ -16,10 +16,10 @@ Security fixes target the current public `main` branch and latest release. Older
 
 Enve connects directly to servers selected and operated by the user.
 
-- Credentials and refresh tokens belong in Keychain, never source files or UserDefaults.
+- Credentials and refresh tokens belong in platform-secure storage (Keychain on Apple platforms and encrypted credential storage on Android), never source files or ordinary preferences.
 - Tokens must not be written to logs or diagnostics.
 - Reports must not contain private server addresses, signed media URLs, or personal library data.
 - Non-streaming API requests should prefer authorization headers. Some playback and image URLs carry provider tokens because those framework paths cannot reliably attach custom headers.
-- Local self-signed TLS is supported only for recognized local hosts. `NSAllowsArbitraryLoads` is intentional for user-supplied LAN and self-hosted servers.
-- OAuth client identifiers belong in ignored developer settings; client secrets do not belong in a distributed iOS app.
-- Changes involving networking, local-server trust, media URLs, or entitlements require provider-level testing.
+- Local self-signed TLS is supported only through each platform's documented local-server trust path. On Apple platforms, `NSAllowsArbitraryLoads` is intentional for user-supplied LAN and self-hosted servers.
+- OAuth client identifiers belong in ignored developer settings; client secrets do not belong in a distributed mobile app.
+- Changes involving networking, local-server trust, media URLs, app capabilities, or entitlements require provider-level testing on every affected platform.

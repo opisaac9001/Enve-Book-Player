@@ -1,0 +1,79 @@
+#!/bin/sh
+set -eu
+
+repository_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repository_root"
+
+identifier='enve-android-source-cc91a725-7756-4324-a504-e063bcecbfe0'
+failed=0
+
+require_text() {
+    file=$1
+    required=$2
+    if ! grep -Fq "$required" "$file"; then
+        printf 'Missing required provenance in %s\n' "$file" >&2
+        failed=1
+    fi
+}
+
+require_text LICENSE.md 'Enve Noncommercial Public Source License'
+require_text NOTICE.md "$identifier"
+require_text THIRD_PARTY_NOTICES.md '## Distribution reminder'
+require_text docs/legal/THIRD_PARTY_AUDIT.md '## Current conclusion'
+require_text BuildSupport/FoliateRuntime/UPSTREAM.txt '6b11e1744346f60504b727984f7d42f0fef3ab54'
+require_text engine/src/main/cpp/libmobi/PROVENANCE.md '0.12'
+require_text engine/src/main/cpp/whisper/PROVENANCE.md '1.8.4'
+require_text app/build.gradle.kts "$identifier"
+require_text app/src/main/AndroidManifest.xml "$identifier"
+
+for protected_file in \
+    app/src/main/java/com/enve/app/ui/auth/AuthBrowserActivity.kt \
+    app/src/main/java/com/enve/app/ui/auth/AuthViewModel.kt \
+    app/src/main/java/com/enve/app/ui/screens/ServiceLoginAdvancedOptions.kt \
+    app/src/main/java/com/enve/app/ui/screens/ServiceLoginScreen.kt \
+    audiobookshelf/src/main/java/com/enve/audiobookshelf/auth/AbsOidcFlow.kt \
+    audiobookshelf/src/main/java/com/enve/audiobookshelf/auth/AbsPasswordLogin.kt \
+    audiobookshelf/src/main/java/com/enve/audiobookshelf/auth/AbsTokenRefreshStrategy.kt \
+    bookorbit/src/main/java/com/enve/bookorbit/auth/BookOrbitAuthCookies.kt \
+    bookorbit/src/main/java/com/enve/bookorbit/auth/BookOrbitOidcFlow.kt \
+    bookorbit/src/main/java/com/enve/bookorbit/auth/BookOrbitPasswordLogin.kt \
+    bookorbit/src/main/java/com/enve/bookorbit/auth/BookOrbitTokenRefreshStrategy.kt \
+    core/src/main/java/com/enve/core/auth/AbsOidcPkce.kt \
+    core/src/main/java/com/enve/core/auth/CredentialVault.kt \
+    core/src/main/java/com/enve/core/auth/OAuthRedirectUris.kt \
+    core/src/main/java/com/enve/core/data/local/PreferencesManager.kt \
+    core/src/main/java/com/enve/core/data/remote/auth/AuthInterceptor.kt \
+    core/src/main/java/com/enve/core/data/remote/auth/ConnectionAuthHeaders.kt \
+    core/src/main/java/com/enve/core/data/remote/security/PrivateNetworkTrust.kt \
+    core/src/main/java/com/enve/core/data/remote/auth/TokenRefreshAuthenticator.kt \
+    engine/src/main/java/com/enve/app/auth/MtlsManager.kt \
+    engine/src/main/java/com/enve/app/data/auth/GrimmoryTokenRefreshStrategy.kt \
+    engine/src/main/java/com/enve/app/data/emby/EmbyPasswordLogin.kt \
+    engine/src/main/java/com/enve/app/data/grimmory/auth/GrimmoryOidcFlow.kt \
+    engine/src/main/java/com/enve/app/data/grimmory/auth/GrimmoryPasswordLogin.kt \
+    engine/src/main/java/com/enve/app/data/jellyfin/JellyfinPasswordLogin.kt \
+    engine/src/main/java/com/enve/app/data/jellyfin/JellyfinQuickConnectFlow.kt \
+    engine/src/main/java/com/enve/app/data/kavita/KavitaPasswordLogin.kt \
+    engine/src/main/java/com/enve/app/data/mediabrowser/MediaBrowserPasswordAuthenticator.kt \
+    engine/src/main/java/com/enve/app/data/opds/BasicSourcesPasswordLogin.kt \
+    komga/src/main/java/com/enve/komga/auth/KomgaOAuthFlow.kt \
+    komga/src/main/java/com/enve/komga/auth/KomgaPasswordLogin.kt \
+    local/src/main/java/com/enve/local/auth/LocalPasswordLogin.kt \
+    plex/src/main/java/com/enve/plex/auth/PlexAuthHeaderStrategy.kt \
+    plex/src/main/java/com/enve/plex/auth/PlexPinAuthFlow.kt \
+    plex/src/main/java/com/enve/plex/auth/PlexPinAuthService.kt \
+    silo/src/main/java/com/enve/silo/auth/SiloPasswordLogin.kt \
+    silo/src/main/java/com/enve/silo/auth/SiloTokenRefreshStrategy.kt \
+    storyteller/src/main/java/com/enve/storyteller/auth/StorytellerAuthHeaderStrategy.kt
+do
+    if [ "$(head -n 1 "$protected_file")" != '// AGENT-LOCKED' ]; then
+        printf 'Missing agent lock marker in %s\n' "$protected_file" >&2
+        failed=1
+    fi
+done
+
+if [ "$failed" -ne 0 ]; then
+    exit 1
+fi
+
+printf 'Provenance and agent-lock markers verified.\n'

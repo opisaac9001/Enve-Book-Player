@@ -26,7 +26,7 @@ xcuserdata/
 Packages/
 Package.pins
 Package.resolved
-!enve.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+!ios/enve.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
 SourcePackages/
 
 # CocoaPods
