@@ -2,12 +2,30 @@
 
 Focused fixes, provider improvements, accessibility work, documentation, and well-scoped features are welcome.
 
+Questions and early ideas belong in [GitHub Discussions](https://github.com/opisaac9001/Enve-Book-Player/discussions). Use Issues for reproducible bugs and work that is ready to be tracked. Report vulnerabilities privately through [GitHub's security advisory form](https://github.com/opisaac9001/Enve-Book-Player/security/advisories/new), never in an issue or discussion.
+
 ## Before writing code
 
-1. Search the existing issues and pull requests.
-2. Open an issue before starting a large feature, architecture change, new dependency, or new backend.
+1. Search the existing discussions, issues, and pull requests.
+2. Start a discussion before committing to a large feature, architecture change, new dependency, or new backend. Once the scope is concrete, open an issue so the work can be tracked.
 3. Keep each contribution focused on one problem.
 4. Build the unmodified app first so existing failures are not mistaken for regressions.
+
+## Fork and open a pull request
+
+The quickest command-line workflow is:
+
+```sh
+gh repo fork opisaac9001/Enve-Book-Player --clone
+cd Enve-Book-Player
+git switch -c fix/short-description
+
+# Make and verify your changes, then:
+git push -u origin fix/short-description
+gh pr create --repo opisaac9001/Enve-Book-Player --base main
+```
+
+You can also use GitHub's **Fork** button, clone your fork, create a focused branch, and open a pull request against this repository's `main` branch. The upstream repository intentionally keeps `main` as its only long-lived branch; contribution branches live in contributor forks and are deleted after merge. Maintainers may convert an Issue into a Discussion when the topic needs exploration before it becomes tracked work.
 
 ## Project conventions
 

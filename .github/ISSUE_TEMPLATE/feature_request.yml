@@ -4,6 +4,9 @@ title: "[Feature]: "
 labels:
   - enhancement
 body:
+  - type: markdown
+    attributes:
+      value: If the idea is still exploratory, start in GitHub Discussions. Use this form when the requested outcome is concrete enough to track as work.
   - type: textarea
     id: need
     attributes:

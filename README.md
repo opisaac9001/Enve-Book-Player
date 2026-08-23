@@ -12,6 +12,7 @@
   <a href="https://envemedia.com/books/"><img src="https://img.shields.io/badge/iOS-TestFlight-F5921A?style=for-the-badge&logo=apple&logoColor=white" alt="Get Enve Book Player"></a>
   <a href="https://github.com/opisaac9001/Enve-Book-Player/actions/workflows/ios-ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/opisaac9001/Enve-Book-Player/ios-ci.yml?branch=main&style=for-the-badge&label=build" alt="iOS CI status"></a>
   <a href="https://github.com/opisaac9001/Enve-Book-Player/issues"><img src="https://img.shields.io/github/issues/opisaac9001/Enve-Book-Player?style=for-the-badge&color=F5921A" alt="Open issues"></a>
+  <a href="https://github.com/opisaac9001/Enve-Book-Player/discussions"><img src="https://img.shields.io/badge/GitHub-Discussions-24292F?style=for-the-badge&logo=github" alt="GitHub Discussions"></a>
   <a href="https://discord.gg/Hw4nmXRehb"><img src="https://img.shields.io/badge/Discord-community-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Join the Discord community"></a>
   <a href="https://buymeacoffee.com/envebookplayer"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-support-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=000000" alt="Support Enve on Buy Me a Coffee"></a>
   <a href="./LICENSE.md"><img src="https://img.shields.io/badge/license-source--available-1F2937?style=for-the-badge" alt="Source-available license"></a>
@@ -19,16 +20,20 @@
 
 Enve brings listening and reading together without requiring an Enve account, subscription, or cloud service. Connect the servers you already run, import local files, and keep your library and progress under your control.
 
+This repository contains the iPhone and iPad source. The [Android edition](https://envemedia.com/books/#android) is in open testing, but its source is not public yet.
+
 The public repository follows stable releases. Day-to-day development happens privately, so `main` is updated in reviewed, release-sized snapshots rather than carrying unfinished work.
 
 ## What it does
 
-- Plays audiobooks and podcasts with chapters, queue management, sleep timers, bookmarks, CarPlay, and offline downloads.
-- Reads EPUB books with a native Readium-based reader, annotations, themes, and reading controls.
-- Keeps books from different sources in one library and merges duplicate editions where possible.
-- Syncs playback and reading progress with supported servers and optional sync services.
-- Supports read-along books with synchronized text and audio.
-- Includes collections, smart shelves, reading statistics, a reading journal, widgets, and a watchOS companion.
+| | |
+| :---: | --- |
+| 🎧 | **Listen** — Audiobooks and podcasts with chapters, queues, sleep timers, bookmarks, CarPlay, and offline downloads. |
+| 📖 | **Read** — EPUB books and comics with a native Readium-based reader, annotations, themes, and reading controls. |
+| 🔄 | **Keep your place** — Playback and reading progress sync with supported servers and optional sync services. |
+| 📚 | **Bring libraries together** — One library across multiple sources, with duplicate-edition merging where possible. |
+| 🔊 | **Read along** — Synchronized text and audio for compatible books. |
+| 📊 | **Track and organize** — Collections, smart shelves, reading statistics, a journal, widgets, and an Apple Watch companion. |
 
 ## Screenshots
 
@@ -46,18 +51,14 @@ The public repository follows stable releases. Day-to-day development happens pr
 
 ## Supported libraries and services
 
-Enve works with local files and self-hosted services, including:
+Enve works with local files and a broad range of self-hosted services:
 
-- Audiobookshelf
-- Plex, Jellyfin, and Emby
-- Booklore and Grimmory
-- Storyteller
-- Komga and Kavita
-- OPDS catalogs
-- WebDAV and SMB
-- Silo
-- RSS podcasts
-- Premiumize, Real-Debrid, and TorBox
+| | Supported sources |
+| :---: | --- |
+| 🎧 | **Audiobook and media servers:** Audiobookshelf, Plex, Jellyfin, Emby, Storyteller, Grimmory, BookOrbit, and Silo |
+| 📚 | **Comics and ebooks:** Komga, Kavita, and OPDS catalogs |
+| 🗂️ | **Files and feeds:** Local files, WebDAV, SMB, and RSS podcasts |
+| ☁️ | **Cloud and debrid:** Premiumize, Real-Debrid, and TorBox |
 
 Provider capabilities differ. The [documentation](https://envemedia.com/docs/) has current setup instructions and service-specific notes.
 
@@ -79,33 +80,38 @@ Let Swift Package Manager resolve dependencies, then build the `enve` scheme for
 
 The complete setup and signing notes are published with the source in `DEVELOPMENT.md`.
 
-## AI-ready development
-
-Enve is set up for contributors who use coding agents as well as those who work directly in Xcode. [`CLAUDE.md`](CLAUDE.md) contains the app's architecture, build, and verification guidance, while [`AGENTS.md`](AGENTS.md) defines repository-wide rules that apply to any coding agent, regardless of vendor or model.
-
-Some especially sensitive source files begin with `// AGENT-LOCKED`. These files contain behavior that can be easy to break without understanding the surrounding invariants. Agents must not inspect or edit their contents unless the repository owner has authorized that specific work and the owner-set advisory password has been verified with `./scripts/agent-lock`. The password and verification state are local and are never committed.
-
-The lock is a guardrail for cooperative tools, not encryption or a security boundary. Human contributors can read the source normally, but should change protected files only when they understand the relevant architecture and can fully test the result. Start by giving your agent the repository root and asking it to read `CLAUDE.md`, `AGENTS.md`, and `DEVELOPMENT.md` before making changes.
-
 ## Contributing
 
-Bug fixes, accessibility improvements, provider work, documentation, and focused features are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), and open an issue before undertaking a large feature, architectural change, or new dependency.
+Bug fixes, accessibility improvements, provider work, documentation, and focused features are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md). Use [Discussions](https://github.com/opisaac9001/Enve-Book-Player/discussions) for questions and early ideas, and Issues for reproducible bugs or agreed work.
 
 For app support and setup questions, use the central [Enve Support repository](https://github.com/opisaac9001/Enve-Support) or [Discord](https://discord.gg/Hw4nmXRehb). Please report security problems privately as described in [SECURITY.md](SECURITY.md).
+
+<details>
+<summary><strong>Using a coding agent</strong></summary>
+
+This repository includes detailed instructions for coding agents. Ask the agent to read [`CLAUDE.md`](CLAUDE.md), [`AGENTS.md`](AGENTS.md), and [`DEVELOPMENT.md`](DEVELOPMENT.md) before it makes changes.
+
+Files beginning with `// AGENT-LOCKED` have extra safeguards because they are easy to break without understanding their invariants. The owner-set password is local and advisory: it guides cooperative tools, but it is not encryption or a security boundary. Human contributors can inspect the source normally and should edit protected files only when they understand and can fully test the affected behavior.
+
+</details>
 
 ## Important links
 
 | Resource | Link |
 | --- | --- |
 | Enve Media | [envemedia.com](https://envemedia.com/) |
-| Book Player and downloads | [envemedia.com/books](https://envemedia.com/books/) |
+| iOS Book Player and downloads | [envemedia.com/books](https://envemedia.com/books/) |
+| Android edition | [Status and open testing](https://envemedia.com/books/#android) |
 | Documentation | [envemedia.com/docs](https://envemedia.com/docs/) |
 | FAQ | [envemedia.com/faq](https://envemedia.com/faq.html) |
-| Bug reports and source requests | [GitHub issues](https://github.com/opisaac9001/Enve-Book-Player/issues) |
+| Questions and ideas | [GitHub Discussions](https://github.com/opisaac9001/Enve-Book-Player/discussions) |
+| Bugs and tracked work | [GitHub Issues](https://github.com/opisaac9001/Enve-Book-Player/issues) |
 | General Enve support | [Enve Support](https://github.com/opisaac9001/Enve-Support) |
 | Community | [Discord](https://discord.gg/Hw4nmXRehb) |
 | Support development | [Buy Me a Coffee](https://buymeacoffee.com/envebookplayer) |
 
 ## License
 
-Enve is **source-available**, not OSI open source. It is distributed under the [Enve Noncommercial Public Source License](LICENSE.md). Personal use, study, modification, and noncommercial community contributions are permitted. Commercial use, paid redistribution, advertising, monetization, and closed-source forks are prohibited. Third-party components remain under their own licenses.
+Enve is **source-available**, not OSI open source. It is distributed under the [Enve Noncommercial Public Source License](LICENSE.md). Personal use, study, modification, and noncommercial community contributions are permitted. Commercial use, paid redistribution, advertising, monetization, and closed-source forks are prohibited.
+
+[Third-party notices](THIRD_PARTY_NOTICES.md) list the licenses and attribution requirements for dependencies, bundled resources, and provider artwork. They are legal notices for redistribution, not additional setup instructions.
