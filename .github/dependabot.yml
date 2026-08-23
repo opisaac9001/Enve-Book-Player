@@ -1,7 +1,12 @@
 version: 2
 updates:
   - package-ecosystem: swift
-    directory: /
+    directory: /ios
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+  - package-ecosystem: gradle
+    directory: /android
     schedule:
       interval: monthly
     open-pull-requests-limit: 5

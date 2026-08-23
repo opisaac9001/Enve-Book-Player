@@ -1,3 +1,6 @@
-[submodule "ThirdParty/foliate-js"]
-	path = ThirdParty/foliate-js
+[submodule "ios/ThirdParty/foliate-js"]
+	path = ios/ThirdParty/foliate-js
+	url = https://github.com/johnfactotum/foliate-js.git
+[submodule "android/ThirdParty/foliate-js"]
+	path = android/ThirdParty/foliate-js
 	url = https://github.com/johnfactotum/foliate-js.git

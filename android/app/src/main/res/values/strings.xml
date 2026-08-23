@@ -1,0 +1,16 @@
+<resources>
+    <string name="widget_book_player_label">Continue Listening</string>
+    <string name="widget_book_player_description">Your current audiobook with playback controls</string>
+    <string name="app_name">Enve</string>
+    <string name="loading_percent">%1$d%%</string>
+    <string name="download_notification_channel_name">Downloads</string>
+    <string name="storyalign_notification_channel_name">Read-aloud generation</string>
+    <string name="settings_download_on_cellular_title">Download over cellular</string>
+    <string name="settings_download_on_cellular_summary">Allow audiobook downloads to use mobile data. When off, downloads wait for Wi-Fi.</string>
+    <string name="reader_footnote_title">Footnote</string>
+    <string name="reader_footnote_close">Close</string>
+    <string name="reader_preparing_book">Preparing book…</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="auth_close">Close</string>
+    <string name="auth_sign_in">Sign in</string>
+</resources>

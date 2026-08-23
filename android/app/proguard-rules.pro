@@ -1,0 +1,11 @@
+-keepattributes *Annotation*
+-keepattributes SourceFile,LineNumberTable
+-keep class com.enve.app.data.remote.dto.** { *; }
+-keep class com.enve.app.data.local.entity.** { *; }
+-keep class com.enve.audiobookshelf.dto.** { *; }
+-keep class com.enve.storyteller.dto.** { *; }
+-keep class com.enve.komga.dto.** { *; }
+-keep class com.enve.plex.dto.** { *; }
+-keep class com.enve.bookorbit.dto.** { *; }
+-keep class com.enve.silo.** { *; }
+-dontwarn org.slf4j.impl.StaticLoggerBinder

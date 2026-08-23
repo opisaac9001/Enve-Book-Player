@@ -1,0 +1,61 @@
+#!/bin/sh
+set -eu
+
+repository_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repository_root"
+
+identifier='enve-source-7f6167c5-3bdb-4a0d-91b8-0e5e30f1e9c4'
+failed=0
+
+require_text() {
+    file=$1
+    text=$2
+    if ! grep -Fq "$text" "$file"; then
+        printf 'Missing required provenance in %s\n' "$file" >&2
+        failed=1
+    fi
+}
+
+require_text ../LICENSE.md 'Enve Noncommercial Public Source License'
+require_text ../NOTICE.md "$identifier"
+require_text THIRD_PARTY_NOTICES.md '## Distribution reminder'
+require_text docs/legal/THIRD_PARTY_AUDIT.md '## Current conclusion'
+require_text LocalPackages/AMSMB2/PROVENANCE.md '1726aaaf7adf63d7d1d2a0c5d1b0e635028215c0'
+require_text LocalPackages/AMSMB2/PROVENANCE.md 'aff9fa6ba9f41cfd3c15d184554601ec3f6d8d03'
+require_text LocalPackages/UnrarKit/PROVENANCE.md 'de75b6136958173fdfc530d38a0145b72342cf0d3842bf7bb120d336602d88ed'
+require_text enve/Configuration/Info.plist '<key>EnveSourceProvenance</key>'
+require_text enve/Configuration/Info.plist "$identifier"
+require_text enve/Configuration/Info.plist 'Copyright 2026 Isaac Lamb'
+require_text enve/Configuration/EnveProvenance.swift "$identifier"
+
+for protected_file in \
+    enve/Networking/ABSCredentials.swift \
+    enve/Networking/Providers/JellyfinProvider+Auth.swift \
+    enve/Screens/Sources/BrowserSessionLoginView.swift \
+    enve/Screens/Sources/KomgaLoginDelegate.swift \
+    enve/Screens/Sources/KomgaOAuthLoginView.swift \
+    enve/Screens/Sources/LoginDelegates.swift \
+    enve/Screens/Sources/UnifiedLoginContracts.swift \
+    enve/Services/CompanionReading/SharedKeychainStore.swift \
+    enve/Services/Network/MTLSManager.swift \
+    enve/Services/Network/NetworkPolicyService.swift \
+    enve/Services/Network/OAuthManager.swift \
+    enve/Services/Network/SecureTokenStorage.swift \
+    enve/Services/Network/ServerConfigStore.swift \
+    enve/Services/Network/SessionManager.swift \
+    enve/Services/Plex/PlexAuthStore.swift \
+    enve/Utilities/InsecureURLSession.swift \
+    enve/Utilities/KeychainHelper.swift \
+    enve/Utilities/NetworkHostUtils.swift
+do
+    if [ "$(head -n 1 "$protected_file")" != '// AGENT-LOCKED' ]; then
+        printf 'Missing agent lock marker in %s\n' "$protected_file" >&2
+        failed=1
+    fi
+done
+
+if [ "$failed" -ne 0 ]; then
+    exit 1
+fi
+
+printf 'Provenance and agent-lock markers verified.\n'

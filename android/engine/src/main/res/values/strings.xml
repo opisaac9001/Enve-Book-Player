@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="playback_notification_channel_name">Playback</string>
+    <string name="download_notification_title">Downloading audiobook</string>
+    <string name="download_notification_text">%1$s</string>
+    <string name="librarian_model_notification_title">Downloading Librarian model</string>
+    <string name="storyalign_notification_title">Creating read-aloud</string>
+    <string name="storyalign_notification_text">%1$s</string>
+</resources>

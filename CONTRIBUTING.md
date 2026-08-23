@@ -29,7 +29,7 @@ You can also use GitHub's **Fork** button, clone your fork, create a focused bra
 
 ## Project conventions
 
-- Use idiomatic Swift 6 and the project's MainActor-default isolation.
+- Follow the platform guide for the code you are changing: Swift 6 and MainActor-default isolation for Apple-platform code, or idiomatic Kotlin and structured concurrency for Android.
 - Prefer clear names and small focused types. Comment reasoning, compatibility constraints, protocol details, and non-obvious workarounds when the code alone cannot explain them.
 - Do not add section banners or comments that narrate obvious code.
 - Do not add placeholder code or speculative abstractions.
@@ -54,8 +54,8 @@ Use invented values in tests and reports. Remove the entire secret rather than l
 Before opening a pull request:
 
 1. Review the complete diff for unrelated changes, temporary files, and private data.
-2. Build the `enve` scheme on an Apple-silicon iOS Simulator.
-3. Run the `AllTests` plan for changes to testable application behavior.
+2. Build the affected platform: the `enve` scheme on an Apple-silicon iOS Simulator, or the Android Gradle targets documented in `android/DEVELOPMENT.md`.
+3. Run the affected platform's unit and regression tests.
 4. Confirm there are no new errors or warnings.
 5. Install and launch the app for runtime changes.
 6. Exercise every affected user-facing path with representative data.
