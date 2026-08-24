@@ -116,14 +116,78 @@ Bug fixes, accessibility improvements, provider work, documentation, and focused
 
 For app support and setup questions, use the central [Enve Support repository](https://github.com/opisaac9001/Enve-Support) or [Discord](https://discord.gg/Hw4nmXRehb). Please report security problems privately as described in [SECURITY.md](SECURITY.md).
 
-<details>
-<summary><strong>Using a coding agent</strong></summary>
+## Using AI coding agents
 
-This repository includes detailed instructions for coding agents. Start with the root [`CLAUDE.md`](CLAUDE.md) and [`AGENTS.md`](AGENTS.md), then use the platform guides under [`ios/`](ios/) or [`android/`](android/) before changing application code.
+Enve includes repository instructions for working with Codex, Claude Code, and other coding agents. Start with the root [`CLAUDE.md`](CLAUDE.md) and [`AGENTS.md`](AGENTS.md), then read the platform-specific guides under [`ios/`](ios/) or [`android/`](android/) before asking an agent to inspect or change application code.
+
+Keep each task focused on one platform and give the agent a clear outcome, relevant files, and acceptance criteria. Generated changes are drafts: review the complete diff, run the platform's required build and tests, and exercise user-facing changes before submitting them.
 
 Files beginning with `// AGENT-LOCKED` have extra safeguards because they are easy to break without understanding their invariants. The owner-set password is local and advisory: it guides cooperative tools, but it is not encryption or a security boundary. Human contributors can inspect the source normally and should edit protected files only when they understand and can fully test the affected behavior.
 
-</details>
+## Acknowledgements
+
+Enve would not exist in its current form without the open-source reading, audiobook, comic, and self-hosting communities.
+
+The projects below have been especially valuable as foundations, API and protocol references, implementation examples, and sources of design inspiration. Enve is an independent project and is not affiliated with or endorsed by these projects.
+
+### Open-source projects
+
+#### Core reading and alignment technology
+
+- [Readium Swift Toolkit](https://github.com/readium/swift-toolkit) and [Readium Kotlin Toolkit](https://github.com/readium/kotlin-toolkit) — the foundations of Enve's EPUB reading support.
+- [Foliate JS](https://github.com/johnfactotum/foliate-js) — an invaluable reading engine and reference for modern ebook behavior.
+- [StoryAlign](https://codeberg.org/richwaters/StoryAlign) — the technology behind Enve's local audiobook and ebook alignment features.
+
+#### Servers, protocols, and integrations
+
+- [Audiobookshelf](https://github.com/advplyr/audiobookshelf) and the [Audiobookshelf mobile app](https://github.com/advplyr/audiobookshelf-app) — essential references for audiobook libraries, playback, progress synchronization, and the Audiobookshelf API.
+- [Storyteller](https://gitlab.com/storyteller-platform/storyteller) — for pioneering aligned ebook and audiobook experiences and providing the ecosystem behind Enve's read-aloud support.
+- [Grimmory](https://github.com/grimmory-tools/grimmory) — for its ebook and audiobook server, its source, and the help provided by its community and developers.
+- [Komga](https://github.com/gotson/komga) and [Komelia](https://github.com/Snd-R/Komelia) — important references for comic, manga, and ebook library integration.
+- [Kavita](https://github.com/Kareadita/Kavita) and [BookOrbit](https://github.com/bookorbit/bookorbit) — for their open APIs and work in self-hosted book libraries.
+- [KOReader](https://github.com/koreader/koreader), [KOReader Sync Server](https://github.com/koreader/koreader-sync-server), and [ABS–KOReader Sync Bridge](https://github.com/cporcellijr/abs-kosync-bridge) — invaluable references for cross-device reading-position synchronization.
+
+#### Reader and player inspiration
+
+- [Silveran Reader](https://github.com/kyonifer/Silveran-Reader) — for its Storyteller integration and aligned reading work across Apple platforms.
+- [AudioBooth](https://github.com/AudioBooth/AudioBooth) — for additional perspective on native audiobook playback.
+- [Thorium Reader](https://github.com/edrlab/thorium-reader) — for its ideas and examples of modern reading experiences.
+
+Thank you to every developer and contributor behind these projects for making your work available to learn from.
+
+### Community contributors
+
+#### First Movers
+
+A special thank-you to Enve's First Movers—the original members who joined the Discord early and supported the project from the beginning:
+
+`bobdole_04`, `cowcorner183`, `dacmcbibs`, `donutking1`, `dscab00se07`, `islandbayboy.`, `jacobevans`, `leram84`, `luxorator`, `mjolbat`, `quantumpete`, `pozzy77.`, `queenofravens`, `rhino4293`, `sipko13`, `sirataxero`, and `wrzatko`.
+
+Thank you for believing in Enve while it was still taking shape.
+
+#### Testing and feedback
+
+Thank you to the community members who have repeatedly tested early builds, reproduced difficult bugs, shared recordings and screenshots, explained their workflows, suggested features, and patiently retested fixes:
+
+`bgetsios`, `charlieeee6368`, `darkpixx`, `dhfisher_`, `erictb`, `kirk6893`, `luckyandlee`, `m3enzo`, `originalme8`, `oublic`, `tim3615`, and `tsfxpro`.
+
+Your feedback has directly helped shape Enve on both iOS and Android. Thank you as well to everyone else who has reported an issue, answered a question, tested a release, or shared an idea—the app is better because of you.
+
+#### Friends from other projects
+
+Special thanks to **Ally**, a moderator in the Grimmory community, for being consistently generous with guidance and help.
+
+Thank you also to **kyonifer** and **smoores** from the Storyteller community for patiently answering questions and sharing their knowledge. They may not be Enve users, but their help has made Enve's Storyteller and read-aloud support better.
+
+### Financial supporters
+
+Enve is especially grateful to its financial supporters:
+
+- `colleen`
+- `Beleval`
+- `leram84`
+
+Thank you for directly supporting Enve's continued development.
 
 ## Important links
 
