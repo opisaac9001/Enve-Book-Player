@@ -27,6 +27,10 @@ Start with the root [architecture guide](../ARCHITECTURE.md) for targets, source
 
 Provider reference documents describe external API shapes. Enve architecture and behavior are defined by the root architecture guide and the contracts under `docs/architecture/` and `docs/ui/`.
 
+## Guides
+
+- [OIDC, SSO, and browser sign-in](../../docs/guides/oidc.md)
+
 ## Legal and distribution
 
 - [Third-party audit](legal/THIRD_PARTY_AUDIT.md)

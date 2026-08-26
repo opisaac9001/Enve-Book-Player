@@ -18,6 +18,7 @@ Reference material for the Android app. Start with the root files for anything t
 ## Guides
 
 - [guides/automation.md](guides/automation.md) — Tasker and broadcast-intent playback control
+- [OIDC, SSO, and browser sign-in](../../docs/guides/oidc.md) — complete provider audit, callback values, and identity-provider setup
 
 ## Testing
 

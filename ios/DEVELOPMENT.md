@@ -58,6 +58,8 @@ cp enve/Configuration/DeveloperSettings.example.plist \
 
 Use developer-owned OAuth applications and redirect schemes. Never commit the populated file. Do not put OAuth client secrets in an iOS application.
 
+Self-hosted server OIDC callbacks are listed in the shared [OIDC, SSO, and browser sign-in guide](../docs/guides/oidc.md).
+
 ## Build the iOS app
 
 List destinations, then build against the desired simulator UDID:
@@ -148,8 +150,9 @@ Do not grow `AppState`, `SyncCoordinator`, or `StorageService` with unrelated st
 ### Change authentication or transport security
 
 1. Read `../SECURITY.md` and preserve its configuration invariants.
-2. Test the actual provider against HTTP, trusted HTTPS, and supported local self-signed HTTPS as applicable.
-3. Confirm secrets are absent from logs, URLs where headers are supported, diagnostics, and persisted preferences.
+2. Read the shared [OIDC, SSO, and browser sign-in guide](../docs/guides/oidc.md) when changing a server sign-in flow.
+3. Test the actual provider against HTTP, trusted HTTPS, and supported local self-signed HTTPS as applicable.
+4. Confirm secrets are absent from logs, URLs where headers are supported, diagnostics, and persisted preferences.
 
 ### Change SwiftUI
 
