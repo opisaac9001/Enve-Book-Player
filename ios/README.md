@@ -62,6 +62,8 @@ Enve works with local files and a broad range of self-hosted services:
 
 Provider capabilities differ. The [documentation](https://envemedia.com/docs/) has current setup instructions and service-specific notes.
 
+For self-hosted SSO, use the platform values and service-specific instructions in the shared [OIDC, SSO, and browser sign-in guide](../docs/guides/oidc.md).
+
 ## Get the app
 
 Current TestFlight and availability information lives on the [Enve Book Player page](https://envemedia.com/books/). Enve is free, contains no advertising or analytics, and does not place a cloud service between the app and your library.

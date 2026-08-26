@@ -75,6 +75,7 @@ The release build is unsigned. Use your own signing configuration for a distribu
 Start at [docs/README.md](docs/README.md).
 
 - [DEVELOPMENT.md](DEVELOPMENT.md) — setup, project shape, common changes, verification
+- [OIDC, SSO, and browser sign-in](../docs/guides/oidc.md) — complete provider audit and callback setup
 - [docs/architecture/module-boundaries.md](docs/architecture/module-boundaries.md) — module layout and the UI/backend wall
 - [docs/architecture/engine-api.md](docs/architecture/engine-api.md) — the facade contract the UI calls
 - [docs/architecture/eink.md](docs/architecture/eink.md) — e-ink detection, refresh policy, and design degradation

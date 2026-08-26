@@ -102,7 +102,7 @@ Use Room for tabular data, `CredentialVault` for secrets, DataStore for UI prefe
 
 ### Change authentication or transport security
 
-Read `SECURITY.md` and follow the password process in `AGENTS.md`. Test the actual provider against every supported transport. Confirm secrets are absent from logs, persisted preferences, diagnostics, and URLs where headers are supported.
+Read `SECURITY.md`, the shared [OIDC, SSO, and browser sign-in guide](../docs/guides/oidc.md), and follow the password process in `AGENTS.md`. Test the actual provider against every supported transport. Confirm secrets are absent from logs, persisted preferences, diagnostics, and URLs where headers are supported.
 
 ### Change Compose UI
 

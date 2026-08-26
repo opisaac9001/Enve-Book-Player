@@ -66,6 +66,8 @@ Enve works with local files and a broad range of self-hosted services:
 
 Provider capabilities differ. The [documentation](https://envemedia.com/docs/) has current setup instructions and service-specific notes.
 
+Self-hosted SSO requires exact callback values. See [OIDC, SSO, and browser sign-in](docs/guides/oidc.md) for the complete iOS and Android service audit and setup for Audiobookshelf, Grimmory, BookOrbit, Komga, and Storyteller.
+
 ## Get the app
 
 Current TestFlight, Android testing, and availability information lives on the [Enve Book Player page](https://envemedia.com/books/). Enve is free, contains no advertising or analytics, and does not place a cloud service between the app and your library.
