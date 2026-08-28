@@ -165,7 +165,7 @@ struct LibraryScreen: View {
     }
 
     private func headerControls(effectiveColumns: Int, compact: Bool) -> some View {
-        let buttonSize: CGFloat = compact ? 40 : 44
+        let buttonSize: CGFloat = 45
         return HStack(spacing: compact ? 6 : 8) {
             if visibleScopeRefreshInProgress {
                 ProgressView()
@@ -214,6 +214,25 @@ struct LibraryScreen: View {
                 PlatformHaptics.selection()
                 cycleDisplay(effectiveColumns: effectiveColumns, compact: compact)
             }
+            NavigationLink {
+                SettingsScreen()
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.hearthUI(15, weight: .semibold))
+                    .foregroundStyle(hearth.text)
+                    .frame(width: buttonSize, height: buttonSize)
+                    .background {
+                        HearthChromeBackground(
+                            shape: .circle,
+                            fill: hearth.bgElevated,
+                            stroke: hearth.hairline,
+                            tint: hearth.bgElevated
+                        )
+                    }
+            }
+            .buttonStyle(PressableStyle())
+            .frame(minWidth: 44, minHeight: 44)
+            .accessibilityLabel("Settings")
         }
         .fixedSize()
     }
@@ -314,6 +333,8 @@ struct LibraryScreen: View {
                         LibraryShelfLabel(glyph: "folder", title: "Collections", line: "Smart shelves")
                     }
                     .buttonStyle(PressableStyle())
+                    .frame(height: 45)
+                    .contentShape(Rectangle())
                     NavigationLink {
                         DiscoverScreen()
                     } label: {
@@ -603,8 +624,11 @@ struct LibraryScreen: View {
                                 .fill(model.facet == facet ? hearth.ember : .clear)
                                 .frame(width: 22, height: 2)
                         }
+                        .frame(minHeight: 44)
                     }
                     .buttonStyle(PressableStyle())
+                    .frame(height: 45)
+                    .contentShape(Rectangle())
                 }
                 NavigationLink {
                     CollectionsScreen()
@@ -615,8 +639,11 @@ struct LibraryScreen: View {
                             .fill(.clear)
                             .frame(width: 22, height: 2)
                     }
+                    .frame(minHeight: 44)
                 }
                 .buttonStyle(PressableStyle())
+                .frame(height: 45)
+                .contentShape(Rectangle())
             }
             .padding(.horizontal, 24)
         }
@@ -951,7 +978,7 @@ private struct LibraryShelfLabel: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.82)
         }
-        .frame(height: 38)
+        .frame(height: 44)
         .padding(.horizontal, 12)
         .background {
             HearthChromeBackground(
@@ -1123,6 +1150,7 @@ struct LibraryMenuChip: View {
         .foregroundStyle(isActive ? hearth.ember : hearth.textSecondary)
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
+        .frame(minHeight: 44)
         .background {
             HearthChromeBackground(
                 shape: .capsule,

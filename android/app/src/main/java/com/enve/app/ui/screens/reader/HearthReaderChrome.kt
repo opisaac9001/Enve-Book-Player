@@ -89,6 +89,7 @@ import com.enve.app.ui.screens.ReaderStatusStrip
 import com.enve.app.viewmodel.ReaderViewModel
 import com.enve.core.data.model.AnnotationStyle
 import com.enve.core.data.model.Book
+import com.enve.engine.prefs.ReadNextPosition
 import com.enve.hearth.design.EmberAccent
 import com.enve.hearth.design.Hearth
 import com.enve.hearth.design.HearthEink
@@ -111,6 +112,8 @@ fun HearthReaderChrome(
     onAskLibrarian: () -> Unit,
     onVerticalMarginsChanged: (Float) -> Unit,
     einkActive: Boolean,
+    readNextEnabled: Boolean = true,
+    readNextPosition: ReadNextPosition = ReadNextPosition.BOTTOM,
     onReadNext: (Book) -> Unit = {},
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
@@ -330,13 +333,24 @@ fun HearthReaderChrome(
             val nextBook = state.nextInSeries
             val atEnd = state.totalPages > 0 && state.currentPage >= state.totalPages ||
                 state.progressPct >= 98
-            if (nextBook != null && atEnd) {
+            if (readNextEnabled && nextBook != null && atEnd) {
                 HearthReadNextButton(
                     book = nextBook,
                     onClick = { onReadNext(nextBook) },
                     modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = 108.dp, start = Hearth.Spacing.XL, end = Hearth.Spacing.XL),
+                        .align(
+                            if (readNextPosition == ReadNextPosition.TOP) {
+                                Alignment.TopCenter
+                            } else {
+                                Alignment.BottomCenter
+                            },
+                        )
+                        .padding(
+                            top = if (readNextPosition == ReadNextPosition.TOP) 108.dp else 0.dp,
+                            bottom = if (readNextPosition == ReadNextPosition.BOTTOM) 108.dp else 0.dp,
+                            start = Hearth.Spacing.XL,
+                            end = Hearth.Spacing.XL,
+                        ),
                 )
             }
 

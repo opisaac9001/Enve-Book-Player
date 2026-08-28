@@ -99,6 +99,22 @@ final class GrimmoryEpubStreamingSession: @unchecked Sendable {
 }
 
 #if canImport(ReadiumShared)
+private nonisolated final class GrimmoryStreamedResource: TransformingResource, @unchecked Sendable {
+    private nonisolated let estimatedByteLength: UInt64?
+
+    nonisolated init(
+        estimatedByteLength: UInt64,
+        makeData: @escaping @Sendable () async -> ReadResult<Data>
+    ) {
+        self.estimatedByteLength = estimatedByteLength > 0 ? estimatedByteLength : nil
+        super.init(DataResource(sourceURL: nil, makeData: makeData), transform: { $0 })
+    }
+
+    nonisolated override func estimatedLength() async -> ReadResult<UInt64?> {
+        .success(estimatedByteLength)
+    }
+}
+
 final class StreamedGrimmoryEpubContainer: Container, @unchecked Sendable {
     nonisolated let sourceURL: AbsoluteURL? = nil
     nonisolated let entries: Set<AnyURL>
@@ -119,12 +135,13 @@ final class StreamedGrimmoryEpubContainer: Container, @unchecked Sendable {
 
     nonisolated subscript(url: any URLConvertible) -> (any Resource)? {
         guard let relative = url.anyURL.relativeURL?.normalized,
-            let path = pathsByURL[relative]
+            let path = pathsByURL[relative],
+            let entry = session.entry(atPath: path)
         else {
             return nil
         }
         let session = session
-        return DataResource(sourceURL: nil) {
+        return GrimmoryStreamedResource(estimatedByteLength: entry.size) {
             do {
                 return try await .success(session.resourceData(atPath: path))
             } catch {

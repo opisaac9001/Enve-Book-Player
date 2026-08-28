@@ -5,6 +5,7 @@ struct PlayerScreen: View {
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(\.hearth) private var hearth
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     @State private var ambient: Color = Hearth.accent
     @State private var sortedChapters: [Chapter] = []
@@ -27,7 +28,6 @@ struct PlayerScreen: View {
                     .padding(.top, 8)
             }
         }
-        .accessibilityIdentifier("player-screen")
         .task(id: engine.playback.currentBook?.stableId) {
             guard let book = engine.playback.currentBook else { return }
             ambient = await AmbientColorStore.shared.resolve(for: book)
@@ -122,28 +122,42 @@ struct PlayerScreen: View {
 
     private func content(book: Book) -> some View {
         GeometryReader { geo in
-            let coverWidth = min(geo.size.width * 0.78, (geo.size.height * 0.42) / book.hearthCoverRatio)
-            VStack(spacing: 0) {
-                topRow
-                    .padding(.horizontal, 20)
-                Spacer(minLength: 12)
-                CoverTile(book: book, width: coverWidth)
-                    .shadow(color: ambient.opacity(0.25), radius: 24, y: 8)
-                Spacer(minLength: 22)
-                titleBlock(book: book)
-                Spacer(minLength: 22)
-                ribbonSection
-                    .padding(.horizontal, 28)
-                Spacer(minLength: 20)
-                transportRow(book: book)
-                Spacer(minLength: 18)
-                utilityRow(book: book)
-                    .padding(.horizontal, 20)
+            let coverWidth = dynamicTypeSize.isAccessibilitySize
+                ? min(geo.size.width * 0.56, 220)
+                : min(geo.size.width * 0.78, (geo.size.height * 0.42) / book.hearthCoverRatio)
+            if dynamicTypeSize.isAccessibilitySize {
+                ScrollView {
+                    playerLayout(book: book, coverWidth: coverWidth)
+                }
+                .scrollIndicators(.hidden)
+            } else {
+                playerLayout(book: book, coverWidth: coverWidth)
+                    .frame(width: geo.size.width, height: geo.size.height)
             }
-            .padding(.top, 8)
-            .padding(.bottom, 14)
-            .frame(width: geo.size.width, height: geo.size.height)
         }
+    }
+
+    private func playerLayout(book: Book, coverWidth: CGFloat) -> some View {
+        VStack(spacing: 0) {
+            topRow
+                .padding(.horizontal, 20)
+            Spacer(minLength: 12)
+            CoverTile(book: book, width: coverWidth)
+                .shadow(color: ambient.opacity(0.25), radius: 24, y: 8)
+                .accessibilityHidden(true)
+            Spacer(minLength: 22)
+            titleBlock(book: book)
+            Spacer(minLength: 22)
+            ribbonSection
+                .padding(.horizontal, 28)
+            Spacer(minLength: 20)
+            transportRow(book: book)
+            Spacer(minLength: 18)
+            utilityRow(book: book)
+                .padding(.horizontal, 20)
+        }
+        .padding(.top, 8)
+        .padding(.bottom, 14)
     }
 
     private var topRow: some View {
@@ -201,18 +215,19 @@ struct PlayerScreen: View {
         VStack(spacing: 7) {
             if let overline = chapterOverline {
                 Overline(overline, color: ambient)
-                    .lineLimit(1)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
             }
             Text(book.title)
                 .font(.hearthDisplay(24, weight: .semibold))
                 .foregroundStyle(hearth.text)
                 .multilineTextAlignment(.center)
-                .lineLimit(2)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                .fixedSize(horizontal: false, vertical: true)
             if let author = book.author {
                 Text(author)
                     .font(.hearthUI(14))
-                    .foregroundStyle(hearth.textSecondary)
-                    .lineLimit(1)
+                    .foregroundStyle(hearth.text)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
             }
         }
         .padding(.horizontal, 28)
@@ -250,6 +265,7 @@ struct PlayerScreen: View {
                     Spacer()
                 }
                 Text(scrubRightLabel)
+                    .frame(minWidth: 44, minHeight: 44, alignment: .trailing)
                     .contentShape(Rectangle())
                     .onTapGesture {
                         guard activeScrubScope == .book else { return }
@@ -257,8 +273,17 @@ struct PlayerScreen: View {
                         PlatformHaptics.selection()
                     }
             }
-            .font(.hearthUI(12, weight: .medium).monospacedDigit())
-            .foregroundStyle(hearth.textTertiary)
+            .font(.hearthUI(13, weight: .semibold).monospacedDigit())
+            .foregroundStyle(hearth.text)
+            .padding(.horizontal, 12)
+            .background {
+                HearthChromeBackground(
+                    shape: .capsule,
+                    fill: hearth.bgElevated.opacity(0.94),
+                    stroke: hearth.hairline,
+                    tint: hearth.bgElevated
+                )
+            }
         }
     }
 
@@ -274,7 +299,6 @@ struct PlayerScreen: View {
                 playerVM.skipBackward()
             }
             .disabled(!playerVM.isPlaybackLoaded)
-            .opacity(playerVM.isPlaybackLoaded ? 1 : 0.4)
             PlayerPlayCircle(isPlaying: playerVM.isPlaying, isLoading: playerVM.isLoading, tint: ambient) {
                 PlatformHaptics.impact(.medium)
                 if !playerVM.isPlaybackLoaded || playerVM.currentBook?.stableId != book.stableId {
@@ -293,7 +317,6 @@ struct PlayerScreen: View {
                 playerVM.skipForward()
             }
             .disabled(!playerVM.isPlaybackLoaded)
-            .opacity(playerVM.isPlaybackLoaded ? 1 : 0.4)
         }
     }
 
@@ -516,7 +539,6 @@ private struct PlayerScrubScopeToggle: View {
                 }
                 .buttonStyle(PressableStyle())
                 .disabled(scope == .chapter && !chapterEnabled)
-                .opacity(scope == .book || chapterEnabled ? 1 : 0.45)
             }
         }
         .padding(3)
@@ -536,7 +558,7 @@ private struct PlayerScrubScopeToggle: View {
         if selection == scope {
             return HearthPalette.readableForeground(on: tint, dark: hearth.onEmber)
         }
-        return hearth.textSecondary
+        return hearth.text
     }
 }
 
@@ -575,7 +597,7 @@ private struct PlayerPlayCircle: View {
     }
 
     private var glyphColor: Color {
-        hearth.onEmber
+        HearthPalette.readableForeground(on: tint, dark: hearth.onEmber)
     }
 }
 
@@ -591,12 +613,15 @@ private struct PlayerUtilityPill: View {
             PlatformHaptics.selection()
             action()
         } label: {
-            PlayerUtilityPillLabel(glyph: glyph, label: label, tint: tint)
+            ViewThatFits(in: .horizontal) {
+                PlayerUtilityPillLabel(glyph: glyph, label: label, tint: tint)
+                PlayerUtilityPillLabel(glyph: glyph, label: nil, tint: tint)
+            }
                 .frame(maxWidth: .infinity)
         }
         .buttonStyle(PressableStyle())
         .disabled(disabled)
-        .opacity(disabled ? 0.4 : 1)
+        .accessibilityLabel(label)
     }
 }
 

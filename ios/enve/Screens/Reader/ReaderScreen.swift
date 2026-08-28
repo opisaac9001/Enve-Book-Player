@@ -142,7 +142,7 @@ struct ReaderScreen: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
-        .overlay(alignment: .bottom) {
+        .overlay(alignment: nextSeriesPromptAlignment) {
             if let nextSeriesIssue, showsNextSeriesPrompt {
                 ReaderNextSeriesPrompt(book: nextSeriesIssue, title: nextSeriesPromptTitle, tint: ambient) {
                     dismissNextSeriesPrompt()
@@ -150,8 +150,8 @@ struct ReaderScreen: View {
                     openNextIssue(nextSeriesIssue)
                 }
                 .padding(.horizontal, 18)
-                .padding(.bottom, 30)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .padding(nextSeriesPromptPaddingEdge, 30)
+                .transition(.move(edge: nextSeriesPromptTransitionEdge).combined(with: .opacity))
             }
         }
         .animation(.smooth(duration: 0.35), value: chromeVisible)
@@ -889,6 +889,18 @@ struct ReaderScreen: View {
             && isReaderAtEnd
             && nextSeriesIssue != nil
             && !dismissedNextSeriesPrompt
+    }
+
+    private var nextSeriesPromptAlignment: Alignment {
+        model.appearance.nextSeriesPromptPlacement == .top ? .top : .bottom
+    }
+
+    private var nextSeriesPromptPaddingEdge: Edge.Set {
+        model.appearance.nextSeriesPromptPlacement == .top ? .top : .bottom
+    }
+
+    private var nextSeriesPromptTransitionEdge: Edge {
+        model.appearance.nextSeriesPromptPlacement == .top ? .top : .bottom
     }
 
     private var isReaderAtEnd: Bool {

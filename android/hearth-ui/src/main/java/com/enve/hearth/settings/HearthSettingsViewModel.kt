@@ -11,6 +11,7 @@ import com.enve.engine.library.LibraryFacade
 import com.enve.engine.prefs.PreferencesFacade
 import com.enve.engine.prefs.HearthHomeSection
 import com.enve.engine.prefs.HearthStartTab
+import com.enve.engine.prefs.ReadNextPosition
 import com.enve.engine.theme.HearthThemeMode
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
@@ -42,6 +43,16 @@ class HearthSettingsViewModel @Inject constructor(
         SharingStarted.WhileSubscribed(5000),
         ComicPageLoadingMode.STREAM,
     )
+    val readNextEnabled = prefs.readNextEnabled.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5000),
+        true,
+    )
+    val readNextPosition = prefs.readNextPosition.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5000),
+        ReadNextPosition.BOTTOM,
+    )
     val preferredStartTab = prefs.preferredStartTab.stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5000),
@@ -65,6 +76,8 @@ class HearthSettingsViewModel @Inject constructor(
     fun setEinkBold(v: Boolean) = launch { eink.setBoldText(v) }
     fun syncNow() = launch { library.refresh() }
     fun setComicPageLoadingMode(mode: ComicPageLoadingMode) = launch { prefs.setComicPageLoadingMode(mode) }
+    fun setReadNextEnabled(enabled: Boolean) = launch { prefs.setReadNextEnabled(enabled) }
+    fun setReadNextPosition(position: ReadNextPosition) = launch { prefs.setReadNextPosition(position) }
     fun setPreferredStartTab(tab: HearthStartTab) = launch { prefs.setPreferredStartTab(tab) }
     fun moveHomeSection(section: HearthHomeSection, offset: Int) = launch {
         val order = homeSectionOrder.value.toMutableList()

@@ -100,6 +100,16 @@ final class LibraryEngine {
         self.recovery = recovery
     }
 
+    var isRefreshing: Bool {
+        catalog.isRefreshing
+    }
+
+    func refreshLibrary() async {
+        let signpost = PerfSignpost.begin("library-refresh")
+        defer { PerfSignpost.end(signpost) }
+        await catalog.refreshLibrary()
+    }
+
     func detailSnapshot(for seed: Book, current: Book?) async -> BookDetailSnapshot {
         let shown = current ?? seed
         let fresh =

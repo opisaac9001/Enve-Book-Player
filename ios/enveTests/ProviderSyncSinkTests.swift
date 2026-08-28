@@ -125,6 +125,7 @@ struct ProviderSyncSinkTests {
                 return provider
             }
         )
+        #expect(!store.persistsConnections)
         let book = Book(
             id: "emby-fallback",
             title: "Emby Fallback",

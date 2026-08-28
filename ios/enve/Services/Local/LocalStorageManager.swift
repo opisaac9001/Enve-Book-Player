@@ -26,6 +26,11 @@ final class LocalStorageManager {
         return appSupportURL.appendingPathComponent("Enve/PlaybackState", isDirectory: true)
     }
 
+    nonisolated private var coverOverridesDirectory: URL {
+        let appSupportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return appSupportURL.appendingPathComponent("Enve/Covers", isDirectory: true)
+    }
+
     nonisolated(unsafe) private let fileManager = FileManager.default
     private let operationQueue = DispatchQueue(label: "com.enve.LocalStorageManager", attributes: .concurrent)
 
@@ -679,21 +684,53 @@ final class LocalStorageManager {
     }
 
     nonisolated func coverOverridePath(for bookId: String) -> URL {
-        let appSupportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let coversDir = appSupportURL.appendingPathComponent("Enve/Covers", isDirectory: true)
         let fileName = "\(LocalStorageManager.sanitizedId(for: bookId)).jpg"
-        return coversDir.appendingPathComponent(fileName, isDirectory: false)
+        return coverOverridesDirectory.appendingPathComponent(fileName, isDirectory: false)
     }
 
     @discardableResult
     func saveCoverOverride(for bookId: String, imageData: Data) throws -> URL {
-        let appSupportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let coversDir = appSupportURL.appendingPathComponent("Enve/Covers", isDirectory: true)
-        try FileManager.default.createDirectory(at: coversDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: coverOverridesDirectory, withIntermediateDirectories: true)
         let url = coverOverridePath(for: bookId)
         try imageData.write(to: url, options: .atomic)
         AppLogger.network.info("Saved cover override \(DiagnosticLogSanitizer.fileDescriptor(for: url))")
         return url
+    }
+
+    nonisolated func coverOverridesDiskBytes() async -> Int64 {
+        let directory = coverOverridesDirectory
+        return await Task.detached(priority: .utility) {
+            Self.directorySize(at: directory)
+        }.value
+    }
+
+    nonisolated private static func directorySize(at directory: URL) -> Int64 {
+        guard let enumerator = FileManager.default.enumerator(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return 0
+        }
+
+        var total: Int64 = 0
+        for case let url as URL in enumerator {
+            guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+                values.isRegularFile == true,
+                let fileSize = values.fileSize
+            else {
+                continue
+            }
+            total += Int64(fileSize)
+        }
+        return total
+    }
+
+    func clearCoverOverrides() async {
+        let directory = coverOverridesDirectory
+        await Task.detached(priority: .utility) {
+            try? FileManager.default.removeItem(at: directory)
+        }.value
     }
 
     func saveCoverOverride(from remoteURL: URL, for bookId: String) async throws -> URL {

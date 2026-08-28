@@ -101,12 +101,13 @@ final class JournalLibraryStatsModel {
         isLoading = true
         defer { isLoading = false }
 
-        let books = await library.allBooks()
-        snapshot = await Self.journalCompute(books)
+        let signpost = PerfSignpost.begin("journal-library-stats")
+        defer { PerfSignpost.end(signpost) }
+        let slices = await library.bookStatisticsSlices()
+        snapshot = await Self.journalCompute(slices)
     }
 
-    nonisolated static func journalCompute(_ allBooks: [Book]) async -> JournalLibrarySnapshot {
-        let books = allBooks.filter { !$0.isPodcastEpisode }
+    nonisolated static func journalCompute(_ books: [BookStatisticsSlice]) async -> JournalLibrarySnapshot {
         var snap = JournalLibrarySnapshot()
         guard !books.isEmpty else { return snap }
 
@@ -201,7 +202,7 @@ final class JournalLibraryStatsModel {
                 progressSum += 1
                 progressCount += 1
             } else {
-                let frac = book.mediaType == .ebook ? book.canonicalEbookProgress : book.progressPercentage
+                let frac = book.progress
                 if frac > 0 {
                     inProgress += 1
                     progressSum += frac

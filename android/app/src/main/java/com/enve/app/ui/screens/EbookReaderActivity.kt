@@ -92,6 +92,7 @@ import com.enve.core.reader.EpubBridgeCheckpointCodec
 import com.enve.core.reader.ReaderEngineKind
 import com.enve.core.reader.ReaderEnginePolicy
 import com.enve.core.reader.ReaderEngineRequest
+import com.enve.engine.prefs.ReadNextPosition
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
@@ -254,13 +255,8 @@ class EbookReaderActivity : FragmentActivity() {
 
                 val w = window.decorView.width.toFloat()
                 val h = window.decorView.height.toFloat()
-                if (st.showChrome && (e.y < h * 0.12f || e.y > h * 0.88f)) return false
-                if (e.y < h * 0.12f || e.y > h * 0.88f) {
-                    vm.toggleChrome()
-                    return true
-                }
-
                 val tapZone = st.prefs.tapZoneWidth.coerceIn(0.15f, 0.35f)
+                if (st.showChrome && (e.y < h * 0.12f || e.y > h * 0.88f)) return false
                 when {
                     e.x < w * tapZone -> { turnPageBackward(); return true }
                     e.x > w * (1f - tapZone) -> { turnPageForward(); return true }
@@ -309,13 +305,10 @@ class EbookReaderActivity : FragmentActivity() {
     @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val volumeNav = vm.state.value.prefs.volumeButtonNavigation
-        val einkKeys = themeViewModel.themeState.value.einkProfile.active
-
         val audioActive = vm.state.value.readAlongPlaying ||
             audioPlaybackManager.state.value.isPlaying
         val direction = ReaderHardwareKeyPolicy.directionFor(
             keyCode = event.keyCode,
-            einkActive = einkKeys,
             volumeButtonNavigation = volumeNav,
             audioActive = audioActive,
         )
@@ -513,6 +506,10 @@ class EbookReaderActivity : FragmentActivity() {
         composeOverlay.setContent {
             val themeState by themeViewModel.themeState.collectAsStateWithLifecycle()
             val uiTextScale by hearthPreferences.uiTextScale.collectAsStateWithLifecycle(initialValue = 1f)
+            val readNextEnabled by hearthPreferences.readNextEnabled.collectAsStateWithLifecycle(initialValue = true)
+            val readNextPosition by hearthPreferences.readNextPosition.collectAsStateWithLifecycle(
+                initialValue = ReadNextPosition.BOTTOM,
+            )
             val useHearthChrome = androidx.compose.runtime.remember { intent?.getBooleanExtra(EXTRA_HEARTH_CHROME, false) == true }
             val onReadNext: (Book) -> Unit = { next ->
                 startActivity(readerIntentForBook(next, hearthChrome = useHearthChrome))
@@ -543,6 +540,8 @@ class EbookReaderActivity : FragmentActivity() {
                         onAskLibrarian = onAskLibrarian,
                         onVerticalMarginsChanged = { margin -> applyVerticalReadingPadding(margin) },
                         einkActive = themeState.einkProfile.active,
+                        readNextEnabled = readNextEnabled,
+                        readNextPosition = readNextPosition,
                         onReadNext = onReadNext,
                     )
                 } else {
@@ -560,6 +559,8 @@ class EbookReaderActivity : FragmentActivity() {
                             onBack    = { finish() },
                             onAskLibrarian = onAskLibrarian,
                             onVerticalMarginsChanged = { margin -> applyVerticalReadingPadding(margin) },
+                            readNextEnabled = readNextEnabled,
+                            readNextPosition = readNextPosition,
                             onReadNext = onReadNext,
                         )
                     }
@@ -1711,6 +1712,8 @@ private fun ReaderOverlay(
     onBack: () -> Unit,
     onAskLibrarian: () -> Unit,
     onVerticalMarginsChanged: (Float) -> Unit,
+    readNextEnabled: Boolean,
+    readNextPosition: ReadNextPosition,
     onReadNext: (Book) -> Unit,
 ) {
     val uiState by vm.state.collectAsStateWithLifecycle()
@@ -1894,13 +1897,24 @@ private fun ReaderOverlay(
             val nextBook = uiState.nextInSeries
             val atEnd = uiState.totalPages > 0 && uiState.currentPage >= uiState.totalPages ||
                 uiState.progressPct >= 98
-            if (nextBook != null && atEnd) {
+            if (readNextEnabled && nextBook != null && atEnd) {
                 NextInSeriesButton(
                     book = nextBook,
                     onClick = { onReadNext(nextBook) },
                     modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = 108.dp, start = 24.dp, end = 24.dp),
+                        .align(
+                            if (readNextPosition == ReadNextPosition.TOP) {
+                                Alignment.TopCenter
+                            } else {
+                                Alignment.BottomCenter
+                            },
+                        )
+                        .padding(
+                            top = if (readNextPosition == ReadNextPosition.TOP) 108.dp else 0.dp,
+                            bottom = if (readNextPosition == ReadNextPosition.BOTTOM) 108.dp else 0.dp,
+                            start = 24.dp,
+                            end = 24.dp,
+                        ),
                 )
             }
 

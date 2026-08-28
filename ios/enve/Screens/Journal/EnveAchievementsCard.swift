@@ -30,11 +30,11 @@ final class EnveAchievementsModel {
         async let listening = HistorySessionStore.shared.loadListeningSessions()
         async let reading = HistorySessionStore.shared.loadReadingSessions()
         async let remote = journal.remoteHistorySessions()
-        async let library = books.allBooks()
+        async let library = books.finishedBookSummaries()
 
         let sessions = await listening + reading + remote
-        let allBooks = await library
-        tally = EnveAchievementsPolicy.tally(sessions: sessions, books: allBooks)
+        let finishedBooks = await library
+        tally = EnveAchievementsPolicy.tally(sessions: sessions, finishedBooks: finishedBooks)
         achievements = EnveAchievementsPolicy.achievements(tally)
         loaded = true
     }

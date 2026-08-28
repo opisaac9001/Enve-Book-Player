@@ -6,6 +6,35 @@ import Logging
 import UIKit
 #endif
 
+struct PlexProgressTarget: Equatable {
+    let ratingKey: String
+    let time: TimeInterval
+    let duration: TimeInterval
+}
+
+func resolvePlexProgressTarget(book: Book, currentTime: TimeInterval) -> PlexProgressTarget {
+    let globalTime = max(0, currentTime)
+    let orderedTracks = (book.audioTracks ?? []).sorted {
+        if $0.startOffset == $1.startOffset { return $0.index < $1.index }
+        return $0.startOffset < $1.startOffset
+    }
+
+    if let track = orderedTracks.last(where: { globalTime >= $0.startOffset }) ?? orderedTracks.first {
+        let localTime = min(max(0, globalTime - track.startOffset), max(0, track.duration))
+        return PlexProgressTarget(
+            ratingKey: track.id,
+            time: localTime,
+            duration: track.duration
+        )
+    }
+
+    return PlexProgressTarget(
+        ratingKey: book.id,
+        time: globalTime,
+        duration: book.duration ?? 0
+    )
+}
+
 class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, AudiobookProgressPushing,
     @unchecked Sendable
 {
@@ -27,6 +56,13 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
     private static let maxTracksForMultiFileBook: Int = 200
 
     private static let minTracksForMultiFileBook: Int = 3
+
+    private struct PlexTrackTimeline {
+        let audioTracks: [AudioTrack]
+        let chapters: [Chapter]
+        let duration: TimeInterval
+        let partKey: String?
+    }
 
     private func durationMilliseconds(from metadata: PlexMetadata) -> Double {
         if let duration = metadata.duration { return duration }
@@ -53,6 +89,63 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
 
             return lhs.ratingKey < rhs.ratingKey
         }
+    }
+
+    private func mimeType(from track: PlexMetadata) -> String {
+        let format = track.media?.first?.container
+            ?? track.media?.first?.audioCodec
+            ?? track.media?.first?.part?.first?.container
+            ?? track.media?.first?.part?.first?.file.map { URL(fileURLWithPath: $0).pathExtension }
+            ?? ""
+
+        switch format.lowercased() {
+        case "mp3": return "audio/mpeg"
+        case "aac": return "audio/aac"
+        case "m4a", "m4b", "mp4": return "audio/mp4"
+        case "ogg", "oga", "vorbis": return "audio/ogg"
+        case "flac": return "audio/flac"
+        case "wav", "wave": return "audio/wav"
+        default: return "application/octet-stream"
+        }
+    }
+
+    private func trackTimeline(from tracks: [PlexMetadata]) -> PlexTrackTimeline {
+        let sorted = orderedTracks(tracks)
+        var audioTracks: [AudioTrack] = []
+        var chapters: [Chapter] = []
+        var offset: TimeInterval = 0
+
+        for (index, track) in sorted.enumerated() {
+            let duration = durationSeconds(from: track)
+            audioTracks.append(
+                AudioTrack(
+                    id: track.ratingKey,
+                    index: index,
+                    title: track.title,
+                    contentUrl: track.media?.first?.part?.first?.key,
+                    duration: duration,
+                    startOffset: offset,
+                    format: mimeType(from: track)
+                )
+            )
+            chapters.append(
+                Chapter(
+                    id: track.ratingKey,
+                    start: offset,
+                    end: offset + duration,
+                    title: track.title,
+                    index: index
+                )
+            )
+            offset += duration
+        }
+
+        return PlexTrackTimeline(
+            audioTracks: audioTracks,
+            chapters: normalizeChapters(chapters, bookDuration: offset),
+            duration: offset,
+            partKey: sorted.first?.media?.first?.part?.first?.key
+        )
     }
 
     private func extractNarrator(from metadata: PlexMetadata, author: String?) -> String? {
@@ -297,10 +390,12 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
 
     fileprivate struct PlexMedia: Codable {
         let duration: Double?
+        let container: String?
+        let audioCodec: String?
         let part: [PlexPart]?
 
         enum CodingKeys: String, CodingKey {
-            case duration
+            case duration, container, audioCodec
             case part = "Part"
         }
     }
@@ -310,6 +405,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         let key: String
         let duration: Double?
         let file: String?
+        let container: String?
     }
 
     private func decodeItemsContainer(from data: Data) throws -> PlexItemsResponse {
@@ -790,32 +886,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
 
             let title = primary.parentTitle ?? primary.title
             let author = primary.grandparentTitle ?? primary.parentTitle ?? "Unknown Author"
-            var audioTracks: [AudioTrack] = []
-            var chapters: [Chapter] = []
-            var offset = 0.0
-
-            for (index, track) in sorted.enumerated() {
-                let duration = durationSeconds(from: track)
-                audioTracks.append(
-                    AudioTrack(
-                        id: track.ratingKey,
-                        index: index,
-                        title: track.title,
-                        contentUrl: track.media?.first?.part?.first?.key,
-                        duration: duration,
-                        startOffset: offset
-                    )
-                )
-                chapters.append(
-                    Chapter(
-                        id: track.ratingKey,
-                        start: offset,
-                        end: offset + duration,
-                        title: track.title
-                    )
-                )
-                offset += duration
-            }
+            let timeline = trackTimeline(from: sorted)
 
             let coverURL = primary.thumb.flatMap { path -> URL? in
                 var components = URLComponents(
@@ -836,15 +907,15 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
                     narrator: extractNarrator(from: primary, author: author),
                     seriesInfo: primary.media?.first?.part?.first?.file.flatMap { parseSeriesFromPath($0, author: author, title: title) }
                         ?? parseSeriesFromTitle(title),
-                    duration: offset,
+                    duration: timeline.duration,
                     coverURL: coverURL,
-                    partKey: primary.media?.first?.part?.first?.key,
-                    audioTracks: audioTracks,
+                    partKey: timeline.partKey,
+                    audioTracks: timeline.audioTracks,
                     dateAdded: Date(timeIntervalSince1970: TimeInterval(primary.addedAt ?? 0)),
                     releaseDate: nil,
                     description: primary.summary,
                     genres: [],
-                    chapters: normalizeChapters(chapters, bookDuration: offset),
+                    chapters: timeline.chapters,
                     publisher: nil,
                     currentTime: 0,
                     isFinished: false,
@@ -891,11 +962,6 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         return books.filter { !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
     private func processPlexAlbum(_ album: PlexMetadata, libraryId: String) async throws -> [Book] {
-
-        if let leafCount = album.leafCount, leafCount <= 1 {
-            return [mapPlexMetadataToBook(album, libraryId: libraryId)]
-        }
-
         let trackRequest = try buildRequest(
             path: "library/metadata/\(album.ratingKey)/children",
             queryItems: [
@@ -912,11 +978,17 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
                 return [mapPlexMetadataToBook(album, libraryId: libraryId)]
             }
 
-            let totalDuration = tracks.reduce(0.0) { sum, track in
-                sum + durationSeconds(from: track)
-            }
-            let partKey = tracks.first?.media?.first?.part?.first?.key
-            return [mapPlexMetadataToBook(album, libraryId: libraryId, overrideDuration: totalDuration, partKey: partKey)]
+            let timeline = trackTimeline(from: tracks)
+            return [
+                mapPlexMetadataToBook(
+                    album,
+                    libraryId: libraryId,
+                    overrideDuration: timeline.duration,
+                    partKey: timeline.partKey,
+                    audioTracks: timeline.audioTracks,
+                    chapters: timeline.chapters
+                )
+            ]
         } catch {
             AppLogger.network.error(
                 "Failed to fetch tracks albumDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: album.title)); using single item"
@@ -1011,32 +1083,24 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
 
         let container = try decodeItemsContainer(from: data)
         let allTracks = orderedTracks(container.metadata ?? [])
-
-        var chapters: [Chapter] = []
-        var cumulativeOffset: Double = 0
-
-        for track in allTracks {
-            let duration = durationSeconds(from: track)
-            let chapter = Chapter(
-                id: track.ratingKey,
-                start: cumulativeOffset,
-                end: cumulativeOffset + duration,
-                title: track.title
-            )
-            chapters.append(chapter)
-            cumulativeOffset += duration
-        }
-
-        let book = self.mapPlexMetadataToBook(item, libraryId: libraryId)
-
+        let timeline = trackTimeline(from: allTracks)
         let fallbackDuration = durationSeconds(from: item)
-        let finalDuration = cumulativeOffset > 0 ? cumulativeOffset : fallbackDuration
+        let finalDuration = timeline.duration > 0 ? timeline.duration : fallbackDuration
 
-        AppLogger.network.info("[PlexProvider] Total duration: \(finalDuration)s, Chapters: \(chapters.count)")
+        AppLogger.network.info("[PlexProvider] Total duration: \(finalDuration)s, Chapters: \(timeline.chapters.count)")
 
-        let correctProgress = finalDuration > 0 ? (book.currentTime / finalDuration) : 0.0
-
-        var normalizedChapters = normalizeChapters(chapters, bookDuration: finalDuration)
+        var normalizedChapters = timeline.chapters
+        if allTracks.count == 1,
+            let onlyTrack = allTracks.first,
+            let embeddedChapters = try? await fetchEmbeddedChapters(
+                bookId: onlyTrack.ratingKey,
+                bookDuration: finalDuration
+            ),
+            !areChaptersInadequate(embeddedChapters, bookDuration: finalDuration)
+        {
+            normalizedChapters = embeddedChapters
+            AppLogger.network.info("[PlexProvider] Found \(embeddedChapters.count) embedded chapters on track \(onlyTrack.ratingKey)")
+        }
 
         if areChaptersInadequate(normalizedChapters, bookDuration: finalDuration),
             let firstTrack = allTracks.first,
@@ -1077,32 +1141,16 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
 
         let fallbackChapters =
             normalizedChapters.isEmpty && safeDuration > 0
-            ? [Chapter(id: "full_book", start: 0, end: safeDuration, title: book.title)]
+            ? [Chapter(id: "full_book", start: 0, end: safeDuration, title: item.title)]
             : normalizedChapters
 
-        return Book(
-            id: book.id,
-            title: book.title,
-            author: book.author,
-            narrator: book.narrator,
-            seriesInfo: book.seriesInfo,
-            duration: safeDuration,
-            coverURL: book.coverURL,
-            dateAdded: book.dateAdded,
-            releaseDate: book.releaseDate,
-            description: book.description,
-            genres: book.genres,
-            chapters: fallbackChapters,
-            publisher: book.publisher,
-            progress: correctProgress,
-            currentTime: book.currentTime,
-            isFinished: book.isFinished,
-            lastUpdate: book.lastUpdate,
-            libraryId: book.libraryId,
-            providerId: book.providerId,
-            backendId: book.backendId ?? connection.id.uuidString,
-            source: .plex,
-            rawMetadata: book.rawMetadata
+        return mapPlexMetadataToBook(
+            item,
+            libraryId: libraryId,
+            overrideDuration: safeDuration,
+            partKey: timeline.partKey,
+            audioTracks: timeline.audioTracks,
+            chapters: fallbackChapters
         )
     }
 
@@ -1245,6 +1293,18 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         }
 
         let duration = durationSeconds(from: track)
+        let partKey = track.media?.first?.part?.first?.key
+        let audioTracks = [
+            AudioTrack(
+                id: track.ratingKey,
+                index: 0,
+                title: track.title,
+                contentUrl: partKey,
+                duration: duration,
+                startOffset: 0,
+                format: mimeType(from: track)
+            )
+        ]
 
         let author = track.grandparentTitle ?? track.parentTitle ?? "Unknown Author"
         let bookTitle = track.title
@@ -1270,6 +1330,8 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
             seriesInfo: seriesInfo,
             duration: duration,
             coverURL: thumbUrl,
+            partKey: partKey,
+            audioTracks: audioTracks,
             dateAdded: Date(timeIntervalSince1970: TimeInterval(track.addedAt ?? 0)),
             releaseDate: nil,
             description: track.summary,
@@ -1388,11 +1450,13 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
 
                 audioTracks.append(
                     AudioTrackInfo(
+                        id: track.id,
                         index: track.index,
                         startOffset: track.startOffset,
                         duration: track.duration,
                         contentUrl: components.url?.absoluteString ?? partKey,
-                        mimeType: "audio/mpeg"
+                        mimeType: track.format ?? "application/octet-stream",
+                        title: track.title
                     )
                 )
             }
@@ -1433,11 +1497,13 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
             ]
 
             let trackInfo = AudioTrackInfo(
+                id: item.ratingKey,
                 index: 0,
                 startOffset: 0,
                 duration: (item.duration ?? 0) / 1000.0,
                 contentUrl: components.url?.absoluteString ?? part.key,
-                mimeType: "audio/mpeg"
+                mimeType: mimeType(from: item),
+                title: item.title
             )
             audioTracks.append(trackInfo)
 
@@ -1465,11 +1531,13 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
                 ]
 
                 let trackInfo = AudioTrackInfo(
+                    id: track.ratingKey,
                     index: index,
                     startOffset: cumulativeOffset,
                     duration: (track.duration ?? 0) / 1000.0,
                     contentUrl: components.url?.absoluteString ?? part.key,
-                    mimeType: "audio/mpeg"
+                    mimeType: mimeType(from: track),
+                    title: track.title
                 )
                 audioTracks.append(trackInfo)
                 cumulativeOffset += trackInfo.duration
@@ -1513,19 +1581,28 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         isFinished: Bool,
         timeListened: TimeInterval
     ) async throws {
-        let offsetMs = Int(currentTime * 1000)
-        let durationMs = Int((book.duration ?? 0) * 1000)
+        let target = resolvePlexProgressTarget(book: book, currentTime: currentTime)
+        let offsetMs = Int(target.time * 1000)
+        let durationMs = Int(target.duration * 1000)
 
         let queryItems = [
-            URLQueryItem(name: "ratingKey", value: book.id),
+            URLQueryItem(name: "key", value: "/library/metadata/\(target.ratingKey)"),
+            URLQueryItem(name: "ratingKey", value: target.ratingKey),
             URLQueryItem(name: "identifier", value: "com.plexapp.plugins.library"),
             URLQueryItem(name: "state", value: isFinished ? "stopped" : "playing"),
             URLQueryItem(name: "time", value: "\(offsetMs)"),
             URLQueryItem(name: "duration", value: "\(durationMs)"),
         ]
 
-        let request = try buildRequest(path: ":/timeline", queryItems: queryItems)
-        _ = try await performDataTask(for: request)
+        var request = try buildRequest(path: ":/timeline", queryItems: queryItems)
+        request.httpMethod = "POST"
+        if let sessionId, !sessionId.isEmpty {
+            request.setValue(sessionId, forHTTPHeaderField: "X-Plex-Session-Identifier")
+        }
+        let (_, response) = try await performDataTask(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw ProviderError.invalidResponse
+        }
     }
 
     private func performDataTask(for request: URLRequest, retryCount: Int = 3) async throws -> (Data, URLResponse) {
@@ -1560,7 +1637,9 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         _ item: PlexMetadata,
         libraryId: String,
         overrideDuration: Double? = nil,
-        partKey: String? = nil
+        partKey: String? = nil,
+        audioTracks: [AudioTrack]? = nil,
+        chapters: [Chapter]? = nil
     ) -> Book {
         let thumbUrl: URL? = item.thumb.flatMap { thumbPath in
             let baseUrlString = connection.url.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -1600,11 +1679,12 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
             duration: duration,
             coverURL: thumbUrl,
             partKey: finalPartKey,
+            audioTracks: audioTracks,
             dateAdded: Date(timeIntervalSince1970: TimeInterval(item.addedAt ?? 0)),
             releaseDate: nil,
             description: item.summary,
             genres: [],
-            chapters: [],
+            chapters: chapters ?? [],
             publisher: nil,
             currentTime: (item.viewOffset ?? 0) / 1000.0,
             isFinished: (item.viewCount ?? 0) > 0 && (item.viewOffset ?? 0) <= 0,
@@ -1626,18 +1706,26 @@ private final class PlexItemsXMLParserDelegate: NSObject, XMLParserDelegate {
         var key = ""
         var duration: Double?
         var file: String?
+        var container: String?
 
         func build() -> PlexProvider.PlexPart {
-            PlexProvider.PlexPart(id: id, key: key, duration: duration, file: file)
+            PlexProvider.PlexPart(id: id, key: key, duration: duration, file: file, container: container)
         }
     }
 
     private struct ParsedMedia {
         var duration: Double?
+        var container: String?
+        var audioCodec: String?
         var parts: [PlexProvider.PlexPart] = []
 
         func build() -> PlexProvider.PlexMedia {
-            PlexProvider.PlexMedia(duration: duration, part: parts.isEmpty ? nil : parts)
+            PlexProvider.PlexMedia(
+                duration: duration,
+                container: container,
+                audioCodec: audioCodec,
+                part: parts.isEmpty ? nil : parts
+            )
         }
     }
 
@@ -1736,13 +1824,19 @@ private final class PlexItemsXMLParserDelegate: NSObject, XMLParserDelegate {
                 viewCount: Self.parseInt(attributeDict["viewCount"])
             )
         case "Media":
-            currentMedia = ParsedMedia(duration: Self.parseDouble(attributeDict["duration"]), parts: [])
+            currentMedia = ParsedMedia(
+                duration: Self.parseDouble(attributeDict["duration"]),
+                container: attributeDict["container"],
+                audioCodec: attributeDict["audioCodec"],
+                parts: []
+            )
         case "Part":
             currentPart = ParsedPart(
                 id: Self.parseInt(attributeDict["id"]),
                 key: attributeDict["key"] ?? "",
                 duration: Self.parseDouble(attributeDict["duration"]),
-                file: attributeDict["file"]
+                file: attributeDict["file"],
+                container: attributeDict["container"]
             )
         default:
             break

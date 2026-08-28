@@ -5026,7 +5026,7 @@ struct FlexibleDate: Decodable {
         }
     }
 
-    static func parse(_ value: String?) -> Date? {
+    nonisolated static func parse(_ value: String?) -> Date? {
         guard let value, !value.isEmpty else { return nil }
         if let epoch = Double(value) {
             return date(fromEpoch: epoch)
@@ -5040,7 +5040,7 @@ struct FlexibleDate: Decodable {
         return ISO8601DateFormatter().date(from: value)
     }
 
-    private static func date(fromEpoch value: Double) -> Date {
+    nonisolated private static func date(fromEpoch value: Double) -> Date {
         Date(timeIntervalSince1970: value > 10_000_000_000 ? value / 1_000 : value)
     }
 }
@@ -5526,6 +5526,19 @@ enum BookloreBookMapper {
         return URL(string: "\(base)/\(corrected)")
     }
 
+    static func versionedCoverURL(_ url: URL?, updatedOn: String?) -> URL? {
+        guard let url, let updatedOn, !updatedOn.isEmpty,
+            var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        else {
+            return url
+        }
+        var queryItems = components.queryItems ?? []
+        queryItems.removeAll { $0.name == "v" }
+        queryItems.append(URLQueryItem(name: "v", value: updatedOn))
+        components.queryItems = queryItems
+        return components.url ?? url
+    }
+
     private static func strippedSeriesVolume(_ name: String) -> (base: String, number: String)? {
         let pattern = #"^(.*\S)\s+(?:#\s*|vol\.?\s*|volume\s+|book\s+|bk\.?\s*)(\d+(?:\.\d+)?)$"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { return nil }
@@ -5591,6 +5604,16 @@ enum BookloreCatalogMapper {
             return summary.title
         }()
 
+        let coverURL = BookloreBookMapper.absoluteURL(
+            from: summary.thumbnailUrl,
+            serverURL: context.serverURL,
+            mediaType: detectedMediaType
+        )
+        let versionedCoverURL = BookloreBookMapper.versionedCoverURL(
+            coverURL,
+            updatedOn: detectedMediaType == .audiobook ? summary.audiobookCoverUpdatedOn : nil
+        )
+
         var result = Book(
             id: summary.id.stringValue,
             title: resolvedTitle,
@@ -5599,7 +5622,7 @@ enum BookloreCatalogMapper {
             narrator: summary.narrator,
             seriesInfo: seriesInfo,
             duration: duration,
-            coverURL: BookloreBookMapper.absoluteURL(from: summary.thumbnailUrl, serverURL: context.serverURL, mediaType: detectedMediaType),
+            coverURL: versionedCoverURL,
             mediaType: detectedMediaType,
             epubLocator: nil,
             ebookProgress: detectedMediaType == .ebook ? readProg : nil,

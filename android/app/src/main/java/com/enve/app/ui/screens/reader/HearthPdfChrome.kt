@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import com.enve.app.data.reader.ReaderTheme
 import com.enve.app.ui.screens.PdfReaderUiState
 import com.enve.core.data.model.Book
+import com.enve.engine.prefs.ReadNextPosition
 import com.enve.hearth.design.EmberAccent
 import com.enve.hearth.design.Hearth
 import com.enve.hearth.design.HearthText
@@ -52,6 +53,8 @@ internal fun HearthPdfChrome(
     onPrevious: () -> Unit,
     onNext: () -> Unit,
     onSeekPage: (Int) -> Unit,
+    readNextEnabled: Boolean,
+    readNextPosition: ReadNextPosition,
     onReadNext: (Book) -> Unit,
 ) {
     val palette = readerChromePalette(ReaderTheme.OLED, einkActive, EmberAccent)
@@ -94,13 +97,24 @@ internal fun HearthPdfChrome(
                 PdfBottomVeil(state, onPrevious, onNext, onSeekPage)
             }
             val nextBook = state.nextInSeries
-            if (nextBook != null && state.pageCount > 0 && state.currentPage >= state.pageCount - 1) {
+            if (readNextEnabled && nextBook != null && state.pageCount > 0 && state.currentPage >= state.pageCount - 1) {
                 HearthReadNextButton(
                     book = nextBook,
                     onClick = { onReadNext(nextBook) },
                     modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = 96.dp, start = Hearth.Spacing.XL, end = Hearth.Spacing.XL),
+                        .align(
+                            if (readNextPosition == ReadNextPosition.TOP) {
+                                Alignment.TopCenter
+                            } else {
+                                Alignment.BottomCenter
+                            },
+                        )
+                        .padding(
+                            top = if (readNextPosition == ReadNextPosition.TOP) 96.dp else 0.dp,
+                            bottom = if (readNextPosition == ReadNextPosition.BOTTOM) 96.dp else 0.dp,
+                            start = Hearth.Spacing.XL,
+                            end = Hearth.Spacing.XL,
+                        ),
                 )
             }
         }

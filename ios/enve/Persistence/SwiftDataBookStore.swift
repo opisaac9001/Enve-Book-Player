@@ -56,6 +56,138 @@ final class SwiftDataBookStore: BookStoreRepository, @unchecked Sendable {
             return books
         }
 
+        func fetchDownloadedAudiobooks(storageKeys: Set<String>) throws -> [Book] {
+            guard !storageKeys.isEmpty else { return [] }
+            let audioType = AppMediaType.audiobook.rawValue
+            var descriptor = FetchDescriptor<BookRecord>(
+                predicate: #Predicate { $0.mediaType == audioType && !$0.isDeleted }
+            )
+            descriptor.propertiesToFetch = [\BookRecord.stableId]
+
+            let stableIds = Set(
+                try modelContext.fetch(descriptor).compactMap { record in
+                    storageKeys.contains(LocalStorageManager.sanitizedId(for: record.stableId))
+                        ? record.stableId
+                        : nil
+                }
+            )
+            return try fetchBooksByStableIds(ids: stableIds).values.sorted {
+                $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+            }
+        }
+
+        func fetchReaderArtifactBookStableIds() throws -> Set<String> {
+            var annotationDescriptor = FetchDescriptor<AnnotationRecord>()
+            annotationDescriptor.propertiesToFetch = [
+                \AnnotationRecord.bookStableId,
+                \AnnotationRecord.isRemotePlaceholder,
+            ]
+            var stableIds: Set<String> = Set(
+                try modelContext.fetch(annotationDescriptor).compactMap { record in
+                    guard !record.isRemotePlaceholder else { return nil }
+                    return record.bookStableId
+                }
+            )
+
+            var bookmarkDescriptor = FetchDescriptor<BookmarkRecord>()
+            bookmarkDescriptor.propertiesToFetch = [
+                \BookmarkRecord.bookStableId,
+                \BookmarkRecord.note,
+                \BookmarkRecord.isRemotePlaceholder,
+            ]
+            for record in try modelContext.fetch(bookmarkDescriptor) {
+                guard !record.isRemotePlaceholder,
+                    let note = record.note,
+                    !note.isEmpty
+                else { continue }
+                stableIds.insert(record.bookStableId)
+            }
+            return stableIds
+        }
+
+        func fetchFinishedBookSummaries() throws -> [FinishedBookSummary] {
+            var descriptor = FetchDescriptor<BookRecord>(
+                predicate: #Predicate { $0.isFinished && !$0.isDeleted }
+            )
+            descriptor.propertiesToFetch = [
+                \BookRecord.stableId,
+                \BookRecord.mediaType,
+                \BookRecord.lastUpdate,
+            ]
+            return try modelContext.fetch(descriptor).compactMap { record in
+                guard let mediaType = AppMediaType(rawValue: record.mediaType) else { return nil }
+                return FinishedBookSummary(
+                    stableId: record.stableId,
+                    mediaType: mediaType,
+                    lastUpdate: record.lastUpdate
+                )
+            }
+        }
+
+        func fetchBookStatisticsSlices() throws -> [BookStatisticsSlice] {
+            var descriptor = FetchDescriptor<BookRecord>(
+                predicate: #Predicate { !$0.isDeleted && !$0.isPodcastEpisode }
+            )
+            descriptor.propertiesToFetch = [
+                \BookRecord.bookId,
+                \BookRecord.title,
+                \BookRecord.mediaType,
+                \BookRecord.author,
+                \BookRecord.narrator,
+                \BookRecord.series,
+                \BookRecord.publisher,
+                \BookRecord.genres,
+                \BookRecord.language,
+                \BookRecord.isbn,
+                \BookRecord.thumb,
+                \BookRecord.publishedYear,
+                \BookRecord.addedAt,
+                \BookRecord.duration,
+                \BookRecord.isFinished,
+                \BookRecord.currentTime,
+                \BookRecord.ebookProgress,
+                \BookRecord.epubLocator,
+            ]
+            return try modelContext.fetch(descriptor).compactMap { record in
+                guard let mediaType = AppMediaType(rawValue: record.mediaType) else { return nil }
+
+                let progress: Double
+                if record.isFinished {
+                    progress = 1
+                } else if mediaType == .ebook {
+                    let stored = Book.normalizedFractionProgress(record.ebookProgress) ?? 0
+                    if let locator = Book.progressFromEbookLocator(record.epubLocator) {
+                        progress = stored <= 0.001 || locator > stored + 0.02 ? locator : stored
+                    } else {
+                        progress = stored
+                    }
+                } else if let duration = record.duration, duration > 0 {
+                    progress = min(max(record.currentTime / duration, 0), 1)
+                } else {
+                    progress = 0
+                }
+
+                return BookStatisticsSlice(
+                    id: record.bookId,
+                    title: record.title,
+                    mediaType: mediaType,
+                    author: record.author,
+                    narrator: record.narrator,
+                    series: record.series,
+                    publisher: record.publisher,
+                    genres: record.genres,
+                    language: record.language,
+                    isbn: record.isbn,
+                    thumb: record.thumb,
+                    publishedYear: record.publishedYear,
+                    addedAt: record.addedAt,
+                    duration: record.duration,
+                    isFinished: record.isFinished,
+                    progress: progress
+                )
+            }
+        }
+
         func fetchBrowseSlices(source: String) throws -> [BookBrowseSlice] {
 
             let localSource = source
@@ -2542,6 +2674,46 @@ final class SwiftDataBookStore: BookStoreRepository, @unchecked Sendable {
             return try await worker.fetchAllBooks()
         } catch {
             AppLogger.general.error("BookStore.allBooks failed: \(error)")
+            return []
+        }
+    }
+
+    func downloadedAudiobooks(storageKeys: Set<String>) async -> [Book] {
+        let worker = makeWorker()
+        do {
+            return try await worker.fetchDownloadedAudiobooks(storageKeys: storageKeys)
+        } catch {
+            AppLogger.general.error("BookStore.downloadedAudiobooks failed: \(error)")
+            return []
+        }
+    }
+
+    func readerArtifactBookStableIds() async -> Set<String> {
+        let worker = makeWorker()
+        do {
+            return try await worker.fetchReaderArtifactBookStableIds()
+        } catch {
+            AppLogger.general.error("BookStore.readerArtifactBookStableIds failed: \(error)")
+            return []
+        }
+    }
+
+    func finishedBookSummaries() async -> [FinishedBookSummary] {
+        let worker = makeWorker()
+        do {
+            return try await worker.fetchFinishedBookSummaries()
+        } catch {
+            AppLogger.general.error("BookStore.finishedBookSummaries failed: \(error)")
+            return []
+        }
+    }
+
+    func bookStatisticsSlices() async -> [BookStatisticsSlice] {
+        let worker = makeWorker()
+        do {
+            return try await worker.fetchBookStatisticsSlices()
+        } catch {
+            AppLogger.general.error("BookStore.bookStatisticsSlices failed: \(error)")
             return []
         }
     }

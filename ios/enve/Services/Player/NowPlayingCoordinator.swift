@@ -14,6 +14,7 @@ final class NowPlayingCoordinator {
     private weak var activeTarget: (any RemoteCommandTarget)?
     #if os(iOS)
     private var nowPlayingSession: MPNowPlayingSession?
+    private weak var nowPlayingSessionOwner: (any RemoteCommandTarget)?
     #endif
 
     private var lastInfo: NowPlayingInfo?
@@ -38,8 +39,24 @@ final class NowPlayingCoordinator {
     }
 
     #if os(iOS)
-    func setNowPlayingSession(_ session: MPNowPlayingSession?) {
+    func setNowPlayingSession(_ session: MPNowPlayingSession, for target: any RemoteCommandTarget) {
+        if let current = nowPlayingSession, current !== session {
+            current.players.forEach { current.removePlayer($0) }
+        }
         nowPlayingSession = session
+        nowPlayingSessionOwner = target
+        if activeTarget != nil {
+            armCommands()
+        }
+    }
+
+    func clearNowPlayingSession(if target: any RemoteCommandTarget) {
+        guard nowPlayingSessionOwner === target else { return }
+        if let current = nowPlayingSession {
+            current.players.forEach { current.removePlayer($0) }
+        }
+        nowPlayingSession = nil
+        nowPlayingSessionOwner = nil
         if activeTarget != nil {
             armCommands()
         }

@@ -201,11 +201,16 @@ private struct MatchesOrphanMatchSheet: View {
     @Environment(\.hearth) private var hearth
     @Environment(\.dismiss) private var dismiss
 
-    @State private var query = ""
+    @State private var query: String
     @State private var serverBooks: [Book] = []
     @State private var selected: Book?
     @State private var confirmShown = false
     @State private var loaded = false
+
+    init(orphan: Book) {
+        self.orphan = orphan
+        _query = State(initialValue: orphan.title)
+    }
 
     private var filtered: [Book] {
         guard !query.isEmpty else { return serverBooks }
@@ -262,8 +267,12 @@ private struct MatchesOrphanMatchSheet: View {
         .padding(.horizontal, 24)
         .hearthPresentationBackground()
         .presentationDragIndicator(.visible)
-        .task {
-            serverBooks = await engine.matches.matchableServerBooks(for: orphan)
+        .task(id: query) {
+            loaded = false
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            serverBooks = await engine.matches.matchableServerBooks(for: orphan, query: query)
+            guard !Task.isCancelled else { return }
             loaded = true
         }
         .confirmationDialog("Confirm the match", isPresented: $confirmShown, presenting: selected) { book in

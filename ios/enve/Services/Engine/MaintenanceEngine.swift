@@ -5,33 +5,24 @@ import Foundation
 final class MaintenanceEngine {
     private let appState: AppState
     private let recovery: LibraryRecoveryCoordinator
-    private let downloads: UnifiedDownloadService
 
     init(
         appState: AppState = .shared,
-        recovery: LibraryRecoveryCoordinator = .shared,
-        downloads: UnifiedDownloadService = .shared
+        recovery: LibraryRecoveryCoordinator = .shared
     ) {
         self.appState = appState
         self.recovery = recovery
-        self.downloads = downloads
     }
 
     func clearImageCache() async {
-        DiskImageCache.shared.clearAllCache()
+        await DiskImageCache.shared.clearAllCache()
         await AppCache.shared.clearCoverCache()
+        await LocalStorageManager.shared.clearCoverOverrides()
     }
 
     func clearMetadata() async {
         try? await MetadataStorage.shared.clearAllMetadata()
-        await AppCache.shared.clearActiveCaches()
-    }
-
-    func clearFinishedDownloads() async {
-        for task in downloads.completedTasks {
-            await downloads.deleteDownload(bookId: task.bookId)
-        }
-        downloads.clearCompleted()
+        await AppCache.shared.clearMetadataCache()
     }
 
     func performDeviceOnlyFactoryReset() async {
@@ -43,7 +34,7 @@ final class MaintenanceEngine {
         BookStoreManager.shared.resetStore()
         await recovery.resetBookDataState()
         await AppCache.shared.clearActiveCaches()
-        DiskImageCache.shared.clearAllCache()
+        await DiskImageCache.shared.clearAllCache()
 
         let fileManager = FileManager.default
         var roots: [URL] = []

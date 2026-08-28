@@ -65,6 +65,7 @@ struct HearthScreen: View {
             }
             .scrollIndicators(.hidden)
         }
+        .accessibilityIdentifier("hearth-screen")
         .navigationDestination(item: $seeAll) { destination in
             HearthSeeAllScreen(destination: destination)
         }
@@ -385,9 +386,11 @@ struct HearthScreen: View {
                     .frame(height: 180)
                 Image(systemName: "flame")
                     .font(.hearthUI(44))
-                    .foregroundStyle(Hearth.accent)
+                    .foregroundStyle(hearth.ember)
+                    .accessibilityHidden(true)
             }
             .frame(maxWidth: .infinity)
+            .accessibilityHidden(true)
 
             Text("Light the fire.")
                 .font(.hearthDisplay(26))
@@ -406,10 +409,10 @@ struct HearthScreen: View {
                     Text("Add a source")
                         .font(.hearthUI(16, weight: .semibold))
                 }
-                .foregroundStyle(hearth.onEmber)
+                .foregroundStyle(hearth.readableOnEmber)
                 .padding(.horizontal, 24)
                 .padding(.vertical, 14)
-                .background(Hearth.accent, in: Capsule())
+                .background(hearth.ember, in: Capsule())
             }
             .buttonStyle(PressableStyle())
         }
@@ -608,19 +611,20 @@ struct HearthHero: View {
                     CoverTile(book: book, width: 132)
                 }
                 .buttonStyle(PressableStyle())
+                .accessibilityLabel("Open \(book.title)")
 
                 VStack(alignment: .leading, spacing: 8) {
                     Overline(statusOverline, color: tint)
                     Text(book.title)
-                        .font(.hearthDisplay(24, weight: .semibold))
+                        .font(.hearthDisplay(24, weight: .bold))
                         .foregroundStyle(hearth.text)
-                        .lineLimit(3)
                         .fixedSize(horizontal: false, vertical: true)
                     if let byline {
                         Text(byline)
-                            .font(.hearthUI(14))
-                            .foregroundStyle(hearth.textSecondary)
-                            .lineLimit(1)
+                            .font(.hearthUI(14, weight: .semibold))
+                            .foregroundStyle(hearth.text)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     HearthSourceBadge(text: sourceName)
                     Spacer(minLength: 4)

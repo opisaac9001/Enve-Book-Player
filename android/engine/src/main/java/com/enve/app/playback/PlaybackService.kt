@@ -453,9 +453,10 @@ class PlaybackService : MediaLibraryService() {
             mediaItems = (0 until current.mediaItemCount)
                 .map { index -> rewriteForLocal(current.getMediaItemAt(index)) },
         )
+        val resumeLocalPlayback = captured.playWhenReady
         current.playWhenReady = false
         try {
-            captured.applyTo(local)
+            captured.copy(playWhenReady = false).applyTo(local)
         } catch (e: Exception) {
             Log.e(TAG, "Unable to restore local playback after Cast", e)
             return
@@ -463,6 +464,7 @@ class PlaybackService : MediaLibraryService() {
         session.setPlayer(NoSkipTrackPlayer(local))
         current.stop()
         current.clearMediaItems()
+        local.playWhenReady = resumeLocalPlayback
         wasServicePlaying = local.isPlaying
     }
 

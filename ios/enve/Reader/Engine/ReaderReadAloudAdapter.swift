@@ -79,6 +79,7 @@ final class ReadAloudPlaybackCoordinator {
     ) {
         configureMapping(clips: clips, timeline: timeline, chapterDurations: chapterDurations)
 
+        overlayPlayer?.stop()
         let player = MediaOverlayPlayer()
         player.load(clips: clips, timeline: timeline, audioDir: audioDir)
         player.syncOffset = syncOffset

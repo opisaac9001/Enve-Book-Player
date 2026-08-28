@@ -33,6 +33,7 @@ struct SettingsScreen: View {
             .padding(.top, 8)
             .padding(.bottom, mantelInset + 16)
         }
+        .accessibilityIdentifier("settings-screen")
         .scrollIndicators(.hidden)
         .scrollDismissesKeyboard(.interactively)
         .background(HearthBackground())
@@ -468,7 +469,7 @@ struct SettingsScreen: View {
                     Text("Add a source")
                         .font(.hearthUI(16, weight: .semibold))
                 }
-                .foregroundStyle(hearth.onEmber)
+                .foregroundStyle(hearth.readableOnEmber)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 13)
                 .background(hearth.ember, in: Capsule())
@@ -579,6 +580,13 @@ struct SettingsScreen: View {
     private var storageGroup: some View {
         VStack(alignment: .leading, spacing: 12) {
             SourcesCard {
+                settingsNav(LibraryHealthScreen()) {
+                    SettingsLinkRow(
+                        title: "Library health",
+                        subtitle: "Sources, sync, downloads, and this phone",
+                        systemImage: "heart.text.square.fill"
+                    )
+                }
                 settingsNav(DownloadsScreen()) {
                     SettingsLinkRow(
                         title: "Downloads",
@@ -884,13 +892,13 @@ private struct SettingsSourceRow: View {
                 Text(URL(string: connection.url)?.host ?? connection.url)
                     .font(.hearthCaption)
                     .foregroundStyle(hearth.textSecondary)
-                    .lineLimit(1)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
             if let bookCount, bookCount > 0 {
                 Text("\(bookCount)")
                     .font(.hearthCaption)
-                    .foregroundStyle(hearth.textTertiary)
+                    .foregroundStyle(hearth.text)
             }
             Circle()
                 .fill(statusColor)

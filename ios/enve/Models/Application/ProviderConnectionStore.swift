@@ -46,6 +46,7 @@ final class ProviderConnectionStore: ProviderConnectionAccessing, ProviderConnec
 
     private var providers: [UUID: LibraryProvider] = [:]
     private let providerFactory: @MainActor (ServerConnection) -> LibraryProvider?
+    private(set) var persistsConnections: Bool
 
     var allProviders: [UUID: LibraryProvider] { providers }
     var providerCount: Int { providers.count }
@@ -55,6 +56,7 @@ final class ProviderConnectionStore: ProviderConnectionAccessing, ProviderConnec
         providerFactory: @escaping @MainActor (ServerConnection) -> LibraryProvider? = ProviderFactory.create(for:)
     ) {
         self.providerFactory = providerFactory
+        persistsConnections = initialConnections == nil
         connections = initialConnections ?? load()
         syncProviders()
         refreshAuthenticationFailures()
@@ -348,6 +350,8 @@ final class ProviderConnectionStore: ProviderConnectionAccessing, ProviderConnec
     }
 
     private func persist() {
+        guard persistsConnections else { return }
+
         do {
             UserDefaults.standard.set(try JSONEncoder().encode(connections), forKey: Self.storageKey)
         } catch {

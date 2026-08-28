@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.LibraryBooks
 import androidx.compose.material.icons.filled.CheckCircle
@@ -28,6 +29,7 @@ import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Headphones
 import androidx.compose.material.icons.outlined.Insights
 import androidx.compose.material.icons.outlined.QueryStats
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.WorkspacePremium
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -59,6 +61,7 @@ fun HearthJournalScreen(
     onOpenInsights: () -> Unit,
     onOpenStatsHub: () -> Unit,
     onOpenSleep: () -> Unit,
+    onOpenSettings: () -> Unit = {},
 ) {
     val vm: HearthJournalViewModel = hiltViewModel()
     val stats by vm.stats.collectAsStateWithLifecycle()
@@ -73,9 +76,31 @@ fun HearthJournalScreen(
         verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.XXL),
     ) {
         item {
-            Column(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = Hearth.Spacing.XL).padding(top = Hearth.Spacing.L)) {
-                Overline("Your reading life")
-                Text("Journal", style = HearthText.ScreenTitle, color = palette.text)
+            Row(
+                Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = Hearth.Spacing.XL).padding(top = Hearth.Spacing.L),
+                verticalAlignment = Alignment.Top,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column {
+                    Overline("Your reading life")
+                    Text("Journal", style = HearthText.ScreenTitle, color = palette.text)
+                }
+                Box(
+                    Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(palette.bgElevated)
+                        .border(1.dp, palette.hairline, CircleShape)
+                        .clickable(onClick = onOpenSettings),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Outlined.Settings,
+                        contentDescription = "Settings",
+                        tint = palette.textSecondary,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
             }
         }
 

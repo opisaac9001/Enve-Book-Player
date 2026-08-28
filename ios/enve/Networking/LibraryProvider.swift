@@ -16,6 +16,7 @@ struct PlaybackSessionInfo {
 }
 
 struct AudioTrackInfo {
+    var id: String? = nil
     let index: Int
     let startOffset: Double
     let duration: Double

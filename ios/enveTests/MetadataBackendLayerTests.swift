@@ -64,6 +64,49 @@ struct MetadataBackendLayerTests {
         #expect(layer.genres == ["Fantasy"])
     }
 
+    @Test func catalogRefreshReplacesStaleBackendFieldsAndKeepsExtractedChapters() {
+        let chapters = [Chapter(id: "0", start: 0, end: 60, title: "Opening")]
+        let existing = BackendMetadataLayer(
+            title: "Old title",
+            author: "Old author",
+            narrator: "Old narrator",
+            series: "Old series",
+            seriesNumber: 1,
+            year: 1999,
+            publisher: "Old publisher",
+            genres: ["Old genre"],
+            description: "Old description",
+            duration: 120,
+            isbn: "old-isbn",
+            asin: "old-asin",
+            fileName: "download.m4b",
+            folderName: "Downloads",
+            chapters: chapters,
+            thumb: "https://example.com/old.jpg"
+        )
+
+        var book = Self.book()
+        book.thumb = "https://example.com/new.jpg"
+        let layer = MetadataManager.refreshedBackendLayer(from: book, preserving: existing)
+
+        #expect(layer.title == "Stream Recovered")
+        #expect(layer.author == "Author")
+        #expect(layer.narrator == "Reader")
+        #expect(layer.series == "Arc")
+        #expect(layer.seriesNumber == 2)
+        #expect(layer.year == 2011)
+        #expect(layer.publisher == "House")
+        #expect(layer.genres == ["Fantasy"])
+        #expect(layer.description == "From the stream")
+        #expect(layer.duration == 3_600)
+        #expect(layer.isbn == "9780000000001")
+        #expect(layer.asin == "B00TEST")
+        #expect(layer.thumb == "https://example.com/new.jpg")
+        #expect(layer.fileName == "download.m4b")
+        #expect(layer.folderName == "Downloads")
+        #expect(layer.chapters == chapters)
+    }
+
     private static func book() -> Book {
         Book(
             id: "grimmory-1",

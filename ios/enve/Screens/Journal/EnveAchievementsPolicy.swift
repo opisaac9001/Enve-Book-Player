@@ -37,6 +37,20 @@ struct EnveAchievementTally {
 enum EnveAchievementsPolicy {
 
     static func tally(sessions: [HistorySession], books: [Book]) -> EnveAchievementTally {
+        tally(
+            sessions: sessions,
+            finishedBooks: books.compactMap { book in
+                guard book.isFinished else { return nil }
+                return FinishedBookSummary(
+                    stableId: book.stableId,
+                    mediaType: book.mediaType,
+                    lastUpdate: book.lastUpdate
+                )
+            }
+        )
+    }
+
+    static func tally(sessions: [HistorySession], finishedBooks: [FinishedBookSummary]) -> EnveAchievementTally {
         var tally = EnveAchievementTally()
         var seen = Set<String>()
 
@@ -58,7 +72,7 @@ enum EnveAchievementsPolicy {
 
         tally.streak = JournalStats.streak(tally.dailySeconds)
 
-        for book in books where book.isFinished && book.mediaType != .podcast {
+        for book in finishedBooks where book.mediaType != .podcast {
             tally.finishedBooks += 1
             switch book.mediaType {
             case .audiobook: tally.finishedAudiobooks += 1

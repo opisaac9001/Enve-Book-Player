@@ -16,6 +16,53 @@ enum GrimmoryOpenDecision: Equatable {
     case conflict(local: TimeInterval, server: TimeInterval)
 }
 
+struct AudiobookNowPlayingMetadata: Equatable {
+    let chapterTitle: String?
+    let chapterNumber: Int?
+    let chapterCount: Int?
+    let elapsed: TimeInterval
+    let duration: TimeInterval
+}
+
+func resolveAudiobookNowPlayingMetadata(
+    book: Book,
+    currentTime: TimeInterval,
+    playbackDuration: TimeInterval
+) -> AudiobookNowPlayingMetadata {
+    let globalDuration = playbackDuration > 0 ? playbackDuration : max(0, book.duration ?? 0)
+    let globalElapsed = globalDuration > 0
+        ? min(max(0, currentTime), globalDuration)
+        : max(0, currentTime)
+    let chapters = book.chapters?.sorted(by: { $0.start < $1.start }) ?? []
+    let chapterIndex =
+        chapters.firstIndex { globalElapsed >= $0.start && globalElapsed < $0.end }
+        ?? chapters.lastIndex { globalElapsed >= $0.start }
+
+    return AudiobookNowPlayingMetadata(
+        chapterTitle: chapterIndex.map { chapters[$0].title },
+        chapterNumber: chapterIndex.map { $0 + 1 },
+        chapterCount: chapterIndex == nil ? nil : chapters.count,
+        elapsed: globalElapsed,
+        duration: globalDuration
+    )
+}
+
+func resolvePlaybackResumeTime(
+    requestedTime: TimeInterval,
+    sessionTime: TimeInterval?,
+    duration: TimeInterval,
+    tolerance: TimeInterval = 5
+) -> TimeInterval {
+    let requested = max(0, requestedTime)
+    let session = max(0, sessionTime ?? 0)
+    let candidate = requested > tolerance ? requested : max(requested, session)
+
+    if duration > 0, candidate > duration + tolerance {
+        return 0
+    }
+    return candidate
+}
+
 func decideGrimmoryOpen(
     localTime: TimeInterval,
     serverTime: TimeInterval,
@@ -165,6 +212,11 @@ final class PlaybackManager {
     private var currentProvider: (any PlaybackSessionProvider)?
     private var playbackEndObserver: NSObjectProtocol?
     private var playbackFailureObserver: NSObjectProtocol?
+    private var playbackStalledObserver: NSObjectProtocol?
+    private var playbackRecoveryTask: Task<Void, Never>?
+    private var playbackRecoveryAttempts = 0
+    private var playbackRecoveryBaseline: TimeInterval = 0
+    private let maxPlaybackRecoveryAttempts = 2
     private var syncTimer: Timer?
     private var timeListenedSinceLastSync: TimeInterval = 0
     private var hasClearedNowPlayingWhenIdle = false
@@ -510,7 +562,9 @@ final class PlaybackManager {
         let audioSession = AVAudioSession.sharedInstance()
         do {
             let voiceMode = LibraryDisplayPreferencesStore.shared.loadPreferences().basicVoiceMode.audioSessionMode
-            try audioSession.setCategory(.playback, mode: voiceMode, options: [])
+            let policy: AVAudioSession.RouteSharingPolicy = voiceMode == .voicePrompt ? .default : .longFormAudio
+            let options: AVAudioSession.CategoryOptions = policy == .default ? [.allowAirPlay, .allowBluetoothA2DP] : []
+            try audioSession.setCategory(.playback, mode: voiceMode, policy: policy, options: options)
             if activate {
                 activateAudioSession()
             }
@@ -542,13 +596,17 @@ final class PlaybackManager {
         }
         hasClearedNowPlayingWhenIdle = false
 
-        let chapter = nowPlayingChapterMetadata(for: book)
+        let metadata = resolveAudiobookNowPlayingMetadata(
+            book: book,
+            currentTime: currentTime,
+            playbackDuration: duration
+        )
         let info = NowPlayingInfo(
             title: book.title,
-            artist: chapter?.title ?? book.author ?? "Unknown Author",
+            artist: metadata.chapterTitle ?? book.author ?? "Unknown Author",
             albumTitle: book.author,
-            duration: chapter?.duration ?? (duration > 0 ? duration : (book.duration ?? 0)),
-            elapsed: chapter?.elapsed ?? currentTime,
+            duration: metadata.duration,
+            elapsed: metadata.elapsed,
             showsProgress: LibraryDisplayPreferencesStore.shared.loadPreferences().showLockScreenProgressBar,
             rate: isPlaying ? Double(playbackSpeed) : 0,
             defaultRate: Double(playbackSpeed),
@@ -558,8 +616,8 @@ final class PlaybackManager {
             serviceIdentifier: Bundle.main.bundleIdentifier ?? "com.enve.enve",
             playbackQueueIndex: 0,
             playbackQueueCount: 1,
-            chapterNumber: chapter?.number,
-            chapterCount: chapter?.count,
+            chapterNumber: metadata.chapterNumber,
+            chapterCount: metadata.chapterCount,
             artworkURL: book.coverURL
         )
         nowPlayingUpdateTask?.cancel()
@@ -571,27 +629,6 @@ final class PlaybackManager {
 
     func refreshNowPlayingInfo() {
         updateNowPlayingInfo()
-    }
-
-    private func nowPlayingChapterMetadata(
-        for book: Book
-    ) -> (title: String, number: Int, count: Int, elapsed: TimeInterval, duration: TimeInterval)? {
-        guard let chapters = book.chapters?.sorted(by: { $0.start < $1.start }),
-            !chapters.isEmpty
-        else { return nil }
-
-        let index =
-            chapters.firstIndex {
-                currentTime >= $0.start && currentTime < $0.end
-            }
-            ?? chapters.lastIndex {
-                currentTime >= $0.start
-            }
-        guard let index else { return nil }
-        let chapter = chapters[index]
-        let chapterDuration = max(0, chapter.end - chapter.start)
-        let chapterElapsed = max(0, min(chapterDuration, currentTime - chapter.start))
-        return (chapter.title, index + 1, chapters.count, chapterElapsed, chapterDuration)
     }
 
     private func setupObservers() {
@@ -1046,20 +1083,7 @@ final class PlaybackManager {
 
         if currentBook?.stableId == book.stableId && player != nil {
             AppLogger.player.info("Same book already loaded, resuming from currentTime: \(currentTime)s...")
-            if !isPlaying {
-                let playerTime = player?.currentTime().seconds ?? 0
-                AppLogger.player.info("Player time: \(playerTime)s, Current time: \(currentTime)s")
-                if abs(playerTime - currentTime) > AppConstants.Playback.seekCorrectionThreshold {
-                    AppLogger.player.info("Correcting player position from \(playerTime)s to \(currentTime)s before resume")
-                    let cmTime = CMTime(seconds: currentTime, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
-                    player?.seek(to: cmTime, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
-                        DispatchQueue.main.async {
-                            self?.resume()
-                        }
-                    }
-                    return
-                }
-            }
+            refreshCurrentTimeFromPlayer()
             resume()
             return
         }
@@ -1081,15 +1105,7 @@ final class PlaybackManager {
                 AppLogger.player.info("Using StorageService progress as it's higher: \(localTime)s")
             }
         } else {
-            AppLogger.player.debug("No StorageService progress found for bookDiagnosticID=\(diagnosticBookID(book))")
-            if let legacyProgress = BookProgressStore.shared.loadProgress(bookId: book.id) {
-                AppLogger.player.info("Found legacy progress by id: \(legacyProgress.progress)s")
-                if legacyProgress.progress > localTime {
-                    localTime = legacyProgress.progress
-                    localUpdate = Date(timeIntervalSince1970: legacyProgress.lastUpdated)
-                    AppLogger.player.info("Using legacy progress: \(localTime)s")
-                }
-            }
+            AppLogger.player.debug("No scoped playback progress found for bookDiagnosticID=\(diagnosticBookID(book))")
         }
 
         if book.source == .booklore, book.mediaType == .audiobook {
@@ -1462,23 +1478,19 @@ final class PlaybackManager {
         }
         self.currentTracks = orderedTracks
 
-        let authoritativeResumeTime: TimeInterval
-        if let serverTime = session.serverCurrentTime, serverTime > 0 {
-            AppLogger.player.info("Using server session currentTime: \(Int(serverTime))s (local was \(Int(resumeTime))s)")
-            authoritativeResumeTime = serverTime
-        } else {
-            authoritativeResumeTime = resumeTime
-        }
-
-        let effectiveResumeTime: TimeInterval
-        if sessionDuration <= 0, authoritativeResumeTime > 0 {
-            AppLogger.player.info("Session duration unknown; attempting seek to \(Int(authoritativeResumeTime))s anyway")
-            effectiveResumeTime = authoritativeResumeTime
-        } else if sessionDuration > 0, authoritativeResumeTime > sessionDuration + AppConstants.Playback.resumeTimeTolerance {
-            AppLogger.player.info("Resume time \(authoritativeResumeTime)s exceeds duration \(sessionDuration)s; resetting to 0")
-            effectiveResumeTime = 0
-        } else {
-            effectiveResumeTime = authoritativeResumeTime
+        let effectiveResumeTime = resolvePlaybackResumeTime(
+            requestedTime: resumeTime,
+            sessionTime: session.serverCurrentTime,
+            duration: sessionDuration,
+            tolerance: AppConstants.Playback.resumeTimeTolerance
+        )
+        if resumeTime <= AppConstants.Playback.resumeTimeTolerance,
+            let serverTime = session.serverCurrentTime,
+            effectiveResumeTime == serverTime
+        {
+            AppLogger.player.info("Using server session currentTime: \(Int(serverTime))s")
+        } else if effectiveResumeTime != resumeTime {
+            AppLogger.player.info("Resume time \(resumeTime)s exceeds duration \(sessionDuration)s; resetting to 0")
         }
         if sessionDuration > 0 {
             self.duration = sessionDuration
@@ -1544,12 +1556,127 @@ final class PlaybackManager {
         try await loadAndPlayTrack(targetTrack, seekTime: localSeekTime)
     }
 
+    private func clearPlaybackItemObservers() {
+        if let playbackEndObserver {
+            NotificationCenter.default.removeObserver(playbackEndObserver)
+            self.playbackEndObserver = nil
+        }
+        if let playbackFailureObserver {
+            NotificationCenter.default.removeObserver(playbackFailureObserver)
+            self.playbackFailureObserver = nil
+        }
+        if let playbackStalledObserver {
+            NotificationCenter.default.removeObserver(playbackStalledObserver)
+            self.playbackStalledObserver = nil
+        }
+    }
+
+    private func resetPlaybackRecovery() {
+        playbackRecoveryTask?.cancel()
+        playbackRecoveryTask = nil
+        playbackRecoveryAttempts = 0
+        playbackRecoveryBaseline = 0
+    }
+
+    private func schedulePlaybackRecovery(
+        track: AudioTrackInfo,
+        playerItem: AVPlayerItem,
+        phase: String,
+        delayNanoseconds: UInt64
+    ) {
+        guard playbackRecoveryTask == nil, isPlaying, currentBook != nil else { return }
+        guard playbackRecoveryAttempts < maxPlaybackRecoveryAttempts else {
+            failPlaybackRecovery(phase: phase, error: playerItem.error)
+            return
+        }
+
+        let sessionId = currentSessionId
+        let itemIdentifier = ObjectIdentifier(playerItem)
+        let stalledAt = currentTime
+        playbackRecoveryTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: delayNanoseconds)
+            } catch {
+                return
+            }
+
+            guard let self else { return }
+            guard self.currentSessionId == sessionId,
+                self.isPlaying,
+                let activeItem = self.player?.currentItem,
+                ObjectIdentifier(activeItem) == itemIdentifier,
+                abs(self.currentTime - stalledAt) < 1.5
+            else {
+                self.playbackRecoveryTask = nil
+                return
+            }
+
+            self.playbackRecoveryAttempts += 1
+            self.playbackRecoveryBaseline = self.currentTime
+            let attempt = self.playbackRecoveryAttempts
+            guard let state = self.currentTracks.playbackState(at: self.currentTime) else {
+                self.playbackRecoveryTask = nil
+                self.failPlaybackRecovery(phase: phase, error: playerItem.error)
+                return
+            }
+
+            AppLogger.player.warning(
+                "Recovering \(phase) on track \(state.index), attempt \(attempt)/\(self.maxPlaybackRecoveryAttempts)"
+            )
+
+            do {
+                try await self.loadAndPlayTrack(
+                    state.track,
+                    seekTime: state.localTime,
+                    expectedSessionId: sessionId,
+                    isRecovery: true
+                )
+                guard self.currentSessionId == sessionId else {
+                    self.playbackRecoveryTask = nil
+                    return
+                }
+                self.player?.play()
+                self.player?.rate = self.playbackSpeed
+                self.playbackRecoveryTask = nil
+            } catch {
+                if error is CancellationError { return }
+                AppLogger.player.error("Playback recovery attempt \(attempt) failed: \(error.localizedDescription)")
+                self.playbackRecoveryTask = nil
+                if attempt >= self.maxPlaybackRecoveryAttempts {
+                    self.failPlaybackRecovery(phase: phase, error: error)
+                } else if let retryItem = self.player?.currentItem {
+                    self.schedulePlaybackRecovery(
+                        track: track,
+                        playerItem: retryItem,
+                        phase: phase,
+                        delayNanoseconds: 1_000_000_000
+                    )
+                }
+            }
+        }
+    }
+
+    private func failPlaybackRecovery(phase: String, error: Error?) {
+        playbackRecoveryTask?.cancel()
+        playbackRecoveryTask = nil
+        player?.pause()
+        isPlaying = false
+        stopSyncTimer()
+        syncProgress(forceLocalWrite: true)
+        let detail = error?.localizedDescription ?? phase
+        playbackError = "Unable to continue \"\(currentBook?.title ?? "this book")\": \(detail)"
+    }
+
     private func loadAndPlayTrack(
         _ track: AudioTrackInfo,
         seekTime: TimeInterval = 0,
-        expectedSessionId: String? = nil
+        expectedSessionId: String? = nil,
+        isRecovery: Bool = false
     ) async throws {
         try validatePlaybackSession(expectedSessionId)
+        if !isRecovery {
+            resetPlaybackRecovery()
+        }
 
         if let foundIndex = currentTracks.firstIndex(where: {
             $0.startOffset == track.startOffset && $0.contentUrl == track.contentUrl
@@ -1603,11 +1730,13 @@ final class PlaybackManager {
                     playableAsset = retryAsset
                     if let idx = currentTracks.firstIndex(where: { $0.contentUrl == track.contentUrl }) {
                         currentTracks[idx] = AudioTrackInfo(
+                            id: currentTracks[idx].id,
                             index: currentTracks[idx].index,
                             startOffset: currentTracks[idx].startOffset,
                             duration: currentTracks[idx].duration,
                             contentUrl: correctedURL.absoluteString,
-                            mimeType: mimeType(forFileExtension: correctedURL.pathExtension)
+                            mimeType: mimeType(forFileExtension: correctedURL.pathExtension),
+                            title: currentTracks[idx].title
                         )
                     }
                 } else {
@@ -1621,21 +1750,16 @@ final class PlaybackManager {
         }
         let playerItem = AVPlayerItem(asset: playableAsset)
 
-        if let oldItem = player?.currentItem {
-            NotificationCenter.default.removeObserver(self, name: .AVPlayerItemFailedToPlayToEndTime, object: oldItem)
-            NotificationCenter.default.removeObserver(self, name: .AVPlayerItemDidPlayToEndTime, object: oldItem)
-        }
-
-        if let playbackFailureObserver {
-            NotificationCenter.default.removeObserver(playbackFailureObserver)
-        }
+        clearPlaybackItemObservers()
         playbackFailureObserver = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemFailedToPlayToEndTime,
             object: playerItem,
             queue: .main
-        ) { notification in
-            if let error = notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error {
-                Task { @MainActor in
+        ) { [weak self] notification in
+            let error = notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if let error {
                     self.logStreamingFailureContext(
                         error,
                         track: track,
@@ -1644,6 +1768,28 @@ final class PlaybackManager {
                         phase: "AVPlayerItemFailedToPlayToEndTime"
                     )
                 }
+                self.schedulePlaybackRecovery(
+                    track: track,
+                    playerItem: playerItem,
+                    phase: "failed to play to end",
+                    delayNanoseconds: 250_000_000
+                )
+            }
+        }
+        playbackStalledObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemPlaybackStalled,
+            object: playerItem,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                AppLogger.player.warning("Playback stalled on track \(track.index); monitoring for recovery")
+                self.schedulePlaybackRecovery(
+                    track: track,
+                    playerItem: playerItem,
+                    phase: "playback stalled",
+                    delayNanoseconds: 3_000_000_000
+                )
             }
         }
 
@@ -1698,11 +1844,13 @@ final class PlaybackManager {
                 currentTracks[idx].duration <= 0
             {
                 currentTracks[idx] = AudioTrackInfo(
+                    id: currentTracks[idx].id,
                     index: currentTracks[idx].index,
                     startOffset: currentTracks[idx].startOffset,
                     duration: itemDuration,
                     contentUrl: currentTracks[idx].contentUrl,
-                    mimeType: currentTracks[idx].mimeType
+                    mimeType: currentTracks[idx].mimeType,
+                    title: currentTracks[idx].title
                 )
             }
             let totalDuration: TimeInterval
@@ -1835,6 +1983,12 @@ final class PlaybackManager {
                 let localTime = CMTimeGetSeconds(time)
                 let newTime = localTime + self.currentTrackStartOffset
                 let now = Date()
+                if self.playbackRecoveryAttempts > 0,
+                    newTime >= self.playbackRecoveryBaseline + 5
+                {
+                    self.playbackRecoveryAttempts = 0
+                    self.playbackRecoveryBaseline = newTime
+                }
                 if self.isAppActive {
                     self.currentTime = newTime
                 } else if now.timeIntervalSince(self.lastBackgroundTimePublishAt) >= self.backgroundTimePublishInterval {
@@ -2015,14 +2169,8 @@ final class PlaybackManager {
         }
 
         player = nil
-        if let playbackEndObserver {
-            NotificationCenter.default.removeObserver(playbackEndObserver)
-            self.playbackEndObserver = nil
-        }
-        if let playbackFailureObserver {
-            NotificationCenter.default.removeObserver(playbackFailureObserver)
-            self.playbackFailureObserver = nil
-        }
+        clearPlaybackItemObservers()
+        resetPlaybackRecovery()
         clearNowPlayingSession()
 
         stopSyncTimer()
@@ -2075,7 +2223,7 @@ final class PlaybackManager {
                 let session = MPNowPlayingSession(players: [player])
                 session.automaticallyPublishesNowPlayingInfo = false
                 nowPlayingSession = session
-                NowPlayingCoordinator.shared.setNowPlayingSession(session)
+                NowPlayingCoordinator.shared.setNowPlayingSession(session, for: self)
             }
             nowPlayingSession?.becomeActiveIfPossible { _ in }
         }
@@ -2085,8 +2233,11 @@ final class PlaybackManager {
     private func clearNowPlayingSession() {
         #if os(iOS)
         if #available(iOS 16.0, *) {
+            if let session = nowPlayingSession {
+                session.players.forEach { session.removePlayer($0) }
+            }
             nowPlayingSession = nil
-            NowPlayingCoordinator.shared.setNowPlayingSession(nil)
+            NowPlayingCoordinator.shared.clearNowPlayingSession(if: self)
         }
         #endif
     }

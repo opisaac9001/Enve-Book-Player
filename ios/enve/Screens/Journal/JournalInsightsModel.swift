@@ -78,6 +78,7 @@ enum JournalInsightsPolicy {
     static func snapshot(
         sessions: [HistorySession],
         books: [Book],
+        finishedBooks: [FinishedBookSummary]? = nil,
         year: Int,
         now: Date = .now,
         calendar: Calendar = .current
@@ -96,9 +97,16 @@ enum JournalInsightsPolicy {
         let yearEnd = calendar.date(from: DateComponents(year: year + 1, month: 1, day: 1)) ?? .distantFuture
         let annualSessions = validSessions.filter { $0.endTime >= yearStart && $0.endTime < yearEnd }
         let annualDays = Set(annualSessions.map { calendar.startOfDay(for: $0.endTime) })
-        let finished = books.filter {
+        let finishedBooks = finishedBooks ?? books.compactMap { book in
+            guard book.isFinished else { return nil }
+            return FinishedBookSummary(
+                stableId: book.stableId,
+                mediaType: book.mediaType,
+                lastUpdate: book.lastUpdate
+            )
+        }
+        let finished = finishedBooks.filter {
             $0.mediaType != .podcast
-                && $0.isFinished
                 && $0.lastUpdate >= yearStart
                 && $0.lastUpdate < yearEnd
                 && $0.lastUpdate <= now
@@ -113,7 +121,7 @@ enum JournalInsightsPolicy {
 
         let availableYears = Set(
             validSessions.map { calendar.component(.year, from: $0.endTime) }
-                + books.filter { $0.isFinished && $0.lastUpdate <= now }
+                + finishedBooks.filter { $0.lastUpdate <= now }
                 .map { calendar.component(.year, from: $0.lastUpdate) }
                 + [calendar.component(.year, from: now)]
         ).sorted(by: >)
@@ -266,6 +274,7 @@ enum JournalInsightsPolicy {
 final class JournalInsightsModel {
     private var sessions: [HistorySession] = []
     private var books: [Book] = []
+    private var finishedBooks: [FinishedBookSummary] = []
 
     private(set) var snapshot: JournalInsightsSnapshot
     var selectedYear: Int {
@@ -284,13 +293,17 @@ final class JournalInsightsModel {
     func refresh() async {
         async let listening = HistorySessionStore.shared.loadListeningSessions()
         async let reading = HistorySessionStore.shared.loadReadingSessions()
-        async let storedBooks = library.allBooks()
-
         sessions = await listening + reading
-        books = await storedBooks
+        async let storedBooks = JournalStatsBookLookup.build(ids: Set(sessions.map(\.bookId)), books: library)
+        async let storedFinishedBooks = library.finishedBookSummaries()
+        let storedBookMap = await storedBooks
+        var seen = Set<String>()
+        books = storedBookMap.values.filter { seen.insert($0.stableId).inserted }
+        finishedBooks = await storedFinishedBooks
         let years = JournalInsightsPolicy.snapshot(
             sessions: sessions,
             books: books,
+            finishedBooks: finishedBooks,
             year: selectedYear
         ).availableYears
         if !years.contains(selectedYear), let newest = years.first {
@@ -304,6 +317,7 @@ final class JournalInsightsModel {
         snapshot = JournalInsightsPolicy.snapshot(
             sessions: sessions,
             books: books,
+            finishedBooks: finishedBooks,
             year: selectedYear
         )
     }

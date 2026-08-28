@@ -573,6 +573,30 @@ class MetadataManager {
         return backend
     }
 
+    nonisolated static func refreshedBackendLayer(
+        from book: Book,
+        preserving existing: BackendMetadataLayer?
+    ) -> BackendMetadataLayer {
+        BackendMetadataLayer(
+            title: book.title,
+            author: book.author,
+            narrator: book.narrator,
+            series: book.series,
+            seriesNumber: book.seriesNumber,
+            year: book.publishedYear,
+            publisher: book.publisher,
+            genres: book.genres,
+            description: book.description,
+            duration: book.duration,
+            isbn: book.isbn,
+            asin: book.asin,
+            fileName: existing?.fileName,
+            folderName: existing?.folderName,
+            chapters: existing?.chapters,
+            thumb: book.thumb
+        )
+    }
+
     nonisolated func loadMetadata(for book: Book, readOnly: Bool = false) async -> BookMetadata {
         let diagnosticID = DiagnosticLogSanitizer.identifier(for: book.stableId)
         do {
@@ -1111,7 +1135,8 @@ class MetadataManager {
     }
 
     nonisolated func enrichBookWithStoredMetadata(_ book: Book) async -> Book {
-        let metadata = await loadMetadata(for: book, readOnly: true)
+        var metadata = await loadMetadata(for: book, readOnly: true)
+        metadata.backend = Self.refreshedBackendLayer(from: book, preserving: metadata.backend)
 
         let cachedChapters = metadata.backend?.chapters
         let hasFileMetadata = hasMeaningfulFileMetadata(metadata.file)

@@ -5,6 +5,7 @@ import com.enve.core.data.model.ComicPageLoadingMode
 import com.enve.engine.prefs.PreferencesFacade
 import com.enve.engine.prefs.HearthHomeSection
 import com.enve.engine.prefs.HearthStartTab
+import com.enve.engine.prefs.ReadNextPosition
 import com.enve.engine.theme.HearthThemeMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -30,6 +31,8 @@ class PreferencesFacadeImpl @Inject constructor(
     override val skipBackwardSeconds: Flow<Int> = prefs.skipBackwardSeconds
     override val defaultSpeed: Flow<Float> = prefs.playbackSpeed
     override val scrubScopeChapter: Flow<Boolean> = hearthPrefs.scrubScopeChapter
+    override val readNextEnabled: Flow<Boolean> = hearthPrefs.readNextEnabled
+    override val readNextPosition: Flow<ReadNextPosition> = hearthPrefs.readNextPosition
     override val libraryColumns: Flow<Int> = hearthPrefs.libraryColumns
     override val librarySortStack: Flow<String> = hearthPrefs.librarySortStack
     override val libraryAdvancedFilters: Flow<String> = hearthPrefs.libraryAdvancedFilters
@@ -55,6 +58,8 @@ class PreferencesFacadeImpl @Inject constructor(
     override suspend fun setSkipBackwardSeconds(seconds: Int) = prefs.setSkipBackwardSeconds(seconds)
     override suspend fun setDefaultSpeed(speed: Float) = prefs.setPlaybackSpeed(speed)
     override suspend fun setScrubScopeChapter(chapter: Boolean) = hearthPrefs.setScrubScopeChapter(chapter)
+    override suspend fun setReadNextEnabled(enabled: Boolean) = hearthPrefs.setReadNextEnabled(enabled)
+    override suspend fun setReadNextPosition(position: ReadNextPosition) = hearthPrefs.setReadNextPosition(position)
     override suspend fun setLibraryColumns(columns: Int) = hearthPrefs.setLibraryColumns(columns)
     override suspend fun setLibrarySortStack(encoded: String) = hearthPrefs.setLibrarySortStack(encoded)
     override suspend fun setLibraryAdvancedFilters(encoded: String) =

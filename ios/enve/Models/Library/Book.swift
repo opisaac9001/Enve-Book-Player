@@ -696,6 +696,7 @@ nonisolated public struct Book: Identifiable, Codable, Equatable, Sendable {
     nonisolated func withPlaybackSessionTimeline(tracks: [AudioTrackInfo], duration: TimeInterval?) -> Book {
         let audioTracks = tracks.map {
             AudioTrack(
+                id: $0.id ?? UUID().uuidString,
                 index: $0.index,
                 title: $0.title,
                 contentUrl: $0.contentUrl,

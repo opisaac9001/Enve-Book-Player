@@ -22,6 +22,7 @@ struct ReaderAppearanceTray: View {
                 default:
                     epubControls
                 }
+                nextSeriesControls
             }
             .padding(.horizontal, 20)
             .padding(.top, 26)
@@ -261,8 +262,12 @@ struct ReaderAppearanceTray: View {
                     set: { model.appearance.volumeButtonsTurnPages = $0 }
                 )
             )
+        }
+    }
+
+    private var nextSeriesControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
             Overline("At the end")
-                .padding(.top, 8)
             readerToggle(
                 "Suggest the next book",
                 isOn: Binding(
@@ -270,6 +275,21 @@ struct ReaderAppearanceTray: View {
                     set: { model.appearance.showNextSeriesPrompt = $0 }
                 )
             )
+            if model.appearance.showNextSeriesPrompt {
+                HStack(spacing: 8) {
+                    ForEach(ReaderNextSeriesPromptPlacement.allCases) { placement in
+                        HearthChip(
+                            title: placement.label,
+                            isSelected: model.appearance.nextSeriesPromptPlacement == placement
+                        ) {
+                            PlatformHaptics.selection()
+                            model.appearance.nextSeriesPromptPlacement = placement
+                        }
+                    }
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Next book suggestion position")
+            }
         }
     }
 

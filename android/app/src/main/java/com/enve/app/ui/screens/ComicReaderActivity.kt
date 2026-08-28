@@ -109,6 +109,7 @@ import coil.imageLoader
 import coil.request.ImageRequest
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
+import com.enve.engine.prefs.ReadNextPosition
 import com.enve.core.data.local.LastOpenedBookStore
 import com.enve.app.ui.theme.EnveTheme
 import com.enve.app.viewmodel.ComicBackgroundTheme
@@ -151,33 +152,6 @@ class ComicReaderActivity : ComponentActivity() {
     }
 
     companion object {
-        private val forwardKeyCodes = setOf(
-            KeyEvent.KEYCODE_VOLUME_DOWN,
-            KeyEvent.KEYCODE_PAGE_DOWN,
-            KeyEvent.KEYCODE_DPAD_RIGHT,
-            KeyEvent.KEYCODE_BUTTON_R1,
-            KeyEvent.KEYCODE_BUTTON_R2,
-            KeyEvent.KEYCODE_BUTTON_Z,
-            KeyEvent.KEYCODE_F2,
-            KeyEvent.KEYCODE_MEDIA_NEXT,
-        )
-        private val einkOnlyPageKeyCodes = setOf(
-            KeyEvent.KEYCODE_PAGE_UP,
-            KeyEvent.KEYCODE_PAGE_DOWN,
-            KeyEvent.KEYCODE_DPAD_LEFT,
-            KeyEvent.KEYCODE_DPAD_RIGHT,
-            KeyEvent.KEYCODE_BUTTON_L1,
-            KeyEvent.KEYCODE_BUTTON_R1,
-            KeyEvent.KEYCODE_BUTTON_L2,
-            KeyEvent.KEYCODE_BUTTON_R2,
-            KeyEvent.KEYCODE_BUTTON_Y,
-            KeyEvent.KEYCODE_BUTTON_Z,
-            KeyEvent.KEYCODE_F1,
-            KeyEvent.KEYCODE_F2,
-            KeyEvent.KEYCODE_MEDIA_PREVIOUS,
-            KeyEvent.KEYCODE_MEDIA_NEXT,
-        )
-
         private const val EXTRA_BOOK_ID = "bookId"
         private const val EXTRA_BOOK_SOURCE = "bookSource"
         private const val EXTRA_CONNECTION_ID = "connectionId"
@@ -253,6 +227,10 @@ class ComicReaderActivity : ComponentActivity() {
             val state by vm.state.collectAsStateWithLifecycle()
             val themeState by themeViewModel.themeState.collectAsStateWithLifecycle()
             val uiTextScale by hearthPreferences.uiTextScale.collectAsStateWithLifecycle(initialValue = 1f)
+            val readNextEnabled by hearthPreferences.readNextEnabled.collectAsStateWithLifecycle(initialValue = true)
+            val readNextPosition by hearthPreferences.readNextPosition.collectAsStateWithLifecycle(
+                initialValue = ReadNextPosition.BOTTOM,
+            )
             val useHearthChrome = remember { intent.getBooleanExtra(EXTRA_HEARTH_CHROME, false) }
 
             val chromeVisible = (state.pages.isEmpty()) || (state.error != null) || state.showSettingsSheet
@@ -285,6 +263,8 @@ class ComicReaderActivity : ComponentActivity() {
                     ComicReaderScreen(
                         state = state,
                         hearthChrome = useHearthChrome,
+                        readNextEnabled = readNextEnabled,
+                        readNextPosition = readNextPosition,
                         onSettingsChange = vm::updateSettings,
                         onBack = { finish() },
                         onPageChange = vm::showPage,
@@ -316,24 +296,19 @@ class ComicReaderActivity : ComponentActivity() {
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val audioActive = audioPlaybackManager.state.value.isPlaying
         val volumeNav = vm.state.value.settings.volumeButtonNavigation
-        val einkKeys = themeViewModel.themeState.value.einkProfile.active
-
-        val keycode = event.keyCode
-        val isVolume = keycode == KeyEvent.KEYCODE_VOLUME_UP || keycode == KeyEvent.KEYCODE_VOLUME_DOWN
-        val shouldHandle = when {
-            isVolume -> volumeNav && !audioActive
-            einkKeys -> keycode in einkOnlyPageKeyCodes
-            else -> false
-        }
-        if (event.action == KeyEvent.ACTION_DOWN && shouldHandle) {
+        val direction = ReaderHardwareKeyPolicy.directionFor(
+            keyCode = event.keyCode,
+            volumeButtonNavigation = volumeNav,
+            audioActive = audioActive,
+        )
+        if (direction != null) {
             val state = vm.state.value
-            if (state.pages.isNotEmpty()) {
+            if (state.pages.isNotEmpty() && ReaderHardwareKeyPolicy.shouldTriggerTurn(event.action, event.repeatCount)) {
                 val isRtl = state.settings.readingDirection == ComicReadingDirection.RIGHT_TO_LEFT
-                val forward = keycode in forwardKeyCodes
-                val direction = if (forward) +1 else -1
-                vm.showPage(state.currentPage + if (isRtl) -direction else direction)
-                return true
+                val offset = if (direction == ReaderPageKeyDirection.FORWARD) 1 else -1
+                vm.showPage(state.currentPage + if (isRtl) -offset else offset)
             }
+            return true
         }
         return super.dispatchKeyEvent(event)
     }
@@ -345,6 +320,8 @@ class ComicReaderActivity : ComponentActivity() {
 private fun ComicReaderScreen(
     state: ComicReaderUiState,
     hearthChrome: Boolean,
+    readNextEnabled: Boolean,
+    readNextPosition: ReadNextPosition,
     onSettingsChange: (ComicReaderSettings) -> Unit,
     onBack: () -> Unit,
     onPageChange: (Int) -> Unit,
@@ -520,13 +497,24 @@ private fun ComicReaderScreen(
 
         val nextBook = state.nextInSeries
         val onLastPage = state.pages.isNotEmpty() && state.currentPage >= state.pages.lastIndex
-        if (nextBook != null && onLastPage) {
+        if (readNextEnabled && nextBook != null && onLastPage) {
             NextInSeriesButton(
                 book = nextBook,
                 onClick = { onOpenNextInSeries(nextBook) },
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 96.dp, start = 24.dp, end = 24.dp),
+                    .align(
+                        if (readNextPosition == ReadNextPosition.TOP) {
+                            Alignment.TopCenter
+                        } else {
+                            Alignment.BottomCenter
+                        },
+                    )
+                    .padding(
+                        top = if (readNextPosition == ReadNextPosition.TOP) 96.dp else 0.dp,
+                        bottom = if (readNextPosition == ReadNextPosition.BOTTOM) 96.dp else 0.dp,
+                        start = 24.dp,
+                        end = 24.dp,
+                    ),
             )
         }
 
