@@ -1223,8 +1223,8 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
     private func realDebridArchiveBooks(for book: Book, archiveURL: String) async -> [Book] {
         guard book.source == .realdebrid else { return [book] }
 
-        let allBooks = await bookQuerying.allBooks()
-        let matched = allBooks.filter { candidate in
+        let providerBooks = await bookQuerying.books(source: Book.BookSource.realdebrid.rawValue, providerId: book.providerId)
+        let matched = providerBooks.filter { candidate in
             guard candidate.source == .realdebrid else { return false }
             guard candidate.providerId == book.providerId else { return false }
             guard candidate.libraryId == book.libraryId else { return false }

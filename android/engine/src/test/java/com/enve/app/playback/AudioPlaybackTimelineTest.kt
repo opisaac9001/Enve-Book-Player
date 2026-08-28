@@ -25,6 +25,30 @@ class AudioPlaybackTimelineTest {
     }
 
     @Test
+    fun metadataDurationWinsOverTransientReceiverTimeline() {
+        val duration = resolveTrackDurationMs(
+            metadataDurationMs = 3_600_000L,
+            timelineDurationMs = 10_000L,
+            currentDurationMs = 10_000L,
+            isCurrentItem = true,
+        )
+
+        assertEquals(3_600_000L, duration)
+    }
+
+    @Test
+    fun receiverTimelineFillsMissingMetadataDuration() {
+        val duration = resolveTrackDurationMs(
+            metadataDurationMs = 0L,
+            timelineDurationMs = 90_000L,
+            currentDurationMs = 10_000L,
+            isCurrentItem = true,
+        )
+
+        assertEquals(90_000L, duration)
+    }
+
+    @Test
     fun missingTrackOffsetsUseControllerPosition() {
         val position = resolveAbsolutePlaybackPosition(
             localPositionMs = 42_000L,

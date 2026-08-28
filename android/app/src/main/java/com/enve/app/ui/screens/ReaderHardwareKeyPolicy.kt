@@ -13,28 +13,26 @@ object ReaderHardwareKeyPolicy {
 
     fun directionFor(
         keyCode: Int,
-        einkActive: Boolean,
         volumeButtonNavigation: Boolean,
         audioActive: Boolean,
     ): ReaderPageKeyDirection? {
-        if (einkActive) {
-            when (keyCode) {
-                KeyEvent.KEYCODE_PAGE_DOWN,
-                KeyEvent.KEYCODE_DPAD_RIGHT,
-                KeyEvent.KEYCODE_BUTTON_R1,
-                KeyEvent.KEYCODE_BUTTON_R2,
-                KeyEvent.KEYCODE_BUTTON_Z,
-                KeyEvent.KEYCODE_F2,
-                KeyEvent.KEYCODE_MEDIA_NEXT -> return ReaderPageKeyDirection.FORWARD
+        when (keyCode) {
+            KeyEvent.KEYCODE_PAGE_DOWN,
+            KeyEvent.KEYCODE_DPAD_RIGHT,
+            KeyEvent.KEYCODE_BUTTON_R1,
+            KeyEvent.KEYCODE_BUTTON_R2,
+            KeyEvent.KEYCODE_BUTTON_Z,
+            KeyEvent.KEYCODE_F2 -> return ReaderPageKeyDirection.FORWARD
 
-                KeyEvent.KEYCODE_PAGE_UP,
-                KeyEvent.KEYCODE_DPAD_LEFT,
-                KeyEvent.KEYCODE_BUTTON_L1,
-                KeyEvent.KEYCODE_BUTTON_L2,
-                KeyEvent.KEYCODE_BUTTON_Y,
-                KeyEvent.KEYCODE_F1,
-                KeyEvent.KEYCODE_MEDIA_PREVIOUS -> return ReaderPageKeyDirection.BACKWARD
-            }
+            KeyEvent.KEYCODE_PAGE_UP,
+            KeyEvent.KEYCODE_DPAD_LEFT,
+            KeyEvent.KEYCODE_BUTTON_L1,
+            KeyEvent.KEYCODE_BUTTON_L2,
+            KeyEvent.KEYCODE_BUTTON_Y,
+            KeyEvent.KEYCODE_F1 -> return ReaderPageKeyDirection.BACKWARD
+
+            KeyEvent.KEYCODE_MEDIA_NEXT -> if (!audioActive) return ReaderPageKeyDirection.FORWARD
+            KeyEvent.KEYCODE_MEDIA_PREVIOUS -> if (!audioActive) return ReaderPageKeyDirection.BACKWARD
         }
 
         if (!volumeButtonNavigation || audioActive) return null

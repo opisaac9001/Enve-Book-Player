@@ -65,6 +65,31 @@ struct BookPresence: Sendable {
     let hasReadAloud: Bool
 }
 
+struct FinishedBookSummary: Sendable, Equatable {
+    let stableId: String
+    let mediaType: AppMediaType
+    let lastUpdate: Date
+}
+
+struct BookStatisticsSlice: Sendable, Equatable {
+    let id: String
+    let title: String
+    let mediaType: AppMediaType
+    let author: String?
+    let narrator: String?
+    let series: String?
+    let publisher: String?
+    let genres: [String]?
+    let language: String?
+    let isbn: String?
+    let thumb: String?
+    let publishedYear: Int?
+    let addedAt: Date?
+    let duration: TimeInterval?
+    let isFinished: Bool
+    let progress: Double
+}
+
 struct BrowseAuthorAggregate: Sendable, Hashable {
     let name: String
     let bookCount: Int
@@ -170,6 +195,10 @@ struct BookStoreSortDescriptor: Sendable, Hashable {
 
 protocol BookQuerying: Sendable {
     func allBooks() async -> [Book]
+    func downloadedAudiobooks(storageKeys: Set<String>) async -> [Book]
+    func readerArtifactBookStableIds() async -> Set<String>
+    func finishedBookSummaries() async -> [FinishedBookSummary]
+    func bookStatisticsSlices() async -> [BookStatisticsSlice]
     func activeBooks(excludingSource: String, minProgressThreshold: Double) async -> [Book]
     func browseSlices(source: String) async -> [BookBrowseSlice]
     func browseSlices(mediaType: String) async -> [BookBrowseSlice]

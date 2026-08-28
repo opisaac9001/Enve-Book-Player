@@ -10,6 +10,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.enve.engine.theme.HearthThemeMode
 import com.enve.engine.prefs.HearthHomeSection
 import com.enve.engine.prefs.HearthStartTab
+import com.enve.engine.prefs.ReadNextPosition
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -21,6 +22,8 @@ private val KEY_THEME_MODE = stringPreferencesKey("hearth.themeMode")
 private val KEY_OLED = booleanPreferencesKey("hearth.oled")
 private val KEY_UI_TEXT_SCALE = floatPreferencesKey("hearth.uiTextScale")
 private val KEY_SCRUB_CHAPTER = booleanPreferencesKey("hearth.player.scrubChapter")
+private val KEY_READ_NEXT_ENABLED = booleanPreferencesKey("hearth.reader.readNextEnabled")
+private val KEY_READ_NEXT_POSITION = stringPreferencesKey("hearth.reader.readNextPosition")
 private val KEY_LIBRARY_COLUMNS = intPreferencesKey("hearth.library.columns")
 private val KEY_LIBRARY_SORT_STACK = stringPreferencesKey("hearth.library.sortStack")
 private val KEY_LIBRARY_ADVANCED_FILTERS = stringPreferencesKey("hearth.library.advancedFilters")
@@ -43,6 +46,11 @@ class HearthPreferencesStore @Inject constructor(
     }
 
     val scrubScopeChapter: Flow<Boolean> = context.hearthDataStore.data.map { it[KEY_SCRUB_CHAPTER] ?: false }
+    val readNextEnabled: Flow<Boolean> = context.hearthDataStore.data.map { it[KEY_READ_NEXT_ENABLED] ?: true }
+    val readNextPosition: Flow<ReadNextPosition> = context.hearthDataStore.data.map { prefs ->
+        prefs[KEY_READ_NEXT_POSITION]?.let { runCatching { ReadNextPosition.valueOf(it) }.getOrNull() }
+            ?: ReadNextPosition.BOTTOM
+    }
 
     val libraryColumns: Flow<Int> = context.hearthDataStore.data.map { (it[KEY_LIBRARY_COLUMNS] ?: 3).coerceIn(1, 4) }
 
@@ -75,6 +83,14 @@ class HearthPreferencesStore @Inject constructor(
 
     suspend fun setScrubScopeChapter(chapter: Boolean) {
         context.hearthDataStore.edit { it[KEY_SCRUB_CHAPTER] = chapter }
+    }
+
+    suspend fun setReadNextEnabled(enabled: Boolean) {
+        context.hearthDataStore.edit { it[KEY_READ_NEXT_ENABLED] = enabled }
+    }
+
+    suspend fun setReadNextPosition(position: ReadNextPosition) {
+        context.hearthDataStore.edit { it[KEY_READ_NEXT_POSITION] = position.name }
     }
 
     suspend fun setLibraryColumns(columns: Int) {

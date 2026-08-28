@@ -277,6 +277,18 @@ enum ReadAloudGranularityMode: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+enum ReaderNextSeriesPromptPlacement: String, CaseIterable, Identifiable, Codable {
+    case top, bottom
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .top: "Top"
+        case .bottom: "Bottom"
+        }
+    }
+}
+
 struct ClassicReaderAppearance: Codable, Equatable {
     static let storageKey = "enve.ebookReaderAppearance.v2"
     private static let legacyStorageKey = "enve.reader.appearance.v3"
@@ -315,6 +327,7 @@ struct ClassicReaderAppearance: Codable, Equatable {
     var volumeButtonsTurnPages = false
     var tapEdgesTurnPages = true
     var showNextSeriesPrompt = true
+    var nextSeriesPromptPlacement: ReaderNextSeriesPromptPlacement = .bottom
 
     var bionicReading: Bool = false
 
@@ -361,6 +374,7 @@ struct ClassicReaderAppearance: Codable, Equatable {
         case volumeButtonsTurnPages
         case tapEdgesTurnPages
         case showNextSeriesPrompt
+        case nextSeriesPromptPlacement
         case bionicReading
         case readAloudSyncOffset
         case readAloudHighlightColor
@@ -460,6 +474,9 @@ struct ClassicReaderAppearance: Codable, Equatable {
         volumeButtonsTurnPages = (try? c.decode(Bool.self, forKey: .volumeButtonsTurnPages)) ?? volumeButtonsTurnPages
         tapEdgesTurnPages = (try? c.decode(Bool.self, forKey: .tapEdgesTurnPages)) ?? tapEdgesTurnPages
         showNextSeriesPrompt = (try? c.decode(Bool.self, forKey: .showNextSeriesPrompt)) ?? showNextSeriesPrompt
+        nextSeriesPromptPlacement =
+            (try? c.decode(ReaderNextSeriesPromptPlacement.self, forKey: .nextSeriesPromptPlacement))
+            ?? nextSeriesPromptPlacement
         bionicReading = (try? c.decode(Bool.self, forKey: .bionicReading)) ?? bionicReading
 
         readAloudSyncOffset = (try? c.decode(Double.self, forKey: .readAloudSyncOffset)) ?? readAloudSyncOffset

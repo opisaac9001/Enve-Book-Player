@@ -82,7 +82,7 @@ final class CarPlayDownloaded: CarPlayPage {
         guard !downloadedIds.isEmpty else { return [] }
         if downloadedIds == downloadIndexKeys { return downloadIndexBooks }
 
-        let all = await environment.catalog.allBooks()
+        let all = await environment.catalog.downloadedAudiobooks(storageKeys: downloadedIds)
         let recent = environment.progress.recentlyPlayed()
         let matched = await environment.downloads.downloadedAudiobooks(from: all + recent, downloadedIds: downloadedIds)
 

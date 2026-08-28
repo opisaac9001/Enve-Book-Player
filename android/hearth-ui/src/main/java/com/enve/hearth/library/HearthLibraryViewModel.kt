@@ -286,7 +286,16 @@ class HearthLibraryViewModel @Inject constructor(
     val series: StateFlow<List<BrowseGroup>> = scopedBooks.map { list ->
         list.groupBy { it.seriesName?.trim().orEmpty() }
             .filterKeys { it.isNotBlank() }
-            .map { (name, books) -> BrowseGroup(key = name, name = name, count = books.size, coverUrl = books.firstNotNullOfOrNull(Book::coverUrl)) }
+            .map { (name, books) ->
+                val unread = books.count { !isRead(it) }
+                BrowseGroup(
+                    key = name,
+                    name = name,
+                    count = books.size,
+                    coverUrl = books.firstNotNullOfOrNull(Book::coverUrl),
+                    secondary = if (unread == 0) "✓ All read" else "$unread unread",
+                )
+            }
             .sortedBy { it.name.lowercase() }
     }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 

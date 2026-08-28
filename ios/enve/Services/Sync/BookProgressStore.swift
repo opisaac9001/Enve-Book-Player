@@ -41,7 +41,6 @@ final class BookProgressStore {
         ]
 
         userDefaults.set(progressData, forKey: stableKey)
-        userDefaults.set(progressData, forKey: "bookProgress_\(book.id)")
 
         let now = Date().timeIntervalSince1970
         userDefaults.set(now, forKey: "bookProgressLastUpdated")
@@ -72,7 +71,6 @@ final class BookProgressStore {
             }
 
             userDefaults.set(progressData, forKey: stableKey)
-            userDefaults.set(progressData, forKey: "bookProgress_\(update.book.id)")
             didChange = true
         }
 
@@ -84,8 +82,7 @@ final class BookProgressStore {
     }
 
     func loadProgress(for book: Book) -> (progress: TimeInterval, duration: TimeInterval, lastUpdated: TimeInterval)? {
-        if let result = readProgress(forKey: storageKey(for: book)) { return result }
-        return loadProgress(bookId: book.id)
+        readProgress(forKey: storageKey(for: book))
     }
 
     func saveProgress(bookId: String, progress: TimeInterval, duration: TimeInterval) {
@@ -125,14 +122,10 @@ final class BookProgressStore {
     func saveServerStamp(for book: Book, _ date: Date) {
         let ts = date.timeIntervalSince1970
         userDefaults.set(ts, forKey: "serverStamp_\(book.stableId)")
-        userDefaults.set(ts, forKey: "serverStamp_\(book.id)")
     }
 
     func loadServerStamp(for book: Book) -> Date? {
         if let ts = userDefaults.object(forKey: "serverStamp_\(book.stableId)") as? TimeInterval {
-            return Date(timeIntervalSince1970: ts)
-        }
-        if let ts = userDefaults.object(forKey: "serverStamp_\(book.id)") as? TimeInterval {
             return Date(timeIntervalSince1970: ts)
         }
         return nil

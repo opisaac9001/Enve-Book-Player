@@ -700,9 +700,10 @@ struct SourceDetailScreen: View {
                     && candidate.password == connection.password
                     && candidate.token == connection.token
                     && candidate.customHeaders == connection.customHeaders
-                let (isValid, _) = try await appState.validateConnection(candidate)
+                let (isValid, validatedConnection) = try await appState.validateConnection(candidate)
                 if isValid {
                     if credentialsMatchSaved {
+                        appState.providerConnections.updateToken(validatedConnection)
                         mutateConnection {
                             $0.isConnected = true
                             $0.lastVerified = Date()

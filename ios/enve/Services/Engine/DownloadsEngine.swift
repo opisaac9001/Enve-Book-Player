@@ -167,10 +167,15 @@ final class DownloadsEngine {
     }
 
     func downloadedStorageItems() async -> [DownloadedStorageItem] {
+        let signpost = PerfSignpost.begin("downloaded-storage-items")
+        defer { PerfSignpost.end(signpost) }
+
         let storage = LocalStorageManager.shared
         let downloadedIds = storage.downloadedAudiobookIds()
-        let liveBooks = await appState.bookStore.allBooks()
-        let downloadedEbooks = await appState.bookStore.downloadedEbooks(limit: max(liveBooks.count, 1))
+        async let liveBooksRequest = appState.bookStore.downloadedAudiobooks(storageKeys: Set(downloadedIds))
+        async let ebookCountRequest = appState.bookStore.bookCount(mediaType: AppMediaType.ebook.rawValue)
+        let liveBooks = await liveBooksRequest
+        let downloadedEbooks = await appState.bookStore.downloadedEbooks(limit: max(await ebookCountRequest, 1))
         let liveByKey = Dictionary(
             liveBooks.map { (Self.sanitizeDownloadKey($0.downloadKey), $0) },
             uniquingKeysWith: { _, new in new }
@@ -241,6 +246,17 @@ final class DownloadsEngine {
             guard let book = item.book else { return }
             await removeLibraryDownload(for: book)
         }
+    }
+
+    func clearAllDownloads() async -> (removed: Int, remaining: Int) {
+        let items = await downloadedStorageItems()
+        for item in items {
+            await deleteStorageItem(item)
+        }
+        service.clearCompleted()
+
+        let remaining = await downloadedStorageItems().count
+        return (removed: max(items.count - remaining, 0), remaining: remaining)
     }
 
     func deleteAudiobookDownload(id: String) {

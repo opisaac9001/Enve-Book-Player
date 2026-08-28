@@ -96,7 +96,10 @@ struct BookloreCatalogMapperTests {
         #expect(book.isFinished == false)
         #expect(book.hideFromContinue == false)
         #expect(book.serverReadStatus == "READING")
-        #expect(book.thumb == "http://books.example:6060/api/v1/media/book/99/audiobook-thumbnail")
+        #expect(
+            book.thumb
+                == "http://books.example:6060/api/v1/media/book/99/audiobook-thumbnail?v=2026-03-21T03:13:41Z"
+        )
         #expect(book.publisher == "Invented Press")
         #expect(book.genres == ["Fantasy"])
         #expect(book.language == "en")

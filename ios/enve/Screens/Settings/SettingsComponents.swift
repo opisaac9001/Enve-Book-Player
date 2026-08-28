@@ -60,25 +60,35 @@ struct SettingsLinkRow: View {
             }
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.hearthBody)
+                    .font(.hearthBody.weight(.medium))
                     .foregroundStyle(hearth.text)
+                    .accessibilityHidden(true)
                 if let subtitle {
                     Text(subtitle)
-                        .font(.hearthCaption)
-                        .foregroundStyle(hearth.textSecondary)
+                        .font(.hearthCaption.weight(.medium))
+                        .foregroundStyle(hearth.text)
+                        .accessibilityHidden(true)
                 }
             }
             Spacer(minLength: 8)
             if let detail {
                 Text(detail)
-                    .font(.hearthCaption)
-                    .foregroundStyle(hearth.textSecondary)
+                    .font(.hearthCaption.weight(.medium))
+                    .foregroundStyle(hearth.text)
+                    .accessibilityHidden(true)
             }
             Image(systemName: "chevron.right")
                 .font(.hearthUI(12, weight: .semibold))
                 .foregroundStyle(hearth.textTertiary)
         }
         .contentShape(Rectangle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
+        .accessibilityValue(accessibilityValue)
+    }
+
+    private var accessibilityValue: String {
+        [subtitle, detail].compactMap { $0 }.joined(separator: ". ")
     }
 }
 

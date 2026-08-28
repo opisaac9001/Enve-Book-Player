@@ -1300,9 +1300,6 @@ public class PlayerViewModel {
         if let savedProgress = BookProgressStore.shared.loadProgress(for: match) {
             resumeProgress = savedProgress.progress
             resumeDuration = savedProgress.duration
-        } else if let legacy = BookProgressStore.shared.loadProgress(bookId: lastId) {
-            resumeProgress = legacy.progress
-            resumeDuration = legacy.duration
         }
 
         await MainActor.run {

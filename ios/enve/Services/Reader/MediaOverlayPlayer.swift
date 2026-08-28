@@ -197,6 +197,7 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
         frozenElapsed = globalElapsed()
         teardownObservers()
         player?.pause()
+        clearNowPlayingSession()
         player = nil
         isPlaying = false
         endBackgroundTask()
@@ -305,6 +306,8 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
 
     private func buildQueue(startingAtGroup startingGroup: Int) {
         teardownObservers()
+        player?.pause()
+        clearNowPlayingSession()
         guard let audioDir, !audioFileGroups.isEmpty else {
             player = nil
             return
@@ -351,7 +354,7 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
                 let session = MPNowPlayingSession(players: [player])
                 session.automaticallyPublishesNowPlayingInfo = false
                 nowPlayingSession = session
-                NowPlayingCoordinator.shared.setNowPlayingSession(session)
+                NowPlayingCoordinator.shared.setNowPlayingSession(session, for: self)
             }
             nowPlayingSession?.becomeActiveIfPossible { _ in }
         }
@@ -366,8 +369,11 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
     private func clearNowPlayingSession() {
         #if os(iOS)
         if #available(iOS 16.0, *) {
+            if let session = nowPlayingSession {
+                session.players.forEach { session.removePlayer($0) }
+            }
             nowPlayingSession = nil
-            NowPlayingCoordinator.shared.setNowPlayingSession(nil)
+            NowPlayingCoordinator.shared.clearNowPlayingSession(if: self)
         }
         #endif
     }
@@ -602,7 +608,7 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
         #if os(iOS)
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .spokenAudio, options: [])
+            try session.setCategory(.playback, mode: .spokenAudio, policy: .longFormAudio, options: [])
             try session.setActive(true)
         } catch {
             AppLogger.library.error("MediaOverlayPlayer: Failed to activate audio session: \(error)")
@@ -664,6 +670,7 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
         publishCurrentFragment(force: true)
         teardownObservers()
         player?.pause()
+        clearNowPlayingSession()
         player = nil
         isPlaying = false
         endBackgroundTask()

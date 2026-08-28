@@ -282,6 +282,7 @@
 				Screens/Journal/HearthQuoteCard.swift,
 				Screens/Journal/JournalHeatmap.swift,
 				Screens/Journal/JournalHubModel.swift,
+				Screens/Journal/JournalInsightsModel.swift,
 				Screens/Journal/JournalInsightsScreen.swift,
 				Screens/Journal/JournalLibraryStatsModel.swift,
 				Screens/Journal/JournalLibraryStatsScreen.swift,
@@ -347,6 +348,8 @@
 				Screens/Settings/HomePreferencesScreen.swift,
 				Screens/Settings/KOReaderLinksScreen.swift,
 				Screens/Settings/KOReaderScreen.swift,
+				Screens/Settings/LibraryHealthModel.swift,
+				Screens/Settings/LibraryHealthScreen.swift,
 				Screens/Settings/LibraryDisplayScreen.swift,
 				Screens/Settings/MetadataKeysScreen.swift,
 				Screens/Settings/NewsScreen.swift,
@@ -1418,7 +1421,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = "App Icon & Top Shelf Image";
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = "enve-tvOS/EnveTV.entitlements";
+				CODE_SIGN_ENTITLEMENTS = "enve-tvOS/EnveTVRelease.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 119;
 				DEVELOPMENT_TEAM = 9TT6DBK8W3;

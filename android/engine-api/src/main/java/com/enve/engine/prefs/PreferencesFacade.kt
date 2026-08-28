@@ -17,6 +17,11 @@ enum class HearthHomeSection(val label: String) {
     DOWNLOADED("On this device"),
 }
 
+enum class ReadNextPosition(val label: String) {
+    TOP("Top"),
+    BOTTOM("Bottom"),
+}
+
 interface PreferencesFacade {
     val themeMode: Flow<HearthThemeMode>
     val oledEnabled: Flow<Boolean>
@@ -29,6 +34,8 @@ interface PreferencesFacade {
     val defaultSpeed: Flow<Float>
 
     val scrubScopeChapter: Flow<Boolean>
+    val readNextEnabled: Flow<Boolean>
+    val readNextPosition: Flow<ReadNextPosition>
 
     val libraryColumns: Flow<Int>
 
@@ -48,6 +55,8 @@ interface PreferencesFacade {
     suspend fun setSkipBackwardSeconds(seconds: Int)
     suspend fun setDefaultSpeed(speed: Float)
     suspend fun setScrubScopeChapter(chapter: Boolean)
+    suspend fun setReadNextEnabled(enabled: Boolean)
+    suspend fun setReadNextPosition(position: ReadNextPosition)
     suspend fun setLibraryColumns(columns: Int)
     suspend fun setLibrarySortStack(encoded: String)
     suspend fun setLibraryAdvancedFilters(encoded: String)

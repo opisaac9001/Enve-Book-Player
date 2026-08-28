@@ -146,7 +146,7 @@ struct StorageScreen: View {
         SourcesCard {
             Overline("Where it goes")
             storageRow("Covers", bytes: coversBytes) { pendingAction = .clearCovers }
-            storageRow("Metadata", bytes: metadataBytes) { pendingAction = .clearMetadata }
+            storageRow("Cached metadata", bytes: metadataBytes) { pendingAction = .clearMetadata }
             storageRow("Downloads", bytes: downloadsBytes, clearAction: nil)
             storageRow("Other caches", bytes: otherCacheBytes) { pendingAction = .clearCache }
             if isWorking {
@@ -274,10 +274,19 @@ struct StorageScreen: View {
     }
 
     private func loadSizes() async {
-        coversBytes = await SourcesCacheMetrics.directorySize(named: "Covers")
-        metadataBytes = await SourcesCacheMetrics.directorySize(named: "Metadata")
-        downloadsBytes = await engine.downloads.downloadedStorageBytes()
-        otherCacheBytes = await SourcesCacheMetrics.size(at: URL.cachesDirectory)
+        async let appCacheSizesRequest = AppCache.shared.activeCacheSizes()
+        async let diskCoverBytesRequest = DiskImageCache.shared.diskBytes()
+        async let coverOverrideBytesRequest = LocalStorageManager.shared.coverOverridesDiskBytes()
+        async let legacyCoverBytesRequest = SourcesCacheMetrics.directorySize(named: "Covers")
+        async let downloadsBytesRequest = engine.downloads.downloadedStorageBytes()
+        async let cachesDirectoryBytesRequest = SourcesCacheMetrics.size(at: URL.cachesDirectory)
+
+        let appCacheSizes = await appCacheSizesRequest
+        let diskCoverBytes = await diskCoverBytesRequest
+        coversBytes = appCacheSizes.coversBytes + diskCoverBytes + (await coverOverrideBytesRequest) + (await legacyCoverBytesRequest)
+        metadataBytes = appCacheSizes.metadataBytes
+        downloadsBytes = await downloadsBytesRequest
+        otherCacheBytes = max((await cachesDirectoryBytesRequest) - diskCoverBytes, 0)
         if let attrs = try? FileManager.default.attributesOfFileSystem(forPath: NSHomeDirectory()),
             let free = attrs[.systemFreeSize] as? NSNumber
         {
@@ -291,14 +300,18 @@ struct StorageScreen: View {
         pendingAction = nil
         switch action {
         case .clearCovers:
-            DiskImageCache.shared.clearAllCache()
+            await DiskImageCache.shared.clearAllCache()
             await AppCache.shared.clearCoverCache()
+            await LocalStorageManager.shared.clearCoverOverrides()
             try? FileManager.default.removeItem(at: URL.documentsDirectory.appendingPathComponent("Covers"))
             resultMessage = "Cover cache cleared."
         case .clearMetadata:
-            try? FileManager.default.removeItem(at: URL.documentsDirectory.appendingPathComponent("Metadata"))
+            await AppCache.shared.clearMetadataCache()
             resultMessage = "Metadata cache cleared."
         case .clearCache:
+            await DiskImageCache.shared.clearAllCache()
+            await AppCache.shared.clearActiveCaches()
+            await LocalStorageManager.shared.clearCoverOverrides()
             if let contents = try? FileManager.default.contentsOfDirectory(at: URL.cachesDirectory, includingPropertiesForKeys: nil) {
                 for item in contents {
                     try? FileManager.default.removeItem(at: item)

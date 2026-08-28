@@ -161,6 +161,7 @@ struct MantelBar: View {
                 }
                 .foregroundStyle(tab == item ? hearth.ember : hearth.textSecondary)
                 .frame(maxWidth: .infinity)
+                .frame(minHeight: 44)
                 .contentShape(Rectangle())
             }
             .buttonStyle(PressableStyle())
@@ -256,7 +257,7 @@ struct MantelBar: View {
                         pillTint = await AmbientColorStore.shared.resolve(for: book)
                     }
 
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading) {
                         HearthMarqueeText(
                             text: book.title,
                             size: 13,
@@ -265,16 +266,16 @@ struct MantelBar: View {
                             color: hearth.text,
                             height: Hearth.scaled(17)
                         )
-                        Text(pillSubtitle(book: book))
-                            .font(.hearthUI(11, weight: .medium))
-                            .foregroundStyle(hearth.textSecondary)
-                            .lineLimit(1)
+                        .accessibilityHidden(true)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(PressableStyle())
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(book.title)
+            .accessibilityValue(pillSubtitle(book: book))
 
             Button {
                 if book.mediaType == .ebook && !book.hasEPUB3MediaOverlay {
@@ -293,7 +294,7 @@ struct MantelBar: View {
                 )
                 .font(.hearthUI(15, weight: .semibold))
                 .foregroundStyle(hearth.text)
-                .frame(width: 38, height: 38)
+                .frame(width: 44, height: 44)
                 .contentShape(Circle())
             }
             .buttonStyle(PressableStyle())

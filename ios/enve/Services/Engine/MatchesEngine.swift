@@ -66,8 +66,13 @@ final class MatchesEngine {
         refreshOrphanedBooks()
     }
 
-    func matchableServerBooks(for orphan: Book) async -> [Book] {
-        let all = await appState.bookStore.allBooks()
+    func matchableServerBooks(for orphan: Book, query: String, limit: Int = 100) async -> [Book] {
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let all = if trimmedQuery.isEmpty {
+            await appState.bookStore.pagedBooks(offset: 0, limit: limit, mediaType: nil)
+        } else {
+            await appState.bookStore.searchBooks(query: trimmedQuery, limit: limit)
+        }
         return all.filter {
             $0.libraryId != "rescued-downloads"
                 && $0.source != .local

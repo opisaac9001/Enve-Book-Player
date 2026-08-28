@@ -263,6 +263,7 @@ fun HearthRoot(
                         onPlayBook = playBook,
                         onPlaybackStarted = { showPlayer = true },
                         onAddSource = onManageSources,
+                        onOpenSettings = { showSettings = true },
                     )
                     HearthTab.JOURNAL -> HearthJournalScreen(
                         onSelectBook = selectBook,
@@ -270,6 +271,7 @@ fun HearthRoot(
                         onOpenInsights = { showInsights = true },
                         onOpenStatsHub = { showStatsHub = true },
                         onOpenSleep = { showSleepInsights = true },
+                        onOpenSettings = { showSettings = true },
                     )
                 }
                 MantelBar(

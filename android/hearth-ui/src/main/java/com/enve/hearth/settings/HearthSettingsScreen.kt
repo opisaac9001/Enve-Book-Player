@@ -77,6 +77,7 @@ import com.enve.core.data.model.ComicPageLoadingMode
 import com.enve.engine.eink.EinkMode
 import com.enve.engine.prefs.HearthHomeSection
 import com.enve.engine.prefs.HearthStartTab
+import com.enve.engine.prefs.ReadNextPosition
 import com.enve.engine.theme.HearthThemeMode
 import com.enve.hearth.design.EmberButton
 import com.enve.hearth.design.Hearth
@@ -424,6 +425,8 @@ private fun LibraryPage(
 ) {
     val palette = Hearth.palette
     val comicPageLoadingMode by vm.comicPageLoadingMode.collectAsStateWithLifecycle()
+    val readNextEnabled by vm.readNextEnabled.collectAsStateWithLifecycle()
+    val readNextPosition by vm.readNextPosition.collectAsStateWithLifecycle()
     SettingsPage("Settings", SettingsCategory.Library.pageTitle, onBack) {
         item {
             Group("Library") {
@@ -440,6 +443,15 @@ private fun LibraryPage(
         }
         item {
             Group("Reading") {
+                ToggleRow("Read Next suggestions", readNextEnabled, vm::setReadNextEnabled)
+                if (readNextEnabled) {
+                    Text("Read Next position", style = HearthText.Caption, color = palette.textSecondary)
+                    ChipRow(
+                        ReadNextPosition.entries.map { position ->
+                            position.label to (position == readNextPosition)
+                        },
+                    ) { index -> vm.setReadNextPosition(ReadNextPosition.entries[index]) }
+                }
                 ToolRow(Icons.AutoMirrored.Outlined.ManageSearch, "Annotations", "Bookmarks, highlights, and notes") {
                     onOpenDestination(HearthSettingsDestination.Annotations)
                 }

@@ -583,6 +583,10 @@ actor AppCache {
         await activeCoversCache().clearAll()
     }
 
+    func clearMetadataCache() async {
+        await localMetadata.clearAll()
+    }
+
     func runMaintenance() async {
         let prefs = await Task { @MainActor in
             LibraryDisplayPreferencesStore.shared.loadPreferences()

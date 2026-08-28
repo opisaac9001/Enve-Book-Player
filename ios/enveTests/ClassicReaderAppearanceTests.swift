@@ -59,4 +59,19 @@ struct ClassicReaderAppearanceTests {
         #expect(decoded.resolved(for: .dark).theme == .midnight)
         #expect(decoded.theme == .midnight)
     }
+
+    @Test func nextSeriesPromptPlacementDefaultsAndRoundTrips() throws {
+        let missing = try JSONDecoder().decode(
+            ClassicReaderAppearance.self,
+            from: Data("{}".utf8)
+        )
+        var appearance = ClassicReaderAppearance()
+        appearance.nextSeriesPromptPlacement = .top
+
+        let data = try JSONEncoder().encode(appearance)
+        let decoded = try JSONDecoder().decode(ClassicReaderAppearance.self, from: data)
+
+        #expect(missing.nextSeriesPromptPlacement == .bottom)
+        #expect(decoded.nextSeriesPromptPlacement == .top)
+    }
 }

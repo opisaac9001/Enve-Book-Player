@@ -48,6 +48,7 @@ import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -106,6 +107,7 @@ fun HearthLibraryScreen(
     onPlayBook: (Book) -> Unit = {},
     onPlaybackStarted: () -> Unit = {},
     onAddSource: () -> Unit = {},
+    onOpenSettings: () -> Unit = {},
 ) {
     val vm: HearthLibraryViewModel = hiltViewModel()
     val facet by vm.facet.collectAsStateWithLifecycle()
@@ -179,6 +181,7 @@ fun HearthLibraryScreen(
                 },
             ) { vm.cycleColumns() }
             HeaderGlyph(Icons.Outlined.Add, "Add a source", onClick = onAddSource)
+            HeaderGlyph(Icons.Outlined.Settings, "Settings", onClick = onOpenSettings)
         }
         val sources by vm.sources.collectAsStateWithLifecycle()
         val libraries by vm.libraries.collectAsStateWithLifecycle()
@@ -1189,9 +1192,12 @@ private fun BrowseGrid(groups: List<BrowseGroup>, columns: Int, onOpen: (BrowseG
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    "${group.count} ${if (group.count == 1) "book" else "books"}",
+                    listOfNotNull(
+                        "${group.count} ${if (group.count == 1) "book" else "books"}",
+                        group.secondary,
+                    ).joinToString(" · "),
                     style = HearthText.Caption,
-                    color = palette.textTertiary,
+                    color = if (group.secondary == "✓ All read") palette.ember else palette.textTertiary,
                     maxLines = 1,
                 )
             }

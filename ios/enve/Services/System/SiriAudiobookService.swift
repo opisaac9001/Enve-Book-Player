@@ -111,17 +111,8 @@ enum SiriAudiobookService {
         }.value
         guard !downloadedIDs.isEmpty else { return [] }
 
-        var candidateStableIDs = Set(EnveEngine.shared.downloads.completedDownloadBookIds)
-        for diskID in downloadedIDs {
-            if let metadata = try? storage.loadMetadataOverride(OfflineBookMetadata.self, for: diskID) {
-                candidateStableIDs.insert(metadata.stableId)
-            }
-        }
-
-        var byStableID = await AppState.shared.bookStore.booksByStableIds(candidateStableIDs)
-        byStableID = byStableID.filter { _, book in
-            isDownloadedAudiobook(book, downloadedIDs: downloadedIDs)
-        }
+        let storedDownloads = await AppState.shared.bookStore.downloadedAudiobooks(storageKeys: downloadedIDs)
+        var byStableID = Dictionary(uniqueKeysWithValues: storedDownloads.map { ($0.stableId, $0) })
 
         if byStableID.count < downloadedIDs.count {
             let cachedMatches = AppState.shared.allBooks.filter {

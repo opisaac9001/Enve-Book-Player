@@ -1,11 +1,13 @@
 package com.enve.app.ui.screens
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.pdf.PdfRenderer
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
+import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
@@ -63,6 +65,7 @@ import com.enve.core.data.local.LastOpenedBookStore
 import com.enve.core.data.local.PreferencesManager
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
+import com.enve.engine.prefs.ReadNextPosition
 import com.enve.app.data.reader.nextBookInSeries
 import com.enve.app.data.repository.GrimmoryRepository
 import com.enve.app.ui.screens.reader.HearthPdfChrome
@@ -100,6 +103,7 @@ class PdfReaderActivity : ComponentActivity() {
     @Inject lateinit var epdRefreshManager: com.enve.app.eink.EpdRefreshManager
     @Inject lateinit var lastOpenedBookStore: LastOpenedBookStore
     @Inject lateinit var hearthPreferences: com.enve.engine.prefs.PreferencesFacade
+    @Inject lateinit var audioPlaybackManager: com.enve.app.playback.AudioPlaybackManager
 
     private var uiState by mutableStateOf(PdfReaderUiState())
     private var bookId: String = ""
@@ -167,6 +171,10 @@ class PdfReaderActivity : ComponentActivity() {
         setContent {
             val themeState by themeViewModel.themeState.collectAsStateWithLifecycle()
             val uiTextScale by hearthPreferences.uiTextScale.collectAsStateWithLifecycle(initialValue = 1f)
+            val readNextEnabled by hearthPreferences.readNextEnabled.collectAsStateWithLifecycle(initialValue = true)
+            val readNextPosition by hearthPreferences.readNextPosition.collectAsStateWithLifecycle(
+                initialValue = ReadNextPosition.BOTTOM,
+            )
             val useHearthChrome = remember { intent.getBooleanExtra(EXTRA_HEARTH_CHROME, false) }
             val openNext: (Book) -> Unit = { next ->
                 startActivity(readerIntentForBook(next, hearthChrome = useHearthChrome))
@@ -181,6 +189,8 @@ class PdfReaderActivity : ComponentActivity() {
                         onPrevious = { showPage(uiState.currentPage - 1) },
                         onNext = { showPage(uiState.currentPage + 1) },
                         onSeekPage = { showPage(it) },
+                        readNextEnabled = readNextEnabled,
+                        readNextPosition = readNextPosition,
                         onReadNext = openNext,
                     )
                 } else {
@@ -195,6 +205,8 @@ class PdfReaderActivity : ComponentActivity() {
                             onBack = { finish() },
                             onPrevious = { showPage(uiState.currentPage - 1) },
                             onNext = { showPage(uiState.currentPage + 1) },
+                            readNextEnabled = readNextEnabled,
+                            readNextPosition = readNextPosition,
                             onReadNext = openNext,
                         )
                     }
@@ -347,6 +359,25 @@ class PdfReaderActivity : ComponentActivity() {
         if (uiState.pageCount > 0) syncProgress()
     }
 
+    @SuppressLint("RestrictedApi")
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val direction = ReaderHardwareKeyPolicy.directionFor(
+            keyCode = event.keyCode,
+            volumeButtonNavigation = false,
+            audioActive = audioPlaybackManager.state.value.isPlaying,
+        )
+        if (direction != null) {
+            if (ReaderHardwareKeyPolicy.shouldTriggerTurn(event.action, event.repeatCount)) {
+                when (direction) {
+                    ReaderPageKeyDirection.FORWARD -> showPage(uiState.currentPage + 1)
+                    ReaderPageKeyDirection.BACKWARD -> showPage(uiState.currentPage - 1)
+                }
+            }
+            return true
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         renderer?.close()
@@ -361,6 +392,8 @@ private fun PdfReaderScreen(
     onBack: () -> Unit,
     onPrevious: () -> Unit,
     onNext: () -> Unit,
+    readNextEnabled: Boolean,
+    readNextPosition: ReadNextPosition,
     onReadNext: (Book) -> Unit,
 ) {
     val isEink = EnveTheme.isEink
@@ -515,13 +548,24 @@ private fun PdfReaderScreen(
             }
         }
         val nextBook = state.nextInSeries
-        if (nextBook != null && state.pageCount > 0 && state.currentPage >= state.pageCount - 1) {
+        if (readNextEnabled && nextBook != null && state.pageCount > 0 && state.currentPage >= state.pageCount - 1) {
             NextInSeriesButton(
                 book = nextBook,
                 onClick = { onReadNext(nextBook) },
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 96.dp, start = 24.dp, end = 24.dp),
+                    .align(
+                        if (readNextPosition == ReadNextPosition.TOP) {
+                            Alignment.TopCenter
+                        } else {
+                            Alignment.BottomCenter
+                        },
+                    )
+                    .padding(
+                        top = if (readNextPosition == ReadNextPosition.TOP) 96.dp else 0.dp,
+                        bottom = if (readNextPosition == ReadNextPosition.BOTTOM) 96.dp else 0.dp,
+                        start = 24.dp,
+                        end = 24.dp,
+                    ),
             )
         }
     }

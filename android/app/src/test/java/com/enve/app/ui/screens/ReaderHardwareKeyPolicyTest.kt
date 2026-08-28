@@ -14,43 +14,11 @@ class ReaderHardwareKeyPolicyTest {
     }
 
     @Test
-    fun standardDevicesOnlyUseVolumeKeysWhenEnabledAndAudioIsIdle() {
-        assertEquals(
-            ReaderPageKeyDirection.FORWARD,
-            ReaderHardwareKeyPolicy.directionFor(
-                keyCode = KeyEvent.KEYCODE_VOLUME_UP,
-                einkActive = false,
-                volumeButtonNavigation = true,
-                audioActive = false,
-            ),
-        )
-
-        assertNull(
-            ReaderHardwareKeyPolicy.directionFor(
-                keyCode = KeyEvent.KEYCODE_VOLUME_UP,
-                einkActive = false,
-                volumeButtonNavigation = true,
-                audioActive = true,
-            ),
-        )
-
-        assertNull(
-            ReaderHardwareKeyPolicy.directionFor(
-                keyCode = KeyEvent.KEYCODE_PAGE_DOWN,
-                einkActive = false,
-                volumeButtonNavigation = true,
-                audioActive = false,
-            ),
-        )
-    }
-
-    @Test
-    fun einkDevicesUsePhysicalPageKeysInColorAndMonochromeModes() {
+    fun standardDevicesUseBluetoothKeyboardPageKeys() {
         assertEquals(
             ReaderPageKeyDirection.FORWARD,
             ReaderHardwareKeyPolicy.directionFor(
                 keyCode = KeyEvent.KEYCODE_PAGE_DOWN,
-                einkActive = true,
                 volumeButtonNavigation = false,
                 audioActive = true,
             ),
@@ -60,7 +28,6 @@ class ReaderHardwareKeyPolicyTest {
             ReaderPageKeyDirection.BACKWARD,
             ReaderHardwareKeyPolicy.directionFor(
                 keyCode = KeyEvent.KEYCODE_DPAD_LEFT,
-                einkActive = true,
                 volumeButtonNavigation = false,
                 audioActive = true,
             ),
@@ -68,23 +35,49 @@ class ReaderHardwareKeyPolicyTest {
     }
 
     @Test
-    fun einkVolumeKeysStillRespectAudioPlayback() {
+    fun volumeKeysRequireOptInAndIdleAudio() {
+        assertEquals(
+            ReaderPageKeyDirection.FORWARD,
+            ReaderHardwareKeyPolicy.directionFor(
+                keyCode = KeyEvent.KEYCODE_VOLUME_UP,
+                volumeButtonNavigation = true,
+                audioActive = false,
+            ),
+        )
+
         assertNull(
             ReaderHardwareKeyPolicy.directionFor(
-                keyCode = KeyEvent.KEYCODE_VOLUME_DOWN,
-                einkActive = true,
+                keyCode = KeyEvent.KEYCODE_VOLUME_UP,
                 volumeButtonNavigation = true,
                 audioActive = true,
             ),
         )
 
-        assertEquals(
-            ReaderPageKeyDirection.BACKWARD,
+        assertNull(
             ReaderHardwareKeyPolicy.directionFor(
-                keyCode = KeyEvent.KEYCODE_VOLUME_DOWN,
-                einkActive = true,
-                volumeButtonNavigation = true,
+                keyCode = KeyEvent.KEYCODE_VOLUME_UP,
+                volumeButtonNavigation = false,
                 audioActive = false,
+            ),
+        )
+    }
+
+    @Test
+    fun mediaKeysDoNotStealActiveAudioControls() {
+        assertEquals(
+            ReaderPageKeyDirection.FORWARD,
+            ReaderHardwareKeyPolicy.directionFor(
+                keyCode = KeyEvent.KEYCODE_MEDIA_NEXT,
+                volumeButtonNavigation = false,
+                audioActive = false,
+            ),
+        )
+
+        assertNull(
+            ReaderHardwareKeyPolicy.directionFor(
+                keyCode = KeyEvent.KEYCODE_MEDIA_PREVIOUS,
+                volumeButtonNavigation = false,
+                audioActive = true,
             ),
         )
     }

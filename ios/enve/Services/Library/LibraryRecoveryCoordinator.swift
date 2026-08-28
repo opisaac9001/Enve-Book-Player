@@ -62,9 +62,11 @@ final class LibraryRecoveryCoordinator {
     private let bookStore: BookStoreRepository
     private let providerConnections: any ProviderConnectionEditing
     private let stores: LibraryRecoveryStores
+    private let defaults: UserDefaults
 
     private static let legacyEbookLinksMigratedKey = "enve.legacyEbookLinksMigratedToBookStoreV1"
     private static let legacyEbookRelationshipStoreKey = "ebook_audiobook_relationships"
+    static let acknowledgedRescuedDownloadsKey = "enve.acknowledgedRescuedDownloadsV1"
 
     init(
         library: LibraryBookCache = AppState.shared.libraryCache,
@@ -75,7 +77,8 @@ final class LibraryRecoveryCoordinator {
         progress: UserProgressStore = .shared,
         bookStore: BookStoreRepository = AppState.shared.bookStore,
         providerConnections: any ProviderConnectionEditing = AppState.shared.providerConnections,
-        stores: LibraryRecoveryStores = .live()
+        stores: LibraryRecoveryStores = .live(),
+        defaults: UserDefaults = .standard
     ) {
         self.library = library
         self.session = session
@@ -86,6 +89,7 @@ final class LibraryRecoveryCoordinator {
         self.bookStore = bookStore
         self.providerConnections = providerConnections
         self.stores = stores
+        self.defaults = defaults
     }
 
     func runStartupMigrations() async {
@@ -332,6 +336,9 @@ final class LibraryRecoveryCoordinator {
             Set(storage.downloadedAudiobookIds())
         }.value
 
+        let acknowledgedDiskIds = acknowledgedRescuedDownloads().intersection(allDiskIds)
+        saveAcknowledgedRescuedDownloads(acknowledgedDiskIds)
+
         guard !allDiskIds.isEmpty else { return }
 
         let knownBooks = library.books
@@ -357,7 +364,9 @@ final class LibraryRecoveryCoordinator {
             return ids
         }.value
 
-        let orphanedDiskIds = allDiskIds.subtracting(knownSanitizedIds)
+        let orphanedDiskIds = allDiskIds
+            .subtracting(knownSanitizedIds)
+            .subtracting(acknowledgedDiskIds)
 
         guard !orphanedDiskIds.isEmpty else { return }
 
@@ -646,12 +655,19 @@ final class LibraryRecoveryCoordinator {
     }
 
     func dismissOrphanedBook(_ book: Book) {
+        var acknowledged = acknowledgedRescuedDownloads()
+        acknowledged.insert(book.partKey ?? book.downloadKey)
+        saveAcknowledgedRescuedDownloads(acknowledged)
         presentation.orphanedBooks.removeAll { $0.uniqueId == book.uniqueId }
     }
 
     func deleteOrphanedBook(_ book: Book) {
         let diskId = book.partKey ?? book.downloadKey
         let removedId = book.uniqueId
+
+        var acknowledged = acknowledgedRescuedDownloads()
+        acknowledged.remove(diskId)
+        saveAcknowledgedRescuedDownloads(acknowledged)
 
         library.books = library.books.filter { $0.uniqueId != removedId }
         library.hot.remove(uniqueId: removedId)
@@ -667,6 +683,18 @@ final class LibraryRecoveryCoordinator {
         }
 
         stores.purgeDownloadArtifacts(diskId)
+    }
+
+    private func acknowledgedRescuedDownloads() -> Set<String> {
+        Set(defaults.stringArray(forKey: Self.acknowledgedRescuedDownloadsKey) ?? [])
+    }
+
+    private func saveAcknowledgedRescuedDownloads(_ ids: Set<String>) {
+        if ids.isEmpty {
+            defaults.removeObject(forKey: Self.acknowledgedRescuedDownloadsKey)
+        } else {
+            defaults.set(ids.sorted(), forKey: Self.acknowledgedRescuedDownloadsKey)
+        }
     }
 
     private func cleanupRescuedLibraryIfEmpty() {

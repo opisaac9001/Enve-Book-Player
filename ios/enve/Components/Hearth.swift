@@ -105,7 +105,7 @@ struct HearthPalette: Equatable {
             bgSunken: .black,
             text: Color(hexValue: 0xF0E9DC),
             textSecondary: Color(hexValue: 0xA99F92),
-            textTertiary: Color(hexValue: 0x6E665C),
+            textTertiary: Color(hexValue: 0x80786D),
             ember: accent,
             emberSoft: accent.opacity(0.14),
             hairline: .white.opacity(0.08),
@@ -124,7 +124,7 @@ struct HearthPalette: Equatable {
             bgSunken: .black,
             text: Color(hexValue: 0xF0E9DC),
             textSecondary: Color(hexValue: 0xA99F92),
-            textTertiary: Color(hexValue: 0x6E665C),
+            textTertiary: Color(hexValue: 0x80786D),
             ember: accent,
             emberSoft: accent.opacity(0.16),
             hairline: .white.opacity(0.11),
@@ -142,25 +142,47 @@ struct HearthPalette: Equatable {
             bgElevated: .white,
             bgSunken: Color(hexValue: 0xEFE8DB),
             text: Color(hexValue: 0x231F1B),
-            textSecondary: Color(hexValue: 0x7A7064),
-            textTertiary: Color(hexValue: 0xA89D8F),
+            textSecondary: Color(hexValue: 0x6E6459),
+            textTertiary: Color(hexValue: 0x766B5F),
             ember: deepened(accent),
             emberSoft: accent.opacity(0.12),
             hairline: .black.opacity(0.08),
             onEmber: Color(hexValue: 0x1A120A),
             statusOK: Color(hexValue: 0x4F7942),
-            statusWarn: Color(hexValue: 0xA8762A),
+            statusWarn: Color(hexValue: 0x93601B),
             statusError: Color(hexValue: 0xA8453A)
         )
     }
 
     private static func deepened(_ color: Color) -> Color {
-        var h: CGFloat = 0
-        var s: CGFloat = 0
-        var b: CGFloat = 0
+        var red: CGFloat = 0
+        var green: CGFloat = 0
+        var blue: CGFloat = 0
         var a: CGFloat = 0
-        guard UIColor(color).getHue(&h, saturation: &s, brightness: &b, alpha: &a) else { return color }
-        return Color(uiColor: UIColor(hue: h, saturation: min(s * 1.08, 1), brightness: b * 0.91, alpha: a))
+        guard UIColor(color).getRed(&red, green: &green, blue: &blue, alpha: &a) else { return color }
+
+        let background = relativeLuminance(red: 247 / 255, green: 242 / 255, blue: 233 / 255)
+        var scale: CGFloat = 1
+        while contrastRatio(
+            relativeLuminance(red: red * scale, green: green * scale, blue: blue * scale),
+            background
+        ) < 5.6, scale > 0.1 {
+            scale -= 0.02
+        }
+        return Color(red: red * scale, green: green * scale, blue: blue * scale, opacity: a)
+    }
+
+    private static func relativeLuminance(red: CGFloat, green: CGFloat, blue: CGFloat) -> CGFloat {
+        func linearize(_ component: CGFloat) -> CGFloat {
+            component <= 0.03928
+                ? component / 12.92
+                : pow((component + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * linearize(red) + 0.7152 * linearize(green) + 0.0722 * linearize(blue)
+    }
+
+    private static func contrastRatio(_ first: CGFloat, _ second: CGFloat) -> CGFloat {
+        (max(first, second) + 0.05) / (min(first, second) + 0.05)
     }
 
     static func readableForeground(

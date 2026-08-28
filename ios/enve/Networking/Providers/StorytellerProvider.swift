@@ -146,10 +146,13 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
 
     private func authorizedSend(
         _ request: URLRequest,
-        refreshOnForbidden: Bool = true
+        refreshOnForbidden: Bool = false
     ) async throws -> (Data, HTTPURLResponse) {
         let (data, http) = try await send(request)
-        if http.statusCode == 401 || (refreshOnForbidden && http.statusCode == 403) {
+        if Self.responseRequiresReauthentication(
+            statusCode: http.statusCode,
+            refreshOnForbidden: refreshOnForbidden
+        ) {
             guard let username = connection.username, let password = connection.password,
                 !username.isEmpty
             else {
@@ -170,6 +173,13 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
             return (retryData, retryHttp)
         }
         return (data, http)
+    }
+
+    nonisolated static func responseRequiresReauthentication(
+        statusCode: Int,
+        refreshOnForbidden: Bool = false
+    ) -> Bool {
+        statusCode == 401 || (refreshOnForbidden && statusCode == 403)
     }
 
     func loginWithCredentials(usernameOrEmail: String, password: String) async throws -> String {
@@ -998,7 +1008,7 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
             tempURL = url
             response = http
         } else {
-            (tempURL, response) = try await URLSession.shared.download(for: request)
+            (tempURL, response) = try await session.download(for: request)
         }
 
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
@@ -1030,7 +1040,7 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
             tempURL = url
             response = http
         } else {
-            (tempURL, response) = try await URLSession.shared.download(for: request)
+            (tempURL, response) = try await session.download(for: request)
         }
 
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {

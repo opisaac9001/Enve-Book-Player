@@ -73,7 +73,7 @@ private final class RecoveryFixture {
     let progress: UserProgressStore
 
     private let defaultsSuiteName: String
-    private let defaults: UserDefaults
+    let defaults: UserDefaults
     private let metadataFileURL: URL
     private let progressFileURL: URL
 
@@ -140,7 +140,8 @@ private final class RecoveryFixture {
                 purgeCachedArtifacts: { recorder.recordBook($0) },
                 purgeDownloadArtifacts: { recorder.recordDisk($0) },
                 cleanupAlignmentCaches: { _ in recorder.recordAlignmentCleanup() }
-            )
+            ),
+            defaults: defaults
         )
     }
 
@@ -198,6 +199,10 @@ struct LibraryRecoveryCoordinatorTests {
         recovery.dismissOrphanedBook(orphan)
 
         #expect(fixture.presentation.orphanedBooks.isEmpty)
+        #expect(
+            fixture.defaults.stringArray(forKey: LibraryRecoveryCoordinator.acknowledgedRescuedDownloadsKey)
+                == [orphan.downloadKey]
+        )
         fixture.cleanUp()
     }
 

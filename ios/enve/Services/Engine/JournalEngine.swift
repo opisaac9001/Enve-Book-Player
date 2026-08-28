@@ -224,7 +224,8 @@ final class JournalEngine {
     }
 
     func renderObsidianManualExport(preferences: UserPreferences) async -> String {
-        let books = await appState.bookStore.allBooks()
+        let stableIds = await appState.bookStore.readerArtifactBookStableIds()
+        let books = Array(await appState.bookStore.booksByStableIds(stableIds).values)
         var output = ""
 
         for book in books {

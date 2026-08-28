@@ -143,11 +143,6 @@ struct BookDetailScreen: View {
             GlyphButton(systemImage: "chevron.left", label: "Back") { dismiss() }
                 .padding(.leading, 20)
         }
-        .overlay(alignment: .top) {
-            ReaderOpenPreparationBanner()
-                .safeAreaPadding(.top, 52)
-                .zIndex(100)
-        }
         .navigationBarBackButtonHidden(true)
         .toolbar(.hidden, for: .navigationBar)
         .animation(.smooth(duration: 0.35), value: shelf.message)

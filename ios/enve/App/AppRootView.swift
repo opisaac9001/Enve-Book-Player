@@ -245,6 +245,8 @@ struct AppRootView: View {
         }
 
         switch route ?? "" {
+        case "hearth":
+            tab = .hearth
         case "browse":
             tab = .library
         case "library", "libraryfilters", "librarybatch", "librarybatchbar":
@@ -256,11 +258,13 @@ struct AppRootView: View {
         case "addsource":
             debugAddSourcePresented = true
         case "player":
-            if openBook?.isEmpty ?? true,
-                let book = await engine.library.continueListeningBooks(limit: 1).first
-            {
-                engine.playback.play(book)
-            } else if openBook?.isEmpty ?? true {
+            if openBook?.isEmpty ?? true {
+                var book = await engine.library.continueListeningBooks(limit: 1).first
+                if book == nil {
+                    book = await engine.library.firstBooks(mediaType: "audiobook", limit: 1).first
+                }
+                let playerBook = book ?? Self.makePlayerSmokeBook()
+                appState.currentBook = playerBook
                 appState.presentation.isPlayerPresented = true
             }
         case "reader", "readerchrome", "ttsvoices", "ttsdownload", "ttsplayback", "kokorodownload", "kokoroplayback":
@@ -455,7 +459,7 @@ struct AppRootView: View {
         case "suggestions":
             debugWorkHubKey = nil
             debugScreenRoute = DebugRoute(id: "suggestions")
-        case "podcasts", "discover", "collections", "hardcover", "vocabulary", "insights", "completion", "storage", "metadatabatch", "tour":
+        case "podcasts", "discover", "collections", "hardcover", "vocabulary", "insights", "completion", "storage", "libraryhealth", "metadatabatch", "tour":
             if let route { debugScreenRoute = DebugRoute(id: route) }
         default:
             break
@@ -1541,6 +1545,7 @@ struct AppRootView: View {
         case "insights": JournalInsightsScreen()
         case "completion": CompletionCenterScreen()
         case "storage": StorageScreen()
+        case "libraryhealth": LibraryHealthScreen()
         case "metadatabatch": MetadataBatchScreen()
         case "tour": HearthTour()
         default: EmptyView()
@@ -1551,18 +1556,21 @@ struct AppRootView: View {
         ZStack(alignment: .bottom) {
             HearthBackground()
 
-            ZStack {
-                tabContent(.hearth) { HearthScreen(isActive: tab == .hearth) }
-                tabContent(.library) { LibraryScreen(isActive: tab == .library) }
-                tabContent(.podcasts) { PodcastsHomeScreen(isActive: tab == .podcasts, showsBackButton: false) }
-                tabContent(.journal) { JournalScreen(isActive: tab == .journal) }
+            VStack(spacing: 0) {
+                shellBanners
+
+                ZStack {
+                    tabContent(.hearth) { HearthScreen(isActive: tab == .hearth) }
+                    tabContent(.library) { LibraryScreen(isActive: tab == .library) }
+                    tabContent(.podcasts) { PodcastsHomeScreen(isActive: tab == .podcasts, showsBackButton: false) }
+                    tabContent(.journal) { JournalScreen(isActive: tab == .journal) }
+                }
             }
 
             MantelBar(tab: $tab, style: prefs.shellNavigationStyle, onSelect: selectTab)
 
                 .ignoresSafeArea(.keyboard, edges: .bottom)
         }
-        .safeAreaInset(edge: .top, spacing: 0) { shellBanners }
         .environment(\.mantelInset, mantelInset)
         .environment(\.shellNavigationStyle, prefs.shellNavigationStyle)
     }
@@ -1609,10 +1617,12 @@ struct AppRootView: View {
     private func tabContent<Content: View>(_ item: HearthTab, @ViewBuilder content: () -> Content) -> some View {
         NavigationStack {
             content()
+                .accessibilityHidden(tab != item)
         }
         .id(tabResetTokens[item])
         .opacity(tab == item ? 1 : 0)
         .allowsHitTesting(tab == item)
+        .accessibilityHidden(tab != item)
     }
 
     private func selectTab(_ item: HearthTab) {
@@ -1658,6 +1668,23 @@ struct AppRootView: View {
     }
 
     #if DEBUG
+    private static func makePlayerSmokeBook() -> Book {
+        Book(
+            id: "debug-player-smoke",
+            title: "The Ember Archive",
+            author: "Enve Test Library",
+            duration: 28_800,
+            chapters: [
+                Chapter(id: "debug-player-chapter-1", start: 0, end: 7_200, title: "The First Spark"),
+                Chapter(id: "debug-player-chapter-2", start: 7_200, end: 18_000, title: "Across the Stacks"),
+                Chapter(id: "debug-player-chapter-3", start: 18_000, end: 28_800, title: "Home to the Hearth"),
+            ],
+            source: .local,
+            currentTime: 9_450,
+            libraryId: "debug"
+        )
+    }
+
     private static func makeReaderSmokeBook() -> Book? {
         let folder = FileManager.default.temporaryDirectory
             .appendingPathComponent("enve-reader-smoke", isDirectory: true)

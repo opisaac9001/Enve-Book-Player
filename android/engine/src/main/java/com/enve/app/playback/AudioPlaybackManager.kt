@@ -52,6 +52,18 @@ internal fun hasReliableMultiTrackTimeline(
         trackDurationsMs.size == itemCount &&
         trackDurationsMs.all { it > 0L }
 
+internal fun resolveTrackDurationMs(
+    metadataDurationMs: Long,
+    timelineDurationMs: Long,
+    currentDurationMs: Long,
+    isCurrentItem: Boolean,
+): Long = when {
+    metadataDurationMs > 0L -> metadataDurationMs
+    timelineDurationMs > 0L -> timelineDurationMs
+    isCurrentItem && currentDurationMs > 0L -> currentDurationMs
+    else -> 0L
+}
+
 internal data class QueueSeekTarget(
     val mediaItemIndex: Int,
     val positionMs: Long,
@@ -566,11 +578,12 @@ class AudioPlaybackManager @Inject constructor(
             val timelineDuration = runCatching {
                 player.currentTimeline.getWindow(index, window).durationMs
             }.getOrDefault(0L)
-            when {
-                timelineDuration > 0L -> timelineDuration
-                index == player.currentMediaItemIndex && player.duration > 0L -> player.duration
-                else -> knownDuration
-            }
+            resolveTrackDurationMs(
+                metadataDurationMs = knownDuration,
+                timelineDurationMs = timelineDuration,
+                currentDurationMs = player.duration,
+                isCurrentItem = index == player.currentMediaItemIndex,
+            )
         }
         activeTrackOffsetsMs = cumulativeTrackOffsets(activeTrackDurationsMs)
     }

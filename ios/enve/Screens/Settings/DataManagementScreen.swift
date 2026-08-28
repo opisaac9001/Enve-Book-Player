@@ -173,13 +173,18 @@ struct DataManagementScreen: View {
             isWorking = true
             Task {
                 await engine.maintenance.clearMetadata()
-                await MainActor.run { finish("Metadata cleared. It'll re-fetch on the next sync.") }
+                await engine.sources.refreshVisibleLibraryScope(.all)
+                await MainActor.run { finish("Metadata cleared and rebuilt from your sources.") }
             }
         case .clearDownloads:
             isWorking = true
             Task {
-                await engine.maintenance.clearFinishedDownloads()
-                await MainActor.run { finish("Downloaded files removed.") }
+                let result = await engine.downloads.clearAllDownloads()
+                let message =
+                    result.remaining == 0
+                    ? "Removed \(result.removed) downloaded \(result.removed == 1 ? "book" : "books")."
+                    : "Removed \(result.removed) downloads. \(result.remaining) could not be removed."
+                await MainActor.run { finish(message) }
             }
         case .resetApp:
             isResetting = true
@@ -239,7 +244,7 @@ private enum DataAction: Identifiable {
         switch self {
         case .clearCache: return "Cached covers and artwork. Re-fetched as you browse."
         case .clearMetadata: return "Downloaded metadata and your edits. Re-fetched on the next sync."
-        case .clearDownloads: return "Delete finished downloads from this device."
+        case .clearDownloads: return "Delete all downloaded books from this device."
         case .resetApp: return "Erase sources, library, progress, and settings, then close the app."
         }
     }
@@ -258,7 +263,7 @@ private enum DataAction: Identifiable {
         case .clearCache: return "Covers and artwork will be removed and re-downloaded as you browse."
         case .clearMetadata:
             return "Cached metadata and any metadata you've edited will be removed, then re-fetched from your servers on the next sync."
-        case .clearDownloads: return "Finished downloads will be deleted from this device. You can download them again later."
+        case .clearDownloads: return "All downloaded books will be deleted from this device. You can download them again later."
         case .resetApp:
             return
                 "This erases all sources, your whole library, reading progress, and every setting. After clearing, the app will close. Reopen it to start fresh. This can't be undone."

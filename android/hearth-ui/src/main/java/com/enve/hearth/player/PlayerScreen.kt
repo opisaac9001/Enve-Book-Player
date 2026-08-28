@@ -129,7 +129,7 @@ fun PlayerScreen(
             val playButtonSize = if (compactPanel) 64.dp else 76.dp
             val playIconSize = if (compactPanel) 34.dp else 38.dp
             val transportIconSize = if (compactPanel) 30.dp else 34.dp
-            val transportTouchPadding = if (compactPanel) Hearth.Spacing.S else Hearth.Spacing.M
+            val transportTouchPadding = Hearth.Spacing.S
             val utilityIconSize = if (compactPanel) 20.dp else 22.dp
             val utilityTextSize = if (compactPanel) 9.sp else 10.sp
 
@@ -222,27 +222,30 @@ fun PlayerScreen(
                 val canGoNextChapter = chapterIndex in 0 until chapters.lastIndex
                 Row(
                     Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(
-                        Icons.Filled.SkipPrevious,
-                        contentDescription = "Previous chapter",
-                        tint = if (canGoPreviousChapter) palette.text else palette.textSecondary,
-                        modifier = Modifier
-                            .clip(CircleShape)
-                            .clickable(enabled = canGoPreviousChapter) { vm.previousChapter() }
-                            .padding(transportTouchPadding)
-                            .size(transportIconSize),
-                    )
-                    SkipIntervalButton(
-                        seconds = skipBackwardSeconds,
-                        forward = false,
-                        tint = palette.text,
-                        iconSize = transportIconSize,
-                        touchPadding = transportTouchPadding,
-                        onClick = vm::skipBackward,
-                    )
+                    Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Filled.SkipPrevious,
+                            contentDescription = "Previous chapter",
+                            tint = if (canGoPreviousChapter) palette.text else palette.textSecondary,
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .clickable(enabled = canGoPreviousChapter) { vm.previousChapter() }
+                                .padding(transportTouchPadding)
+                                .size(transportIconSize),
+                        )
+                    }
+                    Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                        SkipIntervalButton(
+                            seconds = skipBackwardSeconds,
+                            forward = false,
+                            tint = palette.text,
+                            iconSize = transportIconSize,
+                            touchPadding = transportTouchPadding,
+                            onClick = vm::skipBackward,
+                        )
+                    }
                     Box(
                         Modifier.size(playButtonSize).clip(CircleShape).background(palette.ember).clickable { vm.togglePlay() },
                         contentAlignment = Alignment.Center,
@@ -253,24 +256,28 @@ fun PlayerScreen(
                             tint = palette.readableOnEmber, modifier = Modifier.size(playIconSize),
                         )
                     }
-                    SkipIntervalButton(
-                        seconds = skipForwardSeconds,
-                        forward = true,
-                        tint = palette.text,
-                        iconSize = transportIconSize,
-                        touchPadding = transportTouchPadding,
-                        onClick = vm::skipForward,
-                    )
-                    Icon(
-                        Icons.Filled.SkipNext,
-                        contentDescription = "Next chapter",
-                        tint = if (canGoNextChapter) palette.text else palette.textSecondary,
-                        modifier = Modifier
-                            .clip(CircleShape)
-                            .clickable(enabled = canGoNextChapter) { vm.nextChapter() }
-                            .padding(transportTouchPadding)
-                            .size(transportIconSize),
-                    )
+                    Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                        SkipIntervalButton(
+                            seconds = skipForwardSeconds,
+                            forward = true,
+                            tint = palette.text,
+                            iconSize = transportIconSize,
+                            touchPadding = transportTouchPadding,
+                            onClick = vm::skipForward,
+                        )
+                    }
+                    Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Filled.SkipNext,
+                            contentDescription = "Next chapter",
+                            tint = if (canGoNextChapter) palette.text else palette.textSecondary,
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .clickable(enabled = canGoNextChapter) { vm.nextChapter() }
+                                .padding(transportTouchPadding)
+                                .size(transportIconSize),
+                        )
+                    }
                 }
 
                 Spacer(Modifier.weight(1f))

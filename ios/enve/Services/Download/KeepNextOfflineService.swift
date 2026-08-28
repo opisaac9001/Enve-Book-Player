@@ -119,6 +119,9 @@ final class KeepNextOfflineService {
     }
 
     private func reconcileCurrentItem() async {
+        let signpost = PerfSignpost.begin("keep-next-offline")
+        defer { PerfSignpost.end(signpost) }
+
         let preferences = LibraryDisplayPreferencesStore.shared.loadPreferences()
         guard preferences.keepNextItemsOfflineEnabled,
             downloads.isNetworkAvailable,
@@ -134,7 +137,8 @@ final class KeepNextOfflineService {
         if current.isPodcastEpisode {
             candidates = await podcastCandidates(for: current)
         } else {
-            let books = await appState.bookStore.allBooks()
+            guard let series = current.series else { return }
+            let books = await appState.bookStore.books(inSeriesNames: [series])
             guard !Task.isCancelled else { return }
             candidates = KeepNextOfflinePolicy.seriesCandidates(current: current, books: books)
         }

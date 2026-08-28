@@ -173,15 +173,45 @@ class DiskImageCache {
         failedRemoteURLs.removeObject(forKey: key)
     }
 
-    func clearAllCache() {
+    func diskBytes() async -> Int64 {
+        let directory = cacheDirectory
+        return await Task.detached(priority: .utility) {
+            Self.directorySize(at: directory)
+        }.value
+    }
+
+    nonisolated private static func directorySize(at directory: URL) -> Int64 {
+        guard let enumerator = FileManager.default.enumerator(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return 0
+        }
+
+        var total: Int64 = 0
+        for case let url as URL in enumerator {
+            guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+                values.isRegularFile == true,
+                let fileSize = values.fileSize
+            else {
+                continue
+            }
+            total += Int64(fileSize)
+        }
+        return total
+    }
+
+    func clearAllCache() async {
         memoryCache.removeAllObjects()
         failedRemoteURLs.removeAllObjects()
 
-        Task.detached(priority: .background) {
+        let directory = cacheDirectory
+        await Task.detached(priority: .background) {
             do {
                 let fileManager = FileManager.default
-                if fileManager.fileExists(atPath: self.cacheDirectory.path) {
-                    let contents = try fileManager.contentsOfDirectory(at: self.cacheDirectory, includingPropertiesForKeys: nil)
+                if fileManager.fileExists(atPath: directory.path) {
+                    let contents = try fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
                     for file in contents {
                         try fileManager.removeItem(at: file)
                     }
@@ -190,7 +220,7 @@ class DiskImageCache {
             } catch {
                 AppLogger.library.error("Error clearing disk cache: \(error)")
             }
-        }
+        }.value
     }
 }
 
@@ -289,6 +319,7 @@ struct CachedAsyncCoverImage: View {
         if let identityBook {
             let coverPath = LocalStorageManager.shared.coverOverridePath(for: identityBook.downloadKey)
             let decoded: UIImage? = await Task.detached(priority: .userInitiated) {
+                guard Self.coverOverrideIsCurrent(at: coverPath, for: url) else { return nil }
                 guard let data = try? Data(contentsOf: coverPath) else { return nil }
                 return DiskImageCache.decodeDownsampled(data)
             }.value
@@ -495,6 +526,19 @@ struct CachedAsyncCoverImage: View {
         }
         DiskImageCache.shared.markRemoteFetchFailure(for: url)
         await MainActor.run { isLoading = false }
+    }
+
+    nonisolated static func coverOverrideIsCurrent(at fileURL: URL, for sourceURL: URL) -> Bool {
+        guard let version = URLComponents(url: sourceURL, resolvingAgainstBaseURL: false)?.queryItems?
+            .first(where: { $0.name == "v" })?.value,
+            let updatedAt = FlexibleDate.parse(version)
+        else {
+            return true
+        }
+        guard let modifiedAt = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate else {
+            return false
+        }
+        return modifiedAt >= updatedAt
     }
 
     @MainActor

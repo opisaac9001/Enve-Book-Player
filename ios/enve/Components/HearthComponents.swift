@@ -334,9 +334,11 @@ struct HearthMarqueeText: View {
                         }
                         .onChange(of: g.size.width) { _, w in
                             containerWidth = w; restart()
-                        }
+                    }
                 }
             )
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(text)
             .onChange(of: text) { _, _ in
                 offset = 0; restart()
             }
@@ -348,6 +350,7 @@ struct HearthMarqueeText: View {
             .foregroundStyle(color)
             .lineLimit(1)
             .fixedSize(horizontal: true, vertical: false)
+            .accessibilityHidden(true)
     }
 
     private func restart() {

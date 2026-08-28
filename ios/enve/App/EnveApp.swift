@@ -137,6 +137,7 @@ struct EnveApp: App {
         #if os(iOS)
 
         WatchSessionBridge.shared.start()
+        RuntimeDiagnosticsCollector.shared.start()
         #endif
         AutoSleepService.shared.start()
 
