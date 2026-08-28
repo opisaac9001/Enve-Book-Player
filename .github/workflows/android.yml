@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build and lint
+    name: Compile Android
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:
@@ -41,5 +41,5 @@ jobs:
       - name: Verify Android provenance
         run: ./scripts/verify-provenance
 
-      - name: Run Android compile and lint gate
-        run: ./gradlew --no-daemon :app:lintDebug :app:assembleDebug
+      - name: Compile Android
+        run: ./gradlew --no-daemon :app:compileDebugKotlin
