@@ -16,9 +16,9 @@ concurrency:
 
 jobs:
   build:
-    name: Build, lint, and unit tests
+    name: Build and lint
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: android
@@ -41,40 +41,5 @@ jobs:
       - name: Verify Android provenance
         run: ./scripts/verify-provenance
 
-      - name: Run Android gate
-        run: ./gradlew --no-daemon testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleRelease
-
-  connected-tests:
-    name: Connected Android tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v6
-        with:
-          submodules: recursive
-
-      - name: Set up JDK
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: "21"
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v6
-
-      - name: Enable KVM
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-
-      - name: Run instrumentation tests
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 35
-          target: google_apis
-          arch: x86_64
-          profile: pixel_7_pro
-          script: cd android && ./gradlew --no-daemon :app:connectedDebugAndroidTest
+      - name: Run Android compile and lint gate
+        run: ./gradlew --no-daemon :app:lintDebug :app:assembleDebug

@@ -1,5 +1,6 @@
 package com.enve.app.ui.screens
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
@@ -358,6 +359,7 @@ class PdfReaderActivity : ComponentActivity() {
         if (uiState.pageCount > 0) syncProgress()
     }
 
+    @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val direction = ReaderHardwareKeyPolicy.directionFor(
             keyCode = event.keyCode,

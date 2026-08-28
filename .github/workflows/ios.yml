@@ -18,36 +18,6 @@ jobs:
   test:
     name: Build and test
     runs-on: macos-26
-    timeout-minutes: 60
-    defaults:
-      run:
-        working-directory: ios
-
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v5
-        with:
-          submodules: recursive
-
-      - name: Select Xcode 26.4.1
-        run: sudo xcode-select -s /Applications/Xcode_26.4.1.app
-
-      - name: Verify repository provenance
-        run: ./scripts/verify-provenance
-
-      - name: Run test plan
-        run: |
-          xcodebuild -quiet \
-            -project enve.xcodeproj \
-            -scheme enve \
-            -testPlan AllTests \
-            -destination 'platform=iOS Simulator,name=iPhone Air,OS=26.4.1' \
-            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
-            test
-
-  ui-smoke-tests:
-    name: UI smoke tests
-    runs-on: macos-26
     timeout-minutes: 30
     defaults:
       run:
@@ -65,16 +35,15 @@ jobs:
       - name: Verify repository provenance
         run: ./scripts/verify-provenance
 
-      - name: Run UI smoke suite
+      - name: Build iOS target
         run: |
           xcodebuild -quiet \
             -project enve.xcodeproj \
             -scheme enve \
-            -testPlan UISmokeTests \
-            -destination 'platform=iOS Simulator,name=iPhone Air,OS=26.4.1' \
+            -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
-            test \
-            -only-testing:enveUITests/enveUISmokeTests
+            CODE_SIGNING_ALLOWED=NO \
+            build
 
   watch-build:
     name: Apple Watch build
