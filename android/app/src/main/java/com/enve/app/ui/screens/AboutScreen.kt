@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.PrivacyTip
 import androidx.compose.material.icons.filled.Star
@@ -70,6 +71,7 @@ fun AboutScreen(
     onRateApp: () -> Unit = {},
     onOpenWebsite: () -> Unit = {},
     onOpenPrivacyPolicy: () -> Unit = {},
+    onOpenAcknowledgements: () -> Unit = {},
     onBack: () -> Unit = {},
 ) {
     val colors = EnveTheme.colors
@@ -213,7 +215,7 @@ fun AboutScreen(
                     icon = Icons.Default.Language,
                     tint = Color(0xFF64748B),
                     title = "Website",
-                    subtitle = "enveapp.io",
+                    subtitle = "envemedia.com",
                     onClick = onOpenWebsite,
                 )
                 HorizontalDivider(color = dividerColor)
@@ -231,6 +233,14 @@ fun AboutScreen(
                     title = "Privacy Policy",
                     subtitle = "How Enve handles your data",
                     onClick = onOpenPrivacyPolicy,
+                )
+                HorizontalDivider(color = dividerColor)
+                AboutLinkRow(
+                    icon = Icons.Default.Description,
+                    tint = Color(0xFF64748B),
+                    title = "Open-source licenses",
+                    subtitle = "Libraries, models, and legal notices",
+                    onClick = onOpenAcknowledgements,
                 )
             }
 
@@ -256,7 +266,7 @@ fun AboutScreen(
                     HorizontalDivider(color = dividerColor)
                     AboutTechRow(label = "Min API", value = "26 (Android 8)")
                     HorizontalDivider(color = dividerColor)
-                    AboutTechRow(label = "Target API", value = "35")
+                    AboutTechRow(label = "Target API", value = "36")
                     HorizontalDivider(color = dividerColor)
                 }
             }

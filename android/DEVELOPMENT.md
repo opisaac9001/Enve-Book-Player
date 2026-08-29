@@ -29,11 +29,11 @@ The `hearth-ui` to `engine-api` boundary is deliberate. UI code must not import 
 
 ## Initial setup
 
-From the combined Enve Book Player checkout, initialize the shared Foliate submodule, enter the Android directory, open that directory in Android Studio, and let Gradle sync:
+From the combined Enve Book Player checkout, enter the Android directory, initialize the Foliate submodule, open that directory in Android Studio, and let Gradle sync:
 
 ```sh
-git submodule update --init --recursive
 cd android
+git submodule update --init --recursive
 ```
 
 Create `local.properties` with your local Android SDK path if Android Studio does not create it. That file is ignored.
@@ -102,7 +102,7 @@ Use Room for tabular data, `CredentialVault` for secrets, DataStore for UI prefe
 
 ### Change authentication or transport security
 
-Read `SECURITY.md`, the shared [OIDC, SSO, and browser sign-in guide](../docs/guides/oidc.md), and follow the password process in `AGENTS.md`. Test the actual provider against every supported transport. Confirm secrets are absent from logs, persisted preferences, diagnostics, and URLs where headers are supported.
+Read `SECURITY.md` and follow the password process in `AGENTS.md`. Test the actual provider against every supported transport. Confirm secrets are absent from logs, persisted preferences, diagnostics, and URLs where headers are supported.
 
 ### Change Compose UI
 

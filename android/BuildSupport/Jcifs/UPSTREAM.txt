@@ -1,0 +1,10 @@
+jcifs-ng
+Repository: https://github.com/AgNO3/jcifs-ng
+Version: 2.1.10
+Tag: jcifs-ng-2.1.10
+Commit: 01ad55aee9511b9b466c5d0f586bfa9314469334
+Source archive: https://github.com/AgNO3/jcifs-ng/archive/refs/tags/jcifs-ng-2.1.10.tar.gz
+Source archive SHA-256: 5f7de1c111d1d5dbe74ea5838bbd77b5a4e757a059c72992dea52c7056d567e7
+Maven source JAR SHA-256: e7f26c110e905a40cb12f5ae3151b2427fbd0b153e0edbfc6cf3ac922b66ca4a
+Maven binary JAR SHA-256: 1940332a416644b3b464335d0e0fb12530fb2c1e4cfb57e7d3339b46b2f0af48
+License: LGPL-2.1-or-later

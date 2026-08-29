@@ -21,10 +21,19 @@ require_text NOTICE.md "$identifier"
 require_text THIRD_PARTY_NOTICES.md '## Distribution reminder'
 require_text docs/legal/THIRD_PARTY_AUDIT.md '## Current conclusion'
 require_text BuildSupport/FoliateRuntime/UPSTREAM.txt '6b11e1744346f60504b727984f7d42f0fef3ab54'
-require_text engine/src/main/cpp/libmobi/PROVENANCE.md '0.12'
-require_text engine/src/main/cpp/whisper/PROVENANCE.md '1.8.4'
+require_text engine/src/main/cpp/libmobi/PROVENANCE.md '906274205c11944b628da1c553b255acb1af7c55'
+require_text engine/src/main/cpp/libmobi/PROVENANCE.md 'ec260e472d4db1bcbf8c479ee470bd2a2b2b822f14313604c76e667a684e1dfa'
+require_text engine/src/main/cpp/whisper/PROVENANCE.md '9386f239401074690479731c1e41683fbbeac557'
+require_text BuildSupport/Jcifs/UPSTREAM.txt '5f7de1c111d1d5dbe74ea5838bbd77b5a4e757a059c72992dea52c7056d567e7'
+require_text BuildSupport/Models/UPSTREAM.md '555579ff2f4fd13379abe69c1c3ab5200f7338bc92471557f1d6614a6e5ab0b4'
+require_text BuildSupport/Models/UPSTREAM.md '921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f'
+require_text BuildSupport/ProviderLogos/PROVENANCE.md '2463e4f96353d42e030b895231bd0ad18980313e4bbe648e78ed1047391cecb9'
+require_text docs/release/public-source-publication.md 'This includes Android Auto support'
+require_text docs/release/lgpl-replacement.md 'Enve builds libmobi as a separate `libmobi.so`'
 require_text app/build.gradle.kts "$identifier"
 require_text app/src/main/AndroidManifest.xml "$identifier"
+
+shasum -a 256 --check BuildSupport/ProviderLogos/SHA256SUMS
 
 for protected_file in \
     app/src/main/java/com/enve/app/ui/auth/AuthBrowserActivity.kt \

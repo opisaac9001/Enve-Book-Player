@@ -3,7 +3,7 @@
  *
  * This file is installed with the library.
  * Include it in your project with "#include <mobi.h>".
- * See aryan of usage in mobitool.c, mobimeta.c, mobidrm.c
+ * See example of usage in mobitool.c, mobimeta.c, mobidrm.c
  *
  * Copyright (c) 2014-2022 Bartek Fabiszewski
  * http://www.fabiszewski.net

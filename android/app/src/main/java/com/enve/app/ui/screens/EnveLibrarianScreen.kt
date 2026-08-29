@@ -118,6 +118,8 @@ fun EnveLibrarianScreen(
     var draft by remember { mutableStateOf("") }
     var menuExpanded by remember { mutableStateOf(false) }
     var showModelSettings by remember { mutableStateOf(false) }
+    var showGeminiTerms by remember { mutableStateOf(false) }
+    var showRecommendedModelTerms by remember { mutableStateOf(false) }
     val modelPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) onImportLocalModel(uri)
     }
@@ -300,13 +302,76 @@ fun EnveLibrarianScreen(
                     onRemoteServerApiKeyChange = onRemoteServerApiKeyChange,
                     onTestRemoteServer = onTestRemoteServer,
                     onEngineChange = onEngineChange,
-                    onDownloadGeminiNano = onDownloadGeminiNano,
-                    onDownloadRecommendedModel = onDownloadRecommendedModel,
+                    onDownloadGeminiNano = { showGeminiTerms = true },
+                    onDownloadRecommendedModel = { showRecommendedModelTerms = true },
                     onCancelModelDownload = onCancelModelDownload,
                     onImportLocalModel = {
                         modelPicker.launch(arrayOf("application/octet-stream", "application/x-litertlm", "*/*"))
                     },
                     onRemoveLocalModel = onRemoveLocalModel,
+                )
+            },
+            containerColor = palette.bgElevated,
+            shape = librarianDialogShape(),
+        )
+    }
+
+    if (showGeminiTerms) {
+        AlertDialog(
+            onDismissRequest = { showGeminiTerms = false },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showGeminiTerms = false
+                        onDownloadGeminiNano()
+                    },
+                ) {
+                    Text("Download", color = palette.ember)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showGeminiTerms = false }) {
+                    Text("Cancel", color = palette.textSecondary)
+                }
+            },
+            title = { Text("Download Gemini Nano?", style = hearthDisplay(18.sp, FontWeight.SemiBold), color = palette.text) },
+            text = {
+                Text(
+                    "Gemini Nano is downloaded and managed on-device by Google ML Kit. Google Play services may check for model updates and send performance or utilization information under Google's terms. Enve does not receive that telemetry. See the Privacy Policy and About → Open-source licenses for details.",
+                    style = hearthUI(14.sp),
+                    color = palette.textSecondary,
+                )
+            },
+            containerColor = palette.bgElevated,
+            shape = librarianDialogShape(),
+        )
+    }
+
+    if (showRecommendedModelTerms) {
+        AlertDialog(
+            onDismissRequest = { showRecommendedModelTerms = false },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showRecommendedModelTerms = false
+                        onDownloadRecommendedModel()
+                    },
+                ) {
+                    Text("Download", color = palette.ember)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRecommendedModelTerms = false }) {
+                    Text("Cancel", color = palette.textSecondary)
+                }
+            },
+            title = { Text("Download Qwen3 0.6B?", style = hearthDisplay(18.sp, FontWeight.SemiBold), color = palette.text) },
+            text = {
+                Text(
+                    "This 586 MB on-device model is provided by the LiteRT community and Qwen under the Apache 2.0 license. " +
+                        "Enve verifies its exact revision and SHA-256 digest before installing it. The full license is available in About → Open-source licenses.",
+                    style = hearthUI(14.sp),
+                    color = palette.textSecondary,
                 )
             },
             containerColor = palette.bgElevated,

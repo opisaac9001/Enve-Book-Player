@@ -455,10 +455,19 @@ class StorytellerRepository @Inject constructor(
         val response = api.getAudioManifest(serverId)
         if (!response.isSuccessful) error("Storyteller manifest fetch failed: HTTP ${response.code()}")
         val manifest = response.body() ?: error("Storyteller manifest was empty")
-        if (manifest.readingOrder.isEmpty()) error("Storyteller manifest has no audio tracks")
 
         val serverUrl = scopedServerUrl()?.trimEnd('/').orEmpty()
-        val tracks = manifest.toTracks(serverUrl, serverId)
+        val tracks = manifest.toTracks(serverUrl, serverId).ifEmpty {
+            listOf(
+                AudioTrack(
+                    index = 0,
+                    fileName = "${book.title}.m4b",
+                    title = book.title,
+                    durationMs = book.duration.coerceAtLeast(0L) * 1000L,
+                    contentUrl = "$serverUrl/api/v2/books/$serverId/files?format=audiobook",
+                )
+            )
+        }
         val chapters = manifest.toChapters(tracks)
         val totalDurationSec = tracks.sumOf { it.durationMs } / 1000.0
         val serverCurrentTimeSec = fetchPosition(serverId).getOrThrow()

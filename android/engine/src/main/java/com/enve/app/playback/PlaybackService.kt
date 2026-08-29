@@ -2,6 +2,7 @@ package com.enve.app.playback
 
 import android.app.PendingIntent
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.net.Uri
 import android.os.Bundle
 import android.os.SystemClock
@@ -25,6 +26,7 @@ import androidx.media3.session.CacheBitmapLoader
 import androidx.media3.session.CommandButton
 import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.LibraryResult
+import androidx.media3.session.MediaConstants
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaLibraryService.LibraryParams
 import androidx.media3.session.MediaLibraryService.MediaLibrarySession
@@ -33,7 +35,9 @@ import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionError
 import androidx.media3.session.SessionResult
 import com.enve.core.data.local.PreferencesManager
+import com.enve.core.data.local.LastOpenedBookStore
 import com.enve.engine.playback.PlaybackAutomationContract
+import com.enve.engine.playback.PlayerSessionFacade
 import com.enve.engine.impl.R
 import com.enve.app.readium.ReadAloudCheckpointRepository
 import com.enve.app.readium.ReadAloudPlaybackCoordinator
@@ -79,12 +83,15 @@ class PlaybackService : MediaLibraryService() {
     private var pendingCastHandoff: PendingCastHandoff? = null
     private var castHandoffJob: Job? = null
     private var chapterStore: PlaybackChapterStore? = null
+    private var audioPlaybackManager: AudioPlaybackManager? = null
     private var autoBrowserHelper: AutoMediaBrowserHelper? = null
     private var castStreamResolver: CastStreamResolver? = null
     private var localCastServer: LocalCastServer? = null
     private var progressService: PlayerProgressService? = null
     private var preferences: PreferencesManager? = null
     private var playerSessionService: PlayerSessionService? = null
+    private var playerSessionFacade: PlayerSessionFacade? = null
+    private var lastOpenedBookStore: LastOpenedBookStore? = null
     private var playbackQueueCoordinator: PlaybackQueueCoordinator? = null
     private var readAloudPlayback: ReadAloudPlaybackCoordinator? = null
     private var readAloudCheckpoints: ReadAloudCheckpointRepository? = null
@@ -120,25 +127,20 @@ class PlaybackService : MediaLibraryService() {
         val playWhenReady: Boolean,
     )
 
-    private val allowedControllerPackages = setOf(
+    private val allowedControllerPackages = CarControllerPackages.HOSTS + setOf(
         "android",
         "android.media.session.MediaController",
         "com.android.bluetooth",
-        "com.android.car.media",
         "com.android.systemui",
         "com.google.android.gms",
         "com.google.android.carassistant",
         "com.google.android.googlequicksearchbox",
-        "com.google.android.projection.gearhead",
     )
-    private val allowedControllerPackagePrefixes = listOf(
-        "com.google.android.apps.automotive",
-    )
-
     @EntryPoint
     @InstallIn(SingletonComponent::class)
     interface PlaybackServiceEntryPoint {
         fun audioEffectsManager(): AudioEffectsManager
+        fun audioPlaybackManager(): AudioPlaybackManager
         fun okHttpClient(): OkHttpClient
         fun chapterStore(): PlaybackChapterStore
         fun autoBrowserHelper(): AutoMediaBrowserHelper
@@ -146,6 +148,8 @@ class PlaybackService : MediaLibraryService() {
         fun localCastServer(): LocalCastServer
         fun progressService(): PlayerProgressService
         fun playerSessionService(): PlayerSessionService
+        fun playerSessionFacade(): PlayerSessionFacade
+        fun lastOpenedBookStore(): LastOpenedBookStore
         fun playbackQueueCoordinator(): PlaybackQueueCoordinator
         fun readAloudPlayback(): ReadAloudPlaybackCoordinator
         fun readAloudCheckpoints(): ReadAloudCheckpointRepository
@@ -218,12 +222,15 @@ class PlaybackService : MediaLibraryService() {
         castPlayer = cast
 
         chapterStore = entryPoint?.chapterStore()
+        audioPlaybackManager = entryPoint?.audioPlaybackManager()
         autoBrowserHelper = entryPoint?.autoBrowserHelper()
         castStreamResolver = entryPoint?.castStreamResolver()
         localCastServer = entryPoint?.localCastServer()
         progressService = entryPoint?.progressService()
         preferences = entryPoint?.preferencesManager()
         playerSessionService = entryPoint?.playerSessionService()
+        playerSessionFacade = entryPoint?.playerSessionFacade()
+        lastOpenedBookStore = entryPoint?.lastOpenedBookStore()
         playbackQueueCoordinator = entryPoint?.playbackQueueCoordinator()
         readAloudPlayback = entryPoint?.readAloudPlayback()
         readAloudCheckpoints = entryPoint?.readAloudCheckpoints()
@@ -311,6 +318,10 @@ class PlaybackService : MediaLibraryService() {
                 reason: Int,
             ) {
                 confirmCastHandoff(cast)
+            }
+
+            override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
+                mediaSession?.setMediaButtonPreferences(autoMediaButtonPreferences())
             }
         })
 
@@ -936,12 +947,32 @@ class PlaybackService : MediaLibraryService() {
         private const val CAST_HANDOFF_TIMEOUT_MS = 20_000L
         private const val CAST_RECEIVER_FORWARD_TOLERANCE_MS = 5_000L
         private const val CAST_RECEIVER_BACKWARD_TOLERANCE_MS = 2_000L
+        private val PLAYBACK_SPEEDS = listOf(
+            0.5f,
+            0.75f,
+            1f,
+            1.25f,
+            1.5f,
+            1.75f,
+            2f,
+            2.5f,
+            2.75f,
+            3f,
+        )
         private val NEXT_CHAPTER_COMMAND = SessionCommand(
             PlaybackAutomationContract.COMMAND_NEXT_CHAPTER,
             Bundle.EMPTY,
         )
         private val PREVIOUS_CHAPTER_COMMAND = SessionCommand(
             PlaybackAutomationContract.COMMAND_PREVIOUS_CHAPTER,
+            Bundle.EMPTY,
+        )
+        private val CYCLE_PLAYBACK_SPEED_COMMAND = SessionCommand(
+            PlaybackAutomationContract.COMMAND_CYCLE_PLAYBACK_SPEED,
+            Bundle.EMPTY,
+        )
+        private val ADD_BOOKMARK_COMMAND = SessionCommand(
+            PlaybackAutomationContract.COMMAND_ADD_BOOKMARK,
             Bundle.EMPTY,
         )
         private val SEEK_TO_COMMAND = SessionCommand(
@@ -964,29 +995,61 @@ class PlaybackService : MediaLibraryService() {
                     exoPlayer.prepare()
                 }
             }
+
+            override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
+                mediaSession?.setMediaButtonPreferences(autoMediaButtonPreferences())
+            }
         }
 
-    private fun autoMediaButtonPreferences(): ImmutableList<CommandButton> {
-        val buttons = mutableListOf(
-            CommandButton.Builder(skipBackIcon(seekBackMs))
-                .setDisplayName("Back ${seekBackMs / 1000} seconds")
-                .setPlayerCommand(Player.COMMAND_SEEK_BACK)
-                .setSlots(CommandButton.SLOT_BACK_SECONDARY, CommandButton.SLOT_BACK)
-                .build(),
-            CommandButton.Builder(skipForwardIcon(seekForwardMs))
-                .setDisplayName("Forward ${seekForwardMs / 1000} seconds")
-                .setPlayerCommand(Player.COMMAND_SEEK_FORWARD)
-                .setSlots(CommandButton.SLOT_FORWARD_SECONDARY, CommandButton.SLOT_FORWARD)
-                .build(),
-        )
-        if (chapterStore?.snapshot?.value?.chapters?.isNotEmpty() == true) {
+    private fun autoMediaButtonPreferences(speedOverride: Float? = null): ImmutableList<CommandButton> {
+        val hasChapters = chapterStore?.snapshot?.value?.chapters?.isNotEmpty() == true
+        val buttons = mutableListOf<CommandButton>()
+        if (hasChapters) {
+            buttons += CommandButton.Builder(CommandButton.ICON_PREVIOUS)
+                .setDisplayName(getString(R.string.android_auto_previous_chapter))
+                .setSessionCommand(PREVIOUS_CHAPTER_COMMAND)
+                .setSlots(CommandButton.SLOT_BACK, CommandButton.SLOT_BACK_SECONDARY)
+                .build()
             buttons += CommandButton.Builder(CommandButton.ICON_NEXT)
-                .setDisplayName("Next chapter")
+                .setDisplayName(getString(R.string.android_auto_next_chapter))
                 .setSessionCommand(NEXT_CHAPTER_COMMAND)
-                .setSlots(CommandButton.SLOT_FORWARD_SECONDARY, CommandButton.SLOT_OVERFLOW)
+                .setSlots(CommandButton.SLOT_FORWARD, CommandButton.SLOT_FORWARD_SECONDARY)
                 .build()
         }
+        val playbackSpeed = speedOverride ?: mediaSession?.player?.playbackParameters?.speed ?: 1f
+        buttons += CommandButton.Builder(playbackSpeedIcon(playbackSpeed))
+            .setDisplayName(
+                getString(
+                    R.string.android_auto_playback_speed,
+                    formatPlaybackSpeed(playbackSpeed),
+                ),
+            )
+            .setSessionCommand(CYCLE_PLAYBACK_SPEED_COMMAND)
+            .setSlots(CommandButton.SLOT_BACK_SECONDARY, CommandButton.SLOT_OVERFLOW)
+            .build()
+        buttons += CommandButton.Builder(CommandButton.ICON_BOOKMARK_UNFILLED)
+            .setDisplayName(getString(R.string.android_auto_add_bookmark))
+            .setSessionCommand(ADD_BOOKMARK_COMMAND)
+            .setSlots(CommandButton.SLOT_FORWARD_SECONDARY, CommandButton.SLOT_OVERFLOW)
+            .build()
         return ImmutableList.copyOf(buttons)
+    }
+
+    private fun nextPlaybackSpeed(current: Float): Float =
+        PLAYBACK_SPEEDS.firstOrNull { it > current + 0.01f } ?: PLAYBACK_SPEEDS.first()
+
+    private fun formatPlaybackSpeed(speed: Float): String =
+        speed.toString().removeSuffix(".0")
+
+    private fun playbackSpeedIcon(speed: Float): Int = when {
+        speed < 0.625f -> CommandButton.ICON_PLAYBACK_SPEED_0_5
+        speed < 0.9f -> CommandButton.ICON_PLAYBACK_SPEED_0_8
+        speed < 1.125f -> CommandButton.ICON_PLAYBACK_SPEED_1_0
+        speed < 1.375f -> CommandButton.ICON_PLAYBACK_SPEED_1_2
+        speed < 1.625f -> CommandButton.ICON_PLAYBACK_SPEED_1_5
+        speed < 1.9f -> CommandButton.ICON_PLAYBACK_SPEED_1_8
+        speed < 2.25f -> CommandButton.ICON_PLAYBACK_SPEED_2_0
+        else -> CommandButton.ICON_PLAYBACK_SPEED
     }
 
     private fun startWatchingSkipIntervals(preferences: PreferencesManager) {
@@ -994,31 +1057,13 @@ class PlaybackService : MediaLibraryService() {
         scope.launch {
             preferences.skipBackwardSeconds.collectLatest { seconds ->
                 seekBackMs = seconds.coerceIn(5, 120) * 1000L
-                mediaSession?.setMediaButtonPreferences(autoMediaButtonPreferences())
             }
         }
         scope.launch {
             preferences.skipForwardSeconds.collectLatest { seconds ->
                 seekForwardMs = seconds.coerceIn(5, 120) * 1000L
-                mediaSession?.setMediaButtonPreferences(autoMediaButtonPreferences())
             }
         }
-    }
-
-    private fun skipBackIcon(incrementMs: Long): Int = when (incrementMs / 1000L) {
-        5L -> CommandButton.ICON_SKIP_BACK_5
-        10L -> CommandButton.ICON_SKIP_BACK_10
-        15L -> CommandButton.ICON_SKIP_BACK_15
-        30L -> CommandButton.ICON_SKIP_BACK_30
-        else -> CommandButton.ICON_SKIP_BACK
-    }
-
-    private fun skipForwardIcon(incrementMs: Long): Int = when (incrementMs / 1000L) {
-        5L -> CommandButton.ICON_SKIP_FORWARD_5
-        10L -> CommandButton.ICON_SKIP_FORWARD_10
-        15L -> CommandButton.ICON_SKIP_FORWARD_15
-        30L -> CommandButton.ICON_SKIP_FORWARD_30
-        else -> CommandButton.ICON_SKIP_FORWARD
     }
 
     private fun startWatchingChapters() {
@@ -1107,7 +1152,12 @@ class PlaybackService : MediaLibraryService() {
         val currentCacheKey = AutoMediaBrowserHelper.cacheKeyFrom(current.mediaId) ?: return
         if (snapshot.cacheKey != currentCacheKey) return
 
-        val chapter = snapshot.chapters.getOrNull(snapshot.chapterIndexAt(absolutePositionSec(player))) ?: return
+        val chapterIndex = if (snapshot.usesMediaItemIndexes(player.mediaItemCount)) {
+            player.currentMediaItemIndex
+        } else {
+            snapshot.chapterIndexAt(absolutePositionSec(player))
+        }
+        val chapter = snapshot.chapters.getOrNull(chapterIndex) ?: return
         val chapterTitle = chapter.title
         val existingMeta = current.mediaMetadata
         if (existingMeta.title?.toString() == chapterTitle) return
@@ -1135,32 +1185,85 @@ class PlaybackService : MediaLibraryService() {
 
     private fun absolutePositionMs(player: Player): Long {
         val offsetMs = (0 until player.currentMediaItemIndex).sumOf { index ->
-            player.getMediaItemAt(index).mediaMetadata.durationMs ?: 0L
+            mediaItemDurationMs(player, index)
         }
         return (offsetMs + player.currentPosition).coerceAtLeast(0L)
     }
 
     private fun absoluteDurationMs(player: Player): Long {
         val itemDurations = (0 until player.mediaItemCount).sumOf { index ->
-            player.getMediaItemAt(index).mediaMetadata.durationMs ?: 0L
+            mediaItemDurationMs(player, index)
         }
         return itemDurations.takeIf { it > 0L } ?: player.duration.coerceAtLeast(0L)
     }
 
-    private fun hasLibraryAccess(controllerInfo: MediaSession.ControllerInfo): Boolean {
+    private fun mediaItemDurationMs(player: Player, index: Int): Long {
+        player.getMediaItemAt(index).mediaMetadata.durationMs
+            ?.takeIf { it > 0L }
+            ?.let { return it }
+        val timeline = player.currentTimeline
+        if (index < timeline.windowCount) {
+            timeline.getWindow(index, Timeline.Window()).durationMs
+                .takeIf { it != C.TIME_UNSET && it > 0L }
+                ?.let { return it }
+        }
+        return if (index == player.currentMediaItemIndex) {
+            player.duration.takeIf { it != C.TIME_UNSET && it > 0L } ?: 0L
+        } else {
+            0L
+        }
+    }
+
+    private fun isCarController(
+        session: MediaSession,
+        controllerInfo: MediaSession.ControllerInfo,
+    ): Boolean {
+        if (session.isAutoCompanionController(controllerInfo)) return true
+        val controllerPackage = controllerInfo.packageName
+        if (controllerPackage in CarControllerPackages.HOSTS) return true
+        return controllerPackage == CarControllerPackages.MEDIA_SIMULATOR &&
+            applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
+    }
+
+    private fun hasLibraryAccess(
+        session: MediaSession,
+        controllerInfo: MediaSession.ControllerInfo,
+    ): Boolean {
         if (controllerInfo.isTrusted) return true
+        if (isCarController(session, controllerInfo)) return true
         if (controllerInfo.uid == applicationInfo.uid) return true
         val controllerPackage = controllerInfo.packageName
         if (controllerPackage == packageName) return true
-        return controllerPackage in allowedControllerPackages ||
-            allowedControllerPackagePrefixes.any { controllerPackage.startsWith(it) }
+        return controllerPackage in allowedControllerPackages
     }
 
     private data class Resolved(
         val items: List<MediaItem>,
         val startIndex: Int,
         val startPositionMs: Long,
+        val primary: AutoMediaBrowserHelper.ResolvedPlayback?,
     )
+
+    private suspend fun adoptResolvedPlayback(resolved: AutoMediaBrowserHelper.ResolvedPlayback) {
+        withContext(Dispatchers.Main.immediate) {
+            audioPlaybackManager?.adoptExternalPlayback(resolved.book.id)
+            chapterStore?.set(
+                cacheKey = resolved.book.uniqueKey,
+                bookId = resolved.book.id,
+                chapters = resolved.chapters,
+                title = resolved.book.title,
+                author = resolved.book.author,
+                coverUrl = resolved.book.coverUrl,
+            )
+        }
+        playerSessionService?.start(
+            book = resolved.book,
+            positionSec = resolved.absoluteStartPositionMs / 1000L,
+            durationSec = resolved.durationSec,
+            providerSessionId = resolved.providerSessionId,
+        )
+        lastOpenedBookStore?.record(resolved.book)
+    }
 
     private inner class LibraryCallback(
         private val scope: CoroutineScope,
@@ -1170,7 +1273,7 @@ class PlaybackService : MediaLibraryService() {
             session: MediaSession,
             controller: MediaSession.ControllerInfo,
         ): MediaSession.ConnectionResult {
-            val libraryAccess = hasLibraryAccess(controller)
+            val libraryAccess = hasLibraryAccess(session, controller)
             Log.i(
                 "PlaybackService",
                 "onConnect pkg=${controller.packageName} uid=${controller.uid} trusted=${controller.isTrusted} libraryAccess=$libraryAccess",
@@ -1180,6 +1283,8 @@ class PlaybackService : MediaLibraryService() {
                     .buildUpon()
                     .add(NEXT_CHAPTER_COMMAND)
                     .add(PREVIOUS_CHAPTER_COMMAND)
+                    .add(CYCLE_PLAYBACK_SPEED_COMMAND)
+                    .add(ADD_BOOKMARK_COMMAND)
                     .add(SEEK_TO_COMMAND)
                     .add(SEEK_BY_COMMAND)
                     .build()
@@ -1188,18 +1293,28 @@ class PlaybackService : MediaLibraryService() {
             }
             val resultBuilder = MediaSession.ConnectionResult.AcceptedResultBuilder(session)
                 .setAvailableSessionCommands(sessionCommands)
-                .setMediaButtonPreferences(autoMediaButtonPreferences())
-            if (!libraryAccess) {
-                resultBuilder.setAvailablePlayerCommands(
-                    session.player.availableCommands.buildUpon()
-                        .remove(Player.COMMAND_SET_MEDIA_ITEM)
-                        .remove(Player.COMMAND_CHANGE_MEDIA_ITEMS)
-                        .remove(Player.COMMAND_SET_PLAYLIST_METADATA)
-                        .remove(Player.COMMAND_SET_MEDIA_ITEMS_METADATA)
-                        .remove(Player.COMMAND_RELEASE)
-                        .build(),
+                .setMediaButtonPreferences(
+                    if (libraryAccess) autoMediaButtonPreferences() else ImmutableList.of(),
                 )
+            val playerCommands = session.player.availableCommands.buildUpon()
+            if (isCarController(session, controller)) {
+                playerCommands
+                    .remove(Player.COMMAND_SEEK_BACK)
+                    .remove(Player.COMMAND_SEEK_FORWARD)
+                    .remove(Player.COMMAND_SEEK_TO_PREVIOUS)
+                    .remove(Player.COMMAND_SEEK_TO_NEXT)
+                    .remove(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
+                    .remove(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
             }
+            if (!libraryAccess) {
+                playerCommands
+                    .remove(Player.COMMAND_SET_MEDIA_ITEM)
+                    .remove(Player.COMMAND_CHANGE_MEDIA_ITEMS)
+                    .remove(Player.COMMAND_SET_PLAYLIST_METADATA)
+                    .remove(Player.COMMAND_SET_MEDIA_ITEMS_METADATA)
+                    .remove(Player.COMMAND_RELEASE)
+            }
+            resultBuilder.setAvailablePlayerCommands(playerCommands.build())
             return resultBuilder.build()
         }
 
@@ -1209,13 +1324,41 @@ class PlaybackService : MediaLibraryService() {
             customCommand: SessionCommand,
             args: Bundle,
         ): ListenableFuture<SessionResult> {
+            if (customCommand == CYCLE_PLAYBACK_SPEED_COMMAND) {
+                val speed = nextPlaybackSpeed(session.player.playbackParameters.speed)
+                session.player.setPlaybackSpeed(speed)
+                scope.launch { preferences?.setPlaybackSpeed(speed) }
+                session.setMediaButtonPreferences(autoMediaButtonPreferences(speed))
+                return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+            }
+            if (customCommand == ADD_BOOKMARK_COMMAND) {
+                if (audioPlaybackManager?.currentBookId == null) {
+                    return Futures.immediateFuture(
+                        SessionResult(SessionResult.RESULT_ERROR_INVALID_STATE),
+                    )
+                }
+                playerSessionFacade?.addBookmark()
+                    ?: return Futures.immediateFuture(
+                        SessionResult(SessionResult.RESULT_ERROR_INVALID_STATE),
+                    )
+                return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+            }
+            if (customCommand == NEXT_CHAPTER_COMMAND || customCommand == PREVIOUS_CHAPTER_COMMAND) {
+                val success = seekToChapter(
+                    player = session.player,
+                    next = customCommand == NEXT_CHAPTER_COMMAND,
+                )
+                return Futures.immediateFuture(
+                    SessionResult(
+                        if (success) {
+                            SessionResult.RESULT_SUCCESS
+                        } else {
+                            SessionResult.RESULT_ERROR_INVALID_STATE
+                        },
+                    ),
+                )
+            }
             val targetMs = when (customCommand) {
-                NEXT_CHAPTER_COMMAND -> chapterStore
-                    ?.nextChapterStart(absolutePositionSec(session.player))
-                    ?.times(1000L)
-                PREVIOUS_CHAPTER_COMMAND -> chapterStore
-                    ?.previousChapterStart(absolutePositionSec(session.player))
-                    ?.times(1000L)
                 SEEK_TO_COMMAND -> args
                     .takeIf { it.containsKey(PlaybackAutomationContract.EXTRA_POSITION_MS) }
                     ?.getLong(PlaybackAutomationContract.EXTRA_POSITION_MS)
@@ -1235,6 +1378,32 @@ class PlaybackService : MediaLibraryService() {
             return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
         }
 
+        private fun seekToChapter(player: Player, next: Boolean): Boolean {
+            val snapshot = chapterStore?.snapshot?.value ?: return false
+            if (snapshot.chapters.isEmpty()) return false
+            if (snapshot.usesMediaItemIndexes(player.mediaItemCount)) {
+                val currentIndex = player.currentMediaItemIndex
+                    .coerceIn(0, snapshot.chapters.lastIndex)
+                val targetIndex = if (next) {
+                    currentIndex + 1
+                } else if (player.currentPosition > 3_000L) {
+                    currentIndex
+                } else {
+                    (currentIndex - 1).coerceAtLeast(0)
+                }
+                if (targetIndex !in snapshot.chapters.indices) return false
+                player.seekTo(targetIndex, 0L)
+                return true
+            }
+            val targetMs = if (next) {
+                snapshot.nextChapterStart(absolutePositionSec(player))
+            } else {
+                snapshot.previousChapterStart(absolutePositionSec(player))
+            }?.times(1000L) ?: return false
+            (player as? NoSkipTrackPlayer)?.seekToAbsolute(targetMs) ?: player.seekTo(targetMs)
+            return true
+        }
+
         private fun addSeekOffset(positionMs: Long, offsetMs: Long): Long = when {
             offsetMs > 0L && positionMs > Long.MAX_VALUE - offsetMs -> Long.MAX_VALUE
             offsetMs == Long.MIN_VALUE -> 0L
@@ -1250,7 +1419,20 @@ class PlaybackService : MediaLibraryService() {
             Log.i("PlaybackService", "onGetLibraryRoot pkg=${browser.packageName}")
             val helper = autoBrowserHelper
                 ?: return Futures.immediateFuture(LibraryResult.ofError(SessionError.ERROR_NOT_SUPPORTED))
-            return Futures.immediateFuture(LibraryResult.ofItem(helper.buildRoot(), params))
+            val rootExtras = Bundle().apply {
+                putInt(
+                    MediaConstants.EXTRAS_KEY_CONTENT_STYLE_BROWSABLE,
+                    MediaConstants.EXTRAS_VALUE_CONTENT_STYLE_CATEGORY_LIST_ITEM,
+                )
+                putInt(
+                    MediaConstants.EXTRAS_KEY_CONTENT_STYLE_PLAYABLE,
+                    MediaConstants.EXTRAS_VALUE_CONTENT_STYLE_GRID_ITEM,
+                )
+            }
+            val rootParams = LibraryParams.Builder()
+                .setExtras(rootExtras)
+                .build()
+            return Futures.immediateFuture(LibraryResult.ofItem(helper.buildRoot(), rootParams))
         }
 
         override fun onGetChildren(
@@ -1271,6 +1453,23 @@ class PlaybackService : MediaLibraryService() {
             }
         }
 
+        override fun onGetItem(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            mediaId: String,
+        ): ListenableFuture<LibraryResult<MediaItem>> {
+            val helper = autoBrowserHelper
+                ?: return Futures.immediateFuture(LibraryResult.ofError(SessionError.ERROR_NOT_SUPPORTED))
+            return launchToListenableFuture {
+                val item = helper.getItem(mediaId)
+                if (item == null) {
+                    LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
+                } else {
+                    LibraryResult.ofItem(item, null)
+                }
+            }
+        }
+
         override fun onSearch(
             session: MediaLibrarySession,
             browser: MediaSession.ControllerInfo,
@@ -1280,8 +1479,10 @@ class PlaybackService : MediaLibraryService() {
             val helper = autoBrowserHelper
                 ?: return Futures.immediateFuture(LibraryResult.ofError(SessionError.ERROR_NOT_SUPPORTED))
             return launchToListenableFuture {
-                val count = helper.downloadedAudiobookSearchCount(query)
-                session.notifySearchResultChanged(browser, query, count, params)
+                val count = helper.audiobookSearchCount(query)
+                withContext(Dispatchers.Main.immediate) {
+                    session.notifySearchResultChanged(browser, query, count, params)
+                }
                 LibraryResult.ofVoid(params)
             }
         }
@@ -1297,7 +1498,7 @@ class PlaybackService : MediaLibraryService() {
             val helper = autoBrowserHelper
                 ?: return Futures.immediateFuture(LibraryResult.ofItemList(ImmutableList.of(), params))
             return launchToListenableFuture {
-                val items = helper.searchDownloadedAudiobooks(query, page, pageSize)
+                val items = helper.searchAudiobooks(query, page, pageSize)
                 LibraryResult.ofItemList(ImmutableList.copyOf(items), params)
             }
         }
@@ -1312,11 +1513,13 @@ class PlaybackService : MediaLibraryService() {
             return launchToListenableFuture {
                 finishNormalPlaybackRequest(revocation)
                 val helper = autoBrowserHelper
-                val resolvedItems = if (helper == null) {
-                    mediaItems
+                val resolved = if (helper == null) {
+                    Resolved(mediaItems, 0, 0L, null)
                 } else {
-                    resolveQueue(helper, mediaItems).items
+                    resolveQueue(helper, mediaItems)
                 }
+                resolved.primary?.let { adoptResolvedPlayback(it) }
+                val resolvedItems = resolved.items
                 val target = withContext(Dispatchers.Main.immediate) {
                     activePlaybackTarget()
                 }
@@ -1371,6 +1574,7 @@ class PlaybackService : MediaLibraryService() {
                     )
                 }
                 val resolved = resolveQueue(helper, mediaItems)
+                resolved.primary?.let { adoptResolvedPlayback(it) }
                 val callerSpecifiedPosition = startPositionMs != C.TIME_UNSET && startPositionMs > 0L
                 val effectiveIndex = if (callerSpecifiedPosition) {
                     if (resolved.items.isEmpty()) 0 else startIndex.coerceIn(0, resolved.items.lastIndex)
@@ -1396,15 +1600,21 @@ class PlaybackService : MediaLibraryService() {
         override fun onPlaybackResumption(
             mediaSession: MediaSession,
             controller: MediaSession.ControllerInfo,
+            isForPlayback: Boolean,
         ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
-            Log.i("PlaybackService", "onPlaybackResumption pkg=${controller.packageName}")
-            val revocation = beginNormalPlaybackRequest(emptyList(), emptyIsNormalPlayback = true)
+            Log.i("PlaybackService", "onPlaybackResumption pkg=${controller.packageName} forPlayback=$isForPlayback")
+            val revocation = if (isForPlayback) {
+                beginNormalPlaybackRequest(emptyList(), emptyIsNormalPlayback = true)
+            } else {
+                null
+            }
             return launchToListenableFuture {
                 finishNormalPlaybackRequest(revocation)
                 val helper = autoBrowserHelper
                     ?: throw UnsupportedOperationException("No media browser helper")
-                val resolved = helper.resolvePlaybackResumption()
+                val resolved = helper.resolvePlaybackResumption(isForPlayback)
                     ?: throw UnsupportedOperationException("No resumable audiobook")
+                if (isForPlayback) adoptResolvedPlayback(resolved)
                 val targetedItems = preparePlaybackTargetForReplacement(
                     resolved.items,
                     resolved.startIndex,
@@ -1426,6 +1636,7 @@ class PlaybackService : MediaLibraryService() {
             var firstStartIndex = 0
             var firstStartMs = 0L
             var seededFromResolve = false
+            var primary: AutoMediaBrowserHelper.ResolvedPlayback? = null
             mediaItems.forEach { item ->
                 if (item.localConfiguration?.uri != null) {
                     out += item
@@ -1436,12 +1647,13 @@ class PlaybackService : MediaLibraryService() {
                             firstStartIndex = out.size + resolved.startIndex
                             firstStartMs = resolved.startPositionMs
                             seededFromResolve = true
+                            primary = resolved
                         }
                         out += resolved.items
                     }
                 }
             }
-            return Resolved(out, firstStartIndex, firstStartMs)
+            return Resolved(out, firstStartIndex, firstStartMs, primary)
         }
 
         private fun <T> launchToListenableFuture(block: suspend () -> T): ListenableFuture<T> {
@@ -1649,20 +1861,20 @@ class PlaybackService : MediaLibraryService() {
 
         private fun absolutePositionMs(): Long {
             val offset = (0 until currentMediaItemIndex).sumOf { index ->
-                getMediaItemAt(index).mediaMetadata.durationMs ?: 0L
+                mediaItemDurationMs(this, index)
             }
             return (offset + currentPosition).coerceAtLeast(0L)
         }
 
         private fun totalDurationMs(): Long =
             (0 until mediaItemCount).sumOf { index ->
-                getMediaItemAt(index).mediaMetadata.durationMs ?: 0L
+                mediaItemDurationMs(this, index)
             }
 
         fun seekToAbsolute(positionMs: Long) {
             var running = 0L
             for (index in 0 until mediaItemCount) {
-                val duration = getMediaItemAt(index).mediaMetadata.durationMs ?: 0L
+                val duration = mediaItemDurationMs(this, index)
                 if (duration <= 0L) continue
                 if (positionMs < running + duration || index == mediaItemCount - 1) {
                     seekTo(index, (positionMs - running).coerceIn(0L, duration))

@@ -1,3 +1,5 @@
+import java.security.MessageDigest
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -11,6 +13,7 @@ plugins {
 val foliateSource = rootProject.layout.projectDirectory.dir("ThirdParty/foliate-js")
 val foliateMetadata = rootProject.layout.projectDirectory.dir("BuildSupport/FoliateRuntime")
 val generatedFoliateAssets = layout.buildDirectory.dir("generated/foliateRuntime/assets")
+val generatedLegalAssets = layout.buildDirectory.dir("generated/legal/assets")
 val foliateRuntimeFiles = listOf(
     "view.js",
     "epub.js",
@@ -89,6 +92,30 @@ val generateFoliateRuntimeAssets = tasks.register<Sync>("generateFoliateRuntimeA
     }
 }
 
+val generateLegalAssets = tasks.register<Sync>("generateLegalAssets") {
+    into(generatedLegalAssets.map { it.dir("licenses") })
+
+    from(rootProject.file("LICENSE.md")) { rename { "enve-LICENSE.txt" } }
+    from(rootProject.file("NOTICE.md")) { rename { "enve-NOTICE.txt" } }
+    from(rootProject.file("THIRD_PARTY_NOTICES.md")) { rename { "THIRD_PARTY_NOTICES.txt" } }
+    from(rootProject.file("engine/src/main/cpp/libmobi/COPYING")) { rename { "libmobi-LGPL-3.0.txt" } }
+    from(rootProject.file("engine/src/main/cpp/libmobi/PROVENANCE.md")) { rename { "libmobi-PROVENANCE.txt" } }
+    from(rootProject.file("engine/src/main/cpp/whisper/LICENSE")) { rename { "whisper-MIT.txt" } }
+    from(rootProject.file("engine/src/main/cpp/whisper/PROVENANCE.md")) { rename { "whisper-PROVENANCE.txt" } }
+    from(rootProject.file("BuildSupport/Jcifs/LICENSE.txt")) { rename { "jcifs-ng-LGPL-2.1.txt" } }
+    from(rootProject.file("BuildSupport/Jcifs/UPSTREAM.txt")) { rename { "jcifs-ng-UPSTREAM.txt" } }
+    from(rootProject.file("BuildSupport/Licenses/Apache-2.0.txt")) { rename { "Qwen3-0.6B-LICENSE.txt" } }
+    from(rootProject.file("BuildSupport/Models/UPSTREAM.md")) { rename { "downloadable-models-UPSTREAM.txt" } }
+    from(rootProject.file("BuildSupport/ProviderLogos/PROVENANCE.md")) { rename { "provider-logos-PROVENANCE.txt" } }
+    from(rootProject.file("BuildSupport/Licenses/Apache-2.0.txt")) { rename { "pdf.js-Apache-2.0.txt" } }
+    from(rootProject.file("ThirdParty/foliate-js/vendor/pdfjs/cmaps/LICENSE")) { rename { "pdf.js-CMaps-BSD.txt" } }
+    from(rootProject.file("ThirdParty/foliate-js/vendor/pdfjs/standard_fonts/LICENSE_FOXIT")) { rename { "pdf.js-Foxit-fonts-BSD.txt" } }
+    from(rootProject.file("ThirdParty/foliate-js/vendor/pdfjs/standard_fonts/LICENSE_LIBERATION")) { rename { "pdf.js-Liberation-fonts-OFL-1.1.txt" } }
+    from(rootProject.file("ThirdParty/grimmory-branding/LICENSE")) { rename { "grimmory-MIT.txt" } }
+    from(rootProject.file("ThirdParty/grimmory-branding/ASSET-LICENSE.md")) { rename { "grimmory-ASSET-LICENSE.txt" } }
+    from(rootProject.file("ThirdParty/grimmory-branding/TRADEMARKS.md")) { rename { "grimmory-TRADEMARKS.txt" } }
+}
+
 android {
     namespace = "com.enve.app"
     compileSdk { version = release(36) { minorApiLevel = 1 } }
@@ -99,8 +126,8 @@ android {
         applicationId = "com.enve.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 44
-        versionName = "1.2 build 44"
+        versionCode = 46
+        versionName = "1.2 build 46"
         buildConfigField(
             "String",
             "SOURCE_PROVENANCE",
@@ -138,6 +165,9 @@ android {
 
     sourceSets.getByName("main").assets.srcDir(
         files(generatedFoliateAssets).builtBy(generateFoliateRuntimeAssets)
+    )
+    sourceSets.getByName("main").assets.srcDir(
+        files(generatedLegalAssets).builtBy(generateLegalAssets)
     )
 
     packaging {
@@ -270,8 +300,65 @@ tasks.configureEach {
             || name.contains("lint", ignoreCase = true)
     ) {
         dependsOn(generateFoliateRuntimeAssets)
+        dependsOn(generateLegalAssets)
     }
     if (name.startsWith("check") && name.endsWith("Classpath")) {
         enabled = false
+    }
+}
+
+val releaseDependencyInventory = layout.buildDirectory.file("reports/release/dependencies.tsv")
+
+tasks.register("generateReleaseDependencyInventory") {
+    outputs.file(releaseDependencyInventory)
+    doLast {
+        val releaseRuntimeClasspath = configurations.getByName("releaseRuntimeClasspath")
+        val artifacts = releaseRuntimeClasspath.incoming.artifactView {
+            componentFilter { identifier ->
+                identifier is org.gradle.api.artifacts.component.ModuleComponentIdentifier
+            }
+        }.artifacts.artifacts
+            .sortedBy { "${it.id.componentIdentifier}:${it.file.name}" }
+        val lines = buildList {
+            add("component\tartifact\tsha256")
+            for (artifact in artifacts) {
+                val digest = MessageDigest.getInstance("SHA-256")
+                artifact.file.inputStream().buffered().use { input ->
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        digest.update(buffer, 0, count)
+                    }
+                }
+                val sha256 = digest.digest().joinToString("") { byte: Byte -> "%02x".format(byte) }
+                add("${artifact.id.componentIdentifier}\t${artifact.file.name}\t$sha256")
+            }
+        }
+        releaseDependencyInventory.get().asFile.apply {
+            parentFile.mkdirs()
+            writeText(lines.joinToString("\n", postfix = "\n"))
+        }
+    }
+}
+
+tasks.register("verifyAcknowledgementsInventory") {
+    inputs.file("src/main/res/raw/aboutlibraries.json")
+    doLast {
+        val releaseRuntimeClasspath = configurations.getByName("releaseRuntimeClasspath")
+        val resolved = releaseRuntimeClasspath.incoming.resolutionResult.allComponents
+            .mapNotNull { component ->
+                val id = component.id as? org.gradle.api.artifacts.component.ModuleComponentIdentifier
+                id?.let { "${it.group}:${it.module}" }
+            }
+            .toSet()
+        val inventoryText = file("src/main/res/raw/aboutlibraries.json").readText()
+        val missing = resolved.filterNot { coordinate ->
+            listOf(coordinate, "$coordinate-android", "$coordinate-jvm")
+                .any { candidate -> inventoryText.contains("\"uniqueId\":\"$candidate\"") }
+        }.sorted()
+        check(missing.isEmpty()) {
+            "The in-app acknowledgements inventory is missing release dependencies:\n${missing.joinToString("\n")}"
+        }
     }
 }

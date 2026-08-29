@@ -506,7 +506,7 @@ static int dump_rawml_parts(const MOBIRawml *rawml, const char *fullpath) {
 /**
  @brief Bundle recreated source files into EPUB container
  
- This function is a simple aryan.
+ This function is a simple example.
  In real world implementation one should validate and correct all input
  markup to check if it conforms to OPF and HTML specifications and
  correct all the issues.

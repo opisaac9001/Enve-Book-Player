@@ -1,33 +1,37 @@
 package com.enve.app.playback
 
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.drawable.BitmapDrawable
 import android.net.Uri
+import android.os.Bundle
 import android.provider.MediaStore
 import android.util.Log
-import androidx.core.graphics.drawable.toBitmap
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.util.UnstableApi
-import coil.ImageLoader
-import coil.request.ImageRequest
-import coil.request.SuccessResult
+import androidx.media3.session.MediaConstants
 import com.enve.app.data.offline.OfflineDownloadManager
 import com.enve.app.data.repository.AggregatorRepository
 import com.enve.core.data.local.BookCacheDao
+import com.enve.core.data.local.BookExtrasDao
+import com.enve.core.data.local.CachedBook
+import com.enve.core.data.local.LastOpenedBookStore
+import com.enve.core.data.local.decodeChapters
 import com.enve.core.data.local.toBook
 import com.enve.core.data.model.AudioTrack
 import com.enve.core.data.model.Book
+import com.enve.core.data.model.Chapter
+import com.enve.core.data.provider.ProviderPlaybackSession
+import com.enve.core.data.provider.synthesizeChaptersFromTracks
+import com.enve.engine.impl.R
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import java.io.ByteArrayOutputStream
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -36,9 +40,11 @@ import javax.inject.Singleton
 class AutoMediaBrowserHelper @Inject constructor(
     @ApplicationContext private val context: Context,
     private val bookCacheDao: BookCacheDao,
+    private val bookExtrasDao: BookExtrasDao,
     private val aggregatorRepository: AggregatorRepository,
     private val offlineDownloadManager: OfflineDownloadManager,
-    private val imageLoader: ImageLoader,
+    private val autoArtworkCache: AutoArtworkCache,
+    private val lastOpenedBookStore: LastOpenedBookStore,
 ) {
 
     companion object {
@@ -49,8 +55,7 @@ class AutoMediaBrowserHelper @Inject constructor(
         private const val BOOK_PREFIX = "book:"
         private const val TAG = "AutoMediaBrowser"
         private const val SHELF_LIMIT = 50
-        private const val COVER_TARGET_PX = 320
-        private const val COVER_FETCH_TIMEOUT_MS = 2_500L
+        private const val COVER_ITEM_TIMEOUT_MS = 3_000L
 
         fun cacheKeyFrom(mediaId: String): String? {
             if (!mediaId.startsWith(BOOK_PREFIX)) return null
@@ -58,6 +63,9 @@ class AutoMediaBrowserHelper @Inject constructor(
         }
 
         fun mediaIdForCacheKey(cacheKey: String): String = "$BOOK_PREFIX$cacheKey"
+
+        fun mediaIdForTrack(cacheKey: String, trackIndex: Int): String =
+            "$BOOK_PREFIX$cacheKey#track:$trackIndex"
     }
 
     fun buildRoot(): MediaItem = MediaItem.Builder()
@@ -75,8 +83,16 @@ class AutoMediaBrowserHelper @Inject constructor(
     suspend fun getChildren(parentId: String): List<MediaItem> = withContext(Dispatchers.IO) {
         when (parentId) {
             ROOT_ID -> listOf(
-                shelfItem(SHELF_IN_PROGRESS, "Continue Listening"),
-                shelfItem(SHELF_RECENT, "Recently Added"),
+                shelfItem(
+                    SHELF_IN_PROGRESS,
+                    R.string.android_auto_continue_listening,
+                    R.drawable.ic_car_continue,
+                ),
+                shelfItem(
+                    SHELF_RECENT,
+                    R.string.android_auto_recently_added,
+                    R.drawable.ic_car_recent,
+                ),
             )
             SHELF_IN_PROGRESS -> loadShelf { bookCacheDao.getInProgressAudiobooksOnce(SHELF_LIMIT) }
             SHELF_RECENT -> loadShelf { bookCacheDao.getRecentlyAddedAudiobooks(SHELF_LIMIT) }
@@ -87,52 +103,85 @@ class AutoMediaBrowserHelper @Inject constructor(
         }
     }
 
+    suspend fun getItem(mediaId: String): MediaItem? = withContext(Dispatchers.IO) {
+        when (mediaId) {
+            ROOT_ID -> buildRoot()
+            SHELF_IN_PROGRESS -> shelfItem(
+                SHELF_IN_PROGRESS,
+                R.string.android_auto_continue_listening,
+                R.drawable.ic_car_continue,
+            )
+            SHELF_RECENT -> shelfItem(
+                SHELF_RECENT,
+                R.string.android_auto_recently_added,
+                R.drawable.ic_car_recent,
+            )
+            else -> cacheKeyFrom(mediaId)
+                ?.let { bookCacheDao.getByCacheKey(it) }
+                ?.toBook()
+                ?.let { browseItemFor(it, artworkUriFor(it)) }
+        }
+    }
+
     data class ResolvedPlayback(
         val items: List<MediaItem>,
         val startIndex: Int,
         val startPositionMs: Long,
+        val absoluteStartPositionMs: Long,
+        val book: Book,
+        val chapters: List<Chapter>,
+        val providerSessionId: String?,
+        val durationSec: Long,
     )
 
-    private data class DownloadedCandidate(
+    private data class ProviderTracks(
+        val tracks: List<AudioTrack>,
+        val session: ProviderPlaybackSession?,
+    )
+
+    private data class SearchCandidate(
         val book: Book,
-        val downloadedAtEpochMs: Long,
         val rank: Int,
     )
 
-    suspend fun resolvePlaybackResumption(): ResolvedPlayback? = withContext(Dispatchers.IO) {
-        val cached = bookCacheDao.getInProgressAudiobooksOnce(1).firstOrNull()
-            ?: bookCacheDao.getRecentlyAddedAudiobooks(1).firstOrNull()
+    suspend fun resolvePlaybackResumption(forPlayback: Boolean): ResolvedPlayback? = withContext(Dispatchers.IO) {
+        val lastOpened = lastOpenedBookStore.lastOpenedBookKey.first()
+            ?.let { bookCacheDao.getByCacheKey(it) }
+        val cached = lastOpened ?: bookCacheDao.getInProgressAudiobooksOnce(1).firstOrNull()
             ?: return@withContext null
-        resolveToPlayableItems(mediaIdForCacheKey(cached.cacheKey))
+        resolveToPlayableItems(mediaIdForCacheKey(cached.cacheKey), forPlayback)
     }
 
     suspend fun resolveSessionRequest(mediaItem: MediaItem): ResolvedPlayback? {
         if (cacheKeyFrom(mediaItem.mediaId) != null) {
-            return resolveToPlayableItems(mediaItem.mediaId)
+            return resolveToPlayableItems(mediaItem.mediaId, forPlayback = true)
         }
         if (!isVoiceSearchRequest(mediaItem)) return null
 
         val request = voiceSearchFrom(mediaItem)
-        if (request.isEmpty) return resolvePlaybackResumption()
-        val match = downloadedCandidates(request).firstOrNull()?.book
-            ?: throw UnsupportedOperationException("No matching downloaded audiobook")
-        return resolveToPlayableItems(mediaIdForCacheKey(match.uniqueKey))
+        if (request.isEmpty) return resolvePlaybackResumption(forPlayback = true)
+        val match = searchCandidates(request).firstOrNull()?.book
+            ?: throw UnsupportedOperationException("No matching audiobook")
+        return resolveToPlayableItems(mediaIdForCacheKey(match.uniqueKey), forPlayback = true)
     }
 
-    suspend fun searchDownloadedAudiobooks(query: String, page: Int, pageSize: Int): List<MediaItem> {
+    suspend fun searchAudiobooks(query: String, page: Int, pageSize: Int): List<MediaItem> {
         val safePage = page.coerceAtLeast(0)
         val safePageSize = pageSize.coerceIn(1, 100)
         val from = safePage * safePageSize
-        return downloadedCandidates(VoiceAudiobookSearch.create(query, null, null))
+        val matches = searchCandidates(VoiceAudiobookSearch.create(query, null, null))
             .drop(from)
             .take(safePageSize)
-            .map { browseItemFor(it.book) }
+        return coverItems(matches.map { it.book })
     }
 
-    suspend fun downloadedAudiobookSearchCount(query: String): Int =
-        downloadedCandidates(VoiceAudiobookSearch.create(query, null, null)).size
+    suspend fun audiobookSearchCount(query: String): Int =
+        searchCandidates(VoiceAudiobookSearch.create(query, null, null)).size
 
-    suspend fun resolveToPlayableItems(mediaId: String): ResolvedPlayback? = withContext(Dispatchers.IO) {
+    suspend fun resolveToPlayableItems(
+        mediaId: String,
+        forPlayback: Boolean = true,
+    ): ResolvedPlayback? = withContext(Dispatchers.IO) {
         val cacheKey = cacheKeyFrom(mediaId) ?: run {
             Log.w(TAG, "resolve: '$mediaId' has no $BOOK_PREFIX prefix")
             return@withContext null
@@ -141,28 +190,63 @@ class AutoMediaBrowserHelper @Inject constructor(
             Log.w(TAG, "resolve: no cached book for cacheKey='$cacheKey'")
             return@withContext null
         }
-        val book = cached.toBook()
-        val resumeMs = (cached.currentTime * 1000L).coerceAtLeast(0L)
+        val cachedBook = cached.toBook()
+        val storedChapters = bookExtrasDao.get(cached.cacheKey)
+            ?.decodeChapters()
+            .orEmpty()
+        val book = if (cachedBook.chapters.isEmpty() && storedChapters.isNotEmpty()) {
+            cachedBook.copy(chapters = storedChapters)
+        } else {
+            cachedBook
+        }
+        val localResumeMs = (cached.currentTime * 1000L).coerceAtLeast(0L)
 
         val offline = offlineTracks(book)
         if (offline.isNotEmpty()) {
-            Log.i(TAG, "resolve: ${book.id} using ${offline.size} offline tracks resume=${resumeMs}ms")
-            return@withContext buildResolved(book, offline, resumeMs)
+            val chapters = book.chapters.ifEmpty {
+                synthesizeChaptersFromTracks(offline, book.duration)
+            }
+            Log.i(TAG, "resolve: ${book.id} using ${offline.size} offline tracks resume=${localResumeMs}ms")
+            return@withContext buildResolved(book, offline, localResumeMs, chapters, null)
         }
 
-        val remote = providerTracks(book)
-        if (remote.isEmpty()) {
+        val remote = providerTracks(book, forPlayback)
+        if (remote.tracks.isEmpty()) {
             Log.w(TAG, "resolve: no playable tracks for ${book.source}/${book.id}")
             return@withContext null
         }
-        Log.i(TAG, "resolve: ${book.id} using ${remote.size} provider tracks resume=${resumeMs}ms")
-        buildResolved(book, remote, resumeMs)
+        val resumeMs = localResumeMs.takeIf { it > 0L }
+            ?: remote.session?.serverCurrentTimeSec?.times(1000L)
+            ?: 0L
+        val chapters = remote.session?.chapters?.takeIf { it.isNotEmpty() }
+            ?: book.chapters.takeIf { it.isNotEmpty() }
+            ?: synthesizeChaptersFromTracks(remote.tracks, book.duration)
+        Log.i(TAG, "resolve: ${book.id} using ${remote.tracks.size} provider tracks resume=${resumeMs}ms")
+        buildResolved(book, remote.tracks, resumeMs, chapters, remote.session?.sessionId)
     }
 
-    private fun buildResolved(book: Book, tracks: List<AudioTrack>, resumeMs: Long): ResolvedPlayback {
-        val items = tracks.map { playableItem(book, it) }
+    private suspend fun buildResolved(
+        book: Book,
+        tracks: List<AudioTrack>,
+        resumeMs: Long,
+        chapters: List<Chapter>,
+        providerSessionId: String?,
+    ): ResolvedPlayback {
+        val artworkUri = artworkUriFor(book)
+        val items = tracks.map { playableItem(book, it, artworkUri) }
         val (index, offsetMs) = startOffsetInTracks(tracks, resumeMs)
-        return ResolvedPlayback(items, index, offsetMs)
+        val durationSec = book.duration.takeIf { it > 0L }
+            ?: tracks.sumOf { it.durationMs.coerceAtLeast(0L) } / 1000L
+        return ResolvedPlayback(
+            items = items,
+            startIndex = index,
+            startPositionMs = offsetMs,
+            absoluteStartPositionMs = resumeMs,
+            book = book.copy(duration = durationSec),
+            chapters = chapters,
+            providerSessionId = providerSessionId,
+            durationSec = durationSec,
+        )
     }
 
     private fun startOffsetInTracks(tracks: List<AudioTrack>, resumeMs: Long): Pair<Int, Long> {
@@ -179,46 +263,40 @@ class AutoMediaBrowserHelper @Inject constructor(
         return lastIdx to (tracks.getOrNull(lastIdx)?.durationMs?.coerceAtLeast(0L) ?: 0L)
     }
 
-    private suspend fun loadShelf(query: suspend () -> List<com.enve.core.data.local.CachedBook>): List<MediaItem> {
+    private suspend fun loadShelf(query: suspend () -> List<CachedBook>): List<MediaItem> {
         val rows = try {
             query()
         } catch (e: CancellationException) {
             throw e
-        } catch (t: Throwable) {
-            Log.e(TAG, "shelf query failed", t)
+        } catch (e: Exception) {
+            Log.e(TAG, "shelf query failed", e)
             return emptyList()
         }
-        return coroutineScope {
-            rows.map { cached ->
-                async {
-                    val book = cached.toBook()
-                    browseItemFor(book, fetchCoverBytes(book.coverUrl))
-                }
-            }.awaitAll()
-        }
+        return coverItems(rows.map { it.toBook() })
     }
 
-    private suspend fun downloadedCandidates(search: VoiceAudiobookSearch): List<DownloadedCandidate> =
+    private suspend fun coverItems(books: List<Book>): List<MediaItem> = coroutineScope {
+        books.map { book ->
+            async {
+                val artworkUri = withTimeoutOrNull(COVER_ITEM_TIMEOUT_MS) {
+                    artworkUriFor(book)
+                }
+                browseItemFor(book, artworkUri)
+            }
+        }.awaitAll()
+    }
+
+    private suspend fun searchCandidates(search: VoiceAudiobookSearch): List<SearchCandidate> =
         withContext(Dispatchers.IO) {
-            val manifests = offlineDownloadManager.listDownloadedManifests()
-                .filter { offlineDownloadManager.isDownloaded(it.bookId) }
-            if (manifests.isEmpty()) return@withContext emptyList()
-
-            val cachedByID = manifests
-                .map { it.bookId }
-                .distinct()
-                .chunked(500)
-                .flatMap { bookCacheDao.getAudiobooksByIds(it) }
-                .associateBy { it.id }
-
-            manifests.mapNotNull { manifest ->
-                val cached = cachedByID[manifest.bookId] ?: return@mapNotNull null
-                val rank = search.rank(manifest.title, manifest.author, cached.narrator)
+            val query = search.title ?: search.query ?: search.creator ?: return@withContext emptyList()
+            bookCacheDao.searchAudiobooksByMetadata(query).mapNotNull { cached ->
+                val rank = search.rank(cached.title, cached.author, cached.narrator)
                 if (rank >= VoiceAudiobookSearch.NO_MATCH) return@mapNotNull null
-                DownloadedCandidate(cached.toBook(), manifest.downloadedAtEpochMs, rank)
+                SearchCandidate(cached.toBook(), rank)
             }.sortedWith(
-                compareBy<DownloadedCandidate> { it.rank }
-                    .thenByDescending { it.downloadedAtEpochMs }
+                compareBy<SearchCandidate> { it.rank }
+                    .thenByDescending { it.book.lastReadTime }
+                    .thenByDescending { it.book.addedOn }
                     .thenBy { it.book.title.lowercase() }
             )
         }
@@ -243,56 +321,47 @@ class AutoMediaBrowserHelper @Inject constructor(
         )
     }
 
-    private suspend fun fetchCoverBytes(url: String?): ByteArray? {
-        if (url.isNullOrBlank()) return null
-        return withTimeoutOrNull(COVER_FETCH_TIMEOUT_MS) {
-            try {
-                val result = imageLoader.execute(
-                    ImageRequest.Builder(context)
-                        .data(url)
-                        .size(COVER_TARGET_PX)
-                        .allowHardware(false)
-                        .build()
-                )
-                if (result !is SuccessResult) return@withTimeoutOrNull null
-                val bitmap = (result.drawable as? BitmapDrawable)?.bitmap
-                    ?: result.drawable.toBitmap()
-                ByteArrayOutputStream().use { out ->
-                    bitmap.compress(Bitmap.CompressFormat.JPEG, 85, out)
-                    out.toByteArray()
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (t: Throwable) {
-                Log.w(TAG, "cover fetch failed for $url", t)
-                null
-            }
-        }
-    }
+    private suspend fun artworkUriFor(book: Book): Uri? =
+        autoArtworkCache.uriFor(book.id, book.uniqueKey, book.coverUrl)
 
-    private fun shelfItem(id: String, title: String): MediaItem = MediaItem.Builder()
+    private fun shelfItem(id: String, titleResId: Int, artworkResId: Int): MediaItem = MediaItem.Builder()
         .setMediaId(id)
         .setMediaMetadata(
             MediaMetadata.Builder()
-                .setTitle(title)
+                .setTitle(context.getString(titleResId))
                 .setIsBrowsable(true)
                 .setIsPlayable(false)
                 .setMediaType(MediaMetadata.MEDIA_TYPE_FOLDER_AUDIO_BOOKS)
+                .setArtworkUri(androidResourceUri(artworkResId))
+                .setExtras(
+                    Bundle().apply {
+                        putInt(
+                            MediaConstants.EXTRAS_KEY_CONTENT_STYLE_PLAYABLE,
+                            MediaConstants.EXTRAS_VALUE_CONTENT_STYLE_GRID_ITEM,
+                        )
+                    }
+                )
                 .build()
         )
         .build()
 
-    private fun browseItemFor(book: Book, artworkBytes: ByteArray? = null): MediaItem {
-        val artworkUri = offlineDownloadManager.localCoverUri(book.id) ?: book.coverUrl
+    private fun androidResourceUri(resourceId: Int): Uri = Uri.Builder()
+        .scheme("android.resource")
+        .authority(context.resources.getResourcePackageName(resourceId))
+        .appendPath(context.resources.getResourceTypeName(resourceId))
+        .appendPath(context.resources.getResourceEntryName(resourceId))
+        .build()
+
+    private fun browseItemFor(book: Book, artworkUri: Uri? = null): MediaItem {
         val meta = MediaMetadata.Builder()
             .setTitle(book.title)
             .setArtist(book.author)
             .setIsBrowsable(false)
             .setIsPlayable(true)
             .setMediaType(MediaMetadata.MEDIA_TYPE_AUDIO_BOOK)
+            .setExtras(carMetadataExtras(book))
             .apply {
-                artworkUri?.takeIf { it.isNotBlank() }?.let { setArtworkUri(Uri.parse(it)) }
-                artworkBytes?.let { setArtworkData(it, MediaMetadata.PICTURE_TYPE_FRONT_COVER) }
+                artworkUri?.let(::setArtworkUri)
                 if (book.duration > 0L) setDurationMs(book.duration * 1000L)
             }
             .build()
@@ -302,8 +371,7 @@ class AutoMediaBrowserHelper @Inject constructor(
             .build()
     }
 
-    private fun playableItem(book: Book, track: AudioTrack): MediaItem {
-        val artworkUri = offlineDownloadManager.localCoverUri(book.id) ?: book.coverUrl
+    private fun playableItem(book: Book, track: AudioTrack, artworkUri: Uri?): MediaItem {
         val meta = MediaMetadata.Builder()
             .setTitle(track.title?.takeIf { it.isNotBlank() } ?: book.title)
             .setArtist(book.author)
@@ -311,16 +379,46 @@ class AutoMediaBrowserHelper @Inject constructor(
             .setIsBrowsable(false)
             .setIsPlayable(true)
             .setMediaType(MediaMetadata.MEDIA_TYPE_AUDIO_BOOK)
+            .setExtras(carMetadataExtras(book))
             .apply {
-                artworkUri?.takeIf { it.isNotBlank() }?.let { setArtworkUri(Uri.parse(it)) }
+                artworkUri?.let(::setArtworkUri)
                 if (track.durationMs > 0L) setDurationMs(track.durationMs)
             }
             .build()
         return MediaItem.Builder()
-            .setMediaId(mediaIdForCacheKey(book.uniqueKey))
+            .setMediaId(mediaIdForTrack(book.uniqueKey, track.index))
             .setUri(track.contentUrl.orEmpty())
             .setMediaMetadata(meta)
             .build()
+    }
+
+    private fun carMetadataExtras(book: Book): Bundle = Bundle().apply {
+        putLong(
+            MediaConstants.EXTRAS_KEY_DOWNLOAD_STATUS,
+            if (book.isDownloaded) {
+                MediaConstants.EXTRAS_VALUE_STATUS_DOWNLOADED
+            } else {
+                MediaConstants.EXTRAS_VALUE_STATUS_NOT_DOWNLOADED
+            },
+        )
+        val progress = book.progress.toDouble()
+        when {
+            book.isFinished -> putInt(
+                MediaConstants.EXTRAS_KEY_COMPLETION_STATUS,
+                MediaConstants.EXTRAS_VALUE_COMPLETION_STATUS_FULLY_PLAYED,
+            )
+            progress > 0.0 -> {
+                putInt(
+                    MediaConstants.EXTRAS_KEY_COMPLETION_STATUS,
+                    MediaConstants.EXTRAS_VALUE_COMPLETION_STATUS_PARTIALLY_PLAYED,
+                )
+                putDouble(MediaConstants.EXTRAS_KEY_COMPLETION_PERCENTAGE, progress)
+            }
+            else -> putInt(
+                MediaConstants.EXTRAS_KEY_COMPLETION_STATUS,
+                MediaConstants.EXTRAS_VALUE_COMPLETION_STATUS_NOT_PLAYED,
+            )
+        }
     }
 
     private fun offlineTracks(book: Book): List<AudioTrack> =
@@ -336,26 +434,33 @@ class AutoMediaBrowserHelper @Inject constructor(
                 )
             }
 
-    private suspend fun providerTracks(book: Book): List<AudioTrack> {
-        val session = try {
-            aggregatorRepository.startPlaybackSession(book).getOrNull()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (t: Throwable) {
-            Log.e(TAG, "startPlaybackSession failed for ${book.id}", t)
+    private suspend fun providerTracks(book: Book, forPlayback: Boolean): ProviderTracks {
+        val session = if (forPlayback) {
+            try {
+                aggregatorRepository.startPlaybackSession(book).getOrNull()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "startPlaybackSession failed for ${book.id}", e)
+                null
+            }
+        } else {
             null
         }
         val fromSession = session?.audioTracks.orEmpty().filter { !it.contentUrl.isNullOrBlank() }
-        if (fromSession.isNotEmpty()) return fromSession.sortedBy { it.index }
+        if (fromSession.isNotEmpty()) return ProviderTracks(fromSession.sortedBy { it.index }, session)
 
         val fromTracks = try {
             aggregatorRepository.getAudioTracks(book).getOrNull().orEmpty()
         } catch (e: CancellationException) {
             throw e
-        } catch (t: Throwable) {
-            Log.e(TAG, "getAudioTracks failed for ${book.id}", t)
+        } catch (e: Exception) {
+            Log.e(TAG, "getAudioTracks failed for ${book.id}", e)
             emptyList()
         }
-        return fromTracks.filter { !it.contentUrl.isNullOrBlank() }.sortedBy { it.index }
+        return ProviderTracks(
+            tracks = fromTracks.filter { !it.contentUrl.isNullOrBlank() }.sortedBy { it.index },
+            session = session,
+        )
     }
 }

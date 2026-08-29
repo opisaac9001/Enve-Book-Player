@@ -2,7 +2,7 @@
 
 Enve Book Player for Android includes or depends on software, native code, models, fonts, and brand assets owned by other parties. Those materials are excluded from the Enve license and remain under their own terms.
 
-This inventory describes the repository audited on 2026-08-10. Gradle build files, resolved release dependencies, vendored license files, and upstream notices remain authoritative.
+This inventory describes the repository audited on 2026-08-29. Gradle build files, resolved release dependencies, vendored license files, and upstream notices remain authoritative.
 
 ## Bundled source and native components
 
@@ -10,8 +10,8 @@ This inventory describes the repository audited on 2026-08-10. Gradle build file
 |---|---|---|---|
 | Foliate JS | `ThirdParty/foliate-js`, commit `6b11e1744346f60504b727984f7d42f0fef3ab54` | MIT | Copyright John Factotum. The app packages an allowlisted runtime subset and retains its license. |
 | zip.js | 2.7.52 in the Foliate runtime | BSD-3-Clause | Copyright Gildas Lormeau. Retain `BuildSupport/FoliateRuntime/zip.js-LICENSE.txt` in binary documentation or acknowledgements. |
-| PDF.js and its CMaps/fonts | Foliate vendored tree | Apache-2.0, BSD-style, and font-specific terms | Retain the license files under `ThirdParty/foliate-js/vendor/pdfjs/`. |
-| libmobi | 0.12 under `engine/src/main/cpp/libmobi/` | LGPL-3.0-or-later | Statically linked into the app's native library. Binary distribution requires prominent notice, the LGPL and GPL texts, corresponding libmobi source, corresponding application code or relinking materials, and installation information required by LGPL section 4. |
+| PDF.js and its CMaps/fonts | PDF.js 4.7.76 in the Foliate vendored tree | Apache-2.0, BSD-style, and SIL OFL-1.1 terms | The app surfaces the PDF.js, CMap, Foxit font, and Liberation font license texts in acknowledgements. |
+| libmobi | 0.12 under `engine/src/main/cpp/libmobi/` | LGPL-3.0-or-later | Built as a separate `libmobi.so` loaded by Enve's JNI bridge. The exact source and replacement/install instructions are published with the app and retained in release evidence. |
 | whisper.cpp and ggml | 1.8.4 under `engine/src/main/cpp/whisper/` | MIT | Copyright the ggml authors. The app carries a small JNI bridge based on the upstream Android example. Retain the MIT notice. |
 
 ## Direct Gradle dependencies
@@ -26,7 +26,7 @@ This inventory describes the repository audited on 2026-08-10. Gradle build file
 | Readium Kotlin Toolkit | 3.3.0 | BSD-3-Clause |
 | NanoHTTPD | 2.3.1 | BSD-3-Clause |
 | jsoup | 1.17.2 | MIT |
-| jcifs-ng | 2.1.10 | LGPL-2.1 |
+| jcifs-ng | 2.1.10 | LGPL-2.1-or-later; exact source and replacement instructions are retained with release evidence |
 | Android libarchive wrapper and libarchive | 1.1.6 | Apache-2.0 wrapper with libarchive's BSD-style component licenses |
 | Google Cast framework and Play services dependencies | Cast framework 21.5.0 | Google APIs and SDK terms; not relicensed under the Enve license |
 | Google Play Billing Library | 9.1.0 | Google Play SDK terms; not relicensed under the Enve license |
@@ -38,7 +38,7 @@ The final APK also contains transitive dependencies. Before each binary release,
 
 ## Runtime models
 
-Enve does not license model weights merely by supporting or downloading them. Whisper, Gemma, LiteRT-LM, and user-selected model files may carry terms separate from their runtimes. A distributor must identify the exact model, retain its license and use restrictions, and show those terms before or with any download. Do not bundle or host model weights until their redistribution rights are verified.
+Enve does not license model weights merely by supporting or downloading them. The offered Qwen3 0.6B LiteRT-LM and Whisper tiny.en downloads are revision-pinned, SHA-256 verified, and identified in `BuildSupport/Models/UPSTREAM.md`; their terms are shown before download and remain available in the in-app acknowledgements. User-selected model files may carry different terms.
 
 ML Kit states that its APIs may send performance and utilization metrics and may contact Google for updates. Binary distributors must provide the privacy disclosures required for their distribution channel.
 

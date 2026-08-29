@@ -96,6 +96,18 @@ Several sections need setup that a bare device cannot provide: a live server wit
 - [ ] E-Ink mode chips, bold text, and refresh strength persist and take effect
 - [ ] Connected libraries list shows each connection with enable toggle and remove
 - [ ] Sync now refreshes; About shows the expected version
+- [ ] About opens the website and Privacy Policy at `envemedia.com`
+- [ ] Open-source licenses opens, shows the resolved dependency list, and opens every bundled notice
+
+## Android Auto
+
+- [ ] Enve appears in the media launcher on a compatible car or Desktop Head Unit
+- [ ] Recently played, downloads, and provider/library browsing load without unsafe or dead-end rows
+- [ ] Selecting a playable book starts playback and updates title, author, artwork, duration, and position
+- [ ] Play/pause, previous/next, rewind, and fast-forward controls drive phone playback
+- [ ] Voice search finds a book and either plays the requested result or presents safe browsable results
+- [ ] Artwork content URIs resolve from the car process and never expose an authentication token
+- [ ] Disconnecting and reconnecting restores the active media session without duplicating queue items
 
 ## Sources and providers
 

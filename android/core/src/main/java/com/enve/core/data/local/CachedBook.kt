@@ -647,15 +647,14 @@ interface BookCacheDao {
 
     @Query("""
         SELECT * FROM book_cache
-        WHERE mediaType = 'AUDIOBOOK' AND title LIKE '%' || :query || '%'
-        ORDER BY
-            CASE WHEN lower(title) = lower(:query) THEN 0
-                 WHEN lower(title) LIKE lower(:query) || '%' THEN 1
-                 ELSE 2 END,
-            lastReadTime DESC
-        LIMIT 10
+        WHERE mediaType = 'AUDIOBOOK'
+          AND (title LIKE '%' || :query || '%'
+            OR author LIKE '%' || :query || '%'
+            OR narrator LIKE '%' || :query || '%')
+        ORDER BY lastReadTime DESC, addedOn DESC
+        LIMIT 1000
     """)
-    suspend fun searchAudiobooks(query: String): List<CachedBook>
+    suspend fun searchAudiobooksByMetadata(query: String): List<CachedBook>
 
     @Query("""
         SELECT * FROM book_cache

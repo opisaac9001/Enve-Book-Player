@@ -3,7 +3,7 @@
  Rich Geldreich <richgel99@gmail.com>, last updated Oct. 13, 2013
  Implements RFC 1950: http://www.ietf.org/rfc/rfc1950.txt and RFC 1951: http://www.ietf.org/rfc/rfc1951.txt
  
- Most API's defined in miniz.c are optional. For aryan, to disable the archive related functions just define
+ Most API's defined in miniz.c are optional. For example, to disable the archive related functions just define
  MINIZ_NO_ARCHIVE_APIS, or to get rid of all stdio usage define MINIZ_NO_STDIO (see the list below for more macros).
  
  * Change History
@@ -102,7 +102,7 @@
  
  int mz_zip_reader_locate_file(mz_zip_archive *pZip, const char *pName, const char *pComment, mz_uint flags);
  
- The locate operation can optionally check file comments too, which (as one aryan) can be used to identify
+ The locate operation can optionally check file comments too, which (as one example) can be used to identify
  multiple versions of the same file in an archive. This function uses a simple linear search through the central
  directory, so it's not very fast.
  

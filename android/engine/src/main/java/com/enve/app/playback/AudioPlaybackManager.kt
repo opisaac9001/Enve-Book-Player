@@ -125,6 +125,7 @@ data class PlaybackState(
 @androidx.annotation.OptIn(UnstableApi::class)
 class AudioPlaybackManager @Inject constructor(
     @ApplicationContext private val context: Context,
+    private val autoArtworkCache: AutoArtworkCache,
 ) {
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var controller: MediaController? = null
@@ -149,6 +150,12 @@ class AudioPlaybackManager @Inject constructor(
         if (_currentBookId.value != bookId) {
             _state.value = _state.value.copy(currentPositionMs = 0L, durationMs = 0L, playbackCompleted = false)
         }
+    }
+
+    fun adoptExternalPlayback(bookId: String) {
+        resetTransientStateForNewBook(bookId)
+        currentBookId = bookId
+        connect()
     }
 
     private fun runOnMain(block: () -> Unit) {
@@ -210,6 +217,7 @@ class AudioPlaybackManager @Inject constructor(
             bookId = bookId,
             title = title,
             author = author,
+            coverUrl = coverUrl,
             startPositionMs = startPositionMs,
             mediaId = mediaId,
             authToken = authToken,
@@ -225,8 +233,10 @@ class AudioPlaybackManager @Inject constructor(
     private fun playSingleOnController(
         player: MediaController,
         streamUrl: String,
+        bookId: String,
         title: String,
         author: String?,
+        coverUrl: String?,
         startPositionMs: Long,
         mediaId: String,
         authToken: String?,
@@ -236,9 +246,12 @@ class AudioPlaybackManager @Inject constructor(
         activeQueueKey = queueKeyFor(mediaId, itemCount = 1)
         _state.value = _state.value.copy(errorMessage = null)
 
+        val cacheKey = AutoMediaBrowserHelper.cacheKeyFrom(mediaId) ?: bookId
+        val cachedArtwork = autoArtworkCache.cachedUriFor(bookId, cacheKey, coverUrl)
         val metadata = MediaMetadata.Builder()
             .setTitle(title)
             .setArtist(author)
+            .apply { cachedArtwork?.let(::setArtworkUri) }
             .build()
 
         val resolvedUrl = withAuthToken(streamUrl, authToken)
@@ -256,6 +269,9 @@ class AudioPlaybackManager @Inject constructor(
         }
         player.prepare()
         player.play()
+        if (cachedArtwork == null) {
+            updateQueueArtwork(bookId, cacheKey, coverUrl, activeQueueKey)
+        }
     }
 
     fun playMultiTrack(
@@ -263,6 +279,7 @@ class AudioPlaybackManager @Inject constructor(
         bookId: String,
         title: String,
         author: String?,
+        coverUrl: String? = null,
         startPositionMs: Long = 0L,
         mediaId: String = "",
         authToken: String? = null,
@@ -274,6 +291,7 @@ class AudioPlaybackManager @Inject constructor(
             bookId = bookId,
             title = title,
             author = author,
+            coverUrl = coverUrl,
             startPositionMs = startPositionMs,
             mediaId = mediaId,
             authToken = authToken,
@@ -289,8 +307,10 @@ class AudioPlaybackManager @Inject constructor(
     private fun playMultiTrackOnController(
         player: MediaController,
         tracks: List<TrackInfo>,
+        bookId: String,
         title: String,
         author: String?,
+        coverUrl: String?,
         startPositionMs: Long,
         mediaId: String,
         authToken: String?,
@@ -300,6 +320,8 @@ class AudioPlaybackManager @Inject constructor(
         activeQueueKey = queueKeyFor(mediaId, tracks.size)
         _state.value = _state.value.copy(errorMessage = null)
 
+        val cacheKey = AutoMediaBrowserHelper.cacheKeyFrom(mediaId) ?: bookId
+        val cachedArtwork = autoArtworkCache.cachedUriFor(bookId, cacheKey, coverUrl)
         val mediaItems = tracks.mapIndexed { index, track ->
             val itemMediaId = if (mediaId.isNotBlank() && tracks.size > 1) "$mediaId#track=$index" else mediaId
             val resolvedUrl = withAuthToken(track.url, authToken)
@@ -311,6 +333,7 @@ class AudioPlaybackManager @Inject constructor(
                     MediaMetadata.Builder()
                         .setTitle(track.title ?: title)
                         .setArtist(author)
+                        .apply { cachedArtwork?.let(::setArtworkUri) }
                         .apply {
                             if (track.durationMs > 0L) setDurationMs(track.durationMs)
                         }
@@ -345,6 +368,9 @@ class AudioPlaybackManager @Inject constructor(
         player.prepare()
 
         player.play()
+        if (cachedArtwork == null) {
+            updateQueueArtwork(bookId, cacheKey, coverUrl, activeQueueKey)
+        }
     }
 
     fun togglePlayPause() {
@@ -603,6 +629,29 @@ class AudioPlaybackManager @Inject constructor(
         return "$baseId:$itemCount"
     }
 
+    private fun updateQueueArtwork(
+        bookId: String,
+        cacheKey: String,
+        coverUrl: String?,
+        queueKey: String?,
+    ) {
+        scope.launch {
+            val artworkUri = autoArtworkCache.uriFor(bookId, cacheKey, coverUrl) ?: return@launch
+            val player = controller ?: return@launch
+            if (currentBookId != bookId || activeQueueKey != queueKey) return@launch
+            for (index in 0 until player.mediaItemCount) {
+                val item = player.getMediaItemAt(index)
+                val metadata = item.mediaMetadata.buildUpon()
+                    .setArtworkUri(artworkUri)
+                    .build()
+                player.replaceMediaItem(
+                    index,
+                    item.buildUpon().setMediaMetadata(metadata).build(),
+                )
+            }
+        }
+    }
+
     private fun playPending(pending: PendingPlayback) {
         currentBookId = pending.bookId
         val player = controller ?: return
@@ -610,8 +659,10 @@ class AudioPlaybackManager @Inject constructor(
             is PendingPlayback.Single -> playSingleOnController(
                 player = player,
                 streamUrl = pending.streamUrl,
+                bookId = pending.bookId,
                 title = pending.title,
                 author = pending.author,
+                coverUrl = pending.coverUrl,
                 startPositionMs = pending.startPositionMs,
                 mediaId = pending.mediaId,
                 authToken = pending.authToken,
@@ -619,8 +670,10 @@ class AudioPlaybackManager @Inject constructor(
             is PendingPlayback.Multi -> playMultiTrackOnController(
                 player = player,
                 tracks = pending.tracks,
+                bookId = pending.bookId,
                 title = pending.title,
                 author = pending.author,
+                coverUrl = pending.coverUrl,
                 startPositionMs = pending.startPositionMs,
                 mediaId = pending.mediaId,
                 authToken = pending.authToken,
@@ -642,6 +695,7 @@ class AudioPlaybackManager @Inject constructor(
             override val bookId: String,
             val title: String,
             val author: String?,
+            val coverUrl: String?,
             val startPositionMs: Long,
             val mediaId: String,
             val authToken: String?,
@@ -652,6 +706,7 @@ class AudioPlaybackManager @Inject constructor(
             override val bookId: String,
             val title: String,
             val author: String?,
+            val coverUrl: String?,
             val startPositionMs: Long,
             val mediaId: String,
             val authToken: String?,
@@ -674,6 +729,9 @@ class AudioPlaybackManager @Inject constructor(
         }
 
         internal fun guessMimeType(url: String): String {
+            if (url.substringBefore('#').contains("format=audiobook", ignoreCase = true)) {
+                return MimeTypes.AUDIO_MP4
+            }
             val path = url.substringBefore('?').substringBefore('#').lowercase()
             return when {
                 path.endsWith(".mp3") -> MimeTypes.AUDIO_MPEG

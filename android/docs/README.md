@@ -18,7 +18,6 @@ Reference material for the Android app. Start with the root files for anything t
 ## Guides
 
 - [guides/automation.md](guides/automation.md) — Tasker and broadcast-intent playback control
-- [OIDC, SSO, and browser sign-in](../../docs/guides/oidc.md) — complete provider audit, callback values, and identity-provider setup
 
 ## Testing
 
@@ -27,4 +26,8 @@ Reference material for the Android app. Start with the root files for anything t
 ## Release
 
 - [release/play-tip-jar.md](release/play-tip-jar.md) — Google Play one-time product setup for the tip jar
+- [release/play-console-submission.md](release/play-console-submission.md) — privacy, Data safety, Health apps, and store-asset submission record
+- [release/lgpl-replacement.md](release/lgpl-replacement.md) — source, rebuilding, relinking, and installation instructions for LGPL components
+- [release/public-source-publication.md](release/public-source-publication.md) — final source export and public verification for each production release
+- [release/production-checklist.md](release/production-checklist.md) — exact local, public-source, Play Console, hardware, and rollout gates
 - [legal/THIRD_PARTY_AUDIT.md](legal/THIRD_PARTY_AUDIT.md) — third-party obligations that gate binary distribution

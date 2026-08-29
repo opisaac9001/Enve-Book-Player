@@ -4,18 +4,33 @@ Release notes for the Android app. Versions are `<name> build <code>`, matching 
 
 ## Unreleased
 
-Current version: **1.2 build 44**.
+No pending changes.
 
-Notes were not written for builds 30 through 44. Notable additions visible in the current source since build 29, without a build attribution:
+## 1.2 build 46 — 2026-08-29
+
+### Added
 
 - Wear OS companion app with transport control, recent books, and sleep-timer control
 - Sleep tracking backed by Health Connect
 - Server tools hub — per-connection stats, achievements, highlights, bookmarks, and history
 - BookOrbit and Silo providers, and BookOrbit reading insights
 - Playback automation contract for broadcast-intent control
+- Android Auto browsing, playback controls, voice search, and artwork
 - EPUB page labels in the reader, offline-first opening of downloaded ebooks, and expanded text-selection tools
 
-This list is incomplete and should be reconciled with the release notes before the next release.
+### Distribution and privacy
+
+- Added in-app open-source acknowledgements and an exact release dependency inventory.
+- Pinned Enve-managed Qwen and Whisper model downloads to verified revisions and SHA-256 digests.
+- Added model download disclosures and expanded Health Connect, Google service, and model-download privacy disclosures.
+- Recorded exact libmobi, whisper.cpp, and jcifs-ng provenance and LGPL replacement instructions.
+
+### Pending release-candidate verification
+
+- Android Auto on a compatible car or Desktop Head Unit.
+- Wear controls and sleep-timer behavior on physical Wear OS hardware.
+- Remote and downloaded playback on physical Cast hardware.
+- Komga reading-direction behavior with an affected library.
 
 ## 1.2 build 29 — 2026-07-22
 

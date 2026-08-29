@@ -7,6 +7,7 @@ import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
+import java.security.MessageDigest
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -15,6 +16,7 @@ data class WhisperModel(
     val fileName: String,
     val url: String,
     val approxBytes: Long,
+    val sha256: String,
 )
 
 @Singleton
@@ -28,7 +30,7 @@ class WhisperModelManager @Inject constructor(
 
     fun isInstalled(model: WhisperModel): Boolean {
         val f = modelFile(model)
-        return f.exists() && f.length() >= (model.approxBytes * 0.98).toLong()
+        return f.isFile && f.length() == model.approxBytes && f.sha256().equals(model.sha256, ignoreCase = true)
     }
 
     suspend fun download(model: WhisperModel, onProgress: (Float) -> Unit) = withContext(Dispatchers.IO) {
@@ -65,9 +67,13 @@ class WhisperModelManager @Inject constructor(
             }
         }
 
-        if (partial.length() < (model.approxBytes * 0.98).toLong()) {
+        if (partial.length() != model.approxBytes) {
             partial.delete()
-            throw IllegalStateException("Downloaded model too small (${partial.length()} bytes)")
+            throw IllegalStateException("Downloaded model had an unexpected size")
+        }
+        if (!partial.sha256().equals(model.sha256, ignoreCase = true)) {
+            partial.delete()
+            throw IllegalStateException("Downloaded model verification failed")
         }
         if (dest.exists()) dest.delete()
         if (!partial.renameTo(dest)) throw IllegalStateException("Could not finalize model file")
@@ -79,11 +85,25 @@ class WhisperModelManager @Inject constructor(
         val TINY_EN = WhisperModel(
             id = "tiny.en",
             fileName = "ggml-tiny.en.bin",
-            url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin",
+            url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-tiny.en.bin",
             approxBytes = 77_704_715L,
+            sha256 = "921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f",
         )
 
         val ALL = listOf(TINY_EN)
         fun byId(id: String): WhisperModel? = ALL.firstOrNull { it.id == id }
     }
+}
+
+private fun File.sha256(): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    inputStream().buffered().use { input ->
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            digest.update(buffer, 0, count)
+        }
+    }
+    return digest.digest().joinToString("") { byte -> "%02x".format(byte) }
 }
