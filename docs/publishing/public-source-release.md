@@ -16,6 +16,8 @@ The private repositories remain the working copies. Their Git metadata and histo
 4. Confirm third-party code and assets may be redistributed and that their notices are current.
 5. Update the platform changelog and documentation before copying the snapshot.
 
+The snapshot is allowed to lag while a release is being prepared. It must not lag the production release: every feature in the shipped binary must be represented in the corresponding public source snapshot. For Android, this expressly includes Android Auto support and its manifest declarations, media-library code, artwork provider, resources, and tests.
+
 ## Exporting a platform
 
 Copy source files into the matching public directory while excluding at least:
@@ -44,6 +46,7 @@ Run the affected platform's provenance check and complete documented build/test 
 Before committing, confirm:
 
 - both platform directories are independently buildable
+- every feature shipped in the release is present in the exported platform source; Android releases include Android Auto
 - root and platform links resolve after the directory split
 - GitHub Actions use `ios/` and `android/` as their working directories
 - no nested private repository or private history is present
