@@ -258,13 +258,13 @@ dependencies {
 
     implementation("me.zhanghai.android.libarchive:library:1.1.6")
 
-    implementation("androidx.media3:media3-exoplayer:1.10.0")
-    implementation("androidx.media3:media3-session:1.10.0")
-    implementation("androidx.media3:media3-ui:1.10.0")
+    implementation("androidx.media3:media3-exoplayer:1.11.0")
+    implementation("androidx.media3:media3-session:1.11.0")
+    implementation("androidx.media3:media3-ui:1.11.0")
 
-    implementation("androidx.media3:media3-datasource-okhttp:1.10.0")
+    implementation("androidx.media3:media3-datasource-okhttp:1.11.0")
 
-    implementation("androidx.media3:media3-cast:1.10.0")
+    implementation("androidx.media3:media3-cast:1.11.0")
     implementation("com.google.android.gms:play-services-cast-framework:21.5.0")
     implementation("com.google.android.gms:play-services-wearable:20.0.1")
     implementation("androidx.mediarouter:mediarouter:1.7.0")
