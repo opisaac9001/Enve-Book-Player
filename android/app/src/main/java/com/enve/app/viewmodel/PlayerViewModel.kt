@@ -361,6 +361,7 @@ class PlayerViewModel @Inject constructor(
                         bookId = book.id,
                         title = book.title,
                         author = book.author,
+                        coverUrl = book.coverUrl,
                         startPositionMs = resolvedStartTime * 1000,
                         mediaId = mediaId,
                     )
@@ -446,6 +447,7 @@ class PlayerViewModel @Inject constructor(
                             bookId = book.id,
                             title = book.title,
                             author = book.author,
+                            coverUrl = book.coverUrl,
                             startPositionMs = resolvedStartTime * 1000,
                             mediaId = mediaId,
                         )
@@ -593,6 +595,7 @@ class PlayerViewModel @Inject constructor(
                 bookId = book.id,
                 title = book.title,
                 author = book.author,
+                coverUrl = book.coverUrl,
                 startPositionMs = effectiveStartPositionSec * 1000,
                 mediaId = mediaId,
                 authToken = castAuthToken,

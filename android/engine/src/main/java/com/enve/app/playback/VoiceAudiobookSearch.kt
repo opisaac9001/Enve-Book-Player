@@ -39,12 +39,23 @@ internal data class VoiceAudiobookSearch(
         const val NO_MATCH = 1_000
         private const val CREATOR_MISMATCH = 9
 
-        fun create(query: String?, title: String?, creator: String?): VoiceAudiobookSearch =
-            VoiceAudiobookSearch(
-                query = query.cleaned(),
-                title = title.cleaned(),
-                creator = creator.cleaned(),
+        fun create(query: String?, title: String?, creator: String?): VoiceAudiobookSearch {
+            val cleanedQuery = query.cleaned()
+            val cleanedTitle = title.cleaned()
+            val cleanedCreator = creator.cleaned()
+            val titleAndCreator = if (cleanedTitle == null && cleanedCreator == null) {
+                cleanedQuery?.let(TITLE_AND_CREATOR::matchEntire)
+            } else {
+                null
+            }
+            return VoiceAudiobookSearch(
+                query = cleanedQuery.takeIf { titleAndCreator == null },
+                title = cleanedTitle ?: titleAndCreator?.groupValues?.get(1)?.cleaned(),
+                creator = cleanedCreator ?: titleAndCreator?.groupValues?.get(2)?.cleaned(),
             )
+        }
+
+        private val TITLE_AND_CREATOR = Regex("^(.+?)\\s+by\\s+(.+)$", RegexOption.IGNORE_CASE)
 
         private fun String?.cleaned(): String? = this
             ?.trim()

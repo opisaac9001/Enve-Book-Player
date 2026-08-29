@@ -1,22 +1,20 @@
 # Android Third-Party Release Audit
 
-Audited 2026-08-10 against the repository and Gradle configuration on `main`.
+Audited 2026-08-29 against the repository and Gradle configuration on `main`.
 
 This is a release checklist, not legal advice. It separates source publication from binary distribution because an APK has obligations that a source repository alone does not satisfy.
 
 ## Current conclusion
 
-The source repository can be published under the Enve Noncommercial Public Source License because `LICENSE.md` excludes third-party materials and preserves their separate rights. A public APK or app bundle is not ready for distribution yet.
+The source repository can be published under the Enve Noncommercial Public Source License because `LICENSE.md` excludes third-party materials and preserves their separate rights. The repository-level licensing work is complete; a public APK or app bundle remains gated on verification of the exact signed release candidate and its matching public source snapshot.
 
-The binary blockers are:
+The remaining binary release gates are:
 
-1. Add an in-app acknowledgements screen reachable from Settings and include all license and NOTICE texts present in the resolved release artifact.
-2. Choose and document a compliant LGPL-3.0-or-later distribution method for statically linked libmobi. Provide the exact libmobi source, Enve application code or usable object/relinking materials, build instructions, and installation information needed to replace the library.
-3. Provide LGPL-2.1 notice and corresponding source for jcifs-ng 2.1.10, and verify whether the packaged form requires additional relinking material.
-4. Generate a complete release dependency and license inventory, including transitive AAR/JAR contents and native libraries. The current root notice covers direct dependencies only.
-5. Verify the terms and privacy disclosures for ML Kit GenAI, LiteRT-LM, Google Cast, Play services, and Play Billing for the intended distribution channel.
-6. Identify and present the license for every model Enve offers, downloads, hosts, or bundles. No model may be redistributed from its framework license alone.
-7. Audit the final APK and app bundle for embedded license files, unexpected assets, native objects, debug metadata, credentials, private URLs, and build paths.
+1. Generate the release evidence bundle from the exact signed candidate and confirm its artifact digests, signature, dependency inventory, native libraries, notices, and source archives.
+2. Audit the final APK and app bundle for unexpected assets, debug metadata, credentials, private URLs, and build paths.
+3. Verify the current Google SDK and service terms for ML Kit GenAI, LiteRT-LM, Google Cast, Play services, and Play Billing, then make the matching Google Play Data safety and Health apps declarations.
+4. Publish and independently build the public source snapshot that corresponds to the production binary, including Android Auto and every other shipped feature.
+5. Complete the required physical-device, Android Auto, Wear OS, Cast, and server-integration checks listed in the release checklist.
 
 ## Source repository checks
 
@@ -32,9 +30,20 @@ The binary blockers are:
 - [x] Removed the commercial *Isles of the Emberdark* EPUB test fixture. The remaining StoryAlign EPUB fixtures identify themselves as Project Gutenberg public domain and Standard Ebooks public domain/CC0 material.
 - [x] Removed the obsolete website/store screenshots containing third-party book covers and visible library data.
 - [x] The maintainer confirmed that bundled provider logos are authorized for their current identification and compatibility use in Enve.
-- [ ] Record an authoritative upstream commit or release archive hash for the vendored libmobi 0.12 tree.
-- [ ] Record the authoritative whisper.cpp v1.8.4 commit and verify the vendored file set against it.
-- [ ] Record the exact upstream file or documented transformation for every non-Grimmory provider logo.
+- [x] Record an authoritative upstream commit and source archive hash for the vendored libmobi 0.12 tree, including the exact Enve integration changes.
+- [x] Record the authoritative whisper.cpp v1.8.4 commit and verify every vendored upstream file by Git blob hash.
+- [x] Record every non-Grimmory provider-logo file digest and its unchanged transfer from the owner-authorized Enve iOS asset set.
+
+## Completed binary-preparation work
+
+- [x] In-app acknowledgements are reachable from About and contain the resolved release dependency inventory plus bundled legal and provenance documents.
+- [x] `verifyAcknowledgementsInventory` fails the build when a resolved release module is missing from the in-app inventory.
+- [x] `generateReleaseDependencyInventory` records each resolved release artifact and SHA-256 digest.
+- [x] libmobi is packaged as a separate `libmobi.so`; exact corresponding source, rebuild, replacement, signing, and installation instructions are documented.
+- [x] jcifs-ng 2.1.10 has exact source, commit, archive digest, license, replacement, and installation information.
+- [x] Offered Qwen3 0.6B and Whisper tiny.en downloads are revision-pinned, size-checked, SHA-256 verified, and documented with their licenses.
+- [x] Model download terms are presented before Enve-managed downloads, and all model notices remain available in-app.
+- [x] The public privacy policy describes Health Connect sleep access, Google SDK behavior, and model downloads.
 
 ## Binary distribution package
 
@@ -51,6 +60,7 @@ A release evidence bundle should contain:
 - model cards, licenses, and accepted-use restrictions for distributed or offered models
 - privacy disclosures covering ML Kit and other SDK data behavior
 - a report from inspecting the final APK and app bundle
+- the private source revision, matching public source revision, and confirmation that Android Auto is present in the public snapshot
 
 Keep that bundle available for at least the period required by the applicable licenses and by section 6 of the Enve license.
 

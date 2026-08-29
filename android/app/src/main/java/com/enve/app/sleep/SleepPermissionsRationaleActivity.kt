@@ -27,6 +27,6 @@ class SleepPermissionsRationaleActivity : ComponentActivity() {
     }
 
     private companion object {
-        const val PRIVACY_POLICY_URL = "https://enveapp.io/privacy"
+        const val PRIVACY_POLICY_URL = "https://envemedia.com/privacy-policy"
     }
 }

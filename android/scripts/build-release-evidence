@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repository_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repository_root"
+
+release_mode=${1:-local}
+if [[ "$release_mode" != "local" && "$release_mode" != "production" ]]; then
+    echo "Usage: $0 [local|production]" >&2
+    exit 2
+fi
+
+if [[ "$release_mode" == "production" ]]; then
+    [[ -z "$(git status --porcelain)" ]] || {
+        echo "Production evidence requires a clean source checkout." >&2
+        exit 1
+    }
+    [[ -n "${ENVE_PUBLIC_SOURCE_REVISION:-}" ]] || {
+        echo "Set ENVE_PUBLIC_SOURCE_REVISION to the matching public source commit." >&2
+        exit 1
+    }
+fi
+
+timestamp=$(date -u +%Y%m%dT%H%M%SZ)
+private_revision=$(git rev-parse HEAD)
+public_revision=${ENVE_PUBLIC_SOURCE_REVISION:-not-recorded-local-preparation}
+evidence_root="app/build/reports/release-evidence/build-46-${timestamp}"
+artifacts_dir="$evidence_root/artifacts"
+legal_dir="$evidence_root/legal"
+source_dir="$evidence_root/corresponding-source"
+reports_dir="$evidence_root/reports"
+mkdir -p "$artifacts_dir" "$legal_dir" "$source_dir" "$reports_dir"
+
+./scripts/verify-provenance
+./gradlew --no-daemon \
+    test \
+    :app:verifyAcknowledgementsInventory \
+    :app:generateReleaseDependencyInventory \
+    :app:lintRelease \
+    :wear:lintRelease \
+    :app:assembleDebug \
+    :wear:assembleDebug \
+    :app:assembleRelease \
+    :wear:assembleRelease \
+    :app:bundleRelease \
+    :wear:bundleRelease
+
+app_bundle=${ENVE_APP_BUNDLE:-app/build/outputs/bundle/release/app-release.aab}
+wear_bundle=${ENVE_WEAR_BUNDLE:-wear/build/outputs/bundle/release/wear-release.aab}
+cp "$app_bundle" "$artifacts_dir/app-release.aab"
+cp "$wear_bundle" "$artifacts_dir/wear-release.aab"
+cp app/build/outputs/apk/release/app-release-unsigned.apk "$artifacts_dir/"
+cp wear/build/outputs/apk/release/wear-release-unsigned.apk "$artifacts_dir/"
+cp app/build/outputs/native-debug-symbols/release/native-debug-symbols.zip "$artifacts_dir/"
+cp app/build/reports/release/dependencies.tsv "$reports_dir/"
+cp -R app/build/reports/lint-results-release.html "$reports_dir/app-lint.html"
+cp -R wear/build/reports/lint-results-release.html "$reports_dir/wear-lint.html"
+cp LICENSE.md NOTICE.md THIRD_PARTY_NOTICES.md "$legal_dir/"
+cp docs/legal/THIRD_PARTY_AUDIT.md docs/release/lgpl-replacement.md "$legal_dir/"
+cp -R BuildSupport/Jcifs BuildSupport/Models BuildSupport/ProviderLogos "$legal_dir/"
+cp engine/src/main/cpp/libmobi/COPYING "$legal_dir/libmobi-LGPL-3.0.txt"
+cp engine/src/main/cpp/libmobi/PROVENANCE.md "$legal_dir/libmobi-PROVENANCE.md"
+cp engine/src/main/cpp/whisper/LICENSE "$legal_dir/whisper-MIT.txt"
+cp engine/src/main/cpp/whisper/PROVENANCE.md "$legal_dir/whisper-PROVENANCE.md"
+cp app/src/main/res/raw/aboutlibraries.json "$legal_dir/"
+cp ThirdParty/foliate-js/LICENSE "$legal_dir/foliate-MIT.txt"
+cp BuildSupport/FoliateRuntime/zip.js-LICENSE.txt "$legal_dir/zip.js-BSD-3-Clause.txt"
+cp BuildSupport/Licenses/Apache-2.0.txt "$legal_dir/Qwen3-0.6B-LICENSE.txt"
+cp BuildSupport/Licenses/Apache-2.0.txt "$legal_dir/pdf.js-Apache-2.0.txt"
+cp ThirdParty/foliate-js/vendor/pdfjs/cmaps/LICENSE "$legal_dir/pdf.js-CMaps-BSD.txt"
+cp ThirdParty/foliate-js/vendor/pdfjs/standard_fonts/LICENSE_FOXIT "$legal_dir/pdf.js-Foxit-fonts-BSD.txt"
+cp ThirdParty/foliate-js/vendor/pdfjs/standard_fonts/LICENSE_LIBERATION "$legal_dir/pdf.js-Liberation-fonts-OFL-1.1.txt"
+
+curl --fail --location --silent --show-error \
+    "https://github.com/bfabiszewski/libmobi/archive/906274205c11944b628da1c553b255acb1af7c55.tar.gz" \
+    --output "$source_dir/libmobi-906274205c11944b628da1c553b255acb1af7c55.tar.gz"
+curl --fail --location --silent --show-error \
+    "https://github.com/AgNO3/jcifs-ng/archive/refs/tags/jcifs-ng-2.1.10.tar.gz" \
+    --output "$source_dir/jcifs-ng-2.1.10.tar.gz"
+tar -czf "$source_dir/enve-vendored-libmobi-build-46.tar.gz" engine/src/main/cpp/libmobi
+
+verify_digest() {
+    local expected=$1
+    local file=$2
+    local actual
+    actual=$(shasum -a 256 "$file" | awk '{print $1}')
+    [[ "$actual" == "$expected" ]] || {
+        echo "Digest mismatch for $file" >&2
+        exit 1
+    }
+}
+
+verify_digest ec260e472d4db1bcbf8c479ee470bd2a2b2b822f14313604c76e667a684e1dfa \
+    "$source_dir/libmobi-906274205c11944b628da1c553b255acb1af7c55.tar.gz"
+verify_digest 5f7de1c111d1d5dbe74ea5838bbd77b5a4e757a059c72992dea52c7056d567e7 \
+    "$source_dir/jcifs-ng-2.1.10.tar.gz"
+
+for bundle in "$artifacts_dir"/*.aab; do
+    bundle_name=$(basename "$bundle")
+    unzip -l "$bundle" > "$reports_dir/${bundle_name}.contents.txt"
+    jarsigner -verify -verbose -certs "$bundle" > "$reports_dir/${bundle_name}.signature.txt" 2>&1 || true
+done
+
+temporary_dir=$(mktemp -d)
+trap 'rm -rf "$temporary_dir"' EXIT
+unzip -q "$artifacts_dir/app-release.aab" -d "$temporary_dir/app-bundle"
+find "$temporary_dir/app-bundle" -type f -print | sort > "$reports_dir/app-release-files.txt"
+: > "$reports_dir/sensitive-or-build-path-scan.txt"
+while IFS= read -r -d '' packaged_file; do
+    matches=$(LC_ALL=C grep -a -o -E \
+        'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|github_pat_[A-Za-z0-9_]+|ghp_[A-Za-z0-9]+|xox[baprs]-[A-Za-z0-9-]+|sk_live_[A-Za-z0-9]+|/Users/[^/]+/(Desktop|Documents|Downloads|Library|Projects|Source|Workspace|workspace)/|/Volumes/[^/]+/[^[:space:]]*(Enve|enve|Workspace|workspace)' \
+        "$packaged_file" | sort -u || true)
+    if [[ -n "$matches" ]]; then
+        printf '%s\n%s\n' "$packaged_file" "$matches" >> "$reports_dir/sensitive-or-build-path-scan.txt"
+    fi
+done < <(find "$temporary_dir/app-bundle" -type f -print0)
+
+zipalign_binary=${ENVE_ZIPALIGN:-$(command -v zipalign || true)}
+if [[ -n "$zipalign_binary" ]]; then
+    "$zipalign_binary" -c -P 16 -v 4 "$artifacts_dir/app-release-unsigned.apk" \
+        > "$reports_dir/app-release-16k-alignment.txt"
+elif [[ "$release_mode" == "production" ]]; then
+    echo "Set ENVE_ZIPALIGN to Android build-tools zipalign for production evidence." >&2
+    exit 1
+else
+    echo "Not run; set ENVE_ZIPALIGN to verify 16 KB APK alignment." \
+        > "$reports_dir/app-release-16k-alignment.txt"
+fi
+
+readobj_binary=${ENVE_LLVM_READOBJ:-$(command -v llvm-readobj || true)}
+mkdir -p "$temporary_dir/native"
+unzip -q "$artifacts_dir/app-release-unsigned.apk" 'lib/*/libenve_mobi.so' 'lib/*/libmobi.so' -d "$temporary_dir/native"
+find "$temporary_dir/native" -type f -print | sort > "$reports_dir/libmobi-packaging.txt"
+if [[ -n "$readobj_binary" ]]; then
+    while IFS= read -r bridge; do
+        "$readobj_binary" --dynamic-table "$bridge" >> "$reports_dir/libmobi-packaging.txt"
+    done < <(find "$temporary_dir/native" -name libenve_mobi.so -type f | sort)
+    grep -q 'Shared library: \[libmobi.so\]' "$reports_dir/libmobi-packaging.txt" || {
+        echo "The JNI bridge does not declare libmobi.so as a shared dependency." >&2
+        exit 1
+    }
+elif [[ "$release_mode" == "production" ]]; then
+    echo "Set ENVE_LLVM_READOBJ to llvm-readobj for production evidence." >&2
+    exit 1
+else
+    echo "Dynamic-table check not run; set ENVE_LLVM_READOBJ." >> "$reports_dir/libmobi-packaging.txt"
+fi
+
+{
+    echo "release_mode=$release_mode"
+    echo "version=1.2"
+    echo "build=46"
+    echo "generated_utc=$timestamp"
+    echo "private_revision=$private_revision"
+    echo "public_source_revision=$public_revision"
+    echo "android_auto_required_in_public_source=true"
+} > "$evidence_root/RELEASE.txt"
+
+(
+    cd "$evidence_root"
+    find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 shasum -a 256 > SHA256SUMS
+)
+
+if [[ "$release_mode" == "production" ]]; then
+    grep -q 'jar verified' "$reports_dir/app-release.aab.signature.txt" || {
+        echo "The app bundle is not signed and verified." >&2
+        exit 1
+    }
+    grep -q 'jar verified' "$reports_dir/wear-release.aab.signature.txt" || {
+        echo "The Wear bundle is not signed and verified." >&2
+        exit 1
+    }
+    [[ ! -s "$reports_dir/sensitive-or-build-path-scan.txt" ]] || {
+        echo "The app bundle contains a credential-like value or local build path." >&2
+        exit 1
+    }
+fi
+
+echo "Release evidence: $evidence_root"

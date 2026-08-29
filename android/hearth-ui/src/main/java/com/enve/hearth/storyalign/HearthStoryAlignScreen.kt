@@ -29,11 +29,16 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Headphones
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.SwapHoriz
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -103,6 +108,36 @@ private fun MainView(vm: HearthStoryAlignViewModel) {
     val audiobook by vm.selectedAudiobook.collectAsStateWithLifecycle()
     val canStart by vm.canStart.collectAsStateWithLifecycle()
     val jobs by vm.jobs.collectAsStateWithLifecycle()
+    var showModelTerms by remember { mutableStateOf(false) }
+
+    if (showModelTerms) {
+        AlertDialog(
+            onDismissRequest = { showModelTerms = false },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showModelTerms = false
+                        vm.startAlignment()
+                    },
+                ) { Text("Continue", color = palette.ember) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showModelTerms = false }) {
+                    Text("Cancel", color = palette.textSecondary)
+                }
+            },
+            title = { Text("On-device transcription model", color = palette.text) },
+            text = {
+                Text(
+                    "StoryAlign uses the 74 MB Whisper tiny.en model under the MIT license. " +
+                        "Enve downloads the pinned model if it is not installed, verifies its SHA-256 digest, and performs transcription on this device. " +
+                        "The full notice is available in About → Open-source licenses.",
+                    color = palette.textSecondary,
+                )
+            },
+            containerColor = palette.bgElevated,
+        )
+    }
 
     LazyColumn(
         contentPadding = PaddingValues(
@@ -148,7 +183,7 @@ private fun MainView(vm: HearthStoryAlignViewModel) {
                     style = HearthText.Body, color = palette.textSecondary,
                 )
                 Spacer(Modifier.height(Hearth.Spacing.L))
-                StartButton(enabled = canStart) { vm.startAlignment() }
+                StartButton(enabled = canStart) { showModelTerms = true }
             }
         }
 

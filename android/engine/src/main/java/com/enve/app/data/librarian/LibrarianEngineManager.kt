@@ -29,6 +29,7 @@ import okhttp3.Request
 import java.io.File
 import java.io.IOException
 import java.io.RandomAccessFile
+import java.security.MessageDigest
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -210,9 +211,13 @@ class LibrarianEngineManager @Inject constructor(
             }
         }
 
-        if (temp.length() < MIN_MODEL_BYTES) {
+        if (temp.length() != RECOMMENDED_MODEL_SIZE_BYTES) {
             temp.delete()
-            throw EnveLibrarianException("Recommended model download was incomplete.")
+            throw EnveLibrarianException("Recommended model download had an unexpected size.")
+        }
+        if (!temp.sha256().equals(RECOMMENDED_MODEL_SHA256, ignoreCase = true)) {
+            temp.delete()
+            throw EnveLibrarianException("Recommended model verification failed.")
         }
         if (target.exists()) target.delete()
         check(temp.renameTo(target)) { "Could not save the recommended model." }
@@ -615,14 +620,27 @@ private fun Long.humanBytes(): String {
     return if (gb >= 1.0) "%.1f GB".format(gb) else "%.0f MB".format(mb)
 }
 
+private fun File.sha256(): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    inputStream().buffered().use { input ->
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            digest.update(buffer, 0, count)
+        }
+    }
+    return digest.digest().joinToString("") { byte -> "%02x".format(byte) }
+}
+
 private const val RECOMMENDED_MODEL_URL =
-    "https://huggingface.co/litert-community/Qwen3-0.6B/resolve/main/Qwen3-0.6B.litertlm"
+    "https://huggingface.co/litert-community/Qwen3-0.6B/resolve/8414150f2e9dcc82449bcc9c5abc404b399a4d06/Qwen3-0.6B.litertlm"
 private const val RECOMMENDED_MODEL_SIZE_BYTES = 614_236_160L
+private const val RECOMMENDED_MODEL_SHA256 =
+    "555579ff2f4fd13379abe69c1c3ab5200f7338bc92471557f1d6614a6e5ab0b4"
 internal const val MODEL_DOWNLOAD_WORK_NAME = "librarian-model-download"
 private const val DISK_SPACE_MARGIN_BYTES = 200L * 1024L * 1024L
 private const val MODEL_PROGRESS_STEP_BYTES = 2L * 1024L * 1024L
-private const val MIN_MODEL_BYTES = 100L * 1024L * 1024L
-
 private const val LITERT_PROMPT_CONTEXT_CHARS = 3_200
 private const val GEMINI_FOCUSED_CONTEXT_CHARS = 3_200
 private const val GEMINI_BROAD_CONTEXT_CHARS = 6_000

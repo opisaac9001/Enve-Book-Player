@@ -11,6 +11,8 @@ local.properties
 *.ap_
 *.dex
 *.class
+app/release/
+store-assets/
 
 # IDE
 .idea/

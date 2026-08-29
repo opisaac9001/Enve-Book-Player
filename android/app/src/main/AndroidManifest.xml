@@ -55,6 +55,18 @@
             android:name="com.enve.app.SOURCE_PROVENANCE"
             android:value="enve-android-source-cc91a725-7756-4324-a504-e063bcecbfe0" />
 
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+
+        <meta-data
+            android:name="androidx.car.app.TintableAttributionIcon"
+            android:resource="@drawable/ic_car_attribution" />
+
+        <meta-data
+            android:name="com.google.android.gms.car.application.theme"
+            android:resource="@style/Theme.Enve.Car" />
+
         <activity
             android:name=".ui.screens.EbookReaderActivity"
             android:exported="false"
@@ -183,11 +195,24 @@
                 <action android:name="androidx.media3.session.MediaSessionService" />
                 <action android:name="androidx.media3.session.MediaLibraryService" />
                 <action android:name="android.media.browse.MediaBrowserService" />
+                <action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH" />
             </intent-filter>
+        </service>
+
+        <receiver
+            android:name="androidx.media3.session.MediaButtonReceiver"
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MEDIA_BUTTON" />
             </intent-filter>
-        </service>
+        </receiver>
+
+        <provider
+            android:name="com.enve.app.playback.AutoArtworkProvider"
+            android:authorities="${applicationId}.auto-artwork"
+            android:exported="true"
+            android:grantUriPermissions="false"
+            tools:ignore="ExportedContentProvider" />
 
         <service
             android:name=".wear.WearCompanionService"

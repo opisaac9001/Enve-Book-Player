@@ -94,6 +94,7 @@ object Routes {
     const val LIBRARY_DISPLAY = "settings/libraryDisplay"
     const val ANNOTATIONS = "annotations"
     const val ABOUT = "settings/about"
+    const val ACKNOWLEDGEMENTS = "settings/acknowledgements"
     const val CRASH_LOGS = "settings/crashLogs"
     const val TIP_JAR = "settings/tipJar"
     const val AUDIO_EFFECTS = "settings/audioEffects"
@@ -145,12 +146,12 @@ fun EnveApp(
         }
 
         val openWebsite: () -> Unit = {
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://enveapp.io"))
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://envemedia.com"))
             runCatching { context.startActivity(intent) }
         }
 
         val openPrivacyPolicy: () -> Unit = {
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://enveapp.io/privacy"))
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://envemedia.com/privacy-policy"))
             runCatching { context.startActivity(intent) }
         }
 
@@ -737,6 +738,14 @@ fun EnveApp(
                     onRateApp = rateApp,
                     onOpenWebsite = openWebsite,
                     onOpenPrivacyPolicy = openPrivacyPolicy,
+                    onOpenAcknowledgements = { navController.navigate(Routes.ACKNOWLEDGEMENTS) },
+                    onBack = goBack,
+                )
+            }
+
+            composable(Routes.ACKNOWLEDGEMENTS) {
+                AcknowledgementsScreen(
+                    dynamicBackgroundEnabled = themeState.dynamicBackgroundEnabled,
                     onBack = goBack,
                 )
             }

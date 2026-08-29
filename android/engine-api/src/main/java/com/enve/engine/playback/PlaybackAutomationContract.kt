@@ -19,6 +19,8 @@ object PlaybackAutomationContract {
 
     const val COMMAND_NEXT_CHAPTER = "enve.player.nextChapter"
     const val COMMAND_PREVIOUS_CHAPTER = "enve.player.previousChapter"
+    const val COMMAND_CYCLE_PLAYBACK_SPEED = "enve.player.cyclePlaybackSpeed"
+    const val COMMAND_ADD_BOOKMARK = "enve.player.addBookmark"
     const val COMMAND_SEEK_TO = "enve.player.seekTo"
     const val COMMAND_SEEK_BY = "enve.player.seekBy"
 }

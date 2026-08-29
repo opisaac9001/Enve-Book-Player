@@ -95,7 +95,7 @@ class PlaybackStarter @Inject constructor(
         if (tracks.size > 1) {
             audioManager.playMultiTrack(
                 tracks = tracks.map { AudioPlaybackManager.TrackInfo(it.uri, it.title, it.durationMs) },
-                bookId = book.id, title = book.title, author = book.author,
+                bookId = book.id, title = book.title, author = book.author, coverUrl = book.coverUrl,
                 startPositionMs = startSec * 1000, mediaId = mediaId,
             )
         } else {
@@ -137,7 +137,7 @@ class PlaybackStarter @Inject constructor(
                         title = t.title ?: t.fileName, durationMs = t.durationMs ?: 0L,
                     )
                 },
-                bookId = book.id, title = book.title, author = book.author,
+                bookId = book.id, title = book.title, author = book.author, coverUrl = book.coverUrl,
                 startPositionMs = startSec * 1000, mediaId = mediaId,
             )
         } else {
@@ -175,7 +175,7 @@ class PlaybackStarter @Inject constructor(
         if (tracks.size > 1) {
             audioManager.playMultiTrack(
                 tracks = tracks.map { AudioPlaybackManager.TrackInfo(it.contentUrl.orEmpty(), it.title ?: it.fileName, it.durationMs) },
-                bookId = book.id, title = book.title, author = book.author,
+                bookId = book.id, title = book.title, author = book.author, coverUrl = book.coverUrl,
                 startPositionMs = effectiveStart * 1000, mediaId = mediaId, authToken = castToken,
             )
         } else {

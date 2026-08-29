@@ -48,4 +48,15 @@ class VoiceAudiobookSearchTest {
                 search.rank("The Odyssey", "Robert Fagles", null)
         )
     }
+
+    @Test
+    fun `query with title and creator matches both fields`() {
+        val search = VoiceAudiobookSearch.create("The Odyssey by Robert Fagles", null, null)
+
+        assertTrue(search.matches("The Odyssey", "Robert Fagles", null))
+        assertTrue(
+            search.rank("The Odyssey", "Robert Fagles", null) <
+                search.rank("The Odyssey", "Emily Wilson", null),
+        )
+    }
 }
