@@ -6,9 +6,9 @@ This is an engineering compliance inventory, not legal advice. It separates publ
 
 ## Current conclusion
 
-The code, dependency source, and current provider artwork can be published with the existing license files and the root `THIRD_PARTY_NOTICES.md`. The maintainer confirms that the provider logos are authorized for their current identification and compatibility use in Enve. A signed binary is not ready for distribution as-is because most compiled-package notices are not bundled or exposed to users, the LGPL delivery plan is incomplete, and optional model terms are not presented at download time.
+Enve's original source can be published under the GNU Affero General Public License v3.0 only (`AGPL-3.0-only`) with the existing notice files. Third-party source and artwork remain under their own terms. The maintainer confirms that the provider logos are authorized for their current identification and compatibility use in Enve. A signed binary is not ready for distribution as-is because compatibility has not been established between the AGPL and the App Store distribution terms or every linked and bundled dependency, most compiled-package notices are not bundled or exposed to users, the LGPL delivery plan is incomplete, and optional model terms are not presented at download time.
 
-Enve's license prohibits commercial use, charging, advertising, and monetization. Those restrictions conflict with the Open Source Definition's free-redistribution and no-discrimination-against-fields-of-endeavor requirements. Public materials should describe Enve as **source-available**, not OSI open source. See the [Open Source Definition](https://opensource.org/osd).
+Enve's original source is licensed under the OSI-approved GNU Affero General Public License v3.0 only. The AGPL permits commercial use and redistribution while requiring covered source disclosure and reciprocal licensing in the circumstances defined by the license. Public materials may describe Enve's original source as open-source software. Do not apply that description or the AGPL to third-party materials governed by different terms.
 
 ## Dependency findings
 

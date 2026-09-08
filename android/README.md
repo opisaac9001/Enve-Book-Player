@@ -50,6 +50,6 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for setup and architecture details. Read [C
 
 ## License
 
-Enve is source-available under the [Enve Noncommercial Public Source License](LICENSE.md). Commercial use, paid redistribution, advertising, monetization, and closed-source forks are prohibited. This is not an OSI-approved open-source license.
+Enve's original source is free and open-source software under the [GNU Affero General Public License v3.0 only](LICENSE.md) (`AGPL-3.0-only`). Commercial use and paid redistribution are permitted, provided the AGPL's source-disclosure, notice, and reciprocal-licensing requirements are met.
 
 Third-party components remain under their respective licenses. Redistributions must retain [NOTICE.md](NOTICE.md), [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), and the license files shipped with vendored components. The [third-party audit](docs/legal/THIRD_PARTY_AUDIT.md) lists requirements that must be resolved before distributing an APK or app bundle.

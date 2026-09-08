@@ -1,6 +1,6 @@
 # Public Source Release Runbook
 
-This runbook publishes a stable source snapshot from the private development repository to the public source repository. Enve is source-available under the Enve Noncommercial Public Source License, not OSI open source.
+This runbook publishes a stable source snapshot from the private development repository to the public source repository. Enve's original source is free and open-source software under the GNU Affero General Public License v3.0 only (`AGPL-3.0-only`). Third-party materials remain under their respective licenses.
 
 ## Repository roles
 
