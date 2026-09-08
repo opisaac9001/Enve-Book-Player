@@ -6,7 +6,7 @@ This is a release checklist, not legal advice. It separates source publication f
 
 ## Current conclusion
 
-The source repository can be published under the Enve Noncommercial Public Source License because `LICENSE.md` excludes third-party materials and preserves their separate rights. The repository-level licensing work is complete; a public APK or app bundle remains gated on verification of the exact signed release candidate and its matching public source snapshot.
+Enve's original source can be published under the GNU Affero General Public License v3.0 only (`AGPL-3.0-only`). Third-party materials remain under their own terms. A public APK or app bundle remains gated on an AGPL compatibility review of every linked and bundled dependency, verification of the exact signed release candidate, and publication of its matching source snapshot.
 
 The remaining binary release gates are:
 
@@ -18,7 +18,7 @@ The remaining binary release gates are:
 
 ## Source repository checks
 
-- [x] Root Enve license distinguishes original and third-party material.
+- [x] Root notices distinguish Enve's original source from third-party material.
 - [x] Root notice carries an Android-specific provenance identifier.
 - [x] Foliate is pinned as a Git submodule and its runtime is built from an allowlist.
 - [x] Foliate and zip.js licenses are copied into generated assets.
@@ -62,13 +62,13 @@ A release evidence bundle should contain:
 - a report from inspecting the final APK and app bundle
 - the private source revision, matching public source revision, and confirmation that Android Auto is present in the public snapshot
 
-Keep that bundle available for at least the period required by the applicable licenses and by section 6 of the Enve license.
+Keep that bundle available for at least the period required by the applicable licenses and by section 6 of the AGPL.
 
 ## License compatibility notes
 
-The Enve license's noncommercial and advertising restrictions apply only to Enve-owned material. They do not restrict rights granted in libmobi, jcifs-ng, Foliate, AndroidX, or other third-party components.
+The AGPL applies to Enve's original source. Third-party materials retain their own licenses, but distributing a combined APK or app bundle requires those terms to be compatible with the AGPL's obligations. Keeping separate notices does not establish compatibility.
 
-LGPL recipients must retain the right to modify the covered library and debug those modifications. The Enve license explicitly grants the minimum reverse-engineering and relinking permission necessary for third-party compliance, but a distributor still has to provide the practical materials required by the LGPL.
+LGPL recipients must retain the right to modify the covered library and debug those modifications. A distributor must provide the practical materials required by the LGPL and satisfy the AGPL independently.
 
 Google SDK and model terms may impose service, telemetry, account, privacy, or acceptable-use conditions. Those terms are not converted into the Enve license and must be evaluated for the actual release channel.
 

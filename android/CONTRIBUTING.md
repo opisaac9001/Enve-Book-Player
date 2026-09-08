@@ -54,4 +54,6 @@ Automated output is not verification. Disclose meaningful AI assistance in the p
 
 Explain the user-visible outcome, important implementation choices, exact verification performed, known limitations, and meaningful AI assistance. Do not rewrite a maintainer's branch or include unrelated formatting.
 
-By contributing, you agree that your contribution is distributed under `LICENSE.md` as described in its contribution section.
+## Contribution licensing
+
+Contributions are accepted on an inbound-equals-outbound basis. By intentionally submitting a contribution, you license it under the GNU Affero General Public License v3.0 only (`AGPL-3.0-only`) in `LICENSE.md`. You retain ownership of your contribution. No separate contributor agreement grants Enve broader relicensing rights unless you separately agree to one in writing.

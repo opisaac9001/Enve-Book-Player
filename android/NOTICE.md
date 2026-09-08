@@ -4,7 +4,7 @@ Enve Book Player is an original project maintained by Isaac Lamb.
 
 Source provenance identifier: `enve-android-source-cc91a725-7756-4324-a504-e063bcecbfe0`
 
-Copyright 2026 Isaac Lamb. Enve's original source is distributed under the Enve Noncommercial Public Source License in `LICENSE.md`. Redistributed copies and forks must retain the required license and attribution notices.
+Copyright 2026 Isaac Lamb. Enve's original source is distributed under the GNU Affero General Public License v3.0 only (`AGPL-3.0-only`) in `LICENSE.md`. Redistributed copies and forks must comply with the AGPL and retain the required license and attribution notices.
 
 Third-party source, Gradle dependencies, native libraries, artwork, trademarks, and other materials remain under their own licenses and copyrights. Their inclusion does not relicense them under the Enve license. Review the Gradle build files, `ThirdParty/`, `BuildSupport/`, native source directories, and bundled brand documentation before distributing a build or source archive.
 

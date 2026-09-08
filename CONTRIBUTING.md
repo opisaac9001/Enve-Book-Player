@@ -72,4 +72,6 @@ Include:
 - screenshots or a short recording for visible UI changes
 - known limitations or follow-up work
 
-By contributing, you confirm that you have the right to submit the work and agree to the contribution terms in [LICENSE.md](LICENSE.md).
+## Contribution licensing
+
+Contributions are accepted on an inbound-equals-outbound basis. By intentionally submitting a contribution, you license it under the GNU Affero General Public License v3.0 only (`AGPL-3.0-only`) in [LICENSE.md](LICENSE.md). You retain ownership of your contribution. No separate contributor agreement grants Enve broader relicensing rights unless you separately agree to one in writing.
