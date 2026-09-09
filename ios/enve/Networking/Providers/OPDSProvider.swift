@@ -373,9 +373,8 @@ class OPDSProvider: WholeSnapshotCatalogProvider, EbookDownloadProvider, @unchec
         return preview.contains("\"metadata\"") || preview.contains("\"publications\"")
     }
 
-    private func feedURL() -> URL {
+    func feedURL() -> URL {
         var str = connection.url.trimmingCharacters(in: .whitespacesAndNewlines)
-        while str.hasSuffix("/") { str.removeLast() }
         if !str.hasPrefix("http") { str = "http://\(str)" }
         return URL(string: str) ?? URL(string: "http://invalid")!
     }

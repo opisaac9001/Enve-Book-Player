@@ -9,7 +9,6 @@ import com.enve.core.data.remote.TokenRefreshStrategy
 import com.enve.core.data.local.PreferencesManager
 import com.enve.core.data.model.BookSource
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import okhttp3.Request
 import okhttp3.Response
@@ -24,13 +23,11 @@ class TokenRefreshAuthenticator @Inject constructor(
     private val vault: CredentialVault,
     private val connectionRegistry: ConnectionRegistry,
     private val tokenRefreshStrategies: Map<BookSource, @JvmSuppressWildcards TokenRefreshStrategy>,
+    private val tokenRefreshCoordinator: TokenRefreshCoordinator,
 ) : Authenticator {
-
-    private val refreshMutex = Mutex()
 
     override fun authenticate(route: Route?, response: Response): Request? {
         val path = response.request.url.encodedPath
-        // Never retry auth / login endpoints to prevent loops
         if (path.contains("auth/login") || path.contains("auth/refresh")) return null
         if (response.request.header("X-Retry-Auth") != null) return null
 
@@ -48,7 +45,7 @@ class TokenRefreshAuthenticator @Inject constructor(
         if (serverUrl.isNullOrBlank()) return null
 
         return runBlocking {
-            refreshMutex.withLock {
+            tokenRefreshCoordinator.mutex.withLock {
                 val currentToken = activeConnectionId?.let { vault.get(CredentialVault.accessTokenKey(it)) }
                     ?: preferencesManager.getAccessTokenSync()
                 val requestToken = response.request.header("Authorization")

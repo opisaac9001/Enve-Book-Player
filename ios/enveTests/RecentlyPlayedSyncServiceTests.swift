@@ -9,11 +9,12 @@ import Testing
 private final class ProviderConnectionStub: ProviderConnectionAccessing {
     var connections: [ServerConnection] = []
     var backends: [BackendConfig] = []
+    var providers: [UUID: LibraryProvider] = [:]
 
     func backend(id: String) -> BackendConfig? { backends.first { $0.id == id } }
     func allBackends() -> [BackendConfig] { backends }
-    func provider(for providerId: UUID) -> LibraryProvider? { nil }
-    func provider(for book: Book) -> LibraryProvider? { nil }
+    func provider(for providerId: UUID) -> LibraryProvider? { providers[providerId] }
+    func provider(for book: Book) -> LibraryProvider? { providers[book.providerId] }
 }
 
 @MainActor
@@ -225,7 +226,8 @@ private func makeBook(
     duration: TimeInterval? = 600,
     ebookProgress: Double? = nil,
     lastUpdate: Date = Date(timeIntervalSince1970: 1_000),
-    readAloudSourceStableId: String? = nil
+    readAloudSourceStableId: String? = nil,
+    backendId: String = "abs"
 ) -> Book {
     Book(
         id: id,
@@ -236,7 +238,7 @@ private func makeBook(
         lastUpdate: lastUpdate,
         libraryId: "library",
         providerId: testProviderId,
-        backendId: "backend",
+        backendId: backendId,
         source: .audiobookshelf,
         readAloudSourceStableId: readAloudSourceStableId
     )
@@ -319,7 +321,7 @@ struct RecentlyPlayedSyncServiceTests {
         let fixture = try WorkerFixture()
         fixture.connections.backends = [
             makeBackend(id: "abs"),
-            makeBackend(id: "emby", type: .emby),
+            makeBackend(id: "second-abs"),
             makeBackend(id: "jellyfin-off", type: .jellyfin, enabled: false),
             makeBackend(id: "plex", type: .plex),
         ]
@@ -334,8 +336,8 @@ struct RecentlyPlayedSyncServiceTests {
 
         let result = await fixture.makeService().sync(trigger: .appLaunch)
 
-        #expect(result.attemptedBackendCount == 5)
-        #expect(fixture.progressAPI.queriedBackends == ["abs", "emby"])
+        #expect(result.attemptedBackendCount == 6)
+        #expect(fixture.progressAPI.queriedBackends == ["abs", "second-abs"])
     }
 
     @Test func skipsAbsorbedAndCurrentlyPlayingBooks() async throws {
@@ -411,7 +413,7 @@ struct RecentlyPlayedSyncServiceTests {
         #expect(fixture.libraryCache.mutatedStableIds.isEmpty)
     }
 
-    @Test func failedEbookPushDoesNotMarkTheBackendFailed() async throws {
+    @Test func failedEbookPushMarksTheBackendFailed() async throws {
         let fixture = try WorkerFixture()
         fixture.connections.backends = [makeBackend(id: "abs")]
         fixture.progressAPI.ebookPushError = URLError(.badServerResponse)
@@ -432,7 +434,7 @@ struct RecentlyPlayedSyncServiceTests {
         let result = await fixture.makeService().sync(trigger: .appLaunch)
 
         #expect(result.pushedItemCount == 0)
-        #expect(result.failedBackends.isEmpty)
+        #expect(result.failedBackends == ["Backend abs"])
         #expect(fixture.progressCache.recentlyPlayed.keys.contains(book.stableId))
     }
 
@@ -522,7 +524,7 @@ struct RecentlyPlayedSyncServiceTests {
 
     @Test func cancelledBackendFetchStopsRemainingBackendsWithoutMarkingFailures() async throws {
         let fixture = try WorkerFixture()
-        fixture.connections.backends = [makeBackend(id: "abs"), makeBackend(id: "emby", type: .emby)]
+        fixture.connections.backends = [makeBackend(id: "abs"), makeBackend(id: "second-abs")]
         fixture.progressAPI.progressByBackend["abs"] = .failure(CancellationError())
 
         let result = await fixture.makeService().sync(trigger: .appLaunch)
@@ -534,7 +536,7 @@ struct RecentlyPlayedSyncServiceTests {
 
     @Test func urlCancellationIsTreatedAsCancellationRatherThanFailure() async throws {
         let fixture = try WorkerFixture()
-        fixture.connections.backends = [makeBackend(id: "abs"), makeBackend(id: "emby", type: .emby)]
+        fixture.connections.backends = [makeBackend(id: "abs"), makeBackend(id: "second-abs")]
         fixture.progressAPI.progressByBackend["abs"] = .failure(URLError(.cancelled))
 
         let result = await fixture.makeService().sync(trigger: .appLaunch)
@@ -546,14 +548,139 @@ struct RecentlyPlayedSyncServiceTests {
 
     @Test func ordinaryBackendFailureIsRecordedAndTheNextBackendStillRuns() async throws {
         let fixture = try WorkerFixture()
-        fixture.connections.backends = [makeBackend(id: "abs"), makeBackend(id: "emby", type: .emby)]
+        fixture.connections.backends = [makeBackend(id: "abs"), makeBackend(id: "second-abs")]
         fixture.progressAPI.progressByBackend["abs"] = .failure(URLError(.timedOut))
 
         let result = await fixture.makeService().sync(trigger: .appLaunch)
 
         #expect(result.wasCancelled == false)
         #expect(result.failedBackends == ["Backend abs"])
-        #expect(fixture.progressAPI.queriedBackends == ["abs", "emby"])
+        #expect(fixture.progressAPI.queriedBackends == ["abs", "second-abs"])
+    }
+
+    @Test func refreshIncludesCompletedResetAndOlderItemsBeyondTwenty() async throws {
+        let fixture = try WorkerFixture()
+        fixture.connections.backends = [makeBackend(id: "abs")]
+        let books = (0..<25).map { makeBook(id: "book-\($0)") }
+        await fixture.store.upsertBooks(books)
+        fixture.libraryCache.allBooks = books
+        fixture.progressCache.stored[books[24].stableId] = .init(progress: 300, duration: 600, lastUpdated: 1_000)
+        fixture.progressAPI.progressByBackend["abs"] = .success((0..<25).map {
+            makeProgress(libraryItemId: "book-\($0)", currentTime: $0 == 24 ? 0 : 300,
+                         duration: 600, isFinished: $0 == 23, lastUpdateSeconds: 5_000 - Double($0))
+        })
+
+        let result = await fixture.makeService().sync(trigger: .homePullToRefresh)
+
+        #expect(result.pulledItemCount == 25)
+        #expect(await fixture.store.book(uniqueId: books[23].uniqueId)?.isFinished == true)
+        #expect(await fixture.store.book(uniqueId: books[24].uniqueId)?.currentTime == 0)
+        #expect(fixture.progressCache.stored[books[0].stableId]?.lastUpdated == 5_000)
+        #expect(fixture.progressAPI.audiobookPushes.isEmpty)
+    }
+
+    @Test func completedServerProgressRemovesAnEffectivelyFinishedBookFromContinueListening() async throws {
+        let fixture = try WorkerFixture()
+        fixture.connections.backends = [makeBackend(id: "abs")]
+        var book = makeBook(id: "finished", lastUpdate: Date(timeIntervalSince1970: 1_000))
+        book.currentTime = 600
+        await fixture.store.upsertBooks([book])
+        fixture.libraryCache.allBooks = [book]
+        fixture.progressCache.stored[book.stableId] = .init(progress: 600, duration: 600, lastUpdated: 1_000)
+        fixture.progressAPI.progressByBackend["abs"] = .success([
+            makeProgress(
+                libraryItemId: "finished",
+                currentTime: 600,
+                duration: 600,
+                progress: 1,
+                isFinished: false,
+                lastUpdateSeconds: 5_000
+            )
+        ])
+
+        let result = await fixture.makeService().sync(trigger: .homePullToRefresh)
+
+        #expect(result.pulledItemCount == 1)
+        #expect(await fixture.store.book(uniqueId: book.uniqueId)?.isFinished == true)
+        #expect(await fixture.store.continueListeningBooks(limit: 10).isEmpty)
+        #expect(fixture.progressCache.recentlyPlayed[book.stableId] == nil)
+    }
+
+    @Test func identicalItemIDsOnOtherServersAreNotReadOrPushed() async throws {
+        let fixture = try WorkerFixture()
+        fixture.connections.backends = [makeBackend(id: "abs")]
+        let own = makeBook(id: "shared")
+        var other = makeBook(id: "shared", backendId: "other")
+        other.providerId = UUID()
+        await fixture.store.upsertBooks([own, other])
+        fixture.progressCache.stored[other.stableId] = .init(progress: 500, duration: 600, lastUpdated: 9_000)
+        fixture.progressAPI.progressByBackend["abs"] = .success([
+            makeProgress(libraryItemId: "shared", currentTime: 200, duration: 600, lastUpdateSeconds: 5_000)
+        ])
+
+        let result = await fixture.makeService().sync(trigger: .homePullToRefresh)
+
+        #expect(result.pulledItemCount == 1)
+        #expect(fixture.progressCache.savedProgress[own.stableId] == 200)
+        #expect(fixture.progressCache.savedProgress[other.stableId] == nil)
+        #expect(fixture.progressAPI.audiobookPushes.isEmpty)
+    }
+
+    @Test func mediaServersNeverUseAudiobookshelfProgressAPI() async throws {
+        let fixture = try WorkerFixture()
+        fixture.connections.backends = [makeBackend(id: "jellyfin", type: .jellyfin), makeBackend(id: "emby", type: .emby)]
+        fixture.connections.connections = [makeConnection(type: .jellyfin), makeConnection(type: .emby)]
+        let native = SyncStrategyStub(id: "native", result: ProviderSyncResult(pulled: 2, pushed: 0, failedBackends: ["Offline source"]))
+        fixture.strategies.syncStrategies = [native]
+
+        let result = await fixture.makeService().sync(trigger: .homePullToRefresh)
+
+        #expect(fixture.progressAPI.queriedBackends.isEmpty)
+        #expect(result.pulledItemCount == 2)
+        #expect(result.failedBackends == ["Offline source"])
+        #expect(native.invocations.count == 1)
+    }
+
+    @Test func nativeProviderPullsIntoPersistenceWithoutUploadingStaleLocalState() async throws {
+        let fixture = try WorkerFixture()
+        let connection = makeConnection(type: .jellyfin)
+        fixture.connections.connections = [connection]
+        let provider = ProgressProviderStub(connection: connection)
+        provider.audiobookProgress = ProviderAudiobookProgress(
+            positionSeconds: 180, percentage: 0.3, trackIndex: nil, updatedAt: nil, readState: .reading
+        )
+        fixture.connections.providers[connection.id] = provider
+        let book = Book(id: "native", title: "Native", duration: 600, source: .jellyfin,
+                        providerId: connection.id, libraryId: "library")
+        await fixture.store.upsertBooks([book])
+        fixture.libraryCache.allBooks = [book]
+        let defaults = try #require(UserDefaults(suiteName: "NativeSync-\(UUID().uuidString)"))
+        let pending = PendingSyncQueueStore(defaults: defaults)
+        let strategy = NativeProgressSyncStrategy(
+            providerType: .jellyfin, source: .jellyfin, connections: fixture.connections,
+            books: fixture.store, progressRepository: fixture.store, libraryCache: fixture.libraryCache,
+            progressCache: fixture.progressCache, playbackState: fixture.playback, pendingSyncs: pending
+        )
+
+        let result = await strategy.sync(force: true, launchOptimized: false)
+
+        #expect(result.pulled == 1)
+        #expect(await fixture.store.book(uniqueId: book.uniqueId)?.currentTime == 180)
+        #expect(fixture.libraryCache.allBooks[0].currentTime == 180)
+        #expect(provider.playbackUpdates.isEmpty)
+
+        pending.enqueue(PendingServerSync(stableId: book.stableId, sourceRaw: "jellyfin", backendId: nil,
+                                          serverItemId: book.id, position: 400, duration: 600, updatedAt: 9000))
+        provider.audiobookProgress = ProviderAudiobookProgress(
+            positionSeconds: 0, percentage: 0, trackIndex: nil, updatedAt: nil, readState: .unspecified
+        )
+        let protected = await strategy.sync(force: true, launchOptimized: false)
+        #expect(protected.pulled == 0)
+        #expect(await fixture.store.book(uniqueId: book.uniqueId)?.currentTime == 180)
+        pending.removeAll()
+        let reset = await strategy.sync(force: true, launchOptimized: false)
+        #expect(reset.pulled == 1)
+        #expect(await fixture.store.book(uniqueId: book.uniqueId)?.currentTime == 0)
     }
 
     @Test func refreshesAudiobookSnapshotsForASmallLibrary() async throws {

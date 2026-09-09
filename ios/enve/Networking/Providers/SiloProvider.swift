@@ -506,9 +506,24 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
     ) async throws {
         try await ensureAuthenticated()
         _ = try await ensureProfile()
+        if progress <= 0 {
+            let request = try makeRequest(path: "/watched/\(book.id)", method: "DELETE")
+            try await sendEmpty(request)
+            detailCache.removeValue(forKey: book.id)
+            return
+        }
         let detail = try await itemDetail(book.id)
-        guard let version = try await activeEbookVersion(for: detail) else { return }
+        guard let version = try await activeEbookVersion(for: detail) else {
+            throw ProviderError.invalidResponse
+        }
         let boundedProgress = min(max(progress, 0), 1)
+        // Silo latches completion until the watched state is explicitly cleared.
+        if boundedProgress < 0.99,
+            let previous = try await siloEbookProgress(for: book.id), (previous.progress ?? 0) >= 0.99
+        {
+            try await sendEmpty(makeRequest(path: "/watched/\(book.id)", method: "DELETE"))
+            detailCache.removeValue(forKey: book.id)
+        }
         let location = siloReaderLocation(
             from: epubLocator,
             progress: boundedProgress,
@@ -560,6 +575,7 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
     func fetchAudiobookProgress(
         for book: Book
     ) async throws -> (positionSeconds: TimeInterval, percentage: Double, trackIndex: Int?, updatedAt: Date?, isAbandoned: Bool)? {
+        detailCache.removeValue(forKey: book.id)
         let detail = try await itemDetail(book.id)
         guard let userData = detail.userData,
             let position = userData.positionSeconds,

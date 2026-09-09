@@ -3,7 +3,9 @@ package com.enve.audiobookshelf
 import com.enve.audiobookshelf.dto.AbsLibraryItemDto
 import com.enve.audiobookshelf.dto.AbsMediaProgressDto
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AbsMediaProgressMergeTest {
@@ -41,5 +43,29 @@ class AbsMediaProgressMergeTest {
         val merged = mergeAbsMediaProgress(listOf(item), emptyList())
 
         assertEquals(inline, merged.single().mediaProgress)
+    }
+
+    @Test
+    fun resolvesEveryAudiobookshelfCompletionSignal() {
+        assertTrue(AbsMediaProgressDto(isFinished = true).resolvedIsFinished)
+        assertTrue(AbsMediaProgressDto(finishedAt = 1L).resolvedIsFinished)
+        assertTrue(AbsMediaProgressDto(progress = 0.99f).resolvedIsFinished)
+        assertTrue(
+            AbsMediaProgressDto(
+                duration = 1_000.0,
+                currentTime = 990.0,
+            ).resolvedIsFinished,
+        )
+    }
+
+    @Test
+    fun doesNotResolveIncompleteProgressAsFinished() {
+        assertFalse(
+            AbsMediaProgressDto(
+                duration = 1_000.0,
+                currentTime = 500.0,
+                progress = 0.5f,
+            ).resolvedIsFinished,
+        )
     }
 }

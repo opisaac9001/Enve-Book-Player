@@ -3,7 +3,7 @@ package com.enve.audiobookshelf
 import com.enve.core.data.local.BookCacheDao
 import com.enve.core.data.local.ConnectionRegistry
 import com.enve.core.data.local.toCachedBook
-import com.enve.core.data.model.Book
+import com.enve.core.data.local.toBook
 import com.enve.core.data.model.BookSource
 import com.enve.core.data.remote.ConnectionScope
 import com.enve.core.data.sync.ProviderSyncResult
@@ -31,16 +31,20 @@ class AudiobookshelfProgressSyncStrategy @Inject constructor(
         if (!force && lastSyncAtMs?.let { now - it < MIN_SYNC_INTERVAL_MS } == true) {
             return ProviderSyncResult.ZERO
         }
-        lastSyncAtMs = now
 
         val connections = connectionRegistry.connections.first()
             .filter { it.enabled && it.source == BookSource.AUDIOBOOKSHELF }
         var pulled = 0
+        var failed = false
 
         for (connection in connections) {
             val books = try {
                 withContext(ConnectionScope.asContextElement(connection.id)) {
-                    repository.getBooksInProgress().getOrThrow()
+                    val localBooks = bookCacheDao.getBySourceAndConnection(
+                        BookSource.AUDIOBOOKSHELF.name, connection.id,
+                    ).map { it.toBook() }
+                    val updated = repository.getProgressForBooks(localBooks)
+                    val discovered = repository.getBooksInProgress(allowCachedFallback = false).getOrThrow()
                         .map { book ->
                             val rawLibraryId = book.libraryId
                                 ?.substringAfter("::", missingDelimiterValue = book.libraryId.orEmpty())
@@ -50,39 +54,41 @@ class AudiobookshelfProgressSyncStrategy @Inject constructor(
                                 libraryId = rawLibraryId?.let { "${connection.id}::$it" },
                             )
                         }
+                    (updated + discovered).groupBy { it.uniqueKey }
+                        .values.map { entries -> entries.maxBy { it.lastReadTime } }
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
+                failed = true
                 continue
             }
 
-            if (books.isNotEmpty()) {
-                val newBooks = mutableListOf<Book>()
-                for (book in books) {
-                    val existing = bookCacheDao.getByCacheKey(book.uniqueKey)
-                    if (existing == null) {
-                        newBooks += book
-                    } else {
-                        val progress = maxOf(book.readProgress, book.epubProgress ?: 0f)
-                        bookCacheDao.updateUnifiedProgress(
-                            bookId = book.id,
-                            connectionId = connection.id,
-                            progress = progress,
-                            currentTimeSec = book.currentTime.takeIf { it > 0L } ?: -1L,
-                            locatorJson = book.epubLocator,
-                            nowMs = book.lastReadTime.takeIf { it > 0L } ?: now,
-                        )
-                    }
+            for (book in books) {
+                if (bookCacheDao.insertIfAbsent(book.toCachedBook(now)) != -1L) {
+                    pulled++
+                } else {
+                    pulled += bookCacheDao.applyRemoteProgress(
+                        cacheKey = book.uniqueKey,
+                        source = BookSource.AUDIOBOOKSHELF.name,
+                        progress = book.readProgress,
+                        ebookProgress = book.epubProgress,
+                        currentTimeSec = book.currentTime,
+                        locatorJson = book.epubLocator,
+                        finished = book.isFinished,
+                        readStatus = book.serverReadStatus,
+                        updatedAt = book.lastReadTime,
+                    )
                 }
-                if (newBooks.isNotEmpty()) {
-                    bookCacheDao.upsert(newBooks.map { it.toCachedBook(now) })
-                }
-                pulled += books.size
             }
         }
 
-        return ProviderSyncResult(pulled = pulled, pushed = 0)
+        if (!failed) lastSyncAtMs = now
+        return ProviderSyncResult(
+            pulled = pulled,
+            pushed = 0,
+            failedBackends = if (failed) listOf(displayName) else emptyList(),
+        )
     }
 
     private companion object {

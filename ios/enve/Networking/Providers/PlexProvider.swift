@@ -35,7 +35,7 @@ func resolvePlexProgressTarget(book: Book, currentTime: TimeInterval) -> PlexPro
     )
 }
 
-class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, AudiobookProgressPushing,
+class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, AudiobookProgressProvider,
     @unchecked Sendable
 {
     var connection: ServerConnection
@@ -44,7 +44,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         [
             .fullImport, .pagedImport,
             .recentBooks,
-            .audiobookProgressPush,
+            .audiobookProgressPull, .audiobookProgressPush,
             .downloads, .coverAuthQuery, .backgroundOperation,
         ]
     }
@@ -109,8 +109,8 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         }
     }
 
-    private func trackTimeline(from tracks: [PlexMetadata]) -> PlexTrackTimeline {
-        let sorted = orderedTracks(tracks)
+    private func trackTimeline(from tracks: [PlexMetadata], preserveOrder: Bool = false) -> PlexTrackTimeline {
+        let sorted = preserveOrder ? tracks : orderedTracks(tracks)
         var audioTracks: [AudioTrack] = []
         var chapters: [Chapter] = []
         var offset: TimeInterval = 0
@@ -344,6 +344,16 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         let key: String
         let title: String
         let type: String
+        var location: [Location]? = nil
+
+        struct Location: Codable {
+            let path: String
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case key, title, type
+            case location = "Location"
+        }
     }
 
     fileprivate struct PlexItemsResponse: Codable {
@@ -358,7 +368,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         }
     }
 
-    fileprivate struct PlexMetadata: Codable {
+    struct PlexMetadata: Codable {
         let ratingKey: String
         let key: String
         let parentRatingKey: String?
@@ -388,7 +398,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         }
     }
 
-    fileprivate struct PlexMedia: Codable {
+    struct PlexMedia: Codable {
         let duration: Double?
         let container: String?
         let audioCodec: String?
@@ -400,7 +410,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         }
     }
 
-    fileprivate struct PlexPart: Codable {
+    struct PlexPart: Codable {
         let id: Int?
         let key: String
         let duration: Double?
@@ -552,7 +562,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         guard parsed else {
             throw ProviderError.invalidResponse
         }
-        return delegate.sections.map { PlexSection(key: $0.key, title: $0.title, type: $0.type) }
+        return delegate.sections.map { PlexSection(key: $0.key, title: $0.title, type: $0.type, location: $0.paths.map { PlexSection.Location(path: $0) }) }
     }
 
     func fetchBooks(libraryId: String) async throws -> [Book] {
@@ -765,7 +775,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         books.removeAll { $0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         return LibraryCatalogPage(
             books: books,
-            totalCount: response.totalSize,
+            totalCount: nil,
             isLast: response.metadata.count < pageSize
                 || response.totalSize.map { offset + response.metadata.count >= $0 } == true
         )
@@ -974,26 +984,98 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
             let trackContainer = try decodeItemsContainer(from: trackData)
             let tracks = orderedTracks(trackContainer.metadata ?? [])
 
-            guard !tracks.isEmpty else {
-                return [mapPlexMetadataToBook(album, libraryId: libraryId)]
+            var roots: [String] = []
+            if Self.isUnknownAlbumTitle(album.title) {
+                let request = try buildRequest(path: "library/sections")
+                let (data, _) = try await performDataTask(for: request)
+                roots = try decodeLibrarySections(from: data).first { $0.key == libraryId }?.location?.map(\.path) ?? []
             }
-
-            let timeline = trackTimeline(from: tracks)
-            return [
-                mapPlexMetadataToBook(
-                    album,
-                    libraryId: libraryId,
-                    overrideDuration: timeline.duration,
-                    partKey: timeline.partKey,
-                    audioTracks: timeline.audioTracks,
-                    chapters: timeline.chapters
-                )
-            ]
+            var books = mapPlexAlbum(album, tracks: tracks, libraryId: libraryId, libraryRoots: roots)
+            if books.count > 1,
+                let existing = await AppState.shared.bookStore.book(uniqueId: "\(connection.id.uuidString)_\(album.ratingKey)") {
+                let bookmarks = await AppState.shared.bookStore.bookmarks(forBookStableId: existing.stableId)
+                let downloaded = await MainActor.run { LocalStorageManager.shared.isAudiobookDownloaded(existing.downloadKey) }
+                if Self.shouldPreserveAlbum(existing, hasBookmarks: !bookmarks.isEmpty, isDownloaded: downloaded) {
+                    books = [existing]
+                }
+            }
+            return books
         } catch {
             AppLogger.network.error(
                 "Failed to fetch tracks albumDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: album.title)); using single item"
             )
             return [mapPlexMetadataToBook(album, libraryId: libraryId)]
+        }
+    }
+
+    static func isUnknownAlbumTitle(_ title: String) -> Bool {
+        let title = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return title.isEmpty || title == "[unknown album]" || title == "unknown album"
+            || title.hasPrefix("unknown album (") || title.hasPrefix("[unknown album] (")
+    }
+
+    static func shouldPreserveAlbum(_ book: Book, hasBookmarks: Bool, isDownloaded: Bool) -> Bool {
+        book.currentTime > 0 || book.isFinished || hasBookmarks || isDownloaded
+    }
+
+    func mapPlexAlbum(_ album: PlexMetadata, tracks: [PlexMetadata], libraryId: String, libraryRoots: [String] = []) -> [Book] {
+        guard !tracks.isEmpty else { return [mapPlexMetadataToBook(album, libraryId: libraryId)] }
+        let sorted = orderedTracks(tracks)
+        guard Self.isUnknownAlbumTitle(album.title), !libraryRoots.isEmpty,
+            sorted.allSatisfy({ $0.media?.first?.part?.first?.file?.isEmpty == false }) else {
+            let timeline = trackTimeline(from: sorted)
+            return [mapPlexMetadataToBook(album, libraryId: libraryId, overrideDuration: timeline.duration,
+                partKey: timeline.partKey, audioTracks: timeline.audioTracks, chapters: timeline.chapters)]
+        }
+
+        let roots = Set(libraryRoots.map { URL(fileURLWithPath: $0).standardizedFileURL.path })
+        func bookFolder(_ track: PlexMetadata) -> URL? {
+            guard let path = track.media?.first?.part?.first?.file else { return nil }
+            var folder = URL(fileURLWithPath: path).standardizedFileURL.deletingLastPathComponent()
+            if folder.lastPathComponent.range(of: #"(?i)^(?:cd|disc|disk)[ ._-]*[0-9]+$"#, options: .regularExpression) != nil,
+                !roots.contains(folder.path) {
+                folder.deleteLastPathComponent()
+            }
+            return folder
+        }
+        let groups = Dictionary(grouping: sorted) { track -> String in
+            guard let folder = bookFolder(track),
+                roots.contains(where: { folder.path.hasPrefix($0 + "/") }) else {
+                return "track:\(track.ratingKey)"
+            }
+            return "folder:\(folder.path)"
+        }
+        return groups.values.sorted { $0[0].ratingKey < $1[0].ratingKey }.map { group in
+            let tracks = group.sorted { lhs, rhs in
+                let left = lhs.media?.first?.part?.first?.file ?? lhs.ratingKey
+                let right = rhs.media?.first?.part?.first?.file ?? rhs.ratingKey
+                if URL(fileURLWithPath: left).deletingLastPathComponent() == URL(fileURLWithPath: right).deletingLastPathComponent(),
+                    let leftIndex = lhs.index, let rightIndex = rhs.index, leftIndex != rightIndex {
+                    return leftIndex < rightIndex
+                }
+                return left.localizedStandardCompare(right) == .orderedAscending
+            }
+            let first = tracks[0]
+            if tracks.count == 1, groups.count > 1 { return mapTrackBookToFullBook(first, libraryId: libraryId) }
+            let timeline = trackTimeline(from: tracks, preserveOrder: true)
+            var book = mapPlexMetadataToBook(album, libraryId: libraryId, overrideID: groups.count > 1 ? first.ratingKey : nil, overrideDuration: timeline.duration,
+                partKey: timeline.partKey, audioTracks: timeline.audioTracks, chapters: timeline.chapters)
+            if let path = first.media?.first?.part?.first?.file {
+                let file = URL(fileURLWithPath: path)
+                let folder = file.deletingLastPathComponent()
+                let parent = bookFolder(first) ?? folder
+                if parent != folder {
+                    let discs = Set(tracks.compactMap { $0.media?.first?.part?.first?.file }.map {
+                        URL(fileURLWithPath: $0).deletingLastPathComponent().lastPathComponent
+                    })
+                    book.title = discs.count == 1 ? "\(parent.lastPathComponent) — \(folder.lastPathComponent)" : parent.lastPathComponent
+                } else if tracks.count > 1 || file.deletingPathExtension().lastPathComponent.range(of: #"(?i)^(?:(?:part|chapter|track)[ ._-]*)?[0-9]+$"#, options: .regularExpression) != nil && !roots.contains(folder.path) {
+                    book.title = parent.lastPathComponent
+                } else {
+                    book.title = file.deletingPathExtension().lastPathComponent
+                }
+            }
+            return book
         }
     }
 
@@ -1144,7 +1226,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
             ? [Chapter(id: "full_book", start: 0, end: safeDuration, title: item.title)]
             : normalizedChapters
 
-        return mapPlexMetadataToBook(
+        var book = mapPlexMetadataToBook(
             item,
             libraryId: libraryId,
             overrideDuration: safeDuration,
@@ -1152,6 +1234,10 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
             audioTracks: timeline.audioTracks,
             chapters: fallbackChapters
         )
+        if Self.isUnknownAlbumTitle(item.title), let existingBook {
+            book.title = existingBook.title
+        }
+        return book
     }
 
     private func fetchEmbeddedChapters(bookId: String, bookDuration: Double?) async throws -> [Chapter] {
@@ -1307,13 +1393,19 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         ]
 
         let author = track.grandparentTitle ?? track.parentTitle ?? "Unknown Author"
-        let bookTitle = track.title
+        let bookTitle: String
+        if Self.isUnknownAlbumTitle(track.parentTitle ?? ""),
+            let file = track.media?.first?.part?.first?.file {
+            bookTitle = URL(fileURLWithPath: file).deletingPathExtension().lastPathComponent
+        } else {
+            bookTitle = track.title
+        }
 
         let narrator = extractNarrator(from: track, author: author)
         var seriesInfo = extractSeriesInfo(from: track, author: author)
         if seriesInfo == nil,
             let parentTitle = track.parentTitle,
-            !parentTitle.isEmpty,
+            !Self.isUnknownAlbumTitle(parentTitle),
             parentTitle != track.title,
             parentTitle.lowercased() != author.lowercased()
         {
@@ -1339,7 +1431,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
             chapters: chapters,
             publisher: nil,
             currentTime: (track.viewOffset ?? 0) / 1000.0,
-            isFinished: false,
+            isFinished: (track.viewCount ?? 0) > 0 && (track.viewOffset ?? 0) <= 0,
             lastUpdate: Date(),
             libraryId: libraryId,
             providerId: connection.id,
@@ -1438,15 +1530,22 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
             AppLogger.network.debug(
                 "Starting multi-album playback bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId)) tracks=\(storedTracks.count)"
             )
-            for track in storedTracks {
-                guard let partKey = track.contentUrl else { continue }
-                guard var components = URLComponents(url: baseURL.appendingPathComponent(partKey), resolvingAgainstBaseURL: false) else {
-                    continue
+            var partKeys: [String: String] = [:]
+            for start in stride(from: 0, to: storedTracks.count, by: 100) {
+                let ids = storedTracks[start..<min(start + 100, storedTracks.count)].map(\.id).joined(separator: ",")
+                let request = try buildRequest(path: "library/metadata/\(ids)")
+                let (data, response) = try await performDataTask(for: request)
+                guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                    throw ProviderError.invalidResponse
                 }
-                components.queryItems = [
-                    URLQueryItem(name: "X-Plex-Token", value: token),
-                    URLQueryItem(name: "download", value: "1"),
-                ]
+                for item in try decodeItemsContainer(from: data).metadata ?? [] {
+                    partKeys[item.ratingKey] = item.media?.first?.part?.first?.key
+                }
+            }
+            for track in storedTracks {
+                guard let partKey = partKeys[track.id], let url = buildStreamingURL(partKey: partKey) else {
+                    throw ProviderError.invalidResponse
+                }
 
                 audioTracks.append(
                     AudioTrackInfo(
@@ -1454,7 +1553,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
                         index: track.index,
                         startOffset: track.startOffset,
                         duration: track.duration,
-                        contentUrl: components.url?.absoluteString ?? partKey,
+                        contentUrl: url.absoluteString,
                         mimeType: track.format ?? "application/octet-stream",
                         title: track.title
                     )
@@ -1556,22 +1655,34 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
     func fetchAudiobookProgress(
         for book: Book
     ) async throws -> (positionSeconds: TimeInterval, percentage: Double, trackIndex: Int?, updatedAt: Date?, isAbandoned: Bool)? {
-        let request = try buildRequest(path: "library/metadata/\(book.id)")
-        let (data, response) = try await performDataTask(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
-
-        guard let container = try? decodeItemsContainer(from: data),
-            let item = container.metadata?.first
-        else { return nil }
-
-        let durationMs = durationMilliseconds(from: item)
-        let offsetMs = item.viewOffset ?? 0
-        let positionSeconds = offsetMs / 1000.0
-        let percentage = durationMs > 0 ? offsetMs / durationMs : 0
-        let updatedAt = item.lastViewedAt.map { Date(timeIntervalSince1970: TimeInterval($0)) }
-        let isFinished = (item.viewCount ?? 0) > 0 && offsetMs <= 0
-
-        return (positionSeconds: positionSeconds, percentage: percentage, trackIndex: nil, updatedAt: updatedAt, isAbandoned: isFinished)
+        let tracks = (book.audioTracks ?? []).sorted { $0.startOffset < $1.startOffset }
+        let ids = tracks.isEmpty ? [book.id] : tracks.map(\.id)
+        var latest: (position: TimeInterval, date: Date)?
+        var allFinished = true
+        var duration = book.duration ?? 0
+        for (index, id) in ids.enumerated() {
+            let request = try buildRequest(path: "library/metadata/\(id)")
+            let (data, response) = try await performDataTask(for: request)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+                let item = try decodeItemsContainer(from: data).metadata?.first
+            else { throw ProviderError.invalidResponse }
+            let offset = (item.viewOffset ?? 0) / 1000
+            let finished = (item.viewCount ?? 0) > 0 && offset <= 0
+            allFinished = allFinished && finished
+            if tracks.isEmpty { duration = durationMilliseconds(from: item) / 1000 }
+            let startOffset = tracks.isEmpty ? 0 : tracks[index].startOffset
+            let trackDuration = tracks.isEmpty ? duration : tracks[index].duration
+            let position = startOffset + (finished ? trackDuration : offset)
+            let date = item.lastViewedAt.map { Date(timeIntervalSince1970: TimeInterval($0)) }
+            if let date, date > (latest?.date ?? .distantPast) {
+                latest = (position, date)
+            } else if date == nil, offset > 0, latest == nil {
+                latest = (position, .distantPast)
+            }
+        }
+        let position = allFinished ? duration : (latest?.position ?? 0)
+        return (positionSeconds: position, percentage: duration > 0 ? position / duration : 0,
+                trackIndex: nil, updatedAt: latest?.date, isAbandoned: allFinished)
     }
 
     func updatePlaybackProgress(
@@ -1605,7 +1716,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         }
     }
 
-    private func performDataTask(for request: URLRequest, retryCount: Int = 3) async throws -> (Data, URLResponse) {
+    func performDataTask(for request: URLRequest, retryCount: Int = 3) async throws -> (Data, URLResponse) {
         var currentRetry = 0
         while true {
             do {
@@ -1636,6 +1747,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
     private func mapPlexMetadataToBook(
         _ item: PlexMetadata,
         libraryId: String,
+        overrideID: String? = nil,
         overrideDuration: Double? = nil,
         partKey: String? = nil,
         audioTracks: [AudioTrack]? = nil,
@@ -1671,7 +1783,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         AppLogger.network.debug("Mapping book: ID=\(item.ratingKey), Title=\"\(bookTitle)\", partKey=\(finalPartKey ?? "nil")")
 
         return Book(
-            id: item.ratingKey,
+            id: overrideID ?? item.ratingKey,
             title: bookTitle,
             author: author,
             narrator: narrator,
@@ -1957,6 +2069,7 @@ private final class PlexSectionsXMLParserDelegate: NSObject, XMLParserDelegate {
         let key: String
         let title: String
         let type: String
+        var paths: [String] = []
     }
 
     var sections: [SectionRecord] = []
@@ -1969,6 +2082,10 @@ private final class PlexSectionsXMLParserDelegate: NSObject, XMLParserDelegate {
         qualifiedName qName: String?,
         attributes attributeDict: [String: String] = [:]
     ) {
+        if elementName == "Location", let path = attributeDict["path"], !sections.isEmpty {
+            sections[sections.count - 1].paths.append(path)
+            return
+        }
         guard elementName == "Directory" else { return }
         guard let key = attributeDict["key"],
             let title = attributeDict["title"],

@@ -220,6 +220,7 @@ struct MantelBar: View {
 
     private func emberPill(book: Book) -> some View {
         let live = isLive(book)
+        let artworkWidth = 42 / book.hearthCoverRatio
         return HStack(spacing: 8) {
             Button {
                 if book.mediaType == .ebook && !book.hasEPUB3MediaOverlay {
@@ -238,7 +239,7 @@ struct MantelBar: View {
                         book: book
                     )
                     .aspectRatio(contentMode: .fill)
-                    .frame(width: 42, height: 42)
+                    .frame(width: artworkWidth, height: 42)
                     .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
                     .overlay {
                         RoundedRectangle(cornerRadius: 9, style: .continuous)
@@ -256,6 +257,7 @@ struct MantelBar: View {
                     .task(id: book.stableId) {
                         pillTint = await AmbientColorStore.shared.resolve(for: book)
                     }
+                    .frame(width: 42, height: 42)
 
                     VStack(alignment: .leading) {
                         HearthMarqueeText(

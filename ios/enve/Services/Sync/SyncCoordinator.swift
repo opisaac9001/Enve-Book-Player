@@ -246,7 +246,9 @@ final class SyncCoordinator {
         let token = activeRecentlyPlayedSyncToken
         beginSync()
 
+        let pendingPushes = Array(pushDebounceTasks.values)
         let task = Task<ServerStatusSyncResult, Never> { @MainActor [pendingSyncFlusher, recentlyPlayedSync] in
+            for push in pendingPushes { await push.value }
             await pendingSyncFlusher.flush()
             return await recentlyPlayedSync.sync(trigger: trigger)
         }
@@ -293,29 +295,11 @@ final class SyncCoordinator {
             return
         }
 
-        guard let book = AppState.shared.bookInMemory(stableId: bookStableId),
-            let provider = providerResolver.provider(for: book)
-        else { return }
-        let localProgress = book.canonicalEbookProgress
-        let locator = book.epubLocator
+        guard var book = AppState.shared.bookInMemory(stableId: bookStableId) else { return }
+        book.lastUpdate = Date()
+        let resolvedBook = book
         Task {
-            if book.isStorytellerReadAloud,
-                let storyteller = provider as? StorytellerProvider
-            {
-                guard let locator else { return }
-                _ = try? await StorytellerPositionSyncService.shared.submit(
-                    book: book,
-                    locatorJSON: locator,
-                    observedAt: book.lastUpdate,
-                    through: storyteller
-                )
-            } else {
-                try? await (provider as? any EbookProgressPushing)?.updateEbookProgress(
-                    for: book,
-                    progress: localProgress,
-                    epubLocator: locator
-                )
-            }
+            await pushProgress(book: resolvedBook, forceImmediate: true, domain: .ebook)
         }
     }
 
@@ -330,17 +314,20 @@ final class SyncCoordinator {
         emit(.pullStarted(bookId: bookId))
 
         if book.isStorytellerReadAloud && domain.usesEbookProgress {
-            guard !excludingProvider,
-                let sink = PluginRegistry.shared
-                    .sinks(applicableTo: book, domain: domain)
-                    .first(where: { $0.id == ProviderSyncSink.identifier }),
-                let snapshot = await sink.pull(book: book, domain: domain)
-            else {
-                emit(.pullCompleted(bookId: bookId, applied: false))
-                return
+            do {
+                guard !excludingProvider,
+                    let sink = PluginRegistry.shared.sinks(applicableTo: book, domain: domain)
+                        .first(where: { $0.id == ProviderSyncSink.identifier }),
+                    let snapshot = try await sink.pull(book: book, domain: domain)
+                else {
+                    emit(.pullCompleted(bookId: bookId, applied: false))
+                    return
+                }
+                await applySnapshot(snapshot, to: book, usesEbookProgress: true)
+                emit(.pullCompleted(bookId: bookId, applied: true))
+            } catch {
+                emit(.pullFailed(bookId: bookId, error: error.localizedDescription))
             }
-            await applySnapshot(snapshot, to: book, usesEbookProgress: true)
-            emit(.pullCompleted(bookId: bookId, applied: true))
             return
         }
 
@@ -349,8 +336,13 @@ final class SyncCoordinator {
         }
         var snapshots: [SyncSnapshot] = []
         for sink in sinks {
-            if let snap = await sink.pull(book: book, domain: domain) {
-                snapshots.append(snap)
+            do {
+                if let snap = try await sink.pull(book: book, domain: domain) {
+                    snapshots.append(snap)
+                }
+            } catch {
+                emit(.pullFailed(bookId: bookId, error: error.localizedDescription))
+                return
             }
         }
 
@@ -429,6 +421,7 @@ final class SyncCoordinator {
         let bookId = book.stableId
 
         if forceImmediate {
+            pushDebounceTasks.removeValue(forKey: bookId)?.cancel()
             await performPush(book: book, sourceEngine: sourceEngine, domain: domain)
             return
         }
@@ -626,7 +619,7 @@ final class SyncCoordinator {
     private func emit(_ event: SyncEvent) {
         let bookId: String
         switch event {
-        case .pullStarted(let id), .pullCompleted(let id, _),
+        case .pullStarted(let id), .pullCompleted(let id, _), .pullFailed(let id, _),
             .pushStarted(let id), .pushCompleted(let id), .pushFailed(let id, _, _),
             .conflictDetected(let id, _, _, _):
             bookId = id

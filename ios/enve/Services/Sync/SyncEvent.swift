@@ -2,6 +2,7 @@ import Foundation
 
 enum SyncEvent: Sendable {
     case pullStarted(bookId: String)
+    case pullFailed(bookId: String, error: String)
     case pullCompleted(bookId: String, applied: Bool)
     case pushStarted(bookId: String)
     case pushCompleted(bookId: String)

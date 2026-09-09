@@ -390,9 +390,7 @@ public final class HardcoverService: Sendable {
             }
             """
         let response: GenericUpdateResponse = try await performQuery(mutation)
-        if let error = response.updateUserBook?.error {
-            throw HardcoverError.graphQLError(message: error)
-        }
+        try response.validate()
     }
 
     public func markBookAsStarted(userBookId: Int) async throws {
@@ -455,7 +453,8 @@ public final class HardcoverService: Sendable {
                     }
                 }
                 """
-            let _: UpdateReadProgressResponse = try await performQuery(mutation)
+            let response: UpdateReadProgressResponse = try await performQuery(mutation)
+            try response.validate()
             return readId
         } else {
             return try await insertReadRecord(
@@ -519,10 +518,9 @@ public final class HardcoverService: Sendable {
 
             do {
                 let response: InsertReadSessionResponse = try await performQuery(mutation, suppressGraphQLErrorLogging: true)
+                let createdReadId = try response.createdReadId()
                 await insertReadModeStore.set(mode)
-
-                let createdReadId = response.insertUserBookRead?.userBookRead?.id ?? 0
-                if isFinished, mode == .progressPages, createdReadId > 0 {
+                if isFinished, mode == .progressPages {
                     try? await markReadSessionFinished(readId: createdReadId)
                 }
                 return createdReadId
@@ -556,7 +554,8 @@ public final class HardcoverService: Sendable {
                 }
             }
             """
-        let _: UpdateReadProgressResponse = try await performQuery(mutation)
+        let response: UpdateReadProgressResponse = try await performQuery(mutation)
+        try response.validate()
     }
 
     public func rateBook(userBookId: Int, rating: Double) async throws {
@@ -571,7 +570,8 @@ public final class HardcoverService: Sendable {
                 }
             }
             """
-        let _: GenericUpdateResponse = try await performQuery(mutation)
+        let response: GenericUpdateResponse = try await performQuery(mutation)
+        try response.validate()
     }
 
     public func reviewBook(userBookId: Int, reviewText: String) async throws {
@@ -584,7 +584,8 @@ public final class HardcoverService: Sendable {
                 }
             }
             """
-        let _: GenericUpdateResponse = try await performQuery(mutation)
+        let response: GenericUpdateResponse = try await performQuery(mutation)
+        try response.validate()
     }
 
     public func getBookReviews(bookId: Int, limit: Int = 20) async throws -> [HardcoverReview] {
@@ -1004,7 +1005,8 @@ public final class HardcoverService: Sendable {
                 }
             }
             """
-        let _: UpdateReadProgressResponse = try await performQuery(mutation)
+        let response: UpdateReadProgressResponse = try await performQuery(mutation)
+        try response.validate()
     }
 
     public func markMatchedBookAsFinished(localBookId: String) async throws {
@@ -1117,7 +1119,8 @@ public final class HardcoverService: Sendable {
                 }
             }
             """
-        let _: UpdateReadProgressResponse = try await performQuery(mutation)
+        let response: UpdateReadProgressResponse = try await performQuery(mutation)
+        try response.validate()
     }
 
     private func mapToLegacyUserBook(_ data: UserBookFullData) -> HardcoverUserBookLegacy {
@@ -1418,11 +1421,6 @@ private struct TypesenseDoc: Decodable {
     let image: HardcoverImage?
     let slug: String?
 
-    enum CodingKeys: String, CodingKey {
-        case id, title, description, image, slug
-        case releaseYear = "release_year"
-        case authorNames = "author_names"
-    }
 }
 
 private struct UserSearchResponse: Decodable {
@@ -1440,82 +1438,64 @@ private struct InsertUserBookMutResponse: Decodable {
     struct InsertData: Decodable {
         let error: String?
         let userBook: UBData?
-        enum CodingKeys: String, CodingKey {
-            case error
-            case userBook = "user_book"
-        }
     }
     struct UBData: Decodable { let id: Int }
-    enum CodingKeys: String, CodingKey {
-        case insertUserBook = "insert_user_book"
-    }
 }
 
-private struct GenericUpdateResponse: Decodable {
+struct GenericUpdateResponse: Decodable {
+    func validate() throws {
+        guard let result = updateUserBook else { throw HardcoverError.invalidResponse }
+        if let error = result.error, !error.isEmpty { throw HardcoverError.graphQLError(message: error) }
+    }
+
     let updateUserBook: UpdateData?
     struct UpdateData: Decodable {
         let error: String?
-    }
-    enum CodingKeys: String, CodingKey {
-        case updateUserBook = "update_user_book"
     }
 }
 
 private struct GenericDeleteResponse: Decodable {
     let deleteUserBook: DeleteData?
     struct DeleteData: Decodable { let id: Int? }
-    enum CodingKeys: String, CodingKey {
-        case deleteUserBook = "delete_user_book"
-    }
 }
 
 private struct GenericMutResponse: Decodable {}
 
-private struct InsertReadSessionResponse: Decodable {
+struct InsertReadSessionResponse: Decodable {
+    func createdReadId() throws -> Int {
+        guard let result = insertUserBookRead else { throw HardcoverError.invalidResponse }
+        if let error = result.error, !error.isEmpty { throw HardcoverError.graphQLError(message: error) }
+        guard let id = result.userBookRead?.id, id > 0 else { throw HardcoverError.invalidResponse }
+        return id
+    }
+
     let insertUserBookRead: InsertData?
     struct InsertData: Decodable {
         let error: String?
         let userBookRead: ReadData?
-        enum CodingKeys: String, CodingKey {
-            case error
-            case userBookRead = "user_book_read"
-        }
     }
     struct ReadData: Decodable {
         let id: Int
         let startedAt: String?
         let progressPages: Int?
-        enum CodingKeys: String, CodingKey {
-            case id
-            case startedAt = "started_at"
-            case progressPages = "progress_pages"
-        }
-    }
-    enum CodingKeys: String, CodingKey {
-        case insertUserBookRead = "insert_user_book_read"
     }
 }
 
-private struct UpdateReadProgressResponse: Decodable {
+struct UpdateReadProgressResponse: Decodable {
+    func validate() throws {
+        guard let result = updateUserBookRead else { throw HardcoverError.invalidResponse }
+        if let error = result.error, !error.isEmpty { throw HardcoverError.graphQLError(message: error) }
+        guard result.userBookRead != nil else { throw HardcoverError.invalidResponse }
+    }
+
     let updateUserBookRead: UpdateData?
     struct UpdateData: Decodable {
         let error: String?
         let userBookRead: ReadData?
-        enum CodingKeys: String, CodingKey {
-            case error
-            case userBookRead = "user_book_read"
-        }
     }
     struct ReadData: Decodable {
         let id: Int
         let progressPages: Int?
-        enum CodingKeys: String, CodingKey {
-            case id
-            case progressPages = "progress_pages"
-        }
-    }
-    enum CodingKeys: String, CodingKey {
-        case updateUserBookRead = "update_user_book_read"
     }
 }
 

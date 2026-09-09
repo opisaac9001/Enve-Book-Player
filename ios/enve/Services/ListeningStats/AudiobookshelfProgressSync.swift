@@ -45,7 +45,7 @@ final class AudiobookshelfProgressSync: ProgressSyncProtocol, @unchecked Sendabl
                 currentTime: progress.currentTime ?? 0,
                 duration: progress.duration ?? 0,
                 progress: progress.progress ?? 0,
-                isFinished: progress.isFinished ?? false,
+                isFinished: progress.resolvedIsFinished,
                 lastUpdate: progress.lastUpdate,
                 backendId: backend.id
             )
@@ -66,7 +66,7 @@ final class AudiobookshelfProgressSync: ProgressSyncProtocol, @unchecked Sendabl
             currentTime: progress.currentTime ?? 0,
             duration: progress.duration ?? 0,
             progress: progress.progress ?? 0,
-            isFinished: progress.isFinished ?? false,
+            isFinished: progress.resolvedIsFinished,
             lastUpdate: progress.lastUpdate,
             backendId: backend.id
         )

@@ -1491,7 +1491,12 @@ private fun DetailHeader(b: Book, ambientColor: Color, onBack: () -> Unit) {
             }
             Column(Modifier.fillMaxWidth().padding(horizontal = Hearth.Spacing.XL), horizontalAlignment = Alignment.CenterHorizontally) {
                 val coverWidth = if (b.mediaType == AppMediaType.EBOOK) 156.dp else 112.dp
-                CoverTile(model = b.coverUrl, ambient = ambientColor, modifier = Modifier.width(coverWidth))
+                CoverTile(
+                    model = b.coverUrl,
+                    ambient = ambientColor,
+                    mediaType = b.mediaType,
+                    modifier = Modifier.width(coverWidth),
+                )
                 Spacer(Modifier.height(Hearth.Spacing.M))
                 Text(
                     b.title,
@@ -1674,7 +1679,11 @@ private fun BookShelfRow(title: String, books: List<Book>, onOpen: (Book) -> Uni
             horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.M),
         ) {
             items(books, key = { it.id + (it.connectionId ?: "") }) { book ->
-                CoverTile(model = book.coverUrl, modifier = Modifier.width(108.dp).clickable { onOpen(book) })
+                CoverTile(
+                    model = book.coverUrl,
+                    mediaType = book.mediaType,
+                    modifier = Modifier.width(108.dp).clickable { onOpen(book) },
+                )
             }
         }
     }

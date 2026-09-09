@@ -89,7 +89,11 @@ final class CarPlayTabBar: NSObject {
         }
 
         tabBarTemplate = newTemplate
-        interfaceController.setRootTemplate(newTemplate, animated: false, completion: nil)
+        interfaceController.setRootTemplate(
+            newTemplate,
+            animated: false,
+            completion: carPlayInterfaceCompletion("Set root template")
+        )
     }
 
     private func refreshVisibleTabs() {

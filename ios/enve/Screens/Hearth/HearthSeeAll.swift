@@ -39,7 +39,7 @@ struct HearthSeeAllScreen: View {
                                 GeometryReader { geo in
                                     ShelfCoverCell(book: book, width: geo.size.width, showsProgress: destination.kind != .fresh)
                                 }
-                                .aspectRatio(1 / 1.5, contentMode: .fit)
+                                .aspectRatio(1 / book.hearthCoverRatio, contentMode: .fit)
                             }
                             .buttonStyle(PressableStyle())
                         }

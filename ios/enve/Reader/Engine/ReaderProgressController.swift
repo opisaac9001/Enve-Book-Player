@@ -802,7 +802,11 @@ final class ReaderProgressController {
                 }
                 return
             }
-            let ebookForPush = libraryCache.bookInMemory(uniqueId: syncBook.uniqueId) ?? syncBook
+            var ebookForPush = libraryCache.bookInMemory(uniqueId: syncBook.uniqueId) ?? syncBook
+            ebookForPush.ebookProgress = progression
+            ebookForPush.epubLocator = locator
+            ebookForPush.isFinished = progression >= 0.99
+            ebookForPush.lastUpdate = capturedAt
             await SyncCoordinator.shared.pushProgress(
                 book: ebookForPush,
                 forceImmediate: true,

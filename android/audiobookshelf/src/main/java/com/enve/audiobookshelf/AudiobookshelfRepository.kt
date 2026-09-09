@@ -481,7 +481,7 @@ class AudiobookshelfRepository @Inject constructor(
         val mediaType = resolveAbsMediaType(dto)
         val progressFraction = (dto.mediaProgress?.progress ?: 0f).coerceIn(0f, 1f)
         val readStatus = when {
-            dto.mediaProgress?.isFinished == true -> com.enve.core.data.model.ReadStatus.COMPLETED
+            dto.mediaProgress?.resolvedIsFinished == true -> com.enve.core.data.model.ReadStatus.COMPLETED
             progressFraction > 0f -> com.enve.core.data.model.ReadStatus.IN_PROGRESS
             else -> com.enve.core.data.model.ReadStatus.UNREAD
         }
@@ -606,7 +606,7 @@ class AudiobookshelfRepository @Inject constructor(
             audioTracks = tracks,
             hasAudio = hasAbsAudio(media),
             hasEbook = hasAbsEbook(media),
-            isFinished = progress?.isFinished == true || progressFraction >= 0.99f,
+            isFinished = progress?.resolvedIsFinished == true,
             primaryFileType = primaryFileType,
         )
     }
@@ -652,33 +652,7 @@ class AudiobookshelfRepository @Inject constructor(
         val base = mapAbsItemToBook(dto, libraryId, serverUrl, fetchDetail = fetchDetail) ?: return null
         val progress = dto.mediaProgress
         if (progress == null) return base
-
-        val durationSec = progress.duration
-            ?.takeIf { it > 0.0 }
-            ?.let { normalizeAbsDurationSeconds(it, base.duration.takeIf { d -> d > 0L }) }
-            ?: base.duration
-        val audioProgress = progress.progress?.coerceIn(0f, 1f) ?: base.readProgress
-        val ebookProgress = progress.ebookProgress?.coerceIn(0f, 1f) ?: base.epubProgress
-        val currentTimeSec = normalizeAbsCurrentTimeSeconds(
-            rawCurrentTime = progress.currentTime,
-            durationSec = durationSec,
-            progressFraction = audioProgress,
-            fallbackSec = base.currentTime,
-        )
-        val lastReadTime = progress.lastUpdate
-            ?.takeIf { it > 0L }
-            ?.let { if (it < 100_000_000_000L) it * 1000L else it }
-            ?: base.lastReadTime
-
-        return base.copy(
-            duration = durationSec,
-            currentTime = currentTimeSec,
-            readProgress = audioProgress,
-            epubProgress = ebookProgress,
-            epubLocator = progress.ebookLocation ?: base.epubLocator,
-            lastReadTime = lastReadTime,
-            isFinished = progress.isFinished == true || audioProgress >= 0.99f || (ebookProgress ?: 0f) >= 0.99f,
-        )
+        return applyAbsMediaProgress(base, progress)
     }
 
     private fun mapAudioFileToTrack(itemId: String, file: AbsAudioFileDto, serverUrl: String): AudioTrack? {
@@ -822,46 +796,6 @@ class AudiobookshelfRepository @Inject constructor(
         }
     }
 
-    private fun normalizeAbsDurationSeconds(rawDuration: Double, referenceDurationSec: Long?): Long {
-        if (rawDuration <= 0.0) return 0L
-        val raw = rawDuration.toLong()
-        if (raw <= 0L) return 0L
-        val ref = referenceDurationSec?.takeIf { it > 0L }
-        if (ref != null) {
-            if (raw > ref * 10L) return (raw / 1000L).coerceAtLeast(1L)
-            if (raw * 10L < ref) return raw.coerceAtLeast(1L)
-            return raw.coerceAtLeast(1L)
-        }
-        return if (raw > 1_000_000L) (raw / 1000L).coerceAtLeast(1L) else raw
-    }
-
-    private fun normalizeAbsCurrentTimeSeconds(
-        rawCurrentTime: Double?,
-        durationSec: Long,
-        progressFraction: Float?,
-        fallbackSec: Long?,
-    ): Long {
-        val computedFromProgress = progressFraction
-            ?.coerceIn(0f, 1f)
-            ?.let { pct -> if (durationSec > 0L) (durationSec * pct).toLong() else null }
-
-        val raw = rawCurrentTime?.takeIf { it > 0.0 }?.toLong()
-        val normalized = when {
-            raw == null -> null
-            durationSec > 0L && raw > durationSec * 10L -> raw / 1000L
-            raw > 10_000_000L -> raw / 1000L
-            else -> raw
-        }
-
-        val candidate = when {
-            normalized != null && normalized > 0L -> normalized
-            computedFromProgress != null && computedFromProgress > 0L -> computedFromProgress
-            else -> fallbackSec
-        } ?: 0L
-
-        return if (durationSec > 0L) candidate.coerceIn(0L, durationSec) else candidate.coerceAtLeast(0L)
-    }
-
     suspend fun getAudioTracks(book: Book): Result<List<AudioTrack>> {
         return startPlaybackSession(book).mapCatching { session ->
             session.audioTracks.ifEmpty {
@@ -956,6 +890,16 @@ class AudiobookshelfRepository @Inject constructor(
         Result.failure(e)
     }
 
+    suspend fun getProgressForBooks(books: List<Book>): List<Book> {
+        val response = api.getMe()
+        check(response.isSuccessful) { "ABS user progress failed: HTTP ${response.code()}" }
+        val progress = checkNotNull(response.body()) { "ABS user progress returned an empty body" }
+            .mediaProgress.filter { it.episodeId == null }
+            .groupBy { it.libraryItemId }
+            .mapValues { (_, entries) -> entries.maxBy { it.lastUpdate ?: 0L } }
+        return books.mapNotNull { book -> progress[book.id]?.let { applyAbsMediaProgress(book, it) } }
+    }
+
     suspend fun createBookmark(
         itemId: String,
         request: com.enve.audiobookshelf.dto.AbsBookmarkRequest,
@@ -1000,7 +944,7 @@ class AudiobookshelfRepository @Inject constructor(
         }
     }
 
-    suspend fun getBooksInProgress(): Result<List<Book>> {
+    suspend fun getBooksInProgress(allowCachedFallback: Boolean = true): Result<List<Book>> {
         return try {
             val serverUrl = scopedServerUrlAndToken().first
             val normalizedUrl = serverUrl.trimEnd('/')
@@ -1035,6 +979,7 @@ class AudiobookshelfRepository @Inject constructor(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            if (!allowCachedFallback) return Result.failure(e)
             val cached = runCatching {
                 val serverUrl = scopedServerUrlAndToken().first.trimEnd('/')
                 loadLaneFromDisk(serverUrl, "in-progress")

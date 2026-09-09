@@ -1,6 +1,7 @@
 package com.enve.app.data.sync
 
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import com.enve.core.data.sync.ProviderSyncStrategy
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -48,8 +49,10 @@ class RecentlyPlayedSyncService @Inject constructor(
             result.onSuccess {
                 pulled += it.pulled
                 pushed += it.pushed
+                failed.addAll(it.failedBackends)
             }.onFailure { error ->
-                Log.e(TAG, "Strategy '${strategy.id}' failed", error)
+                if (error is CancellationException) throw error
+                Log.e(TAG, "Strategy '${strategy.id}' failed")
                 failed.add(strategy.displayName)
             }
         }
@@ -63,7 +66,7 @@ class RecentlyPlayedSyncService @Inject constructor(
             attemptedStrategyCount = strategies.size,
             pulledItemCount = pulled,
             pushedItemCount = pushed,
-            failedStrategies = failed,
+            failedStrategies = failed.distinct(),
         )
     }
 

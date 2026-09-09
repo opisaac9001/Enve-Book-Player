@@ -46,7 +46,7 @@ final class KOReaderSyncService {
         if let data = userDefaults.data(forKey: linksKey),
             let decoded = try? JSONDecoder().decode([KOReaderBookLink].self, from: data)
         {
-            self.links = Dictionary(uniqueKeysWithValues: decoded.map { ($0.bookStableId, $0) })
+            self.links = Self.restoredLinks(decoded)
         }
 
         self.lastSyncDate = userDefaults.object(forKey: lastSyncKey) as? Date
@@ -261,6 +261,10 @@ final class KOReaderSyncService {
     }
 
     func link(for bookStableId: String) -> KOReaderBookLink? { links[bookStableId] }
+
+    static func restoredLinks(_ decoded: [KOReaderBookLink]) -> [String: KOReaderBookLink] {
+        Dictionary(decoded.map { ($0.bookStableId, $0) }, uniquingKeysWith: { _, latest in latest })
+    }
 
     func ensureDocumentHash(for book: Book) async -> String? {
         if let existing = links[book.stableId] { return existing.documentHash }

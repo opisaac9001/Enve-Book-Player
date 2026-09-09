@@ -1,7 +1,7 @@
 import Foundation
 import Logging
 
-class KomgaProvider: IncrementalCatalogProvider, EbookProgressPushing, EbookDownloadProvider,
+class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDownloadProvider,
     ServerPageProvider, @unchecked Sendable
 {
     var connection: ServerConnection
@@ -348,6 +348,15 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressPushing, EbookDown
     }
 
     func updateEbookProgress(for book: Book, progress: Double, epubLocator: String?) async throws {
+        if progress <= 0 {
+            var request = try makeRequest(path: "/api/v1/books/\(book.id)/read-progress")
+            request.httpMethod = "DELETE"
+            let (_, response) = try await send(request)
+            guard (200...299).contains(response.statusCode) else {
+                throw ProviderError.serverError("Failed to reset Komga progress (HTTP \(response.statusCode))")
+            }
+            return
+        }
         let totalPages = try await fetchPageCount(for: book)
         guard totalPages > 0 else {
             throw ProviderError.serverError("Komga returned zero pages for book \(book.id)")

@@ -122,14 +122,14 @@ class EbookContextService @Inject constructor(
         val dir = File(context.cacheDir, "librarian-ebook-sources").also { it.mkdirs() }
         val safeName = fileSafeName(book.stableId)
         val cached = File(dir, "$safeName.${book.sourceFormat.extension}")
-        if (cached.exists() && cached.length() > 10_240L) return@withContext cached
+        if (cached.exists() && cached.length() > 0L) return@withContext cached
 
         if (downloadUrl.startsWith("content://") || downloadUrl.startsWith("file://")) {
             val temp = File(dir, "$safeName.tmp")
             val input = context.contentResolver.openInputStream(android.net.Uri.parse(downloadUrl))
                 ?: throw EbookContextException("Couldn't open the local book file.")
             input.use { inp -> FileOutputStream(temp).use { out -> inp.copyTo(out) } }
-            if (temp.length() < 1024L) {
+            if (temp.length() == 0L) {
                 temp.delete()
                 throw EbookContextException("The local book file was empty.")
             }
@@ -164,7 +164,7 @@ class EbookContextService @Inject constructor(
                 }
             }
         }
-        if (temp.length() < 1024L) {
+        if (temp.length() == 0L) {
             temp.delete()
             throw EbookContextException("Downloaded ebook was empty.")
         }

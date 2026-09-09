@@ -19,9 +19,7 @@ enum StoreBackup {
         let existing = companions.filter { fm.fileExists(atPath: $0.path) }
         guard !existing.isEmpty else { return nil }
 
-        pruneOldBackups(in: parent, label: label, keep: max(retainCount - 1, 0))
-
-        let backupDir = parent.appendingPathComponent("\(label).corrupt-\(timestampString())")
+        let backupDir = parent.appendingPathComponent("\(label).corrupt-\(timestampString())-\(UUID().uuidString)")
         do {
             try fm.createDirectory(at: backupDir, withIntermediateDirectories: true)
             for src in existing {
@@ -31,8 +29,10 @@ enum StoreBackup {
             AppLogger.general.warning(
                 "StoreBackup: copied \(existing.count) file(s) for \(label) to \(backupDir.lastPathComponent) before corruption reset"
             )
+            pruneOldBackups(in: parent, label: label, keep: max(retainCount, 1))
             return backupDir
         } catch {
+            try? fm.removeItem(at: backupDir)
             AppLogger.general.error("StoreBackup: failed to back up \(label): \(error)")
             return nil
         }

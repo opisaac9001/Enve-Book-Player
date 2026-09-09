@@ -1213,7 +1213,7 @@ public final class AudiobookshelfService: @unchecked Sendable {
             currentTime: currentTime,
             duration: duration,
             progress: progress,
-            isFinished: isFinished
+            isFinished: isFinished || currentTime <= 0 ? isFinished : nil
         )
         request.httpBody = try encoder.encode(progressRequest)
 
@@ -1226,10 +1226,7 @@ public final class AudiobookshelfService: @unchecked Sendable {
         var request = createRequest(url: url, method: "PATCH", backend: backend)
 
         let body: [String: Any] = [
-            "progress": ebookProgress,
             "ebookProgress": ebookProgress,
-            "currentTime": 0,
-            "duration": 0,
             "isFinished": isFinished,
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -1908,7 +1905,7 @@ public final class AudiobookshelfService: @unchecked Sendable {
             currentTime: currentTime,
             duration: duration,
             progress: progress,
-            isFinished: isFinished
+            isFinished: isFinished || currentTime <= 0 ? isFinished : nil
         )
         request.httpBody = try encoder.encode(progressRequest)
 

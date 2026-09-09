@@ -55,12 +55,12 @@ Legend: ✓ supported, ✗ not supported, ⚠ partial / capped (note in §3 belo
 
 | Provider | full | paged | stream | delta | recent | series | coll. | absPull | absPush | epubPull | epubPush | dl | covH | covQ | pgStream | bg |
 |---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| Audiobookshelf | ✓ | ⚠¹ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | ✗ | ✓ | ✗ | ✓ |
-| Plex            | ✓ | ✓ | ✗ | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ | ✗ | ✓ | ✗ | ✓ |
-| Jellyfin        | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ |
+| Audiobookshelf | ✓ | ⚠¹ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | ✗ | ✓ |
+| Plex            | ✓ | ✓ | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ | ✓ | ✗ | ✓ | ✗ | ✓ |
+| Jellyfin        | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ | ✓ |
 | Emby            | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ | ✓ |
-| Komga           | ✓ | ⚠¹ | ✗ | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
-| Kavita          | ✓ | ⚠¹ | ✗ | ✗ | ✓ | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ |
+| Komga           | ✓ | ⚠¹ | ✗ | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| Kavita          | ✓ | ⚠¹ | ✗ | ✗ | ✓ | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ |
 | Booklore        | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ |
 | BookOrbit       | ✓ | ✓ | ✗ | ✗ | ✗³ | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ |
 | Silo            | ✓ | ✓ | ✓ | ✗ | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ |
@@ -80,14 +80,14 @@ Columns: **full** = fullImport, **paged** = pagedImport, **stream** = streamingI
 
 ## Per-provider notes
 
-- **Audiobookshelf** — reference provider for streaming through `fetchBookBatches`. Cover auth uses a `?token=` query item. No ebook progress push today.
-- **Plex** — paged via `X-Plex-Container-Start/Size`. Series and collections are inferred from paths. Progress push uses `:/scrobble`; progress pull is unavailable.
-- **Jellyfin** / **Emby** — server-paged via `StartIndex` / `Limit`. Cover URLs require `X-Emby-Token` headers and must use the authenticated cover loader.
+- **Audiobookshelf** — reference provider for streaming through `fetchBookBatches`. Cover auth uses a `?token=` query item. Ebook updates submit `ebookProgress` without audio time or duration fields. Audio updates include the full book duration and omit `isFinished: false` for nonzero playback positions because ABS otherwise resets the position when reopening a finished item.
+- **Plex** — paged via `X-Plex-Container-Start/Size`. Series and collections are inferred from paths. Progress pushes use `:/timeline`; progress pulls combine track offsets into the book timeline.
+- **Jellyfin** / **Emby** — server-paged via `StartIndex` / `Limit`. Cover URLs require `X-Emby-Token` headers and must use the authenticated cover loader. Audio positions are saved through user-data updates. Neither provider advertises native ebook-position sync: Jellyfin accepts but does not persist `PlayedPercentage` for ebooks. Ebook download/reading remains available.
 - **Komga** — comic-server: only provider with `serverPageStreaming` today. Delta uses `sort=created,desc`. Cover URL uses HTTP Basic — fine for the iOS `URLSession` cover loader but not for `AsyncImage` without a header rewrite.
-- **Kavita** — POST-paginated (body, not query). JWT cover auth via Bearer header. No series exposed (returns `[]`).
+- **Kavita** — POST requests use one-based query pagination and a library-filter statement in the JSON body. JWT cover auth via Bearer header. No series exposed (returns `[]`). Ebook progress uses the same first chapter as the downloaded ebook and the native Reader progress endpoints.
 - **Booklore** — three-tier (app-tier `/api/v1/app/*`, legacy REST `/api/v1/rest/*`, Komga fallback). Carries both header and query auth for covers. Full progress matrix.
 - **BookOrbit** — JWT (15-min access / 7-day refresh httpOnly cookie). Header-only auth. Catalog import stays pagination-only for compatibility with releases that reject `filter`/`sort`; activity sync behaviorally probes the newer paginated `readStatus` filter and falls back to the bounded dashboard endpoint when unavailable. Collections support complete definition and membership snapshots. No universally available sort or recent-books endpoint exists across supported releases.
-- **Silo** — profile-scoped API with snapshot-fenced catalog pagination and cursor-based progress sync. Collections include complete personal/manual/smart definitions and memberships plus visible server library collections.
+- **Silo** — profile-scoped API with snapshot-fenced catalog pagination and cursor-based progress sync. Ebook resets and rereads clear the server’s latched watched state before applying a new position. Collections include complete personal/manual/smart definitions and memberships plus visible server library collections.
 - **OPDS** — read-only feed (Atom 1.x + OPDS 2.0 JSON); depth-bounded traversal. Auth via challenge-response delegate (Basic/Digest/Bearer). No structured series/collections — OPDS spec doesn't expose them.
 - **Storyteller** — covers carry both Bearer header AND a `?w=` query sizing token. Full progress matrix incl. read-aloud (EPUB3 SMIL).
 - **WebDAV** — file-system enumeration via PROPFIND. No progress, covers, series, or collections. Directory traversal is not currently depth-bounded.
@@ -101,3 +101,13 @@ Columns: **full** = fullImport, **paged** = pagedImport, **stream** = streamingI
 4. Cross-check against the per-provider notes in §"Per-provider notes" — those describe *why* the flags are what they are; if your change invalidates a note, edit it.
 
 The capability surface is intentionally honest: a missing flag (✗) signals real work to do, not a TODO to be silenced by adding it.
+
+## Progress refresh
+
+Audiobookshelf reconciliation is scoped to its connection and processes the returned progress records, including completed and reset items. Jellyfin, Emby, Plex and Kavita use their native provider progress capabilities; they never receive Audiobookshelf requests. Manual refresh visits all indexed books for those connections, while startup limits per-book requests to 40 recent local books. Providers without a batch progress endpoint require per-book requests, so manual reconciliation can take longer on large libraries.
+
+Booklore, BookOrbit, Komga, Silo and Storyteller retain their dedicated strategies. Manual Booklore and Silo ebook refresh is no longer limited to a recent window or a cross-connection candidate cap. Provider strategy failures propagate to the refresh result. Pending local writes are protected during reconciliation.
+
+Emby ebooks and file-only sources do not advertise service progress sync. Emby audiobook progress is supported. OPDS, WebDAV, debrid and local files have no native service progress endpoint; their Enve/iCloud progress is separate. Booklore legacy REST and Komga fallback tiers report unsupported ebook uploads instead of reporting a successful write.
+
+Komga resets use its documented [mark book as unread](https://komga.org/docs/openapi/delete-book-read-progress/) endpoint rather than writing page one.

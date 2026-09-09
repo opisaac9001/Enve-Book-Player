@@ -119,13 +119,22 @@ final class CarPlayNowPlaying {
 
     private func presentPlaybackError(_ message: String) {
         guard isConnected else { return }
+        guard interfaceController.presentedTemplate == nil else { return }
         AppLogger.carplay.error("[CarPlay] Playback error: \(message)")
 
         let dismiss = CPAlertAction(title: "OK", style: .default) { [weak self] _ in
-            self?.interfaceController.dismissTemplate(animated: true, completion: nil)
+            guard let self, self.interfaceController.presentedTemplate != nil else { return }
+            self.interfaceController.dismissTemplate(
+                animated: true,
+                completion: carPlayInterfaceCompletion("Dismiss playback error")
+            )
         }
         let alert = CPAlertTemplate(titleVariants: [message], actions: [dismiss])
-        interfaceController.presentTemplate(alert, animated: true, completion: nil)
+        interfaceController.presentTemplate(
+            alert,
+            animated: true,
+            completion: carPlayInterfaceCompletion("Present playback error")
+        )
     }
 
     private func updateNowPlayingTemplate() {
@@ -201,17 +210,27 @@ final class CarPlayNowPlaying {
             let item = CPListItem(text: label, detailText: nil)
             item.isPlaying = isSelected
             item.handler = { [weak self] _, completion in
+                guard let self else {
+                    completion()
+                    return
+                }
                 AppLogger.carplay.info("[CarPlay] Setting new speed: \(speed)x")
-                self?.controller.setPlaybackRate(Double(speed))
-                self?.interfaceController.popTemplate(animated: true, completion: nil)
-                completion()
+                self.controller.setPlaybackRate(Double(speed))
+                self.interfaceController.popTemplate(
+                    animated: true,
+                    completion: carPlayInterfaceCompletion("Close playback speed", then: completion)
+                )
             }
             return item
         }
 
         let section = CPListSection(items: items)
         let listTemplate = CPListTemplate(title: "Playback Speed", sections: [section])
-        interfaceController.pushTemplate(listTemplate, animated: true, completion: nil)
+        interfaceController.pushTemplate(
+            listTemplate,
+            animated: true,
+            completion: carPlayInterfaceCompletion("Show playback speed")
+        )
     }
 
     private func onChaptersTapped(chapters resolvedChapters: [Chapter]) {

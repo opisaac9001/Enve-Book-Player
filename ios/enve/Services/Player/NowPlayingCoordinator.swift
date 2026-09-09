@@ -9,7 +9,7 @@ import UIKit
 @MainActor
 final class NowPlayingCoordinator {
     static let shared = NowPlayingCoordinator()
-    private init() {}
+    init() {}
 
     private weak var activeTarget: (any RemoteCommandTarget)?
     #if os(iOS)
@@ -40,9 +40,7 @@ final class NowPlayingCoordinator {
 
     #if os(iOS)
     func setNowPlayingSession(_ session: MPNowPlayingSession, for target: any RemoteCommandTarget) {
-        if let current = nowPlayingSession, current !== session {
-            current.players.forEach { current.removePlayer($0) }
-        }
+        // Retire sessions intact; explicit removePlayer calls trigger an iOS 27 KVO exception.
         nowPlayingSession = session
         nowPlayingSessionOwner = target
         if activeTarget != nil {
@@ -52,9 +50,6 @@ final class NowPlayingCoordinator {
 
     func clearNowPlayingSession(if target: any RemoteCommandTarget) {
         guard nowPlayingSessionOwner === target else { return }
-        if let current = nowPlayingSession {
-            current.players.forEach { current.removePlayer($0) }
-        }
         nowPlayingSession = nil
         nowPlayingSessionOwner = nil
         if activeTarget != nil {

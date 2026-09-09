@@ -108,7 +108,11 @@ private fun QueueSheet(vm: HearthPlayerViewModel, onDismiss: () -> Unit) {
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
             ) {
-                CoverTile(model = item.book.coverUrl, modifier = Modifier.width(42.dp))
+                CoverTile(
+                    model = item.book.coverUrl,
+                    mediaType = item.book.mediaType,
+                    modifier = Modifier.width(42.dp),
+                )
                 Column(Modifier.weight(1f)) {
                     Text(item.book.title, style = HearthText.Label, color = palette.text, maxLines = 2)
                     item.book.author?.takeIf { it.isNotBlank() }?.let {

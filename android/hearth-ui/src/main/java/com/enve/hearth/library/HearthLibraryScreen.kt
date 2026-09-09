@@ -1253,6 +1253,7 @@ private fun GridCoverCell(
         ) {
             CoverTile(
                 model = book.coverUrl,
+                mediaType = book.mediaType,
                 modifier = Modifier.fillMaxWidth(),
                 contentDescription = book.title,
                 progress = com.enve.hearth.design.HearthFormat.progress(book),
@@ -1366,6 +1367,7 @@ private fun DenseBookRow(
     ) {
         CoverTile(
             model = book.coverUrl,
+            mediaType = book.mediaType,
             modifier = Modifier.width(44.dp),
             contentDescription = book.title,
             progress = com.enve.hearth.design.HearthFormat.progress(book),

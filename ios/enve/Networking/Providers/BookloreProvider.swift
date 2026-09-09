@@ -3622,7 +3622,7 @@ class BookloreProvider: LibraryProvider, PlaybackSessionProvider, AudiobookProgr
             AppLogger.network.debug(
                 "[Booklore] Ebook progress push unsupported for active API tier bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId))"
             )
-            return
+            throw ProviderError.notImplemented
         }
 
         if book.epub3Features?.hasMediaOverlay == true {
@@ -3635,7 +3635,7 @@ class BookloreProvider: LibraryProvider, PlaybackSessionProvider, AudiobookProgr
             AppLogger.network.error(
                 "[Booklore] Ebook progress push skipped; invalid bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId))"
             )
-            return
+            throw ProviderError.invalidResponse
         }
 
         let resource = try await resolveGrimmoryEPUBResource(for: book)

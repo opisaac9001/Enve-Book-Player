@@ -102,9 +102,12 @@ final class PendingSyncQueueFlusher {
     }
 
     private func flush(stableId: String, entry: PendingServerSync) async {
+        guard store.entries[stableId] == entry else { return }
         let diagnosticID = DiagnosticLogSanitizer.identifier(for: stableId)
         do {
-            switch try await transport.push(stableId: stableId, entry: entry) {
+            let disposition = try await transport.push(stableId: stableId, entry: entry)
+            guard store.entries[stableId] == entry else { return }
+            switch disposition {
             case .remove:
                 store.remove(stableId: stableId)
                 AppLogger.sync.debug("[PendingSync] Flushed bookDiagnosticID=\(diagnosticID)")
@@ -112,6 +115,7 @@ final class PendingSyncQueueFlusher {
                 AppLogger.sync.debug("[PendingSync] Retained bookDiagnosticID=\(diagnosticID); transport is unavailable")
             }
         } catch {
+            guard store.entries[stableId] == entry else { return }
             let status = httpStatus(from: error)
             switch status {
             case 401, 403:

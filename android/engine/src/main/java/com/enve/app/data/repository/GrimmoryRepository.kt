@@ -1626,7 +1626,7 @@ class GrimmoryRepository @Inject constructor(
                 resolveAgainst(ctx.serverUrl, bookId)
             }
 
-            else -> "${ctx.serverUrl}/api/v1/books/${bookId.grimmoryServerBookId()}/content?bookType=EPUB"
+            else -> grimmoryBookContentUrl(ctx.serverUrl, bookId.grimmoryServerBookId())
         }
     }
 
@@ -1640,7 +1640,7 @@ class GrimmoryRepository @Inject constructor(
         val epubFile = detail?.epubFile()
         return ProviderEbookResource(
 
-            url = "${ctx.serverUrl}/api/v1/books/$rawBookId/content?bookType=EPUB",
+            url = grimmoryBookContentUrl(ctx.serverUrl, rawBookId, bookType = "EPUB"),
             providerFileId = epubFile?.id,
         )
     }

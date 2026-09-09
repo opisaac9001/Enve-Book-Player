@@ -34,6 +34,7 @@ final class BookOrbitSyncStrategy: ProviderSyncStrategy {
         guard !connections.isEmpty else { return .zero }
 
         var pulled = 0
+        var failedBackends: [String] = []
         var pushed = 0
 
         for connection in connections {
@@ -107,9 +108,11 @@ final class BookOrbitSyncStrategy: ProviderSyncStrategy {
                     pulled += result.pulled
                     pushed += result.pushed
                 }
-            } catch is CancellationError {
-                return ProviderSyncResult(pulled: pulled, pushed: pushed)
             } catch {
+                if error is CancellationError || (error as? URLError)?.code == .cancelled {
+                    return ProviderSyncResult(pulled: pulled, pushed: pushed, failedBackends: failedBackends, wasCancelled: true)
+                }
+                if !failedBackends.contains(connection.name) { failedBackends.append(connection.name) }
                 AppLogger.sync.error("[BookOrbit] activity sync failed: \(error.localizedDescription)")
             }
         }
@@ -117,7 +120,7 @@ final class BookOrbitSyncStrategy: ProviderSyncStrategy {
         if pulled > 0 {
             NotificationCenter.default.post(name: .continueListeningNeedsRefresh, object: nil)
         }
-        return ProviderSyncResult(pulled: pulled, pushed: pushed)
+        return ProviderSyncResult(pulled: pulled, pushed: pushed, failedBackends: failedBackends)
     }
 
     private func pullLegacyContinueSnapshot(

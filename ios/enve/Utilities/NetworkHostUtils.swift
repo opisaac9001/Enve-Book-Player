@@ -4,21 +4,22 @@ import Foundation
 
 enum NetworkHostUtils {
     static nonisolated func isLocalNetworkHost(_ host: String) -> Bool {
-        if host == "localhost" || host == "127.0.0.1" { return true }
-        if host.hasPrefix("192.168.") || host.hasPrefix("10.") { return true }
-
-        if host.hasPrefix("172."),
-            let second = host.split(separator: ".").dropFirst().first,
-            let v = Int(second), (16...31).contains(v)
+        if host == "localhost" { return true }
+        let parts = host.split(separator: ".", omittingEmptySubsequences: false)
+        if parts.count == 4,
+            parts.allSatisfy({ part in
+                !part.isEmpty && (part.count == 1 || part.first != "0")
+                    && part.utf8.allSatisfy { (48...57).contains($0) }
+            })
         {
-            return true
-        }
-
-        if host.hasPrefix("100."),
-            let second = host.split(separator: ".").dropFirst().first,
-            let v = Int(second), (64...127).contains(v)
-        {
-            return true
+            let octets = parts.compactMap { UInt8($0) }
+            if octets.count == 4 {
+                return octets == [127, 0, 0, 1]
+                    || octets[0] == 10
+                    || (octets[0] == 192 && octets[1] == 168)
+                    || (octets[0] == 172 && (16...31).contains(octets[1]))
+                    || (octets[0] == 100 && (64...127).contains(octets[1]))
+            }
         }
 
         if host.hasSuffix(".local") || host.hasSuffix(".lan") { return true }

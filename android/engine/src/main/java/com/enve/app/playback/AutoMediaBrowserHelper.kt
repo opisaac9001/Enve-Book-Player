@@ -50,6 +50,8 @@ class AutoMediaBrowserHelper @Inject constructor(
     companion object {
         const val ROOT_ID = "enve_root"
         const val SHELF_IN_PROGRESS = "enve_shelf_in_progress"
+        const val SHELF_LIBRARY = "enve_shelf_library"
+        const val SHELF_DOWNLOADS = "enve_shelf_downloads"
         const val SHELF_RECENT = "enve_shelf_recent"
 
         private const val BOOK_PREFIX = "book:"
@@ -66,6 +68,57 @@ class AutoMediaBrowserHelper @Inject constructor(
 
         fun mediaIdForTrack(cacheKey: String, trackIndex: Int): String =
             "$BOOK_PREFIX$cacheKey#track:$trackIndex"
+
+        fun mediaIdForChapter(cacheKey: String, chapterIndex: Int): String =
+            "$BOOK_PREFIX$cacheKey#chapter:$chapterIndex"
+
+        fun isChapterMediaId(mediaId: String): Boolean =
+            mediaId.startsWith(BOOK_PREFIX) && "#chapter:" in mediaId
+
+        internal data class ChapterSegment(
+            val chapter: Chapter,
+            val startMs: Long,
+            val endMs: Long,
+        )
+
+        internal fun chapterSegments(
+            chapters: List<Chapter>,
+            totalDurationMs: Long,
+        ): List<ChapterSegment> {
+            if (chapters.size < 2) return emptyList()
+            val segments = chapters.mapIndexed { index, chapter ->
+                val startMs = chapter.startTime.coerceAtLeast(0L) * 1000L
+                val nextStartMs = chapters.getOrNull(index + 1)
+                    ?.startTime
+                    ?.coerceAtLeast(0L)
+                    ?.times(1000L)
+                val declaredEndMs = chapter.endTime.coerceAtLeast(0L) * 1000L
+                val endMs = when {
+                    nextStartMs != null && nextStartMs > startMs -> nextStartMs
+                    declaredEndMs > startMs -> declaredEndMs
+                    index == chapters.lastIndex && totalDurationMs > startMs -> totalDurationMs
+                    else -> return emptyList()
+                }
+                ChapterSegment(chapter, startMs, endMs)
+            }
+            return segments.takeIf { items ->
+                items.zipWithNext().all { (current, next) -> next.startMs >= current.endMs }
+            }.orEmpty()
+        }
+
+        internal fun startOffsetInSegments(
+            segments: List<ChapterSegment>,
+            resumeMs: Long,
+        ): Pair<Int, Long> {
+            if (segments.isEmpty()) return 0 to resumeMs.coerceAtLeast(0L)
+            val absoluteMs = resumeMs.coerceAtLeast(0L)
+            val index = segments.indexOfLast { absoluteMs >= it.startMs }
+                .coerceAtLeast(0)
+                .coerceAtMost(segments.lastIndex)
+            val segment = segments[index]
+            return index to (absoluteMs - segment.startMs)
+                .coerceIn(0L, segment.endMs - segment.startMs)
+        }
     }
 
     fun buildRoot(): MediaItem = MediaItem.Builder()
@@ -89,12 +142,24 @@ class AutoMediaBrowserHelper @Inject constructor(
                     R.drawable.ic_car_continue,
                 ),
                 shelfItem(
+                    SHELF_LIBRARY,
+                    R.string.android_auto_library,
+                    R.drawable.ic_car_library,
+                ),
+                shelfItem(
+                    SHELF_DOWNLOADS,
+                    R.string.android_auto_downloads,
+                    R.drawable.ic_car_downloads,
+                ),
+                shelfItem(
                     SHELF_RECENT,
                     R.string.android_auto_recently_added,
                     R.drawable.ic_car_recent,
                 ),
             )
             SHELF_IN_PROGRESS -> loadShelf { bookCacheDao.getInProgressAudiobooksOnce(SHELF_LIMIT) }
+            SHELF_LIBRARY -> loadShelf { bookCacheDao.getAudiobooksForCar(SHELF_LIMIT) }
+            SHELF_DOWNLOADS -> loadShelf { bookCacheDao.getDownloadedAudiobooksForCar(SHELF_LIMIT) }
             SHELF_RECENT -> loadShelf { bookCacheDao.getRecentlyAddedAudiobooks(SHELF_LIMIT) }
             else -> {
                 Log.w(TAG, "getChildren: unknown parentId='$parentId'")
@@ -110,6 +175,16 @@ class AutoMediaBrowserHelper @Inject constructor(
                 SHELF_IN_PROGRESS,
                 R.string.android_auto_continue_listening,
                 R.drawable.ic_car_continue,
+            )
+            SHELF_LIBRARY -> shelfItem(
+                SHELF_LIBRARY,
+                R.string.android_auto_library,
+                R.drawable.ic_car_library,
+            )
+            SHELF_DOWNLOADS -> shelfItem(
+                SHELF_DOWNLOADS,
+                R.string.android_auto_downloads,
+                R.drawable.ic_car_downloads,
             )
             SHELF_RECENT -> shelfItem(
                 SHELF_RECENT,
@@ -233,10 +308,28 @@ class AutoMediaBrowserHelper @Inject constructor(
         providerSessionId: String?,
     ): ResolvedPlayback {
         val artworkUri = artworkUriFor(book)
-        val items = tracks.map { playableItem(book, it, artworkUri) }
-        val (index, offsetMs) = startOffsetInTracks(tracks, resumeMs)
-        val durationSec = book.duration.takeIf { it > 0L }
-            ?: tracks.sumOf { it.durationMs.coerceAtLeast(0L) } / 1000L
+        val totalDurationMs = book.duration
+            .takeIf { it > 0L }
+            ?.times(1000L)
+            ?: tracks.sumOf { it.durationMs.coerceAtLeast(0L) }
+        val segments = if (tracks.size == 1) {
+            chapterSegments(chapters, totalDurationMs)
+        } else {
+            emptyList()
+        }
+        val items = if (segments.isNotEmpty()) {
+            segments.map { segment ->
+                chapterPlayableItem(book, tracks.single(), segment, artworkUri)
+            }
+        } else {
+            tracks.map { playableItem(book, it, artworkUri) }
+        }
+        val (index, offsetMs) = if (segments.isNotEmpty()) {
+            startOffsetInSegments(segments, resumeMs)
+        } else {
+            startOffsetInTracks(tracks, resumeMs)
+        }
+        val durationSec = totalDurationMs / 1000L
         return ResolvedPlayback(
             items = items,
             startIndex = index,
@@ -337,7 +430,7 @@ class AutoMediaBrowserHelper @Inject constructor(
                     Bundle().apply {
                         putInt(
                             MediaConstants.EXTRAS_KEY_CONTENT_STYLE_PLAYABLE,
-                            MediaConstants.EXTRAS_VALUE_CONTENT_STYLE_GRID_ITEM,
+                            MediaConstants.EXTRAS_VALUE_CONTENT_STYLE_LIST_ITEM,
                         )
                     }
                 )
@@ -389,6 +482,38 @@ class AutoMediaBrowserHelper @Inject constructor(
             .setMediaId(mediaIdForTrack(book.uniqueKey, track.index))
             .setUri(track.contentUrl.orEmpty())
             .setMediaMetadata(meta)
+            .build()
+    }
+
+    private fun chapterPlayableItem(
+        book: Book,
+        track: AudioTrack,
+        segment: ChapterSegment,
+        artworkUri: Uri?,
+    ): MediaItem {
+        val durationMs = segment.endMs - segment.startMs
+        val metadata = MediaMetadata.Builder()
+            .setTitle(segment.chapter.title)
+            .setSubtitle(book.title)
+            .setArtist(book.author)
+            .setAlbumTitle(book.title)
+            .setIsBrowsable(false)
+            .setIsPlayable(true)
+            .setMediaType(MediaMetadata.MEDIA_TYPE_AUDIO_BOOK_CHAPTER)
+            .setDurationMs(durationMs)
+            .setExtras(carMetadataExtras(book))
+            .apply { artworkUri?.let(::setArtworkUri) }
+            .build()
+        return MediaItem.Builder()
+            .setMediaId(mediaIdForChapter(book.uniqueKey, segment.chapter.index))
+            .setUri(track.contentUrl.orEmpty())
+            .setClippingConfiguration(
+                MediaItem.ClippingConfiguration.Builder()
+                    .setStartPositionMs(segment.startMs)
+                    .setEndPositionMs(segment.endMs)
+                    .build()
+            )
+            .setMediaMetadata(metadata)
             .build()
     }
 

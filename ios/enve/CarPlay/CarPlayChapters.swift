@@ -29,7 +29,11 @@ final class CarPlayChapters {
 
         let section = CPListSection(items: items)
         let listTemplate = CPListTemplate(title: "Chapters", sections: [section])
-        interfaceController.pushTemplate(listTemplate, animated: true, completion: nil)
+        interfaceController.pushTemplate(
+            listTemplate,
+            animated: true,
+            completion: carPlayInterfaceCompletion("Show chapters")
+        )
     }
 
     private func createListItem(for chapter: Chapter, number: Int, isCurrent: Bool) -> CPListItem {
@@ -44,16 +48,22 @@ final class CarPlayChapters {
         item.isPlaying = isCurrent
 
         item.handler = { [weak self] _, completion in
-            self?.onChapterSelected(chapter)
-            completion()
+            guard let self else {
+                completion()
+                return
+            }
+            self.onChapterSelected(chapter, completion: completion)
         }
 
         return item
     }
 
-    private func onChapterSelected(_ chapter: Chapter) {
+    private func onChapterSelected(_ chapter: Chapter, completion: @escaping () -> Void) {
         playback.seek(to: chapter.start)
-        interfaceController.popTemplate(animated: true, completion: nil)
+        interfaceController.popTemplate(
+            animated: true,
+            completion: carPlayInterfaceCompletion("Close chapters", then: completion)
+        )
     }
 
     private func formatDuration(_ duration: TimeInterval) -> String {

@@ -13,7 +13,7 @@ enum AutoSleepPolicy {
     }
 
     nonisolated static func currentWindowStart(now: Date, startMinutes: Int, calendar: Calendar) -> Date {
-        let todayStart = calendar.startOfDay(for: now).addingTimeInterval(TimeInterval(startMinutes * 60))
+        let todayStart = calendar.date(bySettingHour: startMinutes / 60, minute: startMinutes % 60, second: 0, of: now)!
         if now >= todayStart { return todayStart }
         return calendar.date(byAdding: .day, value: -1, to: todayStart) ?? todayStart
     }

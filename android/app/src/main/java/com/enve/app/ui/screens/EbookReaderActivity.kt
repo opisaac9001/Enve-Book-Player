@@ -5,6 +5,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.graphics.drawable.ColorDrawable
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Bundle
@@ -22,6 +23,7 @@ import android.widget.Toast
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import androidx.activity.compose.BackHandler
+import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.animation.*
@@ -184,7 +186,7 @@ class EbookReaderActivity : FragmentActivity() {
     private var bookTitle: String = ""
     private var bookAuthor: String = ""
     private var bookLastReadTime: Long = 0L
-    private var requestedReaderEngine: ReaderEngineKind = ReaderEngineKind.READIUM
+    private var requestedReaderEngine by mutableStateOf(ReaderEngineKind.READIUM)
     private var foliateEngine: FoliateReaderEngine? = null
     private var foliateReady = false
     private var foliateFallbackStarted = false
@@ -505,6 +507,29 @@ class EbookReaderActivity : FragmentActivity() {
 
         composeOverlay.setContent {
             val themeState by themeViewModel.themeState.collectAsStateWithLifecycle()
+            val readerState by vm.state.collectAsStateWithLifecycle()
+            val readerTheme = readerState.prefs.theme
+            val readerBackground = if (requestedReaderEngine == ReaderEngineKind.FOLIATE) {
+                when (readerTheme) {
+                    ReaderTheme.LIGHT -> android.graphics.Color.WHITE
+                    ReaderTheme.SEPIA -> 0xFFF4ECD8.toInt()
+                    ReaderTheme.DARK -> 0xFF121212.toInt()
+                    ReaderTheme.OLED -> android.graphics.Color.BLACK
+                }
+            } else {
+                readerState.prefs.toEpubPreferences().theme!!.backgroundColor
+            }
+            DisposableEffect(readerTheme, readerBackground) {
+                window.setBackgroundDrawable(ColorDrawable(readerBackground))
+                epubContainer.setBackgroundColor(readerBackground)
+                val systemBarStyle = if (readerTheme == ReaderTheme.LIGHT || readerTheme == ReaderTheme.SEPIA) {
+                    SystemBarStyle.light(readerBackground, readerBackground)
+                } else {
+                    SystemBarStyle.dark(readerBackground)
+                }
+                enableEdgeToEdge(statusBarStyle = systemBarStyle, navigationBarStyle = systemBarStyle)
+                onDispose { }
+            }
             val uiTextScale by hearthPreferences.uiTextScale.collectAsStateWithLifecycle(initialValue = 1f)
             val readNextEnabled by hearthPreferences.readNextEnabled.collectAsStateWithLifecycle(initialValue = true)
             val readNextPosition by hearthPreferences.readNextPosition.collectAsStateWithLifecycle(
@@ -601,7 +626,7 @@ class EbookReaderActivity : FragmentActivity() {
         }
 
         val hasOfflineSource = comicOfflineStorage.getDownloadedFile(bookId)
-            ?.let { it.exists() && it.length() > 10_240 }
+            ?.let { it.exists() && it.length() > 0L }
             ?: false
         val useReaderNetwork = shouldUseReaderNetwork(
             hasOfflineSource = hasOfflineSource,
@@ -681,6 +706,7 @@ class EbookReaderActivity : FragmentActivity() {
             return
         }
 
+        requestedReaderEngine = ReaderEngineKind.READIUM
         val readium  = (application as EnveApplication).readiumManager
         val customFontResources = ReadiumCustomFontResources(customFonts)
         val readiumOpenStartMs = android.os.SystemClock.elapsedRealtime()
@@ -1294,7 +1320,7 @@ class EbookReaderActivity : FragmentActivity() {
     ): File {
 
         val offlineFile = comicOfflineStorage.getDownloadedFile(bookId)
-        if (offlineFile != null && offlineFile.exists() && offlineFile.length() > 10_240) {
+        if (offlineFile != null && offlineFile.exists() && offlineFile.length() > 0) {
             setStatus("Loading offline ${format.displayName}\u2026")
             validateDownloadedEbookSource(offlineFile, format)
             return offlineFile
@@ -1314,7 +1340,7 @@ class EbookReaderActivity : FragmentActivity() {
         }
         val cached   = File(dir, cachedName)
 
-        if (cached.exists() && cached.length() > 10_240) {
+        if (cached.exists() && cached.length() > 0) {
             if (isZipBackedEbook(format) && !looksLikeZip(cached)) {
                 cached.delete()
             } else {
@@ -1338,7 +1364,7 @@ class EbookReaderActivity : FragmentActivity() {
                 val input = contentResolver.openInputStream(android.net.Uri.parse(downloadUrl))
                     ?: throw Exception("Couldn't open the local file. Was it moved or deleted?")
                 input.use { inp -> FileOutputStream(tmp).use { out -> inp.copyTo(out) } }
-                if (tmp.length() < 1024) { tmp.delete(); throw Exception("File too small") }
+                if (tmp.length() == 0L) { tmp.delete(); throw Exception("File is empty") }
                 validateDownloadedEbookSource(tmp, format)
                 if (cached.exists()) cached.delete()
                 if (!tmp.renameTo(cached)) {
@@ -1385,7 +1411,7 @@ class EbookReaderActivity : FragmentActivity() {
                 tmp.delete()
                 throw Exception("The download stopped early — got ${total / 1024} KB of ${len / 1024} KB.")
             }
-            if (tmp.length() < 1024) { tmp.delete(); throw Exception("File too small") }
+            if (tmp.length() == 0L) { tmp.delete(); throw Exception("File is empty") }
             validateDownloadedEbookSource(tmp, format)
             if (cached.exists()) cached.delete()
             if (!tmp.renameTo(cached)) {
@@ -1760,16 +1786,6 @@ private fun ReaderOverlay(
         onDispose {
             controller?.show(WindowInsetsCompat.Type.statusBars() or WindowInsetsCompat.Type.navigationBars())
             controller?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
-        }
-    }
-
-    DisposableEffect(uiState.prefs.theme) {
-        val window = activity?.window
-        val controller = window?.let { WindowCompat.getInsetsController(it, it.decorView) }
-        val isLightTheme = uiState.prefs.theme == ReaderTheme.LIGHT || uiState.prefs.theme == ReaderTheme.SEPIA
-        controller?.isAppearanceLightStatusBars = isLightTheme
-        onDispose {
-            controller?.isAppearanceLightStatusBars = false
         }
     }
 

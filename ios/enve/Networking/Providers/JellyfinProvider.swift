@@ -8,7 +8,7 @@ import UIKit
 #endif
 
 class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, AudiobookProgressProvider,
-    EbookProgressProvider, EbookDownloadProvider, ObservableObject, @unchecked Sendable
+    EbookDownloadProvider, ObservableObject, @unchecked Sendable
 {
     @Published var connection: ServerConnection
     let session: URLSession
@@ -17,7 +17,6 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
         [
             .fullImport, .pagedImport,
             .audiobookProgressPull, .audiobookProgressPush,
-            .ebookProgressPull, .ebookProgressPush,
             .downloads, .coverAuthHeader, .backgroundOperation,
         ]
     }
@@ -127,7 +126,7 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
         }
 
         AppLogger.network.info("[JellyfinProvider] No valid token, checking for username/password...")
-        guard let username = connection.username, let password = connection.token else {
+        guard let username = connection.username, let password = connection.password ?? connection.token else {
             AppLogger.network.warning("[JellyfinProvider] Missing username or password")
             return false
         }
@@ -173,7 +172,6 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
 
     private func authenticate(username: String, password: String) async throws {
         AppLogger.network.info("[JellyfinProvider] ===== AUTHENTICATION STARTED =====")
-        AppLogger.network.info("[JellyfinProvider] Username: \(username)")
 
         let base = normalizeServerURL(connection.url)
         AppLogger.network.info("[JellyfinProvider] Server URL: \(URL(string: base)?.redacted.absoluteString ?? "<invalid>")")
@@ -446,32 +444,7 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
         var book = mapJellyfinItemToBook(item, libraryId: libraryId, base: base)
         book.chapters = chapters
 
-        if duration != book.duration {
-            AppLogger.network.info("Recreating book with corrected duration: \(duration)s")
-            let newProgress = duration > 0 ? (book.currentTime / duration) : 0
-            book = Book(
-                id: book.id,
-                title: book.title,
-                author: book.author,
-                narrator: book.narrator,
-                seriesInfo: book.seriesInfo,
-                duration: duration,
-                coverURL: book.coverURL,
-                dateAdded: book.dateAdded,
-                releaseDate: book.releaseDate,
-                description: book.description,
-                genres: book.genres,
-                chapters: book.chapters,
-                publisher: book.publisher,
-                progress: newProgress,
-                currentTime: book.currentTime,
-                isFinished: book.isFinished,
-                lastUpdate: book.lastUpdate,
-                libraryId: book.libraryId,
-                providerId: book.providerId,
-                rawMetadata: book.rawMetadata
-            )
-        }
+        book.duration = duration
         return book
     }
 
@@ -548,31 +521,27 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
         isFinished: Bool,
         timeListened: TimeInterval
     ) async throws {
-        guard let userId = connection.userId, let _ = connection.token else { return }
+        guard let userId = connection.userId, connection.token != nil else { throw ProviderError.unauthorized }
         let base = normalizeServerURL(connection.url)
-        let positionTicks = Int64(currentTime * 10_000_000)
-
-        guard let url = URL(string: "\(base)/Users/\(userId)/PlayingItems/\(book.id)/Progress?PositionTicks=\(positionTicks)") else {
-            return
+        guard let url = URL(string: "\(base)/Users/\(userId)/Items/\(book.id)/UserData") else {
+            throw ProviderError.invalidURL
         }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         addAuthHeaders(&request)
-
-        _ = try? await performDataTask(for: request)
-
-        if isFinished {
-            guard let playedUrl = URL(string: "\(base)/Users/\(userId)/PlayedItems/\(book.id)") else {
-                return
-            }
-            var playedRequest = URLRequest(url: playedUrl)
-            playedRequest.httpMethod = "POST"
-            addAuthHeaders(&playedRequest)
-            _ = try? await performDataTask(for: playedRequest)
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "PlaybackPositionTicks": Int64(max(0, currentTime) * 10_000_000),
+            "Played": isFinished,
+            "LastPlayedDate": ISO8601DateFormatter().string(from: Date()),
+        ])
+        let (_, response) = try await performDataTask(for: request)
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            throw ProviderError.invalidResponse
         }
     }
 
-    private func performDataTask(for request: URLRequest, retryCount: Int = 3) async throws -> (Data, URLResponse) {
+    func performDataTask(for request: URLRequest, retryCount: Int = 3) async throws -> (Data, URLResponse) {
         var currentRetry = 0
         while true {
             do {
@@ -603,6 +572,15 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
     private func fetchChildAudioItems(parentId: String) async throws -> [JellyfinItem] {
         guard let userId = connection.userId else { return [] }
         let base = normalizeServerURL(connection.url)
+
+        guard let parentURL = URL(string: "\(base)/Users/\(userId)/Items/\(parentId)") else { throw ProviderError.invalidURL }
+        var parentRequest = URLRequest(url: parentURL)
+        addAuthHeaders(&parentRequest)
+        let (parentData, parentResponse) = try await performDataTask(for: parentRequest)
+        guard let http = parentResponse as? HTTPURLResponse, http.statusCode == 200 else { throw ProviderError.invalidResponse }
+        let parent = try JSONDecoder().decode(JellyfinItem.self, from: parentData)
+        // Jellyfin treats a non-folder ParentId as the user's library root.
+        guard parent.IsFolder == true else { return [] }
 
         guard var components = URLComponents(string: "\(base)/Users/\(userId)/Items") else { return [] }
         components.queryItems = [
@@ -780,74 +758,26 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
         )
     }
 
-    func updateEbookProgress(for book: Book, progress: Double, epubLocator: String?) async throws {
-        guard let userId = connection.userId else { throw ProviderError.unauthorized }
-        let base = normalizeServerURL(connection.url)
-
-        guard let url = URL(string: "\(base)/Users/\(userId)/Items/\(book.id)/UserData") else { return }
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        addAuthHeaders(&request)
-
-        let body: [String: Any] = [
-            "PlayedPercentage": max(0, min(100, progress * 100)),
-            "Played": progress >= 0.99,
-        ]
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        _ = try? await performDataTask(for: request)
-
-        if progress >= 0.99,
-            let playedURL = URL(string: "\(base)/Users/\(userId)/PlayedItems/\(book.id)")
-        {
-            var playedRequest = URLRequest(url: playedURL)
-            playedRequest.httpMethod = "POST"
-            addAuthHeaders(&playedRequest)
-            _ = try? await performDataTask(for: playedRequest)
-        }
-    }
-
-    func fetchEbookProgress(for book: Book) async throws -> (progress: Double, locator: String?, updatedAt: Date?, isAbandoned: Bool)? {
-        guard let userId = connection.userId else { return nil }
-        let base = normalizeServerURL(connection.url)
-
-        guard let url = URL(string: "\(base)/Users/\(userId)/Items/\(book.id)?Fields=UserData") else { return nil }
-        var request = URLRequest(url: url)
-        addAuthHeaders(&request)
-
-        guard let (data, response) = try? await performDataTask(for: request),
-            let http = response as? HTTPURLResponse, http.statusCode == 200,
-            let item = try? JSONDecoder().decode(JellyfinItem.self, from: data)
-        else {
-            return nil
-        }
-
-        let percentage = (item.UserData?.PlayedPercentage ?? 0) / 100.0
-        let played = item.UserData?.Played ?? false
-        return (progress: percentage, locator: nil, updatedAt: nil, isAbandoned: played)
-    }
-
     func fetchAudiobookProgress(
         for book: Book
     ) async throws -> (positionSeconds: TimeInterval, percentage: Double, trackIndex: Int?, updatedAt: Date?, isAbandoned: Bool)? {
-        guard let userId = connection.userId else { return nil }
+        guard let userId = connection.userId else { throw ProviderError.unauthorized }
         let base = normalizeServerURL(connection.url)
 
-        guard let url = URL(string: "\(base)/Users/\(userId)/Items/\(book.id)?Fields=UserData") else { return nil }
+        guard let url = URL(string: "\(base)/Users/\(userId)/Items/\(book.id)?Fields=UserData") else { throw ProviderError.invalidURL }
         var request = URLRequest(url: url)
         addAuthHeaders(&request)
 
-        guard let (data, response) = try? await performDataTask(for: request),
-            let http = response as? HTTPURLResponse, http.statusCode == 200,
-            let item = try? JSONDecoder().decode(JellyfinItem.self, from: data)
-        else {
-            return nil
+        let (data, response) = try await performDataTask(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw ProviderError.invalidResponse
         }
+        let item = try JSONDecoder().decode(JellyfinItem.self, from: data)
 
         let positionSeconds = Double(item.UserData?.PlaybackPositionTicks ?? 0) / 10_000_000.0
         let percentage = (item.UserData?.PlayedPercentage ?? 0) / 100.0
         let played = item.UserData?.Played ?? false
-        return (positionSeconds: positionSeconds, percentage: percentage, trackIndex: nil, updatedAt: nil, isAbandoned: played)
+        return (positionSeconds: positionSeconds, percentage: percentage, trackIndex: nil, updatedAt: ProviderProgressDate.parse(item.UserData?.LastPlayedDate), isAbandoned: played)
     }
 }
 
@@ -877,12 +807,13 @@ private struct JellyfinItem: Decodable {
     let Studios: [JellyfinNameIdPair]?
     let Genres: [String]?
     let ChildCount: Int?
+    let IsFolder: Bool?
     let MediaSources: [JellyfinMediaSource]?
 
     enum CodingKeys: String, CodingKey {
         case Id, ParentId, Name, MediaType, CollectionType, RunTimeTicks, ProductionYear, Overview
         case AlbumArtist, AlbumArtists, ArtistItems, ImageTags, Chapters, UserData
-        case SeriesName, IndexNumber, Studios, Genres, ChildCount, MediaSources
+        case SeriesName, IndexNumber, Studios, Genres, ChildCount, IsFolder, MediaSources
         case itemType = "Type"
     }
 }
@@ -900,6 +831,7 @@ private struct JellyfinChapter: Decodable {
 }
 
 private struct JellyfinUserData: Decodable {
+    let LastPlayedDate: String?
     let PlaybackPositionTicks: Int64?
     let Played: Bool?
     let PlayedPercentage: Double?

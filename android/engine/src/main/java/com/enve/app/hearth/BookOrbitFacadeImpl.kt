@@ -163,9 +163,7 @@ class BookOrbitFacadeImpl @Inject constructor(
         title = title,
         authors = authors.joinToString(", ").takeIf { it.isNotBlank() },
         coverUrl = coverUrl,
-        seriesLabel = seriesIndex?.let { index ->
-            if (index % 1.0 == 0.0) "Book ${index.toInt()}" else "Book $index"
-        },
+        seriesLabel = seriesIndex?.let { "Book $it" },
     )
 
     private fun BookOrbitHighlightQuery.toFilter(): BookOrbitAnnotationHubFilter = BookOrbitAnnotationHubFilter(

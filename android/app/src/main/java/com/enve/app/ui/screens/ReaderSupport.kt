@@ -68,7 +68,7 @@ internal suspend fun downloadReaderFile(
     val safeName = bookId.replace(Regex("[^a-zA-Z0-9_-]"), "_")
     val cached = File(dir, "$safeName.${format.cacheExtension}")
 
-    if (cached.exists() && cached.length() > 10_240) {
+    if (cached.exists() && cached.length() > 0) {
         onStatus("Loading cached ${format.displayName}…")
         return cached
     }
@@ -82,9 +82,9 @@ internal suspend fun downloadReaderFile(
             val input = contentResolver.openInputStream(android.net.Uri.parse(downloadUrl))
                 ?: throw IllegalStateException("Couldn't open the local file. Was it moved or deleted?")
             input.use { inp -> FileOutputStream(tmp).use { out -> inp.copyTo(out) } }
-            if (tmp.length() < 1024) {
+            if (tmp.length() == 0L) {
                 tmp.delete()
-                throw IllegalStateException("File too small")
+                throw IllegalStateException("File is empty")
             }
             if (cached.exists()) cached.delete()
             if (!tmp.renameTo(cached)) {
@@ -118,9 +118,9 @@ internal suspend fun downloadReaderFile(
             }
         }
 
-        if (tmp.length() < 1024) {
+        if (tmp.length() == 0L) {
             tmp.delete()
-            throw IllegalStateException("File too small")
+            throw IllegalStateException("File is empty")
         }
 
         if (cached.exists()) cached.delete()

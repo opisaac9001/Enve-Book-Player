@@ -1,12 +1,12 @@
 # Public Release Model
 
-This repository contains stable public source releases of Enve Book Player. Active development takes place in a separate private repository.
+This repository contains public source snapshots of Enve Book Player. Active development takes place in a separate private repository.
 
-Each public update is prepared from a reviewed private release candidate and published as a clean snapshot. The public repository does not mirror private development history, temporary branches, credentials, signing material, unreleased experiments, or internal release notes.
+Each public update is prepared from a reviewed development revision and published as a clean snapshot. The public repository does not mirror private development history, temporary branches, credentials, signing material, or internal release notes. Snapshots may include features ahead of their app-store release; the changelog records known verification limits.
 
 ## What to expect
 
-- `main` represents the latest public source release.
+- `main` represents the latest public source snapshot.
 - Version tags identify the source corresponding to public app releases.
 - Release notes describe user-visible changes and known limitations.
 - Urgent public fixes may land between app releases when needed.

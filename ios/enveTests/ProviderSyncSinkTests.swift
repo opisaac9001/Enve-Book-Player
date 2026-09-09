@@ -19,7 +19,7 @@ private final class ProviderResolverStub: LibraryProviderResolving {
 }
 
 @MainActor
-private final class ProgressProviderStub: @MainActor LibraryProvider, @MainActor AudiobookProgressProvider {
+final class ProgressProviderStub: @MainActor LibraryProvider, @MainActor AudiobookProgressProvider {
     struct PlaybackUpdate: Equatable {
         let bookId: String
         let sessionId: String?
@@ -30,6 +30,7 @@ private final class ProgressProviderStub: @MainActor LibraryProvider, @MainActor
 
     var connection: ServerConnection
     var audiobookProgress: ProviderAudiobookProgress?
+    var pullError: Error?
     private(set) var playbackUpdates: [PlaybackUpdate] = []
 
     init(connection: ServerConnection) {
@@ -69,7 +70,8 @@ private final class ProgressProviderStub: @MainActor LibraryProvider, @MainActor
         )
     }
     func fetchAudiobookProgressState(for book: Book) async throws -> ProviderAudiobookProgress? {
-        audiobookProgress
+        if let pullError { throw pullError }
+        return audiobookProgress
     }
 
     func fetchAudiobookProgress(
@@ -165,7 +167,7 @@ struct ProviderSyncSinkTests {
         #expect(store.allBackends().contains(where: { $0.id == connectionId.uuidString }))
     }
 
-    @Test func resolvesByBookAndMapsAudiobookProgress() async {
+    @Test func resolvesByBookAndMapsAudiobookProgress() async throws {
         let providerId = UUID()
         let connection = ServerConnection(
             id: providerId,
@@ -187,13 +189,26 @@ struct ProviderSyncSinkTests {
         let book = makeBook(providerId: providerId)
         let sink = ProviderSyncSink(providerResolver: resolver)
 
-        let snapshot = await sink.pull(book: book, domain: .audiobook)
+        let snapshot = try await sink.pull(book: book, domain: .audiobook)
 
         #expect(resolver.requestedBooks.map(\.id) == [book.id])
         #expect(snapshot?.positionSeconds == 25)
         #expect(snapshot?.progress == 0.25)
         #expect(snapshot?.lastUpdate == Date(timeIntervalSince1970: 500))
         #expect(snapshot?.source == "Test Server")
+    }
+
+    @Test func providerPullFailureIsNotAnEmptySuccess() async throws {
+        let connection = ServerConnection(name: "Fixture", url: "https://example.invalid", type: .jellyfin)
+        let provider = ProgressProviderStub(connection: connection)
+        provider.pullError = URLError(.timedOut)
+        let resolver = ProviderResolverStub()
+        resolver.providers[connection.id] = provider
+        let sink = ProviderSyncSink(providerResolver: resolver)
+        let book = makeBook(providerId: connection.id)
+        await #expect(throws: URLError.self) {
+            _ = try await sink.pull(book: book, domain: .audiobook)
+        }
     }
 
     @Test func routesAudiobookPushThroughResolvedCapability() async throws {

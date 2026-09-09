@@ -11,6 +11,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
     @unchecked Sendable
 {
     var connection: ServerConnection
+    private let session: URLSession?
     private var cachedContinueProgress: [UserMediaProgress] = []
     private var cachedContinueProgressAt: Date = .distantPast
     private var cachedAdminStatus: Bool?
@@ -112,8 +113,9 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         cachedContinueProgressAt = .distantPast
     }
 
-    init(connection: ServerConnection) {
+    init(connection: ServerConnection, session: URLSession? = nil) {
         self.connection = connection
+        self.session = session
     }
 
     private var refreshTokenKey: String { "bookorbit_refresh_\(connection.id.uuidString)" }
@@ -185,7 +187,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         applyCustomHeaders(&request)
         request.httpBody = try JSONSerialization.data(withJSONObject: ["username": username, "password": password])
 
-        let (data, response) = try await InsecureURLSession.shared.data(for: request)
+        let (data, response) = try await (session ?? InsecureURLSession.shared).data(for: request)
         guard let http = response as? HTTPURLResponse else { throw ProviderError.invalidResponse }
         guard http.statusCode == 200 else {
             if http.statusCode == 401 { throw ProviderError.unauthorized }
@@ -222,7 +224,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         request.setValue("refresh_token=\(refresh)", forHTTPHeaderField: "Cookie")
         applyCustomHeaders(&request)
 
-        let (data, response) = try await InsecureURLSession.shared.data(for: request)
+        let (data, response) = try await (session ?? InsecureURLSession.shared).data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200,
             let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
             let accessToken = json["accessToken"] as? String, !accessToken.isEmpty
@@ -458,7 +460,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
 
-        let (data, response) = try await InsecureURLSession.shared.data(for: request)
+        let (data, response) = try await (session ?? InsecureURLSession.shared).data(for: request)
         guard let http = response as? HTTPURLResponse else { throw ProviderError.invalidResponse }
         return (data, http)
     }
@@ -486,6 +488,19 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
 
     private struct BooksPageDTO: Decodable { let items: [BookCardDTO]; let total: Int; let page: Int; let size: Int }
 
+    private struct SeriesIndex: Decodable, Sendable {
+        let value: String
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            if let text = try? container.decode(String.self) {
+                value = text
+            } else {
+                value = try container.decode(Decimal.self).description
+            }
+        }
+    }
+
     private struct BookCardDTO: Decodable, Sendable {
         let id: Int
         let title: String?
@@ -493,7 +508,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         let authors: [String]?
         let narrators: [String]?
         let seriesName: String?
-        let seriesIndex: Double?
+        let seriesIndex: SeriesIndex?
         let publishedYear: Int?
         let language: String?
         let genres: [String]?
@@ -527,7 +542,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         let publishedYear: Int?
         let language: String?
         let seriesName: String?
-        let seriesIndex: Double?
+        let seriesIndex: SeriesIndex?
         let authors: [AuthorDTO]?
         let genres: [String]?
         let rating: Double?
@@ -1158,7 +1173,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
             title: dto.title ?? "Untitled",
             author: dto.authors?.joined(separator: ", "),
             narrator: dto.narrators?.joined(separator: ", "),
-            seriesInfo: dto.seriesName.map { SeriesInfo(name: $0, sequence: dto.seriesIndex.map(Self.sequenceString)) },
+            seriesInfo: dto.seriesName.map { SeriesInfo(name: $0, sequence: dto.seriesIndex?.value) },
             duration: nil,
             coverURL: coverURL,
             partKey: String(dto.id),
@@ -1217,7 +1232,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
             title: dto.title ?? "Untitled",
             author: dto.authors?.map { $0.name }.joined(separator: ", "),
             narrator: narrator,
-            seriesInfo: dto.seriesName.map { SeriesInfo(name: $0, sequence: dto.seriesIndex.map(Self.sequenceString)) },
+            seriesInfo: dto.seriesName.map { SeriesInfo(name: $0, sequence: dto.seriesIndex?.value) },
             duration: isAudiobook ? totalDuration : nil,
             coverURL: coverURL,
             partKey: String(dto.id),
@@ -1259,6 +1274,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
             let dur = durations ? (file.durationSeconds ?? 0) : 0
             tracks.append(
                 AudioTrack(
+                    id: String(file.id),
                     index: index,
                     title: file.filename,
                     filePath: String(file.id),
@@ -1282,10 +1298,6 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
             let end = index + 1 < sorted.count ? sorted[index + 1].startMs / 1000.0 : max(start, totalDuration)
             return Chapter(id: String(index), start: start, end: end, title: ch.title, index: index)
         }
-    }
-
-    private static func sequenceString(_ value: Double) -> String {
-        value.rounded() == value ? String(Int(value)) : String(value)
     }
 
     func getAudioURL(for book: Book) -> URL? {
@@ -1322,6 +1334,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
             }
             infos.append(
                 AudioTrackInfo(
+                    id: track.filePath ?? track.id,
                     index: index,
                     startOffset: offset,
                     duration: duration,
@@ -1370,14 +1383,11 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         isFinished: Bool,
         timeListened: TimeInterval
     ) async throws {
-        guard let bookId = Int(book.id) else { return }
+        guard let bookId = Int(book.id) else { throw ProviderError.invalidResponse }
 
         let (fileId, localPosition) = currentFileAndOffset(book: book, globalPosition: currentTime)
         guard let fileId else {
-            AppLogger.sync.debug(
-                "[BookOrbit] No file to attribute progress bookId=\(DiagnosticLogSanitizer.identifier(for: book.stableId)); skipping"
-            )
-            return
+            throw ProviderError.invalidResponse
         }
 
         let duration = book.duration ?? 0
@@ -1656,18 +1666,16 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
     func fetchAudiobookProgress(
         for book: Book
     ) async throws -> (positionSeconds: TimeInterval, percentage: Double, trackIndex: Int?, updatedAt: Date?, isAbandoned: Bool)? {
-        guard let bookId = Int(book.id) else { return nil }
-        guard let (data, http) = try? await perform("books/\(bookId)/audio-progress"),
-            http.statusCode == 200, !data.isEmpty,
-            let dto = try? Self.decoder.decode(AudioProgressDTO.self, from: data),
-            let fileId = dto.currentFileId
-        else {
-            return nil
-        }
+        guard let bookId = Int(book.id) else { throw ProviderError.invalidResponse }
+        let (data, http) = try await perform("books/\(bookId)/audio-progress")
+        if http.statusCode == 404 || http.statusCode == 204 { return nil }
+        guard http.statusCode == 200 else { throw ProviderError.invalidResponse }
+        guard let dto = try Self.decoder.decode(AudioProgressDTO?.self, from: data) else { return nil }
+        guard let fileId = dto.currentFileId else { return nil }
 
         let local = dto.positionSeconds ?? 0
         let tracks = await tracksForOffsetMapping(book: book)
-        let track = tracks.first { Int($0.filePath ?? "") == fileId }
+        let track = tracks.first { Int($0.filePath ?? $0.id) == fileId }
         let global = (track?.startOffset ?? 0) + local
         let percentage = (dto.percentage ?? 0) / 100.0
         return (
@@ -1679,7 +1687,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
     private func currentFileAndOffset(book: Book, globalPosition: TimeInterval) -> (fileId: Int?, offset: TimeInterval) {
         if let tracks = book.audioTracks, !tracks.isEmpty {
             let track = tracks.last { $0.startOffset <= globalPosition } ?? tracks.first
-            let fileId = track.flatMap { Int($0.filePath ?? "") }
+            let fileId = track.flatMap { Int($0.filePath ?? $0.id) }
             let offset = globalPosition - (track?.startOffset ?? 0)
             return (fileId, offset)
         }
@@ -1766,13 +1774,11 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
     }
 
     func fetchEbookProgress(for book: Book) async throws -> (progress: Double, locator: String?, updatedAt: Date?, isAbandoned: Bool)? {
-        guard let ino = book.audioFileIno, let fileId = Int(ino) else { return nil }
-        guard let (data, http) = try? await perform("books/files/\(fileId)/progress"),
-            http.statusCode == 200,
-            let dto = try? Self.decoder.decode(FileProgressDTO.self, from: data)
-        else {
-            return nil
-        }
+        guard let ino = book.audioFileIno, let fileId = Int(ino) else { throw ProviderError.invalidResponse }
+        let (data, http) = try await perform("books/files/\(fileId)/progress")
+        if http.statusCode == 404 || http.statusCode == 204 { return nil }
+        guard http.statusCode == 200 else { throw ProviderError.invalidResponse }
+        guard let dto = try Self.decoder.decode(FileProgressDTO?.self, from: data) else { return nil }
         let progress = (dto.percentage ?? 0) / 100.0
         return (progress: progress, locator: dto.cfi, updatedAt: dto.updatedAt, isAbandoned: progress >= 0.99)
     }

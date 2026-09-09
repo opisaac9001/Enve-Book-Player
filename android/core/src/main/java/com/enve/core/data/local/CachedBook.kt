@@ -73,6 +73,43 @@ interface BookCacheDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(books: List<CachedBook>)
 
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertIfAbsent(book: CachedBook): Long
+
+    @Query("""
+        UPDATE book_cache
+        SET readProgress = :progress,
+            epubProgress = :ebookProgress,
+            currentTime = :currentTimeSec,
+            epubLocator = :locatorJson,
+            isFinished = :finished,
+            serverReadStatus = :readStatus,
+            lastReadTime = :updatedAt,
+            inProgress = CASE
+                WHEN :finished = 0 AND hideFromContinue = 0
+                    AND (:progress > 0.001 OR :ebookProgress > 0.001 OR :currentTimeSec > 0)
+                THEN 1 ELSE 0
+            END
+        WHERE cacheKey = :cacheKey AND source = :source
+            AND :updatedAt > lastReadTime
+            AND NOT EXISTS (
+                SELECT 1 FROM pending_progress_push
+                WHERE bookId = book_cache.id AND source = book_cache.source
+                    AND connectionKey = COALESCE(book_cache.connectionId, '')
+            )
+    """)
+    suspend fun applyRemoteProgress(
+        cacheKey: String,
+        source: String,
+        progress: Float,
+        ebookProgress: Float?,
+        currentTimeSec: Long,
+        locatorJson: String?,
+        finished: Boolean,
+        readStatus: String?,
+        updatedAt: Long,
+    ): Int
+
     @Query("UPDATE book_cache SET epubLocator = :locatorJson, epubProgress = :progress WHERE id = :bookId AND (connectionId = :connectionId OR (:connectionId IS NULL AND connectionId IS NULL))")
     suspend fun updateEpubProgress(bookId: String, connectionId: String?, locatorJson: String?, progress: Float)
 
@@ -674,6 +711,22 @@ interface BookCacheDao {
         LIMIT :limit
     """)
     suspend fun getRecentlyAddedAudiobooks(limit: Int): List<CachedBook>
+
+    @Query("""
+        SELECT * FROM book_cache
+        WHERE mediaType = 'AUDIOBOOK'
+        ORDER BY title COLLATE NOCASE ASC
+        LIMIT :limit
+    """)
+    suspend fun getAudiobooksForCar(limit: Int): List<CachedBook>
+
+    @Query("""
+        SELECT * FROM book_cache
+        WHERE mediaType = 'AUDIOBOOK' AND isDownloaded = 1
+        ORDER BY lastReadTime DESC, addedOn DESC
+        LIMIT :limit
+    """)
+    suspend fun getDownloadedAudiobooksForCar(limit: Int): List<CachedBook>
 }
 
 data class BrowseGroupRow(val name: String, val count: Int)

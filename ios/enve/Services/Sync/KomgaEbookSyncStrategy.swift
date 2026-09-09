@@ -38,6 +38,7 @@ final class KomgaEbookSyncStrategy: ProviderSyncStrategy {
         guard !connections.isEmpty else { return .zero }
 
         var pulled = 0
+        var failedBackends: [String] = []
 
         for connection in connections {
             guard let provider = providerConnections.provider(for: connection.id) as? KomgaProvider else { continue }
@@ -58,6 +59,7 @@ final class KomgaEbookSyncStrategy: ProviderSyncStrategy {
                 for progress in progressItems {
                     guard let book = localBooksById[progress.libraryItemId],
                         book.stableId != activeBookId,
+                        PendingSyncQueueStore.shared.entries[book.stableId] == nil,
                         let serverProgress = progress.ebookProgress
                     else { continue }
 
@@ -94,9 +96,25 @@ final class KomgaEbookSyncStrategy: ProviderSyncStrategy {
 
                 for book in localBooks
                 where
-                    book.stableId != activeBookId && book.canonicalEbookProgress > 0.001 && progressByBookId[book.id] == nil
+                    book.stableId != activeBookId && PendingSyncQueueStore.shared.entries[book.stableId] == nil
+                    && (force || book.canonicalEbookProgress > 0.001) && progressByBookId[book.id] == nil
                 {
-                    guard try await provider.fetchEbookProgress(for: book) == nil else { continue }
+                    if let remote = try await provider.fetchEbookProgress(for: book) {
+                        guard force, remote.progress != book.ebookProgress || (remote.progress >= 0.99) != book.isFinished else { continue }
+                        var updated = book
+                        updated.ebookProgress = remote.progress
+                        updated.isFinished = remote.progress >= 0.99
+                        updated.serverReadStatus = updated.isFinished ? "READ" : "IN_PROGRESS"
+                        updated.hideFromContinue = false
+                        updated.lastUpdate = remote.updatedAt ?? book.lastUpdate
+                        updated.epubLocator = nil
+                        if AppState.shared.mutateBook(stableId: book.stableId, { $0 = updated }) == nil {
+                            await bookWriter.upsertBooks([updated])
+                        }
+                        pulled += 1
+                        continue
+                    }
+                    guard book.canonicalEbookProgress > 0 || book.isFinished else { continue }
 
                     let resetDate = Date()
                     var resetBook = book
@@ -118,12 +136,16 @@ final class KomgaEbookSyncStrategy: ProviderSyncStrategy {
                     pulled += 1
                 }
             } catch {
+                if error is CancellationError || (error as? URLError)?.code == .cancelled {
+                    return ProviderSyncResult(pulled: pulled, pushed: 0, failedBackends: failedBackends, wasCancelled: true)
+                }
+                if !failedBackends.contains(connection.name) { failedBackends.append(connection.name) }
                 AppLogger.sync.error(
                     "Failed to sync Komga progress providerDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: connection.id.uuidString)): \(error.localizedDescription)"
                 )
             }
         }
 
-        return ProviderSyncResult(pulled: pulled, pushed: 0)
+        return ProviderSyncResult(pulled: pulled, pushed: 0, failedBackends: failedBackends)
     }
 }

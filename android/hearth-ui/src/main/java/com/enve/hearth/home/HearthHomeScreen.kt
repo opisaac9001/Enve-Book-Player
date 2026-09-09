@@ -247,7 +247,7 @@ private fun HeroSection(book: Book, sourceName: String, isPlaying: Boolean, onCo
                 CoverTile(
                     model = book.coverUrl,
                     ambient = tint,
-                    aspect = if (book.mediaType == AppMediaType.EBOOK) 2f / 3f else 1f,
+                    mediaType = book.mediaType,
                     modifier = Modifier.width(if (compact) 106.dp else 132.dp).clickable(onClick = onOpen),
                 )
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.S)) {
@@ -376,6 +376,7 @@ private fun ShelfCard(book: Book, showProgress: Boolean, onOpen: (Book) -> Unit)
     ) {
         CoverTile(
             model = book.coverUrl,
+            mediaType = book.mediaType,
             modifier = if (showProgress) {
                 Modifier.fillMaxWidth()
             } else {

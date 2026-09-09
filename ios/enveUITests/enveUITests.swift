@@ -110,6 +110,30 @@ final class enveUISmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testPassageAvailabilityPrompt() {
+        let app = launch(route: "player")
+        let readingOptions = app.buttons["Reading options"]
+        XCTAssertTrue(readingOptions.waitForExistence(timeout: 20))
+        readingOptions.tap()
+
+        let findPassage = app.buttons["Find this passage in ebook"]
+        XCTAssertTrue(findPassage.waitForExistence(timeout: 5))
+        findPassage.tap()
+
+        if #available(iOS 26.0, *) {
+            XCTAssertTrue(app.staticTexts["Link an ebook first"].waitForExistence(timeout: 5))
+            XCTAssertFalse(app.alerts["Update Required"].exists)
+        } else {
+            let alert = app.alerts["Update Required"]
+            XCTAssertTrue(alert.waitForExistence(timeout: 5))
+            XCTAssertTrue(alert.staticTexts["Finding passages in an ebook requires iOS 26.0 or newer."].exists)
+            alert.buttons["OK"].tap()
+            XCTAssertTrue(readingOptions.exists)
+            XCTAssertFalse(alert.exists)
+        }
+    }
+
+    @MainActor
     func testReaderPresentation() throws {
         let app = launch(route: "reader")
 

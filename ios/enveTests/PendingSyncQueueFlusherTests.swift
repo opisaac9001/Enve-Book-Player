@@ -114,6 +114,56 @@ struct PendingSyncQueueFlusherTests {
         #expect(fixture.store.isEmpty)
     }
 
+    @Test(arguments: [200, 401, 404, 503])
+    func inFlightResultDoesNotMutateReplacement(status: Int) async {
+        let fixture = makeStore()
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        fixture.store.enqueue(entry(id: "book", updatedAt: 10))
+        let replacement = entry(id: "book", updatedAt: 20)
+        let transport = PendingSyncTransportStub()
+        transport.waitsForRelease = true
+        if status != 200 {
+            transport.results["book"] = [.failure(ProviderError.serverError("HTTP \(status)"))]
+        }
+        let flusher = PendingSyncQueueFlusher(store: fixture.store, transport: transport)
+
+        let task = Task { @MainActor in await flusher.flush() }
+        while transport.attempts.isEmpty { await Task.yield() }
+        fixture.store.enqueue(replacement)
+        transport.release()
+        await task.value
+
+        #expect(fixture.store.entries["book"] == replacement)
+        transport.waitsForRelease = false
+        await flusher.flush()
+        #expect(transport.attempts == ["book", "book"])
+        #expect(fixture.store.isEmpty)
+    }
+
+    @Test func flushSkipsEntriesReplacedWhileAnotherRequestIsInFlight() async {
+        let fixture = makeStore()
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        fixture.store.enqueue(entry(id: "first", updatedAt: 10))
+        fixture.store.enqueue(entry(id: "second", updatedAt: 20))
+        let replacement = entry(id: "second", updatedAt: 30)
+        let transport = PendingSyncTransportStub()
+        transport.waitsForRelease = true
+        let flusher = PendingSyncQueueFlusher(store: fixture.store, transport: transport)
+
+        let task = Task { @MainActor in await flusher.flush() }
+        while transport.attempts.isEmpty { await Task.yield() }
+        fixture.store.enqueue(replacement)
+        transport.waitsForRelease = false
+        transport.release()
+        await task.value
+
+        #expect(transport.attempts == ["first"])
+        #expect(fixture.store.entries["second"] == replacement)
+        await flusher.flush()
+        #expect(transport.attempts == ["first", "second"])
+        #expect(fixture.store.isEmpty)
+    }
+
     @Test func retryUsesInjectedClockAndDoesNotPushDuringBackoff() async {
         let fixture = makeStore()
         defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }

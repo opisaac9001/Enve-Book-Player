@@ -101,6 +101,7 @@ final class BookloreEbookSyncStrategy: ProviderSyncStrategy {
         }
 
         var pullCount = 0
+        var failedBackends: [String] = []
         var pushCount = 0
         var updatedInMemoryBooks: [Book] = []
 
@@ -140,9 +141,22 @@ final class BookloreEbookSyncStrategy: ProviderSyncStrategy {
                     }
                 }
             } catch {
+                if error is CancellationError || (error as? URLError)?.code == .cancelled {
+                    return ProviderSyncResult(pulled: pullCount, pushed: pushCount, failedBackends: failedBackends, wasCancelled: true)
+                }
+                if !failedBackends.contains(provider.connection.name) { failedBackends.append(provider.connection.name) }
                 AppLogger.sync.error(
                     "Failed to fetch Booklore recent books providerDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: providerId.uuidString)): \(error.localizedDescription)"
                 )
+            }
+
+            if force {
+                let providerBooks = await books.books(
+                    source: Book.BookSource.booklore.rawValue, providerId: providerId, mediaType: "ebook"
+                )
+                for book in providerBooks where !absorbedIds.contains(book.stableId) {
+                    if seenStableIds.insert(book.stableId).inserted { prioritizedBooks.append(book) }
+                }
             }
 
             let extraConflictLimit = (launchOptimized && totalEligible > 5_000) ? 4 : 12
@@ -165,9 +179,9 @@ final class BookloreEbookSyncStrategy: ProviderSyncStrategy {
                 let diagnosticID = DiagnosticLogSanitizer.identifier(for: book.stableId)
                 if Task.isCancelled {
                     AppLogger.sync.debug("Booklore ebook sync cancelled bookDiagnosticID=\(diagnosticID)")
-                    return ProviderSyncResult(pulled: pullCount, pushed: pushCount)
+                    return ProviderSyncResult(pulled: pullCount, pushed: pushCount, failedBackends: failedBackends, wasCancelled: true)
                 }
-                guard book.stableId != playingBookId else { continue }
+                guard book.stableId != playingBookId, PendingSyncQueueStore.shared.entries[book.stableId] == nil else { continue }
 
                 do {
                     let localProgress = book.ebookProgress ?? 0
@@ -175,7 +189,7 @@ final class BookloreEbookSyncStrategy: ProviderSyncStrategy {
 
                     guard let serverResult = try await provider.fetchEbookProgressState(for: book) else {
                         guard localProgress > 0.001 else { continue }
-                        try? await provider.updateEbookProgress(for: book, progress: localProgress, epubLocator: book.epubLocator)
+                        try await provider.updateEbookProgress(for: book, progress: localProgress, epubLocator: book.epubLocator)
                         AppLogger.sync.info(
                             "Pushed Booklore ebook progress to empty server state bookDiagnosticID=\(diagnosticID) progress=\(Int(localProgress * 100))%"
                         )
@@ -267,7 +281,7 @@ final class BookloreEbookSyncStrategy: ProviderSyncStrategy {
                         )
                         pullCount += 1
                     case .push:
-                        try? await provider.updateEbookProgress(for: book, progress: localProgress, epubLocator: book.epubLocator)
+                        try await provider.updateEbookProgress(for: book, progress: localProgress, epubLocator: book.epubLocator)
                         AppLogger.sync.debug(
                             "Pushed Booklore ebook progress bookDiagnosticID=\(diagnosticID) progress=\(Int(localProgress * 100))%"
                         )
@@ -290,6 +304,10 @@ final class BookloreEbookSyncStrategy: ProviderSyncStrategy {
                         break
                     }
                 } catch {
+                    if error is CancellationError || (error as? URLError)?.code == .cancelled {
+                        return ProviderSyncResult(pulled: pullCount, pushed: pushCount, failedBackends: failedBackends, wasCancelled: true)
+                    }
+                    if !failedBackends.contains(provider.connection.name) { failedBackends.append(provider.connection.name) }
                     AppLogger.sync.error(
                         "Failed to sync Booklore ebook bookDiagnosticID=\(diagnosticID): \(String(reflecting: error))"
                     )
@@ -301,6 +319,6 @@ final class BookloreEbookSyncStrategy: ProviderSyncStrategy {
             await bookWriter.upsertBooks(updatedInMemoryBooks)
         }
 
-        return ProviderSyncResult(pulled: pullCount, pushed: pushCount)
+        return ProviderSyncResult(pulled: pullCount, pushed: pushCount, failedBackends: failedBackends)
     }
 }
