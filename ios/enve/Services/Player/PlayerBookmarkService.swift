@@ -1,5 +1,20 @@
 import Foundation
 
+enum PlayerBookmarkNavigation {
+    static func audioSeekPosition(for bookmark: Bookmark, playbackBook: Book?) -> TimeInterval? {
+        if bookmark.mediaType == .audiobook {
+            return bookmark.position
+        }
+        guard playbackBook?.hasEPUB3MediaOverlay == true,
+            bookmark.locator == nil,
+            !bookmark.isRemotePlaceholder
+        else {
+            return nil
+        }
+        return bookmark.position
+    }
+}
+
 public class PlayerBookmarkService {
     private let storageService: StorageService
 

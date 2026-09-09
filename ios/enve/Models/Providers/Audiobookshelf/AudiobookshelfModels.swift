@@ -474,6 +474,14 @@ public struct ABSMediaProgress: Codable {
     public var progressPercentage: Double {
         return (progress ?? 0) * 100
     }
+
+    public var resolvedIsFinished: Bool {
+        if isFinished == true || finishedAt != nil || (progress ?? 0) >= 0.99 {
+            return true
+        }
+        guard let duration, duration > 0, let currentTime else { return false }
+        return currentTime >= duration * 0.99
+    }
 }
 
 public struct ABSPlaySessionRequest: Codable {

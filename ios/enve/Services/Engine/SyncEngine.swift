@@ -90,6 +90,8 @@ final class SyncEngine {
             return BookSyncStatusUpdate(phase: .syncing, message: "Checking the server...")
         case .pullCompleted(_, let applied):
             return BookSyncStatusUpdate(phase: .idle, message: applied ? "Brought back newer progress" : "Up to date")
+        case .pullFailed(_, let error):
+            return BookSyncStatusUpdate(phase: .error(error), message: "Couldn't check the server")
         case .pushStarted:
             return BookSyncStatusUpdate(phase: .syncing, message: "Sending your progress...")
         case .pushCompleted:

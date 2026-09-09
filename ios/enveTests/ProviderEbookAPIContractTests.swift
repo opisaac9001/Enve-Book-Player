@@ -14,9 +14,25 @@ struct ProviderEbookAPIContractTests {
         let komga: any ProviderConnectionHandling = KomgaProvider(connection: connection(type: .komga))
         #expect(komga is any EbookDownloadProvider)
         #expect(komga is any EbookProgressPushing)
-        #expect(!(komga is any EbookProgressPulling))
+        #expect(komga is any EbookProgressPulling)
         #expect(komga is any ServerPageProvider)
         #expect(!(komga is any PlaybackSessionProvider))
+
+        let abs: any ProviderConnectionHandling = AudiobookshelfProvider(connection: connection(type: .audiobookshelf))
+        #expect(abs is any EbookProgressProvider)
+        #expect(abs.capabilities.contains(.ebookProgressPush))
+        let plex: any ProviderConnectionHandling = PlexProvider(connection: connection(type: .plex))
+        #expect(plex is any AudiobookProgressProvider)
+        #expect(plex.capabilities.contains(.audiobookProgressPull))
+        let kavita: any ProviderConnectionHandling = KavitaProvider(connection: connection(type: .kavita))
+        #expect(kavita is any EbookProgressProvider)
+        #expect(kavita.capabilities.contains(.ebookProgressPull))
+
+        let jellyfin: any ProviderConnectionHandling = JellyfinProvider(connection: connection(type: .jellyfin))
+        #expect(jellyfin is any AudiobookProgressProvider)
+        #expect(jellyfin is any EbookDownloadProvider)
+        #expect(!(jellyfin is any EbookProgressProvider))
+        #expect(!jellyfin.capabilities.contains(.ebookProgressPush))
 
         let webDAV: any ProviderConnectionHandling = WebDAVProvider(connection: connection(type: .webdav))
         #expect(webDAV is any PlaybackSessionProvider)
@@ -44,6 +60,21 @@ struct ProviderEbookAPIContractTests {
         )
 
         #expect(mediaType == .ebook)
+    }
+
+    @Test @MainActor func opdsPreservesTrailingSlashInFeedURL() {
+        let connection = ServerConnection(
+            name: "Project Gutenberg",
+            url: "https://www.gutenberg.org/ebooks/search.opds/?sort_order=downloads",
+            type: .opds
+        )
+
+        let provider = OPDSProvider(connection: connection)
+
+        #expect(
+            provider.feedURL().absoluteString
+                == "https://www.gutenberg.org/ebooks/search.opds/?sort_order=downloads"
+        )
     }
 
     @Test func audiobookshelfKeepsDualFormatItemsAudiobookFirst() {

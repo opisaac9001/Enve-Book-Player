@@ -39,6 +39,17 @@ internal fun grimmoryCompanionAudiobookId(bookId: String): String =
     if (bookId.startsWith(GRIMMORY_COMPANION_AUDIOBOOK_ID_PREFIX)) bookId
     else "$GRIMMORY_COMPANION_AUDIOBOOK_ID_PREFIX$bookId"
 
+internal fun grimmoryBookContentUrl(
+    serverUrl: String,
+    bookId: String,
+    bookType: String? = null,
+): String {
+    val contentUrl = "${serverUrl.trimEnd('/')}/api/v1/books/$bookId/content"
+    return bookType?.takeIf { it.isNotBlank() }
+        ?.let { "$contentUrl?bookType=$it" }
+        ?: contentUrl
+}
+
 internal fun BookDetailDto.copyWithResolvedMediaType(): BookDetailDto = copy(primaryFileType = selectedFile()?.bookType ?: primaryFileType)
 
 internal fun BookDetailDto.resolvedMediaType(): AppMediaType = (selectedFile()?.bookType ?: primaryFileType).toMediaType()

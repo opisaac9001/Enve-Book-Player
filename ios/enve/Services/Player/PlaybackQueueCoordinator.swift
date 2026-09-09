@@ -246,6 +246,7 @@ final class PlaybackQueueCoordinator {
             {
                 playable = stored
             }
+            guard !Task.isCancelled, self.startRequestID == requestID else { return }
             if resetIfFinished, PlaybackQueuePolicy.isFinished(playable) {
                 self.progressStore.resetToBeginning(for: playable)
                 let observedAt = Date()

@@ -422,7 +422,7 @@ class ComicReaderViewModel @Inject constructor(
         }
 
         val offlineFile = comicOfflineService.getLocalFile(bookId)
-        if (offlineFile != null && offlineFile.exists() && offlineFile.length() > 1024) {
+        if (offlineFile != null && offlineFile.exists() && offlineFile.length() > 0L) {
             val pages = try {
                 loadOrExtractComicPages(
                     cacheDir = appContext.cacheDir,

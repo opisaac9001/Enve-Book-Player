@@ -62,11 +62,14 @@ final class BookStoreManager {
                 configurations: [config]
             )
         } catch {
-            AppLogger.general.error("BookStore: persistent store failed, resetting: \(error)")
+            AppLogger.general.error("BookStore: persistent store failed: \(error)")
 
-            backupLocation = StoreBackup.backup(storeURL: Self.storeURL, label: "BookStore")
-            Self.removeStoreFiles()
             do {
+                guard let backup = StoreBackup.backup(storeURL: Self.storeURL, label: "BookStore") else {
+                    throw error
+                }
+                backupLocation = backup
+                Self.removeStoreFiles()
                 resolvedContainer = try ModelContainer(
                     for: schema,
                     migrationPlan: BookStoreMigrationPlan.self,

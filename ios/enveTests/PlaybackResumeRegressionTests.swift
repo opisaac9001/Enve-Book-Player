@@ -4,6 +4,53 @@ import Testing
 @testable import enve
 
 struct PlaybackResumeRegressionTests {
+    @Test func playerBookmarksAlwaysResolveAudiobookPositions() {
+        let book = Book(id: "book", title: "Book", mediaType: .audiobook)
+        let bookmark = Bookmark(
+            bookId: book.stableId,
+            position: 321,
+            title: "Scene",
+            mediaType: .audiobook
+        )
+
+        #expect(PlayerBookmarkNavigation.audioSeekPosition(for: bookmark, playbackBook: book) == 321)
+    }
+
+    @Test func legacyReadAloudPlayerBookmarksStillResolveAudioPositions() {
+        let book = Book(
+            id: "read-aloud",
+            title: "Read Aloud",
+            mediaType: .ebook,
+            epub3Features: EPUB3Features(hasMediaOverlay: true)
+        )
+        let bookmark = Bookmark(
+            bookId: book.stableId,
+            position: 654,
+            title: "Legacy audio bookmark",
+            mediaType: .ebook
+        )
+
+        #expect(PlayerBookmarkNavigation.audioSeekPosition(for: bookmark, playbackBook: book) == 654)
+    }
+
+    @Test func ebookLocatorBookmarksRemainReaderNavigationTargets() {
+        let book = Book(
+            id: "read-aloud",
+            title: "Read Aloud",
+            mediaType: .ebook,
+            epub3Features: EPUB3Features(hasMediaOverlay: true)
+        )
+        let bookmark = Bookmark(
+            bookId: book.stableId,
+            position: 0.4,
+            title: "Page bookmark",
+            locator: #"{"href":"chapter.xhtml","locations":{"progression":0.4}}"#,
+            mediaType: .ebook
+        )
+
+        #expect(PlayerBookmarkNavigation.audioSeekPosition(for: bookmark, playbackBook: book) == nil)
+    }
+
     @Test func nowPlayingKeepsBookGlobalProgressWhileShowingChapterMetadata() {
         let book = Book(
             id: "book",

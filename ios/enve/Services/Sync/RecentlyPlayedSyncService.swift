@@ -41,7 +41,6 @@ protocol RecentlyPlayedSyncing: AnyObject {
 
 @MainActor
 final class RecentlyPlayedSyncService: RecentlyPlayedSyncing {
-    private static let recentItemLimit = 20
     private static let snapshotRefreshBookLimit = 5_000
 
     private let playbackState: any PlaybackStateProvider
@@ -81,9 +80,9 @@ final class RecentlyPlayedSyncService: RecentlyPlayedSyncing {
 
     func sync(trigger: ServerStatusSyncTrigger) async -> ServerStatusSyncResult {
         let progressBackends = providerConnections.allBackends().filter {
-            $0.enabled && ($0.type == .audiobookshelf || $0.type == .jellyfin || $0.type == .emby)
+            $0.enabled && $0.type == .audiobookshelf
         }
-        let strategyConnectionCount = [ProviderType.booklore, .storyteller, .bookOrbit, .komga, .silo]
+        let strategyConnectionCount = [ProviderType.booklore, .storyteller, .bookOrbit, .komga, .silo, .jellyfin, .emby, .plex, .kavita]
             .reduce(0) { $0 + providerConnections.activeConnections(of: $1).count }
 
         guard !progressBackends.isEmpty || strategyConnectionCount > 0 else {
@@ -108,119 +107,166 @@ final class RecentlyPlayedSyncService: RecentlyPlayedSyncing {
                     (lhs.lastUpdate ?? 0) > (rhs.lastUpdate ?? 0)
                 }
 
-                let recent =
-                    sorted
-                    .filter { ($0.isFinished ?? false) == false && (($0.currentTime ?? 0) > 0 || ($0.ebookProgress ?? 0) > 0) }
-                    .prefix(Self.recentItemLimit)
+                let localBooks: [Book]
+                if let providerId = UUID(uuidString: backend.id) {
+                    localBooks = await bookQuerying.books(source: Book.BookSource.audiobookshelf.rawValue, providerId: providerId)
+                } else {
+                    localBooks = await bookQuerying.books(backendId: backend.id, source: Book.BookSource.audiobookshelf.rawValue)
+                }
+                let booksByItemId = Dictionary(grouping: localBooks, by: { $0.partKey ?? $0.id })
 
-                let neededIds = Set(recent.compactMap(\.libraryItemId))
-                let bookById = await bookQuerying.booksByIds(neededIds)
+                for item in sorted {
+                    try Task.checkCancellation()
+                    guard item.episodeId == nil, let libraryItemId = item.libraryItemId else { continue }
+                    for book in booksByItemId[libraryItemId] ?? [] {
+                        guard !absorbedStableIds.contains(book.stableId) else { continue }
+                        guard book.stableId != playbackState.currentBook?.stableId,
+                            PendingSyncQueueStore.shared.entries[book.stableId] == nil
+                        else { continue }
 
-                for item in recent {
-                    guard let libraryItemId = item.libraryItemId else { continue }
-                    guard let book = bookById[libraryItemId] else { continue }
-                    guard !absorbedStableIds.contains(book.stableId) else { continue }
-                    guard book.stableId != playbackState.currentBook?.stableId else { continue }
+                        let diagnosticID = DiagnosticLogSanitizer.identifier(for: book.stableId)
+                        let serverDate = item.lastUpdate.flatMap { Date(timeIntervalSince1970: $0 / 1000) } ?? .distantPast
 
-                    let diagnosticID = DiagnosticLogSanitizer.identifier(for: book.stableId)
-                    let serverDate = item.lastUpdate.flatMap { Date(timeIntervalSince1970: $0 / 1000) } ?? Date()
+                        if book.mediaType == .ebook {
+                            let serverEbookProgress = item.ebookProgress ?? item.progress ?? 0
+                            let serverFinished = item.resolvedIsFinished
+                            let localEbookProgress = book.ebookProgress ?? 0
 
-                    if book.mediaType == .ebook {
-                        let serverEbookProgress = item.ebookProgress ?? item.progress ?? 0
-                        let localEbookProgress = book.ebookProgress ?? 0
-
-                        let direction = resolveProgressConflict(
-                            localPosition: localEbookProgress,
-                            localDate: book.lastUpdate,
-                            serverPosition: serverEbookProgress,
-                            serverDate: serverDate
-                        )
-
-                        switch direction {
-                        case .pull:
-                            await progressRepository.updateEbookProgress(
-                                uniqueId: book.uniqueId,
-                                ebookProgress: serverEbookProgress,
-                                epubLocator: nil,
-                                isFinished: serverEbookProgress >= 0.99,
-                                lastUpdate: serverDate
+                            var direction = resolveProgressConflict(
+                                localPosition: localEbookProgress,
+                                localDate: book.lastUpdate,
+                                serverPosition: serverEbookProgress,
+                                serverDate: serverDate
                             )
-                            libraryCache.mutateBook(stableId: book.stableId) {
-                                $0.ebookProgress = serverEbookProgress
-                                $0.lastUpdate = serverDate
+
+                            if serverDate > book.lastUpdate, serverEbookProgress == 0, localEbookProgress > 0 {
+                                direction = .pull
                             }
-                            ebookLinks.saveLinks()
-                            AppLogger.sync.debug(
-                                "Pulled ebook progress bookDiagnosticID=\(diagnosticID) progress=\(Int(serverEbookProgress * 100))%"
-                            )
-                            pullCount += 1
-                        case .push:
-                            do {
-                                try await progressAPI.pushEbookProgress(
-                                    libraryItemId: book.partKey ?? book.id,
-                                    progress: localEbookProgress,
-                                    isFinished: localEbookProgress >= 0.99,
-                                    backend: backend
+                            if direction == .none, serverDate >= book.lastUpdate, book.isFinished != serverFinished {
+                                direction = .pull
+                            }
+                            switch direction {
+                            case .pull:
+                                await progressRepository.updateEbookProgress(
+                                    uniqueId: book.uniqueId,
+                                    ebookProgress: serverEbookProgress,
+                                    epubLocator: nil,
+                                    isFinished: serverFinished,
+                                    lastUpdate: serverDate
                                 )
+                                libraryCache.mutateBook(stableId: book.stableId) {
+                                    $0.ebookProgress = serverEbookProgress
+                                    $0.isFinished = serverFinished
+                                    $0.epubLocator = nil
+                                    $0.lastUpdate = serverDate
+                                }
+                                ebookLinks.saveLinks()
                                 AppLogger.sync.debug(
-                                    "Pushed ebook progress bookDiagnosticID=\(diagnosticID) progress=\(Int(localEbookProgress * 100))%"
+                                    "Pulled ebook progress bookDiagnosticID=\(diagnosticID) progress=\(Int(serverEbookProgress * 100))%"
                                 )
-                                pushCount += 1
-                            } catch {
-                                AppLogger.sync.error(
-                                    "Failed to push ebook progress bookDiagnosticID=\(diagnosticID): \(error.localizedDescription)"
-                                )
+                                pullCount += 1
+                            case .push:
+                                do {
+                                    try await progressAPI.pushEbookProgress(
+                                        libraryItemId: book.partKey ?? book.id,
+                                        progress: localEbookProgress,
+                                        isFinished: localEbookProgress >= 0.99,
+                                        backend: backend
+                                    )
+                                    AppLogger.sync.debug(
+                                        "Pushed ebook progress bookDiagnosticID=\(diagnosticID) progress=\(Int(localEbookProgress * 100))%"
+                                    )
+                                    pushCount += 1
+                                } catch {
+                                    if error is CancellationError || (error as? URLError)?.code == .cancelled { throw error }
+                                    if !failedBackends.contains(backend.name) { failedBackends.append(backend.name) }
+                                    AppLogger.sync.error(
+                                        "Failed to push ebook progress bookDiagnosticID=\(diagnosticID): \(error.localizedDescription)"
+                                    )
+                                }
+                            case .none, .conflict:
+                                break
                             }
-                        case .none, .conflict:
-                            break
+                        } else {
+                            let serverTime = item.currentTime ?? 0
+                            let duration = item.duration ?? book.duration ?? 0
+
+                            let local = progressCache.loadProgress(for: book)
+                            let localTime = local?.progress ?? book.currentTime
+                            let localDate = local.flatMap { Date(timeIntervalSince1970: $0.lastUpdated) } ?? book.lastUpdate
+
+                            var direction = resolveProgressConflict(
+                                localPosition: localTime,
+                                localDate: localDate,
+                                serverPosition: serverTime,
+                                serverDate: serverDate
+                            )
+
+                            let serverFinished = item.resolvedIsFinished
+                            if serverDate > localDate, serverTime == 0, localTime > 0 {
+                                direction = .pull
+                            }
+                            if direction == .none, serverDate >= localDate, book.isFinished != serverFinished {
+                                direction = .pull
+                            }
+                            switch direction {
+                            case .pull:
+                                progressCache.saveProgress(for: book, progress: serverTime, duration: duration, at: serverDate)
+                                await progressRepository.applyAuthoritativeProgress([
+                                    AuthoritativeProgressUpdate(
+                                        bookUniqueId: book.uniqueId,
+                                        stableId: book.stableId,
+                                        currentTime: serverTime,
+                                        duration: duration,
+                                        ebookProgress: book.ebookProgress,
+                                        epubLocator: book.epubLocator,
+                                        isFinished: serverFinished,
+                                        lastUpdate: serverDate,
+                                        hideFromContinue: item.hideFromContinueListening ?? false
+                                    )
+                                ])
+                                libraryCache.mutateBook(stableId: book.stableId) {
+                                    $0.currentTime = serverTime
+                                    $0.isFinished = serverFinished
+                                    $0.lastUpdate = serverDate
+                                    $0.hideFromContinue = item.hideFromContinueListening ?? false
+                                }
+                                AppLogger.sync.debug(
+                                    "Pulled audiobook progress bookDiagnosticID=\(diagnosticID) position=\(Int(serverTime))s"
+                                )
+                                pullCount += 1
+                            case .push:
+                                do {
+                                    let localDuration = local?.duration ?? duration
+                                    try await progressAPI.pushAudiobookProgress(
+                                        libraryItemId: book.partKey ?? book.id,
+                                        currentTime: localTime,
+                                        duration: localDuration,
+                                        isFinished: localDuration > 0 && localTime >= localDuration,
+                                        backend: backend
+                                    )
+                                    AppLogger.sync.debug(
+                                        "Pushed audiobook progress bookDiagnosticID=\(diagnosticID) position=\(Int(localTime))s"
+                                    )
+                                    pushCount += 1
+                                } catch {
+                                    if error is CancellationError || (error as? URLError)?.code == .cancelled { throw error }
+                                    if !failedBackends.contains(backend.name) { failedBackends.append(backend.name) }
+                                    AppLogger.sync.error(
+                                        "Failed to push audiobook progress bookDiagnosticID=\(diagnosticID): \(error.localizedDescription)"
+                                    )
+                                }
+                            case .none, .conflict:
+                                break
+                            }
                         }
-                    } else {
-                        let serverTime = item.currentTime ?? 0
-                        let duration = item.duration ?? book.duration ?? 0
 
-                        let local = progressCache.loadProgress(for: book)
-                        let localTime = local?.progress ?? 0
-                        let localDate = local.flatMap { Date(timeIntervalSince1970: $0.lastUpdated) } ?? .distantPast
-
-                        let direction = resolveProgressConflict(
-                            localPosition: localTime,
-                            localDate: localDate,
-                            serverPosition: serverTime,
-                            serverDate: serverDate
-                        )
-
-                        switch direction {
-                        case .pull:
-                            progressCache.saveProgress(for: book, progress: serverTime, duration: duration, at: Date())
-                            AppLogger.sync.debug(
-                                "Pulled audiobook progress bookDiagnosticID=\(diagnosticID) position=\(Int(serverTime))s"
-                            )
-                            pullCount += 1
-                        case .push:
-                            do {
-                                let localDuration = local?.duration ?? duration
-                                try await progressAPI.pushAudiobookProgress(
-                                    libraryItemId: book.partKey ?? book.id,
-                                    currentTime: localTime,
-                                    duration: localDuration,
-                                    isFinished: localDuration > 0 && localTime >= localDuration,
-                                    backend: backend
-                                )
-                                AppLogger.sync.debug(
-                                    "Pushed audiobook progress bookDiagnosticID=\(diagnosticID) position=\(Int(localTime))s"
-                                )
-                                pushCount += 1
-                            } catch {
-                                AppLogger.sync.error(
-                                    "Failed to push audiobook progress bookDiagnosticID=\(diagnosticID): \(error.localizedDescription)"
-                                )
-                            }
-                        case .none, .conflict:
-                            break
+                        if !item.resolvedIsFinished, item.hideFromContinueListening != true,
+                            (item.currentTime ?? 0) > 0 || (item.ebookProgress ?? 0) > 0
+                        {
+                            progressCache.saveRecentlyPlayed(book, date: serverDate)
                         }
                     }
-
-                    progressCache.saveRecentlyPlayed(book, date: serverDate)
                 }
             } catch is CancellationError {
                 AppLogger.sync.debug("Server status sync cancelled")
@@ -243,7 +289,7 @@ final class RecentlyPlayedSyncService: RecentlyPlayedSyncing {
         let strategies = strategyRegistry.syncStrategies
         await libraryCache.withAllBooksTransaction {
             for strategy in strategies {
-                if Task.isCancelled {
+                if wasCancelled || Task.isCancelled {
                     AppLogger.sync.info("Server status sync cancelled before strategy \(strategy.id)")
                     wasCancelled = true
                     break
@@ -251,6 +297,8 @@ final class RecentlyPlayedSyncService: RecentlyPlayedSyncing {
                 let result = await strategy.sync(force: force, launchOptimized: launchOptimized)
                 pullCount += result.pulled
                 pushCount += result.pushed
+                failedBackends.append(contentsOf: result.failedBackends.filter { !failedBackends.contains($0) })
+                wasCancelled = wasCancelled || result.wasCancelled
             }
         }
 

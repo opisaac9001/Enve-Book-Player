@@ -958,10 +958,10 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         isFinished: Bool,
         timeListened: TimeInterval
     ) async throws {
-        guard let userId = connection.userId else { return }
+        guard let userId = connection.userId else { throw ProviderError.unauthorized }
         let base = EmbyProvider.normalizeServerURL(connection.url)
 
-        guard let url = URL(string: "\(base)/Users/\(userId)/Items/\(book.id)/UserData") else { return }
+        guard let url = URL(string: "\(base)/Users/\(userId)/Items/\(book.id)/UserData") else { throw ProviderError.invalidURL }
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -972,11 +972,15 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         let body: [String: Any] = [
             "PlaybackPositionTicks": ticks,
             "Played": isFinished,
+            "LastPlayedDate": ISO8601DateFormatter().string(from: Date()),
         ]
 
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        _ = try await session.data(for: request)
+        let (_, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            throw ProviderError.invalidResponse
+        }
     }
 
     func getAudioURL(for book: Book) -> URL? {
@@ -992,23 +996,22 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
     func fetchAudiobookProgress(
         for book: Book
     ) async throws -> (positionSeconds: TimeInterval, percentage: Double, trackIndex: Int?, updatedAt: Date?, isAbandoned: Bool)? {
-        guard let userId = connection.userId else { return nil }
+        guard let userId = connection.userId else { throw ProviderError.unauthorized }
         let base = EmbyProvider.normalizeServerURL(connection.url)
 
-        guard let url = URL(string: "\(base)/Users/\(userId)/Items/\(book.id)?Fields=UserData") else { return nil }
+        guard let url = URL(string: "\(base)/Users/\(userId)/Items/\(book.id)?Fields=UserData") else { throw ProviderError.invalidURL }
         var request = URLRequest(url: url)
         addAuthHeaders(&request)
 
-        guard let (data, response) = try? await session.data(for: request),
-            let http = response as? HTTPURLResponse, http.statusCode == 200,
-            let item = try? JSONDecoder().decode(EmbyItem.self, from: data)
-        else {
-            return nil
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw ProviderError.invalidResponse
         }
+        let item = try JSONDecoder().decode(EmbyItem.self, from: data)
 
         let positionSeconds = Double(item.UserData?.PlaybackPositionTicks ?? 0) / 10_000_000.0
         let played = item.UserData?.Played ?? false
-        return (positionSeconds: positionSeconds, percentage: 0, trackIndex: nil, updatedAt: nil, isAbandoned: played)
+        return (positionSeconds: positionSeconds, percentage: 0, trackIndex: nil, updatedAt: ProviderProgressDate.parse(item.UserData?.LastPlayedDate), isAbandoned: played)
     }
 
     func fetchCollections(libraryId: String?) async throws -> [Collection] { return [] }
@@ -1286,6 +1289,7 @@ private struct EmbyChapter: Decodable {
 }
 
 private struct EmbyUserData: Decodable {
+    let LastPlayedDate: String?
     let PlaybackPositionTicks: Int64?
     let Played: Bool?
     let PlayedPercentage: Double?

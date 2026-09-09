@@ -35,6 +35,7 @@ final class SiloActivitySyncStrategy: ProviderSyncStrategy {
         guard !connections.isEmpty else { return .zero }
 
         var pulled = 0
+        var failedBackends: [String] = []
         let pushed = 0
 
         for connection in connections {
@@ -73,9 +74,11 @@ final class SiloActivitySyncStrategy: ProviderSyncStrategy {
                         )
                     }
                 }
-            } catch is CancellationError {
-                return ProviderSyncResult(pulled: pulled, pushed: pushed)
             } catch {
+                if error is CancellationError || (error as? URLError)?.code == .cancelled {
+                    return ProviderSyncResult(pulled: pulled, pushed: pushed, failedBackends: failedBackends, wasCancelled: true)
+                }
+                if !failedBackends.contains(connection.name) { failedBackends.append(connection.name) }
                 AppLogger.sync.error(
                     "Silo activity sync failed providerDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: connection.id.uuidString)): \(error.localizedDescription)"
                 )
@@ -88,7 +91,7 @@ final class SiloActivitySyncStrategy: ProviderSyncStrategy {
                 object: nil
             )
         }
-        return ProviderSyncResult(pulled: pulled, pushed: pushed)
+        return ProviderSyncResult(pulled: pulled, pushed: pushed, failedBackends: failedBackends)
     }
 
     private func pullCursorDeltas(

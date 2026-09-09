@@ -662,7 +662,7 @@ public class PlayerViewModel {
             locator: nil,
             title: title,
             note: note,
-            mediaType: book.mediaType,
+            mediaType: .audiobook,
             chapterTitle: chapter?.title
         )
         bookmarks = (bookmarks + [newBookmark]).sorted { $0.position < $1.position }
@@ -807,11 +807,11 @@ public class PlayerViewModel {
     }
 
     func seekToBookmark(_ bookmark: Bookmark) {
-        if bookmark.mediaType == .ebook {
-            NotificationCenter.default.post(name: NSNotification.Name("SeekToEbookBookmark"), object: bookmark)
-        } else {
-            seek(to: bookmark.position)
+        if let position = PlayerBookmarkNavigation.audioSeekPosition(for: bookmark, playbackBook: activeBook) {
+            seek(to: position)
+            return
         }
+        NotificationCenter.default.post(name: NSNotification.Name("SeekToEbookBookmark"), object: bookmark)
     }
 
     func setSleepTimerToEndOfChapter(fadeOut: Bool = true) {

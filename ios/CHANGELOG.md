@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.2 (1) — 2026-09-08
+
+- Preserve square audiobook artwork across library, player, and queue surfaces.
+- Improve progress reconciliation, pending-write protection, and error reporting across library providers.
+- Correct Plex album grouping and playback URLs, BookOrbit series numbering, and OPDS feed URL handling.
+- Fix CarPlay chapter controls and playback-session lifecycle, and preserve database backups before corruption recovery.
+- Add on-device passage matching for downloaded, linked audiobooks and ebooks on iOS 26 or newer. Older iOS versions show an update-required prompt; the app still supports iOS 17.
+
+Live speech-to-ebook matching remains pending device verification.
+
 ## 1.2 (117) — 2026-07-31
 
 ### Fixed

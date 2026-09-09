@@ -301,7 +301,7 @@ struct LibraryNarratorRow: View {
     private var thumb: some View {
         if let cover {
             CoverTile(book: cover, width: 44, showsProgress: false, corner: 8)
-                .frame(width: 44, height: 66, alignment: .bottom)
+                .frame(width: 44, height: 44 * cover.hearthCoverRatio, alignment: .bottom)
         } else {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(hearth.bgElevated)

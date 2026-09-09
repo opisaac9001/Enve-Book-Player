@@ -13,6 +13,7 @@ struct PlayerScreen: View {
     @State private var activeSheet: PlayerSheet?
     @State private var sleepChapterLabel: String?
     @State private var linkedEbook: Book?
+    @State private var showPassageUpdateRequired = false
     @AppStorage("player.showPercentRemaining") private var showPercentRemaining = false
     @AppStorage("player.scrubScope") private var scrubScopeRaw = PlayerScrubScope.book.rawValue
 
@@ -99,11 +100,24 @@ struct PlayerScreen: View {
                         LibrarianChatScreen(book: book)
                             .presentationDetents([.large])
                     }
+                case .passage:
+                    if #available(iOS 26.0, *), let ebook = linkedEbook, let audiobook = engine.playback.currentBook {
+                        PlayerPassageSheet(ebook: ebook, audiobook: audiobook, position: playerVM.progress)
+                            .presentationDetents([.medium, .large])
+                    } else {
+                        ContentUnavailableView("Link an ebook first", systemImage: "books.vertical", description: Text("Link this audiobook to its ebook from book details, then download both books to find matching passages on this device."))
+                            .presentationDetents([.medium])
+                    }
                 }
             }
             .hearthPresentationBackground()
             .presentationDragIndicator(.visible)
             .enveEnvironment()
+        }
+        .alert("Update Required", isPresented: $showPassageUpdateRequired) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Finding passages in an ebook requires iOS 26.0 or newer.")
         }
         .alert("Two places in this book", isPresented: syncConflictPresented) {
             if let conflict = playerVM.playbackConflict {
@@ -164,8 +178,27 @@ struct PlayerScreen: View {
         HStack {
             GlyphButton(systemImage: "chevron.down", label: "Close player") { dismiss() }
             Spacer()
-            if linkedEbook != nil {
-                GlyphButton(systemImage: "book", label: "Switch to reading", action: switchToReading)
+            if engine.playback.currentBook?.mediaType == .audiobook {
+                Menu {
+                    if linkedEbook != nil {
+                        Button("Switch to reading", systemImage: "book", action: switchToReading)
+                    }
+                    if #available(iOS 26.0, *) {
+                        Button(playerVM.isPlaying ? "Pause to find this passage" : "Find this passage in ebook", systemImage: "text.magnifyingglass") {
+                            activeSheet = .passage
+                        }
+                        .disabled(playerVM.isPlaying)
+                    } else {
+                        Button("Find this passage in ebook", systemImage: "text.magnifyingglass") {
+                            showPassageUpdateRequired = true
+                        }
+                    }
+                } label: {
+                    Image(systemName: "book")
+                        .frame(width: 44, height: 44)
+                        .foregroundStyle(hearth.text)
+                }
+                .accessibilityLabel("Reading options")
             }
             queueButton
             PlayerAirPlayButton(tint: hearth.text, activeTint: ambient)
@@ -508,7 +541,7 @@ struct PlayerScreen: View {
 }
 
 private enum PlayerSheet: String, Identifiable {
-    case speed, sleep, chapters, bookmarks, audio, queue, ambient, librarian
+    case speed, sleep, chapters, bookmarks, audio, queue, ambient, librarian, passage
     var id: String { rawValue }
 }
 

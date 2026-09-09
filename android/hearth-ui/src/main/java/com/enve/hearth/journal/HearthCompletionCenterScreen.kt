@@ -146,6 +146,7 @@ private fun CompletionCoverCard(book: Book, onSelectBook: (Book) -> Unit) {
     ) {
         CoverTile(
             model = book.coverUrl,
+            mediaType = book.mediaType,
             contentDescription = book.title,
             progress = progress,
             modifier = Modifier.fillMaxWidth(),
@@ -183,6 +184,7 @@ private fun CompletionHistoryRow(
     ) {
         CoverTile(
             model = book.coverUrl,
+            mediaType = book.mediaType,
             contentDescription = book.title,
             isFinished = true,
             modifier = Modifier.width(54.dp),

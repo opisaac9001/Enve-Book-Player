@@ -20,18 +20,16 @@ final class BookBridgeMappingImporter {
     func runImport(baseURL: URL) async throws -> Result {
         let mappings = try await client.fetchMappings(baseURL: baseURL)
 
-        let audiobooksByABSId = Dictionary(
-            uniqueKeysWithValues: AppState.shared.allBooks
-                .filter { $0.mediaType == .audiobook && $0.source == .audiobookshelf }
-                .map { ($0.id, $0) }
+        let audiobooksByABSId = Self.booksIndexedByUniqueKey(
+            AppState.shared.allBooks.filter { $0.mediaType == .audiobook && $0.source == .audiobookshelf },
+            key: { $0.id }
         )
 
         let ebooksByDocHash: [String: Book] = {
             let links = KOReaderSyncService.shared.links
-            let booksByStableId = Dictionary(
-                uniqueKeysWithValues: AppState.shared.allBooks
-                    .filter { $0.mediaType == .ebook }
-                    .map { ($0.stableId, $0) }
+            let booksByStableId = Self.booksIndexedByUniqueKey(
+                AppState.shared.allBooks.filter { $0.mediaType == .ebook },
+                key: { $0.stableId }
             )
             var map: [String: Book] = [:]
             for (stableId, link) in links {
@@ -83,5 +81,24 @@ final class BookBridgeMappingImporter {
 
         EbookLinkStore.shared.saveLinks()
         return result
+    }
+
+    static func booksIndexedByUniqueKey<Key: Hashable>(
+        _ books: [Book],
+        key: (Book) -> Key
+    ) -> [Key: Book] {
+        var indexed: [Key: Book] = [:]
+        var duplicateKeys = Set<Key>()
+
+        for book in books {
+            let bookKey = key(book)
+            guard !duplicateKeys.contains(bookKey) else { continue }
+            if indexed.updateValue(book, forKey: bookKey) != nil {
+                indexed.removeValue(forKey: bookKey)
+                duplicateKeys.insert(bookKey)
+            }
+        }
+
+        return indexed
     }
 }

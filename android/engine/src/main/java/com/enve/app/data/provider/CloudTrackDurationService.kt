@@ -7,14 +7,18 @@ import com.enve.core.data.local.decodeAudioTracks
 import com.enve.core.data.local.encodeAudioTracksJson
 import com.enve.core.data.model.AudioTrack
 import com.enve.core.data.model.Book
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -22,6 +26,9 @@ import javax.inject.Singleton
 class CloudTrackDurationService @Inject constructor(
     private val bookExtras: BookExtrasDao,
 ) {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val activeProbes = ConcurrentHashMap.newKeySet<String>()
+
     suspend fun resolveDurations(book: Book, tracks: List<AudioTrack>): List<AudioTrack> {
         if (tracks.size <= 1 || tracks.all { it.durationMs > 0L }) return tracks
 
@@ -38,9 +45,16 @@ class CloudTrackDurationService @Inject constructor(
             }
         }
 
-        val resolved = if (merged.any { it.durationMs <= 0L }) probeMissing(merged) else merged
-        persistIfChanged(cacheKey, resolved, existing)
-        return resolved
+        if (merged.any { it.durationMs <= 0L } && activeProbes.add(cacheKey)) {
+            scope.launch {
+                try {
+                    persistIfChanged(cacheKey, probeMissing(merged))
+                } finally {
+                    activeProbes.remove(cacheKey)
+                }
+            }
+        }
+        return merged
     }
 
     private suspend fun probeMissing(tracks: List<AudioTrack>): List<AudioTrack> {
@@ -61,12 +75,13 @@ class CloudTrackDurationService @Inject constructor(
         }
     }
 
-    private suspend fun persistIfChanged(cacheKey: String, tracks: List<AudioTrack>, existing: BookExtras?) {
+    private suspend fun persistIfChanged(cacheKey: String, tracks: List<AudioTrack>) {
         if (tracks.none { it.durationMs > 0L }) return
 
         val payload = encodeAudioTracksJson(tracks.map { it.copy(contentUrl = null) })
-        if (payload == existing?.audioTracksJson) return
         withContext(Dispatchers.IO) {
+            val existing = bookExtras.get(cacheKey)
+            if (payload == existing?.audioTracksJson) return@withContext
             bookExtras.upsert(
                 BookExtras(
                     cacheKey = cacheKey,

@@ -36,7 +36,7 @@ protocol SyncSink: AnyObject, Sendable {
 
     func isApplicable(to book: Book, domain: ProgressSyncDomain) -> Bool
 
-    func pull(book: Book, domain: ProgressSyncDomain) async -> SyncSnapshot?
+    func pull(book: Book, domain: ProgressSyncDomain) async throws -> SyncSnapshot?
 
     func push(_ update: ProgressUpdate) async throws
 }

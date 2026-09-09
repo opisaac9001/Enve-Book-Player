@@ -71,9 +71,7 @@ class OnDeviceEbookNormalizer(
                 )
                 converter.convertToEpub(source, normalized)
             }
-            EbookSourceFormat.FB2 -> throw EbookNormalizationException(
-                "On-device FB2 conversion is not bundled yet."
-            )
+            EbookSourceFormat.FB2 -> Fb2EpubConverter().convertToEpub(source, normalized)
             EbookSourceFormat.UNKNOWN -> throw EbookNormalizationException(
                 "Unknown ebook format."
             )

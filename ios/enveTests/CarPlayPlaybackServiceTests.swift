@@ -5,6 +5,25 @@ import Testing
 @testable import enve
 
 @MainActor
+struct CarPlayInterfaceCompletionTests {
+    @Test func followUpRunsAfterSuccess() {
+        var callCount = 0
+
+        carPlayInterfaceCompletion("Test success", then: { callCount += 1 })(true, nil)
+
+        #expect(callCount == 1)
+    }
+
+    @Test func followUpRunsAfterFailure() {
+        var callCount = 0
+
+        carPlayInterfaceCompletion("Test failure", then: { callCount += 1 })(false, CarPlayTestError())
+
+        #expect(callCount == 1)
+    }
+}
+
+@MainActor
 struct CarPlayChapterResolutionTests {
     @Test func bookChaptersWinAndAreSortedByStart() {
         let fixture = Fixture()
@@ -54,6 +73,8 @@ struct CarPlayChapterResolutionTests {
         #expect(Fixture().service.chapters(for: book("one")).isEmpty)
     }
 }
+
+private struct CarPlayTestError: Error {}
 
 @MainActor
 struct CarPlayCurrentBookTests {

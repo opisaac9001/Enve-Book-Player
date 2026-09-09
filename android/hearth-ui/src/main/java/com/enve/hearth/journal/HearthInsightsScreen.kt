@@ -158,6 +158,7 @@ private fun TopBooksCard(
             ) {
                 CoverTile(
                     model = entry.book.coverUrl,
+                    mediaType = entry.book.mediaType,
                     contentDescription = entry.book.title,
                     modifier = Modifier.width(42.dp),
                 )

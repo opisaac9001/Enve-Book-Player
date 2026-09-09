@@ -41,6 +41,7 @@ final class SiloEbookSyncStrategy: ProviderSyncStrategy {
         guard !connections.isEmpty else { return .zero }
 
         var pulled = 0
+        var failedBackends: [String] = []
         var pushed = 0
         var updatedBooks: [Book] = []
 
@@ -49,19 +50,24 @@ final class SiloEbookSyncStrategy: ProviderSyncStrategy {
             do {
                 _ = try await provider.fetchLibraries()
             } catch {
+                if error is CancellationError || (error as? URLError)?.code == .cancelled {
+                    return ProviderSyncResult(pulled: pulled, pushed: pushed, failedBackends: failedBackends, wasCancelled: true)
+                }
+                if !failedBackends.contains(connection.name) { failedBackends.append(connection.name) }
                 AppLogger.sync.debug(
                     "Skipping Silo ebook sync providerDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: connection.id.uuidString)): \(error.localizedDescription)"
                 )
                 continue
             }
 
-            let candidateBooks = await books.firstBooks(
+            let candidateBooks = await books.books(
                 source: Book.BookSource.silo.rawValue,
-                mediaType: "ebook",
-                limit: launchOptimized ? 100 : 1000
-            ).filter { $0.providerId == connection.id }
+                providerId: connection.id,
+                mediaType: "ebook"
+            ).sorted { $0.lastUpdate > $1.lastUpdate }
 
-            for book in candidateBooks where book.stableId != activeBookId {
+            for book in candidateBooks.prefix(launchOptimized && !force ? 100 : candidateBooks.count)
+            where book.stableId != activeBookId && PendingSyncQueueStore.shared.entries[book.stableId] == nil {
                 do {
                     let localProgress = book.ebookProgress ?? book.canonicalEbookProgress
                     let localDate = book.lastUpdate
@@ -153,6 +159,10 @@ final class SiloEbookSyncStrategy: ProviderSyncStrategy {
                         break
                     }
                 } catch {
+                    if error is CancellationError || (error as? URLError)?.code == .cancelled {
+                        return ProviderSyncResult(pulled: pulled, pushed: pushed, failedBackends: failedBackends, wasCancelled: true)
+                    }
+                    if !failedBackends.contains(connection.name) { failedBackends.append(connection.name) }
                     AppLogger.sync.error(
                         "Failed to sync Silo ebook bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId)): \(error.localizedDescription)"
                     )
@@ -164,6 +174,6 @@ final class SiloEbookSyncStrategy: ProviderSyncStrategy {
             await bookWriter.upsertBooks(updatedBooks)
         }
 
-        return ProviderSyncResult(pulled: pulled, pushed: pushed)
+        return ProviderSyncResult(pulled: pulled, pushed: pushed, failedBackends: failedBackends)
     }
 }

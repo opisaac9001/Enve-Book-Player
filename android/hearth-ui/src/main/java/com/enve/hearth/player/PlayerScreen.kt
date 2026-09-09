@@ -61,6 +61,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.enve.core.data.model.AppMediaType
 import com.enve.hearth.design.CoverTile
 import com.enve.hearth.design.EmberGlow
 import com.enve.hearth.design.Hearth
@@ -157,7 +158,11 @@ fun PlayerScreen(
                 }
 
                 Spacer(Modifier.height(if (compactPanel || widePanel) Hearth.Spacing.S else Hearth.Spacing.L))
-                CoverTile(model = now?.coverUrl, modifier = Modifier.width(coverWidth))
+                CoverTile(
+                    model = now?.coverUrl,
+                    mediaType = AppMediaType.AUDIOBOOK,
+                    modifier = Modifier.width(coverWidth),
+                )
                 Spacer(Modifier.height(coverBottomGap))
 
                 val chapterTitle = chapters.getOrNull(chapterIndex)?.title

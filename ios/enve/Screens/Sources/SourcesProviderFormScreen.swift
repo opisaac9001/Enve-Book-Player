@@ -548,8 +548,10 @@ struct SourcesProviderFormScreen: View {
             return presetURL
         }
         var trimmed = serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        while trimmed.hasSuffix("/") {
-            trimmed = String(trimmed.dropLast())
+        if capability.providerType != .opds {
+            while trimmed.hasSuffix("/") {
+                trimmed = String(trimmed.dropLast())
+            }
         }
         guard !trimmed.isEmpty else { return trimmed }
         return urlScheme.rawValue + trimmed

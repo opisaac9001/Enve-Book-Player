@@ -60,9 +60,7 @@ final class MediaOverlayPlaybackService {
     }
 
     func prepareAudioTracks(for book: Book) async throws -> OverlayAudioResult {
-        guard let fileURL = resolveEbookFile(for: book) else {
-            throw OverlayPlaybackError.noEbookFile
-        }
+        let fileURL = try await resolveEbookFile(for: book)
         return try await prepareAudioTracks(for: book, fileURL: fileURL)
     }
 
@@ -572,8 +570,11 @@ final class MediaOverlayPlaybackService {
         }
     }
 
-    private func resolveEbookFile(for book: Book) -> URL? {
-        LocalEbookImporter.shared.resolveEbookForOverlay(book: book)
+    private func resolveEbookFile(for book: Book) async throws -> URL {
+        if let existing = LocalEbookImporter.shared.resolveEbookForOverlay(book: book) {
+            return existing
+        }
+        return try await UnifiedDownloadService.shared.prepareReaderAsset(for: book)
     }
 
     private func loadIndexedAudioTracks(for book: Book, epubFileURL: URL) -> OverlayAudioResult? {

@@ -2,6 +2,8 @@ package com.enve.bookorbit
 
 import com.enve.bookorbit.dto.BookOrbitAchievementCatalogueDto
 import com.enve.bookorbit.dto.BookOrbitAnnotationHubPageDto
+import com.enve.bookorbit.dto.BookOrbitBookDetailDto
+import com.enve.bookorbit.dto.BookOrbitBooksPageDto
 import com.enve.bookorbit.dto.BookOrbitProgressFunnelComparisonDto
 import com.enve.bookorbit.dto.BookOrbitReadingSessionsPageDto
 import com.enve.bookorbit.dto.BookOrbitRecommendationDto
@@ -80,14 +82,33 @@ class BookOrbitServerFeatureDtoTest {
             """{"days":30,"current":{"started":10,"reached25":8,"reached50":5,"reached75":3,"completed":2},"previous":null}""",
         )
         val recommendation = json.decodeFromString<BookOrbitRecommendationDto>(
-            """{"id":4,"title":"Next","coverAspectRatio":"2:3","updatedAt":null,"seriesIndex":2.0,"hasCover":true,"authors":["Ada"],"isAudiobook":false}""",
+            """{"id":4,"title":"Next","coverAspectRatio":"2.0","updatedAt":null,"seriesIndex":"1–3","hasCover":true,"authors":["Ada"],"isAudiobook":false}""",
         )
 
         assertEquals(900L, distribution.totalSeconds)
         assertEquals("kobo", distribution.slices[1].bucket)
         assertEquals(2, funnel.current.completed)
         assertNull(funnel.previous)
-        assertEquals(2.0, recommendation.seriesIndex!!, 0.0)
+        assertEquals("1–3", recommendation.seriesIndex)
         assertTrue(recommendation.hasCover)
+    }
+
+    @Test
+    fun decodesTextAndNumericSeriesIndexes() {
+        val page = json.decodeFromString<BookOrbitBooksPageDto>(
+            """{"items":[
+              {"id":1,"seriesIndex":"1–3"},
+              {"id":2,"seriesIndex":"0.50"},
+              {"id":3,"seriesIndex":2.0},
+              {"id":4,"seriesIndex":2.5},
+              {"id":5,"seriesIndex":null}
+            ]}""".trimIndent(),
+        )
+        val detail = json.decodeFromString<BookOrbitBookDetailDto>(
+            """{"id":6,"seriesIndex":"2"}""",
+        )
+
+        assertEquals(listOf("1–3", "0.50", "2", "2.5", null), page.items.map { it.seriesIndex })
+        assertEquals("2", detail.seriesIndex)
     }
 }

@@ -72,6 +72,7 @@ final class BookloreAudiobookSyncStrategy: ProviderSyncStrategy {
         guard !providerBookById.isEmpty else { return .zero }
 
         var pullCount = 0
+        var failedBackends: [String] = []
         var pushCount = 0
         var didMutateContinueListeningState = false
 
@@ -87,7 +88,11 @@ final class BookloreAudiobookSyncStrategy: ProviderSyncStrategy {
             }
 
             let selectedBooks: [Book]
-            if totalEligible <= 500 {
+            if force {
+                selectedBooks = await books.books(
+                    source: Book.BookSource.booklore.rawValue, providerId: providerId, mediaType: "audiobook"
+                )
+            } else if totalEligible <= 500 {
 
                 selectedBooks = idMap.values
                     .sorted { lhs, rhs in
@@ -102,6 +107,10 @@ final class BookloreAudiobookSyncStrategy: ProviderSyncStrategy {
                 do {
                     recentBooks = try await provider.fetchRecentBooks(limit: recentFetchLimit)
                 } catch {
+                    if error is CancellationError || (error as? URLError)?.code == .cancelled {
+                        return ProviderSyncResult(pulled: pullCount, pushed: pushCount, failedBackends: failedBackends, wasCancelled: true)
+                    }
+                    if !failedBackends.contains(provider.connection.name) { failedBackends.append(provider.connection.name) }
                     AppLogger.sync.error(
                         "Failed to fetch Booklore recent audiobooks for provider \(providerId): \(error.localizedDescription)"
                     )
@@ -142,9 +151,9 @@ final class BookloreAudiobookSyncStrategy: ProviderSyncStrategy {
                 let diagnosticID = DiagnosticLogSanitizer.identifier(for: book.stableId)
                 if Task.isCancelled {
                     AppLogger.sync.debug("Booklore audiobook sync cancelled bookDiagnosticID=\(diagnosticID)")
-                    return ProviderSyncResult(pulled: pullCount, pushed: pushCount)
+                    return ProviderSyncResult(pulled: pullCount, pushed: pushCount, failedBackends: failedBackends, wasCancelled: true)
                 }
-                guard book.stableId != currentlyPlaying else { continue }
+                guard book.stableId != currentlyPlaying, PendingSyncQueueStore.shared.entries[book.stableId] == nil else { continue }
 
                 do {
                     let local = BookProgressStore.shared.loadProgress(for: book)
@@ -290,6 +299,10 @@ final class BookloreAudiobookSyncStrategy: ProviderSyncStrategy {
                         }
                     }
                 } catch {
+                    if error is CancellationError || (error as? URLError)?.code == .cancelled {
+                        return ProviderSyncResult(pulled: pullCount, pushed: pushCount, failedBackends: failedBackends, wasCancelled: true)
+                    }
+                    if !failedBackends.contains(provider.connection.name) { failedBackends.append(provider.connection.name) }
                     AppLogger.sync.error(
                         "Failed to sync Booklore audiobook bookDiagnosticID=\(diagnosticID): \(error.localizedDescription)"
                     )
@@ -303,6 +316,6 @@ final class BookloreAudiobookSyncStrategy: ProviderSyncStrategy {
                 NotificationCenter.default.post(name: .continueListeningNeedsRefresh, object: nil)
             }
         }
-        return ProviderSyncResult(pulled: pullCount, pushed: pushCount)
+        return ProviderSyncResult(pulled: pullCount, pushed: pushCount, failedBackends: failedBackends)
     }
 }

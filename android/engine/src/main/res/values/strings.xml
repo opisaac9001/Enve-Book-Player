@@ -11,5 +11,7 @@
     <string name="android_auto_playback_speed">Playback speed %1$s×</string>
     <string name="android_auto_add_bookmark">Add bookmark</string>
     <string name="android_auto_continue_listening">Continue Listening</string>
+    <string name="android_auto_library">Library</string>
+    <string name="android_auto_downloads">Downloads</string>
     <string name="android_auto_recently_added">Recently Added</string>
 </resources>

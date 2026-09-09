@@ -344,7 +344,7 @@ final class LinkedBookQuickSyncService {
     }
 }
 
-private struct LinkedBookTextIndex {
+struct LinkedBookTextIndex {
     struct Token {
         let value: String
         let chunkIndex: Int
@@ -373,7 +373,7 @@ private struct LinkedBookTextIndex {
     }
 }
 
-private enum LinkedBookSparseMatcher {
+enum LinkedBookSparseMatcher {
     struct Match {
         let ebookProgress: Double
         let quote: String
@@ -384,7 +384,8 @@ private enum LinkedBookSparseMatcher {
     static func match(
         transcript: String,
         expectedProgress: Double,
-        in index: LinkedBookTextIndex
+        in index: LinkedBookTextIndex,
+        requiresUniquePassage: Bool = false
     ) -> Match? {
         let query = words(in: transcript)
         guard query.count >= 8 else { return nil }
@@ -428,6 +429,7 @@ private enum LinkedBookSparseMatcher {
             abs($0.centerToken - best.centerToken) > query.count
         }
         let margin = best.score - (runnerUp?.score ?? 0)
+        if requiresUniquePassage, best.score < 0.72 || margin < 0.12 { return nil }
         guard best.score >= 0.38,
             margin >= 0.025 || best.score >= 0.58
         else {
@@ -450,9 +452,13 @@ private enum LinkedBookSparseMatcher {
             1
         )
         let confidence = min(1, best.score + min(max(margin, 0), 0.15))
+        let wordRanges = chunk.text.ranges(of: /[\p{L}\p{N}]+/)
+        let quote = requiresUniquePassage && wordRanges.count == chunkWords.count
+            ? String(chunk.text[wordRanges[quoteStart].lowerBound..<wordRanges[quoteEnd - 1].upperBound])
+            : chunkWords[quoteStart..<quoteEnd].joined(separator: " ")
         return Match(
             ebookProgress: ebookProgress,
-            quote: chunkWords[quoteStart..<quoteEnd].joined(separator: " "),
+            quote: quote,
             href: chunk.href,
             confidence: confidence
         )

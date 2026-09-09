@@ -6,6 +6,15 @@ Release notes for the Android app. Versions are `<name> build <code>`, matching 
 
 No pending changes.
 
+## 1.2 build 50 — 2026-09-08
+
+- Preserve square audiobook artwork throughout the app and match reader backgrounds to the selected reading theme.
+- Protect newer local listening positions and pending uploads during Audiobookshelf refreshes.
+- Add Library and Downloads shelves to Android Auto and chapter queues for single-file audiobooks.
+- Add on-device FB2-to-EPUB conversion and allow valid small ebook files.
+- Correct BookOrbit series numbering, Grimmory download URLs, and anonymous OPDS sign-in.
+- Serialize proactive and expired-token refreshes through a shared coordinator.
+
 ## 1.2 build 46 — 2026-08-29
 
 ### Added

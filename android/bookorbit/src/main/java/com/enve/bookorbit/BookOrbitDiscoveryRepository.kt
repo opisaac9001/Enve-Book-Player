@@ -13,7 +13,7 @@ data class BookOrbitRelatedBook(
     val title: String,
     val authors: List<String>,
     val coverUrl: String?,
-    val seriesIndex: Double?,
+    val seriesIndex: String?,
     val isAudiobook: Boolean,
 )
 

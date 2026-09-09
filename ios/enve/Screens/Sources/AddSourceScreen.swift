@@ -6,6 +6,7 @@ struct AddSourceScreen: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var selected: AddSourceProvider?
+    @State private var didAddSource = false
 
     var body: some View {
         GeometryReader { geo in
@@ -55,10 +56,14 @@ struct AddSourceScreen: View {
         }
         .background(HearthBackground())
         .toolbar(.hidden, for: .navigationBar)
-        .sheet(item: $selected) { provider in
+        .sheet(item: $selected, onDismiss: {
+            guard didAddSource else { return }
+            didAddSource = false
+            dismiss()
+        }) { provider in
             AddSourceRouter(provider: provider) {
+                didAddSource = true
                 selected = nil
-                dismiss()
             }
             .enveEnvironment()
         }

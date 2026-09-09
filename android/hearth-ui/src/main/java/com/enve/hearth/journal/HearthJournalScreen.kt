@@ -123,7 +123,11 @@ fun HearthJournalScreen(
                         horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.M),
                     ) {
                         items(mantel, key = { it.id + (it.connectionId ?: "") }) { book ->
-                            CoverTile(model = book.coverUrl, modifier = Modifier.width(112.dp).clickable { onSelectBook(book) })
+                            CoverTile(
+                                model = book.coverUrl,
+                                mediaType = book.mediaType,
+                                modifier = Modifier.width(112.dp).clickable { onSelectBook(book) },
+                            )
                         }
                     }
                 }

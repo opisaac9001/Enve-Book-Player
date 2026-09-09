@@ -167,6 +167,7 @@ private fun EmberPill(
     val title = book?.title ?: now?.title.orEmpty()
     val author = book?.author ?: now?.author
     val coverUrl = book?.coverUrl ?: now?.coverUrl
+    val mediaType = book?.mediaType ?: now?.let { AppMediaType.AUDIOBOOK }
     val progress = when {
         isEbook -> (book.epubProgress ?: book.readProgress).coerceIn(0f, 1f)
         isActiveAudio -> transport.progress
@@ -179,7 +180,7 @@ private fun EmberPill(
             .padding(Hearth.Spacing.XS),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        PillArtwork(coverUrl, progress)
+        PillArtwork(coverUrl, mediaType, progress)
         Spacer(Modifier.width(Hearth.Spacing.S))
         val line2 = if (isActiveAudio) subtitle ?: author else author
         Column(Modifier.weight(1f)) {
@@ -227,7 +228,7 @@ private fun EmberPill(
 }
 
 @Composable
-private fun PillArtwork(coverUrl: String?, progress: Float) {
+private fun PillArtwork(coverUrl: String?, mediaType: AppMediaType?, progress: Float) {
     val palette = Hearth.palette
     val eink = Hearth.eink
     Box(Modifier.size(46.dp), contentAlignment = Alignment.Center) {
@@ -250,8 +251,13 @@ private fun PillArtwork(coverUrl: String?, progress: Float) {
         val coverShape = RoundedCornerShape(if (eink.sharpCorners) 0.dp else 6.dp)
         Box(
             Modifier
-                .width(28.dp)
-                .height(40.dp)
+                .then(
+                    if (mediaType == AppMediaType.AUDIOBOOK || mediaType == AppMediaType.PODCAST) {
+                        Modifier.size(36.dp)
+                    } else {
+                        Modifier.width(28.dp).height(40.dp)
+                    },
+                )
                 .clip(coverShape)
                 .background(if (eink.active) palette.bgElevated else palette.emberSoft)
                 .then(if (eink.active) Modifier.border(1.dp, palette.text, coverShape) else Modifier),

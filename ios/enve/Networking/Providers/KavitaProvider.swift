@@ -1,7 +1,7 @@
 import Foundation
 import Logging
 
-class KavitaProvider: IncrementalCatalogProvider, EbookProgressPushing, EbookDownloadProvider,
+class KavitaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDownloadProvider,
     @unchecked Sendable
 {
     var connection: ServerConnection
@@ -10,14 +10,13 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressPushing, EbookDow
         [
             .fullImport, .pagedImport,
             .recentBooks, .collections,
-            .ebookProgressPush,
+            .ebookProgressPull, .ebookProgressPush,
             .downloads, .coverAuthHeader, .backgroundOperation,
         ]
     }
 
     private let pageSize = 100
     private var jwtToken: String?
-    private var pageCountCache: [String: Int] = [:]
 
     init(connection: ServerConnection) {
         self.connection = connection
@@ -81,12 +80,14 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressPushing, EbookDow
     private func fetchCatalogPage(libraryId: String, page: Int) async throws -> LibraryCatalogPage {
         guard let libraryId = Int(libraryId) else { throw ProviderError.invalidResponse }
         let body: [String: Any] = [
-            "libraryIds": [libraryId],
-            "pageNumber": page,
-            "pageSize": pageSize,
+            "statements": [["field": 19, "comparison": 0, "value": String(libraryId)]],
+            "combination": 0,
             "sortOptions": ["sortField": 5, "isAscending": false],
         ]
-        var request = try makeRequest(path: "/api/Series/v2")
+        var request = try makeRequest(path: "/api/Series/v2", queryItems: [
+            URLQueryItem(name: "pageNumber", value: String(page + 1)),
+            URLQueryItem(name: "pageSize", value: String(pageSize)),
+        ])
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -104,13 +105,23 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressPushing, EbookDow
 
     func fetchRecentBooks(libraryId: String, limit: Int) async throws -> [Book] {
         try await ensureAuthenticated()
-        let request = try makeRequest(path: "/api/Series/recently-added-v2")
+        guard let libraryId = Int(libraryId) else { throw ProviderError.invalidResponse }
+        var request = try makeRequest(path: "/api/Series/recently-added-v2", queryItems: [
+            URLQueryItem(name: "pageNumber", value: "1"),
+            URLQueryItem(name: "pageSize", value: String(max(1, limit))),
+        ])
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "statements": [["field": 19, "comparison": 0, "value": String(libraryId)]],
+            "combination": 0,
+        ])
         let (data, response) = try await send(request)
         guard response.statusCode == 200 else {
-            return []
+            throw ProviderError.serverError("Failed to fetch recent series (HTTP \(response.statusCode))")
         }
         let result = try JSONDecoder().decode([KavitaSeries].self, from: data)
-        return Array(result.prefix(limit).map { mapToBook($0, libraryId: libraryId) })
+        return Array(result.prefix(limit).map { mapToBook($0, libraryId: String(libraryId)) })
     }
 
     func fetchCollections(libraryId: String?) async throws -> [Collection] {
@@ -235,12 +246,14 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressPushing, EbookDow
     }
 
     func updateEbookProgress(for book: Book, progress: Double, epubLocator: String?) async throws {
-        try await ensureAuthenticated()
-        guard let seriesId = Int(book.id) else { return }
-        let totalPages = try await resolvePageCount(for: book)
+        let (volume, chapter) = try await readingChapter(for: book)
+        guard let seriesId = Int(book.id), let libraryId = Int(book.libraryId) else { throw ProviderError.invalidResponse }
         let body: [String: Any] = [
             "seriesId": seriesId,
-            "pagesRead": max(1, Int(progress * Double(totalPages))),
+            "libraryId": libraryId,
+            "volumeId": volume.id,
+            "chapterId": chapter.id,
+            "pageNum": Int(max(0, min(1, progress)) * Double(chapter.pages)),
         ]
         var request = try makeRequest(path: "/api/Reader/progress")
         request.httpMethod = "POST"
@@ -252,22 +265,32 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressPushing, EbookDow
         }
     }
 
-    private func resolvePageCount(for book: Book) async throws -> Int {
-        if let cached = pageCountCache[book.id] { return cached }
-        guard let seriesId = Int(book.id) else {
-            throw ProviderError.serverError("Invalid series ID for Kavita page count")
-        }
-        let request = try makeRequest(path: "/api/Series/\(seriesId)")
+    func fetchEbookProgress(for book: Book) async throws -> (progress: Double, locator: String?, updatedAt: Date?, isAbandoned: Bool)? {
+        let (_, chapter) = try await readingChapter(for: book)
+        let request = try makeRequest(path: "/api/Reader/get-progress?chapterId=\(chapter.id)")
         let (data, response) = try await send(request)
         guard response.statusCode == 200 else {
-            throw ProviderError.serverError("Could not fetch Kavita page count (HTTP \(response.statusCode))")
+            throw ProviderError.serverError("Failed to fetch Kavita progress (HTTP \(response.statusCode))")
         }
-        let detail = try JSONDecoder().decode(KavitaSeriesPageInfo.self, from: data)
-        guard detail.pages > 0 else {
-            throw ProviderError.serverError("Kavita returned zero pages for series \(seriesId)")
+        let progress = try JSONDecoder().decode(KavitaReadingProgress.self, from: data)
+        let fraction = max(0, min(1, Double(progress.pageNum) / Double(chapter.pages)))
+        return (progress: fraction, locator: nil, updatedAt: ProviderProgressDate.parse(progress.lastModifiedUtc), isAbandoned: false)
+    }
+
+    private func readingChapter(for book: Book) async throws -> (KavitaVolume, KavitaChapter) {
+        try await ensureAuthenticated()
+        guard let seriesId = Int(book.id) else { throw ProviderError.invalidResponse }
+        let request = try makeRequest(path: "/api/Series/volumes?seriesId=\(seriesId)")
+        let (data, response) = try await send(request)
+        guard response.statusCode == 200 else {
+            throw ProviderError.serverError("Failed to fetch Kavita volumes (HTTP \(response.statusCode))")
         }
-        pageCountCache[book.id] = detail.pages
-        return detail.pages
+        let volumes = try JSONDecoder().decode([KavitaVolume].self, from: data)
+        // Downloads currently open the first chapter of the first volume.
+        guard let volume = volumes.first, let chapter = volume.chapters?.first, chapter.pages > 0 else {
+            throw ProviderError.invalidResponse
+        }
+        return (volume, chapter)
     }
 
     func ensureAuthenticated() async throws {
@@ -435,10 +458,6 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressPushing, EbookDow
         let summary: String?
     }
 
-    private struct KavitaSeriesPageInfo: Decodable {
-        let pages: Int
-    }
-
     private struct KavitaVolume: Decodable {
         let id: Int
         let chapters: [KavitaChapter]?
@@ -447,6 +466,12 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressPushing, EbookDow
     private struct KavitaChapter: Decodable {
         let id: Int
         let title: String?
+        let pages: Int
+    }
+
+    private struct KavitaReadingProgress: Decodable {
+        let pageNum: Int
+        let lastModifiedUtc: String?
     }
 
     private struct KavitaCollectionTag: Decodable {

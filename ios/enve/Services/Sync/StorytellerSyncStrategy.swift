@@ -37,6 +37,7 @@ final class StorytellerSyncStrategy: ProviderSyncStrategy {
         guard !connections.isEmpty else { return .zero }
 
         var pulled = 0
+        var failedBackends: [String] = []
         var pushed = 0
         var catalogChanged = false
 
@@ -71,7 +72,7 @@ final class StorytellerSyncStrategy: ProviderSyncStrategy {
 
                 for remoteBook in remoteBooks {
                     if Task.isCancelled {
-                        return ProviderSyncResult(pulled: pulled, pushed: pushed)
+                        return ProviderSyncResult(pulled: pulled, pushed: pushed, failedBackends: failedBackends, wasCancelled: true)
                     }
                     guard let localBook = localById[remoteBook.id],
                         !pendingIds.uniqueIds.contains(localBook.uniqueId),
@@ -88,6 +89,10 @@ final class StorytellerSyncStrategy: ProviderSyncStrategy {
                             through: provider
                         )
                     } catch {
+                        if error is CancellationError || (error as? URLError)?.code == .cancelled {
+                            return ProviderSyncResult(pulled: pulled, pushed: pushed, failedBackends: failedBackends, wasCancelled: true)
+                        }
+                        if !failedBackends.contains(connection.name) { failedBackends.append(connection.name) }
                         AppLogger.sync.error(
                             "Storyteller pending position could not be reconciled bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: remoteBook.stableId)): \(error.localizedDescription)"
                         )
@@ -122,9 +127,11 @@ final class StorytellerSyncStrategy: ProviderSyncStrategy {
                     fingerprint: activityFingerprint(remoteBooks),
                     itemCount: remoteBooks.count
                 )
-            } catch is CancellationError {
-                return ProviderSyncResult(pulled: pulled, pushed: pushed)
             } catch {
+                if error is CancellationError || (error as? URLError)?.code == .cancelled {
+                    return ProviderSyncResult(pulled: pulled, pushed: pushed, failedBackends: failedBackends, wasCancelled: true)
+                }
+                if !failedBackends.contains(connection.name) { failedBackends.append(connection.name) }
                 AppLogger.sync.error(
                     "Storyteller mirror sync failed providerDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: connection.id.uuidString)): \(error.localizedDescription)"
                 )
@@ -134,7 +141,7 @@ final class StorytellerSyncStrategy: ProviderSyncStrategy {
         if pulled > 0 || catalogChanged {
             NotificationCenter.default.post(name: .continueListeningNeedsRefresh, object: nil)
         }
-        return ProviderSyncResult(pulled: pulled, pushed: pushed)
+        return ProviderSyncResult(pulled: pulled, pushed: pushed, failedBackends: failedBackends)
     }
 
     private func reconcileCatalog(

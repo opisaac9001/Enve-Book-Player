@@ -22,7 +22,7 @@ final class ProviderSyncSink: SyncSink {
             && (provider.syncCapability.contains(.pullProgress) || provider.syncCapability.contains(.pushProgress))
     }
 
-    func pull(book: Book, domain: ProgressSyncDomain) async -> SyncSnapshot? {
+    func pull(book: Book, domain: ProgressSyncDomain) async throws -> SyncSnapshot? {
         guard let provider = providerResolver.provider(for: book) else { return nil }
         guard provider.syncCapability.contains(.pullProgress) else { return nil }
         let sourceName = provider.connection.name.isEmpty ? provider.connection.type.rawValue : provider.connection.name
@@ -45,7 +45,7 @@ final class ProviderSyncSink: SyncSink {
                 )
             }
             guard let progressProvider = provider as? any EbookProgressPulling else { return nil }
-            guard let result = try? await progressProvider.fetchEbookProgressState(for: book),
+            guard let result = try await progressProvider.fetchEbookProgressState(for: book),
                 result.readState != .notReading
             else { return nil }
             return SyncSnapshot(
@@ -58,7 +58,7 @@ final class ProviderSyncSink: SyncSink {
             )
         } else {
             guard let progressProvider = provider as? any AudiobookProgressPulling else { return nil }
-            guard let result = try? await progressProvider.fetchAudiobookProgressState(for: book),
+            guard let result = try await progressProvider.fetchAudiobookProgressState(for: book),
                 result.readState != .notReading
             else { return nil }
             let dur = book.duration ?? 1
@@ -75,7 +75,7 @@ final class ProviderSyncSink: SyncSink {
     }
 
     func push(_ update: ProgressUpdate) async throws {
-        guard let provider = providerResolver.provider(for: update.book) else { return }
+        guard let provider = providerResolver.provider(for: update.book) else { throw ProviderError.invalidResponse }
         guard provider.syncCapability.contains(.pushProgress) else { return }
 
         if update.domain == .ebook {

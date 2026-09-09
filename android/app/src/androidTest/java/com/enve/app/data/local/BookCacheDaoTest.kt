@@ -6,6 +6,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.enve.core.data.local.BookCacheDao
 import com.enve.core.data.local.CachedBook
+import com.enve.core.data.local.PendingProgressPush
 import com.enve.core.data.local.BookMetadataOverride
 import com.enve.core.data.local.BookMetadataOverrideDao
 import com.enve.core.data.local.CustomSmartCollection
@@ -467,6 +468,100 @@ class BookCacheDaoTest {
         customSmartCollectionDao.delete("smart-1")
         assertEquals(0, customSmartCollectionDao.getAll().size)
     }
+
+    @Test
+    fun remoteProgressDoesNotReplaceNewerLocalListening() = runBlocking {
+        val local = cachedBook("audio", mediaType = "AUDIOBOOK").copy(
+            source = "AUDIOBOOKSHELF", currentTime = 900L, lastReadTime = 3000L,
+        )
+        dao.upsert(listOf(local))
+
+        assertEquals(0, applyRemoteAudio(updatedAt = 2000L))
+        assertEquals(0, applyRemoteAudio(updatedAt = 3000L))
+        assertEquals(0, applyRemoteAudio(updatedAt = 0L))
+        assertEquals(local, dao.getByCacheKey(local.cacheKey))
+    }
+
+    @Test
+    fun remoteProgressPreservesPendingLocalUpload() = runBlocking {
+        val local = cachedBook("audio").copy(source = "AUDIOBOOKSHELF", currentTime = 900L)
+        dao.upsert(listOf(local))
+        db.pendingProgressPushDao().upsert(PendingProgressPush(
+            bookId = "audio", source = "AUDIOBOOKSHELF", connectionKey = "test-conn",
+            mediaType = "AUDIOBOOK", percentage = 0.9f, isFinished = false, createdAt = 1000L,
+        ))
+
+        assertEquals(0, applyRemoteAudio(updatedAt = 2000L))
+        assertEquals(local, dao.getByCacheKey(local.cacheKey))
+    }
+
+    @Test
+    fun remoteProgressIsIsolatedByConnectionAndPreservesDownload() = runBlocking {
+        val other = cachedBook("audio", connectionId = "other").copy(source = "AUDIOBOOKSHELF")
+        dao.upsert(listOf(
+            cachedBook("audio", isDownloaded = true).copy(source = "AUDIOBOOKSHELF"), other,
+        ))
+        db.pendingProgressPushDao().upsert(PendingProgressPush(
+            bookId = "audio", source = "AUDIOBOOKSHELF", connectionKey = "other",
+            mediaType = "AUDIOBOOK", percentage = 0.9f, isFinished = false, createdAt = 1000L,
+        ))
+
+        assertEquals(1, applyRemoteAudio(updatedAt = 2000L))
+        val updated = dao.getByCacheKey("test-conn:audio")!!
+        assertEquals(120L, updated.currentTime)
+        assertEquals(2000L, updated.lastReadTime)
+        assertEquals(true, updated.isDownloaded)
+        assertEquals(true, updated.inProgress)
+        assertEquals(other, dao.getByCacheKey(other.cacheKey))
+    }
+
+    @Test
+    fun newerRemoteResetClearsPositionAndFinishedState() = runBlocking {
+        dao.upsert(listOf(cachedBook("audio").copy(
+            source = "AUDIOBOOKSHELF", currentTime = 900L, isFinished = true,
+            serverReadStatus = "READ", lastReadTime = 1000L, epubLocator = "old-locator",
+        )))
+
+        assertEquals(1, applyRemoteAudio(updatedAt = 2000L, position = 0L, progress = 0f))
+        val updated = dao.getByCacheKey("test-conn:audio")!!
+        assertEquals(0L, updated.currentTime)
+        assertEquals(false, updated.isFinished)
+        assertEquals(false, updated.inProgress)
+        assertNull(updated.epubLocator)
+        assertNull(updated.serverReadStatus)
+    }
+
+    @Test
+    fun remoteCompletionRemovesBookFromContinueListening() = runBlocking {
+        dao.upsert(listOf(cachedBook("audio").copy(
+            source = "AUDIOBOOKSHELF", currentTime = 120L, inProgress = true,
+        )))
+
+        assertEquals(1, dao.applyRemoteProgress(
+            cacheKey = "test-conn:audio", source = "AUDIOBOOKSHELF",
+            progress = 0.5f, ebookProgress = null, currentTimeSec = 120L,
+            locatorJson = null, finished = true, readStatus = null, updatedAt = 2000L,
+        ))
+        val updated = dao.getByCacheKey("test-conn:audio")!!
+        assertEquals(true, updated.isFinished)
+        assertEquals(false, updated.inProgress)
+    }
+
+    @Test
+    fun insertingRemoteDiscoveryDoesNotReplaceExistingLocalBook() = runBlocking {
+        val local = cachedBook("audio", isDownloaded = true).copy(currentTime = 900L)
+        dao.upsert(listOf(local))
+
+        assertEquals(-1L, dao.insertIfAbsent(cachedBook("audio")))
+        assertEquals(local, dao.getByCacheKey(local.cacheKey))
+    }
+
+    private suspend fun applyRemoteAudio(updatedAt: Long, position: Long = 120L, progress: Float = 0.2f) =
+        dao.applyRemoteProgress(
+            cacheKey = "test-conn:audio", source = "AUDIOBOOKSHELF",
+            progress = progress, ebookProgress = null, currentTimeSec = position,
+            locatorJson = null, finished = false, readStatus = null, updatedAt = updatedAt,
+        )
 
     private fun cachedBook(
         id: String,

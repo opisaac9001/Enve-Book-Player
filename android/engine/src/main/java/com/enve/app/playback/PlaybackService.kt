@@ -1143,6 +1143,12 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
+    private fun usesChapterMediaItems(
+        player: Player,
+        snapshot: PlaybackChapterStore.Snapshot,
+    ): Boolean = snapshot.usesMediaItemIndexes(player.mediaItemCount) ||
+        player.currentMediaItem?.mediaId?.let(AutoMediaBrowserHelper::isChapterMediaId) == true
+
     private fun applyChapterMetadata(snapshot: PlaybackChapterStore.Snapshot) {
 
         if (activePlaybackTarget() === castPlayer) return
@@ -1152,7 +1158,7 @@ class PlaybackService : MediaLibraryService() {
         val currentCacheKey = AutoMediaBrowserHelper.cacheKeyFrom(current.mediaId) ?: return
         if (snapshot.cacheKey != currentCacheKey) return
 
-        val chapterIndex = if (snapshot.usesMediaItemIndexes(player.mediaItemCount)) {
+        val chapterIndex = if (usesChapterMediaItems(player, snapshot)) {
             player.currentMediaItemIndex
         } else {
             snapshot.chapterIndexAt(absolutePositionSec(player))
@@ -1381,7 +1387,7 @@ class PlaybackService : MediaLibraryService() {
         private fun seekToChapter(player: Player, next: Boolean): Boolean {
             val snapshot = chapterStore?.snapshot?.value ?: return false
             if (snapshot.chapters.isEmpty()) return false
-            if (snapshot.usesMediaItemIndexes(player.mediaItemCount)) {
+            if (usesChapterMediaItems(player, snapshot)) {
                 val currentIndex = player.currentMediaItemIndex
                     .coerceIn(0, snapshot.chapters.lastIndex)
                 val targetIndex = if (next) {
@@ -1426,7 +1432,7 @@ class PlaybackService : MediaLibraryService() {
                 )
                 putInt(
                     MediaConstants.EXTRAS_KEY_CONTENT_STYLE_PLAYABLE,
-                    MediaConstants.EXTRAS_VALUE_CONTENT_STYLE_GRID_ITEM,
+                    MediaConstants.EXTRAS_VALUE_CONTENT_STYLE_LIST_ITEM,
                 )
             }
             val rootParams = LibraryParams.Builder()

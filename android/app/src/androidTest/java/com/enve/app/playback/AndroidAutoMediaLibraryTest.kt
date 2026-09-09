@@ -432,7 +432,7 @@ class AndroidAutoMediaLibraryTest {
                 ),
             )
             assertEquals(
-                MediaConstants.EXTRAS_VALUE_CONTENT_STYLE_GRID_ITEM,
+                MediaConstants.EXTRAS_VALUE_CONTENT_STYLE_LIST_ITEM,
                 rootResult.params?.extras?.getInt(
                     MediaConstants.EXTRAS_KEY_CONTENT_STYLE_PLAYABLE,
                 ),
@@ -447,19 +447,21 @@ class AndroidAutoMediaLibraryTest {
             assertEquals(
                 listOf(
                     AutoMediaBrowserHelper.SHELF_IN_PROGRESS,
+                    AutoMediaBrowserHelper.SHELF_LIBRARY,
+                    AutoMediaBrowserHelper.SHELF_DOWNLOADS,
                     AutoMediaBrowserHelper.SHELF_RECENT,
                 ),
                 shelves!!.map { it.mediaId },
             )
             assertEquals(
-                listOf("Continue Listening", "Recently Added"),
+                listOf("Continue Listening", "Library", "Downloads", "Recently Added"),
                 shelves.map { it.mediaMetadata.title.toString() },
             )
             assertEquals(
-                listOf("android.resource", "android.resource"),
+                listOf("android.resource", "android.resource", "android.resource", "android.resource"),
                 shelves.map { it.mediaMetadata.artworkUri?.scheme },
             )
-            assertEquals(2, shelves.map { it.mediaMetadata.artworkUri }.distinct().size)
+            assertEquals(4, shelves.map { it.mediaMetadata.artworkUri }.distinct().size)
 
             val recent = controllerHandler.call {
                 browser.getItem(AutoMediaBrowserHelper.SHELF_RECENT)

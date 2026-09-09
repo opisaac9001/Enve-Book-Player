@@ -10,6 +10,7 @@ struct SourcesQuickConnectScreen: View {
     @State private var statusMessage: String?
     @State private var errorMessage: String?
     @State private var detected: DetectedServer?
+    @State private var didAddSource = false
     @State private var showingManual = false
     @State private var probeTask: Task<Void, Never>?
 
@@ -75,7 +76,11 @@ struct SourcesQuickConnectScreen: View {
         .background(HearthBackground())
         .toolbar(.hidden, for: .navigationBar)
         .onDisappear { probeTask?.cancel() }
-        .sheet(item: $detected) { server in
+        .sheet(item: $detected, onDismiss: {
+            guard didAddSource else { return }
+            didAddSource = false
+            dismiss()
+        }) { server in
             detectedLogin(for: server).enveEnvironment()
         }
         .sheet(isPresented: $showingManual) {
@@ -146,7 +151,7 @@ struct SourcesQuickConnectScreen: View {
     }
 
     private func finish() {
+        didAddSource = true
         detected = nil
-        dismiss()
     }
 }

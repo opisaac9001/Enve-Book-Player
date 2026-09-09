@@ -40,12 +40,10 @@ data class QuickConnectUiState(
 )
 
 data class AuthState(
-    // Login form fields (not synced from preferences)
     val serverUrl: String = "",
     val username: String = "",
     val password: String = "",
 
-    // Currently active connection info (synced from preferences)
     val activeSource: BookSource = BookSource.GRIMMORY,
     val activeServerUrl: String = "",
     val activeUsername: String = "",
@@ -53,7 +51,6 @@ data class AuthState(
     val selectedSource: BookSource = BookSource.GRIMMORY,
     val editingConnectionId: String? = null,
     val browserAuthUrl: String? = null,
-    // Cookie name to poll for instead of waiting on a deep-link callback (Komga "SESSION").
     val browserAuthRequiredCookie: String? = null,
     val browserAuthRequiresOriginReturn: Boolean = false,
     val komgaOauthProvider: String = "",
@@ -64,20 +61,16 @@ data class AuthState(
     val isInitialized: Boolean = false,
     val showDiscordAnnouncement: Boolean = false,
     val error: String? = null,
-    // Plex PIN OAuth
     val plexPinId: Long = 0L,
     val plexPinCode: String = "",
     val plexPolling: Boolean = false,
-    // Plex Home user picker — populated when the user opens the switcher.
     val plexHomeUsers: List<com.enve.plex.auth.PlexHomeUser> = emptyList(),
     val plexHomeUsersLoading: Boolean = false,
     val plexHomeUsersError: String? = null,
     val plexCurrentUserId: Long? = null,
-    // Multi-service
     val allConnections: List<ProviderConnection> = emptyList(),
     val activeConnectionId: String? = null,
 
-    // Advanced connection options
     val urlScheme: UrlScheme = UrlScheme.HTTPS,
     val authMode: ConnectionAuthMode = ConnectionAuthMode.AUTO,
     val customHeaders: Map<String, String> = emptyMap(),
@@ -89,23 +82,17 @@ data class AuthState(
     val mtlsCertSubject: String? = null,
     val mtlsCertError: String? = null,
 
-    // Quick Connect (Jellyfin)
     val quickConnectCode: String = "",
     val quickConnectPolling: Boolean = false,
-    // Incremented on every successful login so the login screen can dismiss
-    // regardless of whether the user was already connected via another source.
-    // The prefs.isConnected approach breaks for multi-source because it's always true.
     val loginEpoch: Int = 0,
     val importMessage: String? = null,
     val cloudRootCandidates: List<String> = emptyList(),
     val selectedCloudRootPaths: List<String> = emptyList(),
     val pendingCloudRootConnectionId: String? = null,
 
-    // connectionHealth keyed by ProviderConnection.id; missing key = not yet probed.
     val isCheckingHealth: Boolean = false,
     val connectionHealth: Map<String, Boolean> = emptyMap(),
 ) {
-    // Effective headers merge: customHeaders + service tokens
     val effectiveHeaders: Map<String, String>
         get() {
             val merged = customHeaders.toMutableMap()
@@ -150,7 +137,6 @@ class AuthViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            // Run migration before anything else touches connection state
             runCatching { migrateOldSingleServerToConnectionRegistry() }
             runCatching { flagExpiredCloudflareCookies() }
             launch { runCatching { refreshKomgaAdminFlags() } }
@@ -188,8 +174,6 @@ class AuthViewModel @Inject constructor(
                         isInitialized = true,
                         allConnections = allConnections,
                         activeConnectionId = activeConnId,
-                        // Show the Discord announcement once: only for users upgrading to v10+
-                        // who haven't dismissed it yet. VERSION_CODE 10 = v1.3.
                         showDiscordAnnouncement = lastSeen < com.enve.app.BuildConfig.VERSION_CODE,
                     )
                 }
@@ -197,8 +181,6 @@ class AuthViewModel @Inject constructor(
         }
     }
 
-    // Migrate existing single-server users to the connection registry.
-    // Only runs once - after that the flag is set and we skip.
     private suspend fun migrateOldSingleServerToConnectionRegistry() {
         if (prefs.migrationCompleted.first()) return
 
@@ -227,7 +209,6 @@ class AuthViewModel @Inject constructor(
 
         connectionRegistry.upsert(connection)
 
-        // Copy legacy credentials to per-connection storage
         vault.put(CredentialVault.accessTokenKey(connectionId), oldAccessToken)
         if (oldUsername.isNotBlank()) {
             vault.put(CredentialVault.usernameKey(connectionId), oldUsername)
@@ -270,7 +251,6 @@ class AuthViewModel @Inject constructor(
 
     fun setSelectedSource(source: BookSource) {
         val defaultUrl = defaultServerUrlFor(source)
-        // Clear login fields when changing source to ensure a fresh form
         _state.update { it.copy(
             selectedSource = source,
             editingConnectionId = null,
@@ -388,8 +368,6 @@ class AuthViewModel @Inject constructor(
     }
 
     fun stagePendingLoginCookie(cookie: String) {
-        // Update the volatile cache synchronously so the next interceptor call sees the
-        // value even if the DataStore write is still in flight, then persist async.
         prefs.stagePendingLoginCookie(cookie)
         viewModelScope.launch { prefs.setPendingLoginCookie(cookie) }
     }
@@ -450,7 +428,6 @@ class AuthViewModel @Inject constructor(
 
     fun updateMtlsCertPassword(password: String) {
         _state.update { it.copy(mtlsCertPassword = password, mtlsCertError = null) }
-        // Re-validate if bytes already staged
         val bytes = _state.value.mtlsCertBytes ?: return
         if (bytes.isNotEmpty()) validateStagedMtlsCert(bytes, password)
     }
@@ -491,7 +468,8 @@ class AuthViewModel @Inject constructor(
 
     fun login() {
         val current = _state.value
-        if (current.serverUrl.isBlank() || current.username.isBlank() || current.password.isBlank()) {
+        val requiresCredentials = current.selectedSource != BookSource.OPDS
+        if (current.serverUrl.isBlank() || (requiresCredentials && (current.username.isBlank() || current.password.isBlank()))) {
             _state.update { it.copy(error = "All fields are required") }
             return
         }
@@ -509,7 +487,7 @@ class AuthViewModel @Inject constructor(
 
         viewModelScope.launch {
             _state.update { it.copy(isLoading = true, error = null, serverUrl = normalizedUrl) }
-            val trimmedServerUrl = normalizedUrl.trimEnd('/')
+            val trimmedServerUrl = if (current.selectedSource == BookSource.OPDS) normalizedUrl else normalizedUrl.trimEnd('/')
             val previousSource = prefs.activeBookSource.first()
             val previousConnectionId = prefs.activeConnectionId.first()
             val previousServerUrl = prefs.serverUrl.first()
@@ -522,7 +500,6 @@ class AuthViewModel @Inject constructor(
                     password = current.password,
                 ).map { Unit }
             } else {
-                // Surface source + server first so interceptors pick the right base/token before the network call.
                 prefs.setActiveBookSource(current.selectedSource)
                 prefs.saveServerInfo(trimmedServerUrl, current.username)
                 repository.invalidateListCaches()
@@ -536,7 +513,6 @@ class AuthViewModel @Inject constructor(
             result.onSuccess {
                 val connState = current.copy(serverUrl = normalizedUrl)
                 val connectionId = upsertConnectionForCurrentState(connState)
-                // Store per-connection creds alongside legacy ones
                 storePerConnectionCredentials(connectionId, current.username, current.password)
                 prefs.setActiveConnectionId(connectionId)
                 _state.update {
@@ -570,7 +546,6 @@ class AuthViewModel @Inject constructor(
         var cleaned = url.filter { it >= ' ' }.trim()
         if (cleaned.isEmpty()) return ""
 
-        // Recover pasted URLs containing concatenated or nested schemes.
         val firstProtocolIndex = cleaned.indexOf("://")
         if (firstProtocolIndex != -1) {
             val secondProtocolIndex = cleaned.indexOf("://", firstProtocolIndex + 3)
@@ -587,7 +562,6 @@ class AuthViewModel @Inject constructor(
             }
         }
 
-        // Explicit scheme from the toggle is authoritative; strip any baked-in scheme so the toggle wins.
         return if (scheme != null) {
             val stripped = cleaned.removePrefix("http://").removePrefix("https://")
             "${scheme.prefix}$stripped"
@@ -1000,9 +974,7 @@ class AuthViewModel @Inject constructor(
         val host = uri.host.orEmpty().lowercase()
         val path = uri.path.orEmpty().lowercase()
         val isStorytellerCallback = scheme == "storyteller"
-        // ABS:        audiobookshelf://oauth?…
         val isAbsOauthCallback = scheme == "audiobookshelf" && host == "oauth"
-        // Grimmory:   grimmory://oauth2-callback or legacy booklore://oauth2-callback
         val isGrimmoryOauthCallback = scheme == "grimmory" || scheme == "booklore"
         val isBookOrbitOauthCallback = path.contains("oauth2-callback")
 
@@ -1033,13 +1005,9 @@ class AuthViewModel @Inject constructor(
             .mapNotNull { key -> uri.getQueryParameter(key)?.takeIf { it.isNotBlank() } }
             .firstOrNull()
 
-        // Apply server URL immediately (before the coroutine) so it's in state when
-        // the Storyteller exchange call fires - handles the case where ViewModel state
-        // was reset while AuthBrowserActivity was open (e.g. process recreation).
         if (!callbackServerUrl.isNullOrBlank()) {
             _state.update { it.copy(serverUrl = callbackServerUrl) }
         }
-        // Ensure selectedSource is Storyteller for the callback path even if state reset.
         if (isStorytellerCallback) {
             _state.update { it.copy(selectedSource = BookSource.STORYTELLER) }
         }
@@ -1061,8 +1029,6 @@ class AuthViewModel @Inject constructor(
                     val effectiveToken = resolved?.accessToken ?: token
                     effectiveUrl to effectiveToken
                 } else {
-                    // For Storyteller, prefer the server URL embedded in the callback URI
-                    // (set by AuthBrowserActivity) over the possibly-stale state URL.
                     val stateUrl = _state.value.serverUrl.trim()
                     val serverUrl = callbackServerUrl?.takeIf { it.isNotBlank() } ?: stateUrl
                     serverUrl to token
@@ -1279,10 +1245,6 @@ class AuthViewModel @Inject constructor(
     private fun validateServerUrl(url: String): String? {
         val trimmed = url.trim()
         if (trimmed.isBlank()) return "Server URL is required"
-        // android.net.Uri.parse() is lenient and never throws - it accepts underscores in
-        // hostnames, non-standard ports, and other common internal server naming patterns that
-        // java.net.URI rejects with URISyntaxException, causing a false "Server URL is invalid"
-        // error before any network call is ever attempted.
         val parsed = android.net.Uri.parse(trimmed)
         if (_state.value.selectedSource == BookSource.SMB) {
             return when {
@@ -1310,9 +1272,6 @@ class AuthViewModel @Inject constructor(
         }
     }
 
-    // ─── Plex PIN OAuth ───────────────────────────────────────────────────────
-    // Protocol mechanics live in [PlexPinAuthFlow]; this VM just orchestrates
-    // UI state + token-acquired → connection persistence.
 
     fun startPlexOAuth() {
         viewModelScope.launch {
@@ -1341,21 +1300,8 @@ class AuthViewModel @Inject constructor(
                     return@launch
                 }
 
-                // Persist the plex.tv-issued user token so the Home user picker
-                // can enumerate /api/v2/home/users later — per-connection vault
-                // tokens get overwritten when the user switches, but this one
-                // always lets us list users and switch back to the owner.
                 prefs.setPlexOwnerToken(auth.userToken)
 
-                // Register every Plex server the account has access to as its own
-                // ConnectionRegistry entry (per-user product choice). The first one
-                // becomes the active connection so the rest of the post-login flow
-                // doesn't change.
-                //
-                // No fallback to plex.tv if discovery returned nothing — registering
-                // plex.tv as a "server" then trying GET /library/sections against it
-                // 404s the whole library load. Surface the auth-without-servers case
-                // as an explicit error so the user knows to check their PMS.
                 if (auth.allServers.isEmpty()) {
                     _state.update {
                         it.copy(
@@ -1382,8 +1328,6 @@ class AuthViewModel @Inject constructor(
                     )
                     val connId = upsertConnectionForCurrentState(connState)
                     storePerConnectionCredentials(connId, name, null)
-                    // Each Plex server gets its own server-scoped token in the vault
-                    // so multi-server users can browse them independently.
                     runCatching {
                         vault.put(
                             com.enve.core.auth.CredentialVault.accessTokenKey(connId),
@@ -1399,16 +1343,6 @@ class AuthViewModel @Inject constructor(
                 val activeId = firstConnId
                 val primary = firstServer
                 if (activeId != null && primary != null) {
-                    // ServiceLoginScreen dismisses when ALL of:
-                    //   authState.isConnected == true
-                    //   authState.activeSource == PLEX
-                    //   authState.loginEpoch > baselineEpoch (captured at screen open)
-                    //
-                    // All three flow from prefs writes through the combine() above
-                    // (line ~139). Write them directly here instead of through
-                    // repository.loginWithToken so a future refactor of that helper
-                    // can't accidentally break login dismissal — these calls are
-                    // load-bearing for the UI.
                     prefs.setActiveBookSource(BookSource.PLEX)
                     prefs.saveServerInfo(
                         url = primary.url,
@@ -1443,13 +1377,6 @@ class AuthViewModel @Inject constructor(
         _state.update { it.copy(plexPolling = false, plexPinId = 0L, plexPinCode = "", error = null) }
     }
 
-    // ─── Plex Home users ──────────────────────────────────────────────────
-    // Lists the users on the owner's Plex Home and lets the user switch to
-    // one. The owner token (stored by startPlexOAuth) is the call credential.
-    // After a successful switch, every Plex connection in the registry gets
-    // the new user-scoped token written to its vault entry, since one user
-    // can have access to multiple servers and we want all of them to see the
-    // switched identity.
 
     fun loadPlexHomeUsers() {
         viewModelScope.launch {
@@ -1522,9 +1449,6 @@ class AuthViewModel @Inject constructor(
         _state.update { it.copy(plexHomeUsersError = null) }
     }
 
-    // ─── Jellyfin Quick Connect ─────────────────────────────────────────────
-    // Protocol mechanics live in [JellyfinQuickConnectFlow]; this VM
-    // orchestrates UI state + token-acquired → connection persistence.
     private var jellyfinPollJob: Job? = null
 
     fun startJellyfinQuickConnect() {
@@ -1552,9 +1476,6 @@ class AuthViewModel @Inject constructor(
                 )
             }
 
-            // Pre-flight: friendlier upfront if QC is admin-disabled.
-            // null result means the probe itself failed (network) — fall through
-            // and let Initiate surface the real error.
             if (jellyfinQuickConnectFlow.isEnabled(normalizedUrl) == false) {
                 _state.update {
                     it.copy(
@@ -1735,7 +1656,6 @@ class AuthViewModel @Inject constructor(
         }
     }
 
-    // Returns the deterministic connection ID so callers can store creds against it
     private suspend fun upsertConnectionForCurrentState(state: AuthState): String {
         val normalizedUrl = state.serverUrl.trim().trimEnd('/')
         val username = state.username.ifBlank { "token-user" }
@@ -1749,7 +1669,6 @@ class AuthViewModel @Inject constructor(
             runCatching { libraryCacheRepository.clearForConnection(existingConnectionId) }
         }
 
-        // Persist any staged mTLS cert to the connection's permanent store
         val certBytes = state.mtlsCertBytes
         if (state.mtlsEnabled && certBytes != null && certBytes.isNotEmpty()) {
             runCatching {
@@ -1757,7 +1676,6 @@ class AuthViewModel @Inject constructor(
             }
         }
 
-        // Store service tokens in encrypted vault
         if (state.serviceClientId.isNotBlank()) {
             vault.put(CredentialVault.serviceClientIdKey(connectionId), state.serviceClientId)
         }
@@ -1785,8 +1703,6 @@ class AuthViewModel @Inject constructor(
                 cloudRootPaths = existingConnection?.cloudRootPaths.orEmpty(),
             )
         )
-        // Connection now carries the Cookie via customHeaders; the pre-login staging slot
-        // is no longer needed and would otherwise leak into the next "Connect" flow.
         prefs.clearPendingLoginContext()
 
         if (state.selectedSource == BookSource.KOMGA) {
@@ -1804,8 +1720,6 @@ class AuthViewModel @Inject constructor(
                 }
             }
         }
-        // Kick a background ingest so Library / Browse / Home start populating immediately
-        // instead of forcing the user to pull-to-refresh after every new server.
         runCatching { libraryCacheRepository.ingestConnectionsInBackground(listOf(connectionId)) }
         return connectionId
     }
@@ -1815,7 +1729,6 @@ class AuthViewModel @Inject constructor(
         return "${source.displayName} ($host)"
     }
 
-    // Store creds keyed by connection ID so each connection has its own tokens
     private fun storePerConnectionCredentials(connectionId: String, username: String?, password: String?) {
         if (!username.isNullOrBlank()) {
             vault.put(CredentialVault.usernameKey(connectionId), username)
@@ -1831,11 +1744,6 @@ class AuthViewModel @Inject constructor(
         if (!password.isNullOrBlank()) {
             vault.put(CredentialVault.passwordKey(connectionId), password)
         }
-        // Mirror the just-written kosync credentials (Grimmory.login wrote them keyed by
-        // serverUrl) onto the connection-keyed slot. The serverUrl-keyed slot is shared
-        // across all accounts on the same host, so without this mirror two Grimmory users
-        // on the same server would each see only the other's kosync creds. Sync paths
-        // prefer the connection-keyed slot when ConnectionScope is set.
         val serverUrl = _state.value.serverUrl.trim().trimEnd('/')
         if (serverUrl.isNotBlank()) {
             vault.get(CredentialVault.kosyncUsernameKey(serverUrl))?.let {
@@ -1847,7 +1755,6 @@ class AuthViewModel @Inject constructor(
         }
     }
 
-    // ─── Connection Management ────────────────────────────────────────────────
 
     fun listConnections(): Flow<List<ProviderConnection>> = connectionRegistry.connections
 
@@ -1865,17 +1772,10 @@ class AuthViewModel @Inject constructor(
         viewModelScope.launch {
             connectionRegistry.setEnabled(connectionId, enabled)
             if (!enabled) {
-                // Disabling a connection should immediately stop its books from showing up
-                // in Browse / Home counts. Cache entries get cleared; the next refresh after
-                // re-enabling repopulates them. Same semantics as removeConnection without
-                // touching credentials. Downloaded files on disk are NOT touched; the user
-                // can still play/read them via the Downloads tab.
                 runCatching { libraryCacheRepository.clearForConnection(connectionId) }
                 runCatching { aggregatorRepository.invalidateCaches() }
                 runCatching { aggregatorRepository.clearHomeSnapshotCache() }
             } else {
-                // Re-enable: ingest just this connection so we don't re-fetch every other
-                // server's books.
                 runCatching { libraryCacheRepository.ingestConnectionsInBackground(listOf(connectionId)) }
             }
         }
@@ -1886,11 +1786,9 @@ class AuthViewModel @Inject constructor(
             val connection = connectionRegistry.connections.first()
                 .find { it.id == connectionId } ?: return@launch
 
-            // Update the legacy single-server keys so interceptors/repos just work
             prefs.setActiveBookSource(connection.source)
             prefs.saveServerInfo(connection.serverUrl, connection.username)
 
-            // Restore per-connection tokens to legacy keys
             val accessToken = vault.get(CredentialVault.accessTokenKey(connectionId))
             val refreshToken = vault.get(CredentialVault.refreshTokenKey(connectionId))
             if (!accessToken.isNullOrBlank()) {
@@ -1908,7 +1806,6 @@ class AuthViewModel @Inject constructor(
 
     fun removeConnection(connectionId: String) {
         viewModelScope.launch {
-            // Nuke per-connection creds
             vault.remove(CredentialVault.accessTokenKey(connectionId))
             vault.remove(CredentialVault.refreshTokenKey(connectionId))
             vault.remove(CredentialVault.passwordKey(connectionId))
@@ -1919,10 +1816,6 @@ class AuthViewModel @Inject constructor(
             vault.remove(CredentialVault.kosyncPasswordKeyForConnection(connectionId))
             mtlsManager.clearCert(connectionId)
 
-            // Drop cached books/libraries for this connection so Home/Library don't keep
-            // rendering content from a server the user just deleted. Downloaded books on
-            // disk (OfflineDownloadManager / ComicOfflineService) are intentionally NOT
-            // touched — the user can still read/listen to those locally.
             runCatching { libraryCacheRepository.clearForConnection(connectionId) }
             runCatching { aggregatorRepository.invalidateCaches() }
             runCatching { aggregatorRepository.clearHomeSnapshotCache() }
@@ -1933,18 +1826,12 @@ class AuthViewModel @Inject constructor(
                 prefs.clearActiveConnectionId()
             }
 
-            // Wipe the legacy single-server fields once the registry empties so Settings
-            // stops showing the deleted server's URL.
             if (connectionRegistry.connections.first().isEmpty()) {
                 prefs.clearAuth()
             }
         }
     }
 
-    // Cloudflare Access cookies (CF_Authorization) are short-lived JWTs (default 24h).
-    // After a couple of restarts they'll be expired and every API call returns the IdP
-    // challenge HTML. Decode the JWT exp claim on launch and flag connections whose
-    // cookie is gone - the LibraryConnections row already shows a "Needs sign in" badge.
     private suspend fun flagExpiredCloudflareCookies() {
         val nowSec = System.currentTimeMillis() / 1000L
         val expiryBufferSec = 60L
@@ -1985,9 +1872,6 @@ class AuthViewModel @Inject constructor(
         0L
     }
 
-    // Walks every Komga connection and queries /api/v1/users/me to update isAdmin. Runs in
-    // ConnectionScope per connection so the request hits the right server. Failures (network,
-    // 401, etc.) are silent - admin flag just isn't updated.
     private suspend fun refreshKomgaAdminFlags() {
         val current = connectionRegistry.connections.first()
             .filter { it.source == BookSource.KOMGA && it.enabled }
@@ -2043,9 +1927,6 @@ class AuthViewModel @Inject constructor(
         }
     }
 
-    // Re-stage a fresh CF_Authorization cookie captured from the in-app browser onto an
-    // existing connection. Replaces only the Cookie header so other custom headers (e.g. a
-    // user-added X-Forwarded-Host) are preserved.
     fun restoreCloudflareCookieForConnection(connectionId: String, cookie: String) {
         if (cookie.isBlank()) return
         viewModelScope.launch {

@@ -1,6 +1,7 @@
 @preconcurrency import CarPlay
 import Combine
 import Foundation
+import Logging
 
 final class CarPlayController {
     private let interfaceController: CPInterfaceController
@@ -40,6 +41,23 @@ final class CarPlayController {
                 nowPlaying.showNowPlaying()
             }
         }
+    }
+}
+
+@MainActor
+func carPlayInterfaceCompletion(
+    _ operation: String,
+    then followUp: (() -> Void)? = nil
+) -> (Bool, (any Error)?) -> Void {
+    { success, error in
+        if !success {
+            if let error {
+                AppLogger.carplay.error("[CarPlay] \(operation) failed: \(error)")
+            } else {
+                AppLogger.carplay.error("[CarPlay] \(operation) failed")
+            }
+        }
+        followUp?()
     }
 }
 

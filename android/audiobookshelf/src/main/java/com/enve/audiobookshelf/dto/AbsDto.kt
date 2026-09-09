@@ -134,14 +134,24 @@ data class AbsSeriesPayload(
 data class AbsMediaProgressDto(
     val id: String? = null,
     val libraryItemId: String? = null,
+    val episodeId: String? = null,
     val duration: Double? = null,
     val progress: Float? = null,
     val currentTime: Double? = null,
     val isFinished: Boolean? = null,
+    val finishedAt: Long? = null,
     val lastUpdate: Long? = null,
     val ebookLocation: String? = null,
     val ebookProgress: Float? = null,
-)
+) {
+    val resolvedIsFinished: Boolean
+        get() {
+            if (isFinished == true || finishedAt != null || (progress ?: 0f) >= 0.99f) return true
+            val total = duration ?: return false
+            val position = currentTime ?: return false
+            return total > 0.0 && position >= total * 0.99
+        }
+}
 
 @Serializable
 data class AbsChaptersResponse(

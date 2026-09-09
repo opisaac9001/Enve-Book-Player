@@ -34,7 +34,7 @@ enum ABSMediaTypeClassifier {
 }
 
 class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvider, AudiobookProgressProvider,
-    EbookProgressPulling, EbookDownloadProvider, @unchecked Sendable
+    EbookProgressProvider, EbookDownloadProvider, @unchecked Sendable
 {
     var connection: ServerConnection
 
@@ -42,7 +42,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         [
             .fullImport, .pagedImport, .streamingImport, .deltaImport,
             .recentBooks, .series, .collections,
-            .audiobookProgressPull, .audiobookProgressPush, .ebookProgressPull,
+            .audiobookProgressPull, .audiobookProgressPush, .ebookProgressPull, .ebookProgressPush,
             .downloads, .coverAuthQuery, .backgroundOperation,
         ]
     }
@@ -633,6 +633,14 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         let lastUpdate: Double?
         let ebookProgress: Double?
         let ebookLocation: String?
+
+        var resolvedIsFinished: Bool {
+            if isFinished == true || (progress ?? 0) >= 0.99 {
+                return true
+            }
+            guard let duration, duration > 0, let currentTime else { return false }
+            return currentTime >= duration * 0.99
+        }
     }
 
     func fetchLibraries() async throws -> [Library] {
@@ -1489,7 +1497,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
                     episodeId: item.episodeId,
                     currentTime: item.currentTime ?? 0,
                     progress: item.progress ?? 0,
-                    isFinished: item.isFinished ?? false,
+                    isFinished: item.resolvedIsFinished,
                     duration: item.duration ?? 0,
                     lastUpdate: item.lastUpdateDate ?? Date.distantPast,
                     ebookProgress: item.ebookProgress
@@ -1554,7 +1562,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
                 episodeId: p.episodeId,
                 currentTime: p.currentTime ?? 0,
                 progress: p.progress ?? 0,
-                isFinished: p.isFinished ?? false,
+                isFinished: p.resolvedIsFinished,
                 duration: p.duration ?? 0,
                 lastUpdate: p.lastUpdate.map { Date(timeIntervalSince1970: $0 / 1000) } ?? Date.distantPast,
                 ebookProgress: p.ebookProgress
@@ -1880,12 +1888,14 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             progressRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
             let duration = book.duration ?? 0
-            let progressBody: [String: Any] = [
+            var progressBody: [String: Any] = [
                 "currentTime": currentTime,
-                "isFinished": isFinished,
+                "duration": duration,
                 "progress": currentTime / (duration > 0 ? duration : 1),
             ]
-            progressRequest.httpBody = try? JSONSerialization.data(withJSONObject: progressBody)
+            // ABS clears currentTime when isFinished changes from true to false.
+            if isFinished || currentTime <= 0 { progressBody["isFinished"] = isFinished }
+            progressRequest.httpBody = try JSONSerialization.data(withJSONObject: progressBody)
 
             let (_, progressResponse) = try await performRequest(progressRequest)
             guard let progressHttp = progressResponse as? HTTPURLResponse, (200...299).contains(progressHttp.statusCode) else {
@@ -1906,12 +1916,13 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
             let duration = book.duration ?? 0
-            let body: [String: Any] = [
+            var body: [String: Any] = [
                 "currentTime": currentTime,
-                "isFinished": isFinished,
+                "duration": duration,
                 "progress": currentTime / (duration > 0 ? duration : 1),
             ]
-            request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+            if isFinished || currentTime <= 0 { body["isFinished"] = isFinished }
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
             let (_, response) = try await performRequest(request)
             guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
@@ -2158,17 +2169,14 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
         var body: [String: Any] = [
-            "progress": progress,
             "ebookProgress": progress,
-            "currentTime": 0,
-            "duration": 0,
             "isFinished": progress >= 0.99,
         ]
         if let epubLocator {
             body["ebookLocation"] = epubLocator
         }
 
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (_, response) = try await performRequest(request)
         if let httpResponse = response as? HTTPURLResponse, !(200...299).contains(httpResponse.statusCode) {
@@ -2188,13 +2196,11 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         var request = URLRequest(url: progressURL)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
-        guard let (data, response) = try? await performRequest(request),
-            let http = response as? HTTPURLResponse,
-            http.statusCode == 200,
-            let p = try? Self.absDecoder.decode(ABSProgressItem.self, from: data)
-        else {
-            return nil
-        }
+        let (data, response) = try await performRequest(request)
+        guard let http = response as? HTTPURLResponse else { throw ProviderError.invalidResponse }
+        if http.statusCode == 404 { return nil }
+        guard http.statusCode == 200 else { throw ProviderError.invalidResponse }
+        let p = try Self.absDecoder.decode(ABSProgressItem.self, from: data)
 
         let progress = p.ebookProgress ?? p.progress ?? 0
         let locator = p.ebookLocation
@@ -2211,17 +2217,17 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             throw ProviderError.unauthorized
         }
 
-        let progressURL = baseURL.appendingPathComponent("api/me/progress/\(book.partKey ?? book.id)")
+        var path = "api/me/progress/\(book.podcastLibraryItemId ?? book.partKey ?? book.id)"
+        if book.isPodcastEpisode, let episodeId = book.episodeId { path += "/\(episodeId)" }
+        let progressURL = baseURL.appendingPathComponent(path)
         var request = URLRequest(url: progressURL)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
-        guard let (data, response) = try? await performRequest(request),
-            let http = response as? HTTPURLResponse,
-            http.statusCode == 200,
-            let p = try? Self.absDecoder.decode(ABSProgressItem.self, from: data)
-        else {
-            return nil
-        }
+        let (data, response) = try await performRequest(request)
+        guard let http = response as? HTTPURLResponse else { throw ProviderError.invalidResponse }
+        if http.statusCode == 404 { return nil }
+        guard http.statusCode == 200 else { throw ProviderError.invalidResponse }
+        let p = try Self.absDecoder.decode(ABSProgressItem.self, from: data)
 
         let positionSeconds = p.currentTime ?? 0
         let percentage = p.progress ?? 0

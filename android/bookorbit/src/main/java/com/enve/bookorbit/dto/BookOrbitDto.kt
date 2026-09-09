@@ -1,6 +1,36 @@
 package com.enve.bookorbit.dto
 
+import kotlinx.serialization.KSerializer
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.descriptors.PrimitiveKind
+import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
+import kotlinx.serialization.json.JsonDecoder
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.jsonPrimitive
+
+object BookOrbitSeriesIndexSerializer : KSerializer<String?> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("BookOrbitSeriesIndex", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): String? {
+        val json = decoder as? JsonDecoder ?: return decoder.decodeString()
+        val value = json.decodeJsonElement()
+        if (value is JsonNull) return null
+        val primitive = value.jsonPrimitive
+        return if (primitive.isString) primitive.content else primitive.content.toDoubleOrNull()?.let { number ->
+            if (number % 1.0 == 0.0) number.toLong().toString() else number.toString()
+        } ?: primitive.content
+    }
+
+    @OptIn(ExperimentalSerializationApi::class)
+    override fun serialize(encoder: Encoder, value: String?) {
+        if (value == null) encoder.encodeNull() else encoder.encodeString(value)
+    }
+}
 
 @Serializable
 data class BookOrbitLoginRequest(
@@ -122,7 +152,8 @@ data class BookOrbitBookCardDto(
     val authors: List<String> = emptyList(),
     val narrators: List<String> = emptyList(),
     val seriesName: String? = null,
-    val seriesIndex: Double? = null,
+    @Serializable(with = BookOrbitSeriesIndexSerializer::class)
+    val seriesIndex: String? = null,
     val publishedYear: Int? = null,
     val language: String? = null,
     val genres: List<String> = emptyList(),
@@ -179,7 +210,8 @@ data class BookOrbitBookDetailDto(
     val pageCount: Int? = null,
     val language: String? = null,
     val seriesName: String? = null,
-    val seriesIndex: Double? = null,
+    @Serializable(with = BookOrbitSeriesIndexSerializer::class)
+    val seriesIndex: String? = null,
     val authors: List<BookOrbitAuthorDto> = emptyList(),
     val genres: List<String> = emptyList(),
     val tags: List<String> = emptyList(),

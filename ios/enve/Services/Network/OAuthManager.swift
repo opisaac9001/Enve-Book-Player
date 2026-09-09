@@ -101,6 +101,7 @@ struct OAuthToken: Codable, Sendable {
         case expiresIn = "expires_in"
         case tokenType = "token_type"
         case scope
+        case issuedAt = "issued_at"
     }
 
     init(accessToken: String, refreshToken: String?, expiresIn: Int?, tokenType: String, scope: String?, issuedAt: Date) {
@@ -119,7 +120,7 @@ struct OAuthToken: Codable, Sendable {
         expiresIn = try container.decodeIfPresent(Int.self, forKey: .expiresIn)
         tokenType = try container.decode(String.self, forKey: .tokenType)
         scope = try container.decodeIfPresent(String.self, forKey: .scope)
-        issuedAt = Date()
+        issuedAt = try container.decodeIfPresent(Date.self, forKey: .issuedAt) ?? Date()
     }
 
     func encode(to encoder: Encoder) throws {
@@ -129,6 +130,7 @@ struct OAuthToken: Codable, Sendable {
         try container.encodeIfPresent(expiresIn, forKey: .expiresIn)
         try container.encode(tokenType, forKey: .tokenType)
         try container.encodeIfPresent(scope, forKey: .scope)
+        try container.encode(issuedAt, forKey: .issuedAt)
     }
 
     var isExpired: Bool {
@@ -158,7 +160,7 @@ enum OAuthError: LocalizedError {
         case .userCancelled:
             return "Authentication cancelled by user"
         case .invalidConfiguration:
-            return "OAuth credentials not configured. Please set up your client ID and secret in OAuthManager.swift"
+            return "OAuth is not configured for this service."
         case .invalidResponse:
             return "Invalid response from authorization server"
         case .networkError(let error):
@@ -304,11 +306,7 @@ final class OAuthManager: NSObject, ObservableObject {
             parameters["client_secret"] = clientSecret
         }
 
-        request.httpBody =
-            parameters
-            .map { "\($0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0.value)" }
-            .joined(separator: "&")
-            .data(using: .utf8)
+        request.httpBody = Self.formEncodedBody(parameters)
 
         let (data, response) = try await session.data(for: request)
 
@@ -352,11 +350,7 @@ final class OAuthManager: NSObject, ObservableObject {
             parameters["client_secret"] = clientSecret
         }
 
-        request.httpBody =
-            parameters
-            .map { "\($0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0.value)" }
-            .joined(separator: "&")
-            .data(using: .utf8)
+        request.httpBody = Self.formEncodedBody(parameters)
 
         let (data, response) = try await session.data(for: request)
 
@@ -391,6 +385,14 @@ final class OAuthManager: NSObject, ObservableObject {
         }
 
         return token
+    }
+
+    static func formEncodedBody(_ parameters: [String: String]) -> Data {
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~")
+        let body = parameters.sorted { $0.key < $1.key }.map { key, value in
+            "\(key.addingPercentEncoding(withAllowedCharacters: allowed)!)=\(value.addingPercentEncoding(withAllowedCharacters: allowed)!)"
+        }.joined(separator: "&")
+        return Data(body.utf8)
     }
 
     private struct PKCEPair {

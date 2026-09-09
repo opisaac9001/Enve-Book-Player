@@ -25,7 +25,7 @@ class ComicOfflineStorage @Inject constructor(
         val dir = bookDirectory(bookId)
         if (!dir.exists()) return false
         return dir.listFiles().orEmpty().any {
-            it.name.startsWith("book.") && it.length() > 1024 && it.name != "book.json"
+            it.name.startsWith("book.") && it.length() > 0L && it.name != "book.json"
         }
     }
 
@@ -33,7 +33,7 @@ class ComicOfflineStorage @Inject constructor(
         val dir = bookDirectory(bookId)
         if (!dir.exists()) return null
         return dir.listFiles().orEmpty()
-            .firstOrNull { it.name.startsWith("book.") && it.length() > 1024 && it.name != "book.json" }
+            .firstOrNull { it.name.startsWith("book.") && it.length() > 0L && it.name != "book.json" }
     }
 
     fun createTempFile(bookId: String, extension: String): File {
@@ -96,6 +96,6 @@ class ComicOfflineStorage @Inject constructor(
 
     private fun isDownloadedDir(dir: File): Boolean =
         dir.listFiles().orEmpty().any {
-            it.name.startsWith("book.") && it.length() > 1024 && it.name != "book.json"
+            it.name.startsWith("book.") && it.length() > 0L && it.name != "book.json"
         }
 }

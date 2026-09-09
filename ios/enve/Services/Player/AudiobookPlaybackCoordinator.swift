@@ -186,8 +186,9 @@ final class AudiobookPlaybackCoordinator: BookPlaybackStarting {
             appState.currentBook = bookToPlay
             _ = appState.libraryCache.replaceExisting(bookToPlay)
 
-            if !(bookToPlay.chapters?.isEmpty ?? true) {
+            if let chapters = bookToPlay.chapters, !chapters.isEmpty {
                 await appState.bookStore.upsertBooks([bookToPlay])
+                ActivePlayback.composition.bookMetadataUpdater.updateChapters(chapters, for: bookToPlay)
             }
             playback.playBook(bookToPlay, provider: playbackProvider)
         }

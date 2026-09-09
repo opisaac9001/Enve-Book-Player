@@ -31,8 +31,14 @@ import coil.ImageLoader
 import coil.compose.AsyncImage
 import coil.request.CachePolicy
 import coil.request.ImageRequest
+import com.enve.core.data.model.AppMediaType
 
 val LocalHearthImageLoader = staticCompositionLocalOf<ImageLoader?> { null }
+
+internal fun coverAspectRatio(mediaType: AppMediaType?): Float = when (mediaType) {
+    AppMediaType.AUDIOBOOK, AppMediaType.PODCAST -> 1f
+    else -> 2f / 3f
+}
 
 @Composable
 fun CoverTile(
@@ -40,7 +46,7 @@ fun CoverTile(
     modifier: Modifier = Modifier,
     ambient: Color = Hearth.palette.ember,
     contentDescription: String? = null,
-    aspect: Float = 2f / 3f,
+    mediaType: AppMediaType? = null,
     progress: Float = 0f,
     isFinished: Boolean = false,
 ) {
@@ -57,7 +63,7 @@ fun CoverTile(
         .takeIf(String::isNotEmpty)
 
     val shaped = modifier
-        .aspectRatio(aspect)
+        .aspectRatio(coverAspectRatio(mediaType))
         .then(
             if (eink.borderInsteadOfShadow) {
                 Modifier.border(1.5.dp, palette.text, shape)

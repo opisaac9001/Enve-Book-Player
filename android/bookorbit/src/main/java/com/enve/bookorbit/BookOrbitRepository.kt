@@ -674,7 +674,7 @@ class BookOrbitRepository @Inject constructor(
             isFinished = status == ReadStatus.COMPLETED,
             serverReadStatus = readStatus?.status?.uppercase(),
             seriesName = seriesName,
-            seriesNumber = seriesIndex?.let(::sequenceString),
+            seriesNumber = seriesIndex,
             publisher = publisher,
             publishedDate = publishedYear?.toString(),
             isbn13 = isbn13,
@@ -721,7 +721,7 @@ class BookOrbitRepository @Inject constructor(
             isFinished = status == ReadStatus.COMPLETED,
             serverReadStatus = readStatus?.status?.uppercase(),
             seriesName = seriesName,
-            seriesNumber = seriesIndex?.let(::sequenceString),
+            seriesNumber = seriesIndex,
             publisher = publisher,
             publishedDate = publishedYear?.toString(),
             isbn13 = isbn13,
@@ -971,9 +971,6 @@ class BookOrbitRepository @Inject constructor(
 
     private fun isAudio(format: String?): Boolean =
         format?.lowercase() in setOf("m4b", "mp3", "m4a", "opus", "ogg", "flac", "wav", "aac", "aax")
-
-    private fun sequenceString(value: Double): String =
-        if (value % 1.0 == 0.0) value.toInt().toString() else value.toString()
 
     private fun parseDateMillis(raw: String?): Long? {
         if (raw.isNullOrBlank()) return null

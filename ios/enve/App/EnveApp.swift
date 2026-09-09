@@ -45,6 +45,20 @@ struct EnveApp: App {
         registry.register(libraryProviderFactory: { BookOrbitProvider(connection: $0) }, for: .bookOrbit)
         registry.register(libraryProviderFactory: { SiloProvider(connection: $0) }, for: .silo)
 
+        let nativeProgressSources: [(ProviderType, Book.BookSource)] = [
+            (.jellyfin, .jellyfin), (.emby, .emby), (.plex, .plex), (.kavita, .kavita),
+        ]
+        for (type, source) in nativeProgressSources {
+            registry.register(
+                syncStrategy: NativeProgressSyncStrategy(
+                    providerType: type, source: source,
+                    connections: providerConnections, books: bookStore,
+                    progressRepository: bookStore, libraryCache: AppState.shared,
+                    progressCache: BookProgressStore.shared, playbackState: ActivePlayback.controller
+                )
+            )
+        }
+
         registry.register(
             syncStrategy: StorytellerSyncStrategy(
                 providerConnections: providerConnections,

@@ -120,9 +120,9 @@ class ComicOfflineService @Inject constructor(
             val input = context.contentResolver.openInputStream(android.net.Uri.parse(url))
                 ?: error("Couldn't open the local file for ${book.title}")
             input.use { inp -> FileOutputStream(target).use { out -> inp.copyTo(out) } }
-            if (target.length() < 1024) {
+            if (target.length() == 0L) {
                 target.delete()
-                error("Local file too small for ${book.title}")
+                error("Local file is empty for ${book.title}")
             }
             storage.commit(target)
             storage.saveManifest(book)
@@ -193,9 +193,9 @@ class ComicOfflineService @Inject constructor(
                 }
             }
 
-            if (target.length() < 1024) {
+            if (target.length() == 0L) {
                 target.delete()
-                error("Downloaded file too small for ${book.title}")
+                error("Downloaded file is empty for ${book.title}")
             }
 
             storage.commit(target)

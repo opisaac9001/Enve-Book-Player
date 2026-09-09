@@ -74,7 +74,8 @@ final class AudiobookTranscriptionService {
         guard activeBookStableId == nil else {
             throw AudiobookTranscriptionError.transcriptionBusy
         }
-
+        activeBookStableId = book.stableId
+        defer { activeBookStableId = nil }
         let locale = try await supportedLocale(for: book)
         let tracks = try await resolver.localTracks(for: book)
         let start = min(max(startTime, 0), tracks.totalDuration)

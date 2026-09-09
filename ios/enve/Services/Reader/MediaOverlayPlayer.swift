@@ -354,9 +354,11 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
                 let session = MPNowPlayingSession(players: [player])
                 session.automaticallyPublishesNowPlayingInfo = false
                 nowPlayingSession = session
-                NowPlayingCoordinator.shared.setNowPlayingSession(session, for: self)
             }
-            nowPlayingSession?.becomeActiveIfPossible { _ in }
+            if let session = nowPlayingSession {
+                NowPlayingCoordinator.shared.setNowPlayingSession(session, for: self)
+                session.becomeActiveIfPossible { _ in }
+            }
         }
         #endif
     }
@@ -369,11 +371,8 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
     private func clearNowPlayingSession() {
         #if os(iOS)
         if #available(iOS 16.0, *) {
-            if let session = nowPlayingSession {
-                session.players.forEach { session.removePlayer($0) }
-            }
-            nowPlayingSession = nil
             NowPlayingCoordinator.shared.clearNowPlayingSession(if: self)
+            nowPlayingSession = nil
         }
         #endif
     }

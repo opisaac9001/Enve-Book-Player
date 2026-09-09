@@ -35,4 +35,15 @@ struct AutoSleepPolicyTests {
         let sameNight = AutoSleepPolicy.currentWindowStart(now: elevenPM, startMinutes: 22 * 60, calendar: calendar)
         #expect(sameNight == expected)
     }
+    @Test(arguments: [(3, 8), (11, 1)])
+    func daylightSavingNightKeepsOneWindow(date: (Int, Int)) {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+        let expected = calendar.date(from: DateComponents(year: 2026, month: date.0, day: date.1, hour: 22))!
+        for hoursLater in [0.5, 1.5, 2.5, 5.5] {
+            let now = expected.addingTimeInterval(hoursLater * 3600)
+            #expect(AutoSleepPolicy.currentWindowStart(now: now, startMinutes: 22 * 60, calendar: calendar) == expected)
+        }
+    }
+
 }
