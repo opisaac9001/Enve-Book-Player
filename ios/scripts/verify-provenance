@@ -16,8 +16,8 @@ require_text() {
     fi
 }
 
-require_text ../LICENSE.md 'GNU AFFERO GENERAL PUBLIC LICENSE'
-require_text ../NOTICE.md "$identifier"
+require_text LICENSE.md 'GNU AFFERO GENERAL PUBLIC LICENSE'
+require_text NOTICE.md "$identifier"
 require_text THIRD_PARTY_NOTICES.md '## Distribution reminder'
 require_text docs/legal/THIRD_PARTY_AUDIT.md '## Current conclusion'
 require_text LocalPackages/AMSMB2/PROVENANCE.md '1726aaaf7adf63d7d1d2a0c5d1b0e635028215c0'
@@ -27,6 +27,8 @@ require_text enve/Configuration/Info.plist '<key>EnveSourceProvenance</key>'
 require_text enve/Configuration/Info.plist "$identifier"
 require_text enve/Configuration/Info.plist 'Copyright 2026 Isaac Lamb'
 require_text enve/Configuration/EnveProvenance.swift "$identifier"
+
+./scripts/verify-sensitive-source
 
 for protected_file in \
     enve/Networking/ABSCredentials.swift \

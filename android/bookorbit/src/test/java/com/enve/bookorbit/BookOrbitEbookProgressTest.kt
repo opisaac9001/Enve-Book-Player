@@ -14,6 +14,27 @@ import org.junit.Test
 
 class BookOrbitEbookProgressTest {
     @Test
+    fun serverCfiSurvivesCacheRestoreAndUpload() {
+        val cfi = "epubcfi(/6/8!/4/2:10)"
+        val cached = bookOrbitEpubLocator(cfi, 0.42f)
+        val checkpoint = EpubBridgeCheckpointCodec.fromReadiumLocator(
+            cached, "publication", "34", 1L, 0L, 500L,
+        )!!
+        assertEquals(ReaderEngineKind.FOLIATE, checkpoint.sourceEngine)
+        assertEquals(cfi, checkpoint.epubCfi)
+        assertEquals(cfi, bookOrbitFoliateCfi(cached))
+        assertEquals(cfi, bookOrbitFoliateCfi(EpubBridgeCheckpointCodec.encode(checkpoint)))
+        assertNull(checkpoint.forPublication("different-publication", "34").epubCfi)
+    }
+
+    @Test
+    fun missingOrPartialServerCfiDoesNotBecomeAnExactLocation() {
+        for (cfi in listOf(null, "epubcfi(/4/2:10)", "invalid")) {
+            assertNull(bookOrbitFoliateCfi(bookOrbitEpubLocator(cfi, 0.42f)))
+        }
+    }
+
+    @Test
     fun foliateCheckpointWritesItsExactCfi() {
         val cfi = bookOrbitFoliateCfi(
             EpubBridgeCheckpointCodec.encode(

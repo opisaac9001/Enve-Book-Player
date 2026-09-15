@@ -5,11 +5,13 @@ import Testing
 
 struct DiagnosticLogSanitizerTests {
     @Test func removesUnixPathsAndMediaFilenames() {
-        let input = #"Opening /Users/alice/Library/Application Support/Enve/Private Book.m4b, filename=Private Book.m4b"#
+        let homeDirectory = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+        let privateBook = homeDirectory.appendingPathComponent("Library/Application Support/Enve/Private Book.m4b")
+        let input = "Opening \(privateBook.path), filename=Private Book.m4b"
 
         let result = DiagnosticLogSanitizer.sanitize(input)
 
-        #expect(!result.contains("/Users/alice"))
+        #expect(!result.contains(homeDirectory.path))
         #expect(!result.contains("Private Book"))
         #expect(result.contains("<local-path>"))
     }

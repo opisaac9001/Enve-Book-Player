@@ -204,6 +204,14 @@ struct LibraryCatalogPage {
     let books: [Book]
     let totalCount: Int?
     let isLast: Bool
+    let isComplete: Bool
+
+    init(books: [Book], totalCount: Int?, isLast: Bool, isComplete: Bool = true) {
+        self.books = books
+        self.totalCount = totalCount
+        self.isLast = isLast
+        self.isComplete = isComplete
+    }
 }
 
 struct LibraryCatalogBatch {
@@ -261,6 +269,7 @@ final class LibraryCatalogBatchSource {
     static func snapshot(
         books: [Book],
         batchSize: Int = 500,
+        isComplete: Bool = true,
         resumeAfter: String?,
         expectedSnapshotIdentifier: String?
     ) -> LibraryCatalogBatchSource {
@@ -273,7 +282,8 @@ final class LibraryCatalogBatchSource {
         let state = SnapshotLibraryCatalogState(
             books: books,
             batchSize: batchSize,
-            offset: canResume ? min(requestedOffset, books.count) : 0
+            offset: canResume ? min(requestedOffset, books.count) : 0,
+            isComplete: isComplete
         )
         return LibraryCatalogBatchSource(
             snapshotIdentifier: snapshotIdentifier,
@@ -295,11 +305,13 @@ private final class SnapshotLibraryCatalogState {
     private let batchSize: Int
     private var offset: Int
     private var emittedEmptySnapshot = false
+    private let isComplete: Bool
 
-    init(books: [Book], batchSize: Int, offset: Int) {
+    init(books: [Book], batchSize: Int, offset: Int, isComplete: Bool) {
         self.books = books
         self.batchSize = max(1, batchSize)
         self.offset = offset
+        self.isComplete = isComplete
     }
 
     func next() -> LibraryCatalogBatch? {
@@ -310,8 +322,8 @@ private final class SnapshotLibraryCatalogState {
                 books: [],
                 loadedSoFar: 0,
                 totalCount: 0,
-                resumeToken: "0",
-                completesSnapshot: true
+                resumeToken: isComplete ? "0" : nil,
+                completesSnapshot: isComplete
             )
         }
         guard offset < books.count else { return nil }
@@ -322,8 +334,8 @@ private final class SnapshotLibraryCatalogState {
             books: batch,
             loadedSoFar: offset,
             totalCount: books.count,
-            resumeToken: String(offset),
-            completesSnapshot: offset == books.count
+            resumeToken: isComplete ? String(offset) : nil,
+            completesSnapshot: isComplete && offset == books.count
         )
     }
 }
@@ -336,6 +348,7 @@ private final class PagedLibraryCatalogState {
     private var nextPage: Int
     private var loaded: Int
     private var finished = false
+    private var isComplete: Bool
 
     init(
         firstPage: LibraryCatalogPage,
@@ -349,6 +362,7 @@ private final class PagedLibraryCatalogState {
         self.pageConcurrency = max(1, pageConcurrency)
         self.nextPage = nextPage
         loaded = nextPage * pageSize
+        isComplete = firstPage.isComplete
         self.fetchPage = fetchPage
     }
 
@@ -384,14 +398,15 @@ private final class PagedLibraryCatalogState {
         let books = pages.flatMap { $0.1.books }
         loaded += books.count
         let last = pages.last!
-        let completesSnapshot = last.1.isLast
+        isComplete = isComplete && pages.allSatisfy(\.1.isComplete)
+        let completesSnapshot = last.1.isLast && isComplete
         nextPage = last.0 + 1
-        finished = completesSnapshot
+        finished = last.1.isLast
         return LibraryCatalogBatch(
             books: books,
             loadedSoFar: loaded,
             totalCount: firstPage.totalCount,
-            resumeToken: String(nextPage),
+            resumeToken: isComplete ? String(nextPage) : nil,
             completesSnapshot: completesSnapshot
         )
     }

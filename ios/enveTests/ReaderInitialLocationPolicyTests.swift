@@ -8,6 +8,23 @@ import Testing
 struct ReaderInitialLocationPolicyTests {
     private static let highlight = "a memorable sentence"
 
+    @Test func foliateCFIOnlyInitialLocationSurvivesWithoutAReadiumLocator() {
+        let json = """
+            {"href":"","type":"application/xhtml+xml","locations":{"totalProgression":0.42,"cfi":"epubcfi(/6/8!/4/260,/5:18,/5:145)","enveSourceEngine":"foliate"}}
+            """
+        #expect((try? Locator(jsonString: json)) == nil)
+        let candidate = ReaderInitialLocation(locator: nil, locatorJSON: json)
+        #expect(ReaderInitialLocationResolver.validating(candidate, readingOrderHrefs: ["chapter.xhtml"]) == candidate)
+    }
+
+    @Test func unmarkedCFIOnlyInitialLocationIsRejected() {
+        let json = """
+            {"href":"","type":"application/xhtml+xml","locations":{"totalProgression":0.42,"cfi":"epubcfi(/6/8!/4/260,/5:18,/5:145)"}}
+            """
+        let candidate = ReaderInitialLocation(locator: nil, locatorJSON: json)
+        #expect(ReaderInitialLocationResolver.validating(candidate, readingOrderHrefs: ["chapter.xhtml"]) == .unresolved)
+    }
+
     private func locator(href: String, progression: Double = 0.25) throws -> Locator {
         try Locator(
             jsonString: """

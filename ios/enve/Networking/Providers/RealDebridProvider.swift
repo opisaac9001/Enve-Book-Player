@@ -11,6 +11,7 @@ private struct CachedUnrestrictedLink {
 final class RealDebridProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider, @unchecked Sendable {
     private var unrestrictedLinkCache: [String: CachedUnrestrictedLink] = [:]
     var connection: ServerConnection
+    private var catalogFetchWasComplete = true
 
     var capabilities: ProviderCapabilities {
         [.fullImport, .downloads, .backgroundOperation]
@@ -74,11 +75,26 @@ final class RealDebridProvider: WholeSnapshotCatalogProvider, PlaybackSessionPro
         guard libraryId == self.libraryId else { return [] }
         guard let token = connection.token, !token.isEmpty else { return [] }
 
+        catalogFetchWasComplete = true
         let allFiles = try await fetchAllAudioFiles()
         let groupedBooks = groupFilesIntoBooks(allFiles)
         return groupedBooks.map(makeBookSummary).sorted {
             $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
         }
+    }
+
+    func makeCatalogBatchSource(
+        libraryId: String,
+        resumeAfter: String?,
+        expectedSnapshotIdentifier: String?
+    ) async throws -> LibraryCatalogBatchSource {
+        let books = try await fetchBooks(libraryId: libraryId)
+        return LibraryCatalogBatchSource.snapshot(
+            books: books,
+            isComplete: catalogFetchWasComplete,
+            resumeAfter: resumeAfter,
+            expectedSnapshotIdentifier: expectedSnapshotIdentifier
+        )
     }
 
     func fetchRecentBooks(libraryId: String, limit: Int) async throws -> [Book] {
@@ -350,7 +366,16 @@ final class RealDebridProvider: WholeSnapshotCatalogProvider, PlaybackSessionPro
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             return []
         }
-        return (try? JSONDecoder().decode([RealDebridTorrent].self, from: data)) ?? []
+        let result = try JSONDecoder().decode(LossyDecodableArray<RealDebridTorrent>.self, from: data)
+        if !result.rejectedItems.isEmpty { catalogFetchWasComplete = false }
+        RejectedContentStore.shared.update(
+            connection: connection,
+            libraryId: libraryId,
+            acceptedItemIdentifiers: Set(result.values.map(\.id)),
+            rejectedItems: result.rejectedItems,
+            fallbackScope: "torrents"
+        )
+        return result.values
     }
 
     private func fetchTorrentInfo(id: String) async throws -> RealDebridTorrentInfo {
@@ -359,7 +384,34 @@ final class RealDebridProvider: WholeSnapshotCatalogProvider, PlaybackSessionPro
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             throw ProviderError.invalidResponse
         }
-        return try JSONDecoder().decode(RealDebridTorrentInfo.self, from: data)
+        do {
+            let info = try JSONDecoder().decode(RealDebridTorrentInfo.self, from: data)
+            if !info.rejectedItems.isEmpty { catalogFetchWasComplete = false }
+            RejectedContentStore.shared.update(
+                connection: connection,
+                libraryId: libraryId,
+                acceptedItemIdentifiers: Set(info.files.map { String($0.id) }),
+                rejectedItems: info.rejectedItems,
+                fallbackScope: "torrent-\(id)"
+            )
+            return info
+        } catch {
+            catalogFetchWasComplete = false
+            RejectedContentStore.shared.update(
+                connection: connection,
+                libraryId: libraryId,
+                acceptedItemIdentifiers: [],
+                rejectedItems: [
+                    RejectedContentCandidate(
+                        itemIdentifier: id,
+                        title: nil,
+                        reason: RejectedContentFailure.describe(error),
+                        fallbackIdentifier: "torrent-\(id)"
+                    )
+                ]
+            )
+            throw error
+        }
     }
 
     private func fetchDownloads() async throws -> [RealDebridDownload] {
@@ -368,7 +420,16 @@ final class RealDebridProvider: WholeSnapshotCatalogProvider, PlaybackSessionPro
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             return []
         }
-        return (try? JSONDecoder().decode([RealDebridDownload].self, from: data)) ?? []
+        let result = try JSONDecoder().decode(LossyDecodableArray<RealDebridDownload>.self, from: data)
+        if !result.rejectedItems.isEmpty { catalogFetchWasComplete = false }
+        RejectedContentStore.shared.update(
+            connection: connection,
+            libraryId: libraryId,
+            acceptedItemIdentifiers: Set(result.values.map { String($0.id) }),
+            rejectedItems: result.rejectedItems,
+            fallbackScope: "downloads"
+        )
+        return result.values
     }
 
     private func fetchAllAudioFiles() async throws -> [RDFileEntry] {
@@ -884,6 +945,23 @@ struct RealDebridTorrentInfo: Decodable {
     let files: [RealDebridTorrentFile]
     let links: [String]
     let status: String
+    let rejectedItems: [RejectedContentCandidate]
+
+    private enum CodingKeys: String, CodingKey {
+        case id, filename, bytes, files, links, status
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        filename = try container.decode(String.self, forKey: .filename)
+        bytes = try container.decode(Int64.self, forKey: .bytes)
+        let files = try container.decode(LossyDecodableArray<RealDebridTorrentFile>.self, forKey: .files)
+        self.files = files.values
+        rejectedItems = files.rejectedItems
+        links = try container.decode([String].self, forKey: .links)
+        status = try container.decode(String.self, forKey: .status)
+    }
 }
 
 struct RealDebridTorrentFile: Decodable {

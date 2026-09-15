@@ -109,6 +109,8 @@ class BookOrbitSyncStrategy @Inject constructor(
                                 localUpdatedAt = local.lastReadTime.takeIf { it > 0L },
                                 remotePercentage = remoteProgress,
                                 remoteUpdatedAt = remote.lastReadTime.takeIf { it > 0L },
+                                localLocator = local.epubLocator.takeIf { local.mediaType == AppMediaType.EBOOK },
+                                remoteLocator = remote.epubLocator.takeIf { remote.mediaType == AppMediaType.EBOOK },
                             )
                         ) {
                             BookOrbitProgressDecision.PULL -> {

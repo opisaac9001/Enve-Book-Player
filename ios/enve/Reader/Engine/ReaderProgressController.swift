@@ -164,7 +164,9 @@ final class ReaderProgressController {
                 localDate: localDate,
                 serverPosition: serverProgress,
                 serverDate: serverDate,
-                protectsAgainstBackwardProgress: true
+                protectsAgainstBackwardProgress: true,
+                localLocator: current.epubLocator,
+                serverLocator: serverLocator
             )
             return (direction, current, localProgress, current.epubLocator)
         }
@@ -267,7 +269,6 @@ final class ReaderProgressController {
             }
         }
         guard let serverLocatorJSON = await hydrateTask?.value else { return }
-        guard let serverLocator = try? Locator(jsonString: serverLocatorJSON) else { return }
 
         var adapter: (any ReaderEngineAdapter)?
         for _ in 0..<50 {
@@ -290,42 +291,43 @@ final class ReaderProgressController {
             return
         }
 
-        let targetLocator: Locator
-        if usesMediaOverlayPosition {
-            guard let publication = host?.progressPublication,
-                let resolved = await readAloud.resolvedInitialLocation(
-                    rawLocator: serverLocatorJSON,
-                    parsed: serverLocator,
-                    publication: publication
-                )
-            else {
-                AppLogger.sync.warning(
-                    "Rejected hydrated EPUB3 media-overlay position bookDiagnosticID=\(bookDiagnosticID)"
-                )
-                return
-            }
-            targetLocator = resolved
-        } else if EpubLocationBridge.canRestoreDirectly(serverLocatorJSON) {
-            targetLocator = serverLocator
+        let targetJSON: String?
+        var fallbackProgression = EpubLocationBridge.totalProgression(from: serverLocatorJSON)
+        if !usesMediaOverlayPosition,
+            adapter.kind == .foliate,
+            EpubLocationBridge.canStoreAlongsidePercentageSync(serverLocatorJSON)
+        {
+            targetJSON = serverLocatorJSON
         } else {
-            let serverProgression = serverLocator.locations.totalProgression ?? serverLocator.locations.progression ?? 0
-            targetLocator = host?.progressLocatorAtOrBefore(progression: serverProgression) ?? serverLocator
-        }
-        let targetJSON: String? = {
-            if !usesMediaOverlayPosition,
-                adapter.kind == .foliate,
-                EpubLocationBridge.canStoreAlongsidePercentageSync(serverLocatorJSON)
-            {
-                return serverLocatorJSON
+            guard let serverLocator = try? Locator(jsonString: serverLocatorJSON) else { return }
+            let targetLocator: Locator
+            if usesMediaOverlayPosition {
+                guard let publication = host?.progressPublication,
+                    let resolved = await readAloud.resolvedInitialLocation(
+                        rawLocator: serverLocatorJSON,
+                        parsed: serverLocator,
+                        publication: publication
+                    )
+                else {
+                    AppLogger.sync.warning(
+                        "Rejected hydrated EPUB3 media-overlay position bookDiagnosticID=\(bookDiagnosticID)"
+                    )
+                    return
+                }
+                targetLocator = resolved
+                fallbackProgression = nil
+            } else if EpubLocationBridge.canRestoreDirectly(serverLocatorJSON) {
+                targetLocator = serverLocator
+            } else {
+                let serverProgression = serverLocator.locations.totalProgression ?? serverLocator.locations.progression ?? 0
+                targetLocator = host?.progressLocatorAtOrBefore(progression: serverProgression) ?? serverLocator
+                fallbackProgression = serverProgression
             }
-            return try? targetLocator.jsonString()
-        }()
+            targetJSON = try? targetLocator.jsonString()
+        }
         bridgeSession?.setRestoreTarget(
             locatorJSON: targetJSON,
-            fallbackProgression: usesMediaOverlayPosition
-                ? nil
-                : serverLocator.locations.totalProgression
-                    ?? serverLocator.locations.progression
+            fallbackProgression: fallbackProgression
         )
         guard let targetJSON,
             await adapter.restore(locatorJSON: targetJSON, animated: false)

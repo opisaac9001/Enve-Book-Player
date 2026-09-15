@@ -2,11 +2,11 @@
 
 This file is the repository guide for Claude Code and other coding agents. Treat it as project policy when inspecting, modifying, or validating the app.
 
-This file governs the Apple-platform project under `ios/`. Enve Book Player uses Swift 6, SwiftUI, Readium, and Xcode 26.4 or newer. The main scheme is `enve`, and the minimum iOS version is 17.0. The sibling Android project has its own guides under `android/`.
+Enve Book Player is a native Swift audiobook and ebook player for iOS. The project uses Swift 6, SwiftUI, Readium, and Xcode 26.4 or newer. The main scheme is `enve`, and the minimum iOS version is 17.0.
 
 ## Start every task here
 
-Run these checks from the shared repository root before reading application code or making changes, then return to `ios/` for platform commands:
+Run these checks from the repository root before reading application code or making changes:
 
 ```sh
 pwd
@@ -20,7 +20,7 @@ Then read the documentation relevant to the task:
 1. `AGENTS.md` for protected files and the advisory password protocol.
 2. `ARCHITECTURE.md` for ownership boundaries and dependency direction.
 3. `DEVELOPMENT.md` for setup, signing, build, and runtime verification.
-4. `../CONTRIBUTING.md` and `../SECURITY.md` for repository-wide contribution and security rules.
+4. `CONTRIBUTING.md` and `SECURITY.md` for public contribution and security rules.
 5. The focused documentation under `docs/` for the feature or provider being changed.
 6. `docs/distribution/public-source-release.md` before preparing or publishing a public source snapshot.
 
@@ -130,7 +130,7 @@ Do not weaken or “clean up” these behaviors without explicit user approval a
 - OAuth client identifiers belong in the ignored `enve/Configuration/DeveloperSettings.plist`. Client secrets do not belong in a distributed iOS app.
 - Entitlements, App Groups, CloudKit containers, URL schemes, background modes, and production identifiers are release-sensitive. Do not change them as incidental cleanup.
 
-Read `../SECURITY.md` and the relevant provider documentation before changing authentication, networking, trust handling, or credential storage.
+Read `SECURITY.md` and the relevant provider documentation before changing authentication, networking, trust handling, or credential storage.
 
 ## Build and verification
 
@@ -194,7 +194,7 @@ Closures passed to WatchConnectivity, MediaPlayer, and similar off-main callback
 
 ## Before reporting completion
 
-1. Review `git status` and the entire diff from the shared repository root.
+1. Review `git status` and the entire diff from the repository root.
 2. Confirm every changed file is required for the requested outcome.
 3. Remove placeholders, generated explanations, debug output, secrets, and unrelated formatting.
 4. Confirm zero build errors and zero new warnings for every affected target.

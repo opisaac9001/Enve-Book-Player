@@ -136,6 +136,9 @@ final class UserProgressStore {
         }
         let applyEbookPosition: (inout Book) -> Void = { book in
             book.ebookProgress = targetEbookProgress(book)
+            if let locator = progress.epubLocator {
+                book.epubLocator = locator
+            }
             if progress.ebookProgress == nil,
                 book.isStorytellerReadAloud,
                 let locator = StorytellerProvider.localAudioLocatorJSONString(
@@ -195,7 +198,7 @@ final class UserProgressStore {
                 currentTime: capturedProgress.currentTime,
                 duration: capturedProgress.duration,
                 ebookProgress: capturedProgress.ebookProgress,
-                epubLocator: nil,
+                epubLocator: capturedProgress.epubLocator,
                 isFinished: capturedProgress.isFinished,
                 lastUpdate: capturedProgress.lastUpdate,
                 hideFromContinue: false,
@@ -213,7 +216,7 @@ final class UserProgressStore {
                     progress: $0.progress,
                     book: $0.book,
                     hideFromContinue: $0.book.hideFromContinue,
-                    epubLocator: $0.book.epubLocator,
+                    epubLocator: $0.progress.epubLocator ?? $0.book.epubLocator,
                     serverReadStatus: $0.book.serverReadStatus
                 )
             }

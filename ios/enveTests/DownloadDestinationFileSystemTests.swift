@@ -5,7 +5,7 @@ import Testing
 
 struct DownloadDestinationFileSystemTests {
     @Test func bookDirectorySanitizesPathUnsafeIdentifiersUnderTheAudiobooksRoot() {
-        let root = URL(fileURLWithPath: "/tmp/audiobooks", isDirectory: true)
+        let root = makeRoot().appendingPathComponent("audiobooks", isDirectory: true)
         let destinations = DownloadDestinationFileSystem(audiobooksRoot: root)
 
         let directory = destinations.bookDirectory(for: "abs:lib/1?a&b=c\\d")
@@ -15,7 +15,7 @@ struct DownloadDestinationFileSystemTests {
     }
 
     @Test func chapterFilesFollowTheDownloadedAudioLayout() {
-        let directory = URL(fileURLWithPath: "/tmp/book", isDirectory: true)
+        let directory = makeRoot().appendingPathComponent("book", isDirectory: true)
 
         #expect(
             DownloadDestinationFileSystem.chapterFile(in: directory, index: 0, fileExtension: "m4b")

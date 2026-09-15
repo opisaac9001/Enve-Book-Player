@@ -430,8 +430,10 @@ class BookOrbitRepository @Inject constructor(
         if (!response.isSuccessful) error(httpMessage("BookOrbit ebook progress pull failed", response))
         val dto = response.body() ?: return null
         val cfi = dto.cfi?.takeIf(EpubBridgeCheckpointCodec::isFullEpubCfi)
+        val percentage = ((dto.percentage ?: 0.0) / 100.0).toFloat().coerceIn(0f, 1f)
         return SyncSnapshot(
-            percentage = ((dto.percentage ?: 0.0) / 100.0).toFloat().coerceIn(0f, 1f),
+            percentage = percentage,
+            locatorJson = bookOrbitEpubLocator(cfi, percentage),
             epubCfi = cfi,
             updatedAt = parseDateMillis(dto.updatedAt),
             source = BookSource.BOOKORBIT.displayName,

@@ -19,7 +19,11 @@ class BookOrbitPasswordLogin @Inject constructor(
     override val source: BookSource = BookSource.BOOKORBIT
 
     override suspend fun login(serverUrl: String, username: String, password: String): Result<Unit> = runCatching {
-        val response = api.login(BookOrbitLoginRequest(username = username, password = password))
+        val normalizedUrl = serverUrl.trimEnd('/')
+        val response = api.login(
+            "$normalizedUrl/api/v1/auth/login",
+            BookOrbitLoginRequest(username = username, password = password),
+        )
         if (!response.isSuccessful) {
             error("BookOrbit login failed: HTTP ${response.code()} ${response.message()}".trim())
         }

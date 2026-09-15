@@ -57,8 +57,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.roundToInt
 import androidx.annotation.ColorInt
+import androidx.core.graphics.Insets
 import androidx.core.graphics.toColorInt
 import androidx.core.text.HtmlCompat
+import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -177,6 +179,8 @@ class EbookReaderActivity : FragmentActivity() {
     private lateinit var loadingPct: TextView
     private lateinit var epubContainer: FrameLayout
     private lateinit var composeOverlay: ComposeView
+    private var epubContainerSafeInsets: Insets = Insets.NONE
+    private var verticalReadingPaddingPx = 0
     private var readiumFootnoteDialog: android.app.AlertDialog? = null
     private var readiumNavigator: EpubNavigatorFragment? = null
     private var readiumFootnoteReturnLocator: Locator? = null
@@ -477,6 +481,14 @@ class EbookReaderActivity : FragmentActivity() {
         loadingPct     = findViewById(R.id.loading_percent)
         epubContainer  = findViewById(R.id.epub_container)
         composeOverlay = findViewById(R.id.compose_overlay)
+        ViewCompat.setOnApplyWindowInsetsListener(epubContainer) { _, insets ->
+            epubContainerSafeInsets = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout(),
+            )
+            applyEpubContainerPadding()
+            insets
+        }
+        ViewCompat.requestApplyInsets(epubContainer)
 
         bookId     = intent.getStringExtra(EXTRA_BOOK_ID)    ?: run { finish(); return }
         bookSource = intent.getStringExtra(EXTRA_BOOK_SOURCE)?.let { runCatching { BookSource.valueOf(it) }.getOrNull() } ?: BookSource.GRIMMORY
@@ -530,6 +542,23 @@ class EbookReaderActivity : FragmentActivity() {
                 }
                 enableEdgeToEdge(statusBarStyle = systemBarStyle, navigationBarStyle = systemBarStyle)
                 onDispose { }
+            }
+            DisposableEffect(readerState.showChrome) {
+                val controller = WindowCompat.getInsetsController(window, window.decorView)
+                val systemBars = WindowInsetsCompat.Type.statusBars() or
+                    WindowInsetsCompat.Type.navigationBars()
+                if (readerState.showChrome) {
+                    controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
+                    controller.show(systemBars)
+                } else {
+                    controller.systemBarsBehavior =
+                        WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                    controller.hide(systemBars)
+                }
+                onDispose {
+                    controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
+                    controller.show(systemBars)
+                }
             }
             val uiTextScale by hearthPreferences.uiTextScale.collectAsStateWithLifecycle(initialValue = 1f)
             val readNextEnabled by hearthPreferences.readNextEnabled.collectAsStateWithLifecycle(initialValue = true)
@@ -1580,11 +1609,19 @@ class EbookReaderActivity : FragmentActivity() {
     }
 
     private fun applyVerticalReadingPadding(margin: Float) {
-
         val normalized = (margin / 2f).coerceIn(0f, 1f)
         val insetDp = normalized * 48f
-        val insetPx = (insetDp * resources.displayMetrics.density).roundToInt()
-        epubContainer.setPadding(0, insetPx, 0, insetPx)
+        verticalReadingPaddingPx = (insetDp * resources.displayMetrics.density).roundToInt()
+        applyEpubContainerPadding()
+    }
+
+    private fun applyEpubContainerPadding() {
+        epubContainer.setPadding(
+            epubContainerSafeInsets.left,
+            epubContainerSafeInsets.top + verticalReadingPaddingPx,
+            epubContainerSafeInsets.right,
+            epubContainerSafeInsets.bottom + verticalReadingPaddingPx,
+        )
     }
 
     private fun initTts() {
@@ -1778,7 +1815,6 @@ private fun ReaderOverlay(
     val colors = chromeColorsForTheme(uiState.prefs.theme, accentColor, einkChromeActive)
 
     val context = LocalContext.current
-    val activity = context as? FragmentActivity
 
     LaunchedEffect(uiState.prefs.verticalMargins) {
         onVerticalMarginsChanged(uiState.prefs.verticalMargins)
@@ -1798,24 +1834,6 @@ private fun ReaderOverlay(
         ) {
             kotlinx.coroutines.delay(if (einkActive) 15_000L else 5_000L)
             vm.hideChrome()
-        }
-    }
-
-    DisposableEffect(uiState.showChrome) {
-        val window = activity?.window
-        val controller = window?.let { WindowCompat.getInsetsController(it, it.decorView) }
-        if (controller != null) {
-            if (uiState.showChrome) {
-                controller.show(WindowInsetsCompat.Type.statusBars() or WindowInsetsCompat.Type.navigationBars())
-                controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
-            } else {
-                controller.hide(WindowInsetsCompat.Type.statusBars() or WindowInsetsCompat.Type.navigationBars())
-                controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            }
-        }
-        onDispose {
-            controller?.show(WindowInsetsCompat.Type.statusBars() or WindowInsetsCompat.Type.navigationBars())
-            controller?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
         }
     }
 
@@ -2171,9 +2189,16 @@ private fun ReaderOverlay(
                         results = uiState.searchResults,
                         loading = uiState.searchLoading,
                         error = uiState.searchError,
+                        status = uiState.searchStatus,
+                        wholeWords = uiState.searchWholeWords,
+                        optionsAvailable = uiState.searchOptionsAvailable,
+                        hasMore = uiState.searchHasMore,
                         colors = colors,
                         onQueryChange = vm::updateSearchQuery,
                         onSearch = { vm.runSearch() },
+                        onWholeWordsChange = vm::updateSearchWholeWords,
+                        onCancel = vm::cancelSearch,
+                        onLoadMore = vm::loadMoreSearchResults,
                         onResultClick = { vm.seekToSearchResult(it) },
                         onClose = { vm.showSearch(false) },
                     )

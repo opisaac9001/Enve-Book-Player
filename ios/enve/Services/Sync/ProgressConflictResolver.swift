@@ -15,8 +15,18 @@ struct ProgressConflictResolver: Sendable {
         localDate: Date,
         serverPosition: Double,
         serverDate: Date,
-        protectsAgainstBackwardProgress: Bool = false
+        protectsAgainstBackwardProgress: Bool = false,
+        localLocator: String? = nil,
+        serverLocator: String? = nil
     ) -> SyncDirection {
+        let localCFI = EpubLocationBridge.sourceEngine(from: localLocator) == .foliate
+            ? EpubLocationBridge.canonicalFullEPUBCFI(EpubLocationBridge.epubCFI(from: localLocator)) : nil
+        let serverCFI = EpubLocationBridge.sourceEngine(from: serverLocator) == .foliate
+            ? EpubLocationBridge.canonicalFullEPUBCFI(EpubLocationBridge.epubCFI(from: serverLocator)) : nil
+        if localCFI != serverCFI, localDate != .distantPast, serverDate != .distantPast {
+            if serverCFI != nil, serverDate > localDate { return .pull }
+            if localCFI != nil, localDate > serverDate { return .push }
+        }
         if localPosition <= 0 && serverPosition <= 0 { return .none }
         if localPosition <= 0 { return .pull }
         if serverPosition <= 0 { return .push }

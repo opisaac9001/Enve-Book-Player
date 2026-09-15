@@ -70,6 +70,7 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
             throw ProviderError.serverError("Failed to fetch books (HTTP \(response.statusCode))")
         }
         let result = try JSONDecoder().decode(KomgaPage<KomgaBook>.self, from: data)
+        updateRejectedContent(result, libraryId: libraryId, fallbackScope: "page-\(page)")
         if page == 0 {
             AppLogger.network.debug(
                 "[Komga] library=\(libraryId) totalElements=\(result.totalElements) totalPages=\(result.totalPages) firstPageCount=\(result.content.count)"
@@ -78,7 +79,8 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
         return LibraryCatalogPage(
             books: result.content.map { mapToBook($0, libraryId: libraryId) },
             totalCount: result.totalElements,
-            isLast: result.last ?? (result.content.isEmpty || page >= result.totalPages - 1)
+            isLast: result.last ?? (result.rawItemCount == 0 || page >= result.totalPages - 1),
+            isComplete: result.rejectedItems.isEmpty
         )
     }
 
@@ -95,6 +97,7 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
             throw ProviderError.serverError("Failed to fetch recent books (HTTP \(response.statusCode))")
         }
         let result = try JSONDecoder().decode(KomgaPage<KomgaBook>.self, from: data)
+        updateRejectedContent(result, libraryId: libraryId, fallbackScope: "recent")
         return result.content.map { mapToBook($0, libraryId: libraryId) }
     }
 
@@ -102,6 +105,7 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
         var page = 0
         var collected: [Book] = []
         var maxSeen: Date = since
+        var hadDecodeFailures = false
 
         var iterationCeiling = 5_000
         var iter = 0
@@ -131,6 +135,8 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
             do {
                 result = try JSONDecoder().decode(KomgaPage<KomgaBook>.self, from: data)
             } catch { return nil }
+            updateRejectedContent(result, libraryId: libraryId, fallbackScope: "delta-page-\(page)")
+            if !result.rejectedItems.isEmpty { hadDecodeFailures = true }
             if result.content.isEmpty { break }
             if page == 0, result.totalPages > 0 {
                 iterationCeiling = min(result.totalPages + 5, iterationCeiling)
@@ -154,7 +160,7 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
             page += 1
         }
 
-        return (collected, maxSeen)
+        return (collected, hadDecodeFailures ? since : maxSeen)
     }
 
     func fetchCollections(libraryId: String?) async throws -> [Collection] {
@@ -668,6 +674,20 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
         return String(format: "%g", numberSort)
     }
 
+    private func updateRejectedContent(
+        _ page: KomgaPage<KomgaBook>,
+        libraryId: String,
+        fallbackScope: String
+    ) {
+        RejectedContentStore.shared.update(
+            connection: connection,
+            libraryId: libraryId,
+            acceptedItemIdentifiers: Set(page.content.map(\.id)),
+            rejectedItems: page.rejectedItems,
+            fallbackScope: fallbackScope
+        )
+    }
+
     private struct KomgaLibrary: Decodable {
         let id: String
         let name: String
@@ -678,6 +698,22 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
         let totalElements: Int
         let totalPages: Int
         let last: Bool?
+        let rejectedItems: [RejectedContentCandidate]
+        var rawItemCount: Int { content.count + rejectedItems.count }
+
+        private enum CodingKeys: String, CodingKey {
+            case content, totalElements, totalPages, last
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            let content = try container.decode(LossyDecodableArray<T>.self, forKey: .content)
+            self.content = content.values
+            rejectedItems = content.rejectedItems
+            totalElements = try container.decode(Int.self, forKey: .totalElements)
+            totalPages = try container.decode(Int.self, forKey: .totalPages)
+            last = try container.decodeIfPresent(Bool.self, forKey: .last)
+        }
     }
 
     private struct KomgaBook: Decodable {

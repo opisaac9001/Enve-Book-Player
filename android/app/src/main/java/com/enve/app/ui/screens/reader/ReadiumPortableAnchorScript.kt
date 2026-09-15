@@ -327,9 +327,10 @@ object ReadiumPortableAnchorScript {
         })();
     """.trimIndent()
 
-    fun restore(locatorJson: String): String = """
+    fun restore(locatorJson: String, searchResult: Boolean = false): String = """
         (function() {
             const target = $locatorJson;
+            const searchResult = $searchResult;
             const locations = target?.locations || {};
             const compact = value => String(value || '')
                 .normalize('NFC')
@@ -385,16 +386,28 @@ object ReadiumPortableAnchorScript {
                 }
                 function findInScope(scope) {
                     const mapped = textMap(scope);
-                    const haystack = mapped.text.toLocaleLowerCase();
-                    const needle = exact.toLocaleLowerCase();
-                    const prefix = compact(target?.text?.before).toLocaleLowerCase();
-                    const suffix = compact(target?.text?.after).toLocaleLowerCase();
+                    const haystack = searchResult ? mapped.text : mapped.text.toLocaleLowerCase();
+                    const needle = searchResult ? exact : exact.toLocaleLowerCase();
+                    const prefix = searchResult ? compact(target?.text?.before) : compact(target?.text?.before).toLocaleLowerCase();
+                    const suffix = searchResult ? compact(target?.text?.after) : compact(target?.text?.after).toLocaleLowerCase();
                     const matches = [];
                     let cursor = 0;
                     while (cursor <= haystack.length - needle.length) {
                         const offset = haystack.indexOf(needle, cursor);
                         if (offset < 0) break;
                         let score = 0;
+                        if (searchResult) {
+                            const before = haystack.slice(Math.max(0, offset - prefix.length - 8), offset).trimEnd();
+                            const after = haystack.slice(offset + needle.length, offset + needle.length + suffix.length + 8).trimStart();
+                            for (let size = 1; size <= Math.min(prefix.length, before.length); size += 1) {
+                                if (prefix.slice(-size) !== before.slice(-size)) break;
+                                score += 1;
+                            }
+                            for (let size = 1; size <= Math.min(suffix.length, after.length); size += 1) {
+                                if (suffix.slice(0, size) !== after.slice(0, size)) break;
+                                score += 1;
+                            }
+                        }
                         if (
                             prefix &&
                             haystack.slice(Math.max(0, offset - prefix.length), offset) === prefix
@@ -460,6 +473,37 @@ object ReadiumPortableAnchorScript {
 
             const range = rangeFromTextQuote() || rangeFromDom();
             if (range) {
+                if (searchResult && globalThis.readium?.scrollToLocator) {
+                    const scope = range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
+                        ? range.commonAncestorContainer : range.commonAncestorContainer.parentElement;
+                    const path = [];
+                    let element = scope;
+                    while (element && element !== document.body) {
+                        if (element.id) {
+                            path.unshift('#' + CSS.escape(element.id));
+                            break;
+                        }
+                        const siblings = Array.from(element.parentElement.children)
+                            .filter(item => item.localName === element.localName);
+                        path.unshift(element.localName + ':nth-of-type(' + (siblings.indexOf(element) + 1) + ')');
+                        element = element.parentElement;
+                    }
+                    if (element === document.body) path.unshift('body');
+                    const before = range.cloneRange();
+                    before.selectNodeContents(scope);
+                    before.setEnd(range.startContainer, range.startOffset);
+                    const after = range.cloneRange();
+                    after.selectNodeContents(scope);
+                    after.setStart(range.endContainer, range.endOffset);
+                    return String(readium.scrollToLocator({
+                        locations: { cssSelector: path.join(' > ') },
+                        text: {
+                            highlight: range.toString(),
+                            before: before.toString().slice(-200),
+                            after: after.toString().slice(0, 200)
+                        }
+                    }));
+                }
                 const marker = document.createElement('span');
                 marker.setAttribute('aria-hidden', 'true');
                 marker.style.cssText = 'display:inline-block;width:0;height:0;overflow:hidden';

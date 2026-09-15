@@ -111,10 +111,14 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         while total == nil || offset < (total ?? 0) {
             let batch = try await fetchCatalogPage(libraryId: libraryId, offset: offset, limit: pageSize)
             total = batch.total
-            let mapped = try await batch.items.asyncCompactMap { try await book(from: $0, libraryId: libraryId) }
-            books.append(contentsOf: mapped)
-            if batch.items.count < pageSize || batch.hasMore == false { break }
-            offset += batch.items.count
+            let mapped = try await mapCatalogItems(
+                batch.items,
+                libraryId: libraryId,
+                fallbackScope: "offset-\(offset)-detail"
+            )
+            books.append(contentsOf: mapped.books)
+            if batch.rawItemCount < pageSize || batch.hasMore == false { break }
+            offset += batch.rawItemCount
         }
 
         return books
@@ -144,13 +148,16 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
             offset: offset,
             limit: pageSize
         )
-        let books = try await response.items.asyncCompactMap {
-            try await book(from: $0, libraryId: libraryId)
-        }
+        let mapped = try await mapCatalogItems(
+            response.items,
+            libraryId: libraryId,
+            fallbackScope: "page-\(page)-detail"
+        )
         return LibraryCatalogPage(
-            books: books,
+            books: mapped.books,
             totalCount: response.total,
-            isLast: response.hasMore == false || offset + response.items.count >= response.total
+            isLast: response.hasMore == false || offset + response.rawItemCount >= response.total,
+            isComplete: response.rejectedItems.isEmpty && mapped.rejectedItems.isEmpty
         )
     }
 
@@ -166,11 +173,15 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
                     while total == nil || offset < (total ?? 0) {
                         let batch = try await self.fetchCatalogPage(libraryId: libraryId, offset: offset, limit: self.pageSize)
                         total = batch.total
-                        let books = try await batch.items.asyncCompactMap { try await self.book(from: $0, libraryId: libraryId) }
-                        loaded += books.count
-                        continuation.yield(LibraryFetchBatchResult(books: books, loadedSoFar: loaded, totalCount: batch.total))
-                        if batch.items.count < self.pageSize || batch.hasMore == false { break }
-                        offset += batch.items.count
+                        let mapped = try await self.mapCatalogItems(
+                            batch.items,
+                            libraryId: libraryId,
+                            fallbackScope: "offset-\(offset)-detail"
+                        )
+                        loaded += mapped.books.count
+                        continuation.yield(LibraryFetchBatchResult(books: mapped.books, loadedSoFar: loaded, totalCount: batch.total))
+                        if batch.rawItemCount < self.pageSize || batch.hasMore == false { break }
+                        offset += batch.rawItemCount
                     }
 
                     continuation.finish()
@@ -190,7 +201,11 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
             sort: "added_at",
             order: "desc"
         )
-        return try await batch.items.asyncCompactMap { try await book(from: $0, libraryId: libraryId) }
+        return try await mapCatalogItems(
+            batch.items,
+            libraryId: libraryId,
+            fallbackScope: "recent-detail"
+        ).books
     }
 
     func fetchCollections(libraryId: String?) async throws -> [Collection] {
@@ -1047,7 +1062,7 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
     ) async throws -> SiloCatalogResponse {
         try await ensureAuthenticated()
         _ = try await ensureProfile()
-        return try await send(
+        let result = try await send(
             try makeRequest(
                 path: "/catalog",
                 query: [
@@ -1062,6 +1077,21 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
             ),
             as: SiloCatalogResponse.self
         )
+        RejectedContentStore.shared.record(
+            providerId: connection.id,
+            providerType: connection.type,
+            sourceName: connection.name,
+            libraryId: libraryId,
+            candidates: result.rejectedItems.map { candidate in
+                RejectedContentCandidate(
+                    itemIdentifier: candidate.itemIdentifier,
+                    title: candidate.title,
+                    reason: candidate.reason,
+                    fallbackIdentifier: "offset-\(offset)-\(candidate.fallbackIdentifier)"
+                )
+            }
+        )
+        return result
     }
 
     private func fetchPersonalCollections(libraryIds: [String]) async throws -> [Collection] {
@@ -1318,6 +1348,43 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         } catch {
             throw ProviderError.decodingFailed
         }
+    }
+
+    private func mapCatalogItems(
+        _ items: [SiloCatalogItem],
+        libraryId: String,
+        fallbackScope: String
+    ) async throws -> (books: [Book], rejectedItems: [RejectedContentCandidate]) {
+        var books: [Book] = []
+        var acceptedItemIdentifiers = Set<String>()
+        var rejectedItems: [RejectedContentCandidate] = []
+
+        for (index, item) in items.enumerated() {
+            do {
+                if let book = try await book(from: item, libraryId: libraryId) {
+                    books.append(book)
+                }
+                acceptedItemIdentifiers.insert(item.contentID)
+            } catch ProviderError.decodingFailed {
+                rejectedItems.append(
+                    RejectedContentCandidate(
+                        itemIdentifier: item.contentID,
+                        title: nil,
+                        reason: "The source returned malformed item details.",
+                        fallbackIdentifier: "item-\(index)"
+                    )
+                )
+            }
+        }
+
+        RejectedContentStore.shared.update(
+            connection: connection,
+            libraryId: libraryId,
+            acceptedItemIdentifiers: acceptedItemIdentifiers,
+            rejectedItems: rejectedItems,
+            fallbackScope: fallbackScope
+        )
+        return (books, rejectedItems)
     }
 
     private func book(from item: SiloCatalogItem, libraryId: String) async throws -> Book? {
@@ -1891,10 +1958,22 @@ private struct SiloCatalogResponse: Decodable {
     let hasMore: Bool?
     let items: [SiloCatalogItem]
     let snapshot: String?
+    let rejectedItems: [RejectedContentCandidate]
+    var rawItemCount: Int { items.count + rejectedItems.count }
 
     enum CodingKeys: String, CodingKey {
         case total, items, snapshot
         case hasMore = "has_more"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let items = try container.decode(LossyDecodableArray<SiloCatalogItem>.self, forKey: .items)
+        self.items = items.values
+        rejectedItems = items.rejectedItems
+        total = try container.decode(Int.self, forKey: .total)
+        hasMore = try container.decodeIfPresent(Bool.self, forKey: .hasMore)
+        snapshot = try container.decodeIfPresent(String.self, forKey: .snapshot)
     }
 }
 

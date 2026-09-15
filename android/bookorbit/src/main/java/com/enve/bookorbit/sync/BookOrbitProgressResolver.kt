@@ -1,5 +1,7 @@
 package com.enve.bookorbit.sync
 
+import com.enve.core.reader.EpubBridgeCheckpointCodec
+
 internal enum class BookOrbitProgressDecision { NONE, PULL, PUSH, CONFLICT }
 
 internal object BookOrbitProgressResolver {
@@ -12,7 +14,15 @@ internal object BookOrbitProgressResolver {
         localUpdatedAt: Long?,
         remotePercentage: Float,
         remoteUpdatedAt: Long?,
+        localLocator: String? = null,
+        remoteLocator: String? = null,
     ): BookOrbitProgressDecision {
+        val localCfi = EpubBridgeCheckpointCodec.foliateCfi(localLocator)
+        val remoteCfi = EpubBridgeCheckpointCodec.foliateCfi(remoteLocator)
+        if (localCfi != remoteCfi && localUpdatedAt != null && remoteUpdatedAt != null) {
+            if (remoteCfi != null && remoteUpdatedAt > localUpdatedAt) return BookOrbitProgressDecision.PULL
+            if (localCfi != null && localUpdatedAt > remoteUpdatedAt) return BookOrbitProgressDecision.PUSH
+        }
         val local = localPercentage.coerceIn(0f, 1f)
         val remote = remotePercentage.coerceIn(0f, 1f)
 

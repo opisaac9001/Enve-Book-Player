@@ -59,10 +59,14 @@ import retrofit2.http.PATCH
 import retrofit2.http.POST
 import retrofit2.http.Path
 import retrofit2.http.Query
+import retrofit2.http.Url
 
 interface BookOrbitApi {
-    @POST("api/v1/auth/login")
-    suspend fun login(@Body request: BookOrbitLoginRequest): Response<BookOrbitLoginResponse>
+    @POST
+    suspend fun login(
+        @Url url: String,
+        @Body request: BookOrbitLoginRequest,
+    ): Response<BookOrbitLoginResponse>
 
     @POST("api/v1/auth/refresh")
     suspend fun refresh(@Header("Cookie") refreshCookie: String): Response<BookOrbitLoginResponse>

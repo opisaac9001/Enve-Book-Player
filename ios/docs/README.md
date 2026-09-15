@@ -6,6 +6,7 @@ Start with the root [architecture guide](../ARCHITECTURE.md) for targets, source
 
 - [Architecture index](architecture/README.md)
 - [Deduplication](architecture/deduplication.md)
+- [Download ownership](architecture/download-ownership.md)
 - [Book identity contract](architecture/identity-contract.md)
 - [Provider capability matrix](architecture/provider-capability-matrix.md)
 - [Server mirror contract](architecture/server-mirror-contract.md)
@@ -17,6 +18,7 @@ Start with the root [architecture guide](../ARCHITECTURE.md) for targets, source
 - [Connections layer](ui/connections-layer.md)
 - [Engine API](ui/engine-api.md)
 - [Reader stack](ui/reader-stack.md)
+- [Streamed EPUB reproduction notes](ui/streamed-epub-reproduction.md)
 
 ## Backend references
 
@@ -27,12 +29,9 @@ Start with the root [architecture guide](../ARCHITECTURE.md) for targets, source
 
 Provider reference documents describe external API shapes. Enve architecture and behavior are defined by the root architecture guide and the contracts under `docs/architecture/` and `docs/ui/`.
 
-## Guides
-
-- [OIDC, SSO, and browser sign-in](../../docs/guides/oidc.md)
-
 ## Legal and distribution
 
+- [Public source release process](distribution/public-source-release.md)
 - [Third-party audit](legal/THIRD_PARTY_AUDIT.md)
-- [License](../../LICENSE.md)
+- [License](../LICENSE.md)
 - [Third-party notices](../THIRD_PARTY_NOTICES.md)

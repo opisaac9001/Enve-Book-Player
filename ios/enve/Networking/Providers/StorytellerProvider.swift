@@ -270,9 +270,27 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
         try await fetchMirrorSnapshot(forceRefresh: false)
     }
 
+    func makeCatalogBatchSource(
+        libraryId: String,
+        resumeAfter: String?,
+        expectedSnapshotIdentifier: String?
+    ) async throws -> LibraryCatalogBatchSource {
+        let result = try await fetchMirrorSnapshotResult(forceRefresh: false)
+        return LibraryCatalogBatchSource.snapshot(
+            books: result.books,
+            isComplete: result.isComplete,
+            resumeAfter: resumeAfter,
+            expectedSnapshotIdentifier: expectedSnapshotIdentifier
+        )
+    }
+
     func fetchMirrorSnapshot(forceRefresh: Bool = true) async throws -> [Book] {
+        try await fetchMirrorSnapshotResult(forceRefresh: forceRefresh).books
+    }
+
+    private func fetchMirrorSnapshotResult(forceRefresh: Bool) async throws -> (books: [Book], isComplete: Bool) {
         if !forceRefresh, let cached = cachedMirrorSnapshot() {
-            return cached
+            return (cached, true)
         }
         let request = try makeRequest(path: "/api/v2/books")
         let (data, http) = try await authorizedSend(request)
@@ -282,31 +300,48 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
 
         let decoded = try JSONDecoder().decode(LenientArrayWrapper<StorytellerBook>.self, from: data)
         let stBooks = decoded.values
-
-        let books = stBooks.compactMap { stBook -> Book? in
-            mapStorytellerBookToBook(stBook)
+        var books: [Book] = []
+        var mappingRejections: [RejectedContentCandidate] = []
+        for (index, stBook) in stBooks.enumerated() {
+            if let book = mapStorytellerBookToBook(stBook) {
+                books.append(book)
+            } else {
+                mappingRejections.append(
+                    RejectedContentCandidate(
+                        itemIdentifier: stBook.uuid,
+                        title: resolveBookTitle(stBook),
+                        reason: "The item has no supported audio or ebook content.",
+                        fallbackIdentifier: "mapped-item-\(index)"
+                    )
+                )
+            }
         }
-
-        guard decoded.skippedCount == 0 else {
-            AppLogger.network.error(
-                "Storyteller mirror rejected an incomplete snapshot with \(decoded.skippedCount) malformed book record(s)"
-            )
-            throw ProviderError.decodingFailed
-        }
+        let rejectedItems = decoded.rejectedItems + mappingRejections
+        RejectedContentStore.shared.update(
+            connection: connection,
+            libraryId: "storyteller-library",
+            acceptedItemIdentifiers: Set(books.map(\.id)),
+            rejectedItems: rejectedItems,
+            fallbackScope: "snapshot"
+        )
+        var isComplete = rejectedItems.isEmpty
         var collectionMembership: [String: [String]] = [:]
         let importedBookIds = Set(books.map(\.id))
         for stBook in stBooks where importedBookIds.contains(stBook.uuid) {
             for collection in stBook.collections ?? [] {
                 guard let collectionId = collection.uuid, !collectionId.isEmpty else {
-                    throw ProviderError.decodingFailed
+                    isComplete = false
+                    continue
                 }
                 collectionMembership[collectionId, default: []].append(stBook.uuid)
             }
         }
 
-        cacheMirrorSnapshot(books, collectionMembership: collectionMembership)
+        if isComplete {
+            cacheMirrorSnapshot(books, collectionMembership: collectionMembership)
+        }
         AppLogger.network.info("Fetched \(books.count) Storyteller books from \(stBooks.count) decoded record(s)")
-        return books
+        return (books, isComplete)
     }
 
     func fetchRecentBooks(libraryId: String, limit: Int) async throws -> [Book] {
@@ -2079,30 +2114,15 @@ private extension KeyedDecodingContainer {
 private struct LenientArrayWrapper<T: Decodable>: Decodable {
     let values: [T]
     let skippedCount: Int
+    let rejectedItems: [RejectedContentCandidate]
 
     init(from decoder: Decoder) throws {
-        var container = try decoder.unkeyedContainer()
-        var values: [T] = []
-        var skippedCount = 0
-        var index = 0
-
-        while !container.isAtEnd {
-            do {
-                values.append(try container.decode(T.self))
-            } catch {
-                skippedCount += 1
-                AppLogger.network.warning("Storyteller decode failed at index \(index): \(error.localizedDescription)")
-                _ = try? container.decode(FailableDecodable.self)
-            }
-            index += 1
-        }
-
-        self.values = values
-        self.skippedCount = skippedCount
+        let decoded = try LossyDecodableArray<T>(from: decoder)
+        values = decoded.values
+        rejectedItems = decoded.rejectedItems
+        skippedCount = decoded.rejectedItems.count
     }
 }
-
-private struct FailableDecodable: Decodable {}
 
 struct StorytellerUser: Codable {
     let id: String

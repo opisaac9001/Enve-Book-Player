@@ -28,6 +28,7 @@ class TokenRefreshAuthenticator @Inject constructor(
 
     override fun authenticate(route: Route?, response: Response): Request? {
         val path = response.request.url.encodedPath
+        // Never retry auth / login endpoints to prevent loops
         if (path.contains("auth/login") || path.contains("auth/refresh")) return null
         if (response.request.header("X-Retry-Auth") != null) return null
 

@@ -191,15 +191,16 @@ object EpubBridgeCheckpointCodec {
         }
         val text = root["text"] as? JsonObject
         val exact = text?.string("highlight")?.compactAnchorText()
+        val foliateCfi = foliateCfi(locatorJson)
         return EpubBridgeCheckpoint(
             publicationSha256 = publicationSha256,
             providerFileId = providerFileId,
             revision = revision,
             writerEpoch = writerEpoch,
             observedAt = observedAt,
-            sourceEngine = ReaderEngineKind.READIUM,
+            sourceEngine = if (foliateCfi != null) ReaderEngineKind.FOLIATE else ReaderEngineKind.READIUM,
             href = href,
-            epubCfi = null,
+            epubCfi = foliateCfi,
             cssSelector = locations.string("cssSelector"),
             domRange = domRange,
             resourceProgression = locations.double("progression")?.boundedProgress(),
@@ -309,7 +310,11 @@ object EpubBridgeCheckpointCodec {
                 ?.takeIf { checkpoint.sourceEngine == ReaderEngineKind.FOLIATE }
                 ?.takeIf(::isFullEpubCfi)
         }
-        return null
+        val root = runCatching { json.parseToJsonElement(raw).jsonObject }.getOrNull() ?: return null
+        val locations = root["locations"] as? JsonObject ?: return null
+        return locations.string("cfi")
+            ?.takeIf { locations.string("enveSourceEngine") == "foliate" }
+            ?.takeIf(::isFullEpubCfi)
     }
 
     fun isFullEpubCfi(value: String?): Boolean {

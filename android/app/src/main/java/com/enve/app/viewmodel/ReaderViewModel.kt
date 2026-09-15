@@ -18,6 +18,8 @@ import com.enve.core.data.model.AnnotationKind
 import com.enve.core.data.model.AnnotationMedia
 import com.enve.core.data.model.AnnotationStyle
 import com.enve.app.data.reader.LayoutPreset
+import com.enve.app.data.reader.search.EbookSearchService
+import com.enve.app.data.reader.ReaderSearchPreferences
 import com.enve.core.data.model.ReaderAnnotation
 import com.enve.app.data.reader.ReaderColumns
 import com.enve.app.data.reader.ReaderFont
@@ -51,6 +53,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -116,12 +119,6 @@ data class ReaderSearchResult(
     val progressPct: Int,
 )
 
-private sealed interface SearchLoadResult {
-    data class Success(val items: List<ReaderSearchResult>) : SearchLoadResult
-    data class Failure(val message: String) : SearchLoadResult
-    data object Unavailable : SearchLoadResult
-}
-
 private fun Locator.toSearchResult(index: Int): ReaderSearchResult {
     val section = title?.takeIf { it.isNotBlank() }
         ?: href.toString().substringAfterLast('/').substringBefore('#').ifBlank { "Result" }
@@ -179,6 +176,10 @@ data class ReaderUiState(
     val searchResults:       List<ReaderSearchResult> = emptyList(),
     val searchLoading:       Boolean   = false,
     val searchError:         String?   = null,
+    val searchStatus:        String?   = null,
+    val searchWholeWords:    Boolean   = true,
+    val searchOptionsAvailable: Boolean = false,
+    val searchHasMore:       Boolean   = false,
     val showMoreMenu:        Boolean   = false,
     val showAnnotationDialog: Boolean  = false,
     val readAlongSupported:  Boolean   = false,
@@ -276,6 +277,8 @@ class ReaderViewModel @Inject constructor(
     private val readAloudCheckpoints: ReadAloudCheckpointRepository,
     private val epubBridgeCheckpoints: EpubBridgeCheckpointStore,
     private val history: HistorySessionStore,
+    private val ebookSearch: EbookSearchService,
+    private val searchPreferences: ReaderSearchPreferences,
 ) : ViewModel() {
 
     private val einkBoldActive: Boolean
@@ -348,6 +351,8 @@ class ReaderViewModel @Inject constructor(
     private var readAlongSyncJob: Job? = null
     private var readAlongStartJob: Job? = null
     private var searchJob: Job? = null
+    private var searchEpubFile: java.io.File? = null
+    private var searchLimit = MAX_SEARCH_RESULTS
 
     fun postTransientMessage(message: String) {
         _state.update { it.copy(transientMessage = message) }
@@ -358,7 +363,7 @@ class ReaderViewModel @Inject constructor(
 
     fun showSearch(show: Boolean) {
         if (!show) {
-            searchJob?.cancel()
+            cancelSearch()
             engineNavigator?.clearSearch()
             _state.update { it.copy(showSearchSheet = false, searchLoading = false) }
         } else {
@@ -367,89 +372,147 @@ class ReaderViewModel @Inject constructor(
     }
 
     fun updateSearchQuery(query: String) {
-        _state.update { it.copy(searchQuery = query, searchError = null) }
+        cancelSearch()
+        engineNavigator?.clearSearch()
+        _state.update {
+            it.copy(searchQuery = query.take(200), searchError = null, searchResults = emptyList(), searchHasMore = false)
+        }
+    }
+
+    fun updateSearchWholeWords(wholeWords: Boolean) {
+        cancelSearch()
+        _state.update { it.copy(searchWholeWords = wholeWords, searchResults = emptyList(), searchHasMore = false) }
+        viewModelScope.launch { searchPreferences.setWholeWords(wholeWords) }
+        if (state.value.searchQuery.isNotBlank()) runSearch()
+    }
+
+    fun cancelSearch() {
+        searchJob?.cancel()
+        searchJob = null
+        _state.update { it.copy(searchLoading = false, searchStatus = null) }
+    }
+
+    fun loadMoreSearchResults() {
+        if (state.value.searchLoading || !state.value.searchHasMore) return
+        searchLimit += MAX_SEARCH_RESULTS
+        startSearch(state.value.searchQuery, keepResults = true)
+    }
+
+    fun runSearch(query: String = state.value.searchQuery) {
+        searchLimit = MAX_SEARCH_RESULTS
+        startSearch(query, keepResults = false)
     }
 
     @OptIn(ExperimentalReadiumApi::class, Search::class)
-    fun runSearch(query: String = state.value.searchQuery) {
+    private fun startSearch(query: String, keepResults: Boolean) {
         val trimmed = query.trim()
-        searchJob?.cancel()
-        if (trimmed.length < 2) {
+        cancelSearch()
+        if (trimmed.isEmpty() || trimmed.length > 200) {
             engineNavigator?.clearSearch()
             _state.update {
                 it.copy(
                     searchQuery = query,
                     searchResults = emptyList(),
                     searchLoading = false,
-                    searchError = if (trimmed.isBlank()) null else "Enter at least 2 characters.",
+                    searchError = if (trimmed.isBlank()) null else "Use at most 200 characters.",
+                    searchHasMore = false,
                 )
             }
             return
         }
         val alternateEngine = engineNavigator
         val pub = publication
+        val epubFile = searchEpubFile
+        val wholeWords = state.value.searchWholeWords
+        val limit = searchLimit
         if (alternateEngine == null && pub == null) {
             _state.update { it.copy(searchLoading = false, searchError = "Search is not ready yet.") }
             return
         }
         _state.update {
-            it.copy(searchQuery = query, searchResults = emptyList(), searchLoading = true, searchError = null)
+            it.copy(
+                searchQuery = query,
+                searchResults = if (keepResults) it.searchResults else emptyList(),
+                searchLoading = true,
+                searchError = null,
+                searchStatus = "Searching…",
+                searchHasMore = false,
+            )
         }
         searchJob = viewModelScope.launch {
-            val results = if (alternateEngine != null) {
-                try {
-                    alternateEngine.search(trimmed, MAX_SEARCH_RESULTS)
-                        .mapIndexed { index, locator -> locator.toSearchResult(index) }
-                        .let(SearchLoadResult::Success)
-                } catch (_: TimeoutCancellationException) {
-                    SearchLoadResult.Failure("Search timed out.")
-                } catch (error: CancellationException) {
-                    throw error
-                } catch (error: Exception) {
-                    SearchLoadResult.Failure(error.message ?: "Search failed.")
-                }
-            } else {
-                withContext(Dispatchers.IO) {
-                    val iterator = pub!!.search(
-                        trimmed,
-                        SearchService.Options(
-                            caseSensitive = false,
-                            diacriticSensitive = false,
-                        ),
-                    ) ?: return@withContext SearchLoadResult.Unavailable
-                    try {
-                        val collected = mutableListOf<ReaderSearchResult>()
-                        while (collected.size < MAX_SEARCH_RESULTS) {
-                            val page = iterator.next().getOrElse { error ->
-                                return@withContext SearchLoadResult.Failure(error.message)
-                            } ?: break
-                            for (locator in page.locators) {
-                                collected += locator.toSearchResult(collected.size)
-                                if (collected.size >= MAX_SEARCH_RESULTS) break
-                            }
+            try {
+                if (alternateEngine != null) {
+                    val locators = alternateEngine.search(trimmed, limit + 1)
+                    ensureActive()
+                    _state.update {
+                        it.copy(
+                            searchResults = locators.take(limit).mapIndexed { index, locator -> locator.toSearchResult(index) },
+                            searchHasMore = locators.size > limit,
+                        )
+                    }
+                } else if (epubFile != null) {
+                    ebookSearch.search(pub!!, epubFile, trimmed, wholeWords, limit).collect { update ->
+                        ensureActive()
+                        _state.update {
+                            it.copy(
+                                searchResults = update.results.mapIndexed { index, locator -> locator.toSearchResult(index) },
+                                searchHasMore = update.hasMore,
+                                searchStatus = if (update.indexing) {
+                                    "Preparing search index: ${update.indexedSections}/${update.totalSections} sections"
+                                } else "Searching…",
+                            )
                         }
-                        SearchLoadResult.Success(collected)
-                    } finally {
-                        iterator.close()
+                    }
+                } else {
+                    withContext(Dispatchers.IO) {
+                        val iterator = pub!!.search(
+                            trimmed,
+                            SearchService.Options(caseSensitive = false, diacriticSensitive = false),
+                        ) ?: error("Search is unavailable for this book.")
+                        try {
+                            val collected = mutableListOf<ReaderSearchResult>()
+                            while (collected.size <= limit) {
+                                ensureActive()
+                                val page = iterator.next().getOrElse { error ->
+                                    throw IllegalStateException(error.message)
+                                } ?: break
+                                ensureActive()
+                                for (locator in page.locators) {
+                                    collected += locator.toSearchResult(collected.size)
+                                    if (collected.size > limit) break
+                                }
+                                _state.update {
+                                    it.copy(searchResults = collected.take(limit), searchHasMore = collected.size > limit)
+                                }
+                            }
+                        } finally {
+                            iterator.close()
+                        }
                     }
                 }
-            }
-            _state.update { current ->
-                when (results) {
-                    is SearchLoadResult.Success -> current.copy(
-                        searchResults = results.items,
+                ensureActive()
+                _state.update {
+                    it.copy(
                         searchLoading = false,
-                        searchError = if (results.items.isEmpty()) "Nothing found for “${_state.value.searchQuery}”." else null,
+                        searchStatus = if (it.searchHasMore) "Showing first ${it.searchResults.size} matches" else null,
+                        searchError = if (it.searchResults.isEmpty()) "Nothing found for “$trimmed”." else null,
                     )
-                    SearchLoadResult.Unavailable -> current.copy(
-                        searchResults = emptyList(),
+                }
+            } catch (_: TimeoutCancellationException) {
+                ensureActive()
+                _state.update {
+                    it.copy(searchLoading = false, searchStatus = null, searchError = "Search timed out. Try a more specific phrase.")
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                ensureActive()
+                Log.w(TAG, "EPUB search failed", error)
+                _state.update {
+                    it.copy(
                         searchLoading = false,
-                        searchError = "Search is unavailable for this book.",
-                    )
-                    is SearchLoadResult.Failure -> current.copy(
-                        searchResults = emptyList(),
-                        searchLoading = false,
-                        searchError = results.message,
+                        searchStatus = null,
+                        searchError = "Search could not finish. Please try again.",
                     )
                 }
             }
@@ -457,14 +520,42 @@ class ReaderViewModel @Inject constructor(
     }
 
     fun seekToSearchResult(result: ReaderSearchResult) {
+        cancelSearch()
+        _state.update { it.copy(showSearchSheet = false, showChrome = false) }
         viewModelScope.launch {
-            engineNavigator?.goToLocator(result.locator) ?: navigator?.let {
+            delay(1_000)
+            engineNavigator?.goToLocator(result.locator) ?: navigator?.let { nav ->
                 readiumUserInteractionPending = true
-                if (!it.go(result.locator)) readiumUserInteractionPending = false
+                val sameResource = EpubBridgeRestoreMatcher.hrefMatches(
+                    expected = result.locator.href.toString(),
+                    actual = nav.currentLocator.value.href.toString(),
+                )
+                if (sameResource || nav.go(result.locator, animated = false)) {
+                    val restored = kotlinx.coroutines.withTimeoutOrNull(10_000L) {
+                        nav.currentLocator.first { locator ->
+                            EpubBridgeRestoreMatcher.hrefMatches(
+                                expected = result.locator.href.toString(),
+                                actual = locator.href.toString(),
+                            )
+                        }
+                        val response = nav.evaluateJavascript(
+                            ReadiumPortableAnchorScript.restore(
+                                result.locator.toJSON().toString(),
+                                searchResult = true,
+                            ),
+                        )
+                        response?.toBooleanStrictOrNull()
+                            ?: decodeJavaScriptStringResult(response)?.toBooleanStrictOrNull()
+                            ?: false
+                    }
+                    if (restored != true && !nav.go(result.locator, animated = false)) {
+                        readiumUserInteractionPending = false
+                    }
+                } else {
+                    readiumUserInteractionPending = false
+                }
             }
             engineNavigator?.clearSearch()
-            _state.update { it.copy(showSearchSheet = false, showChrome = true) }
-            keepChromeAlive()
         }
     }
 
@@ -482,6 +573,11 @@ class ReaderViewModel @Inject constructor(
         this.bookSource = source
         this.bookConnectionId = connectionId
         db = ReaderDatabase.getInstance(appContext)
+        viewModelScope.launch {
+            searchPreferences.wholeWords.collect { wholeWords ->
+                _state.update { it.copy(searchWholeWords = wholeWords) }
+            }
+        }
         startReadingSession()
         val startedAt = sessionStartedAtMs
         viewModelScope.launch {
@@ -780,6 +876,9 @@ class ReaderViewModel @Inject constructor(
         engine: ReaderEngineNavigator,
         plan: FoliateOpenPlan,
     ) {
+        cancelSearch()
+        searchEpubFile = null
+        _state.update { it.copy(searchOptionsAvailable = false) }
         readiumRestoreJob?.cancel()
         readiumRestoreJob = null
         readiumUserInteractionPending = false
@@ -935,6 +1034,9 @@ class ReaderViewModel @Inject constructor(
     }
 
     fun attachNavigator(nav: EpubNavigatorFragment, pub: Publication, epubFile: java.io.File? = null) {
+        cancelSearch()
+        searchEpubFile = epubFile
+        _state.update { it.copy(searchOptionsAvailable = epubFile != null) }
         readiumRestoreJob?.cancel()
         readiumRestoreJob = null
         readiumUserInteractionPending = false

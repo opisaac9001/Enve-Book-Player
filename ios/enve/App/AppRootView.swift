@@ -335,18 +335,20 @@ struct AppRootView: View {
                 libraryId: "debug"
             )
         case "splitdetail":
+            let fixtureDirectory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("enve-split-detail", isDirectory: true)
             let tracks = [
                 AudioTrack(
                     index: 0,
                     title: "Chapter 1 - The Worst Birthday",
-                    filePath: "/tmp/Chapter 1 - The Worst Birthday.mp3",
+                    filePath: fixtureDirectory.appendingPathComponent("Chapter 1 - The Worst Birthday.mp3").path,
                     duration: 900,
                     startOffset: 0
                 ),
                 AudioTrack(
                     index: 1,
                     title: "Chapter 2 - Dobby's Warning",
-                    filePath: "/tmp/Chapter 2 - Dobby's Warning.mp3",
+                    filePath: fixtureDirectory.appendingPathComponent("Chapter 2 - Dobby's Warning.mp3").path,
                     duration: 1_100,
                     startOffset: 900
                 ),

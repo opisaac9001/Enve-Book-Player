@@ -8,9 +8,10 @@ No pending changes.
 
 ## 1.2 build 51 — 2026-09-14
 
-- Preserve EPUB reading positions across reopen and sync operations.
-- Bundle Literata, Atkinson Hyperlegible, and Lexend as reader fonts with their provenance and license notices.
-- Correct Grimmory progress synchronization for books with multiple available formats.
+- Preserve exact BookOrbit EPUB CFIs through sync, caching, reopening, and upload, including newer positions within the percentage deadband.
+- Add persistent full-book EPUB search and bundled Literata, Atkinson Hyperlegible, and Lexend reader fonts.
+- Add the unified home-screen book widget and more reliable reader checkpoint uploads.
+- Correct multi-format Grimmory progress handling and validate the explicit BookOrbit server URL during password login.
 - Keep machine-specific test paths and sensitive source files out of published source snapshots.
 
 ## 1.2 build 50 — 2026-09-08

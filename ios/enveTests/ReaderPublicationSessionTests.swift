@@ -5,10 +5,15 @@ import Testing
 
 @MainActor
 struct ReaderPublicationSessionTests {
-    private let managedRoots = [
-        URL(fileURLWithPath: "/Documents/Ebooks", isDirectory: true),
-        URL(fileURLWithPath: "/Caches/ReaderEbooks", isDirectory: true),
-    ]
+    private let fixtureRoot = FileManager.default.temporaryDirectory
+        .appendingPathComponent("ReaderPublicationSessionTests", isDirectory: true)
+
+    private var managedRoots: [URL] {
+        [
+            fixtureRoot.appendingPathComponent("Documents/Ebooks", isDirectory: true),
+            fixtureRoot.appendingPathComponent("Caches/ReaderEbooks", isDirectory: true),
+        ]
+    }
 
     @Test func unreadableServerAssetsInsideManagedRootsAreDiscarded() {
         for root in managedRoots {
@@ -33,14 +38,14 @@ struct ReaderPublicationSessionTests {
     }
 
     @Test func assetsOutsideManagedRootsAreNeverDiscarded() {
-        for path in [
-            "/Documents/EbooksArchive/book.epub",  // sibling directory sharing the root's prefix
-            "/Documents/Ebooks",  // the root itself
-            "/Documents/book.epub",
+        for url in [
+            fixtureRoot.appendingPathComponent("Documents/EbooksArchive/book.epub"),
+            managedRoots[0],
+            fixtureRoot.appendingPathComponent("Documents/book.epub"),
         ] {
             #expect(
                 !ReaderPublicationSession.isDiscardableAsset(
-                    at: URL(fileURLWithPath: path),
+                    at: url,
                     source: .booklore,
                     managedRoots: managedRoots
                 )
@@ -51,7 +56,7 @@ struct ReaderPublicationSessionTests {
     @Test func relativeComponentsResolveBeforeTheManagedRootCheck() {
         #expect(
             !ReaderPublicationSession.isDiscardableAsset(
-                at: URL(fileURLWithPath: "/Documents/Ebooks/../book.epub"),
+                at: managedRoots[0].appendingPathComponent("../book.epub"),
                 source: .booklore,
                 managedRoots: managedRoots
             )

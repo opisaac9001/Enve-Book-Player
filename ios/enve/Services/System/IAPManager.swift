@@ -32,10 +32,17 @@ final class IAPManager {
     var products: [Product] = []
     var purchasedProductIDs = Set<String>()
     var lastLoadErrorMessage: String?
+    @ObservationIgnored private var lastLoadError: Error?
+    @ObservationIgnored private let productLoader: ([String]) async throws -> [Product]
 
     @ObservationIgnored private var updateListenerTask: Task<Void, Error>?
 
-    private init() {
+    init(
+        productLoader: @escaping ([String]) async throws -> [Product] = { try await Product.products(for: $0) },
+        startsAutomatically: Bool = true
+    ) {
+        self.productLoader = productLoader
+        guard startsAutomatically else { return }
         updateListenerTask = listenForTransactions()
 
         Task {
@@ -51,8 +58,9 @@ final class IAPManager {
     func loadProducts() async {
         do {
             let allProductIDs = Self.tipProductIDs + Self.legacyTipProductIDs
-            let allIDs = Array(Set(allProductIDs))
-            products = try await Product.products(for: allIDs)
+            let allIDs = Array(Set(allProductIDs)).sorted()
+            products = try await productLoader(allIDs)
+            lastLoadError = nil
             lastLoadErrorMessage = nil
 
             let returnedIDs = Set(products.map(\.id))
@@ -61,8 +69,10 @@ final class IAPManager {
                 AppLogger.network.warning("Missing current products: \(missingCurrentIDs.joined(separator: ", "))")
             }
         } catch {
-            AppLogger.network.error("Failed to load products: \(error)")
-            lastLoadErrorMessage = error.localizedDescription
+            let failure = ProductLoadFailure(underlyingError: error)
+            lastLoadError = failure
+            lastLoadErrorMessage = failure.localizedDescription
+            AppLogger.network.error("StoreKit product request failed: \(failure.diagnosticCode)")
         }
     }
 
@@ -165,10 +175,30 @@ final class IAPManager {
         }
 
         guard let product = resolvedTipProduct(for: productID) else {
+            if let lastLoadError { throw lastLoadError }
             throw StoreError.productNotFound
         }
 
         try await purchase(product)
+    }
+}
+
+struct ProductLoadFailure: LocalizedError {
+    let underlyingError: Error
+
+    var diagnosticCode: String {
+        var codes: [String] = []
+        var current: NSError? = underlyingError as NSError
+        for _ in 0..<5 {
+            guard let error = current else { break }
+            codes.append("\(error.domain) (\(error.code))")
+            current = error.userInfo[NSUnderlyingErrorKey] as? NSError
+        }
+        return codes.joined(separator: " → ")
+    }
+
+    var errorDescription: String? {
+        "Unable to load tips from the App Store. Please try again later."
     }
 }
 
@@ -191,7 +221,7 @@ extension StoreError: LocalizedError {
             return "Purchase is pending"
         case .productNotFound:
             return
-                "Purchase product could not be loaded. Check App Store Connect product IDs or run with the StoreKit configuration attached to the scheme."
+                "This tip is temporarily unavailable. Please try again later."
         case .unknown:
             return "An unknown error occurred"
         }

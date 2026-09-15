@@ -59,7 +59,7 @@ enum ReaderEnginePolicy {
 
     private static func automaticEngine(for source: Book.BookSource) -> ReaderEngineKind {
         switch source {
-        case .booklore, .silo:
+        case .booklore, .silo, .bookOrbit:
             return .foliate
         default:
             return .readium

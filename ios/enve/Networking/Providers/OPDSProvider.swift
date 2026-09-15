@@ -3,6 +3,7 @@ import Logging
 
 class OPDSProvider: WholeSnapshotCatalogProvider, EbookDownloadProvider, @unchecked Sendable {
     var connection: ServerConnection
+    private var catalogFetchWasComplete = true
 
     var capabilities: ProviderCapabilities {
         [.fullImport, .downloads, .backgroundOperation]
@@ -54,7 +55,22 @@ class OPDSProvider: WholeSnapshotCatalogProvider, EbookDownloadProvider, @unchec
     }
 
     func fetchBooks(libraryId: String) async throws -> [Book] {
-        try await fetchFeed(url: feedURL(), visitedURLs: [], depth: 0)
+        catalogFetchWasComplete = true
+        return try await fetchFeed(url: feedURL(), visitedURLs: [], depth: 0)
+    }
+
+    func makeCatalogBatchSource(
+        libraryId: String,
+        resumeAfter: String?,
+        expectedSnapshotIdentifier: String?
+    ) async throws -> LibraryCatalogBatchSource {
+        let books = try await fetchBooks(libraryId: libraryId)
+        return LibraryCatalogBatchSource.snapshot(
+            books: books,
+            isComplete: catalogFetchWasComplete,
+            resumeAfter: resumeAfter,
+            expectedSnapshotIdentifier: expectedSnapshotIdentifier
+        )
     }
 
     func fetchRecentBooks(libraryId: String, limit: Int) async throws -> [Book] {
@@ -215,6 +231,16 @@ class OPDSProvider: WholeSnapshotCatalogProvider, EbookDownloadProvider, @unchec
             navLinks.append(contentsOf: extractNavLinks(from: group.navigation, baseURL: feedURL))
             navLinks.append(contentsOf: extractNavLinksFromFeedLinks(group.links, baseURL: feedURL))
         }
+
+        let rejectedItems = feed.rejectedItems + (feed.groups ?? []).flatMap(\.rejectedItems)
+        if !rejectedItems.isEmpty { catalogFetchWasComplete = false }
+        RejectedContentStore.shared.update(
+            connection: connection,
+            libraryId: "opds-root",
+            acceptedItemIdentifiers: Set(books.map(\.id)),
+            rejectedItems: rejectedItems,
+            fallbackScope: "opds2"
+        )
 
         let nextLink = feed.links?.first(where: { $0.rel == "next" })?.href.flatMap { resolveURL($0, baseURL: feedURL) }
         let searchLink = feed.links?.first(where: { $0.rel == "search" })?.href.flatMap { resolveURL($0, baseURL: feedURL)?.absoluteString }
@@ -475,6 +501,25 @@ class OPDSProvider: WholeSnapshotCatalogProvider, EbookDownloadProvider, @unchec
         let links: [OPDS2Link]?
         let facets: [OPDS2FacetGroup]?
         let catalogs: [OPDS2Publication]?
+        let rejectedItems: [RejectedContentCandidate]
+
+        private enum CodingKeys: String, CodingKey {
+            case metadata, publications, navigation, groups, links, facets, catalogs
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            metadata = try container.decodeIfPresent(OPDS2FeedMetadata.self, forKey: .metadata)
+            let publications = try container.decodeIfPresent(LossyDecodableArray<OPDS2Publication>.self, forKey: .publications)
+            self.publications = publications?.values
+            navigation = try container.decodeIfPresent([OPDS2Publication].self, forKey: .navigation)
+            groups = try container.decodeIfPresent([OPDS2Group].self, forKey: .groups)
+            links = try container.decodeIfPresent([OPDS2Link].self, forKey: .links)
+            facets = try container.decodeIfPresent([OPDS2FacetGroup].self, forKey: .facets)
+            let catalogs = try container.decodeIfPresent(LossyDecodableArray<OPDS2Publication>.self, forKey: .catalogs)
+            self.catalogs = catalogs?.values
+            rejectedItems = (publications?.rejectedItems ?? []) + (catalogs?.rejectedItems ?? [])
+        }
     }
 
     fileprivate struct OPDS2FeedMetadata: Decodable {
@@ -492,6 +537,21 @@ class OPDSProvider: WholeSnapshotCatalogProvider, EbookDownloadProvider, @unchec
         let publications: [OPDS2Publication]?
         let navigation: [OPDS2Publication]?
         let links: [OPDS2Link]?
+        let rejectedItems: [RejectedContentCandidate]
+
+        private enum CodingKeys: String, CodingKey {
+            case metadata, publications, navigation, links
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            metadata = try container.decodeIfPresent(OPDS2FeedMetadata.self, forKey: .metadata)
+            let publications = try container.decodeIfPresent(LossyDecodableArray<OPDS2Publication>.self, forKey: .publications)
+            self.publications = publications?.values
+            rejectedItems = publications?.rejectedItems ?? []
+            navigation = try container.decodeIfPresent([OPDS2Publication].self, forKey: .navigation)
+            links = try container.decodeIfPresent([OPDS2Link].self, forKey: .links)
+        }
     }
 
     fileprivate struct OPDS2FacetGroup: Decodable {

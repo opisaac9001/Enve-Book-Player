@@ -134,6 +134,7 @@ enum FoliateReaderError: LocalizedError {
     case missingCapabilities
     case unsupportedAnnotation
     case unsupportedCustomFont
+    case missingBuiltInFont
     case commandFailed
     case commandTimedOut
 
@@ -153,6 +154,8 @@ enum FoliateReaderError: LocalizedError {
             "An existing annotation cannot be represented safely in Foliate."
         case .unsupportedCustomFont:
             "The selected reader font is unavailable to Foliate."
+        case .missingBuiltInFont:
+            "A built-in reader font is unavailable to Foliate."
         case .commandFailed:
             "Foliate could not complete a reader action."
         case .commandTimedOut:
@@ -161,7 +164,51 @@ enum FoliateReaderError: LocalizedError {
     }
 }
 
-private struct FoliateReaderPreferences {
+enum FoliateBuiltInFontCSS {
+    private struct Face {
+        let fileName: String
+        let style: String
+        let weight: String
+    }
+
+    private static let openDyslexicFaces = [
+        Face(fileName: "OpenDyslexic-Regular", style: "normal", weight: "400"),
+        Face(fileName: "OpenDyslexic-Italic", style: "italic", weight: "400"),
+        Face(fileName: "OpenDyslexic-Bold", style: "normal", weight: "700"),
+        Face(fileName: "OpenDyslexic-BoldItalic", style: "italic", weight: "700"),
+    ]
+
+    static let openDyslexic: String? = {
+        guard let bundleURL = Bundle.main.url(forResource: "Readium_ReadiumNavigator", withExtension: "bundle"),
+            let bundle = Bundle(url: bundleURL)
+        else {
+            return nil
+        }
+
+        let rules = openDyslexicFaces.compactMap { face -> String? in
+            guard let url = bundle.url(
+                forResource: face.fileName,
+                withExtension: "otf",
+                subdirectory: "Assets/Static/fonts"
+            ), let data = try? Data(contentsOf: url), !data.isEmpty
+            else {
+                return nil
+            }
+            return """
+                @font-face {
+                    font-family: 'OpenDyslexic';
+                    src: url('data:font/otf;base64,\(data.base64EncodedString())') format('opentype');
+                    font-style: \(face.style);
+                    font-weight: \(face.weight);
+                    font-display: block;
+                }
+                """
+        }
+        return rules.count == openDyslexicFaces.count ? rules.joined(separator: "\n") : nil
+    }()
+}
+
+struct FoliateReaderPreferences {
     let theme: String
     let fontFamily: String
     let customFontFamily: String?
@@ -183,7 +230,10 @@ private struct FoliateReaderPreferences {
     let direction: String
     let verticalWriting: Bool?
 
-    init(appearance: ClassicReaderAppearance) throws {
+    init(
+        appearance: ClassicReaderAppearance,
+        fontLibrary: ReaderFontLibrary = .shared
+    ) throws {
         theme = appearance.theme.rawValue
         fontFamily = appearance.fontFamily.rawValue
         columns = appearance.columnMode.rawValue
@@ -206,7 +256,7 @@ private struct FoliateReaderPreferences {
         if appearance.usesCustomFont {
             guard let familyName = appearance.customFontFamilyName,
                 !familyName.isEmpty,
-                let family = ReaderFontLibrary.shared.fontFamily(named: familyName),
+                let family = fontLibrary.fontFamily(named: familyName),
                 !family.files.isEmpty
             else {
                 throw FoliateReaderError.unsupportedCustomFont
@@ -246,7 +296,14 @@ private struct FoliateReaderPreferences {
             customFontCSS = rules.joined(separator: "\n")
         } else {
             customFontFamily = nil
-            customFontCSS = nil
+            if appearance.fontFamily == .openDyslexic {
+                guard let css = FoliateBuiltInFontCSS.openDyslexic else {
+                    throw FoliateReaderError.missingBuiltInFont
+                }
+                customFontCSS = css
+            } else {
+                customFontCSS = nil
+            }
         }
     }
 

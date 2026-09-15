@@ -85,6 +85,39 @@ struct ProviderLiveSyncTests {
             }
             record("LAB \(service) catalog libraries=\(libraries.count) books=\(books.count) ebooks=\(books.filter { $0.mediaType == .ebook }.count)")
             guard !books.isEmpty else { throw LabError.emptyCatalog }
+            if let provider = provider as? BookOrbitProvider,
+               let rawChecks = ProcessInfo.processInfo.environment["ENVE_LAB_BOOKORBIT_CFI_CHECKS"] {
+                struct Checks: Decodable {
+                    struct Position: Decodable { let progress: Double; let cfi: String }
+                    let bookId: String
+                    let positions: [Position]
+                }
+                let checks = try JSONDecoder().decode(Checks.self, from: Data(rawChecks.utf8))
+                let summary = try #require(books.first { $0.id == checks.bookId })
+                let book = try await provider.fetchFullBookDetails(bookId: summary.id, libraryId: summary.libraryId)
+                let original = try #require(await provider.fetchEbookProgress(for: book))
+                do {
+                    for position in checks.positions {
+                        let cfi = try #require(EpubLocationBridge.canonicalFullEPUBCFI(position.cfi))
+                        let locator = EpubLocationBridge.readiumLocator(
+                            href: nil, epubCFI: cfi, fraction: position.progress, sourceEngine: .foliate
+                        )
+                        try await provider.updateEbookProgress(for: book, progress: position.progress, epubLocator: locator)
+                        let remote = try #require(await provider.fetchEbookProgress(for: book))
+                        #expect(EpubLocationBridge.epubCFI(from: remote.locator) == cfi)
+                        #expect(abs(remote.progress - position.progress) < 0.00001)
+                        let current = try await provider.fetchUserMediaProgress(libraryId: book.libraryId)
+                        let cached = try #require(current.first { $0.libraryItemId == book.id })
+                        #expect(EpubLocationBridge.epubCFI(from: cached.epubLocator) == cfi)
+                    }
+                } catch {
+                    try await provider.updateEbookProgress(for: book, progress: original.progress, epubLocator: original.locator)
+                    throw error
+                }
+                try await provider.updateEbookProgress(for: book, progress: original.progress, epubLocator: original.locator)
+                record("LAB BookOrbit exact CFI upload, pull, and Continue Reading passed")
+                return
+            }
             if service == "BookOrbit" {
                 for book in books {
                     let detail = try await provider.fetchFullBookDetails(bookId: book.id, libraryId: book.libraryId)
@@ -188,6 +221,138 @@ struct ProviderLiveSyncTests {
             }
             record("LAB \(service) failed at \(stage): \(message)")
             Issue.record("Lab \(service) failed at \(stage): \(message)")
+        }
+    }
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["ENVE_LAB_DOCUMENT"] != nil
+        && ProcessInfo.processInfo.environment["ENVE_LAB_SERVICE"] == "Grimmory"))
+    func grimmoryFormatMatrixRoundTrip() async throws {
+        let document = try #require(ProcessInfo.processInfo.environment["ENVE_LAB_DOCUMENT"])
+        let text = try String(contentsOfFile: document, encoding: .utf8)
+        var rows: [String: String] = [:]
+        var endpoints: [String: String] = [:]
+        func values(_ row: String) -> [String] {
+            row.split(separator: "`", omittingEmptySubsequences: false).enumerated()
+                .filter { $0.offset % 2 == 1 }.map { String($0.element) }
+        }
+        for line in text.split(separator: "\n") {
+            let cells = line.split(separator: "|", omittingEmptySubsequences: false)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+            guard cells.count >= 4 else { continue }
+            rows[cells[1]] = cells[2]
+            if let url = values(cells[2]).first, url.hasPrefix("http") {
+                endpoints[cells[1]] = url
+            }
+        }
+        let endpoint = try #require(endpoints["Grimmory"])
+        let host = try #require(URL(string: endpoint)?.host)
+        let permittedHosts = ["LAN address", "Tailscale address"].flatMap { values(rows[$0] ?? "") }
+        guard permittedHosts.contains(host) else { throw LabError.nonLabEndpoint }
+        guard
+            let username = values(rows["Username"] ?? "").first,
+            let password = values(rows["Password"] ?? "").first
+        else { throw LabError.rejected }
+        let connection = ServerConnection(
+            name: "Disposable Grimmory format test",
+            url: endpoint,
+            type: .booklore,
+            username: username,
+            password: password
+        )
+        let provider = BookloreProvider(connection: connection)
+        guard try await provider.validateConnection() else { throw LabError.rejected }
+
+        let cfi = "epubcfi(/6/2!/4/2/2)"
+        let foliateLocator = try #require(
+            EpubLocationBridge.readiumLocator(
+                href: "chapter.xhtml",
+                epubCFI: cfi,
+                fraction: 0.37,
+                sourceEngine: .foliate
+            )
+        )
+        let fixtureSpecs: [(label: String, serverType: String, search: String, fileName: String, locator: String, expectsCFI: Bool)] = [
+            ("EPUB", "EPUB", "Enve Synthetic EPUB", "Enve Synthetic EPUB.epub", foliateLocator, true),
+            ("PDF", "PDF", "Enve Synthetic PDF", "Enve Synthetic PDF.pdf", "{\"page\":2}", false),
+            ("CBX", "CBX", "Unicode 日本語 Issue", "Enve Synthetic Comic 002 - ComicInfo.cbz", "cbz-page:3", false),
+            ("FB2", "FB2", "Enve Synthetic FB2", "Enve Synthetic FB2.fb2", foliateLocator, true),
+            ("MOBI", "MOBI", "Pride and Prejudice", "Pride and Prejudice.mobi", foliateLocator, true),
+            ("AZW3 file (server=MOBI)", "MOBI", "Adventures of Sherlock Holmes", "Sherlock Holmes.azw3", foliateLocator, true),
+        ]
+
+        for fixture in fixtureSpecs {
+            let book = try await grimmoryFixture(
+                provider: provider,
+                serverType: fixture.serverType,
+                search: fixture.search,
+                fileName: fixture.fileName
+            )
+            let original = try await provider.fetchEbookProgress(for: book)
+            do {
+                try await provider.updateEbookProgress(
+                    for: book,
+                    progress: 0.37,
+                    epubLocator: fixture.locator
+                )
+                let pulled = try #require(try await provider.fetchEbookProgress(for: book))
+                #expect(abs(pulled.progress - 0.37) < 0.001, "\(fixture.label) progress")
+                if fixture.expectsCFI {
+                    #expect(EpubLocationBridge.epubCFI(from: pulled.locator) == cfi, "\(fixture.label) locator")
+                } else {
+                    #expect(pulled.locator == fixture.locator, "\(fixture.label) locator")
+                }
+                record("LAB Grimmory format=\(fixture.label) bidirectional progress passed")
+            } catch {
+                try await provider.updateEbookProgress(
+                    for: book,
+                    progress: original?.progress ?? 0,
+                    epubLocator: original?.locator
+                )
+                throw error
+            }
+            try await provider.updateEbookProgress(
+                for: book,
+                progress: original?.progress ?? 0,
+                epubLocator: original?.locator
+            )
+        }
+    }
+
+    private func grimmoryFixture(
+        provider: BookloreProvider,
+        serverType: String,
+        search: String,
+        fileName: String
+    ) async throws -> Book {
+        var pageNumber = 0
+        while true {
+            let request = try provider.makeRequest(
+                path: "/api/v1/app/books",
+                queryItems: [
+                    URLQueryItem(name: "fileType", value: serverType),
+                    URLQueryItem(name: "search", value: search),
+                    URLQueryItem(name: "page", value: String(pageNumber)),
+                    URLQueryItem(name: "size", value: "100"),
+                ]
+            )
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw LabError.rejected }
+            let page = try JSONDecoder().decode(BooklorePage<BookloreBookSummary>.self, from: data)
+            if let summary = page.content.first(where: { summary in
+                let file = summary.primaryFile
+                return (summary.primaryFileName ?? file?.fileName)?.caseInsensitiveCompare(fileName) == .orderedSame
+            }) {
+                let libraryId = try #require(summary.libraryId?.stringValue)
+                return try await provider.fetchFullBookDetails(
+                    bookId: summary.id.stringValue,
+                    libraryId: libraryId
+                )
+            }
+            guard page.hasNext else {
+                Issue.record("Missing Grimmory lab fixture: \(fileName)")
+                throw LabError.emptyCatalog
+            }
+            pageNumber += 1
         }
     }
 

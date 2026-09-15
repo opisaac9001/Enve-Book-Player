@@ -270,6 +270,13 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
             }
             let result = try JSONDecoder().decode(EmbyItemsResponse.self, from: data)
             let pageItems = result.Items
+            RejectedContentStore.shared.update(
+                connection: connection,
+                libraryId: libraryId,
+                acceptedItemIdentifiers: Set(pageItems.map(\.Id)),
+                rejectedItems: result.rejectedItems,
+                fallbackScope: "offset-\(startIndex)"
+            )
 
             if iter == 1 {
                 totalRecordCount = result.TotalRecordCount
@@ -284,9 +291,9 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
 
             allItems.append(contentsOf: pageItems)
 
-            if pageItems.count < pageSize { break }
-            if let total = totalRecordCount, startIndex + pageItems.count >= total { break }
-            startIndex += pageItems.count
+            if result.rawItemCount < pageSize { break }
+            if let total = totalRecordCount, startIndex + result.rawItemCount >= total { break }
+            startIndex += result.rawItemCount
         }
         if iter >= iterationCeiling {
             AppLogger.network.error("[Emby] fetchBooks hit \(iterationCeiling)-page runaway guard for library \(libraryId)")
@@ -420,6 +427,13 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
             throw ProviderError.invalidResponse
         }
         let result = try JSONDecoder().decode(EmbyItemsResponse.self, from: data)
+        RejectedContentStore.shared.update(
+            connection: connection,
+            libraryId: libraryId,
+            acceptedItemIdentifiers: Set(result.Items.map(\.Id)),
+            rejectedItems: result.rejectedItems,
+            fallbackScope: "page-\(page)"
+        )
         let folderTypes: Set<String> = ["CollectionFolder", "UserView", "Folder"]
         let containerIds = Set(result.Items.filter { $0.itemType == "MusicAlbum" }.map(\.Id))
         let items = result.Items.filter { item in
@@ -440,8 +454,9 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         return LibraryCatalogPage(
             books: books,
             totalCount: result.TotalRecordCount,
-            isLast: result.Items.count < pageSize
-                || result.TotalRecordCount.map { startIndex + result.Items.count >= $0 } == true
+            isLast: result.rawItemCount < pageSize
+                || result.TotalRecordCount.map { startIndex + result.rawItemCount >= $0 } == true,
+            isComplete: result.rejectedItems.isEmpty
         )
     }
 
@@ -1220,6 +1235,20 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
 private struct EmbyItemsResponse: Decodable {
     let Items: [EmbyItem]
     let TotalRecordCount: Int?
+    let rejectedItems: [RejectedContentCandidate]
+    var rawItemCount: Int { Items.count + rejectedItems.count }
+
+    private enum CodingKeys: String, CodingKey {
+        case Items, TotalRecordCount
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let items = try container.decode(LossyDecodableArray<EmbyItem>.self, forKey: .Items)
+        Items = items.values
+        rejectedItems = items.rejectedItems
+        TotalRecordCount = try container.decodeIfPresent(Int.self, forKey: .TotalRecordCount)
+    }
 }
 
 private struct EmbyItem: Decodable {

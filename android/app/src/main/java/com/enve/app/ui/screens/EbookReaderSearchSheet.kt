@@ -21,6 +21,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -49,9 +52,16 @@ internal fun ReaderSearchSheet(
     results: List<ReaderSearchResult>,
     loading: Boolean,
     error: String?,
+    status: String?,
+    wholeWords: Boolean,
+    optionsAvailable: Boolean,
+    hasMore: Boolean,
     colors: ChromeColors,
     onQueryChange: (String) -> Unit,
     onSearch: () -> Unit,
+    onWholeWordsChange: (Boolean) -> Unit,
+    onCancel: () -> Unit,
+    onLoadMore: () -> Unit,
     onResultClick: (ReaderSearchResult) -> Unit,
     onClose: () -> Unit,
 ) {
@@ -84,13 +94,9 @@ internal fun ReaderSearchSheet(
             singleLine = true,
             leadingIcon = { Icon(Icons.Default.Search, null, tint = colors.secondaryText) },
             trailingIcon = {
-                IconButton(onClick = onSearch, enabled = !loading) {
+                IconButton(onClick = if (loading) onCancel else onSearch) {
                     if (loading) {
-                        CircularProgressIndicator(
-                            color = colors.accentText,
-                            strokeWidth = 2.dp,
-                            modifier = Modifier.size(18.dp),
-                        )
+                        Icon(Icons.Default.Close, "Cancel search", tint = colors.accentText)
                     } else {
                         Icon(Icons.Default.Search, "Search", tint = colors.accentText)
                     }
@@ -108,11 +114,39 @@ internal fun ReaderSearchSheet(
             ),
         )
 
-        when {
-            error != null -> SearchEmptyText(error, colors)
-            loading && results.isEmpty() -> SearchEmptyText("Searching...", colors)
-            results.isEmpty() -> SearchEmptyText("Enter a word or phrase to search this book.", colors)
-            else -> LazyColumn(
+        if (optionsAvailable) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(
+                    checked = wholeWords,
+                    onCheckedChange = onWholeWordsChange,
+                    colors = CheckboxDefaults.colors(checkedColor = colors.accentText, uncheckedColor = colors.secondaryText),
+                )
+                Text(
+                    "Whole words",
+                    color = colors.primaryText,
+                    modifier = Modifier.clickable { onWholeWordsChange(!wholeWords) },
+                )
+            }
+            Text(
+                if (wholeWords) "Word or exact phrase. Matching headings appear first."
+                else "Includes partial words. Searches cached text; large books may take longer.",
+                color = colors.secondaryText,
+                fontSize = DS.FontSize.Caption.scaled(metrics),
+            )
+        }
+        if (status != null) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (loading) {
+                    CircularProgressIndicator(color = colors.accentText, strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
+                }
+                Text(status, color = colors.secondaryText, fontSize = DS.FontSize.Caption.scaled(metrics))
+            }
+        }
+        if (error != null) {
+            Text(error, color = colors.secondaryText)
+        }
+        if (results.isNotEmpty()) {
+            LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(max = 500.dp),
@@ -121,7 +155,16 @@ internal fun ReaderSearchSheet(
                     SearchResultRow(result = result, colors = colors, onClick = { onResultClick(result) })
                     HorizontalDivider(color = colors.divider)
                 }
+                if (hasMore) {
+                    item {
+                        TextButton(onClick = onLoadMore, enabled = !loading, modifier = Modifier.fillMaxWidth()) {
+                            Text("Load more results", color = colors.accentText)
+                        }
+                    }
+                }
             }
+        } else if (!loading && error == null) {
+            SearchEmptyText("Enter a word or phrase to search this book.", colors)
         }
     }
 }

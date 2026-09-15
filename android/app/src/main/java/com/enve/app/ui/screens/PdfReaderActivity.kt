@@ -338,7 +338,7 @@ class PdfReaderActivity : ComponentActivity() {
         lifecycleScope.launch {
             runCatching {
                 if (bookConnectionId == null && bookSource == BookSource.GRIMMORY) {
-                    repository.syncEbookProgress(bookId, percentage, locator)
+                    repository.syncEbookProgress(bookId, percentage, locator, uiState.currentPage + 1)
                 } else {
                     aggregatorRepository.syncEbookProgress(
                         bookId = bookId,

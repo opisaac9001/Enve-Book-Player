@@ -11,6 +11,7 @@ struct UserMediaProgress: Identifiable, Codable, Hashable, Sendable {
     let duration: TimeInterval
     let lastUpdate: Date
     let ebookProgress: Double?
+    var epubLocator: String? = nil
 
     nonisolated var uniqueId: String {
         if let episodeId = episodeId {

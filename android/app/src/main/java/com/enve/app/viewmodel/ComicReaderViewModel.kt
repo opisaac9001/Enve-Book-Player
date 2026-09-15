@@ -356,7 +356,7 @@ class ComicReaderViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 if (bookConnectionId == null && bookSource == BookSource.GRIMMORY) {
-                    repository.syncEbookProgress(bookId, percentage, locator)
+                    repository.syncEbookProgress(bookId, percentage, locator, current.currentPage + 1)
                 } else {
                     aggregatorRepository.syncEbookProgress(
                         bookId = bookId,

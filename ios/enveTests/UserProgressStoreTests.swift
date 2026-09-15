@@ -88,6 +88,32 @@ private struct ProgressFixture {
 
 @MainActor
 struct UserProgressStoreTests {
+    @Test func continueReadingLocatorReachesMirrorSessionAndAuthoritativeStore() async throws {
+        let fixture = try ProgressFixture()
+        defer { fixture.cleanUp() }
+        let book = Book(
+            id: "cfi", title: "CFI fixture", source: .bookOrbit, mediaType: .ebook,
+            lastUpdate: Date(timeIntervalSince1970: 100), providerId: progressTestProviderId, libraryId: "library"
+        )
+        fixture.library.books = [book]
+        fixture.session.currentBook = book
+        let store = fixture.makeStore()
+        let progress = UserMediaProgress(
+            id: book.id, libraryItemId: book.id, providerId: book.providerId, episodeId: nil,
+            currentTime: 0, progress: 0.42, isFinished: false, duration: 0,
+            lastUpdate: Date(timeIntervalSince1970: 500), ebookProgress: 0.42,
+            epubLocator: EpubLocationBridge.readiumLocator(
+                href: nil, epubCFI: "epubcfi(/6/8!/4/2:10)", fraction: 0.42, sourceEngine: .foliate
+            )
+        )
+        store.update(progress)
+        #expect(fixture.library.books[0].epubLocator == progress.epubLocator)
+        #expect(fixture.session.currentBook?.epubLocator == progress.epubLocator)
+        await store.applyAuthoritativeServerProgress([(progress, book)])
+        #expect(fixture.library.hot.book(uniqueId: book.uniqueId)?.epubLocator == progress.epubLocator)
+        #expect(fixture.session.currentBook?.epubLocator == progress.epubLocator)
+    }
+
     @Test func updatePublishesProgressIntoMirrorAndSession() throws {
         let fixture = try ProgressFixture()
         let book = makeBook(id: "one", lastUpdate: Date(timeIntervalSince1970: 100))

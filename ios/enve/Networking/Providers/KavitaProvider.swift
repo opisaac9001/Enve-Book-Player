@@ -95,11 +95,19 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDo
         guard response.statusCode == 200 else {
             throw ProviderError.serverError("Failed to fetch series (HTTP \(response.statusCode))")
         }
-        let result = try JSONDecoder().decode([KavitaSeries].self, from: data)
+        let result = try JSONDecoder().decode(LossyDecodableArray<KavitaSeries>.self, from: data)
+        RejectedContentStore.shared.update(
+            connection: connection,
+            libraryId: String(libraryId),
+            acceptedItemIdentifiers: Set(result.values.map { String($0.id) }),
+            rejectedItems: result.rejectedItems,
+            fallbackScope: "page-\(page)"
+        )
         return LibraryCatalogPage(
-            books: result.map { mapToBook($0, libraryId: String(libraryId)) },
+            books: result.values.map { mapToBook($0, libraryId: String(libraryId)) },
             totalCount: nil,
-            isLast: result.count < pageSize
+            isLast: result.values.count + result.rejectedItems.count < pageSize,
+            isComplete: result.rejectedItems.isEmpty
         )
     }
 
@@ -120,8 +128,15 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDo
         guard response.statusCode == 200 else {
             throw ProviderError.serverError("Failed to fetch recent series (HTTP \(response.statusCode))")
         }
-        let result = try JSONDecoder().decode([KavitaSeries].self, from: data)
-        return Array(result.prefix(limit).map { mapToBook($0, libraryId: String(libraryId)) })
+        let result = try JSONDecoder().decode(LossyDecodableArray<KavitaSeries>.self, from: data)
+        RejectedContentStore.shared.update(
+            connection: connection,
+            libraryId: String(libraryId),
+            acceptedItemIdentifiers: Set(result.values.map { String($0.id) }),
+            rejectedItems: result.rejectedItems,
+            fallbackScope: "recent"
+        )
+        return Array(result.values.prefix(limit).map { mapToBook($0, libraryId: String(libraryId)) })
     }
 
     func fetchCollections(libraryId: String?) async throws -> [Collection] {

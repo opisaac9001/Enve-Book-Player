@@ -4,8 +4,8 @@ import Testing
 
 @MainActor
 struct ReaderEnginePolicyTests {
-    @Test func grimmoryAndSiloPreferFoliateForOrdinaryEPUBs() {
-        for source in [Book.BookSource.booklore, .silo] {
+    @Test func cfiSyncProvidersPreferFoliateForOrdinaryEPUBs() {
+        for source in [Book.BookSource.booklore, .silo, .bookOrbit] {
             let selection = ReaderEnginePolicy.selection(
                 for: .init(
                     source: source,

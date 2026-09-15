@@ -29,6 +29,9 @@ final class GrimmoryCatalogImportSession {
     let totalElements: Int
     fileprivate var checkpoint: GrimmoryCatalogCheckpoint
     fileprivate var seenIdentities: [String: String] = [:]
+    fileprivate var isComplete = true
+
+    var completedSnapshot: Bool { isComplete }
 
     var reconciliation: ReconciliationStart? {
         guard let generation = checkpoint.reconciliationGeneration,
@@ -37,11 +40,12 @@ final class GrimmoryCatalogImportSession {
         return ReconciliationStart(generation: generation, existingCount: existingCount)
     }
 
-    fileprivate init(libraryId: String, checkpoint: GrimmoryCatalogCheckpoint) {
+    fileprivate init(libraryId: String, checkpoint: GrimmoryCatalogCheckpoint, isComplete: Bool = true) {
         self.libraryId = libraryId
         totalPages = checkpoint.totalPages
         totalElements = checkpoint.totalElements
         self.checkpoint = checkpoint
+        self.isComplete = isComplete
     }
 }
 
@@ -83,11 +87,12 @@ struct BookloreTierPreference {
     }
 }
 
-class BookloreProvider: LibraryProvider, PlaybackSessionProvider, AudiobookProgressProvider,
+class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, AudiobookProgressProvider,
     EbookProgressProvider, EngineAwareEbookProgressProvider, EbookDownloadProvider, PersonalRatingProvider, ObservableObject,
     @unchecked Sendable
 {
     @Published var connection: ServerConnection
+    private var catalogFetchWasComplete = true
 
     var capabilities: ProviderCapabilities {
         [
@@ -196,7 +201,14 @@ class BookloreProvider: LibraryProvider, PlaybackSessionProvider, AudiobookProgr
 
         let firstPageData = try await fetchAppBooksPageData(libraryId: libraryId, page: 0)
         let firstPage = try JSONDecoder().decode(BooklorePage<BookloreBookSummary>.self, from: firstPageData)
-        guard !firstPage.content.isEmpty else { throw ProviderError.invalidResponse }
+        guard firstPage.rawItemCount > 0 else { throw ProviderError.invalidResponse }
+        RejectedContentStore.shared.update(
+            connection: connection,
+            libraryId: libraryId,
+            acceptedItemIdentifiers: Set(firstPage.content.map { $0.id.stringValue }),
+            rejectedItems: firstPage.rejectedItems,
+            fallbackScope: "page-0"
+        )
 
         let prepared = try GrimmoryCatalogCheckpointStore.prepare(
             connectionId: connection.id,
@@ -213,7 +225,11 @@ class BookloreProvider: LibraryProvider, PlaybackSessionProvider, AudiobookProgr
                 "[Booklore] Resuming committed catalog import for library \(libraryId): \(prepared.checkpoint.committedPages?.count ?? 0)/\(firstPage.totalPages) pages"
             )
         }
-        return GrimmoryCatalogImportSession(libraryId: libraryId, checkpoint: prepared.checkpoint)
+        return GrimmoryCatalogImportSession(
+            libraryId: libraryId,
+            checkpoint: prepared.checkpoint,
+            isComplete: firstPage.rejectedItems.isEmpty
+        )
     }
 
     func bindCatalogImport(
@@ -271,6 +287,14 @@ class BookloreProvider: LibraryProvider, PlaybackSessionProvider, AudiobookProgr
                 page.totalPages == session.totalPages,
                 page.totalElements == session.totalElements
             else { throw ProviderError.invalidResponse }
+            if !page.rejectedItems.isEmpty { session.isComplete = false }
+            RejectedContentStore.shared.update(
+                connection: connection,
+                libraryId: session.libraryId,
+                acceptedItemIdentifiers: Set(page.content.map { $0.id.stringValue }),
+                rejectedItems: page.rejectedItems,
+                fallbackScope: "page-\(pageNumber)"
+            )
             books.append(contentsOf: page.content.map { BookloreCatalogMapper.book(from: $0, context: context) })
         }
 
@@ -1160,6 +1184,22 @@ class BookloreProvider: LibraryProvider, PlaybackSessionProvider, AudiobookProgr
         let totalElements: Int
         let totalPages: Int
         let last: Bool?
+        let rejectedItems: [RejectedContentCandidate]
+        var rawItemCount: Int { content.count + rejectedItems.count }
+
+        private enum CodingKeys: String, CodingKey {
+            case content, totalElements, totalPages, last
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            let content = try container.decode(LossyDecodableArray<T>.self, forKey: .content)
+            self.content = content.values
+            rejectedItems = content.rejectedItems
+            totalElements = try container.decode(Int.self, forKey: .totalElements)
+            totalPages = try container.decode(Int.self, forKey: .totalPages)
+            last = try container.decodeIfPresent(Bool.self, forKey: .last)
+        }
     }
 
     private struct KomgaBook: Decodable {
@@ -1542,6 +1582,7 @@ class BookloreProvider: LibraryProvider, PlaybackSessionProvider, AudiobookProgr
         let fileId: Int
         let isPrimary: Bool
         let fileName: String?
+        let format: String?
     }
 
     private func fetchLibrariesViaKomga() async throws -> [Library] {
@@ -1618,9 +1659,17 @@ class BookloreProvider: LibraryProvider, PlaybackSessionProvider, AudiobookProgr
                 AppLogger.network.error("[Booklore/Komga] Books decode failed (page \(page)): \(String(describing: error))")
                 throw error
             }
+            if !result.rejectedItems.isEmpty { catalogFetchWasComplete = false }
+            RejectedContentStore.shared.update(
+                connection: connection,
+                libraryId: libraryId,
+                acceptedItemIdentifiers: Set(result.content.map(\.id)),
+                rejectedItems: result.rejectedItems,
+                fallbackScope: "komga-page-\(page)"
+            )
             allBooks.append(contentsOf: result.content.map { mapKomgaBookToBook($0, libraryId: libraryId) })
             let isLast = result.last ?? (page >= result.totalPages - 1)
-            if isLast || result.content.isEmpty { break }
+            if isLast || result.rawItemCount == 0 { break }
             page += 1
         }
         return allBooks
@@ -1660,6 +1709,13 @@ class BookloreProvider: LibraryProvider, PlaybackSessionProvider, AudiobookProgr
             return Array(all.prefix(limit))
         }
         let result = try JSONDecoder().decode(KomgaPage<KomgaBook>.self, from: data)
+        RejectedContentStore.shared.update(
+            connection: connection,
+            libraryId: libraryId,
+            acceptedItemIdentifiers: Set(result.content.map(\.id)),
+            rejectedItems: result.rejectedItems,
+            fallbackScope: "komga-recent"
+        )
         return result.content.map { mapKomgaBookToBook($0, libraryId: libraryId) }
     }
 
@@ -1767,13 +1823,22 @@ class BookloreProvider: LibraryProvider, PlaybackSessionProvider, AudiobookProgr
         guard response.statusCode == 200 else {
             throw ProviderError.serverError("Legacy API: failed to fetch books (HTTP \(response.statusCode))")
         }
-        let books: [BookloreLegacyBook]
+        let decoded: LossyDecodableArray<BookloreLegacyBook>
         do {
-            books = try JSONDecoder().decode([BookloreLegacyBook].self, from: data)
+            decoded = try JSONDecoder().decode(LossyDecodableArray<BookloreLegacyBook>.self, from: data)
         } catch {
             AppLogger.network.error("[Booklore/Legacy] Books decode failed: \(String(describing: error))")
             throw error
         }
+        let books = decoded.values
+        if !decoded.rejectedItems.isEmpty { catalogFetchWasComplete = false }
+        RejectedContentStore.shared.update(
+            connection: connection,
+            libraryId: libraryId,
+            acceptedItemIdentifiers: Set(books.map { $0.id.stringValue }),
+            rejectedItems: decoded.rejectedItems,
+            fallbackScope: "legacy"
+        )
         AppLogger.network.info("[Booklore/Legacy] Fetched \(books.count) books for library \(libraryId)")
         let context = catalogMapperContext(libraryId: libraryId)
         return books.map { BookloreCatalogMapper.book(from: $0, context: context) }
@@ -1801,7 +1866,22 @@ class BookloreProvider: LibraryProvider, PlaybackSessionProvider, AudiobookProgr
     }
 
     func fetchBooks(libraryId: String) async throws -> [Book] {
+        catalogFetchWasComplete = true
         return try await fetchBooks(libraryId: libraryId, onBatch: nil)
+    }
+
+    func makeCatalogBatchSource(
+        libraryId: String,
+        resumeAfter: String?,
+        expectedSnapshotIdentifier: String?
+    ) async throws -> LibraryCatalogBatchSource {
+        let books = try await fetchBooks(libraryId: libraryId)
+        return LibraryCatalogBatchSource.snapshot(
+            books: books,
+            isComplete: catalogFetchWasComplete,
+            resumeAfter: resumeAfter,
+            expectedSnapshotIdentifier: expectedSnapshotIdentifier
+        )
     }
 
     func fetchBooks(libraryId: String, onBatch: ((_ batch: LibraryFetchBatchResult) -> Void)?) async throws -> [Book] {
@@ -1844,7 +1924,7 @@ class BookloreProvider: LibraryProvider, PlaybackSessionProvider, AudiobookProgr
             )
         }
 
-        if firstPage.content.isEmpty {
+        if firstPage.rawItemCount == 0 {
             return try await switchToLegacyBooksAPI(reason: "Mobile app books returned an empty first page", libraryId: libraryId)
         }
 
@@ -1954,6 +2034,14 @@ class BookloreProvider: LibraryProvider, PlaybackSessionProvider, AudiobookProgr
         var allBooks: [Book] = []
         let context = catalogMapperContext(libraryId: libraryId)
         func append(_ page: BooklorePage<BookloreBookSummary>) {
+            if !page.rejectedItems.isEmpty { catalogFetchWasComplete = false }
+            RejectedContentStore.shared.update(
+                connection: connection,
+                libraryId: libraryId,
+                acceptedItemIdentifiers: Set(page.content.map { $0.id.stringValue }),
+                rejectedItems: page.rejectedItems,
+                fallbackScope: "page-\(page.page)"
+            )
             let batch = page.content.map { BookloreCatalogMapper.book(from: $0, context: context) }
             allBooks.append(contentsOf: batch)
             onBatch?(
@@ -2136,7 +2224,15 @@ class BookloreProvider: LibraryProvider, PlaybackSessionProvider, AudiobookProgr
             descending: descending,
             search: search
         )
-        return try JSONDecoder().decode(BooklorePage<BookloreBookSummary>.self, from: data)
+        let result = try JSONDecoder().decode(BooklorePage<BookloreBookSummary>.self, from: data)
+        RejectedContentStore.shared.update(
+            connection: connection,
+            libraryId: libraryId,
+            acceptedItemIdentifiers: Set(result.content.map { $0.id.stringValue }),
+            rejectedItems: result.rejectedItems,
+            fallbackScope: "browse-page-\(page)"
+        )
+        return result
     }
 
     private func fetchRemoteBrowsePageData(
@@ -2850,7 +2946,7 @@ class BookloreProvider: LibraryProvider, PlaybackSessionProvider, AudiobookProgr
         guard let bookId = resolveGrimmoryBookId(for: book) else {
             throw ProviderError.invalidResponse
         }
-        let resource = try await resolveGrimmoryEPUBResource(for: book)
+        let resource = try await resolveGrimmoryEbookResource(for: book)
         let queryItems =
             (resource?.isPrimary ?? true)
             ? []
@@ -3450,46 +3546,80 @@ class BookloreProvider: LibraryProvider, PlaybackSessionProvider, AudiobookProgr
         return try JSONDecoder().decode(BookloreSyncBookDetail.self, from: data)
     }
 
-    private func selectedGrimmoryEPUBResource(
+    private func grimmoryEbookFormat(
+        for file: BookloreBookFile,
+        preferredFormat: String?
+    ) -> String? {
+        let candidates = [
+            file.fileExtension,
+            file.fileType,
+            file.bookType,
+            file.fileName.map { URL(fileURLWithPath: $0).pathExtension },
+            file.filePath.map { URL(fileURLWithPath: $0).pathExtension },
+        ]
+        if let format = candidates.lazy.compactMap(BookloreBookMapper.normalizedEbookFormat).first {
+            return format
+        }
+        let normalized = Set(candidates.compactMap(BookloreBookMapper.normalizedFileType).map { $0.lowercased() })
+        if normalized.contains("cbx") {
+            if let preferredFormat,
+                [EbookFormat.cbz.rawValue, EbookFormat.cbr.rawValue, EbookFormat.imagefolder.rawValue]
+                    .contains(preferredFormat)
+            {
+                return preferredFormat
+            }
+            return EbookFormat.cbz.rawValue
+        }
+        return nil
+    }
+
+    private func selectedGrimmoryEbookResource(
         for book: Book,
         bookId: Int,
         detail: BookloreSyncBookDetail
     ) throws -> GrimmoryEbookResource? {
         let declaredFormat = BookloreBookMapper.normalizedEbookFormat(book.ebookFormat)
-        if let declaredFormat, declaredFormat != EbookFormat.epub.rawValue {
-            return nil
-        }
-
         let files = detail.files ?? []
-        if let cached = cachedEbookResources[book.id],
+        let cacheKey = "\(book.id):\(declaredFormat ?? "primary")"
+        if let cached = cachedEbookResources[cacheKey],
             cached.bookId == bookId,
             files.contains(where: {
-                $0.id?.stringValue == String(cached.fileId) && isEPUBFile($0)
+                $0.id?.stringValue == String(cached.fileId)
             })
         {
             return cached
         }
-        let primaryFile = files.first(where: { $0.isPrimary == true }) ?? files.first
-        if declaredFormat == nil, let primaryFile, !isEPUBFile(primaryFile) {
-            return nil
-        }
 
-        let epubFiles = files.filter(isEPUBFile)
+        let matchingFiles = files.filter { file in
+            guard let declaredFormat else { return grimmoryEbookFormat(for: file, preferredFormat: nil) != nil }
+            guard let fileFormat = grimmoryEbookFormat(for: file, preferredFormat: declaredFormat) else { return false }
+            if [EbookFormat.cbz.rawValue, EbookFormat.cbr.rawValue, EbookFormat.imagefolder.rawValue]
+                .contains(declaredFormat)
+            {
+                return [EbookFormat.cbz.rawValue, EbookFormat.cbr.rawValue, EbookFormat.imagefolder.rawValue]
+                    .contains(fileFormat)
+            }
+            if EbookFormat.mobiExtensions.contains(declaredFormat) {
+                return EbookFormat.mobiExtensions.contains(fileFormat)
+            }
+            return fileFormat == declaredFormat
+        }
         guard
-            let selected = epubFiles.first(where: { $0.isPrimary == true })
-                ?? epubFiles.first,
+            let selected = matchingFiles.first(where: { $0.isPrimary == true })
+                ?? matchingFiles.first,
             let rawFileId = selected.id?.stringValue,
             let fileId = Int(rawFileId),
             fileId > 0
         else {
-            throw ProviderError.serverError("No EPUB file is available for this Grimmory book")
+            throw ProviderError.serverError("No matching ebook file is available for this Grimmory book")
         }
 
         return GrimmoryEbookResource(
             bookId: bookId,
             fileId: fileId,
             isPrimary: selected.isPrimary == true,
-            fileName: selected.fileName
+            fileName: selected.fileName,
+            format: grimmoryEbookFormat(for: selected, preferredFormat: declaredFormat)
         )
     }
 
@@ -3497,17 +3627,18 @@ class BookloreProvider: LibraryProvider, PlaybackSessionProvider, AudiobookProgr
         _ resource: GrimmoryEbookResource,
         for book: Book
     ) {
-        cachedEbookResources[book.id] = resource
+        let format = BookloreBookMapper.normalizedEbookFormat(book.ebookFormat) ?? "primary"
+        cachedEbookResources["\(book.id):\(format)"] = resource
     }
 
-    private func resolveGrimmoryEPUBResource(
+    private func resolveGrimmoryEbookResource(
         for book: Book
     ) async throws -> GrimmoryEbookResource? {
         guard let bookId = resolveGrimmoryBookId(for: book) else {
             throw ProviderError.invalidResponse
         }
         let detail = try await fetchGrimmorySyncDetail(bookId: bookId)
-        let resource = try selectedGrimmoryEPUBResource(
+        let resource = try selectedGrimmoryEbookResource(
             for: book,
             bookId: bookId,
             detail: detail
@@ -3526,14 +3657,13 @@ class BookloreProvider: LibraryProvider, PlaybackSessionProvider, AudiobookProgr
     }
 
     func downloadEbook(for book: Book, onProgress: (@Sendable (Double) -> Void)? = nil) async throws -> URL {
-        let resource = try await resolveGrimmoryEPUBResource(for: book)
+        let resource = try await resolveGrimmoryEbookResource(for: book)
         let cacheIdentifier =
             resource.map {
                 grimmoryResourceCacheIdentifier(for: book, resource: $0)
             } ?? book.id
-        let expectedExtension = resource == nil
-            ? BookloreBookMapper.normalizedEbookFormat(book.ebookFormat)
-            : EbookFormat.epub.rawValue
+        let expectedExtension = resource?.format
+            ?? BookloreBookMapper.normalizedEbookFormat(book.ebookFormat)
 
         if let cached = LocalEbookImporter.shared.cachedEbook(forBookId: cacheIdentifier) {
             if expectedExtension == nil || cached.pathExtension.lowercased() == expectedExtension {
@@ -3638,11 +3768,12 @@ class BookloreProvider: LibraryProvider, PlaybackSessionProvider, AudiobookProgr
             throw ProviderError.invalidResponse
         }
 
-        let resource = try await resolveGrimmoryEPUBResource(for: book)
+        let resource = try await resolveGrimmoryEbookResource(for: book)
         try await progressClient.updateEbookProgress(
             for: book,
             bookId: bookId,
             resourceFileId: resource?.fileId,
+            resourceFormat: resource?.format,
             progress: progress,
             epubLocator: epubLocator,
             sourceEngine: sourceEngine
@@ -3962,7 +4093,7 @@ class BookloreProvider: LibraryProvider, PlaybackSessionProvider, AudiobookProgr
 
         guard let bookId = resolveGrimmoryBookId(for: book) else { return nil }
         let detail = try await fetchGrimmorySyncDetail(bookId: bookId)
-        let resource = try selectedGrimmoryEPUBResource(
+        let resource = try selectedGrimmoryEbookResource(
             for: book,
             bookId: bookId,
             detail: detail
@@ -3974,7 +4105,10 @@ class BookloreProvider: LibraryProvider, PlaybackSessionProvider, AudiobookProgr
             for: book,
             bookId: bookId,
             context: BookloreProgressClient.EbookProgressContext(
-                hasEpubResource: resource != nil,
+                usesEpubProgress: resource.flatMap(\.format).map {
+                    ![EbookFormat.pdf.rawValue, EbookFormat.cbz.rawValue, EbookFormat.cbr.rawValue,
+                      EbookFormat.imagefolder.rawValue].contains($0)
+                } ?? false,
                 readProgress: detail.readProgress,
                 readStatus: detail.readStatus,
                 lastReadTime: detail.lastReadTime,
@@ -4081,20 +4215,6 @@ class BookloreProvider: LibraryProvider, PlaybackSessionProvider, AudiobookProgr
         }
         let type = (file.bookType ?? "").lowercased()
         return type.contains("audio") || type.contains("audiobook")
-    }
-
-    private func isEPUBFile(_ file: BookloreBookFile) -> Bool {
-        let candidates = [
-            file.fileExtension,
-            file.fileType,
-            file.bookType,
-            file.fileName.map { URL(fileURLWithPath: $0).pathExtension },
-            file.filePath.map { URL(fileURLWithPath: $0).pathExtension },
-        ]
-        return
-            candidates
-            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
-            .contains("epub")
     }
 
     func startPlaybackSession(for book: Book) async throws -> PlaybackSessionInfo {
@@ -5060,6 +5180,25 @@ struct BooklorePage<T: Decodable>: Decodable {
     let totalPages: Int
     let hasNext: Bool
     let hasPrevious: Bool
+    let rejectedItems: [RejectedContentCandidate]
+    var rawItemCount: Int { content.count + rejectedItems.count }
+
+    private enum CodingKeys: String, CodingKey {
+        case content, page, size, totalElements, totalPages, hasNext, hasPrevious
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let content = try container.decode(LossyDecodableArray<T>.self, forKey: .content)
+        self.content = content.values
+        rejectedItems = content.rejectedItems
+        page = try container.decode(Int.self, forKey: .page)
+        size = try container.decode(Int.self, forKey: .size)
+        totalElements = try container.decode(Int.self, forKey: .totalElements)
+        totalPages = try container.decode(Int.self, forKey: .totalPages)
+        hasNext = try container.decode(Bool.self, forKey: .hasNext)
+        hasPrevious = try container.decode(Bool.self, forKey: .hasPrevious)
+    }
 }
 
 struct BooklorePrimaryFile: Decodable {
@@ -6037,7 +6176,7 @@ final class BookloreProgressClient {
             let updatedAt: String?
         }
 
-        let hasEpubResource: Bool
+        let usesEpubProgress: Bool
         let readProgress: Double?
         let readStatus: String?
         let lastReadTime: String?
@@ -6092,10 +6231,18 @@ final class BookloreProgressClient {
             let updatedAt: String?
         }
 
+        struct PagePosition: Decodable {
+            let percentage: Double?
+            let page: Int?
+            let updatedAt: String?
+        }
+
         let readProgress: Double?
         let readStatus: String?
         let lastReadTime: String?
         let epubProgress: EpubPosition?
+        let pdfProgress: PagePosition?
+        let cbxProgress: PagePosition?
     }
 
     struct EbookProgressRequest: Encodable {
@@ -6108,16 +6255,6 @@ final class BookloreProgressClient {
             let contentSourceProgressPercent: Double?
         }
 
-        let fileProgress: FileProgress
-    }
-
-    private struct ReadProgressRequest: Encodable {
-        struct FileProgress: Encodable {
-            let bookFileId: Int
-            let progressPercent: Double
-        }
-
-        let bookId: Int
         let fileProgress: FileProgress
     }
 
@@ -6207,10 +6344,12 @@ final class BookloreProgressClient {
             )
         }
 
-        let epubProgress = context.hasEpubResource ? appProgress?.epubProgress : nil
+        let epubProgress = context.usesEpubProgress ? appProgress?.epubProgress : nil
         let exactCFI = EpubLocationBridge.canonicalFullEPUBCFI(epubProgress?.cfi)
         let endpointPercentage =
             epubProgress?.percentage
+            ?? appProgress?.pdfProgress?.percentage
+            ?? appProgress?.cbxProgress?.percentage
             ?? appProgress?.readProgress
             ?? context.readProgress
             ?? context.pdfProgress?.percentage
@@ -6232,14 +6371,14 @@ final class BookloreProgressClient {
                     sourceEngine: .foliate
                 )
             }
-            if context.hasEpubResource {
+            if context.usesEpubProgress {
                 return nil
             }
-            if let page = context.pdfProgress?.page {
-                return "{\"page\":\(page)}"
+            if let page = appProgress?.pdfProgress?.page ?? context.pdfProgress?.page {
+                return "{\"page\":\(max(page - 1, 0))}"
             }
-            if let page = context.cbxProgress?.page {
-                return "cbz-page:\(page)"
+            if let page = appProgress?.cbxProgress?.page ?? context.cbxProgress?.page {
+                return "cbz-page:\(max(page - 1, 0))"
             }
             return nil
         }()
@@ -6264,6 +6403,8 @@ final class BookloreProgressClient {
             locator: locator,
             updatedAt: Self.parseTimestamp(
                 epubProgress?.updatedAt
+                    ?? appProgress?.pdfProgress?.updatedAt
+                    ?? appProgress?.cbxProgress?.updatedAt
                     ?? appProgress?.lastReadTime
                     ?? context.lastReadTime
                     ?? context.pdfProgress?.updatedAt
@@ -6286,16 +6427,27 @@ final class BookloreProgressClient {
         for book: Book,
         bookId: Int,
         resourceFileId: Int?,
+        resourceFormat: String?,
         progress: Double,
         epubLocator: String?,
         sourceEngine: ReaderEngineKind?
     ) async throws {
+        guard let resourceFileId else {
+            throw ProviderError.serverError("No matching ebook file is available for this Grimmory book")
+        }
         let progressPercent = min(max(progress, 0), 1) * 100
         let provenanceLocator = sourceEngine.flatMap {
             EpubLocationBridge.markingSourceEngine($0, in: epubLocator)
         } ?? epubLocator
         let location = EpubLocationBridge.extractGrimmoryLocation(from: provenanceLocator)
+        let format = BookloreBookMapper.normalizedEbookFormat(resourceFormat ?? book.ebookFormat)
         let fullCFI: String? = {
+            if let format,
+                [EbookFormat.pdf.rawValue, EbookFormat.cbz.rawValue, EbookFormat.cbr.rawValue, EbookFormat.imagefolder.rawValue]
+                    .contains(format)
+            {
+                return nil
+            }
             if sourceEngine == .foliate {
                 return EpubLocationBridge.canonicalFullEPUBCFI(
                     EpubLocationBridge.epubCFI(from: epubLocator)
@@ -6303,51 +6455,28 @@ final class BookloreProgressClient {
             }
             return EpubLocationBridge.canonicalFullEPUBCFI(location.epubCFI)
         }()
-        let isOrdinaryEPUB =
-            !book.isReadAloudBook
-            && book.epub3Features?.hasMediaOverlay != true
-
-        if isOrdinaryEPUB, let resourceFileId {
-            let resourcePercentage = Self.resourcePercentage(from: provenanceLocator)
-            var request = try makeRequest("/api/v1/app/books/\(bookId)/progress")
-            request.httpMethod = "PUT"
-            request.httpBody = try JSONEncoder().encode(
-                EbookProgressRequest(
-                    fileProgress: .init(
-                        bookFileId: resourceFileId,
-                        positionData: fullCFI,
-                        positionHref: fullCFI == nil ? nil : location.href,
-                        progressPercent: progressPercent,
-                        ttsPositionCfi: nil,
-                        contentSourceProgressPercent: fullCFI == nil
-                            ? nil
-                            : resourcePercentage
-                    )
-                )
-            )
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
-            let (_, response) = try await performAuthorizedRequest(request)
-            guard (200...204).contains(response.statusCode) else {
-                throw ProviderError.serverError(
-                    "Failed to sync Booklore EPUB position (HTTP \(response.statusCode))"
-                )
+        let pagePosition: String? = {
+            switch format {
+            case EbookFormat.pdf.rawValue:
+                return ReaderLocatorProgress.parsePDFLocator(epubLocator).map { String($0 + 1) }
+            case EbookFormat.cbz.rawValue, EbookFormat.cbr.rawValue, EbookFormat.imagefolder.rawValue:
+                return ReaderLocatorProgress.parseComicLocator(epubLocator).map { String($0 + 1) }
+            default:
+                return nil
             }
-            AppLogger.network.debug(
-                "[Booklore] Pushed EPUB position bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId)) type=\(fullCFI == nil ? "percentage" : "cfi") percentage=\(progressPercent)"
-            )
-            return
-        }
-
-        let fileId = resourceFileId ?? bookId
-        var request = try makeRequest("/api/v1/books/progress")
-        request.httpMethod = "POST"
+        }()
+        let resourcePercentage = Self.resourcePercentage(from: provenanceLocator)
+        var request = try makeRequest("/api/v1/app/books/\(bookId)/progress")
+        request.httpMethod = "PUT"
         request.httpBody = try JSONEncoder().encode(
-            ReadProgressRequest(
-                bookId: bookId,
+            EbookProgressRequest(
                 fileProgress: .init(
-                    bookFileId: fileId,
-                    progressPercent: progressPercent
+                    bookFileId: resourceFileId,
+                    positionData: pagePosition ?? fullCFI,
+                    positionHref: fullCFI == nil ? nil : location.href,
+                    progressPercent: progressPercent,
+                    ttsPositionCfi: nil,
+                    contentSourceProgressPercent: fullCFI == nil ? nil : resourcePercentage
                 )
             )
         )
@@ -6356,11 +6485,11 @@ final class BookloreProgressClient {
         let (_, response) = try await performAuthorizedRequest(request)
         guard (200...204).contains(response.statusCode) else {
             throw ProviderError.serverError(
-                "Failed to sync Booklore ebook progress (HTTP \(response.statusCode))"
+                "Failed to sync Booklore ebook position (HTTP \(response.statusCode))"
             )
         }
         AppLogger.network.debug(
-            "[Booklore] Pushed ebook progress bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId)) percentage=\(progressPercent)"
+            "[Booklore] Pushed ebook position bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId)) percentage=\(progressPercent)"
         )
     }
 

@@ -1327,7 +1327,11 @@ final class LibraryCatalogCoordinator {
                 provider: provider,
                 existingLibraryBooks: existingLibraryBooks
             )
-            await bookStore.markFullReconciled(providerId: providerId, libraryId: lib.id, at: Date())
+            if session.completedSnapshot {
+                await bookStore.markFullReconciled(providerId: providerId, libraryId: lib.id, at: Date())
+            } else {
+                AppLogger.general.error("\(lib.name): remote catalog page contained rejected items; refresh remains pending")
+            }
             provider.completeCatalogSync(libraryId: lib.id)
             await MainActor.run { presentation.libraryImportProgress = nil }
             AppLogger.general.info(
@@ -1399,6 +1403,13 @@ final class LibraryCatalogCoordinator {
             AppLogger.general.error(
                 "\(lib.name): Grimmory page import stopped after \(loadedSoFar) books: \(error.localizedDescription). Committed pages will resume."
             )
+            await MainActor.run { presentation.libraryImportProgress = nil }
+            return true
+        }
+
+        guard session.completedSnapshot else {
+            AppLogger.general.error("\(lib.name): Grimmory catalog contained rejected items; deletion reconciliation skipped")
+            provider.completeCatalogSync(libraryId: lib.id)
             await MainActor.run { presentation.libraryImportProgress = nil }
             return true
         }
@@ -1589,6 +1600,7 @@ final class LibraryCatalogCoordinator {
 
         guard checkpoint.completedSnapshot else {
             AppLogger.general.error("\(lib.name): incremental catalog ended without a complete snapshot marker")
+            CatalogImportCheckpointStore.clear(connectionId: providerId, libraryId: lib.id)
             await MainActor.run { presentation.libraryImportProgress = nil }
             return true
         }

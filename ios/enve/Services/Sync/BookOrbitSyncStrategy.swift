@@ -292,8 +292,9 @@ final class BookOrbitSyncStrategy: ProviderSyncStrategy {
             book.mediaType == .ebook
             ? EpubLocationBridge.readiumLocator(
                 href: nil,
-                epubCFI: record.epubCFI,
-                fraction: fraction
+                epubCFI: EpubLocationBridge.canonicalFullEPUBCFI(record.epubCFI),
+                fraction: fraction,
+                sourceEngine: .foliate
             )
             : nil
         return (

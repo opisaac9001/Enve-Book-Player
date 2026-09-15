@@ -4,6 +4,7 @@ import Logging
 
 final class PremiumizeProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider, @unchecked Sendable {
     var connection: ServerConnection
+    private var catalogFetchWasComplete = true
 
     var capabilities: ProviderCapabilities {
         [.fullImport, .downloads, .backgroundOperation]
@@ -93,9 +94,24 @@ final class PremiumizeProvider: WholeSnapshotCatalogProvider, PlaybackSessionPro
         guard libraryId == self.libraryId else { return [] }
         guard let token = connection.token, !token.isEmpty else { return [] }
 
+        catalogFetchWasComplete = true
         let files = try await fetchAllAudioFiles(token: token)
         let groupedBooks = groupFilesIntoBooks(files)
         return groupedBooks.map(makeBookSummary).sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+    }
+
+    func makeCatalogBatchSource(
+        libraryId: String,
+        resumeAfter: String?,
+        expectedSnapshotIdentifier: String?
+    ) async throws -> LibraryCatalogBatchSource {
+        let books = try await fetchBooks(libraryId: libraryId)
+        return LibraryCatalogBatchSource.snapshot(
+            books: books,
+            isComplete: catalogFetchWasComplete,
+            resumeAfter: resumeAfter,
+            expectedSnapshotIdentifier: expectedSnapshotIdentifier
+        )
     }
 
     func fetchRecentBooks(libraryId: String, limit: Int) async throws -> [Book] {
@@ -330,8 +346,16 @@ final class PremiumizeProvider: WholeSnapshotCatalogProvider, PlaybackSessionPro
             return []
         }
 
-        let payload = try? JSONDecoder().decode(PremiumizeFolderResponse.self, from: data)
-        return payload?.content ?? []
+        let payload = try JSONDecoder().decode(PremiumizeFolderResponse.self, from: data)
+        if !payload.rejectedItems.isEmpty { catalogFetchWasComplete = false }
+        RejectedContentStore.shared.update(
+            connection: connection,
+            libraryId: libraryId,
+            acceptedItemIdentifiers: Set(payload.content.compactMap(\.id)),
+            rejectedItems: payload.rejectedItems,
+            fallbackScope: folderId.map { "folder-\($0)" } ?? "root"
+        )
+        return payload.content
     }
 
     private func isFolder(_ file: PremiumizeFile) -> Bool {
@@ -733,7 +757,19 @@ final class PremiumizeProvider: WholeSnapshotCatalogProvider, PlaybackSessionPro
 }
 
 private struct PremiumizeFolderResponse: Decodable {
-    let content: [PremiumizeFile]?
+    let content: [PremiumizeFile]
+    let rejectedItems: [RejectedContentCandidate]
+
+    private enum CodingKeys: String, CodingKey {
+        case content
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let content = try container.decodeIfPresent(LossyDecodableArray<PremiumizeFile>.self, forKey: .content)
+        self.content = content?.values ?? []
+        rejectedItems = content?.rejectedItems ?? []
+    }
 }
 
 private struct PremiumizeFile: Decodable {

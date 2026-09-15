@@ -192,7 +192,7 @@ struct BookloreProgressClientTests {
             libraryId: "tests"
         )
         let context = BookloreProgressClient.EbookProgressContext(
-            hasEpubResource: true,
+            usesEpubProgress: true,
             readProgress: nil,
             readStatus: nil,
             lastReadTime: nil,
@@ -238,7 +238,7 @@ struct BookloreProgressClientTests {
             libraryId: "tests"
         )
         let context = BookloreProgressClient.EbookProgressContext(
-            hasEpubResource: false,
+            usesEpubProgress: false,
             readProgress: nil,
             readStatus: "READING",
             lastReadTime: nil,
@@ -257,8 +257,62 @@ struct BookloreProgressClientTests {
         )
 
         #expect(progress?.progress == 0.3)
-        #expect(progress?.locator == "{\"page\":7}")
+        #expect(progress?.locator == "{\"page\":6}")
         #expect(progress?.updatedAt == BookloreProgressClient.parseTimestamp("2026-08-21 12:30:00"))
+    }
+
+    @Test func appComicProgressMapsServerPageToLocalPage() async throws {
+        let fixture = Data(
+            """
+            {
+              "readProgress": 37,
+              "readStatus": "READING",
+              "cbxProgress": {
+                "percentage": 37,
+                "page": 4,
+                "updatedAt": "2026-09-14T07:00:00Z"
+              }
+            }
+            """.utf8
+        )
+        let client = BookloreProgressClient(
+            makeRequest: { path in
+                URLRequest(url: URL(string: "https://example.invalid\(path)")!)
+            },
+            performAuthorizedRequest: { request in
+                (
+                    fixture,
+                    HTTPURLResponse(
+                        url: request.url!,
+                        statusCode: 200,
+                        httpVersion: nil,
+                        headerFields: ["Content-Type": "application/json"]
+                    )!
+                )
+            }
+        )
+        let book = Book(
+            id: "42",
+            title: "Comic Fixture",
+            source: .booklore,
+            mediaType: .ebook,
+            providerId: UUID(),
+            libraryId: "tests"
+        )
+        let context = BookloreProgressClient.EbookProgressContext(
+            usesEpubProgress: false,
+            readProgress: nil,
+            readStatus: nil,
+            lastReadTime: nil,
+            pdfProgress: nil,
+            cbxProgress: nil
+        )
+
+        let progress = try await client.fetchEbookProgress(for: book, bookId: 42, context: context)
+
+        #expect(progress?.progress == 0.37)
+        #expect(progress?.locator == "cbz-page:3")
+        #expect(progress?.updatedAt == BookloreProgressClient.parseTimestamp("2026-09-14T07:00:00Z"))
     }
 
     @Test func updateEbookProgressUsesAppCFIContractForEPUBResource() async throws {
@@ -300,6 +354,7 @@ struct BookloreProgressClientTests {
             for: book,
             bookId: 42,
             resourceFileId: 107,
+            resourceFormat: "epub",
             progress: 0.4,
             epubLocator: locator,
             sourceEngine: .foliate
@@ -318,7 +373,7 @@ struct BookloreProgressClientTests {
         #expect(fileProgress["contentSourceProgressPercent"] as? Double == 40)
     }
 
-    @Test func updateEbookProgressUsesLegacyProgressContractWithoutResource() async throws {
+    @Test func updateEbookProgressUsesFileProgressContractForPDF() async throws {
         var capturedRequest: URLRequest?
         let client = BookloreProgressClient(
             makeRequest: { path in
@@ -349,20 +404,67 @@ struct BookloreProgressClientTests {
         try await client.updateEbookProgress(
             for: book,
             bookId: 42,
-            resourceFileId: nil,
+            resourceFileId: 107,
+            resourceFormat: "pdf",
             progress: 0.3,
             epubLocator: "{\"page\":7}",
             sourceEngine: nil
         )
 
         let request = try #require(capturedRequest)
-        #expect(request.url?.path == "/api/v1/books/progress")
-        #expect(request.httpMethod == "POST")
+        #expect(request.url?.path == "/api/v1/app/books/42/progress")
+        #expect(request.httpMethod == "PUT")
         let body = try #require(request.httpBody)
         let root = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
         let fileProgress = try #require(root["fileProgress"] as? [String: Any])
-        #expect(root["bookId"] as? Int == 42)
-        #expect(fileProgress["bookFileId"] as? Int == 42)
+        #expect(fileProgress["bookFileId"] as? Int == 107)
+        #expect(fileProgress["positionData"] as? String == "8")
         #expect(fileProgress["progressPercent"] as? Double == 30)
+    }
+
+    @Test func updateEbookProgressUsesFileProgressContractForComic() async throws {
+        var capturedRequest: URLRequest?
+        let client = BookloreProgressClient(
+            makeRequest: { path in
+                URLRequest(url: URL(string: "https://example.invalid\(path)")!)
+            },
+            performAuthorizedRequest: { request in
+                capturedRequest = request
+                return (
+                    Data(),
+                    HTTPURLResponse(
+                        url: request.url!,
+                        statusCode: 204,
+                        httpVersion: nil,
+                        headerFields: nil
+                    )!
+                )
+            }
+        )
+        let book = Book(
+            id: "42",
+            title: "Comic Push Fixture",
+            source: .booklore,
+            mediaType: .ebook,
+            providerId: UUID(),
+            libraryId: "tests"
+        )
+
+        try await client.updateEbookProgress(
+            for: book,
+            bookId: 42,
+            resourceFileId: 108,
+            resourceFormat: "cbz",
+            progress: 0.5,
+            epubLocator: "cbz-page:4",
+            sourceEngine: nil
+        )
+
+        let body = try #require(capturedRequest?.httpBody)
+        let root = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let fileProgress = try #require(root["fileProgress"] as? [String: Any])
+        #expect(fileProgress["bookFileId"] as? Int == 108)
+        #expect(fileProgress["positionData"] as? String == "5")
+        #expect(fileProgress["progressPercent"] as? Double == 50)
     }
 }

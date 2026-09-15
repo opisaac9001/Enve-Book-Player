@@ -315,14 +315,22 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
             throw ProviderError.invalidResponse
         }
         let result = try JSONDecoder().decode(JellyfinItemsResponse.self, from: data)
+        RejectedContentStore.shared.update(
+            connection: connection,
+            libraryId: libraryId,
+            acceptedItemIdentifiers: Set(result.Items.map(\.Id)),
+            rejectedItems: result.rejectedItems,
+            fallbackScope: "page-\(page)"
+        )
         let books = result.Items.filter { item in
             item.Id != libraryId && item.itemType != "CollectionFolder" && item.itemType != "UserView"
         }.map { mapJellyfinItemToBook($0, libraryId: libraryId, base: base) }
         return LibraryCatalogPage(
             books: books,
             totalCount: result.TotalRecordCount,
-            isLast: result.Items.count < pageSize
-                || result.TotalRecordCount.map { startIndex + result.Items.count >= $0 } == true
+            isLast: result.rawItemCount < pageSize
+                || result.TotalRecordCount.map { startIndex + result.rawItemCount >= $0 } == true,
+            isComplete: result.rejectedItems.isEmpty
         )
     }
 
@@ -784,6 +792,20 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
 private struct JellyfinItemsResponse: Decodable {
     let Items: [JellyfinItem]
     let TotalRecordCount: Int?
+    let rejectedItems: [RejectedContentCandidate]
+    var rawItemCount: Int { Items.count + rejectedItems.count }
+
+    private enum CodingKeys: String, CodingKey {
+        case Items, TotalRecordCount
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let items = try container.decode(LossyDecodableArray<JellyfinItem>.self, forKey: .Items)
+        Items = items.values
+        rejectedItems = items.rejectedItems
+        TotalRecordCount = try container.decodeIfPresent(Int.self, forKey: .TotalRecordCount)
+    }
 }
 
 private struct JellyfinItem: Decodable {

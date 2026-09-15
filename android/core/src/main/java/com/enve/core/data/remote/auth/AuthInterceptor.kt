@@ -31,6 +31,10 @@ class AuthInterceptor @Inject constructor(
     private val tokenRefreshCoordinator: TokenRefreshCoordinator,
 ) : Interceptor {
 
+    // Cache the decoded JWT exp claim so we don't Base64-decode + JSON-parse on every
+    // single request. Tokens are immutable strings; once decoded, the answer is stable
+    // for the lifetime of that token. Bounded so a long-running session that cycles
+    // through many refreshed tokens doesn't accumulate forever - 32 is plenty.
     private val jwtExpCache: MutableMap<String, Long> = java.util.Collections.synchronizedMap(
         object : LinkedHashMap<String, Long>(32, 0.75f, true) {
             override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?): Boolean = size > 32
@@ -52,6 +56,9 @@ class AuthInterceptor @Inject constructor(
             return url.host.equals(originalHost, ignoreCase = true) && url.port == originalPort
         }
 
+        // Public/auth endpoints skip the bearer/basic injection but STILL need the CF
+        // Access cookie + per-connection custom headers - otherwise Cloudflare redirects
+        // the login POST to the IdP and the server returns HTML instead of JSON.
         val stagedLoginHeaders = preferencesManager.getPendingLoginHeadersSync()
         val hasStagedLoginContext = stagedLoginHeaders.isNotEmpty()
         if (
@@ -88,6 +95,14 @@ class AuthInterceptor @Inject constructor(
             return chain.proceed(withHeaders)
         }
 
+        // When ConnectionScope is set, the caller has *explicitly* declared which
+        // connection this request belongs to (e.g. fan-out in LibraryListResolver,
+        // per-connection paged fetches). Prefer it over the "active" connection -
+        // otherwise, when two accounts share the same host:port (two Grimmory users
+        // on the same server), every fan-out call would route to the active token,
+        // returning the active user's data for every connection's call. That bug
+        // showed up as books appearing twice and the other account's libraries
+        // missing from the picker.
         val scopedRegistered = scopedConnectionId
             ?.let { id -> connections.find { it.id == id } }
             ?.takeIf { matchesHostPort(it.serverUrl) }
@@ -209,6 +224,7 @@ class AuthInterceptor @Inject constructor(
     private fun isJwtExpiringSoon(token: String, bufferSeconds: Long): Boolean {
         val exp = jwtExpCache[token] ?: run {
             val decoded = decodeJwtExp(token)
+            // Sentinel 0 marks "couldn't decode" so we don't retry-decode on every request.
             jwtExpCache[token] = decoded
             decoded
         }

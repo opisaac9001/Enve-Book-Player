@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.3 (1) — 2026-09-15
+
+- Preserve exact BookOrbit EPUB CFIs through full sync, Continue Reading, conflict resolution, Foliate restoration, and upload.
+- Prefer newer exact BookOrbit positions even when their percentages fall within the normal progress deadband.
+- Add built-in and imported reader-font support to Foliate.
+- Improve multi-format Grimmory progress handling, tolerate malformed catalog records, and simplify temporary Tip Jar errors.
+
 ## 1.2.2 (1) — 2026-09-08
 
 - Preserve square audiobook artwork across library, player, and queue surfaces.

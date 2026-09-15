@@ -486,7 +486,28 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         let filename: String?
     }
 
-    private struct BooksPageDTO: Decodable { let items: [BookCardDTO]; let total: Int; let page: Int; let size: Int }
+    private struct BooksPageDTO: Decodable {
+        let items: [BookCardDTO]
+        let total: Int
+        let page: Int
+        let size: Int
+        let rejectedItems: [RejectedContentCandidate]
+        var rawItemCount: Int { items.count + rejectedItems.count }
+
+        private enum CodingKeys: String, CodingKey {
+            case items, total, page, size
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            let items = try container.decode(LossyDecodableArray<BookCardDTO>.self, forKey: .items)
+            self.items = items.values
+            rejectedItems = items.rejectedItems
+            total = try container.decode(Int.self, forKey: .total)
+            page = try container.decode(Int.self, forKey: .page)
+            size = try container.decode(Int.self, forKey: .size)
+        }
+    }
 
     private struct SeriesIndex: Decodable, Sendable {
         let value: String
@@ -696,10 +717,12 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
             throw ProviderError.serverError("BookOrbit returned HTTP \(http.statusCode) for library \(libraryId), page \(page)")
         }
         let result = try Self.decoder.decode(BooksPageDTO.self, from: data)
+        updateRejectedContent(result, libraryId: String(libraryId), fallbackScope: "page-\(page)")
         return LibraryCatalogPage(
             books: result.items.map { card($0, libraryId: String(libraryId)) },
             totalCount: result.total,
-            isLast: result.items.count < pageSize || (page + 1) * pageSize >= result.total
+            isLast: result.rawItemCount < pageSize || (page + 1) * pageSize >= result.total,
+            isComplete: result.rejectedItems.isEmpty
         )
     }
 
@@ -725,8 +748,23 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
             throw ProviderError.serverError("BookOrbit returned HTTP \(http.statusCode) for /api/v1/libraries/\(libIdInt)/books")
         }
         let pageDTO = try Self.decoder.decode(BooksPageDTO.self, from: data)
+        updateRejectedContent(pageDTO, libraryId: libraryId, fallbackScope: "recent-page-\(lastPage)")
 
         return pageDTO.items.reversed().map { card($0, libraryId: libraryId) }
+    }
+
+    private func updateRejectedContent(
+        _ page: BooksPageDTO,
+        libraryId: String,
+        fallbackScope: String
+    ) {
+        RejectedContentStore.shared.update(
+            connection: connection,
+            libraryId: libraryId,
+            acceptedItemIdentifiers: Set(page.items.map { String($0.id) }),
+            rejectedItems: page.rejectedItems,
+            fallbackScope: fallbackScope
+        )
     }
 
     func fetchCollections(libraryId: String?) async throws -> [Collection] {
@@ -929,7 +967,13 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
                     isFinished: false,
                     duration: duration,
                     lastUpdate: exact?.updatedAt ?? knownBook?.lastUpdate ?? rankedFallback,
-                    ebookProgress: isAudiobook ? nil : progress
+                    ebookProgress: isAudiobook ? nil : progress,
+                    epubLocator: isAudiobook || exact == nil ? nil : EpubLocationBridge.readiumLocator(
+                        href: nil,
+                        epubCFI: EpubLocationBridge.canonicalFullEPUBCFI(exact?.cfi),
+                        fraction: progress,
+                        sourceEngine: .foliate
+                    )
                 )
             )
         }
@@ -942,7 +986,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
     private func fetchCurrentProgress(
         for item: CurrentlyReadingBookDTO,
         isAudiobook: Bool
-    ) async -> (percentage: Double?, updatedAt: Date?)? {
+    ) async -> (percentage: Double?, updatedAt: Date?, cfi: String?)? {
         if isAudiobook {
             guard let (data, http) = try? await perform("books/\(item.bookId)/audio-progress"),
                 http.statusCode == 200,
@@ -950,7 +994,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
             else {
                 return nil
             }
-            return (progress.percentage, progress.updatedAt)
+            return (progress.percentage, progress.updatedAt, nil)
         }
 
         guard let fileId = item.fileId,
@@ -960,7 +1004,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         else {
             return nil
         }
-        return (progress.percentage, progress.updatedAt)
+        return (progress.percentage, progress.updatedAt, progress.cfi)
     }
 
     func fetchActivitySnapshot() async throws -> [ActivityRecord] {
@@ -1780,7 +1824,13 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         guard http.statusCode == 200 else { throw ProviderError.invalidResponse }
         guard let dto = try Self.decoder.decode(FileProgressDTO?.self, from: data) else { return nil }
         let progress = (dto.percentage ?? 0) / 100.0
-        return (progress: progress, locator: dto.cfi, updatedAt: dto.updatedAt, isAbandoned: progress >= 0.99)
+        let locator = EpubLocationBridge.readiumLocator(
+            href: nil,
+            epubCFI: EpubLocationBridge.canonicalFullEPUBCFI(dto.cfi),
+            fraction: progress,
+            sourceEngine: .foliate
+        )
+        return (progress: progress, locator: locator, updatedAt: dto.updatedAt, isAbandoned: progress >= 0.99)
     }
 
     private static let sessionDateFormatter: ISO8601DateFormatter = {

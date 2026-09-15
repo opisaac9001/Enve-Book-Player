@@ -57,24 +57,27 @@ struct ReaderPagedPagePolicyTests {
     }
 
     @Test func imageFolderDetectionPrefersARealDirectoryThenAPathWithoutAnEbookFile() {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("books/manga", isDirectory: true)
+        let archive = folder.deletingLastPathComponent().appendingPathComponent("manga.cbz")
         #expect(
             ReaderPagedPagePolicy.isImageFolder(
-                filePath: "/books/manga",
-                ebookFileURL: URL(fileURLWithPath: "/books/manga.cbz"),
+                filePath: folder.path,
+                ebookFileURL: archive,
                 isDirectory: { _ in true }
             )
         )
         #expect(
             ReaderPagedPagePolicy.isImageFolder(
-                filePath: "/books/manga",
+                filePath: folder.path,
                 ebookFileURL: nil,
                 isDirectory: { _ in false }
             )
         )
         #expect(
             !ReaderPagedPagePolicy.isImageFolder(
-                filePath: "/books/manga.cbz",
-                ebookFileURL: URL(fileURLWithPath: "/books/manga.cbz"),
+                filePath: archive.path,
+                ebookFileURL: archive,
                 isDirectory: { _ in false }
             )
         )

@@ -14,6 +14,7 @@ struct SettingsScreen: View {
     @State private var hardcoverDetail: String?
     @State private var syncDetail: String?
     @State private var metadataKeysDetailText: String?
+    @State private var rejectedContentStore = RejectedContentStore.shared
     @State private var searchText = ""
     @State private var isSearchPresented = false
     @FocusState private var isSearchFocused: Bool
@@ -337,6 +338,7 @@ struct SettingsScreen: View {
         case .dragAndDrop: DragAndDropScreen()
         case .hiddenBooks: HiddenBooksScreen()
         case .recentlyDeleted: RecentlyDeletedScreen()
+        case .rejectedContent: RejectedContentScreen()
         case .home: HomePreferencesScreen()
         case .comicReader: ComicReaderSettingsScreen()
         case .playback: PlaybackScreen()
@@ -546,6 +548,14 @@ struct SettingsScreen: View {
                 }
                 settingsNav(RecentlyDeletedScreen()) {
                     SettingsLinkRow(title: "Recently deleted", systemImage: "trash")
+                }
+                settingsNav(RejectedContentScreen()) {
+                    SettingsLinkRow(
+                        title: "Rejected content",
+                        subtitle: "Items a source couldn't import",
+                        detail: rejectedContentStore.entries.isEmpty ? nil : "\(rejectedContentStore.entries.count)",
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
                 }
             }
         }
@@ -803,7 +813,7 @@ struct SettingsScreen: View {
 private enum SettingsSearchDestination: String {
     case sources, opds, video, libraryDisplay, metadataMatching, pendingMatches, collections, duplicates
     case bookSync, storyAlign, koReader, hardcover, vocabulary, dictionaries, obsidian, dragAndDrop
-    case hiddenBooks, recentlyDeleted, home, comicReader, playback, appearance, accessibility
+    case hiddenBooks, recentlyDeleted, rejectedContent, home, comicReader, playback, appearance, accessibility
     case downloads, storage, dataManagement, sync, achievements, statsImport, advanced, metadataKeys
     case orphanedBooks, news, tipJar, reportIssue, tour
 }
@@ -837,6 +847,7 @@ private struct SettingsSearchItem: Identifiable {
         item(.dragAndDrop, "Drag & drop", "Files dropped in from a computer", "arrow.down.doc.fill", "import files"),
         item(.hiddenBooks, "Hidden books", "Manage books hidden from the library", "eye.slash", "visibility"),
         item(.recentlyDeleted, "Recently deleted", "Recover removed books", "trash", "restore"),
+        item(.rejectedContent, "Rejected content", "Items a source couldn't import", "exclamationmark.triangle.fill", "broken malformed skipped error"),
         item(.home, "Home & startup", "Start tab and Hearth shelf order", "house.fill", "launch start screen"),
         item(.comicReader, "Comic reader", "Streaming, preloading, and page cache", "books.vertical.fill", "cbz manga pages"),
         item(.playback, "Playback", "Speed, skips, smart rewind, and sleep timer", "play.circle.fill", "audio shake snooze sleep health"),

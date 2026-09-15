@@ -254,18 +254,28 @@ final class ReaderFontLibrary {
 
     private(set) var installedFonts: [InstalledFontFamily] = []
 
-    @ObservationIgnored private let fileManager = FileManager.default
-    @ObservationIgnored private let metadataKey = "enve.reader.installedFonts.v1"
+    @ObservationIgnored private let fileManager: FileManager
+    @ObservationIgnored private let userDefaults: UserDefaults
+    @ObservationIgnored private let metadataKey: String
+    @ObservationIgnored private let fontsDirectory: URL
 
-    private var fontsDirectory: URL {
-        let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return base.appendingPathComponent("Enve/ReaderFonts", isDirectory: true)
-    }
-
-    private init() {
-        try? fileManager.createDirectory(at: fontsDirectory, withIntermediateDirectories: true)
+    init(
+        fileManager: FileManager = .default,
+        userDefaults: UserDefaults = .standard,
+        fontsDirectory: URL? = nil,
+        metadataKey: String = "enve.reader.installedFonts.v1",
+        registerInstalledFonts: Bool = true
+    ) {
+        self.fileManager = fileManager
+        self.userDefaults = userDefaults
+        self.metadataKey = metadataKey
+        self.fontsDirectory = fontsDirectory
+            ?? fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Enve/ReaderFonts", isDirectory: true)
+        try? fileManager.createDirectory(at: self.fontsDirectory, withIntermediateDirectories: true)
         loadInstalledFonts()
 
+        guard registerInstalledFonts else { return }
         let urlsToRegister = installedFonts.flatMap { $0.files.map { URL(fileURLWithPath: $0.filePath) } }
         Task.detached(priority: .utility) {
             for url in urlsToRegister {
@@ -276,7 +286,7 @@ final class ReaderFontLibrary {
     }
 
     func loadInstalledFonts() {
-        guard let data = UserDefaults.standard.data(forKey: metadataKey),
+        guard let data = userDefaults.data(forKey: metadataKey),
             let fonts = try? JSONDecoder().decode([InstalledFontFamily].self, from: data)
         else {
             installedFonts = []
@@ -699,7 +709,7 @@ final class ReaderFontLibrary {
 
     private func persist() {
         guard let data = try? JSONEncoder().encode(installedFonts) else { return }
-        UserDefaults.standard.set(data, forKey: metadataKey)
+        userDefaults.set(data, forKey: metadataKey)
     }
 
     private func fontFaces(for family: InstalledFontFamily) -> [CSSFontFace] {

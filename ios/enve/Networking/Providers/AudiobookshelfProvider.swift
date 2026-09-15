@@ -297,13 +297,6 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         return decoder
     }()
 
-    private struct Safe<T: Decodable>: Decodable {
-        let value: T?
-        init(from decoder: Decoder) throws {
-            value = try? T(from: decoder)
-        }
-    }
-
     private struct LibrariesResponse: Decodable {
         let libraries: [ABSLibrary]
     }
@@ -327,24 +320,38 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         let total: Int
         let page: Int
         let failures: Int
+        let rejectedItems: [RejectedContentCandidate]
 
         enum CodingKeys: String, CodingKey { case results, total, page }
 
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
-            let safe = (try? c.decode([Safe<T>].self, forKey: .results)) ?? []
+            let decodedPage = (try? c.decode(Int.self, forKey: .page)) ?? 0
+            let safe = (try? c.decode([RejectedDecodable<T>].self, forKey: .results)) ?? []
             var good: [T] = []
-            var bad = 0
-            for item in safe {
-                if let v = item.value { good.append(v) } else { bad += 1 }
+            var rejected: [RejectedContentCandidate] = []
+            for (index, item) in safe.enumerated() {
+                if let value = item.value {
+                    good.append(value)
+                } else if let failure = item.rejection {
+                    rejected.append(
+                        RejectedContentCandidate(
+                            itemIdentifier: failure.itemIdentifier,
+                            title: failure.title,
+                            reason: failure.reason,
+                            fallbackIdentifier: "page-\(decodedPage)-item-\(index)"
+                        )
+                    )
+                }
             }
-            if bad > 0 {
-                AppLogger.player.error("\(bad) item(s) failed to decode on this page")
+            if !rejected.isEmpty {
+                AppLogger.player.error("\(rejected.count) item(s) failed to decode on this page")
             }
             results = good
-            failures = bad
+            rejectedItems = rejected
+            failures = rejected.count
             total = (try? c.decode(Int.self, forKey: .total)) ?? good.count
-            page = (try? c.decode(Int.self, forKey: .page)) ?? 0
+            page = decodedPage
         }
     }
 
@@ -406,7 +413,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
                 numAudioFiles = try c.decodeIfPresent(Int.self, forKey: .numAudioFiles)
                 ebookFormat = try c.decodeIfPresent(String.self, forKey: .ebookFormat)
                 chapters = try c.decodeIfPresent([Chapter].self, forKey: .chapters)
-                if let raw = try? c.decode([Safe<AudioFile>].self, forKey: .audioFiles) {
+                if let raw = try? c.decode([RejectedDecodable<AudioFile>].self, forKey: .audioFiles) {
                     audioFiles = raw.compactMap(\.value)
                 } else {
                     audioFiles = nil
@@ -765,7 +772,8 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         return LibraryCatalogPage(
             books: books,
             totalCount: response.total,
-            isLast: rawCount < pageSize || (page + 1) * pageSize >= response.total
+            isLast: rawCount < pageSize || (page + 1) * pageSize >= response.total,
+            isComplete: response.failures == 0
         )
     }
 
@@ -1070,9 +1078,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         }
         do {
             let page = try Self.absDecoder.decode(PageResponse<ABSItem>.self, from: data)
-            guard page.failures == 0 else {
-                throw ProviderError.invalidResponse
-            }
+            updateRejectedContent(page, libraryId: libraryId)
             return page
         } catch {
             AppLogger.player.error("fetchBooks decode failed page \(page): \(error)")
@@ -1151,6 +1157,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             }
 
             let pageResp = try Self.absDecoder.decode(PageResponse<ABSItem>.self, from: data)
+            updateRejectedContent(pageResp, libraryId: libraryId)
 
             for item in pageResp.results {
                 let podcastTitle = item.media.metadata.title ?? "Unknown Podcast"
@@ -1270,6 +1277,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         var page = 0
         var collected: [Book] = []
         var maxSeen: Date = since
+        var hadDecodeFailures = false
         let libType = libraryMediaTypes[libraryId]
 
         while page < iterationCeiling {
@@ -1302,7 +1310,10 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             do {
                 resp = try Self.absDecoder.decode(PageResponse<ABSItem>.self, from: data)
             } catch { return nil }
-            if resp.failures > 0 { return nil }
+            updateRejectedContent(resp, libraryId: libraryId)
+            if resp.failures > 0 {
+                hadDecodeFailures = true
+            }
             if resp.results.isEmpty { break }
 
             var pageHadNew = false
@@ -1326,7 +1337,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         }
 
         AppLogger.player.info("[ABS] Delta: \(collected.count) changed items since \(since)")
-        return (collected, maxSeen)
+        return (collected, hadDecodeFailures ? since : maxSeen)
     }
 
     func fetchRecentBooks(libraryId: String, limit: Int) async throws -> [Book] {
@@ -1357,14 +1368,25 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         }
 
         let pageResp = try Self.absDecoder.decode(PageResponse<ABSItem>.self, from: data)
-        guard pageResp.failures == 0 else {
-            throw ProviderError.invalidResponse
-        }
+        updateRejectedContent(pageResp, libraryId: libraryId)
 
         let libType = self.libraryMediaTypes[libraryId]
         return pageResp.results.compactMap { item in
             convertItemToBook(item, libraryId: libraryId, baseURL: baseURL, token: token, libraryMediaType: libType)
         }
+    }
+
+    private func updateRejectedContent(_ page: PageResponse<ABSItem>, libraryId: String) {
+        RejectedContentStore.shared.update(
+            connection: connection,
+            libraryId: libraryId,
+            acceptedItemIdentifiers: Set(page.results.map(\.id)),
+            rejectedItems: page.rejectedItems
+        )
+        guard !page.rejectedItems.isEmpty else { return }
+        AppLogger.player.warning(
+            "[ABS] Skipped \(page.rejectedItems.count) malformed item(s) on page \(page.page)"
+        )
     }
 
     func fetchCollections(libraryId: String?) async throws -> [Collection] {

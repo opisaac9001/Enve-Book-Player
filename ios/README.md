@@ -1,119 +1,72 @@
-<p align="center">
-  <img src="../screenshots/enve-book-player.svg" alt="Enve Book Player" width="180">
-</p>
+# Enve Book Player
 
-<h1 align="center">Enve Book Player</h1>
+Enve is a native Swift audiobook and ebook player for local libraries and self-hosted media servers. It supports Audiobookshelf, Plex, Jellyfin, Emby, Booklore/Grimmory, Storyteller, Komga, Kavita, OPDS, WebDAV, SMB, and local files.
 
-<p align="center">
-  A native iPhone and iPad app for audiobooks, ebooks, comics, and podcasts from your own files and self-hosted libraries.
-</p>
+The iOS app includes audiobook playback, a Readium-based EPUB reader, library deduplication, downloads, progress sync, CarPlay, reading statistics, annotations, and read-along support. A tvOS target is included in the same project.
 
-<p align="center">
-  <a href="https://envemedia.com/books/"><img src="https://img.shields.io/badge/iOS-TestFlight-F5921A?style=for-the-badge&logo=apple&logoColor=white" alt="Get Enve Book Player"></a>
-  <a href="https://github.com/opisaac9001/Enve-Book-Player/actions/workflows/ios.yml"><img src="https://img.shields.io/github/actions/workflow/status/opisaac9001/Enve-Book-Player/ios.yml?branch=main&style=for-the-badge&label=build" alt="iOS CI status"></a>
-  <a href="https://github.com/opisaac9001/Enve-Book-Player/issues"><img src="https://img.shields.io/github/issues/opisaac9001/Enve-Book-Player?style=for-the-badge&color=F5921A" alt="Open issues"></a>
-  <a href="https://github.com/opisaac9001/Enve-Book-Player/discussions"><img src="https://img.shields.io/badge/GitHub-Discussions-24292F?style=for-the-badge&logo=github" alt="GitHub Discussions"></a>
-  <a href="https://discord.gg/Hw4nmXRehb"><img src="https://img.shields.io/badge/Discord-community-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Join the Discord community"></a>
-  <a href="https://buymeacoffee.com/envebookplayer"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-support-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=000000" alt="Support Enve on Buy Me a Coffee"></a>
-  <a href="../LICENSE.md"><img src="https://img.shields.io/badge/license-AGPL--3.0--only-663399?style=for-the-badge" alt="AGPL-3.0-only license"></a>
-</p>
+## Requirements
 
-Enve brings listening and reading together without requiring an Enve account, subscription, or cloud service. Connect the servers you already run, import local files, and keep your library and progress under your control.
+- Xcode 26.4 or newer
+- iOS 17 or newer
+- Swift 6
 
-This directory contains the Apple-platform source. The native [Android source](../android/) is published alongside it in the same repository.
+## Building
 
-The public repository follows stable releases. Day-to-day development happens privately, so `main` is updated in reviewed, release-sized snapshots rather than carrying unfinished work.
-
-## What it does
-
-| | |
-| :---: | --- |
-| 🎧 | **Listen** — Audiobooks and podcasts with chapters, queues, sleep timers, bookmarks, CarPlay, and offline downloads. |
-| 📖 | **Read** — EPUB books and comics with a native Readium-based reader, annotations, themes, and reading controls. |
-| 🔄 | **Keep your place** — Playback and reading progress sync with supported servers and optional sync services. |
-| 📚 | **Bring libraries together** — One library across multiple sources, with duplicate-edition merging where possible. |
-| 🔊 | **Read along** — Synchronized text and audio for compatible books. |
-| 📊 | **Track and organize** — Collections, smart shelves, reading statistics, a journal, widgets, and an Apple Watch companion. |
-
-## Screenshots
-
-<p align="center">
-  <img src="../screenshots/ios/home.png" alt="Enve home screen" width="250">
-  <img src="../screenshots/ios/library.png" alt="Library" width="250">
-  <img src="../screenshots/ios/book-details.png" alt="Book details" width="250">
-</p>
-
-<p align="center">
-  <img src="../screenshots/ios/now-playing.png" alt="Audiobook player" width="250">
-  <img src="../screenshots/ios/reader.png" alt="Ebook reader" width="250">
-  <img src="../screenshots/ios/read-along.png" alt="Read-along player" width="250">
-</p>
-
-## Supported libraries and services
-
-Enve works with local files and a broad range of self-hosted services:
-
-| | Supported sources |
-| :---: | --- |
-| 🎧 | **Audiobook and media servers:** Audiobookshelf, Plex, Jellyfin, Emby, Storyteller, Grimmory, BookOrbit, and Silo |
-| 📚 | **Comics and ebooks:** Komga, Kavita, and OPDS catalogs |
-| 🗂️ | **Files and feeds:** Local files, WebDAV, SMB, and RSS podcasts |
-| ☁️ | **Cloud and debrid:** Premiumize, Real-Debrid, and TorBox |
-
-Provider capabilities differ. The [documentation](https://envemedia.com/docs/) has current setup instructions and service-specific notes.
-
-For self-hosted SSO, use the platform values and service-specific instructions in the shared [OIDC, SSO, and browser sign-in guide](../docs/guides/oidc.md).
-
-## Get the app
-
-Current TestFlight and availability information lives on the [Enve Book Player page](https://envemedia.com/books/). Enve is free, contains no advertising or analytics, and does not place a cloud service between the app and your library.
-
-## Building from source
-
-You need Xcode 26.4 or newer, an Apple-silicon Mac, and an iOS 17 or newer deployment target.
+Clone the repository with its Foliate submodule:
 
 ```sh
-git clone --recurse-submodules https://github.com/opisaac9001/Enve-Book-Player.git
-cd Enve-Book-Player/ios
-open enve.xcodeproj
+git clone --recurse-submodules <repository-url>
+cd <repository-directory>
 ```
 
-Let Swift Package Manager resolve dependencies, then build the `enve` scheme for an Apple-silicon iOS Simulator. Device builds require your own Apple development team, bundle identifiers, and entitlements. Optional Google Drive and Dropbox support also require developer-owned OAuth applications.
+Open `enve.xcodeproj`, let Swift Package Manager resolve dependencies, and build the `enve` scheme.
 
-The complete setup and signing notes are published with the source in `DEVELOPMENT.md`.
+From the command line:
 
-## Contributing
+```sh
+xcodebuild -project enve.xcodeproj -scheme enve -showdestinations
 
-Bug fixes, accessibility improvements, provider work, documentation, and focused features are welcome. Start with the repository [contribution guide](../CONTRIBUTING.md). Use [Discussions](https://github.com/opisaac9001/Enve-Book-Player/discussions) for questions and early ideas, and Issues for reproducible bugs or agreed work.
+xcodebuild -project enve.xcodeproj \
+  -scheme enve \
+  -destination 'platform=iOS Simulator,id=<simulator-udid>' \
+  build
+```
 
-For app support and setup questions, use the central [Enve Support repository](https://github.com/opisaac9001/Enve-Support) or [Discord](https://discord.gg/Hw4nmXRehb). Please report security problems privately as described in the repository [security policy](../SECURITY.md).
+Use an Apple-silicon simulator destination. FluidAudio's bundled text-processing library does not include an x86_64 simulator slice, so a generic multi-architecture simulator build will not link.
 
-<details>
-<summary><strong>Using a coding agent</strong></summary>
+The app accepts user-supplied server addresses, including local HTTP servers. Do not commit server credentials, API keys, or exported diagnostic data.
 
-This repository includes detailed instructions for coding agents. Ask the agent to read [`CLAUDE.md`](CLAUDE.md), [`AGENTS.md`](AGENTS.md), and [`DEVELOPMENT.md`](DEVELOPMENT.md) before it makes changes.
+### Optional OAuth providers
 
-Files beginning with `// AGENT-LOCKED` have extra safeguards because they are easy to break without understanding their invariants. The owner-set password is local and advisory: it guides cooperative tools, but it is not encryption or a security boundary. Human contributors can inspect the source normally and should edit protected files only when they understand and can fully test the affected behavior.
+Google Drive and Dropbox require developer-owned OAuth applications. Copy the example configuration and supply your registered client identifiers:
 
-</details>
+```sh
+cp enve/Configuration/DeveloperSettings.example.plist \
+  enve/Configuration/DeveloperSettings.plist
+```
 
-## Important links
+`DeveloperSettings.plist` is ignored by Git. Its redirect scheme must match the scheme registered with each OAuth provider. These providers remain unavailable when their client identifier is empty.
 
-| Resource | Link |
-| --- | --- |
-| Enve Media | [envemedia.com](https://envemedia.com/) |
-| iOS Book Player and downloads | [envemedia.com/books](https://envemedia.com/books/) |
-| Android edition | [Status and open testing](https://envemedia.com/books/#android) |
-| Documentation | [envemedia.com/docs](https://envemedia.com/docs/) |
-| FAQ | [envemedia.com/faq](https://envemedia.com/faq.html) |
-| Questions and ideas | [GitHub Discussions](https://github.com/opisaac9001/Enve-Book-Player/discussions) |
-| Bugs and tracked work | [GitHub Issues](https://github.com/opisaac9001/Enve-Book-Player/issues) |
-| General Enve support | [Enve Support](https://github.com/opisaac9001/Enve-Support) |
-| Community | [Discord](https://discord.gg/Hw4nmXRehb) |
-| Support development | [Buy Me a Coffee](https://buymeacoffee.com/envebookplayer) |
+### Device signing
+
+Simulator builds do not require an Apple Developer account. Device builds require selecting your own development team in Xcode. CloudKit, App Groups, push notifications, HealthKit, CarPlay, widgets, and the Watch app use Enve's production identifiers and entitlements; forks must register their own identifiers and update the corresponding project settings and entitlements.
+
+## Repository layout
+
+- `enve/` — main iOS application, features, domain services, providers, persistence, and reader engine
+- `EnveWatch/` — watchOS companion app
+- `enve-tvOS/` — tvOS app
+- `EnveBookWidgets/` — WidgetKit extension
+- `EnveBookShared/` — models shared between selected targets
+- `LocalPackages/` — maintained wrappers and pinned source dependencies
+- `docs/` — architecture, UI contracts, backend references, and legal notes
+
+Read [ARCHITECTURE.md](ARCHITECTURE.md) before changing source ownership or adding a subsystem. The [documentation index](docs/README.md) routes to architecture, UI, backend, and distribution references.
+
+See [DEVELOPMENT.md](DEVELOPMENT.md) for setup and build instructions and [CONTRIBUTING.md](CONTRIBUTING.md) before submitting a change. Report vulnerabilities through [SECURITY.md](SECURITY.md).
 
 ## License
 
-Enve's original source is free and open-source software under the [GNU Affero General Public License v3.0 only](../LICENSE.md) (`AGPL-3.0-only`). Commercial use and paid redistribution are permitted, provided the AGPL's source-disclosure, notice, and reciprocal-licensing requirements are met.
+Enve's original source is free and open-source software under the [GNU Affero General Public License v3.0 only](LICENSE.md) (`AGPL-3.0-only`). Commercial use and paid redistribution are permitted, provided the AGPL's source-disclosure, notice, and reciprocal-licensing requirements are met. Third-party components remain under their respective licenses.
 
-[Third-party notices](THIRD_PARTY_NOTICES.md) list the licenses and attribution requirements for dependencies, bundled resources, and provider artwork. They are legal notices for redistribution, not additional setup instructions.
+Redistributions must retain the license, the source provenance described in [NOTICE.md](NOTICE.md), and all applicable [third-party notices](THIRD_PARTY_NOTICES.md). The [third-party audit](docs/legal/THIRD_PARTY_AUDIT.md) identifies items that still require clearance before distributing a public binary.

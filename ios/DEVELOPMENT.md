@@ -1,6 +1,6 @@
 # Developing Enve Book Player
 
-This guide covers the Apple-platform project under `ios/`. Read `ARCHITECTURE.md` for target boundaries, dependency direction, feature ownership, and file placement. The sibling Android project has its own development guide.
+This guide covers building and modifying the iOS repository. Read `ARCHITECTURE.md` for target boundaries, dependency direction, feature ownership, and file placement.
 
 ## Project shape
 
@@ -57,8 +57,6 @@ cp enve/Configuration/DeveloperSettings.example.plist \
 ```
 
 Use developer-owned OAuth applications and redirect schemes. Never commit the populated file. Do not put OAuth client secrets in an iOS application.
-
-Self-hosted server OIDC callbacks are listed in the shared [OIDC, SSO, and browser sign-in guide](../docs/guides/oidc.md).
 
 ## Build the iOS app
 
@@ -149,10 +147,9 @@ Do not grow `AppState`, `SyncCoordinator`, or `StorageService` with unrelated st
 
 ### Change authentication or transport security
 
-1. Read `../SECURITY.md` and preserve its configuration invariants.
-2. Read the shared [OIDC, SSO, and browser sign-in guide](../docs/guides/oidc.md) when changing a server sign-in flow.
-3. Test the actual provider against HTTP, trusted HTTPS, and supported local self-signed HTTPS as applicable.
-4. Confirm secrets are absent from logs, URLs where headers are supported, diagnostics, and persisted preferences.
+1. Read `SECURITY.md` and preserve its configuration invariants.
+2. Test the actual provider against HTTP, trusted HTTPS, and supported local self-signed HTTPS as applicable.
+3. Confirm secrets are absent from logs, URLs where headers are supported, diagnostics, and persisted preferences.
 
 ### Change SwiftUI
 
@@ -190,4 +187,4 @@ Before submitting a change:
 
 Use a focused branch only when the maintainer asks for one. Do not rewrite published history. Pull requests should explain the user-visible outcome, notable design decisions, and verification performed.
 
-Release archives must retain `../LICENSE.md`, `../NOTICE.md`, `THIRD_PARTY_NOTICES.md`, third-party license files, and the compiled provenance keys. Resolve every blocking item in `docs/legal/THIRD_PARTY_AUDIT.md` before public distribution. The repository license does not replace any third-party license.
+Release archives must retain `LICENSE.md`, `NOTICE.md`, `THIRD_PARTY_NOTICES.md`, third-party license files, and the compiled provenance keys. Resolve every blocking item in `docs/legal/THIRD_PARTY_AUDIT.md` before public distribution. The repository license does not replace any third-party license.

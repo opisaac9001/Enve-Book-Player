@@ -1,10 +1,10 @@
 # Enve Agent Instructions
 
-Read `CLAUDE.md` and `DEVELOPMENT.md` before inspecting or changing Apple-platform code. These instructions govern the `ios/` tree; the sibling Android project has its own guides.
+Read `CLAUDE.md` and `DEVELOPMENT.md` before inspecting or changing application code. The repository rules apply to every coding agent, regardless of vendor or model name.
 
 ## Before doing anything
 
-From the shared repository root, confirm:
+From this repository root, confirm:
 
 ```sh
 pwd
@@ -76,4 +76,4 @@ Codex or the human maintainer owns final verification. A generated patch is not 
 - Exercise the changed workflow instead of relying only on compilation.
 - Run `./scripts/verify-provenance` before release-oriented commits.
 
-See `ARCHITECTURE.md`, `../CONTRIBUTING.md`, and `../SECURITY.md` for source ownership and public contribution rules.
+See `ARCHITECTURE.md`, `CONTRIBUTING.md`, and `SECURITY.md` for source ownership and public contribution rules.

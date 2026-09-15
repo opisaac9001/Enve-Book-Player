@@ -30,7 +30,7 @@ Midnight has narration for the prologue and first chapter, not the entire novel.
 
 ## Contributor provenance
 
-This adapts Daryl's PR #21/#22 work to the requested single-widget design. The three original commits are retained in the public PR branch with Daryl's authorship:
+This adapts Daryl's PR #21/#22 work to the requested single-widget design. The three original commits are retained in the public repository with Daryl's authorship:
 
 - `338a6b466816ba37a9d14e8ef21e1e67ff7276d1` — ebook widget.
 - `ef8d74425439d6ee4b9002569d3ecdcb58eb8809` — audiobook resize/artwork.

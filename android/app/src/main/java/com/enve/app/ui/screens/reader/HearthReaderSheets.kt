@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -24,8 +25,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -40,6 +44,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -517,22 +524,48 @@ private fun ReaderAnnotation.matchesAnnotationQuery(query: String): Boolean {
 private fun SearchSheet(vm: ReaderViewModel, state: ReaderUiState) {
     val palette = Hearth.palette
     val shape = RoundedCornerShape(Hearth.Radius.Inner)
-    Column(Modifier.fillMaxWidth().padding(horizontal = Hearth.Spacing.XL).padding(bottom = Hearth.Spacing.XXL), verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.M)) {
+    val keyboard = LocalSoftwareKeyboardController.current
+    Column(Modifier.fillMaxWidth().imePadding().padding(horizontal = Hearth.Spacing.XL).padding(bottom = Hearth.Spacing.XXL), verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.M)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Overline("Search book")
+            Spacer(Modifier.weight(1f))
+            IconButton(onClick = {
+                if (state.searchLoading) vm.cancelSearch() else { vm.runSearch(); keyboard?.hide() }
+            }) {
+                Icon(
+                    if (state.searchLoading) Icons.Outlined.Close else Icons.Outlined.Search,
+                    contentDescription = if (state.searchLoading) "Cancel search" else "Search",
+                    tint = palette.ember,
+                )
+            }
+            IconButton(onClick = { vm.showSearch(false) }) {
+                Icon(Icons.Outlined.Close, contentDescription = "Close search", tint = palette.textSecondary)
+            }
+        }
         Box(Modifier.fillMaxWidth().clip(shape).background(palette.bg).border(1.dp, palette.hairline, shape).padding(Hearth.Spacing.M)) {
             if (state.searchQuery.isEmpty()) Text("Find in this book…", style = hearthDisplay(16.sp, FontWeight.Normal), color = palette.textTertiary)
             BasicTextField(
                 value = state.searchQuery, onValueChange = vm::updateSearchQuery, singleLine = true,
                 textStyle = hearthDisplay(16.sp, FontWeight.Normal).copy(color = palette.text),
                 cursorBrush = SolidColor(palette.ember),
-                keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { vm.runSearch() }),
+                keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { vm.runSearch(); keyboard?.hide() }),
                 keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Search text" },
             )
         }
-        if (state.searchLoading) Text("Searching…", style = HearthText.Caption, color = palette.textSecondary)
+        if (state.searchOptionsAvailable) {
+            ToggleRow("Whole words", state.searchWholeWords, vm::updateSearchWholeWords)
+            Text(
+                if (state.searchWholeWords) "Word or exact phrase. Matching headings appear first."
+                else "Includes partial words. Large books may take longer.",
+                style = HearthText.Caption,
+                color = palette.textSecondary,
+            )
+        }
+        state.searchStatus?.let { Text(it, style = HearthText.Caption, color = palette.textSecondary) }
         state.searchError?.let { Text(it, style = HearthText.Caption, color = palette.statusError) }
-        LazyColumn(Modifier.heightIn(max = 400.dp)) {
-            items(state.searchResults) { r ->
+        LazyColumn(Modifier.heightIn(max = 400.dp).weight(1f, fill = false)) {
+            items(state.searchResults, key = { it.id }) { r ->
                 Column(
                     Modifier.fillMaxWidth().clickable { vm.seekToSearchResult(r); vm.showSearch(false) }.padding(vertical = Hearth.Spacing.M),
                 ) {
@@ -546,6 +579,11 @@ private fun SearchSheet(vm: ReaderViewModel, state: ReaderUiState) {
                         append(text.after.orEmpty().replace(Regex("\\s+"), " ").take(90))
                     }
                     Text(emphasized, style = HearthText.Body, color = palette.text, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            if (state.searchHasMore && !state.searchLoading) {
+                item {
+                    HearthChip("Load more results", selected = false, onClick = vm::loadMoreSearchResults)
                 }
             }
         }

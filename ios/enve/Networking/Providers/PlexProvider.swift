@@ -324,7 +324,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         return normalized
     }
 
-    private struct PlexMediaContainerResponse<T: Codable>: Codable {
+    private struct PlexMediaContainerResponse<T: Decodable>: Decodable {
         let mediaContainer: T
 
         enum CodingKeys: String, CodingKey {
@@ -356,15 +356,40 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         }
     }
 
-    fileprivate struct PlexItemsResponse: Codable {
+    fileprivate struct PlexItemsResponse: Decodable {
         let metadata: [PlexMetadata]?
         let totalSize: Int?
         let size: Int?
         let offset: Int?
+        let rejectedItems: [RejectedContentCandidate]
+        var rawItemCount: Int { (metadata?.count ?? 0) + rejectedItems.count }
 
         enum CodingKeys: String, CodingKey {
             case metadata = "Metadata"
             case totalSize, size, offset
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            if container.contains(.metadata) {
+                let metadata = try container.decode(LossyDecodableArray<PlexMetadata>.self, forKey: .metadata)
+                self.metadata = metadata.values
+                rejectedItems = metadata.rejectedItems
+            } else {
+                metadata = nil
+                rejectedItems = []
+            }
+            totalSize = try container.decodeIfPresent(Int.self, forKey: .totalSize)
+            size = try container.decodeIfPresent(Int.self, forKey: .size)
+            offset = try container.decodeIfPresent(Int.self, forKey: .offset)
+        }
+
+        init(metadata: [PlexMetadata]?, totalSize: Int?, size: Int?, offset: Int?) {
+            self.metadata = metadata
+            self.totalSize = totalSize
+            self.size = size
+            self.offset = offset
+            rejectedItems = []
         }
     }
 
@@ -776,14 +801,17 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         return LibraryCatalogPage(
             books: books,
             totalCount: nil,
-            isLast: response.metadata.count < pageSize
-                || response.totalSize.map { offset + response.metadata.count >= $0 } == true
+            isLast: response.rawItemCount < pageSize
+                || response.totalSize.map { offset + response.rawItemCount >= $0 } == true,
+            isComplete: response.rejectedItems.isEmpty
         )
     }
 
     private struct PlexAlbumsPage: Sendable {
         let metadata: [PlexMetadata]
         let totalSize: Int?
+        let rejectedItems: [RejectedContentCandidate]
+        var rawItemCount: Int { metadata.count + rejectedItems.count }
     }
 
     private func fetchPlexAlbumsPage(libraryId: String, offset: Int, limit: Int) async throws -> PlexAlbumsPage {
@@ -801,9 +829,17 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
             throw ProviderError.invalidResponse
         }
         let container = try decodeItemsContainer(from: data)
+        RejectedContentStore.shared.update(
+            connection: connection,
+            libraryId: libraryId,
+            acceptedItemIdentifiers: Set((container.metadata ?? []).map(\.ratingKey)),
+            rejectedItems: container.rejectedItems,
+            fallbackScope: "offset-\(offset)"
+        )
         return PlexAlbumsPage(
             metadata: container.metadata ?? [],
-            totalSize: container.totalSize
+            totalSize: container.totalSize,
+            rejectedItems: container.rejectedItems
         )
     }
 
@@ -962,6 +998,13 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
 
         let container = try decodeItemsContainer(from: data)
         let albums = container.metadata ?? []
+        RejectedContentStore.shared.update(
+            connection: connection,
+            libraryId: libraryId,
+            acceptedItemIdentifiers: Set(albums.map(\.ratingKey)),
+            rejectedItems: container.rejectedItems,
+            fallbackScope: "recent"
+        )
 
         var books: [Book] = []
         for album in albums {
@@ -983,6 +1026,13 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
             let (trackData, _) = try await performDataTask(for: trackRequest)
             let trackContainer = try decodeItemsContainer(from: trackData)
             let tracks = orderedTracks(trackContainer.metadata ?? [])
+            RejectedContentStore.shared.update(
+                connection: connection,
+                libraryId: libraryId,
+                acceptedItemIdentifiers: Set(tracks.map(\.ratingKey)),
+                rejectedItems: trackContainer.rejectedItems,
+                fallbackScope: "album-\(album.ratingKey)-tracks"
+            )
 
             var roots: [String] = []
             if Self.isUnknownAlbumTitle(album.title) {

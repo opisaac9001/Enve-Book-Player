@@ -63,7 +63,14 @@ final class ReaderInitialLocationResolver {
         _ location: ReaderInitialLocation,
         readingOrderHrefs: [String]
     ) -> ReaderInitialLocation {
-        guard let locator = location.locator else { return .unresolved }
+        guard let locator = location.locator else {
+            guard EpubLocationBridge.sourceEngine(from: location.locatorJSON) == .foliate,
+                EpubLocationBridge.canonicalFullEPUBCFI(
+                    EpubLocationBridge.epubCFI(from: location.locatorJSON)
+                ) != nil
+            else { return .unresolved }
+            return location
+        }
 
         let targetHref = ReaderLocationController.normalizedHref(locator.href.string)
         if !targetHref.isEmpty,
@@ -116,15 +123,15 @@ final class ReaderInitialLocationResolver {
             request.engineKind == .foliate,
             let rawLocatorJSON = latestBook.epubLocator,
             !rawLocatorJSON.isEmpty,
-            EpubLocationBridge.canStoreAlongsidePercentageSync(rawLocatorJSON),
-            let rawLocator = try? Locator(jsonString: rawLocatorJSON)
+            EpubLocationBridge.canStoreAlongsidePercentageSync(rawLocatorJSON)
         else {
             return ReaderInitialLocation(locator: preferred, locatorJSON: nil)
         }
 
+        let rawLocator = try? Locator(jsonString: rawLocatorJSON)
         let rawProgress =
-            rawLocator.locations.totalProgression
-            ?? rawLocator.locations.progression
+            EpubLocationBridge.totalProgression(from: rawLocatorJSON)
+            ?? rawLocator?.locations.progression
             ?? 0
         guard ReaderInitialLocationPolicy.acceptsRawEngineLocator(
             canonicalProgress: latestBook.canonicalEbookProgress,
@@ -132,7 +139,7 @@ final class ReaderInitialLocationResolver {
         ) else {
             return ReaderInitialLocation(locator: preferred, locatorJSON: nil)
         }
-        return ReaderInitialLocation(locator: rawLocator, locatorJSON: rawLocatorJSON)
+        return ReaderInitialLocation(locator: rawLocator ?? preferred, locatorJSON: rawLocatorJSON)
     }
 
     private func preferredLocation(in publication: Publication) async -> Locator? {
