@@ -32,8 +32,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/readium/Fuzi.git",
       "state" : {
-        "revision" : "347aab158ff8894966ff80469b384bb5337928cd",
-        "version" : "4.0.0"
+        "revision" : "173ec944ca6f2e8024ceb7324bcb8a3cc95a0661",
+        "version" : "4.0.1"
       }
     },
     {
