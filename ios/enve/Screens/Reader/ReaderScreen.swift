@@ -977,39 +977,33 @@ struct ReaderScreen: View {
 
     private func annotateLayer(_ selection: ReaderSelectionSnapshot) -> some View {
         GeometryReader { geo in
-            ZStack {
-                Color.clear
-                    .contentShape(Rectangle())
-                    .onTapGesture(perform: dismissPendingSelection)
-
-                ReaderAnnotateBar(
-                    selectedColor: $inkColor,
-                    onHighlight: { color in
-                        inkColor = color
-                        model.annotationController.addAnnotationFromSelection(style: .highlight, colorHex: color)
-                        PlatformHaptics.impact(.light)
-                    },
-                    onUnderline: {
-                        model.annotationController.addAnnotationFromSelection(style: .underline, colorHex: inkColor)
-                        PlatformHaptics.impact(.light)
-                    },
-                    onStrikethrough: {
-                        model.annotationController.addAnnotationFromSelection(style: .strikethrough, colorHex: inkColor)
-                        PlatformHaptics.impact(.light)
-                    },
-                    onSquiggle: {
-                        model.annotationController.addAnnotationFromSelection(style: .squiggly, colorHex: inkColor)
-                        PlatformHaptics.impact(.light)
-                    },
-                    onNote: {
-                        let current = currentEPUBSelection(fallback: selection)
-                        noteDraft = ReaderNoteDraft(text: current.locator.text.highlight ?? "")
-                    },
-                    onCopy: { copySelection(currentEPUBSelection(fallback: selection)) },
-                    onDefine: { handleDefine() }
-                )
-                .position(annotateBarPosition(for: selection.frame, in: geo.size))
-            }
+            ReaderAnnotateBar(
+                selectedColor: $inkColor,
+                onHighlight: { color in
+                    inkColor = color
+                    model.annotationController.addAnnotationFromSelection(style: .highlight, colorHex: color)
+                    PlatformHaptics.impact(.light)
+                },
+                onUnderline: {
+                    model.annotationController.addAnnotationFromSelection(style: .underline, colorHex: inkColor)
+                    PlatformHaptics.impact(.light)
+                },
+                onStrikethrough: {
+                    model.annotationController.addAnnotationFromSelection(style: .strikethrough, colorHex: inkColor)
+                    PlatformHaptics.impact(.light)
+                },
+                onSquiggle: {
+                    model.annotationController.addAnnotationFromSelection(style: .squiggly, colorHex: inkColor)
+                    PlatformHaptics.impact(.light)
+                },
+                onNote: {
+                    let current = currentEPUBSelection(fallback: selection)
+                    noteDraft = ReaderNoteDraft(text: current.locator.text.highlight ?? "")
+                },
+                onCopy: { copySelection(currentEPUBSelection(fallback: selection)) },
+                onDefine: { handleDefine() }
+            )
+            .position(annotateBarPosition(for: selection.frame, in: geo.size))
         }
         .ignoresSafeArea()
         .transition(.opacity)
