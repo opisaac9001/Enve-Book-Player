@@ -109,6 +109,37 @@ class GrimmoryEbookProgressPayloadTest {
     }
 
     @Test
+    fun pdfProgressUsesOneBasedPagePosition() {
+        val payload = grimmoryEbookFileProgress(
+            bookFileId = 44,
+            totalProgression = 0.3f,
+            checkpointValue = "{\"page\":7}",
+            bookType = "PDF",
+            page = 7,
+        )
+
+        assertEquals(44L, payload.bookFileId)
+        assertEquals("7", payload.positionData)
+        assertEquals(30.0, payload.progressPercent, 0.0001)
+        assertNull(payload.positionHref)
+    }
+
+    @Test
+    fun comicProgressUsesOneBasedPagePosition() {
+        val payload = grimmoryEbookFileProgress(
+            bookFileId = 45,
+            totalProgression = 0.5f,
+            checkpointValue = "cbr-page:12",
+            bookType = "CBX",
+        )
+
+        assertEquals(45L, payload.bookFileId)
+        assertEquals("12", payload.positionData)
+        assertEquals(50.0, payload.progressPercent, 0.0001)
+        assertNull(payload.positionHref)
+    }
+
+    @Test
     fun wirePayloadMatchesCurrentGrimmoryAppContract() {
         val request = GrimmoryUpdateProgressRequest(
             fileProgress = grimmoryEbookFileProgress(

@@ -271,7 +271,7 @@ class GrimmoryProviderAdapter @Inject constructor(
         locator: String?,
         page: Int?,
         pageCount: Int?,
-    ): Result<Unit> = repository.syncEbookProgress(bookId, percentage, locator)
+    ): Result<Unit> = repository.syncEbookProgress(bookId, percentage, locator, page)
 
     override suspend fun syncAudiobookProgress(
         book: Book,

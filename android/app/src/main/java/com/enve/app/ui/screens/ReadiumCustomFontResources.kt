@@ -1,18 +1,30 @@
 package com.enve.app.ui.screens
 
+import android.content.res.AssetManager
 import com.enve.app.data.reader.CustomFont
 import com.enve.app.data.repository.CustomFontRepository
+import com.enve.app.ui.screens.reader.BUNDLED_READER_FONTS
+import com.enve.app.ui.screens.reader.BundledReaderFontFace
 import java.io.File
 import org.readium.r2.shared.publication.Link
 import org.readium.r2.shared.util.Url
 import org.readium.r2.shared.util.data.Container
 import org.readium.r2.shared.util.file.FileResource
 import org.readium.r2.shared.util.mediatype.MediaType
+import org.readium.r2.shared.util.resource.InMemoryResource
 import org.readium.r2.shared.util.resource.Resource
 
-internal class ReadiumCustomFontResources(fonts: List<CustomFont>) : Container<Resource> {
+internal class ReadiumCustomFontResources(
+    assetManager: AssetManager,
+    fonts: List<CustomFont>,
+) : Container<Resource> {
     private data class Key(val fontId: String, val variant: CustomFontRepository.Variant)
-    private data class Entry(val relativeUrl: Url, val sourceUrl: Url, val file: File, val mediaType: MediaType)
+    private data class Entry(
+        val relativeUrl: Url,
+        val sourceUrl: Url,
+        val mediaType: MediaType,
+        val resource: () -> Resource,
+    )
 
     private val entriesByKey: Map<Key, Entry> = buildMap {
         fonts.forEach { font ->
@@ -22,7 +34,30 @@ internal class ReadiumCustomFontResources(fonts: List<CustomFont>) : Container<R
             add(font, CustomFontRepository.Variant.BOLD_ITALIC, font.boldItalicPath)
         }
     }
-    private val entriesByUrl = entriesByKey.values.associateBy(Entry::relativeUrl)
+    private val bundledEntriesByAssetPath: Map<String, Entry> = buildMap {
+        BUNDLED_READER_FONTS
+            .asSequence()
+            .filter { it.declareInReadium }
+            .flatMap { it.faces.asSequence() }
+            .distinctBy(BundledReaderFontFace::assetPath)
+            .forEach { face ->
+                val extension = face.assetPath.substringAfterLast('.').lowercase()
+                val mediaType = if (extension == "otf") OTF_MEDIA_TYPE else TTF_MEDIA_TYPE
+                val relativeUrl = requireNotNull(
+                    Url.fromDecodedPath("$RESOURCE_ROOT/bundled/${face.assetPath.substringAfterLast('/')}")
+                )
+                val sourceUrl = PUBLICATION_BASE_URL.resolve(relativeUrl)
+                val bytes = assetManager.open(face.assetPath).use { it.readBytes() }
+                put(
+                    face.assetPath,
+                    Entry(relativeUrl, sourceUrl, mediaType) {
+                        InMemoryResource(bytes)
+                    },
+                )
+            }
+    }
+    private val entriesByUrl = (entriesByKey.values + bundledEntriesByAssetPath.values)
+        .associateBy(Entry::relativeUrl)
 
     override val entries: Set<Url> = entriesByUrl.keys
     val links: List<Link> = entriesByUrl.values.map { Link(it.relativeUrl, mediaType = it.mediaType) }
@@ -31,9 +66,11 @@ internal class ReadiumCustomFontResources(fonts: List<CustomFont>) : Container<R
     fun sourceUrl(fontId: String, variant: CustomFontRepository.Variant): Url? =
         entriesByKey[Key(fontId, variant)]?.sourceUrl
 
-    override fun get(url: Url): Resource? = entriesByUrl[url.removeQuery().removeFragment()]
-        ?.file
-        ?.let(::FileResource)
+    fun sourceUrl(face: BundledReaderFontFace): Url? =
+        bundledEntriesByAssetPath[face.assetPath]?.sourceUrl
+
+    override fun get(url: Url): Resource? =
+        entriesByUrl[url.removeQuery().removeFragment()]?.resource?.invoke()
 
     override fun close() = Unit
 
@@ -57,8 +94,8 @@ internal class ReadiumCustomFontResources(fonts: List<CustomFont>) : Container<R
             Entry(
                 relativeUrl = relativeUrl,
                 sourceUrl = PUBLICATION_BASE_URL.resolve(relativeUrl),
-                file = file,
                 mediaType = mediaType,
+                resource = { FileResource(file) },
             ),
         )
     }
@@ -73,7 +110,7 @@ internal class ReadiumCustomFontResources(fonts: List<CustomFont>) : Container<R
 
     private companion object {
         const val RESOURCE_ROOT = "enve-reader-fonts"
-        val PUBLICATION_BASE_URL = requireNotNull(Url("https://readium/publication/"))
+        val PUBLICATION_BASE_URL = requireNotNull(Url("https://readium_package/"))
         val TTF_MEDIA_TYPE = requireNotNull(MediaType("font/ttf"))
         val OTF_MEDIA_TYPE = requireNotNull(MediaType("font/otf"))
     }

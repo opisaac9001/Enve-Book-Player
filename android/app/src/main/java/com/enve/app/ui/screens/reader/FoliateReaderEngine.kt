@@ -278,7 +278,7 @@ class FoliateReaderEngine(
                             mediaType,
                             Charsets.UTF_8.name(),
                             webView.context.assets.open(path),
-                        ).withoutCaching()
+                        ).withoutCaching(allowCrossOrigin = path.endsWith(".ttf") || path.endsWith(".otf"))
                     }.getOrElse { blockedResponse() }
                 }
             }
@@ -306,7 +306,7 @@ class FoliateReaderEngine(
                         },
                         null,
                         face.file.inputStream(),
-                    ).withoutCaching()
+                    ).withoutCaching(allowCrossOrigin = true)
                 }
             }
             .build()
@@ -384,6 +384,30 @@ class FoliateReaderEngine(
             )
             .put("capability", bridgeSession.capability)
             .put("preferences", preferences.toFoliateJson())
+            .put(
+                "bundledFonts",
+                JSONArray().apply {
+                    BUNDLED_READER_FONTS.forEach { font ->
+                        put(
+                            JSONObject()
+                                .put("family", font.family)
+                                .put(
+                                    "faces",
+                                    JSONArray().apply {
+                                        font.faces.forEach { face ->
+                                            put(
+                                                JSONObject()
+                                                    .put("url", "$ASSET_ORIGIN/assets/${face.assetPath}")
+                                                    .put("weight", face.weight)
+                                                    .put("style", if (face.italic) "italic" else "normal"),
+                                            )
+                                        }
+                                    },
+                                ),
+                        )
+                    }
+                },
+            )
             .put(
                 "customFonts",
                 JSONArray().apply {
@@ -593,11 +617,14 @@ class FoliateReaderEngine(
             ByteArrayInputStream(ByteArray(0)),
         ).withoutCaching()
 
-    private fun WebResourceResponse.withoutCaching(): WebResourceResponse = apply {
-        responseHeaders = mapOf(
-            "Cache-Control" to "no-store, no-cache, must-revalidate",
-            "Pragma" to "no-cache",
-        )
+    private fun WebResourceResponse.withoutCaching(
+        allowCrossOrigin: Boolean = false,
+    ): WebResourceResponse = apply {
+        responseHeaders = buildMap {
+            put("Cache-Control", "no-store, no-cache, must-revalidate")
+            put("Pragma", "no-cache")
+            if (allowCrossOrigin) put("Access-Control-Allow-Origin", "*")
+        }
     }
 
     private fun Uri.isTrustedAssetOrigin(): Boolean =
@@ -629,7 +656,7 @@ class FoliateReaderEngine(
             "foliate/tts.js",
             "foliate/footnotes.js",
             "foliate/vendor/zip.js",
-        )
+        ) + BUNDLED_READER_FONTS.flatMap { font -> font.faces.map(BundledReaderFontFace::assetPath) }
 
         fun isSupported(): Boolean =
             WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)

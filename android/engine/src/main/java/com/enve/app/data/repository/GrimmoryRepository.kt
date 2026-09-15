@@ -98,6 +98,8 @@ private val BookSource.requiresConfiguredServer: Boolean
         BookSource.LOCAL -> false
     }
 
+private val GRIMMORY_EBOOK_PROGRESS_TYPES = setOf("EPUB", "PDF", "CBX", "FB2", "MOBI", "AZW3")
+
 internal fun Request.Builder.applyGrimmoryOidcHeaders(
     headers: Map<String, String>,
 ): Request.Builder = apply {
@@ -117,8 +119,23 @@ internal fun grimmoryEbookFileProgress(
     bookFileId: Long,
     totalProgression: Float,
     checkpointValue: String?,
+    bookType: String? = null,
+    page: Int? = null,
 ): GrimmoryFileProgressDto {
     val rawValue = checkpointValue?.trim()
+    val normalizedBookType = bookType?.uppercase()
+    val pagePosition = when (normalizedBookType) {
+        "PDF", "CBX" -> {
+            val locatorPage = Regex("""\"page\"\s*:\s*(\d+)""")
+                .find(rawValue.orEmpty())
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.toIntOrNull()
+                ?: rawValue?.substringAfter(':', "")?.toIntOrNull()
+            (page ?: locatorPage)?.coerceAtLeast(1)?.toString()
+        }
+        else -> null
+    }
     val checkpoint = EpubBridgeCheckpointCodec.decode(rawValue)
     val foliateCheckpoint = checkpoint?.takeIf { it.sourceEngine == ReaderEngineKind.FOLIATE }
     val canonicalCfi = foliateCheckpoint?.epubCfi
@@ -133,7 +150,7 @@ internal fun grimmoryEbookFileProgress(
 
     return GrimmoryFileProgressDto(
         bookFileId = bookFileId,
-        positionData = canonicalCfi,
+        positionData = pagePosition ?: canonicalCfi,
         positionHref = canonicalCfi?.let {
             foliateCheckpoint.href?.trim()?.takeIf(String::isNotBlank)
         },
@@ -1637,11 +1654,11 @@ class GrimmoryRepository @Inject constructor(
         }
         val rawBookId = bookId.grimmoryServerBookId()
         val detail = api.getBookDetail(rawBookId).body()
-        val epubFile = detail?.epubFile()
+        val ebookFile = detail?.progressFile(locator = null)
+        val bookType = ebookFile?.resolvedProgressType() ?: "EPUB"
         return ProviderEbookResource(
-
-            url = grimmoryBookContentUrl(ctx.serverUrl, rawBookId, bookType = "EPUB"),
-            providerFileId = epubFile?.id,
+            url = grimmoryBookContentUrl(ctx.serverUrl, rawBookId, bookType = bookType),
+            providerFileId = ebookFile?.id,
         )
     }
 
@@ -1737,6 +1754,8 @@ class GrimmoryRepository @Inject constructor(
             val finished = body.readStatus.equals("READ", ignoreCase = true)
             val epubProgress = body.epubProgress
             val rawPct = epubProgress?.percentage?.let { normalizeFraction(it) }
+                ?: body.pdfProgress?.percentage?.let { normalizeFraction(it) }
+                ?: body.cbxProgress?.percentage?.let { normalizeFraction(it) }
                 ?: body.koreaderProgress?.percentage?.coerceIn(0f, 1f)
                 ?: body.readProgress?.let { normalizeFraction(it) }
             val pct = rawPct ?: if (finished) 1f else return Result.success(null)
@@ -1751,8 +1770,14 @@ class GrimmoryRepository @Inject constructor(
                     href = exactCfi?.let {
                         epubProgress.href?.trim()?.takeIf(String::isNotBlank)
                     },
+                    locatorJson = body.pdfProgress?.page?.let { "{\"page\":$it}" }
+                        ?: body.cbxProgress?.page?.let { "cbz-page:$it" },
                     source = "Grimmory",
-                    updatedAt = parseIsoToEpochMs(epubProgress?.updatedAt),
+                    updatedAt = parseIsoToEpochMs(
+                        epubProgress?.updatedAt
+                            ?: body.pdfProgress?.updatedAt
+                            ?: body.cbxProgress?.updatedAt
+                    ),
                     finished = finished,
                 )
             )
@@ -1941,7 +1966,12 @@ class GrimmoryRepository @Inject constructor(
         }
     }
 
-    suspend fun syncEbookProgress(bookId: String, percentage: Float, cfi: String?): Result<Unit> {
+    suspend fun syncEbookProgress(
+        bookId: String,
+        percentage: Float,
+        locator: String?,
+        page: Int? = null,
+    ): Result<Unit> {
         return try {
             val source = resolveScopedContext().source
             when (source) {
@@ -1951,15 +1981,19 @@ class GrimmoryRepository @Inject constructor(
                         ?: return Result.failure(Exception("Grimmory book id is not numeric: $bookId"))
                     val detail = api.getBookDetail(rawBookId).body()
                         ?: return Result.failure(Exception("Grimmory book detail was unavailable: $bookId"))
-                    val bookFileId = detail.epubFile()?.id?.toLongOrNull()
-                        ?: return Result.failure(Exception("Grimmory EPUB file id was unavailable: $bookId"))
+                    val progressFile = detail.progressFile(locator)
+                        ?: return Result.failure(Exception("Grimmory ebook file id was unavailable: $bookId"))
+                    val bookFileId = progressFile.id?.toLongOrNull()
+                        ?: return Result.failure(Exception("Grimmory ebook file id was invalid: $bookId"))
                     val response = api.putAppBookProgress(
                         bookId = rawBookId,
                         request = GrimmoryUpdateProgressRequest(
                             fileProgress = grimmoryEbookFileProgress(
                                 bookFileId = bookFileId,
                                 totalProgression = percentage,
-                                checkpointValue = cfi,
+                                checkpointValue = locator,
+                                bookType = progressFile.resolvedProgressType(),
+                                page = page,
                             ),
                         )
                     )
@@ -1975,15 +2009,41 @@ class GrimmoryRepository @Inject constructor(
         }
     }
 
-    private fun BookDetailDto.epubFile(): BookFileDto? {
+    private fun BookDetailDto.progressFile(locator: String?): BookFileDto? {
         val candidates = buildList {
             primaryFile?.let(::add)
             addAll(files.orEmpty())
         }.distinctBy { it.id }
-        return candidates.firstOrNull { file ->
-            file.bookType.equals("EPUB", ignoreCase = true) ||
-                file.fileExtension.equals("EPUB", ignoreCase = true) ||
-                file.fileName?.endsWith(".epub", ignoreCase = true) == true
+        val expectedType = when {
+            Regex("""\"page\"\s*:\s*\d+""").containsMatchIn(locator.orEmpty()) -> "PDF"
+            Regex("""^(cbz|cbx|cbr)-page:""", RegexOption.IGNORE_CASE).containsMatchIn(locator.orEmpty()) -> "CBX"
+            else -> primaryFile?.resolvedProgressType()
+        }
+        if (expectedType != null && expectedType != "AUDIOBOOK") {
+            candidates.firstOrNull { it.resolvedProgressType() == expectedType }?.let { return it }
+        }
+        return candidates.firstOrNull { it.resolvedProgressType() in GRIMMORY_EBOOK_PROGRESS_TYPES }
+    }
+
+    private fun BookFileDto.resolvedProgressType(): String? {
+        val values = listOf(
+            bookType,
+            fileExtension,
+            fileName?.substringAfterLast('.', ""),
+            filePath?.substringAfterLast('.', ""),
+        )
+        return values.firstNotNullOfOrNull { value ->
+            when (value?.trim()?.uppercase()) {
+                "CBX", "CBZ", "CBR", "CB7" -> "CBX"
+                "AZW" -> "AZW3"
+                "EPUB" -> "EPUB"
+                "PDF" -> "PDF"
+                "FB2" -> "FB2"
+                "MOBI" -> "MOBI"
+                "AZW3" -> "AZW3"
+                "AUDIOBOOK" -> "AUDIOBOOK"
+                else -> null
+            }
         }
     }
 

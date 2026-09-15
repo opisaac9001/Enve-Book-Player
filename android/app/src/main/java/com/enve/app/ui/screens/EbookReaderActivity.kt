@@ -84,6 +84,7 @@ import com.enve.app.readium.SmilClip
 import com.enve.app.ui.theme.AppTheme
 import com.enve.app.ui.theme.EnveTheme
 import com.enve.app.ui.theme.eink
+import com.enve.app.ui.screens.reader.BUNDLED_READER_FONTS
 import com.enve.app.ui.screens.reader.FoliateReaderEngine
 import com.enve.app.viewmodel.ReaderViewModel
 import com.enve.app.viewmodel.ThemeViewModel
@@ -708,7 +709,7 @@ class EbookReaderActivity : FragmentActivity() {
 
         requestedReaderEngine = ReaderEngineKind.READIUM
         val readium  = (application as EnveApplication).readiumManager
-        val customFontResources = ReadiumCustomFontResources(customFonts)
+        val customFontResources = ReadiumCustomFontResources(assets, customFonts)
         val readiumOpenStartMs = android.os.SystemClock.elapsedRealtime()
         val asset    = readium.assetRetriever.retrieve(epubFile).getOrElse {
             discardUnreadableEbookCache(sourceFile, epubFile)
@@ -848,6 +849,35 @@ class EbookReaderActivity : FragmentActivity() {
                         com.enve.app.readium.strikethroughTemplate()
                     decorationTemplates[com.enve.app.readium.SquigglyStyle::class] =
                         com.enve.app.readium.squigglyTemplate()
+                    BUNDLED_READER_FONTS
+                        .filter { it.declareInReadium }
+                        .forEach { font ->
+                            addFontFamilyDeclaration(
+                                fontFamily = org.readium.r2.navigator.preferences.FontFamily(font.family),
+                            ) {
+                                font.faces.forEach { face ->
+                                    customFontResources.sourceUrl(face)?.let { source ->
+                                        addFontFace {
+                                            addSource(source)
+                                            setFontWeight(
+                                                if (face.weight >= 700) {
+                                                    org.readium.r2.navigator.epub.css.FontWeight.BOLD
+                                                } else {
+                                                    org.readium.r2.navigator.epub.css.FontWeight.NORMAL
+                                                },
+                                            )
+                                            setFontStyle(
+                                                if (face.italic) {
+                                                    org.readium.r2.navigator.epub.css.FontStyle.ITALIC
+                                                } else {
+                                                    org.readium.r2.navigator.epub.css.FontStyle.NORMAL
+                                                },
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     customFonts.forEach { font ->
                         val regular = customFontResources.sourceUrl(font.id, CustomFontRepository.Variant.REGULAR)
                         val bold = customFontResources.sourceUrl(font.id, CustomFontRepository.Variant.BOLD)

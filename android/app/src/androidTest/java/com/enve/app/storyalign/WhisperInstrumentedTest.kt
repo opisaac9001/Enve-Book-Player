@@ -1,6 +1,7 @@
 package com.enve.app.storyalign
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
 import com.enve.app.storyalign.transcribe.WhisperContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -16,9 +17,13 @@ class WhisperInstrumentedTest {
 
     @Test
     fun transcribesRealSpeech() {
-        val model = File("/data/local/tmp/ggml-tiny.en.bin")
-        val wav = File("/data/local/tmp/speech.wav")
-        assumeTrue("push model + speech.wav to /data/local/tmp first", model.exists() && wav.exists())
+        val arguments = InstrumentationRegistry.getArguments()
+        val modelPath = arguments.getString("whisperModelPath")
+        val wavPath = arguments.getString("whisperWavPath")
+        assumeTrue("pass whisperModelPath and whisperWavPath instrumentation arguments", modelPath != null && wavPath != null)
+        val model = File(requireNotNull(modelPath))
+        val wav = File(requireNotNull(wavPath))
+        assumeTrue("Whisper fixtures are not available", model.isFile && wav.isFile)
 
         val pcm = readWav16kMonoFloat(wav)
         assertTrue("audio too short: ${pcm.size}", pcm.size > 16_000)

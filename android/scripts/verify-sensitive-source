@@ -1,0 +1,33 @@
+#!/bin/sh
+set -eu
+
+repository_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repository_root"
+
+failed=0
+sensitive_name_pattern='(^|/)(CLAUDE\.local\.md|\.env(\..*)?|google-services\.json|secrets?\.(json|ya?ml|properties))$|\.(pem|p12|pfx|key|jks|keystore)$'
+sensitive_files=$(git ls-files | grep -Ei "$sensitive_name_pattern" | grep -Eiv '(^|/)\.env(\..*)?\.example$' || true)
+if [ -n "$sensitive_files" ]; then
+    printf 'Sensitive file types are tracked:\n%s\n' "$sensitive_files" >&2
+    failed=1
+fi
+
+credential_pattern='BEGIN (RSA |EC |OPENSSH )?PRIVATE '"KEY"'|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|github_'"pat_"'[A-Za-z0-9_]+|gh'"p_"'[A-Za-z0-9]+|xox[baprs]-[A-Za-z0-9-]+|sk_'"live_"'[A-Za-z0-9]+'
+credential_files=$(git grep -IlE "$credential_pattern" -- . ':!engine/src/main/cpp/**' ':!ThirdParty/**' ':!scripts/build-release-evidence' ':!scripts/verify-sensitive-source' || true)
+if [ -n "$credential_files" ]; then
+    printf 'Credential-like content is tracked in:\n%s\n' "$credential_files" >&2
+    failed=1
+fi
+
+local_path_pattern='/Users/[^/]+/(Desktop|Documents|Downloads|Library|Projects|Source|Workspace|workspace)/|/Volumes/[^/]+/[^[:space:]]*(Enve|enve|Workspace|workspace)|[A-Za-z]:\\Users\\[^\\]+\\'
+local_path_files=$(git grep -IlE "$local_path_pattern" -- . ':!engine/src/main/cpp/**' ':!ThirdParty/**' ':!scripts/build-release-evidence' ':!scripts/verify-sensitive-source' || true)
+if [ -n "$local_path_files" ]; then
+    printf 'Machine-specific paths are tracked in:\n%s\n' "$local_path_files" >&2
+    failed=1
+fi
+
+if [ "$failed" -ne 0 ]; then
+    exit 1
+fi
+
+printf 'Sensitive-source scan passed.\n'

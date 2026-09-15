@@ -48,6 +48,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -233,12 +234,6 @@ data class FoliateOpenPlan(
     val identity: EpubBridgeCheckpoint,
 )
 
-private data class CheckpointCandidate(
-    val checkpoint: EpubBridgeCheckpoint,
-    val observedAt: Long,
-    val local: Boolean = false,
-)
-
 data class ProgressConflictPrompt(
     val localPercentage: Float,
     val localUpdatedAt: Long?,
@@ -311,7 +306,7 @@ class ReaderViewModel @Inject constructor(
     private var latestEpubCheckpoint: EpubBridgeCheckpoint? = null
     private var foliateExpectedCheckpoint: EpubBridgeCheckpoint? = null
     private var foliateRestoreConfirmed = false
-    private var foliateCheckpointDirty = false
+    private val foliateCheckpointSync = FoliateCheckpointSync()
     private var readiumRestoreConfirmed = false
     private var readiumCheckpointDirty = false
     private var readiumCheckpointFingerprint: String? = null
@@ -606,7 +601,7 @@ class ReaderViewModel @Inject constructor(
         epubCheckpointLease = lease
         latestEpubCheckpoint = selected
         foliateRestoreConfirmed = false
-        foliateCheckpointDirty = false
+        foliateCheckpointSync.reset()
         readiumRestoreConfirmed = false
         readiumCheckpointDirty = false
         readiumCheckpointFingerprint = null
@@ -682,41 +677,6 @@ class ReaderViewModel @Inject constructor(
             href = exactHref,
             totalProgression = progression.toDouble().coerceIn(0.0, 1.0),
         )
-    }
-
-    private fun checkpointPrecision(checkpoint: EpubBridgeCheckpoint): Int = when {
-        !checkpoint.epubCfi.isNullOrBlank() -> 4
-        !checkpoint.textQuote?.exact.isNullOrBlank() -> 3
-        checkpoint.domRange != null || !checkpoint.cssSelector.isNullOrBlank() -> 2
-        !checkpoint.href.isNullOrBlank() -> 1
-        else -> 0
-    }
-
-    private fun selectCheckpointCandidate(
-        candidates: List<CheckpointCandidate>,
-    ): EpubBridgeCheckpoint? {
-        val newest = candidates.maxWithOrNull(
-            compareBy<CheckpointCandidate> { it.observedAt }
-                .thenBy { checkpointPrecision(it.checkpoint) },
-        ) ?: return null
-        val local = candidates.firstOrNull(CheckpointCandidate::local) ?: return newest.checkpoint
-        if (newest === local || local.checkpoint.revision <= 0L) return newest.checkpoint
-
-        val localProgress = local.checkpoint.totalProgression
-        val newestProgress = newest.checkpoint.totalProgression
-        val sameFoliateCfi = local.checkpoint.epubCfi != null &&
-            local.checkpoint.epubCfi == newest.checkpoint.epubCfi
-        val isServerEcho = localProgress != null &&
-            newestProgress != null &&
-            kotlin.math.abs(localProgress - newestProgress) <= 0.002 &&
-            newest.observedAt >= local.observedAt &&
-            newest.observedAt - local.observedAt <= 60_000L &&
-            local.checkpoint.hasPreciseAnchor
-        return if (sameFoliateCfi || isServerEcho) {
-            local.checkpoint.copy(observedAt = maxOf(local.observedAt, newest.observedAt))
-        } else {
-            newest.checkpoint
-        }
     }
 
     private suspend fun loadPreferences() {
@@ -830,7 +790,7 @@ class ReaderViewModel @Inject constructor(
         latestEpubCheckpoint = plan.initialCheckpoint
         foliateExpectedCheckpoint = plan.initialCheckpoint
         foliateRestoreConfirmed = false
-        foliateCheckpointDirty = false
+        foliateCheckpointSync.reset()
         positions = emptyList()
         pageMarkers = emptyList()
         lastLocator = null
@@ -913,7 +873,7 @@ class ReaderViewModel @Inject constructor(
         foliateExpectedCheckpoint = null
         if (bootstrappedCheckpoint != null) {
             latestEpubCheckpoint = bootstrappedCheckpoint
-            foliateCheckpointDirty = true
+            foliateCheckpointSync.submit(bootstrappedCheckpoint)
             scheduleFoliateSync()
         }
         _state.update { it.copy(tocEntries = entries) }
@@ -953,7 +913,7 @@ class ReaderViewModel @Inject constructor(
         }
         if (!foliateRestoreConfirmed) return
         if (!location.userInitiated) return
-        foliateCheckpointDirty = true
+        foliateCheckpointSync.submit(checkpoint)
         scheduleFoliateSync()
     }
 
@@ -2812,9 +2772,11 @@ class ReaderViewModel @Inject constructor(
             return
         }
         if (engineNavigator != null) {
-            if (foliateRestoreConfirmed && foliateCheckpointDirty) {
+            if (foliateRestoreConfirmed && foliateCheckpointSync.hasPending) {
                 syncJob?.cancel()
-                syncJob = viewModelScope.launch { persistFoliateCheckpoint() }
+                syncJob = viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+                    persistFoliateCheckpoint()
+                }
             }
             return
         }
@@ -2836,13 +2798,16 @@ class ReaderViewModel @Inject constructor(
     private var lastPushedPct: Float = -1f
 
     private suspend fun persistFoliateCheckpoint() {
-        if (!foliateRestoreConfirmed || !foliateCheckpointDirty) return
+        if (!foliateRestoreConfirmed || !foliateCheckpointSync.hasPending) return
         val lease = epubCheckpointLease ?: return
-        val checkpoint = latestEpubCheckpoint ?: return
-        val committed = epubBridgeCheckpoints.commit(lease, checkpoint) ?: return
-        latestEpubCheckpoint = committed
-        foliateCheckpointDirty = false
-        pushCanonicalProgress(committed)
+        foliateCheckpointSync.flush(
+            commit = { epubBridgeCheckpoints.commit(lease, it) },
+            onCommitted = { checkpoint, committed ->
+                latestEpubCheckpoint = if (latestEpubCheckpoint === checkpoint) committed
+                else latestEpubCheckpoint?.copy(revision = committed.revision)
+            },
+            push = ::pushCanonicalProgress,
+        )
     }
 
     private suspend fun persistReadiumCheckpoint(
@@ -2871,10 +2836,9 @@ class ReaderViewModel @Inject constructor(
         persistReadiumCheckpoint(capture.locator, capture.checkpoint)
     }
 
-    private suspend fun pushCanonicalProgress(checkpoint: EpubBridgeCheckpoint) {
-        val pct = checkpoint.totalProgression?.toFloat()?.coerceIn(0f, 1f) ?: return
-        if (kotlin.math.abs(pct - lastPushedPct) < 0.001f) return
-        lastPushedPct = pct
+    private suspend fun pushCanonicalProgress(checkpoint: EpubBridgeCheckpoint): Result<Unit> {
+        val pct = checkpoint.totalProgression?.toFloat()?.coerceIn(0f, 1f)
+            ?: return Result.failure(IllegalArgumentException("Missing reading progress"))
         val encoded = EpubBridgeCheckpointCodec.encode(checkpoint)
         viewModelScope.launch {
             runCatching {
@@ -2888,7 +2852,7 @@ class ReaderViewModel @Inject constructor(
                 koreaderHub.pushIfConfigured(book, pct, encoded)
             }
         }
-        aggregatorRepository.syncEbookProgress(
+        return aggregatorRepository.syncEbookProgress(
             bookId = bookId,
             source = bookSource,
             percentage = pct,

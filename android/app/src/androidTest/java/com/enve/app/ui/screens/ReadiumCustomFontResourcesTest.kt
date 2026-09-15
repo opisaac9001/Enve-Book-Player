@@ -4,6 +4,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.enve.app.data.reader.CustomFont
 import com.enve.app.data.repository.CustomFontRepository
+import com.enve.app.ui.screens.reader.BUNDLED_READER_FONTS
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -27,6 +28,7 @@ class ReadiumCustomFontResourcesTest {
             writeBytes("OTTOtest".encodeToByteArray())
         }
         val resources = ReadiumCustomFontResources(
+            context.assets,
             listOf(
                 CustomFont(
                     id = "test-family",
@@ -39,17 +41,26 @@ class ReadiumCustomFontResourcesTest {
         )
 
         assertEquals(
-            "https://readium/publication/enve-reader-fonts/test-family/regular.ttf",
+            "https://readium_package/enve-reader-fonts/test-family/regular.ttf",
             resources.sourceUrl("test-family", CustomFontRepository.Variant.REGULAR).toString(),
         )
         assertEquals(
-            "https://readium/publication/enve-reader-fonts/test-family/bold-italic.otf",
+            "https://readium_package/enve-reader-fonts/test-family/bold-italic.otf",
             resources.sourceUrl("test-family", CustomFontRepository.Variant.BOLD_ITALIC).toString(),
         )
         val regularUrl = requireNotNull(
             Url.fromDecodedPath("enve-reader-fonts/test-family/regular.ttf"),
         )
         assertNotNull(resources[regularUrl])
+        val literata = BUNDLED_READER_FONTS.first { it.family == "Literata" }.faces.first()
+        val literataUrl = requireNotNull(resources.sourceUrl(literata))
+        assertEquals(
+            "https://readium_package/enve-reader-fonts/bundled/Literata.ttf",
+            literataUrl.toString(),
+        )
+        assertNotNull(
+            resources[requireNotNull(Url.fromDecodedPath("enve-reader-fonts/bundled/Literata.ttf"))],
+        )
         assertEquals(setOf("font/ttf", "font/otf"), resources.links.map { it.mediaType.toString() }.toSet())
 
         directory.deleteRecursively()

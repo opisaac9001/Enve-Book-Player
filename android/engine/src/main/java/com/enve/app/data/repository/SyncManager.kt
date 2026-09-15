@@ -6,6 +6,7 @@ import com.enve.core.data.local.PendingProgressPush
 import com.enve.core.data.local.PendingProgressPushDao
 import com.enve.core.data.local.PreferencesManager
 import com.enve.core.data.model.AppMediaType
+import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.ProviderConnection
 import com.enve.core.data.remote.ConnectionScope
@@ -23,7 +24,6 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.time.Instant
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -259,26 +259,15 @@ class SyncManager @Inject constructor(
     private suspend fun pushEbookToGrimmory(
         bookId: String,
         percentage: Float,
-        @Suppress("UNUSED_PARAMETER") cfi: String?,
+        cfi: String?,
     ): SourceOutcome<Unit> {
         if (currentSource() != BookSource.GRIMMORY) return SourceOutcome.Skipped(SkipReason.GrimmoryNotLoggedIn)
         val token = accessTokenForCurrentConnection()
         if (token.isNullOrBlank()) return SourceOutcome.Skipped(SkipReason.GrimmoryNotLoggedIn)
-        val numericBookId = bookId.grimmoryServerBookId().toLongOrNull()
-            ?: return SourceOutcome.Skipped(SkipReason.NoGrimmoryBookId)
-
-        return runCatching {
-            val request = GrimmoryProgressRequest(
-                bookId = numericBookId,
-                fileProgress = GrimmoryProgressFileProgress(
-                    bookFileId = numericBookId,
-                    progressPercent = (percentage.toDouble() * 100.0).coerceIn(0.0, 100.0),
-                ),
-                dateFinished = if (percentage >= 0.99f) Instant.now().toString() else null,
-            )
-            val response = api.postBookProgress(request)
-            if (!response.isSuccessful) error("Grimmory progress update failed: ${response.code()}")
-        }.fold(
+        if (bookId.grimmoryServerBookId().toLongOrNull() == null) {
+            return SourceOutcome.Skipped(SkipReason.NoGrimmoryBookId)
+        }
+        return repository.syncEbookProgress(bookId, percentage, cfi).fold(
             onSuccess = { SourceOutcome.Ok(Unit) },
             onFailure = { SourceOutcome.Failure(it) },
         )
@@ -287,27 +276,26 @@ class SyncManager @Inject constructor(
     private suspend fun pushAudiobookToGrimmory(
         bookId: String,
         percentage: Float,
-        @Suppress("UNUSED_PARAMETER") positionMs: Long,
+        positionMs: Long,
         @Suppress("UNUSED_PARAMETER") trackIndex: Int,
     ): SourceOutcome<Unit> {
         if (currentSource() != BookSource.GRIMMORY) return SourceOutcome.Skipped(SkipReason.GrimmoryNotLoggedIn)
         val token = accessTokenForCurrentConnection()
         if (token.isNullOrBlank()) return SourceOutcome.Skipped(SkipReason.GrimmoryNotLoggedIn)
-        val numericBookId = bookId.grimmoryServerBookId().toLongOrNull()
-            ?: return SourceOutcome.Skipped(SkipReason.NoGrimmoryBookId)
-
-        return runCatching {
-            val request = GrimmoryProgressRequest(
-                bookId = numericBookId,
-                fileProgress = GrimmoryProgressFileProgress(
-                    bookFileId = numericBookId,
-                    progressPercent = (percentage.toDouble() * 100.0).coerceIn(0.0, 100.0),
-                ),
-                dateFinished = if (percentage >= 0.99f) Instant.now().toString() else null,
-            )
-            val response = api.postBookProgress(request)
-            if (!response.isSuccessful) error("Grimmory audio progress update failed: ${response.code()}")
-        }.fold(
+        if (bookId.grimmoryServerBookId().toLongOrNull() == null) {
+            return SourceOutcome.Skipped(SkipReason.NoGrimmoryBookId)
+        }
+        val book = Book(
+            id = bookId,
+            title = bookId,
+            source = BookSource.GRIMMORY,
+            mediaType = AppMediaType.AUDIOBOOK,
+        )
+        return repository.syncAudiobookProgress(
+            book = book,
+            currentTimeSec = positionMs / 1000L,
+            progressFraction = percentage,
+        ).fold(
             onSuccess = { SourceOutcome.Ok(Unit) },
             onFailure = { SourceOutcome.Failure(it) },
         )

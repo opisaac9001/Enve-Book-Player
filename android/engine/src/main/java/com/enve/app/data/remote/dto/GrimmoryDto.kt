@@ -309,6 +309,7 @@ data class GrimmoryAppBookProgressDto(
     val readStatus: String? = null,
     val epubProgress: EbookProgressObjectDto? = null,
     val pdfProgress: PageProgressDto? = null,
+    val cbxProgress: PageProgressDto? = null,
     val audiobookProgress: AudiobookProgressDto? = null,
     val koreaderProgress: GrimmoryKoreaderProgressDto? = null,
 )

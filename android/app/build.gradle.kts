@@ -107,6 +107,10 @@ val generateLegalAssets = tasks.register<Sync>("generateLegalAssets") {
     from(rootProject.file("BuildSupport/Licenses/Apache-2.0.txt")) { rename { "Qwen3-0.6B-LICENSE.txt" } }
     from(rootProject.file("BuildSupport/Models/UPSTREAM.md")) { rename { "downloadable-models-UPSTREAM.txt" } }
     from(rootProject.file("BuildSupport/ProviderLogos/PROVENANCE.md")) { rename { "provider-logos-PROVENANCE.txt" } }
+    from(rootProject.file("BuildSupport/ReaderFonts/UPSTREAM.md")) { rename { "reader-fonts-UPSTREAM.txt" } }
+    from(rootProject.file("BuildSupport/ReaderFonts/Literata-OFL.txt")) { rename { "Literata-OFL-1.1.txt" } }
+    from(rootProject.file("BuildSupport/ReaderFonts/Atkinson-Hyperlegible-Next-OFL.txt")) { rename { "Atkinson-Hyperlegible-Next-OFL-1.1.txt" } }
+    from(rootProject.file("BuildSupport/ReaderFonts/Lexend-OFL.txt")) { rename { "Lexend-OFL-1.1.txt" } }
     from(rootProject.file("BuildSupport/Licenses/Apache-2.0.txt")) { rename { "pdf.js-Apache-2.0.txt" } }
     from(rootProject.file("ThirdParty/foliate-js/vendor/pdfjs/cmaps/LICENSE")) { rename { "pdf.js-CMaps-BSD.txt" } }
     from(rootProject.file("ThirdParty/foliate-js/vendor/pdfjs/standard_fonts/LICENSE_FOXIT")) { rename { "pdf.js-Foxit-fonts-BSD.txt" } }
@@ -126,8 +130,8 @@ android {
         applicationId = "com.enve.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 50
-        versionName = "1.2 build 50"
+        versionCode = 51
+        versionName = "1.2 build 51"
         buildConfigField(
             "String",
             "SOURCE_PROVENANCE",

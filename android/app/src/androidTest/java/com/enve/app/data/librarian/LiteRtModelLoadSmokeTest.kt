@@ -163,8 +163,6 @@ private fun restoreModelIfNeeded(
         context.externalMediaDirs
             .filterNotNull()
             .forEach { yield(File(it, STAGED_MODEL_NAME)) }
-        yield(File("/sdcard/Android/media/com.enve.app.debug/$STAGED_MODEL_NAME"))
-        yield(File("/storage/emulated/0/Android/media/com.enve.app.debug/$STAGED_MODEL_NAME"))
     }.firstOrNull { it.isFile }
         ?: return
     target.parentFile?.mkdirs()

@@ -347,6 +347,17 @@ class SyncCoordinator @Inject constructor(
                 if (normalizedProgress <= 0.001f && !book.isFinished) {
                     return@withLock
                 }
+                val ebookLocator = if (book.mediaType == AppMediaType.EBOOK) {
+                    try {
+                        bookCacheDao.getByIdAndConnection(book.id, book.connectionId)?.epubLocator
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        null
+                    } ?: book.epubLocator
+                } else {
+                    null
+                }
                 val adapter = adapters.firstOrNull { it.source == book.source }
                 if (adapter != null && adapter.syncCapability.supports(SyncCapabilityFlag.PUSH_PROGRESS)) {
                     val result = when (book.mediaType) {
@@ -359,7 +370,7 @@ class SyncCoordinator @Inject constructor(
                             bookId = book.id,
                             source = book.source,
                             percentage = normalizedProgress,
-                            locator = null,
+                            locator = ebookLocator,
                             connectionId = book.connectionId,
                         )
                         else -> Result.success(Unit)
@@ -380,15 +391,8 @@ class SyncCoordinator @Inject constructor(
                 }
 
                 if (book.mediaType == AppMediaType.EBOOK) {
-                    val locator = try {
-                        bookCacheDao.getByIdAndConnection(book.id, book.connectionId)?.epubLocator
-                    } catch (e: kotlinx.coroutines.CancellationException) {
-                        throw e
-                    } catch (_: Exception) {
-                        null
-                    } ?: book.epubLocator
                     try {
-                        koreaderHub.pushIfConfigured(book, normalizedProgress, locator)
+                        koreaderHub.pushIfConfigured(book, normalizedProgress, ebookLocator)
                     } catch (e: kotlinx.coroutines.CancellationException) {
                         throw e
                     } catch (_: Exception) {

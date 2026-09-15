@@ -13,6 +13,7 @@ This inventory describes the repository audited on 2026-08-29. Gradle build file
 | PDF.js and its CMaps/fonts | PDF.js 4.7.76 in the Foliate vendored tree | Apache-2.0, BSD-style, and SIL OFL-1.1 terms | The app surfaces the PDF.js, CMap, Foxit font, and Liberation font license texts in acknowledgements. |
 | libmobi | 0.12 under `engine/src/main/cpp/libmobi/` | LGPL-3.0-or-later | Built as a separate `libmobi.so` loaded by Enve's JNI bridge. The exact source and replacement/install instructions are published with the app and retained in release evidence. |
 | whisper.cpp and ggml | 1.8.4 under `engine/src/main/cpp/whisper/` | MIT | Copyright the ggml authors. The app carries a small JNI bridge based on the upstream Android example. Retain the MIT notice. |
+| Literata, Atkinson Hyperlegible Next, and Lexend | Google Fonts commit `334b789e33413f3aba4264d9aa6c97f7b94c5a2f`; see `BuildSupport/ReaderFonts/UPSTREAM.md` | SIL Open Font License 1.1 | Bundled as reader typefaces. Retain each font license and the recorded file digests. |
 
 ## Direct Gradle dependencies
 

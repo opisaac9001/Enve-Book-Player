@@ -22,9 +22,25 @@ captures/
 # OS
 .DS_Store
 
-# Signing material
+# Local environment and signing material
+CLAUDE.local.md
+.env
+.env.*
+!.env.example
+!.env.*.example
+google-services.json
+Secrets.properties
+secrets.properties
+*.cer
+*.crt
+*.key
 *.jks
 *.keystore
+*.mobileprovision
+*.p8
+*.p12
+*.pem
+*.pfx
 keystore.properties
 
 # Local agent lock (salted hash, never committed)

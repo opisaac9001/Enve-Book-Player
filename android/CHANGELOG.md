@@ -6,6 +6,13 @@ Release notes for the Android app. Versions are `<name> build <code>`, matching 
 
 No pending changes.
 
+## 1.2 build 51 — 2026-09-14
+
+- Preserve EPUB reading positions across reopen and sync operations.
+- Bundle Literata, Atkinson Hyperlegible, and Lexend as reader fonts with their provenance and license notices.
+- Correct Grimmory progress synchronization for books with multiple available formats.
+- Keep machine-specific test paths and sensitive source files out of published source snapshots.
+
 ## 1.2 build 50 — 2026-09-08
 
 - Preserve square audiobook artwork throughout the app and match reader backgrounds to the selected reading theme.

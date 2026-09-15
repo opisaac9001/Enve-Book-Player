@@ -54,6 +54,7 @@ const requestInitialState = () => new Promise((resolve, reject) => {
 
 let identity = {}
 let preferences = {}
+let bundledFonts = []
 let customFonts = []
 let lastLocation = null
 let currentSelection = null
@@ -710,7 +711,7 @@ const applyPreferences = next => {
     const customFontCss = customFont
         ? `"${customFont.family.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`
         : null
-    const customFontFaces = (customFonts ?? []).flatMap(font =>
+    const readerFontFaces = [...(bundledFonts ?? []), ...(customFonts ?? [])].flatMap(font =>
         (font.faces ?? []).map(face => `
             @font-face {
                 font-family: "${font.family.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}";
@@ -723,7 +724,7 @@ const applyPreferences = next => {
     ).join('\n')
     const important = preferences.publisherStyles === false ? ' !important' : ''
     view.renderer?.setStyles?.(`
-        ${customFontFaces}
+        ${readerFontFaces}
         :root {
             color-scheme: ${preferences.theme === 'LIGHT' || preferences.theme === 'SEPIA' ? 'light' : 'dark'};
             background: ${theme.background}${important};
@@ -732,13 +733,16 @@ const applyPreferences = next => {
         html, body {
             background: ${theme.background}${important};
             color: ${theme.text}${important};
-            font-family: ${customFontCss ?? fonts[preferences.font] ?? fonts.SERIF}${important};
+            font-family: ${customFontCss ?? fonts[preferences.font] ?? fonts.SERIF} !important;
             font-size: ${Math.max(0.7, Math.min(4, preferences.fontSize ?? 1))}em${important};
             line-height: ${Math.max(1, Math.min(2.5, preferences.lineHeight ?? 1.4))}${important};
             word-spacing: ${preferences.wordSpacing ?? 0}em${important};
             letter-spacing: ${preferences.letterSpacing ?? 0}em${important};
             font-weight: ${Math.round(400 * (preferences.fontWeight ?? 1))}${important};
             text-align: ${preferences.justified === false ? 'start' : 'justify'}${important};
+        }
+        body :not(code):not(pre):not(kbd):not(samp) {
+            font-family: inherit !important;
         }
         p {
             margin-block: ${Math.max(0, preferences.paragraphSpacing ?? 0)}em${important};
@@ -1101,6 +1105,7 @@ const boot = async () => {
         const initial = await requestInitialState()
         identity = initial.identity ?? {}
         preferences = initial.preferences ?? {}
+        bundledFonts = initial.bundledFonts ?? []
         customFonts = initial.customFonts ?? []
         const response = await fetch('/book/current.epub', { cache: 'no-store' })
         if (!response.ok) throw new Error(`EPUB request failed (${response.status})`)
