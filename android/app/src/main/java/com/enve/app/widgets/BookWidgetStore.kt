@@ -34,7 +34,7 @@ internal data class BookWidgetSnapshot(
 
 internal object BookWidgetStore {
     const val PREFS = "enve_book_widget"
-    private val json = Json { ignoreUnknownKeys = true }
+    val json = Json { ignoreUnknownKeys = true }
 
     fun save(context: Context, snapshot: BookWidgetSnapshot) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()

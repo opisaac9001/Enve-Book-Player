@@ -2,12 +2,20 @@ package com.enve.app.widgets
 
 import android.content.Context
 import android.content.Intent
+import androidx.glance.GlanceId
+import androidx.glance.action.Action
+import androidx.glance.action.ActionParameters
+import androidx.glance.action.actionParametersOf
+import androidx.glance.appwidget.action.ActionCallback
+import androidx.glance.appwidget.action.actionRunCallback
+import com.enve.app.MainActivity
 import com.enve.app.ui.screens.ComicReaderActivity
 import com.enve.app.ui.screens.EbookReaderActivity
 import com.enve.app.ui.screens.PdfReaderActivity
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
+import kotlinx.serialization.encodeToString
 
 internal fun Context.readerIntentFor(book: Book): Intent {
     val readerFormat = when {
@@ -32,5 +40,20 @@ internal fun Context.readerIntentFor(book: Book): Intent {
             bookFormat = readerFormat, epubLocator = book.epubLocator,
             epubProgress = book.epubProgress ?: book.readProgress, lastReadTime = book.lastReadTime,
         ).apply { putExtra(EbookReaderActivity.EXTRA_HEARTH_CHROME, true) }
+    }
+}
+
+private val ReaderBookJsonKey = ActionParameters.Key<String>("reader_book_json")
+
+internal fun readerAction(book: Book): Action = actionRunCallback<OpenReaderAction>(
+    actionParametersOf(ReaderBookJsonKey to BookWidgetStore.json.encodeToString(book)),
+)
+
+class OpenReaderAction : ActionCallback {
+    override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
+        val json = parameters[ReaderBookJsonKey] ?: return
+        val book = runCatching { BookWidgetStore.json.decodeFromString<Book>(json) }.getOrNull() ?: return
+        val mainIntent = Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivities(arrayOf(mainIntent, context.readerIntentFor(book)))
     }
 }
