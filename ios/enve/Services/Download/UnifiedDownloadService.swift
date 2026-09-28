@@ -283,7 +283,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
 
         let isSMBBook = book.source == .smb
 
-        if !isSMBBook && storageManager.isAudiobookDownloaded(bookId) {
+        if !isSMBBook && book.mediaType != .ebook && storageManager.isAudiobookDownloaded(bookId) {
             AppLogger.network.debug("Book already downloaded diagnosticID=\(diagnosticID(book.stableId))")
             return
         }
@@ -342,6 +342,9 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
     }
 
     func existingReaderAsset(for book: Book) -> URL? {
+        if book.source == .storyteller, book.epub3Features?.hasMediaOverlay == true {
+            return LocalEbookImporter.shared.resolveEbookForOverlay(book: book)
+        }
         if book.epub3Features?.hasMediaOverlay == true,
             let readaloud = LocalEbookImporter.shared.resolveEbookForOverlay(book: book)
         {
@@ -358,12 +361,12 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         for book: Book,
         onProgress: (@Sendable (Double) -> Void)? = nil
     ) async throws -> URL {
-        if let existing = existingReaderAsset(for: book) {
-            return existing
-        }
-
         if book.source == .storyteller, book.epub3Features?.hasMediaOverlay == true {
             return try await ensureStorytellerReadaloudCached(for: book, onProgress: onProgress)
+        }
+
+        if let existing = existingReaderAsset(for: book) {
+            return existing
         }
 
         guard book.mediaType == .ebook || book.hasAlternateFormat else {
@@ -430,9 +433,18 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
             )
         }
 
-        if let existingURL = LocalEbookImporter.shared.resolveEbookForOverlay(book: book),
-            FileManager.default.fileExists(atPath: existingURL.path)
-        {
+        let existingReadaloudURL = LocalEbookImporter.shared.resolveEbookForOverlay(book: book)
+        #if os(tvOS)
+            let hasExistingReadaloud = existingReadaloudURL.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+        #else
+            let hasExistingReadaloud: Bool
+            if let existingReadaloudURL {
+                hasExistingReadaloud = (try? await StorytellerReadaloudOfflinePrep.validate(epubURL: existingReadaloudURL)) != nil
+            } else {
+                hasExistingReadaloud = false
+            }
+        #endif
+        if let existingURL = existingReadaloudURL, hasExistingReadaloud {
             await persistStorytellerReadaloudBook(
                 book,
                 offlineURL: existingURL,
@@ -546,6 +558,31 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
 
     func clearCompleted() {
         tasks.removeAll { $0.status == .completed || $0.status == .cancelled }
+        saveQueue()
+    }
+
+    func reassignInactiveDownloadTasks(fromBookId oldId: String, toBookId newId: String) {
+        var updated = tasks
+        var didChange = false
+        for index in updated.indices where updated[index].bookId == oldId && !updated[index].isActive {
+            let task = updated[index]
+            updated[index] = BookDownloadTask(
+                id: task.id,
+                bookId: newId,
+                title: task.title,
+                source: task.source,
+                status: task.status,
+                progress: task.progress,
+                bytesDownloaded: task.bytesDownloaded,
+                totalBytes: task.totalBytes,
+                errorMessage: task.errorMessage,
+                createdAt: task.createdAt,
+                updatedAt: task.updatedAt
+            )
+            didChange = true
+        }
+        guard didChange else { return }
+        tasks = updated
         saveQueue()
     }
 
@@ -698,14 +735,6 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
 
     private var openBookIds: Set<String> = []
 
-    func registerOpenBook(_ bookId: String) {
-        openBookIds.insert(bookId)
-    }
-
-    func unregisterOpenBook(_ bookId: String) {
-        openBookIds.remove(bookId)
-    }
-
     private func startDownload(task: inout BookDownloadTask, book: Book) async {
         updateTask(task.id) { $0.status = .downloading }
 
@@ -767,6 +796,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
 
     private static func validateDownloadedEbook(_ url: URL) throws {
         guard EbookFormat.from(fileExtension: url.pathExtension) != nil else {
+            try? FileManager.default.removeItem(at: url)
             throw NSError(
                 domain: "UnifiedDownloadService",
                 code: -4,
@@ -1312,48 +1342,6 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         return normalized.isEmpty ? nil : normalized
     }
 
-    private func probeExpectedContentLength(url: URL, headers: [String: String]) async -> Int64? {
-        let probeSession = URLSession(configuration: .ephemeral)
-        defer { probeSession.invalidateAndCancel() }
-
-        var headRequest = URLRequest(url: url)
-        headRequest.httpMethod = "HEAD"
-        headRequest.timeoutInterval = 30
-        headers.forEach { headRequest.setValue($0.value, forHTTPHeaderField: $0.key) }
-        headRequest.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
-        headRequest.setValue("Enve/1.0", forHTTPHeaderField: "User-Agent")
-
-        if let (_, response) = try? await probeSession.data(for: headRequest),
-            let http = response as? HTTPURLResponse,
-            (200...299).contains(http.statusCode),
-            let contentLength = http.value(forHTTPHeaderField: "Content-Length"),
-            let value = Int64(contentLength),
-            value > 0
-        {
-            return value
-        }
-
-        var rangeRequest = URLRequest(url: url)
-        rangeRequest.setValue("bytes=0-0", forHTTPHeaderField: "Range")
-        rangeRequest.timeoutInterval = 30
-        headers.forEach { rangeRequest.setValue($0.value, forHTTPHeaderField: $0.key) }
-        rangeRequest.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
-        rangeRequest.setValue("Enve/1.0", forHTTPHeaderField: "User-Agent")
-
-        if let (_, response) = try? await probeSession.data(for: rangeRequest),
-            let http = response as? HTTPURLResponse,
-            let contentRange = http.value(forHTTPHeaderField: "Content-Range")
-        {
-            if let totalPart = contentRange.split(separator: "/").last,
-                let total = Int64(totalPart), total > 0
-            {
-                return total
-            }
-        }
-
-        return nil
-    }
-
     func downloadMultipleRemoteFiles(task: BookDownloadTask, tracks: [AudioTrack], headers: [String: String]) async throws {
         let totalFiles = tracks.count
         var completedFiles = 0
@@ -1694,7 +1682,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         func buildTrackRequests() async throws -> [(request: URLRequest, mimeType: String?)] {
             let headers = provider.getStreamingHeaders()
             if let trackInfos = await provider.fetchAudiobookDownloadTracks(for: book), trackInfos.count > 1 {
-                AppLogger.network.info("[Grimmory] /info returned \(trackInfos.count) tracks for download")
+                AppLogger.network.info("[Booklore] /info returned \(trackInfos.count) tracks for download")
                 return trackInfos.compactMap { info in
                     var req = URLRequest(url: info.url)
                     for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
@@ -1704,7 +1692,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
             if let session = try? await provider.startPlaybackSession(for: book),
                 session.audioTracks.count > 1
             {
-                AppLogger.network.info("[Grimmory] session fallback returned \(session.audioTracks.count) tracks for download")
+                AppLogger.network.info("[Booklore] session fallback returned \(session.audioTracks.count) tracks for download")
                 return session.audioTracks.compactMap { track in
                     guard let url = URL(string: track.contentUrl) else { return nil }
                     var req = URLRequest(url: url)
@@ -1755,7 +1743,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
                 let isAuthFailure = errorMsg.contains("401") || errorMsg.lowercased().contains("unauthorized")
                 if isAuthFailure && !didRetryOn401 {
                     didRetryOn401 = true
-                    AppLogger.network.info("[Grimmory] download hit 401; refreshing JWT and retrying once")
+                    AppLogger.network.info("[Booklore] download hit 401; refreshing JWT and retrying once")
                     let refreshed = await provider.refreshStreamingTokenIfNeeded(force: true)
                     if !refreshed {
                         throw NSError(
@@ -2024,6 +2012,7 @@ extension UnifiedDownloadService: URLSessionDownloadDelegate {
         }
     }
 
+    /// The task's own destination is the only origin its credentials belong to. See `HTTPRedirectPolicy`.
     nonisolated func urlSession(
         _ session: URLSession,
         task: URLSessionTask,
@@ -2031,12 +2020,23 @@ extension UnifiedDownloadService: URLSessionDownloadDelegate {
         newRequest request: URLRequest,
         completionHandler: @escaping @Sendable (URLRequest?) -> Void
     ) {
+        guard let url = request.url, HTTPRedirectPolicy.isFollowable(url, from: response.url) else {
+            AppLogger.network.warning("Refused an unsafe download redirect")
+            completionHandler(nil)
+            return
+        }
+
+        let origin = HTTPRedirectPolicy.origin(ofOriginalRequestIn: task)
+        guard origin?.matches(url) == true else {
+            completionHandler(HTTPRedirectPolicy.sanitized(request, keepingCredentialsFor: origin))
+            return
+        }
+
         var redirected = request
         if let originalAuth = task.originalRequest?.value(forHTTPHeaderField: "Authorization"),
             redirected.value(forHTTPHeaderField: "Authorization") == nil
         {
             redirected.setValue(originalAuth, forHTTPHeaderField: "Authorization")
-            AppLogger.network.info("Re-applied auth header through redirect to \(redirected.url?.host ?? "?")")
         }
         completionHandler(redirected)
     }

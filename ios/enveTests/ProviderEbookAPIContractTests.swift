@@ -7,9 +7,13 @@ struct ProviderEbookAPIContractTests {
     @Test @MainActor func providersExposeOnlyImplementedOptionalCapabilities() {
         let opds: any ProviderConnectionHandling = OPDSProvider(connection: connection(type: .opds))
         #expect(opds is any EbookDownloadProvider)
-        #expect(!(opds is any PlaybackSessionProvider))
-        #expect(!(opds is any EbookProgressPulling))
-        #expect(!(opds is any EbookProgressPushing))
+        #expect(opds is any PlaybackSessionProvider)
+        // Progress is real only for publications that advertise an OPDS Progression service; the provider
+        // answers nil and pushes nothing for the rest.
+        #expect(opds is any EbookProgressProvider)
+        #expect(opds is any AudiobookProgressProvider)
+        #expect(opds.capabilities.contains(.ebookProgressPush))
+        #expect(opds.capabilities.contains(.audiobookProgressPull))
 
         let komga: any ProviderConnectionHandling = KomgaProvider(connection: connection(type: .komga))
         #expect(komga is any EbookDownloadProvider)

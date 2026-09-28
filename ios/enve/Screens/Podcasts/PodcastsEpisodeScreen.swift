@@ -7,6 +7,7 @@ struct PodcastsEpisodeScreen: View {
     @Environment(\.hearth) private var hearth
     @Environment(\.mantelInset) private var mantelInset
 
+    private let model = PodcastsModel.shared
     @State private var notesExpanded = false
     @State private var tint: Color = Hearth.accent
 
@@ -113,21 +114,29 @@ struct PodcastsEpisodeScreen: View {
     }
 
     private var metadataChips: some View {
-        HStack(spacing: 8) {
-            if let duration = episode.duration, duration > 0 {
-                podcastsMetaChip(icon: "clock", text: HearthFormat.duration(duration))
-            } else {
-                podcastsMetaChip(icon: "clock", text: "Unknown length")
-            }
-            if isDownloaded {
-                podcastsMetaChip(icon: "arrow.down.circle.fill", text: "Offline")
-            }
-            if episode.isFinished {
-                podcastsMetaChip(icon: "checkmark", text: "Played")
-            } else if episode.isStarted {
-                podcastsMetaChip(icon: "play.fill", text: "\(Int(episode.progressPercentage * 100))%")
+        ScrollView(.horizontal) {
+            HStack(spacing: 8) {
+                if let duration = episode.duration, duration > 0 {
+                    podcastsMetaChip(icon: "clock", text: HearthFormat.duration(duration))
+                } else {
+                    podcastsMetaChip(icon: "clock", text: "Unknown length")
+                }
+                if isDownloaded {
+                    podcastsMetaChip(icon: "arrow.down.circle.fill", text: "Offline")
+                }
+                if let show = model.show(for: episode),
+                    let source = PodcastsFormat.feedOnlyDetailLabel(for: episode, in: show)
+                {
+                    podcastsMetaChip(icon: source.icon, text: source.text)
+                }
+                if episode.isFinished {
+                    podcastsMetaChip(icon: "checkmark", text: "Played")
+                } else if episode.isStarted {
+                    podcastsMetaChip(icon: "play.fill", text: "\(Int(episode.progressPercentage * 100))%")
+                }
             }
         }
+        .scrollIndicators(.hidden)
     }
 
     private func podcastsMetaChip(icon: String, text: String) -> some View {

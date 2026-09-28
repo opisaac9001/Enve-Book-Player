@@ -55,6 +55,40 @@ struct DownloadDestinationFileSystemTests {
         #expect(!FileManager.default.fileExists(atPath: source.path))
     }
 
+    @Test func moveBookDirectoryRefusesToOverwriteANonemptyDestination() throws {
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let destinations = DownloadDestinationFileSystem(audiobooksRoot: root)
+        let source = try destinations.prepareBookDirectory(for: "grimmory:grim:42")
+        try Data([0xAA]).write(to: source.appendingPathComponent("chapter_0.m4b"))
+        let occupied = try destinations.prepareBookDirectory(for: "grimmory:grim:grimmory-ab-42")
+        try Data([0xBB]).write(to: occupied.appendingPathComponent("chapter_0.m4b"))
+
+        #expect(throws: CocoaError.self) {
+            try destinations.moveBookDirectory(from: "grimmory:grim:42", to: "grimmory:grim:grimmory-ab-42")
+        }
+        #expect(try Data(contentsOf: source.appendingPathComponent("chapter_0.m4b")) == Data([0xAA]))
+        #expect(try Data(contentsOf: occupied.appendingPathComponent("chapter_0.m4b")) == Data([0xBB]))
+    }
+
+    @Test func moveBookDirectoryConsumesTheSourceAndReportsWhetherItExisted() throws {
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let destinations = DownloadDestinationFileSystem(audiobooksRoot: root)
+        let source = try destinations.prepareBookDirectory(for: "grimmory:grim:42")
+        try Data([0xAA]).write(to: source.appendingPathComponent("chapter_0.m4b"))
+        try destinations.prepareBookDirectory(for: "grimmory:grim:grimmory-ab-42")
+
+        let moved = try destinations.moveBookDirectory(from: "grimmory:grim:42", to: "grimmory:grim:grimmory-ab-42")
+        let movedAgain = try destinations.moveBookDirectory(from: "grimmory:grim:42", to: "grimmory:grim:grimmory-ab-42")
+
+        let destination = destinations.bookDirectory(for: "grimmory:grim:grimmory-ab-42")
+        #expect(moved)
+        #expect(!movedAgain)
+        #expect(try Data(contentsOf: destination.appendingPathComponent("chapter_0.m4b")) == Data([0xAA]))
+        #expect(!FileManager.default.fileExists(atPath: source.path))
+    }
+
     @Test func removeBookDirectoryReportsWhetherPartialFilesExisted() throws {
         let root = makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }

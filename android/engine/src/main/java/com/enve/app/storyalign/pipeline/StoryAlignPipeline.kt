@@ -1,6 +1,8 @@
 package com.enve.app.storyalign.pipeline
 
 import com.enve.app.storyalign.align.AlignedChapter
+import com.enve.app.storyalign.align.AlignmentQuality
+import com.enve.app.storyalign.align.AlignmentQualityEvaluator
 import com.enve.app.storyalign.align.SentenceAligner
 import com.enve.app.storyalign.align.Transcription
 import com.enve.app.storyalign.align.WordNormalizer
@@ -20,9 +22,8 @@ class StoryAlignPipeline(
         val totalSentences: Int,
         val alignedSentences: Int,
         val skippedSentences: Int,
-    ) {
-        val score: Double get() = if (totalSentences == 0) 0.0 else alignedSentences.toDouble() / totalSentences
-    }
+        val quality: AlignmentQuality,
+    )
 
     data class Result(
         val readAloudEpub: ByteArray,
@@ -35,16 +36,17 @@ class StoryAlignPipeline(
         granularity: StoryAlignGranularity,
         transcriber: Transcriber,
         audioClips: List<ReadAloudEpubBuilder.AudioClipFile>,
+        audioDurationsByIndex: Map<Int, Double>,
         modifiedIso: String,
     ): Result {
         val doc = EpubParser.parse(epub, granularity)
         val transcription: Transcription = transcriber.transcribe()
         val chapters = SentenceAligner(normalizer).alignBook(doc.spineOrderedManifest, transcription)
         val bytes = ReadAloudEpubBuilder.build(epub, doc, chapters, audioClips, modifiedIso)
-        return Result(bytes, chapters, report(chapters))
+        return Result(bytes, chapters, report(chapters, audioDurationsByIndex))
     }
 
-    private fun report(chapters: List<AlignedChapter>): Report {
+    private fun report(chapters: List<AlignedChapter>, audioDurationsByIndex: Map<Int, Double>): Report {
         var aligned = 0
         var skipped = 0
         var total = 0
@@ -53,6 +55,11 @@ class StoryAlignPipeline(
             aligned += c.alignedSentences.size
             skipped += c.skippedSentences.size
         }
-        return Report(total, aligned, skipped)
+        return Report(
+            totalSentences = total,
+            alignedSentences = aligned,
+            skippedSentences = skipped,
+            quality = AlignmentQualityEvaluator.assess(chapters, audioDurationsByIndex).quality,
+        )
     }
 }

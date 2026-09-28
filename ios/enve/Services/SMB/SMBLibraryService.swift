@@ -179,37 +179,6 @@ actor SMBLibraryService {
         saveBooks(books)
     }
 
-    func extractChaptersFromFile(smbService: SMBService, filePath: String) async throws -> [Chapter] {
-        let fileSize = try await smbService.getFileSize(at: filePath)
-        let fileName = (filePath as NSString).lastPathComponent
-
-        let fileEntry = SMBService.FileEntry(
-            name: fileName,
-            path: filePath,
-            isDirectory: false,
-            size: fileSize,
-            modified: nil,
-            created: nil
-        )
-
-        let result = await extractAudioMetadata(smbService: smbService, audioFile: fileEntry)
-
-        guard let smbChapters = result.metadata?.chapters, !smbChapters.isEmpty else {
-            return []
-        }
-
-        return await MainActor.run {
-            smbChapters.enumerated().map { index, smbChapter in
-                Chapter(
-                    id: "smb_chapter_\(index + 1)",
-                    start: smbChapter.startTime,
-                    end: smbChapter.endTime ?? smbChapter.startTime,
-                    title: smbChapter.title
-                )
-            }
-        }
-    }
-
     func scanLibrary(
         _ source: SMBLibrarySource,
         mode: SMBScanMode = .quick,
@@ -505,57 +474,6 @@ actor SMBLibraryService {
         return smbCoversDir
     }
 
-    func ensureCachedCover(for book: Book) async -> String? {
-        guard book.source == .smb, let sourceId = book.backendId else { return nil }
-
-        if let cached = getCachedCoverPath(for: book.id) {
-            AppLogger.network.debug(
-                "[SMB Cover] Found cached cover id=\(DiagnosticLogSanitizer.identifier(for: cached))"
-            )
-            return cached
-        }
-
-        let smbBooks = getBooks(for: sourceId)
-        guard let smbBook = smbBooks.first(where: { $0.id == book.id }) else {
-            AppLogger.network.warning(
-                "[SMB Cover] Book not found bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId))"
-            )
-            return nil
-        }
-
-        guard let source = getSources().first(where: { $0.id == sourceId }),
-            let password = getPassword(for: sourceId)
-        else {
-            AppLogger.network.warning(
-                "[SMB Cover] Missing source credentials sourceDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: sourceId))"
-            )
-            return nil
-        }
-
-        let smbService = SMBService()
-        do {
-            try await smbService.connect(config: source.toServerConfiguration(), password: password)
-            defer { Task { await smbService.disconnect() } }
-
-            let items = try await smbService.listDirectory(at: smbBook.folderPath)
-            let files = items.filter { !$0.isDirectory }
-
-            if let coverFile = files.first(where: { isCoverImage($0.name) }) {
-                AppLogger.network.debug(
-                    "[SMB Cover] Found cover pathDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: coverFile.path))"
-                )
-                if let cachedPath = await downloadCoverToCache(smbService: smbService, remotePath: coverFile.path, bookId: book.id) {
-                    return cachedPath
-                }
-            } else {
-                AppLogger.network.info("[SMB Cover] No cover image found in folder: \(smbBook.folderPath)")
-            }
-        } catch {
-            AppLogger.network.error("[SMB Cover] Failed to cache cover: \(error)")
-        }
-        return getCachedCoverPath(for: book.id)
-    }
-
     private func downloadCoverToCache(smbService: SMBService, remotePath: String, bookId: String) async -> String? {
         let ext = (remotePath as NSString).pathExtension.lowercased()
         let localFileName = "\(bookId).\(ext.isEmpty ? "jpg" : ext)"
@@ -573,17 +491,6 @@ actor SMBLibraryService {
             AppLogger.network.error("[SMB Scan] Failed to cache cover from \(remotePath): \(error.localizedDescription)")
             return nil
         }
-    }
-
-    nonisolated func getCachedCoverPath(for bookId: String) -> String? {
-        let extensions = ["jpg", "jpeg", "png", "webp", "gif"]
-        for ext in extensions {
-            let localURL = coverCacheDirectory.appendingPathComponent("\(bookId).\(ext)")
-            if FileManager.default.fileExists(atPath: localURL.path) {
-                return localURL.path
-            }
-        }
-        return nil
     }
 
     private func parseMetadataFile(smbService: SMBService, path: String) async -> SMBBookMetadata? {
@@ -941,34 +848,6 @@ actor SMBLibraryService {
         merged.chapters = embedded?.chapters ?? sidecar?.chapters
 
         return merged
-    }
-
-    private func extractAudioDuration(smbService: SMBService, audioFile: SMBService.FileEntry) async -> TimeInterval? {
-        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("SMBDurationScan", isDirectory: true)
-        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-
-        let ext = (audioFile.name as NSString).pathExtension
-        let tempFile = tempDir.appendingPathComponent(UUID().uuidString + "." + ext)
-
-        defer {
-            try? FileManager.default.removeItem(at: tempFile)
-        }
-
-        do {
-            try await smbService.downloadFile(from: audioFile.path, to: tempFile, onProgress: nil)
-
-            let asset = AVURLAsset(url: tempFile)
-            let duration = try await asset.load(.duration)
-            let seconds = CMTimeGetSeconds(duration)
-
-            if seconds.isFinite && seconds > 0 {
-                return seconds
-            }
-        } catch {
-            AppLogger.network.error("[SMB Scan] Failed to extract duration for \(audioFile.name): \(error.localizedDescription)")
-        }
-
-        return nil
     }
 
     private func estimateDuration(size: Int64, filename: String) -> TimeInterval? {

@@ -20,6 +20,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSourceBitmapLoader
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
+import com.enve.core.di.RefreshClient
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.CacheBitmapLoader
@@ -142,6 +143,7 @@ class PlaybackService : MediaLibraryService() {
         fun audioEffectsManager(): AudioEffectsManager
         fun audioPlaybackManager(): AudioPlaybackManager
         fun okHttpClient(): OkHttpClient
+        @RefreshClient fun unauthenticatedHttpClient(): OkHttpClient
         fun chapterStore(): PlaybackChapterStore
         fun autoBrowserHelper(): AutoMediaBrowserHelper
         fun castStreamResolver(): CastStreamResolver
@@ -185,9 +187,12 @@ class PlaybackService : MediaLibraryService() {
                     }
                 }
                 .build()
-            val httpFactory = OkHttpDataSource.Factory(playbackClient)
-                .setUserAgent("Enve/1.0 (Android; SDK ${android.os.Build.VERSION.SDK_INT})")
-            DefaultDataSource.Factory(this, httpFactory)
+            val userAgent = "Enve/1.0 (Android; SDK ${android.os.Build.VERSION.SDK_INT})"
+            val authenticatedFactory = OkHttpDataSource.Factory(playbackClient).setUserAgent(userAgent)
+            val publicFactory = OkHttpDataSource.Factory(entry.unauthenticatedHttpClient()).setUserAgent(userAgent)
+            DefaultDataSource.Factory(this) {
+                PublicStreamRoutingDataSource(authenticatedFactory.createDataSource(), publicFactory.createDataSource())
+            }
         }
         val audioAttributes = AudioAttributes.Builder()
             .setContentType(C.AUDIO_CONTENT_TYPE_SPEECH)
@@ -1117,27 +1122,29 @@ class PlaybackService : MediaLibraryService() {
             durationSec = durationMs / 1000L,
         )
         if (!ended) lastHandledEndedMediaId = null
-        if (!force && !isPlaying && !justStopped && !ended) return
+        val justEnded = ended && mediaId != lastHandledEndedMediaId
+        if (!force && !isPlaying && !justStopped && !justEnded) return
 
         val persisted = service.persistPlayback(
             mediaId = mediaId,
             bookId = null,
             positionMs = positionMs,
             durationMs = durationMs,
-            force = force || justStopped || ended,
+            force = force || justStopped || justEnded,
         )
-        if ((force || justStopped || ended) && persisted != null) {
+        if ((force || justStopped || justEnded) && persisted != null) {
             service.syncImmediate(
                 book = persisted.book,
                 currentTimeSec = persisted.currentTimeSec,
                 progressFraction = persisted.progressFraction,
             )
         }
-        if (ended && handleCompletion && mediaId != lastHandledEndedMediaId) {
+        if (justEnded && handleCompletion) {
             lastHandledEndedMediaId = mediaId
             playerSessionService?.close(
                 positionSec = positionMs / 1000L,
                 durationSec = durationMs / 1000L,
+                finished = true,
             )
             playbackQueueCoordinator?.onPlaybackCompleted(mediaId)
         }
@@ -1302,7 +1309,7 @@ class PlaybackService : MediaLibraryService() {
                 .setMediaButtonPreferences(
                     if (libraryAccess) autoMediaButtonPreferences() else ImmutableList.of(),
                 )
-            val playerCommands = session.player.availableCommands.buildUpon()
+            val playerCommands = MediaSession.ConnectionResult.DEFAULT_PLAYER_COMMANDS.buildUpon()
             if (isCarController(session, controller)) {
                 playerCommands
                     .remove(Player.COMMAND_SEEK_BACK)
@@ -1453,8 +1460,8 @@ class PlaybackService : MediaLibraryService() {
             val helper = autoBrowserHelper
                 ?: return Futures.immediateFuture(LibraryResult.ofItemList(ImmutableList.of(), params))
             return launchToListenableFuture {
-                val items = helper.getChildren(parentId)
-                Log.i("PlaybackService", "onGetChildren parent=$parentId returning ${items.size} items")
+                val items = AutoMediaBrowserHelper.paginate(helper.getChildren(parentId), page, pageSize)
+                Log.i("PlaybackService", "onGetChildren parent=$parentId page=$page returning ${items.size} items")
                 LibraryResult.ofItemList(ImmutableList.copyOf(items), params)
             }
         }

@@ -101,6 +101,7 @@ data class ComicReaderUiState(
     val bookmarks: Set<Int> = emptySet(),
     val showSettingsSheet: Boolean = false,
     val nextInSeries: Book? = null,
+    val tapZoneWidth: Float = 0.20f,
 )
 
 data class ComicReaderArgs(
@@ -129,22 +130,6 @@ class ComicReaderViewModel @Inject constructor(
 
     private var bookDirectionOverride: ComicReadingDirection? = null
 
-    fun addPageBookmark(note: String = "") {
-        val page = _state.value.currentPage
-        val id = bookId.takeIf { it.isNotBlank() } ?: return
-        viewModelScope.launch {
-            annotationRepo.create(
-                bookId = id,
-                kind = com.enve.core.data.model.AnnotationKind.BOOKMARK,
-                media = com.enve.core.data.model.AnnotationMedia.CBZ,
-                style = com.enve.core.data.model.AnnotationStyle.NONE,
-                cbzPage = page,
-                note = note,
-                selectedText = "Page ${page + 1}",
-            )
-        }
-    }
-
     private val _state = MutableStateFlow(ComicReaderUiState())
     val state: StateFlow<ComicReaderUiState> = _state.asStateFlow()
 
@@ -160,6 +145,9 @@ class ComicReaderViewModel @Inject constructor(
     private val pageJobs = mutableMapOf<Int, Job>()
 
     init {
+        viewModelScope.launch {
+            prefs.readerTapZoneWidth.collect { width -> _state.update { it.copy(tapZoneWidth = width) } }
+        }
         viewModelScope.launch {
             val namesFlow = combine(
                 prefs.comicReadingDirection,

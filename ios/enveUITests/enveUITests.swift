@@ -77,6 +77,21 @@ final class enveUISmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testLibraryOPDSSourceOpensCatalog() {
+        let app = launch(route: "library")
+        let source = app.buttons["library-source-menu"]
+        XCTAssertTrue(source.waitForExistence(timeout: 20))
+        source.tap()
+
+        let catalog = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "library-opds-catalog-")
+        ).firstMatch
+        XCTAssertTrue(catalog.waitForExistence(timeout: 5))
+        catalog.tap()
+        XCTAssertTrue(app.staticTexts["OPDS catalogue"].waitForExistence(timeout: 15))
+    }
+
+    @MainActor
     func testHearthAccessibility() throws {
         let app = launch(route: "hearth")
         let hearthTab = app.buttons["tab_hearth"]
@@ -139,6 +154,310 @@ final class enveUISmokeTests: XCTestCase {
 
         XCTAssertTrue(app.descendants(matching: .any)["reader-screen"].waitForExistence(timeout: 20))
         try performReleaseAccessibilityAudit(in: app)
+    }
+
+    @MainActor
+    func testRealGrimmoryReadAloudHighlightSurvivesReopen() throws {
+        let app = launch(route: "library")
+        let booksTab = app.buttons["BOOKS"].firstMatch
+        XCTAssertTrue(booksTab.waitForExistence(timeout: 20))
+        booksTab.tap()
+        let book = app.buttons[
+            "Hunter, Erin - Warriors: The New Prophecy 01 - Midnight, Hunter, Erin, 3"
+        ].firstMatch
+        guard book.waitForExistence(timeout: 60) else {
+            throw XCTSkip("The real Grimmory read-aloud book is not in this library")
+        }
+        book.tap()
+
+        let read = app.buttons.matching(
+            NSPredicate(format: "label == %@ OR label == %@", "Read", "Resume")
+        ).firstMatch
+        XCTAssertTrue(read.waitForExistence(timeout: 15))
+        read.tap()
+
+        let reader = app.descendants(matching: .any)["reader-screen"]
+        XCTAssertTrue(
+            reader.waitForExistence(timeout: 120),
+            "The real Grimmory read-aloud EPUB never presented the reader"
+        )
+        XCTAssertTrue(
+            app.descendants(matching: .any)["reader-progress-slider"].waitForExistence(timeout: 120),
+            "The real Grimmory read-aloud EPUB never became ready for navigation"
+        )
+        Thread.sleep(forTimeInterval: 4)
+        attachScreenshot(of: app, named: "real-grimmory-open")
+        let contents = app.buttons["Contents"].firstMatch
+        if !contents.exists {
+            app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).tap()
+        }
+        XCTAssertTrue(contents.waitForExistence(timeout: 10))
+        contents.tap()
+        let prologue = app.buttons["Prologue"].firstMatch
+        XCTAssertTrue(prologue.waitForExistence(timeout: 20))
+        prologue.tap()
+        Thread.sleep(forTimeInterval: 3)
+        attachScreenshot(of: app, named: "real-grimmory-prologue")
+        let passage = app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.45, dy: 0.52))
+        passage.press(forDuration: 1.2)
+        attachScreenshot(of: app, named: "real-grimmory-selection")
+        let highlight = app.buttons["Yellow highlight"].firstMatch
+        XCTAssertTrue(highlight.waitForExistence(timeout: 10))
+        highlight.tap()
+        attachScreenshot(of: app, named: "real-grimmory-highlight")
+
+        let close = app.buttons["Close"].firstMatch
+        if !close.exists {
+            app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).tap()
+        }
+        XCTAssertTrue(close.waitForExistence(timeout: 10))
+        close.tap()
+        XCTAssertTrue(read.waitForExistence(timeout: 15))
+        read.tap()
+        XCTAssertTrue(reader.waitForExistence(timeout: 120))
+        XCTAssertTrue(app.descendants(matching: .any)["reader-progress-slider"].waitForExistence(timeout: 120))
+        app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.28, dy: 0.92)).tap()
+        app.buttons["Notes"].firstMatch.tap()
+        let note = app.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH %@", "top, Highlight")
+        ).firstMatch
+        XCTAssertTrue(note.waitForExistence(timeout: 20))
+        attachScreenshot(of: app, named: "real-grimmory-note-after-reopen")
+        note.tap()
+        XCTAssertTrue(reader.waitForExistence(timeout: 20))
+        XCTAssertFalse(app.buttons["Notes"].firstMatch.exists)
+        attachScreenshot(of: app, named: "real-grimmory-note-navigation")
+    }
+
+    @MainActor
+    func testRealGrimmoryMidChapterLocationSurvivesReopenAndRelaunch() throws {
+        let app = launch(route: "library")
+        let book = app.buttons.matching(
+            NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "Warriors: The New Prophecy 01 - Midnight", "Hunter, Erin")
+        ).firstMatch
+        let booksTab = app.buttons["BOOKS"].firstMatch
+        XCTAssertTrue(booksTab.waitForExistence(timeout: 20))
+        booksTab.tap()
+        guard book.waitForExistence(timeout: 60) else {
+            throw XCTSkip("The real Grimmory read-aloud book is not in this library")
+        }
+        book.tap()
+
+        let read = app.buttons.matching(NSPredicate(format: "label == %@ OR label == %@", "Read", "Resume")).firstMatch
+        XCTAssertTrue(read.waitForExistence(timeout: 15))
+        read.tap()
+        let reader = app.descendants(matching: .any)["reader-screen"]
+        let progress = app.descendants(matching: .any)["reader-progress-slider"]
+        XCTAssertTrue(reader.waitForExistence(timeout: 120))
+        XCTAssertTrue(progress.waitForExistence(timeout: 120))
+        Thread.sleep(forTimeInterval: 4)
+        let contents = app.buttons["Contents"].firstMatch
+        if !contents.exists {
+            app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).tap()
+        }
+        XCTAssertTrue(contents.waitForExistence(timeout: 10))
+        contents.tap()
+        let prologue = app.buttons["Prologue"].firstMatch
+        XCTAssertTrue(prologue.waitForExistence(timeout: 20))
+        prologue.tap()
+        Thread.sleep(forTimeInterval: 3)
+        XCTAssertTrue(progress.waitForExistence(timeout: 20))
+        let before = (progress.value as? String)?.components(separatedBy: " · ").first
+        XCTAssertNotNil(before, "The starting Prologue location is unavailable")
+        for _ in 0..<3 {
+            app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
+            Thread.sleep(forTimeInterval: 1)
+        }
+        Thread.sleep(forTimeInterval: 2)
+        if !progress.exists {
+            app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).tap()
+        }
+        XCTAssertTrue(progress.waitForExistence(timeout: 10))
+        let midChapter = (progress.value as? String)?.components(separatedBy: " · ").first
+        XCTAssertNotNil(midChapter, "The mid-chapter location is unavailable")
+        XCTAssertNotEqual(before, midChapter, "A page turn did not change the real book's location")
+        let locationNumber = Int((midChapter ?? "").split(separator: " ").dropFirst().first ?? "")
+        XCTAssertGreaterThan(locationNumber ?? 0, 13, "The test did not advance beyond the first Prologue location")
+        attachScreenshot(of: app, named: "real-grimmory-midchapter-before-close")
+
+        let close = app.buttons["Close"].firstMatch
+        if !close.exists {
+            app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).tap()
+        }
+        XCTAssertTrue(close.waitForExistence(timeout: 10))
+        close.tap()
+        XCTAssertTrue(read.waitForExistence(timeout: 15))
+        read.tap()
+        XCTAssertTrue(reader.waitForExistence(timeout: 120))
+        XCTAssertTrue(progress.waitForExistence(timeout: 120))
+        XCTAssertEqual((progress.value as? String)?.components(separatedBy: " · ").first, midChapter, "The book moved after closing and reopening")
+        attachScreenshot(of: app, named: "real-grimmory-midchapter-after-reopen")
+
+        for attempt in 1...5 {
+            app.terminate()
+            app.launch()
+            XCTAssertTrue(booksTab.waitForExistence(timeout: 20))
+            booksTab.tap()
+            XCTAssertTrue(book.waitForExistence(timeout: 60))
+            book.tap()
+            XCTAssertTrue(read.waitForExistence(timeout: 15))
+            read.tap()
+            XCTAssertTrue(reader.waitForExistence(timeout: 120))
+            XCTAssertTrue(progress.waitForExistence(timeout: 120))
+            XCTAssertEqual(
+                (progress.value as? String)?.components(separatedBy: " · ").first,
+                midChapter,
+                "The book moved after app relaunch \(attempt)"
+            )
+        }
+        Thread.sleep(forTimeInterval: 3)
+        attachScreenshot(of: app, named: "real-grimmory-midchapter-after-relaunch")
+    }
+
+    @MainActor
+    func testRealGrimmoryMidChapterReadAloudDoesNotRestart() throws {
+        let app = launch(route: "library")
+        let book = app.buttons.matching(
+            NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "Warriors: The New Prophecy 01 - Midnight", "Hunter, Erin")
+        ).firstMatch
+        let booksTab = app.buttons["BOOKS"].firstMatch
+        XCTAssertTrue(booksTab.waitForExistence(timeout: 20))
+        booksTab.tap()
+        guard book.waitForExistence(timeout: 60) else {
+            throw XCTSkip("The real Grimmory read-aloud book is not in this library")
+        }
+        book.tap()
+        let read = app.buttons.matching(NSPredicate(format: "label == %@ OR label == %@", "Read", "Resume")).firstMatch
+        XCTAssertTrue(read.waitForExistence(timeout: 15))
+        read.tap()
+        let reader = app.descendants(matching: .any)["reader-screen"]
+        let progress = app.descendants(matching: .any)["reader-progress-slider"]
+        XCTAssertTrue(reader.waitForExistence(timeout: 120))
+        XCTAssertTrue(progress.waitForExistence(timeout: 120))
+        Thread.sleep(forTimeInterval: 4)
+        let contents = app.buttons["Contents"].firstMatch
+        if !contents.exists {
+            app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).tap()
+        }
+        XCTAssertTrue(contents.waitForExistence(timeout: 10))
+        contents.tap()
+        let prologue = app.buttons["Prologue"].firstMatch
+        XCTAssertTrue(prologue.waitForExistence(timeout: 20))
+        prologue.tap()
+        Thread.sleep(forTimeInterval: 3)
+        for _ in 0..<3 {
+            app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
+            Thread.sleep(forTimeInterval: 1)
+        }
+        let locationNumber = Int(((progress.value as? String) ?? "").split(separator: " ").dropFirst().first ?? "")
+        XCTAssertGreaterThan(locationNumber ?? 0, 13, "The test did not reach a mid-chapter reading position")
+        let more = app.buttons.matching(NSPredicate(format: "label == %@ OR label == %@", "More", "More reader options")).firstMatch
+        if !more.exists {
+            app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).tap()
+        }
+        XCTAssertTrue(more.waitForExistence(timeout: 120))
+        more.tap()
+        attachScreenshot(of: app, named: "real-grimmory-reader-more-menu")
+        app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.45, dy: 0.86)).tap()
+        attachScreenshot(of: app, named: "real-grimmory-after-read-aloud-toggle")
+        let nextSegment = app.buttons["Next Read Aloud segment"].firstMatch
+        XCTAssertTrue(nextSegment.waitForExistence(timeout: 90))
+        nextSegment.tap()
+        Thread.sleep(forTimeInterval: 2)
+        let pause = app.buttons["Pause Read Aloud"].firstMatch
+        if pause.exists { pause.tap() }
+        attachScreenshot(of: app, named: "real-grimmory-read-aloud-midchapter")
+
+        let stopReadAloud = app.buttons["Stop Read Aloud"].firstMatch
+        XCTAssertTrue(stopReadAloud.waitForExistence(timeout: 10))
+        stopReadAloud.tap()
+        if !progress.exists {
+            app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).tap()
+        }
+        XCTAssertTrue(progress.waitForExistence(timeout: 10))
+        let afterListening = (progress.value as? String)?.components(separatedBy: " · ").first
+        XCTAssertNotNil(afterListening)
+        attachScreenshot(of: app, named: "real-grimmory-after-read-aloud-stop")
+
+        let close = app.buttons["Close"].firstMatch
+        if !close.exists {
+            app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).tap()
+        }
+        XCTAssertTrue(close.waitForExistence(timeout: 10))
+        close.tap()
+        XCTAssertTrue(read.waitForExistence(timeout: 15))
+        read.tap()
+        XCTAssertTrue(reader.waitForExistence(timeout: 120))
+        XCTAssertTrue(progress.waitForExistence(timeout: 120))
+        XCTAssertEqual((progress.value as? String)?.components(separatedBy: " · ").first, afterListening, "The book moved after Read Aloud was stopped and reopened")
+        let reopenedPassage = app.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS %@", "The gray-black shape that formed in the pool")
+        ).firstMatch
+        XCTAssertTrue(reopenedPassage.waitForExistence(timeout: 15), "The reopened reader never rendered the saved passage")
+        attachScreenshot(of: app, named: "real-grimmory-after-read-aloud-reopen")
+    }
+
+    @MainActor
+    func testReadAloudReadModeShowsOneSentenceAtATime() throws {
+        let app = launch(route: "hearth")
+
+        // Opening from a home card yields the book instance whose Listen action starts the
+        // narrated session; the detail debug route resolves a different one that plays plain audio.
+        // The hero card rotates with recent activity, so match the title anywhere on the screen.
+        let card = app.buttons
+            .matching(NSPredicate(format: "label CONTAINS %@", "Enve Readaloud Sync Regression"))
+            .firstMatch
+        guard card.waitForExistence(timeout: 40) else {
+            throw XCTSkip("Read-aloud fixture is not on the home screen")
+        }
+        card.tap()
+
+        let listen = app.buttons["Listen"].firstMatch
+        guard listen.waitForExistence(timeout: 60) else {
+            throw XCTSkip("No narrated book with a Listen action is available in this library")
+        }
+        listen.tap()
+
+        // A narrated EPUB extracts audio and parses its SMIL before the player appears, so the
+        // toggle itself is the only reliable signal that the player is ready.
+        let readPill = app.descendants(matching: .any)["Player.ReadModeToggle"].firstMatch
+        guard readPill.waitForExistence(timeout: 180) else {
+            throw XCTSkip("Player never presented a Read mode toggle for this book")
+        }
+        // The player slides up over the previous screen; tapping mid-animation lands elsewhere.
+        Thread.sleep(forTimeInterval: 5)
+        attachScreenshot(of: app, named: "readmode-00-player-cover")
+        // The pill collapses to a glyph in the utility row, which XCUITest cannot scroll to
+        // visible, so tap its centre directly.
+        readPill.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+
+        let panel = app.descendants(matching: .any)["Player.ReadMode"].firstMatch
+        XCTAssertTrue(panel.waitForExistence(timeout: 30), "Read mode panel never replaced the cover")
+        Thread.sleep(forTimeInterval: 4)
+        attachScreenshot(of: app, named: "readmode-01-panel")
+
+        // Tapping a line seeks the narration to it; the middle line is fully on screen.
+        let middleLine = app.descendants(matching: .any)["Second synchronized passage. The reader turns a page."]
+            .firstMatch
+        XCTAssertTrue(middleLine.waitForExistence(timeout: 10), "Read mode did not render its lines as text")
+        middleLine.tap()
+        Thread.sleep(forTimeInterval: 4)
+        attachScreenshot(of: app, named: "readmode-02-seeked")
+
+        let play = app.buttons["Play"].firstMatch
+        if play.exists {
+            play.tap()
+            Thread.sleep(forTimeInterval: 6)
+            attachScreenshot(of: app, named: "readmode-03-playing")
+        }
+    }
+
+    @MainActor
+    private func attachScreenshot(of app: XCUIApplication, named name: String) {
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 
     @MainActor
@@ -214,13 +533,14 @@ final class enveUISmokeTests: XCTestCase {
     @MainActor
     private func launch(
         route: String,
-        contentSizeCategory: String = "UICTContentSizeCategoryL"
+        contentSizeCategory: String = "UICTContentSizeCategoryL",
+        extraArguments: [String] = []
     ) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = [
             "-imagineScreen", route,
             "-UIPreferredContentSizeCategoryName", contentSizeCategory,
-        ]
+        ] + extraArguments
         app.launch()
         XCUIDevice.shared.orientation = .portrait
         return app

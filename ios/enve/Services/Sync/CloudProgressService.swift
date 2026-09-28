@@ -3,6 +3,45 @@ import Combine
 import Foundation
 import Logging
 
+func resolveCloudProgressConflict(
+    localPosition: Double,
+    localDate: Date,
+    cloudPosition: Double,
+    cloudDate: Date,
+    localLocator: String? = nil,
+    cloudLocator: String? = nil
+) -> SyncDirection {
+    if cloudPosition <= 0, cloudDate > localDate { return .pull }
+    return resolveProgressConflictWithBackwardCheck(
+        localPosition: localPosition,
+        localDate: localDate,
+        serverPosition: cloudPosition,
+        serverDate: cloudDate,
+        localLocator: localLocator,
+        serverLocator: cloudLocator
+    )
+}
+
+enum CloudAudiobookMergeDisposition: Equatable {
+    case apply
+    case applyAndSeek
+    case deferWhilePlaying
+}
+
+func cloudAudiobookMergeDisposition(isCurrentBook: Bool, isPlaying: Bool) -> CloudAudiobookMergeDisposition {
+    guard isCurrentBook else { return .apply }
+    return isPlaying ? .deferWhilePlaying : .applyAndSeek
+}
+
+func shouldDeferCloudMerge(
+    domain: ProgressSyncDomain,
+    isCurrentBook: Bool,
+    isOverlayPlaybackActive: Bool,
+    isPlaying: Bool
+) -> Bool {
+    domain == .ebook && isCurrentBook && isOverlayPlaybackActive && isPlaying
+}
+
 @MainActor
 final class CloudProgressService {
     static let shared = CloudProgressService()
@@ -13,6 +52,8 @@ final class CloudProgressService {
     private let playbackState: any PlaybackControlling = ActivePlayback.controller
 
     private var cancellables = Set<AnyCancellable>()
+    private var cloudSyncTask: Task<Void, Never>?
+    private var cloudMergeTask: Task<Void, Never>?
 
     private let libraryCache: LibraryBookCache
     private let connectionStore: ProviderConnectionStore
@@ -135,7 +176,7 @@ final class CloudProgressService {
             )
             let updated = self.libraryCache.mutateBook(uniqueId: current.uniqueId) { book in
                 book.currentTime = position
-                book.isFinished = duration > 0 && position >= duration * 0.99
+                book.isFinished = duration > 0 && position >= duration * Book.finishedProgressThreshold
                 book.lastUpdate = serverDate
             }
             if let updated {
@@ -195,6 +236,7 @@ final class CloudProgressService {
         do {
             let records = try await cloudKit.fetchAllRecords()
             AppLogger.sync.info("Fetched \(records.count) cloud records")
+            await mergeCloudRecords(records, books: libraryCache.books)
 
             if let mostRecent = records.max(by: { $0.lastUpdated < $1.lastUpdated }) {
                 coordinator.updateLastSync(
@@ -281,22 +323,40 @@ final class CloudProgressService {
     }
 
     func syncOnAppLaunch(books: [Book]) async {
+        await syncBooksFromCloud(books, reason: "app launch")
+    }
+
+    func syncNewBooksFromCloud(_ books: [Book]) async {
+        await syncBooksFromCloud(books, reason: "library addition")
+    }
+
+    private func syncBooksFromCloud(_ books: [Book], reason: String) async {
+        let previousTask = cloudSyncTask
+        let task = Task { @MainActor [weak self] in
+            await previousTask?.value
+            await self?.performCloudSync(books, reason: reason)
+        }
+        cloudSyncTask = task
+        await task.value
+    }
+
+    private func performCloudSync(_ books: [Book], reason: String) async {
         let coordinator = SyncCoordinator.shared
         guard coordinator.syncEnabled else {
-            AppLogger.sync.warning("Sync disabled, skipping app launch sync")
+            AppLogger.sync.warning("Sync disabled, skipping iCloud \(reason) sync")
             return
         }
 
-        guard !coordinator.isSyncing else {
-            AppLogger.sync.warning("Already syncing, skipping")
-            return
+        let candidates = books.filter(CloudProgressEligibility.includes)
+        guard !candidates.isEmpty else { return }
+
+        let ownsSyncState = !coordinator.isSyncing
+        if ownsSyncState { coordinator.beginSync() }
+        defer {
+            if ownsSyncState { coordinator.endSync(at: nil) }
         }
 
-        coordinator.beginSync()
-        defer { coordinator.endSync(at: nil) }
-
-        let audiobooks = books.filter { $0.mediaType == .audiobook }
-        AppLogger.sync.info("Starting app launch sync with \(audiobooks.count) audiobooks...")
+        AppLogger.sync.info("Starting iCloud \(reason) sync with \(candidates.count) books...")
 
         let cloudAvailable = await cloudKit.isAvailable()
         coordinator.updateCloudAvailability(cloudAvailable)
@@ -305,22 +365,18 @@ final class CloudProgressService {
             return
         }
 
-        let results = await matchingService.matchAndUpdateProgress(books: audiobooks, autoUpdate: true)
-
-        if !results.isEmpty {
-            AppLogger.sync.info("Found \(results.count) books with cloud progress (auto-updated locally)")
-
-            NotificationCenter.default.post(
-                name: .continueListeningNeedsRefresh,
-                object: nil
-            )
+        do {
+            let records = try await cloudKit.fetchAllRecords(bypassCache: true)
+            await mergeCloudRecords(records, books: candidates)
+        } catch {
+            AppLogger.sync.error("iCloud \(reason) sync failed: \(error.localizedDescription)")
         }
 
         coordinator.updateLastSync(date: Date())
     }
 
     func getCloudProgress(for book: Book) async -> (position: TimeInterval, deviceName: String?)? {
-        guard book.mediaType == .audiobook else { return nil }
+        guard book.mediaType == .audiobook, CloudProgressEligibility.includes(book) else { return nil }
         let coordinator = SyncCoordinator.shared
         guard coordinator.syncEnabled, coordinator.isCloudKitAvailable else { return nil }
 
@@ -332,70 +388,203 @@ final class CloudProgressService {
     }
 
     private func handleCloudProgressUpdate(_ notification: Notification) async {
+        guard SyncCoordinator.shared.syncEnabled else { return }
         guard let records = notification.userInfo?["records"] as? [PlaybackStateRecord] else { return }
+        await mergeCloudRecords(records, books: libraryCache.books)
+        SyncCoordinator.shared.updateLastSync(date: Date())
+    }
 
-        let currentDeviceID = cloudKit.currentDeviceID
+    private func mergeCloudRecords(_ records: [PlaybackStateRecord], books: [Book]) async {
+        let candidateStableIds = Set(
+            books.lazy.filter(CloudProgressEligibility.includes).map(\.stableId)
+        )
+        guard !candidateStableIds.isEmpty else { return }
 
-        for record in records {
-            guard record.deviceID != currentDeviceID else { continue }
+        let previousTask = cloudMergeTask
+        let task = Task { @MainActor [weak self] in
+            await previousTask?.value
+            await self?.mergeCloudRecordBatch(
+                records,
+                candidateStableIds: candidateStableIds
+            )
+        }
+        cloudMergeTask = task
+        await task.value
+    }
+
+    private func mergeCloudRecordBatch(
+        _ records: [PlaybackStateRecord],
+        candidateStableIds: Set<String>
+    ) async {
+        let localBooks = libraryCache.books.filter {
+            candidateStableIds.contains($0.stableId) && CloudProgressEligibility.includes($0)
+        }
+        let localContentHashes = CloudBookContentIdentity.hashes(for: localBooks)
+        let indexedRecords = records.map { ($0, $0.toCanonicalIdentity()) }
+        let recordsByDomainAndHash = Dictionary(
+            grouping: records.compactMap { record -> (String, PlaybackStateRecord)? in
+                guard let contentHash = record.contentHash else { return nil }
+                return ("\(record.domain.rawValue)|\(contentHash)", record)
+            },
+            by: \.0
+        )
+        let recordsByDomainAndTitle = Dictionary(grouping: indexedRecords) {
+            "\($0.0.domain.rawValue)|\($0.1.normalizedTitle)"
+        }
+
+        for book in localBooks {
+            let domain: ProgressSyncDomain = book.mediaType == .ebook || book.isReadAloudBook ? .ebook : .audiobook
+            if domain == .ebook, SyncCoordinator.shared.isEbookReaderOpen { continue }
+            let localIdentity = CanonicalBookIdentity(from: book)
+            let lookupKey = "\(domain.rawValue)|\(localIdentity.normalizedTitle)"
+            let hashCandidates: [PlaybackStateRecord] = if let contentHash = localContentHashes[book.stableId] {
+                recordsByDomainAndHash["\(domain.rawValue)|\(contentHash)"]?.map(\.1) ?? []
+            } else {
+                []
+            }
+            let titleCandidates = (recordsByDomainAndTitle[lookupKey] ?? []).filter {
+                if $0.0.recordID == CloudKitProgressSync.recordName(for: localIdentity, domain: domain) {
+                    return true
+                }
+                let match = localIdentity.matches($0.1)
+                return match == .exactMatch || match.confidence >= 0.7
+            }.map(\.0)
+            let candidates = hashCandidates.isEmpty ? titleCandidates : hashCandidates
+            guard let record = candidates.max(by: { $0.lastUpdated < $1.lastUpdated }) else { continue }
 
             AppLogger.sync.debug("Received CloudKit playback update at \(Int(record.playbackPosition))s")
 
-            let cloudIdentity = record.toCanonicalIdentity()
-            let localBooks = await MainActor.run {
-                self.libraryCache.books.filter { $0.mediaType == .audiobook }
+            let isCurrentBook = playbackState.currentBook?.stableId == book.stableId
+            if shouldDeferCloudMerge(
+                domain: record.domain,
+                isCurrentBook: isCurrentBook,
+                isOverlayPlaybackActive: playbackState.snapshot.isOverlayPlaybackActive,
+                isPlaying: playbackState.isPlaying
+            ) {
+                AppLogger.sync.debug(
+                    "Deferred CloudKit merge for active read-aloud bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId))"
+                )
+                continue
             }
 
-            for book in localBooks {
-                let localIdentity = CanonicalBookIdentity(from: book)
-                let matchResult = localIdentity.matches(cloudIdentity)
-                guard matchResult == .exactMatch || matchResult.isMatch else { continue }
-
-                if playbackState.currentBook?.stableId == book.stableId {
-                    AppLogger.sync.debug(
-                        "Skipped CloudKit merge for current bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId))"
-                    )
-                    break
-                }
-
-                let localProgress = BookProgressStore.shared.loadProgress(for: book)
-                let localPosition = localProgress?.progress ?? 0
-                let localDate = localProgress.map { Date(timeIntervalSince1970: $0.lastUpdated) } ?? .distantPast
-
-                let direction = resolveProgressConflictWithBackwardCheck(
-                    localPosition: localPosition,
-                    localDate: localDate,
-                    serverPosition: record.playbackPosition,
-                    serverDate: record.lastUpdated
+            let playbackDisposition = cloudAudiobookMergeDisposition(
+                isCurrentBook: record.domain == .audiobook && isCurrentBook,
+                isPlaying: playbackState.isPlaying
+            )
+            if playbackDisposition == .deferWhilePlaying {
+                AppLogger.sync.debug(
+                    "Deferred CloudKit merge for actively playing bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId))"
                 )
+                continue
+            }
 
-                switch direction {
-                case .pull:
-                    AppLogger.sync.debug(
-                        "Pulling CloudKit progress bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId)) \(Int(localPosition))s -> \(Int(record.playbackPosition))s"
+            let savedAudiobookProgress = BookProgressStore.shared.loadProgress(for: book)
+            let localPosition = record.domain == .ebook
+                ? book.canonicalEbookProgress
+                : savedAudiobookProgress?.progress ?? 0
+            let localDate = record.domain == .ebook
+                ? book.lastUpdate
+                : savedAudiobookProgress.map { Date(timeIntervalSince1970: $0.lastUpdated) } ?? .distantPast
+            let remotePosition = record.domain == .ebook
+                ? record.normalizedProgress
+                : record.playbackPosition
+
+            let direction = resolveCloudProgressConflict(
+                localPosition: localPosition,
+                localDate: localDate,
+                cloudPosition: remotePosition,
+                cloudDate: record.lastUpdated,
+                localLocator: record.domain == .ebook ? book.epubLocator : nil,
+                cloudLocator: record.domain == .ebook ? record.locator : nil
+            )
+
+            switch direction {
+            case .pull:
+                AppLogger.sync.debug(
+                    "Pulling iCloud progress bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId))"
+                )
+                await SyncCoordinator.shared.applySnapshot(
+                    SyncSnapshot(
+                        progress: record.normalizedProgress,
+                        positionSeconds: record.playbackPosition,
+                        locator: record.locator,
+                        lastUpdate: record.lastUpdated,
+                        isFinished: record.completed,
+                        source: "iCloud"
+                    ),
+                    to: book,
+                    usesEbookProgress: record.domain == .ebook
+                )
+                if record.domain == .ebook,
+                    isCurrentBook,
+                    playbackState.snapshot.isOverlayPlaybackActive,
+                    let position = EpubLocationBridge.narratedAudioTime(from: record.locator)
+                {
+                    playbackState.seek(to: position)
+                }
+                if playbackDisposition == .applyAndSeek {
+                    let position = record.playbackPosition > 0
+                        ? record.playbackPosition
+                        : record.normalizedProgress * (book.duration ?? 0)
+                    playbackState.seek(to: position)
+                }
+            case .push:
+                AppLogger.sync.debug(
+                    "Local progress newer than CloudKit bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId))"
+                )
+                await pushLocalProgressToCloud(book: book, domain: record.domain)
+            case .conflict:
+                if record.domain == .ebook {
+                    EbookConflictStore.shared.add(
+                        EbookSyncConflict(
+                            bookStableId: book.stableId,
+                            bookTitle: book.title,
+                            localProgress: localPosition,
+                            serverProgress: record.normalizedProgress,
+                            serverLocator: record.locator,
+                            serverDate: record.lastUpdated,
+                            remoteSource: "iCloud"
+                        )
                     )
-                    BookProgressStore.shared.saveProgress(
-                        for: book,
-                        progress: record.playbackPosition,
-                        duration: TimeInterval(record.duration)
-                    )
-                case .push:
-                    AppLogger.sync.debug(
-                        "Local progress newer than CloudKit bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId))"
-                    )
-                case .conflict:
+                } else {
                     AppLogger.sync.warning(
                         "CloudKit progress conflict; kept local bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId))"
                     )
-                case .none:
-                    break
                 }
+            case .none:
                 break
             }
         }
 
-        SyncCoordinator.shared.updateLastSync(date: Date())
         NotificationCenter.default.post(name: .continueListeningNeedsRefresh, object: nil)
+    }
+
+    private func pushLocalProgressToCloud(book: Book, domain: ProgressSyncDomain) async {
+        let position: TimeInterval
+        let progress: Double
+        if domain == .ebook {
+            position = 0
+            progress = book.canonicalEbookProgress
+        } else {
+            position = BookProgressStore.shared.loadProgress(for: book)?.progress ?? 0
+            let duration = book.duration ?? 0
+            progress = duration > 0 ? position / duration : 0
+        }
+
+        let update = ProgressUpdate(
+            book: book,
+            domain: domain,
+            positionSeconds: position,
+            progress: progress,
+            locator: domain == .ebook ? book.epubLocator : nil,
+            sourceEngine: domain == .ebook ? EpubLocationBridge.sourceEngine(from: book.epubLocator) : nil,
+            sessionId: nil,
+            isFinished: book.isFinished || progress >= Book.finishedProgressThreshold,
+            timeListened: 0,
+            playbackRate: ActivePlayback.controller.snapshot.playbackSpeed
+        )
+
+        await SyncCoordinator.shared.pushCloudProgress(update)
     }
 }
 

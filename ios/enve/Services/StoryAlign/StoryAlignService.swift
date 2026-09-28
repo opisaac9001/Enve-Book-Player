@@ -136,11 +136,6 @@ final class StoryAlignService {
     }
     #endif
 
-    func canConvert(ebook: Book, audiobook: Book) -> Bool {
-        guard ebook.mediaType == .ebook, audiobook.mediaType == .audiobook else { return false }
-        return true
-    }
-
     func needsDownload(ebook: Book, audiobook: Book) -> (ebook: Bool, audiobook: Bool) {
         return (ebook: resolveEpubURL(ebook) == nil, audiobook: resolveAudioURLs(audiobook) == nil)
     }

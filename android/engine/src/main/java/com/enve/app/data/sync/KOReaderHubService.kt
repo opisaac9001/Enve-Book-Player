@@ -9,7 +9,9 @@ import com.enve.core.data.local.toBook
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
 import com.enve.core.data.sync.KOReaderBookLink
+import com.enve.core.data.sync.KOReaderFileIdentity
 import com.enve.core.data.sync.KOReaderHubConfig
+import com.enve.core.data.sync.KOReaderProgress
 import com.enve.core.data.sync.SyncSnapshot
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
@@ -99,18 +101,42 @@ class KOReaderHubService @Inject constructor(
 
     fun link(for_: String): KOReaderBookLink? = loadLinks()[for_]
 
-    fun link(book: Book, documentHash: String, isAutomatic: Boolean) {
+    fun link(
+        book: Book,
+        documentHash: String,
+        isAutomatic: Boolean,
+        fileIdentity: KOReaderFileIdentity? = null,
+    ) {
         val trimmed = documentHash.trim().lowercase()
         if (trimmed.length != 32 || !trimmed.all { it.isDigit() || it in 'a'..'f' }) return
         val links = loadLinks()
-        val existing = links[book.uniqueKey]
-        links[book.uniqueKey] = KOReaderBookLink(
+        links[book.uniqueKey] = repairedLink(
+            previous = links[book.uniqueKey],
             bookStableId = book.uniqueKey,
             documentHash = trimmed,
             isAutomatic = isAutomatic,
-            lastSyncedAt = existing?.lastSyncedAt,
-            lastSyncedPercentage = existing?.lastSyncedPercentage,
+            fileIdentity = fileIdentity,
         )
+        saveLinks(links)
+    }
+
+    fun linkFilename(book: Book, filename: String?) {
+        val trimmed = filename?.trim()?.takeIf { it.isNotEmpty() }
+        val links = loadLinks()
+        val existing = links[book.uniqueKey]
+        when {
+            existing != null -> {
+                if (existing.filename == trimmed) return
+                if (trimmed == null && existing.documentHash.isBlank()) links.remove(book.uniqueKey)
+                else links[book.uniqueKey] = existing.copy(filename = trimmed)
+            }
+            trimmed != null -> links[book.uniqueKey] = KOReaderBookLink(
+                bookStableId = book.uniqueKey,
+                isAutomatic = true,
+                filename = trimmed,
+            )
+            else -> return
+        }
         saveLinks(links)
     }
 
@@ -129,14 +155,30 @@ class KOReaderHubService @Inject constructor(
         saveLinks(links)
     }
 
-    suspend fun ensureDocumentHash(book: Book): String? {
-        loadLinks()[book.uniqueKey]?.let { return it.documentHash }
-        if (book.mediaType != AppMediaType.EBOOK) return null
-        val file = resolveEbookFile(book) ?: return null
-        val hash = runCatching { PartialMd5.compute(file) }.getOrNull() ?: return null
-        link(book, hash, isAutomatic = true)
+    private suspend fun ensureDocumentHash(book: Book): String? {
+        val existing = loadLinks()[book.uniqueKey]
+        val pinned = existing?.documentHash?.takeIf { it.isNotBlank() }
+        if (existing != null && !existing.isAutomatic) return pinned
+        if (book.mediaType != AppMediaType.EBOOK) return pinned
+        val file = resolveEbookFile(book) ?: return pinned
+        val identity = KOReaderFileIdentity.read(file) ?: return pinned
+        if (pinned != null && existing.fileIdentity == identity) return pinned
+        val hash = computePartialMd5(file) ?: return pinned
+        if (KOReaderFileIdentity.read(file) != identity) return pinned
+
+        val current = loadLinks()[book.uniqueKey]
+        if (current != existing) return current?.documentHash?.takeIf { it.isNotBlank() }
+        link(book, hash, isAutomatic = true, fileIdentity = identity)
         return hash
     }
+
+    fun suggestedFilename(book: Book): String? =
+        loadLinks()[book.uniqueKey]?.filename ?: KOReaderDocumentId.filenameSuggestion(book)
+
+    private suspend fun documentIdsFor(book: Book): DocumentIds = DocumentIds(
+        binaryHash = ensureDocumentHash(book),
+        filenameHash = loadLinks()[book.uniqueKey]?.filename?.let(KOReaderDocumentId::fromFilename),
+    )
 
     fun resolveEbookFile(book: Book): File? {
         val dir = File(context.cacheDir, "ebooks")
@@ -157,7 +199,7 @@ class KOReaderHubService @Inject constructor(
         if (!c.isConfigured || !c.autoSyncEnabled) return
         if (book.mediaType != AppMediaType.EBOOK) return
         val base = c.baseUrl ?: return
-        val hash = ensureDocumentHash(book) ?: return
+        val document = documentIdsFor(book).pushTarget ?: return
 
         val file = resolveEbookFile(book)
         val xpointer = if (locatorJson != null && file != null) {
@@ -170,7 +212,7 @@ class KOReaderHubService @Inject constructor(
                 baseUrl = base,
                 username = c.username,
                 passwordHash = c.passwordHash,
-                document = hash,
+                document = document,
                 progress = progressStr,
                 percentage = percentage.toDouble(),
                 device = deviceIdentity.deviceName,
@@ -190,10 +232,14 @@ class KOReaderHubService @Inject constructor(
         if (!c.isConfigured) return null
         if (book.mediaType != AppMediaType.EBOOK) return null
         val base = c.baseUrl ?: return null
-        val hash = ensureDocumentHash(book) ?: return null
+        val documents = documentIdsFor(book).pullTargets
+        if (documents.isEmpty()) return null
 
-        val remote = client.fetchProgress(base, c.username, c.passwordHash, hash)
-            .getOrNull() ?: return null
+        val remote = selectRemoteRecord(
+            documents.mapNotNull { document ->
+                client.fetchProgress(base, c.username, c.passwordHash, document).getOrNull()
+            },
+        ) ?: return null
         val pct = remote.percentage.coerceIn(0.0, 1.0)
         if (pct <= 0.0) return null
 
@@ -241,5 +287,56 @@ class KOReaderHubService @Inject constructor(
         }
         prefs.setKosyncHubLastSyncTime(System.currentTimeMillis())
         return applied
+    }
+
+    private data class DocumentIds(val binaryHash: String?, val filenameHash: String?) {
+        val pushTarget: String? = filenameHash ?: binaryHash
+        val pullTargets: List<String> = listOfNotNull(pushTarget, binaryHash).distinct()
+    }
+
+    companion object {
+        const val MAX_HASH_HISTORY = 5
+
+        fun selectRemoteRecord(records: List<KOReaderProgress>): KOReaderProgress? {
+            val newest = records.mapNotNull { it.timestamp?.takeIf { ts -> ts > 0L } }.maxOrNull()
+                ?: return records.firstOrNull()
+            return records.first { it.timestamp == newest }
+        }
+
+        fun repairedLink(
+            previous: KOReaderBookLink?,
+            bookStableId: String,
+            documentHash: String,
+            isAutomatic: Boolean,
+            fileIdentity: KOReaderFileIdentity?,
+            filename: String? = previous?.filename,
+        ): KOReaderBookLink {
+            if (previous == null) {
+                return KOReaderBookLink(
+                    bookStableId = bookStableId,
+                    documentHash = documentHash,
+                    isAutomatic = isAutomatic,
+                    fileIdentity = fileIdentity,
+                    filename = filename,
+                )
+            }
+            if (previous.documentHash == documentHash) {
+                return previous.copy(
+                    isAutomatic = isAutomatic,
+                    fileIdentity = fileIdentity,
+                    filename = filename,
+                )
+            }
+            return KOReaderBookLink(
+                bookStableId = bookStableId,
+                documentHash = documentHash,
+                isAutomatic = isAutomatic,
+                fileIdentity = fileIdentity,
+                filename = filename,
+                previousHashes = (listOf(previous.documentHash) + previous.previousHashes)
+                    .filter { it.isNotBlank() && it != documentHash }
+                    .take(MAX_HASH_HISTORY),
+            )
+        }
     }
 }

@@ -1,9 +1,51 @@
+import ReadiumShared
 import Testing
 
 @testable import enve
 
 @MainActor
 struct EpubLocationBridgeTests {
+    @Test func narratedAudioTimeReadsTheExactMediaOverlayPosition() {
+        let locator = #"{"href":"chapter.xhtml","locations":{"fragments":["sentence-26","t=174.7955494600771"]}}"#
+
+        #expect(EpubLocationBridge.narratedAudioTime(from: locator) == 174.7955494600771)
+    }
+
+    @Test func shortSelectionQuotesRemainNavigable() {
+        for quote in ["I", "music"] {
+            let locator = """
+                {"href":"chapter.xhtml","type":"application/xhtml+xml","locations":{},"text":{"highlight":"\(quote)","before":"I heard ","after":" outside."}}
+                """
+            #expect(EpubLocationBridge.locatorForReadiumRestore(locator) != nil)
+        }
+    }
+
+    @Test func cssAnchorsRemainNavigableWithoutAPercentageOrQuote() {
+        let locator = """
+            {"href":"chapter.xhtml","type":"application/xhtml+xml","locations":{"cssSelector":"#passage"}}
+            """
+        #expect(EpubLocationBridge.locatorForReadiumRestore(locator) != nil)
+    }
+
+    @Test func anIDSelectorBecomesTheFragmentReadiumScrollsTo() throws {
+        let anchored = """
+            {"href":"chapter.xhtml","type":"application/xhtml+xml","locations":{"cssSelector":"#Chapter_1-sentence119","progression":0.35}}
+            """
+        let compound = """
+            {"href":"chapter.xhtml","type":"application/xhtml+xml","locations":{"cssSelector":"#body > p:nth-child(3)","progression":0.35}}
+            """
+        let withFragment = """
+            {"href":"chapter.xhtml","type":"application/xhtml+xml","locations":{"cssSelector":"#other","fragments":["s7"],"progression":0.35}}
+            """
+
+        let restored = try Locator(jsonString: try #require(EpubLocationBridge.locatorForReadiumRestore(anchored)))
+        #expect(restored.locations.fragments == ["Chapter_1-sentence119"])
+        let compoundRestored = try Locator(jsonString: try #require(EpubLocationBridge.locatorForReadiumRestore(compound)))
+        #expect(compoundRestored.locations.fragments.isEmpty)
+        let keptFragment = try Locator(jsonString: try #require(EpubLocationBridge.locatorForReadiumRestore(withFragment)))
+        #expect(keptFragment.locations.fragments == ["s7"])
+    }
+
     @Test func sparseProgressionLocatorIsNotDirectRestorable() {
         let locator = """
             {"href":"chapter.xhtml","type":"application/xhtml+xml","locations":{"totalProgression":0.42}}
@@ -146,6 +188,14 @@ struct EpubLocationBridgeTests {
         #expect(EpubLocationBridge.epubCFI(from: locator) == "epubcfi(/6/6!/4/2/8:3)")
         #expect(!locator.contains("\"fragments\""))
         #expect(EpubLocationBridge.locatorForReadiumRestore(locator) != nil)
+    }
+
+    @Test func canonicalCFICanBeAddedToASelectionLocator() {
+        let locator = EpubLocationBridge.readiumLocator(href: "chapter.xhtml", fraction: 0.4)!
+        let marked = EpubLocationBridge.markingEPUBCFI("epubcfi(/6/6!/4/2:3)", in: locator)
+
+        #expect(EpubLocationBridge.epubCFI(from: marked) == "epubcfi(/6/6!/4/2:3)")
+        #expect(EpubLocationBridge.markingEPUBCFI("epubcfi(/4/2:3)", in: locator) == nil)
     }
 
     @Test func providerCFIRequiresTrustedFoliateProvenance() {

@@ -194,7 +194,7 @@ internal object ServerToolsMapping {
                         ServerStat(
                             label = it.title,
                             value = duration(it.totalDurationSeconds),
-                            detail = "${it.totalSessions} sessions · ${dateSpan(it.firstSessionDate, it.lastSessionDate)} · ${progress(it.maxProgress)}%",
+                            detail = "${it.totalSessions} sessions · ${dateSpan(it.firstSessionDate, it.lastSessionDate)} · ${(it.maxProgress * 100.0).roundToLong()}%",
                         )
                     },
                 ),
@@ -388,8 +388,6 @@ internal object ServerToolsMapping {
     private fun round1(value: Double): String = ((value * 10.0).roundToLong() / 10.0).toString()
 
     private fun round2(value: Double): String = ((value * 100.0).roundToLong() / 100.0).toString()
-
-    private fun progress(value: Double): Long = (if (value <= 1.0) value * 100.0 else value).roundToLong()
 
     private fun dateSpan(first: String, last: String): String = if (first == last) first else "$first – $last"
 

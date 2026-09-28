@@ -42,11 +42,6 @@ final class PodcastSubscriptionStore {
         }
     }
 
-    func replaceAll(_ subs: [PodcastSubscription]) {
-        feeds = subs
-        persist()
-    }
-
     private func persist() {
         guard let data = try? JSONEncoder().encode(feeds) else { return }
         UserDefaults.standard.set(data, forKey: Self.storageKey)

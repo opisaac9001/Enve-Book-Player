@@ -170,9 +170,37 @@ struct PodcastsDownloadControl: View {
 }
 
 enum PodcastsFormat {
+    static func feedOnlyRowLabel(
+        for episode: Book,
+        in show: AudiobookshelfProvider.PodcastShow
+    ) -> (icon: String, text: String)? {
+        feedOnlyLabel(for: episode, in: show, text: "Not on server")
+    }
+
+    static func feedOnlyDetailLabel(
+        for episode: Book,
+        in show: AudiobookshelfProvider.PodcastShow
+    ) -> (icon: String, text: String)? {
+        feedOnlyLabel(for: episode, in: show, text: "Not on server")
+    }
+
+    private static func feedOnlyLabel(
+        for episode: Book,
+        in show: AudiobookshelfProvider.PodcastShow,
+        text: String
+    ) -> (icon: String, text: String)? {
+        guard episode.isPodcastEpisode,
+            episode.source != .audiobookshelf,
+            show.episodes.contains(where: { $0.source == .audiobookshelf }),
+            let raw = episode.partKey,
+            let url = URL(string: raw),
+            ["http", "https"].contains(url.scheme?.lowercased())
+        else { return nil }
+        return ("antenna.radiowaves.left.and.right", text)
+    }
+
     static func cleanHTML(_ text: String) -> String {
-        text.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        text.strippingHTMLTags()
     }
 
     static func displayAuthor(_ value: String?, fallback: String? = nil) -> String? {

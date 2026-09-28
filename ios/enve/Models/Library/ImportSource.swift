@@ -65,10 +65,6 @@ struct SourceInfo: Codable, Equatable, Sendable {
         self.lastSyncCheck = lastSyncCheck
     }
 
-    static func fromFiles(path: String) -> SourceInfo {
-        return SourceInfo(type: .files, remotePath: path)
-    }
-
     static func fromWebDAV(serverId: String, serverName: String, path: String) -> SourceInfo {
         return SourceInfo(type: .webDAV, serverId: serverId, serverName: serverName, remotePath: path)
     }

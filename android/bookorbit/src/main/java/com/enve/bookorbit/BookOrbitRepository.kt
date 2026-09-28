@@ -1,11 +1,11 @@
 package com.enve.bookorbit
 
 import com.enve.bookorbit.api.BookOrbitApi
-import com.enve.bookorbit.dto.BookOrbitAudioProgressRequest
-import com.enve.bookorbit.dto.BookOrbitAnnotationDto
+import com.enve.bookorbit.dto.BookOrbitAudiobookAssetDto
+import com.enve.bookorbit.dto.BookOrbitAudiobookManifestDto
+import com.enve.bookorbit.dto.BookOrbitAudiobookPlaybackStateRequest
 import com.enve.bookorbit.dto.BookOrbitBookCardDto
 import com.enve.bookorbit.dto.BookOrbitBookDetailDto
-import com.enve.bookorbit.dto.BookOrbitBookmarkDto
 import com.enve.bookorbit.dto.BookOrbitBookmarkRequest
 import com.enve.bookorbit.dto.BookOrbitBooksPageDto
 import com.enve.bookorbit.dto.BookOrbitBooksPageRequest
@@ -25,9 +25,7 @@ import com.enve.bookorbit.dto.BookOrbitRatingRequest
 import com.enve.bookorbit.dto.BookOrbitStatusRequest
 import com.enve.bookorbit.dto.BookOrbitUpdateAnnotationRequest
 import com.enve.core.data.model.AppMediaType
-import com.enve.core.data.model.AnnotationKind
 import com.enve.core.data.model.AnnotationMedia
-import com.enve.core.data.model.AnnotationStyle
 import com.enve.core.data.model.AudioTrack
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
@@ -43,16 +41,12 @@ import com.enve.core.data.sync.AcceptedAnnotation
 import com.enve.core.data.sync.AnnotationsPushResult
 import com.enve.core.data.sync.RejectedAnnotation
 import com.enve.core.data.util.runSuspendCatching
-import com.enve.core.reader.EpubBridgeCheckpointCodec
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import java.time.Instant
-import java.time.LocalDate
-import java.time.LocalDateTime
-import java.time.OffsetDateTime
-import java.time.ZoneOffset
-import java.time.format.DateTimeFormatter
+import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.roundToLong
@@ -83,13 +77,13 @@ class BookOrbitRepository @Inject constructor(
 ) {
     suspend fun isCurrentUserAdmin(): Result<Boolean> = runSuspendCatching {
         val response = api.me()
-        if (!response.isSuccessful) error(httpMessage("BookOrbit account lookup failed", response))
+        if (!response.isSuccessful) error(bookOrbitHttpMessage("BookOrbit account lookup failed", response))
         response.body()?.isSuperuser == true
     }
 
     suspend fun getCollections(bookIds: List<Int> = emptyList()): Result<List<BookOrbitCollectionDto>> = runSuspendCatching {
         val response = api.collections(bookIds.takeIf { it.isNotEmpty() }?.distinct()?.joinToString(","))
-        if (!response.isSuccessful) error(httpMessage("BookOrbit collections failed", response))
+        if (!response.isSuccessful) error(bookOrbitHttpMessage("BookOrbit collections failed", response))
         response.body().orEmpty().sortedWith(compareBy<BookOrbitCollectionDto> { it.displayOrder }.thenBy { it.name.lowercase() })
     }
 
@@ -100,7 +94,7 @@ class BookOrbitRepository @Inject constructor(
         query: String? = null,
     ): Result<BookOrbitCollectionPage> = runSuspendCatching {
         val response = api.collectionBooks(collectionId, page.coerceAtLeast(0), size.coerceIn(1, 100), query?.takeIf { it.isNotBlank() })
-        if (!response.isSuccessful) error(httpMessage("BookOrbit collection books failed", response))
+        if (!response.isSuccessful) error(bookOrbitHttpMessage("BookOrbit collection books failed", response))
         val body = response.body() ?: BookOrbitBooksPageDto()
         BookOrbitCollectionPage(
             items = body.items.map { it.toBook(libraryId = null) },
@@ -141,14 +135,14 @@ class BookOrbitRepository @Inject constructor(
     ): Result<BookOrbitCollectionDto> = runSuspendCatching {
         requireAdmin()
         val response = request()
-        if (!response.isSuccessful) error(httpMessage("BookOrbit collection update failed", response))
+        if (!response.isSuccessful) error(bookOrbitHttpMessage("BookOrbit collection update failed", response))
         response.body() ?: error("BookOrbit returned an empty collection response")
     }
 
     private suspend fun adminUnitMutation(request: suspend () -> Response<Unit>): Result<Unit> = runSuspendCatching {
         requireAdmin()
         val response = request()
-        if (!response.isSuccessful) error(httpMessage("BookOrbit collection update failed", response))
+        if (!response.isSuccessful) error(bookOrbitHttpMessage("BookOrbit collection update failed", response))
     }
 
     private suspend fun adminCollectionUnitMutation(
@@ -156,7 +150,7 @@ class BookOrbitRepository @Inject constructor(
     ): Result<Unit> = runSuspendCatching {
         requireAdmin()
         val response = request()
-        if (!response.isSuccessful) error(httpMessage("BookOrbit collection update failed", response))
+        if (!response.isSuccessful) error(bookOrbitHttpMessage("BookOrbit collection update failed", response))
     }
 
     private suspend fun requireAdmin() {
@@ -165,7 +159,7 @@ class BookOrbitRepository @Inject constructor(
 
     suspend fun getLibraries(): Result<List<Library>> = runSuspendCatching {
         val response = api.libraries()
-        if (!response.isSuccessful) error(httpMessage("BookOrbit libraries failed", response))
+        if (!response.isSuccessful) error(bookOrbitHttpMessage("BookOrbit libraries failed", response))
         response.body().orEmpty().map {
             Library(
                 id = it.id.toString(),
@@ -245,7 +239,7 @@ class BookOrbitRepository @Inject constructor(
         kind: ContinueKind,
     ): Result<List<Book>> = runSuspendCatching {
         val response = api.currentlyReading()
-        if (!response.isSuccessful) error(httpMessage("BookOrbit currently-reading failed", response))
+        if (!response.isSuccessful) error(bookOrbitHttpMessage("BookOrbit currently-reading failed", response))
         coroutineScope {
             response.body()?.books.orEmpty()
                 .mapIndexed { index, item ->
@@ -293,23 +287,23 @@ class BookOrbitRepository @Inject constructor(
     suspend fun getBook(bookId: String, fallbackLibraryId: String?): Result<Book> = runSuspendCatching {
         val id = bookId.toIntOrNull() ?: error("Invalid BookOrbit book id")
         val response = api.book(id)
-        if (!response.isSuccessful) error(httpMessage("BookOrbit book detail failed", response))
+        if (!response.isSuccessful) error(bookOrbitHttpMessage("BookOrbit book detail failed", response))
         response.body()?.toBook(fallbackLibraryId) ?: error("BookOrbit returned an empty book detail")
     }
 
     suspend fun getAudioTracks(book: Book): Result<List<AudioTrack>> = runSuspendCatching {
-        if (book.audioTracks.hasSeekableOffsets()) return@runSuspendCatching book.audioTracks
-        getBook(book.id, book.libraryId).getOrThrow().audioTracks
+        audiobookTracks(book).first
     }
 
     suspend fun startPlaybackSession(book: Book): Result<ProviderPlaybackSession> = runSuspendCatching {
         val detailed = getBook(book.id, book.libraryId).getOrElse { book }
-        val tracks = detailed.audioTracks.ifEmpty { book.audioTracks }
+        val (tracks, manifest) = audiobookTracks(detailed)
         if (tracks.isEmpty()) error("BookOrbit returned no playable audio tracks")
         ProviderPlaybackSession(
             sessionId = "bookorbit:${book.id}",
             audioTracks = tracks,
-            chapters = detailed.chapters.ifEmpty { synthesizeChapters(tracks, detailed.duration.takeIf { it > 0 } ?: book.duration) },
+            chapters = makeChapters(manifest.chapters, manifest.totalDurationMs / 1000L)
+                .ifEmpty { synthesizeChapters(tracks, manifest.totalDurationMs / 1000L) },
         )
     }
 
@@ -319,18 +313,27 @@ class BookOrbitRepository @Inject constructor(
         progressFraction: Float,
     ): Result<Unit> = runSuspendCatching {
         val bookId = book.id.toIntOrNull() ?: return@runSuspendCatching
-        val (fileId, localPositionSec) = currentFileAndOffset(book, currentTimeSec)
-        val id = fileId ?: return@runSuspendCatching
-        val percentage = (progressFraction * 100.0).coerceIn(0.0, 100.0)
-        val response = api.updateAudioProgress(
+        val manifest = fetchAudiobookManifest(bookId)
+        val assets = manifest.assets.sortedBy { it.sequence }
+        val (asset, localPositionMs) = assetAndOffset(assets, currentTimeSec * 1000L)
+        val selected = asset ?: return@runSuspendCatching
+        val current = api.audiobookPlaybackState(bookId).let { response ->
+            if (response.code() == 404 || response.code() == 204) null
+            else if (response.isSuccessful) response.body()
+            else error(bookOrbitHttpMessage("BookOrbit audio progress pull failed", response))
+        }
+        val response = api.updateAudiobookPlaybackState(
             bookId = bookId,
-            request = BookOrbitAudioProgressRequest(
-                percentage = percentage,
-                currentFileId = id,
-                positionSeconds = localPositionSec.coerceAtLeast(0L).toDouble(),
+            request = BookOrbitAudiobookPlaybackStateRequest(
+                assetId = selected.assetId,
+                positionMs = localPositionMs,
+                capturedAt = Instant.now().toString(),
+                operationId = UUID.randomUUID().toString(),
+                baseRevision = current?.revision ?: 0,
+                manifestRevision = manifest.revision,
             ),
         )
-        if (!response.isSuccessful) error(httpMessage("BookOrbit audio progress sync failed", response))
+        if (!response.isSuccessful) error(bookOrbitHttpMessage("BookOrbit audio progress sync failed", response))
     }
 
     suspend fun fetchAudiobookProgress(book: Book): Result<SyncSnapshot?> = runSuspendCatching {
@@ -339,33 +342,70 @@ class BookOrbitRepository @Inject constructor(
 
     private suspend fun fetchDirectAudiobookProgress(book: Book): SyncSnapshot? {
         val bookId = book.id.toIntOrNull() ?: return null
-        val response = api.audioProgress(bookId)
+        val response = api.audiobookPlaybackState(bookId)
         if (response.code() == 404 || response.code() == 204) return null
-        if (!response.isSuccessful) error(httpMessage("BookOrbit audio progress pull failed", response))
+        if (!response.isSuccessful) error(bookOrbitHttpMessage("BookOrbit audio progress pull failed", response))
         val dto = response.body() ?: return null
-        val fileId = dto.currentFileId
-            ?: return progressSnapshotFromPercentage(
-                book = book,
-                percentagePercent = dto.percentage,
-                updatedAt = parseDateMillis(dto.updatedAt),
-            )
-        val localPosition = (dto.positionSeconds ?: 0.0).roundToLong()
-        val tracks = getAudioTracks(book).getOrDefault(emptyList())
-        val track = tracks.firstOrNull { it.fileId?.toIntOrNull() == fileId }
-        val global = (track?.cumulativeStartMs ?: 0L) / 1000L + localPosition
+        val manifest = fetchAudiobookManifest(bookId)
+        val assets = manifest.assets.sortedBy { it.sequence }
+        val trackIndex = assets.indexOfFirst { it.assetId == dto.assetId }
+        if (trackIndex < 0) return null
+        val globalMs = assets.take(trackIndex).sumOf { it.durationMs ?: 0L } + dto.positionMs.coerceAtLeast(0L)
         val percentage = ((dto.percentage ?: 0.0) / 100.0).toFloat().coerceIn(0f, 1f)
-        val durationSec = durationForProgress(book, tracks)
+        val durationMs = manifest.totalDurationMs.takeIf { it > 0L } ?: assets.sumOf { it.durationMs ?: 0L }
         return SyncSnapshot(
-            percentage = if (percentage > 0.001f || durationSec <= 0L) {
+            percentage = if (percentage > 0.001f || durationMs <= 0L) {
                 percentage
             } else {
-                (global.toFloat() / durationSec.toFloat()).coerceIn(0f, 1f)
+                (globalMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
             },
-            positionMs = global * 1000L,
+            positionMs = globalMs,
             locatorJson = null,
-            updatedAt = parseDateMillis(dto.updatedAt),
+            updatedAt = null,
             source = BookSource.BOOKORBIT.displayName,
         )
+    }
+
+    private suspend fun fetchAudiobookManifest(bookId: Int): BookOrbitAudiobookManifestDto {
+        val response = api.audiobookManifest(bookId)
+        if (!response.isSuccessful) error(bookOrbitHttpMessage("BookOrbit audiobook manifest failed", response))
+        return response.body() ?: error("BookOrbit returned an empty audiobook manifest")
+    }
+
+    private suspend fun audiobookTracks(book: Book): Pair<List<AudioTrack>, BookOrbitAudiobookManifestDto> {
+        val bookId = book.id.toIntOrNull() ?: error("Invalid BookOrbit book id")
+        val manifest = fetchAudiobookManifest(bookId)
+        var offsetMs = 0L
+        val sourceTracks = book.audioTracks
+        val tracks = manifest.assets.sortedBy { it.sequence }.mapIndexed { index, asset ->
+            val durationMs = (asset.durationMs ?: 0L).coerceAtLeast(0L)
+            AudioTrack(
+                index = index,
+                fileName = sourceTracks.getOrNull(index)?.fileName ?: "Track ${index + 1}",
+                title = sourceTracks.getOrNull(index)?.title,
+                durationMs = durationMs,
+                fileSizeBytes = asset.sizeBytes ?: 0L,
+                cumulativeStartMs = offsetMs,
+                fileId = asset.assetId,
+                contentUrl = audiobookAssetUrl(book.id, asset.assetId),
+            ).also { offsetMs += durationMs }
+        }
+        return tracks to manifest
+    }
+
+    private fun assetAndOffset(
+        assets: List<BookOrbitAudiobookAssetDto>,
+        globalPositionMs: Long,
+    ): Pair<BookOrbitAudiobookAssetDto?, Long> {
+        var elapsed = 0L
+        assets.forEachIndexed { index, asset ->
+            val duration = (asset.durationMs ?: 0L).coerceAtLeast(0L)
+            if (globalPositionMs < elapsed + duration || index == assets.lastIndex) {
+                return asset to (globalPositionMs - elapsed).coerceIn(0L, duration.takeIf { it > 0L } ?: Long.MAX_VALUE)
+            }
+            elapsed += duration
+        }
+        return null to globalPositionMs.coerceAtLeast(0L)
     }
 
     private suspend fun fetchCurrentlyReadingAudiobookProgress(book: Book): SyncSnapshot? {
@@ -416,7 +456,7 @@ class BookOrbitRepository @Inject constructor(
                 cfi = bookOrbitFoliateCfi(locator),
             ),
         )
-        if (!response.isSuccessful) error(httpMessage("BookOrbit ebook progress sync failed", response))
+        if (!response.isSuccessful) error(bookOrbitHttpMessage("BookOrbit ebook progress sync failed", response))
     }
 
     suspend fun fetchEbookProgress(book: Book): Result<SyncSnapshot?> = runSuspendCatching {
@@ -427,17 +467,9 @@ class BookOrbitRepository @Inject constructor(
     private suspend fun fetchDirectEbookProgress(fileId: Int): SyncSnapshot? {
         val response = api.ebookProgress(fileId)
         if (response.code() == 404 || response.code() == 204) return null
-        if (!response.isSuccessful) error(httpMessage("BookOrbit ebook progress pull failed", response))
+        if (!response.isSuccessful) error(bookOrbitHttpMessage("BookOrbit ebook progress pull failed", response))
         val dto = response.body() ?: return null
-        val cfi = dto.cfi?.takeIf(EpubBridgeCheckpointCodec::isFullEpubCfi)
-        val percentage = ((dto.percentage ?: 0.0) / 100.0).toFloat().coerceIn(0f, 1f)
-        return SyncSnapshot(
-            percentage = percentage,
-            locatorJson = bookOrbitEpubLocator(cfi, percentage),
-            epubCfi = cfi,
-            updatedAt = parseDateMillis(dto.updatedAt),
-            source = BookSource.BOOKORBIT.displayName,
-        )
+        return bookOrbitEbookSnapshot(dto.cfi, dto.percentage, bookOrbitDateMillis(dto.updatedAt))
     }
 
     suspend fun updateBookStatus(bookId: String, status: String): Result<Unit> = runSuspendCatching {
@@ -453,96 +485,102 @@ class BookOrbitRepository @Inject constructor(
             else -> "unread"
         }
         val response = api.updateStatus(id, BookOrbitStatusRequest(mapped))
-        if (!response.isSuccessful) error(httpMessage("BookOrbit read status update failed", response))
+        if (!response.isSuccessful) error(bookOrbitHttpMessage("BookOrbit read status update failed", response))
     }
 
     suspend fun updatePersonalRating(bookId: String, rating: Int): Result<Unit> = runSuspendCatching {
         val id = bookId.toIntOrNull() ?: error("Invalid BookOrbit book id")
         val response = api.updateRating(id, BookOrbitRatingRequest(rating.coerceIn(1, 5)))
-        if (!response.isSuccessful) error(httpMessage("BookOrbit rating update failed", response))
+        if (!response.isSuccessful) error(bookOrbitHttpMessage("BookOrbit rating update failed", response))
     }
 
     suspend fun pushAnnotations(
         book: Book,
         annotations: List<ReaderAnnotation>,
-    ): Result<AnnotationsPushResult> = runSuspendCatching {
+    ): Result<AnnotationsPushResult> = runSuspendCatching { pushArtifacts(book, annotations) }
+
+    private suspend fun pushArtifacts(
+        book: Book,
+        annotations: List<ReaderAnnotation>,
+    ): AnnotationsPushResult {
         val bookId = book.id.toIntOrNull() ?: error("Invalid BookOrbit book id")
         val accepted = mutableListOf<AcceptedAnnotation>()
         val rejected = mutableListOf<RejectedAnnotation>()
-        for (annotation in annotations) {
-            if (annotation.providerSource != "bookorbit") {
-                rejected += RejectedAnnotation(annotation.id, "Reader artifact belongs to another provider")
-                continue
-            }
-            if (annotation.deletedAt != null) {
-                try {
-                    annotation.serverId?.let { deleteRemoteArtifact(bookId, it) }
-                    accepted += AcceptedAnnotation(annotation.id, annotation.serverId)
-                } catch (t: Throwable) {
-                    if (t is kotlinx.coroutines.CancellationException) throw t
-                    rejected += RejectedAnnotation(annotation.id, t.message ?: "BookOrbit deletion failed")
-                }
-                continue
-            }
-            if (annotation.isBookOrbitBookmark()) {
-                try {
-                    annotation.serverId?.let { deleteRemoteArtifact(bookId, it) }
-                    val response = api.createBookmark(
-                        bookId,
-                        BookOrbitBookmarkRequest(
-                            cfi = if (AnnotationMedia.parse(annotation.media) == AnnotationMedia.EPUB) {
-                                annotation.bookOrbitCfi()
-                            } else {
-                                null
-                            },
-                            title = annotation.bookOrbitBookmarkTitle(),
-                            positionSeconds = annotation.audioPositionMs?.div(1_000.0),
-                        ),
-                    )
-                    if (!response.isSuccessful) error(httpMessage("BookOrbit bookmark sync failed", response))
-                    val remote = response.body() ?: error("BookOrbit returned an empty bookmark response")
-                    accepted += AcceptedAnnotation(annotation.id, "bookmark:${remote.id}")
-                } catch (t: Throwable) {
-                    if (t is kotlinx.coroutines.CancellationException) throw t
-                    rejected += RejectedAnnotation(annotation.id, t.message ?: "BookOrbit bookmark sync failed")
-                }
-                continue
-            }
-            if (!annotation.isBookOrbitHighlight()) {
-                accepted += AcceptedAnnotation(annotation.id, annotation.serverId)
-                continue
-            }
+
+        suspend fun attempt(annotation: ReaderAnnotation, block: suspend () -> AcceptedAnnotation) {
             try {
-                val response = annotation.serverId?.toIntOrNull()?.let { serverId ->
-                    api.updateAnnotation(
-                        bookId,
-                        serverId,
-                        BookOrbitUpdateAnnotationRequest(
-                            note = annotation.note.takeIf { it.isNotBlank() },
-                            color = annotation.colorHex,
-                            style = annotation.bookOrbitStyle(),
-                        ),
-                    )
-                } ?: api.createAnnotation(
-                    bookId,
-                    BookOrbitCreateAnnotationRequest(
-                        cfi = annotation.bookOrbitCfi()!!,
-                        text = annotation.selectedText,
-                        color = annotation.colorHex,
-                        style = annotation.bookOrbitStyle(),
-                        note = annotation.note.takeIf { it.isNotBlank() },
-                        chapterTitle = annotation.chapterId,
-                    ),
-                )
-                if (!response.isSuccessful) error(httpMessage("BookOrbit annotation sync failed", response))
-                val remote = response.body() ?: error("BookOrbit returned an empty annotation response")
-                accepted += AcceptedAnnotation(annotation.id, remote.id.toString())
+                accepted += block()
+            } catch (e: CancellationException) {
+                throw e
             } catch (t: Throwable) {
-                if (t is kotlinx.coroutines.CancellationException) throw t
-                rejected += RejectedAnnotation(annotation.id, t.message ?: "BookOrbit annotation sync failed")
+                rejected += RejectedAnnotation(annotation.id, t.message ?: "BookOrbit reader-artifact sync failed")
             }
         }
-        AnnotationsPushResult(accepted = accepted, rejected = rejected)
+
+        for (annotation in annotations) {
+            when (annotation.bookOrbitArtifactPush()) {
+                BookOrbitArtifactPush.FOREIGN ->
+                    rejected += RejectedAnnotation(annotation.id, "Reader artifact belongs to another provider")
+                BookOrbitArtifactPush.UNSUPPORTED ->
+                    rejected += RejectedAnnotation(annotation.id, "BookOrbit cannot store this reader artifact")
+                BookOrbitArtifactPush.DELETE -> attempt(annotation) {
+                    annotation.serverId?.let { deleteRemoteArtifact(bookId, it) }
+                    AcceptedAnnotation(annotation.id, annotation.serverId)
+                }
+                BookOrbitArtifactPush.BOOKMARK -> attempt(annotation) { pushBookmark(bookId, annotation) }
+                BookOrbitArtifactPush.CREATE_HIGHLIGHT -> attempt(annotation) { createHighlight(bookId, annotation) }
+                BookOrbitArtifactPush.UPDATE_HIGHLIGHT -> attempt(annotation) { updateHighlight(bookId, annotation) }
+            }
+        }
+        return AnnotationsPushResult(accepted = accepted, rejected = rejected)
+    }
+
+    private suspend fun pushBookmark(bookId: Int, annotation: ReaderAnnotation): AcceptedAnnotation {
+        annotation.serverId?.let { deleteRemoteArtifact(bookId, it) }
+        val response = api.createBookmark(
+            bookId,
+            BookOrbitBookmarkRequest(
+                cfi = annotation.bookOrbitCfi()
+                    ?.takeIf { AnnotationMedia.parse(annotation.media) == AnnotationMedia.EPUB },
+                title = annotation.bookOrbitBookmarkTitle(),
+                positionSeconds = annotation.audioPositionMs?.div(1_000.0),
+            ),
+        )
+        if (!response.isSuccessful) error(bookOrbitHttpMessage("BookOrbit bookmark sync failed", response))
+        val remote = response.body() ?: error("BookOrbit returned an empty bookmark response")
+        return AcceptedAnnotation(annotation.id, "bookmark:${remote.id}")
+    }
+
+    private suspend fun createHighlight(bookId: Int, annotation: ReaderAnnotation): AcceptedAnnotation {
+        val response = api.createAnnotation(
+            bookId,
+            BookOrbitCreateAnnotationRequest(
+                cfi = annotation.bookOrbitCfi()!!,
+                text = annotation.selectedText,
+                color = annotation.colorHex,
+                style = annotation.bookOrbitStyle(),
+                note = annotation.note.takeIf { it.isNotBlank() },
+                chapterTitle = annotation.chapterId,
+            ),
+        )
+        if (!response.isSuccessful) error(bookOrbitHttpMessage("BookOrbit annotation sync failed", response))
+        val remote = response.body() ?: error("BookOrbit returned an empty annotation response")
+        return AcceptedAnnotation(annotation.id, remote.id.toString())
+    }
+
+    private suspend fun updateHighlight(bookId: Int, annotation: ReaderAnnotation): AcceptedAnnotation {
+        val response = api.updateAnnotation(
+            bookId,
+            annotation.serverId!!.toInt(),
+            BookOrbitUpdateAnnotationRequest(
+                note = annotation.note.takeIf { it.isNotBlank() },
+                color = annotation.colorHex,
+                style = annotation.bookOrbitStyle(),
+            ),
+        )
+        if (!response.isSuccessful) error(bookOrbitHttpMessage("BookOrbit annotation sync failed", response))
+        val remote = response.body() ?: error("BookOrbit returned an empty annotation response")
+        return AcceptedAnnotation(annotation.id, remote.id.toString())
     }
 
     suspend fun fetchAnnotations(book: Book): Result<List<ReaderAnnotation>> = runSuspendCatching {
@@ -550,12 +588,10 @@ class BookOrbitRepository @Inject constructor(
         coroutineScope {
             val annotations = async { api.annotations(bookId) }
             val bookmarks = async { api.bookmarks(bookId) }
-            val annotationResponse = annotations.await()
-            val bookmarkResponse = bookmarks.await()
-            if (!annotationResponse.isSuccessful) error(httpMessage("BookOrbit annotations failed", annotationResponse))
-            if (!bookmarkResponse.isSuccessful) error(httpMessage("BookOrbit bookmarks failed", bookmarkResponse))
-            annotationResponse.body().orEmpty().map { it.toReaderAnnotation(book.id) } +
-                bookmarkResponse.body().orEmpty().map { it.toReaderAnnotation(book.id) }
+            val annotationRows = bookOrbitOptionalRows("BookOrbit annotations failed", annotations.await())
+            val bookmarkRows = bookOrbitOptionalRows("BookOrbit bookmarks failed", bookmarks.await())
+            annotationRows.mapNotNull { it.toReaderAnnotationOrNull(book.id) } +
+                bookmarkRows.mapNotNull { it.toReaderAnnotationOrNull(book.id) }
         }
     }
 
@@ -593,7 +629,7 @@ class BookOrbitRepository @Inject constructor(
                 endProgress = endProgress?.times(100.0)?.coerceIn(0.0, 100.0),
             ),
         )
-        if (!response.isSuccessful) error(httpMessage("BookOrbit reading-session sync failed", response))
+        if (!response.isSuccessful) error(bookOrbitHttpMessage("BookOrbit reading-session sync failed", response))
     }
 
     suspend fun fetchReadingSessions(book: Book): Result<List<BookOrbitReadingSessionRecord>> = runSuspendCatching {
@@ -602,7 +638,7 @@ class BookOrbitRepository @Inject constructor(
         var page = 1
         while (true) {
             val response = api.readingSessions(bookId, page = page, pageSize = 100)
-            if (!response.isSuccessful) error(httpMessage("BookOrbit reading sessions failed", response))
+            if (!response.isSuccessful) error(bookOrbitHttpMessage("BookOrbit reading sessions failed", response))
             val body = response.body() ?: break
             records += body.items.mapNotNull { it.toRecord(book.mediaType) }
             if (records.size >= body.total || body.items.isEmpty()) break
@@ -630,9 +666,8 @@ class BookOrbitRepository @Inject constructor(
         )
     }
 
-    fun getServeUrl(fileId: Int): String = "${apiBaseUrl()}/books/files/$fileId/serve"
-
-    fun getDownloadUrl(fileId: Int): String = "${apiBaseUrl()}/books/files/$fileId/download"
+    private fun audiobookAssetUrl(bookId: String, assetId: String): String =
+        "${apiBaseUrl()}/audiobooks/$bookId/assets/$assetId/content"
 
     fun invalidateCaches() = Unit
 
@@ -647,7 +682,7 @@ class BookOrbitRepository @Inject constructor(
                 pagination = BookOrbitPaginationRequest(page = page, size = size),
             ),
         )
-        if (!response.isSuccessful) error(httpMessage("BookOrbit books failed", response))
+        if (!response.isSuccessful) error(bookOrbitHttpMessage("BookOrbit books failed", response))
         return response.body() ?: BookOrbitBooksPageDto()
     }
 
@@ -687,7 +722,7 @@ class BookOrbitRepository @Inject constructor(
             primaryFileType = primaryFile?.format,
             libraryId = libraryId,
             connectionId = currentConnection()?.id,
-            addedOn = parseDateMillis(addedAt) ?: 0L,
+            addedOn = bookOrbitDateMillis(addedAt) ?: 0L,
             audioTracks = tracks,
             hasAudio = audioFiles.isNotEmpty(),
             hasEbook = ebookFiles.isNotEmpty(),
@@ -735,7 +770,7 @@ class BookOrbitRepository @Inject constructor(
             libraryId = libraryId?.toString() ?: fallbackLibraryId,
             libraryName = libraryName,
             connectionId = currentConnection()?.id,
-            addedOn = parseDateMillis(addedAt) ?: 0L,
+            addedOn = bookOrbitDateMillis(addedAt) ?: 0L,
             chapters = makeChapters(audioMetadata?.chapters.orEmpty(), totalDuration),
             audioTracks = tracks,
             hasAudio = audioFiles.isNotEmpty(),
@@ -754,7 +789,7 @@ class BookOrbitRepository @Inject constructor(
                 durationMs = durationMs,
                 cumulativeStartMs = offsetMs,
                 fileId = file.id.toString(),
-                contentUrl = getServeUrl(file.id),
+                contentUrl = null,
             ).also {
                 offsetMs += durationMs
             }
@@ -851,83 +886,6 @@ class BookOrbitRepository @Inject constructor(
 
     private fun coverUrl(bookId: Int): String = endpoints.coverUrl(bookId)
 
-    private fun ReaderAnnotation.isBookOrbitHighlight(): Boolean =
-        AnnotationMedia.parse(media) == AnnotationMedia.EPUB &&
-            AnnotationKind.parse(kind) != AnnotationKind.BOOKMARK &&
-            !cfi.isNullOrBlank() &&
-            selectedText.isNotBlank()
-
-    private fun ReaderAnnotation.isBookOrbitBookmark(): Boolean =
-        AnnotationKind.parse(kind) == AnnotationKind.BOOKMARK && when (AnnotationMedia.parse(media)) {
-            AnnotationMedia.AUDIOBOOK -> audioPositionMs != null
-            AnnotationMedia.EPUB -> !cfi.isNullOrBlank()
-            else -> false
-        }
-
-    private fun ReaderAnnotation.bookOrbitCfi(): String? = cfi?.takeIf { it.isNotBlank() }?.let {
-        if (it.startsWith("epubcfi(")) it else "epubcfi($it)"
-    }
-
-    private fun ReaderAnnotation.bookOrbitBookmarkTitle(): String =
-        note.takeIf { it.isNotBlank() }
-            ?: selectedText.takeIf { it.isNotBlank() }
-            ?: chapterId?.takeIf { it.isNotBlank() }
-            ?: "Bookmark"
-
-    private fun ReaderAnnotation.bookOrbitStyle(): String = when (AnnotationStyle.parse(style)) {
-        AnnotationStyle.UNDERLINE -> "underline"
-        AnnotationStyle.STRIKETHROUGH -> "strikethrough"
-        AnnotationStyle.SQUIGGLY -> "squiggly"
-        AnnotationStyle.HIGHLIGHT, AnnotationStyle.NONE -> "highlight"
-    }
-
-    private fun BookOrbitAnnotationDto.toReaderAnnotation(localBookId: String): ReaderAnnotation {
-        val created = parseDateMillis(createdAt) ?: System.currentTimeMillis()
-        return ReaderAnnotation(
-            id = "bookorbit:$id",
-            bookId = localBookId,
-            kind = if (note.isNullOrBlank()) AnnotationKind.HIGHLIGHT.name else AnnotationKind.NOTE.name,
-            media = AnnotationMedia.EPUB.name,
-            style = when (style.lowercase()) {
-                "underline" -> AnnotationStyle.UNDERLINE.name
-                "strikethrough" -> AnnotationStyle.STRIKETHROUGH.name
-                "squiggly" -> AnnotationStyle.SQUIGGLY.name
-                else -> AnnotationStyle.HIGHLIGHT.name
-            },
-            colorHex = color,
-            cfi = cfi,
-            selectedText = text,
-            note = note.orEmpty(),
-            chapterId = chapterTitle,
-            createdAt = created,
-            updatedAt = created,
-            serverId = id.toString(),
-            providerSource = "bookorbit",
-            syncDirty = false,
-        )
-    }
-
-    private fun BookOrbitBookmarkDto.toReaderAnnotation(localBookId: String): ReaderAnnotation {
-        val created = parseDateMillis(createdAt) ?: System.currentTimeMillis()
-        val media = if (positionSeconds != null) AnnotationMedia.AUDIOBOOK else AnnotationMedia.EPUB
-        return ReaderAnnotation(
-            id = "bookorbit:bookmark:$id",
-            bookId = localBookId,
-            kind = AnnotationKind.BOOKMARK.name,
-            media = media.name,
-            style = AnnotationStyle.NONE.name,
-            colorHex = "#F5921A",
-            audioPositionMs = positionSeconds?.times(1_000.0)?.roundToLong(),
-            cfi = cfi,
-            selectedText = title,
-            createdAt = created,
-            updatedAt = created,
-            serverId = "bookmark:$id",
-            providerSource = "bookorbit",
-            syncDirty = false,
-        )
-    }
-
     private suspend fun deleteRemoteArtifact(bookId: Int, serverId: String) {
         val bookmarkId = serverId.removePrefix("bookmark:").toIntOrNull()
         val response = if (serverId.startsWith("bookmark:") && bookmarkId != null) {
@@ -937,13 +895,13 @@ class BookOrbitRepository @Inject constructor(
             api.deleteAnnotation(bookId, annotationId)
         }
         if (!response.isSuccessful && response.code() != 404) {
-            error(httpMessage("BookOrbit reader-artifact deletion failed", response))
+            error(bookOrbitHttpMessage("BookOrbit reader-artifact deletion failed", response))
         }
     }
 
     private fun BookOrbitReadingSessionDto.toRecord(fallback: AppMediaType): BookOrbitReadingSessionRecord? {
-        val started = parseDateMillis(startedAt) ?: return null
-        val ended = parseDateMillis(endedAt) ?: return null
+        val started = bookOrbitDateMillis(startedAt) ?: return null
+        val ended = bookOrbitDateMillis(endedAt) ?: return null
         return BookOrbitReadingSessionRecord(
             id = id,
             startedAtMs = started,
@@ -973,18 +931,6 @@ class BookOrbitRepository @Inject constructor(
 
     private fun isAudio(format: String?): Boolean =
         format?.lowercase() in setOf("m4b", "mp3", "m4a", "opus", "ogg", "flac", "wav", "aac", "aax")
-
-    private fun parseDateMillis(raw: String?): Long? {
-        if (raw.isNullOrBlank()) return null
-        return runCatching { Instant.parse(raw).toEpochMilli() }.getOrNull()
-            ?: runCatching { OffsetDateTime.parse(raw).toInstant().toEpochMilli() }.getOrNull()
-            ?: runCatching { LocalDateTime.parse(raw, DateTimeFormatter.ISO_DATE_TIME).toInstant(ZoneOffset.UTC).toEpochMilli() }.getOrNull()
-            ?: runCatching { LocalDate.parse(raw, DateTimeFormatter.ISO_DATE).atStartOfDay().toInstant(ZoneOffset.UTC).toEpochMilli() }.getOrNull()
-            ?: raw.toLongOrNull()?.let { if (it > 1_000_000_000_000L) it else it * 1000L }
-    }
-
-    private fun httpMessage(prefix: String, response: Response<*>): String =
-        "$prefix: HTTP ${response.code()} ${response.message()}".trim()
 
     private enum class ContinueKind { LISTENING, READING }
 

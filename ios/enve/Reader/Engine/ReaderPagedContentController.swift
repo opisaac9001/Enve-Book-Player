@@ -442,7 +442,7 @@ final class ReaderPagedContentController {
         let progression = host?.pagedCurrentProgress ?? 0
         Task {
             await ReadingStatsTracker.shared.recordTick(bookId: book.stableId, positionProgression: progression, isReading: true)
-            if progression >= 0.99 {
+            if progression >= Book.finishedProgressThreshold {
                 await ReadingStatsTracker.shared.markBookAsFinished(bookId: book.stableId)
             }
         }

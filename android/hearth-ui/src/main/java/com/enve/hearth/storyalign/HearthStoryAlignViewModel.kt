@@ -85,9 +85,6 @@ class HearthStoryAlignViewModel @Inject constructor(
         picking.value = null
     }
 
-    fun clearEbook() { selectedEbook.value = null }
-    fun clearAudiobook() { selectedAudiobook.value = null }
-
     val canStart: StateFlow<Boolean> =
         combine(selectedEbook, selectedAudiobook) { e, a -> e != null && a != null }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
@@ -105,6 +102,7 @@ class HearthStoryAlignViewModel @Inject constructor(
 
     fun cancel(id: String) = launch { storyAlign.cancelJob(id) }
     fun retry(id: String) = launch { storyAlign.retryJob(id) }
+    fun restorePrevious(id: String) = launch { storyAlign.restorePreviousOutput(id) }
     fun delete(id: String) = launch { storyAlign.deleteJob(id, deleteOutput = true) }
 
     private inline fun launch(crossinline block: suspend () -> Unit) {

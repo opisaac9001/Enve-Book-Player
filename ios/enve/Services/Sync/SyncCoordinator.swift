@@ -11,6 +11,14 @@ struct SyncSnapshot: Sendable {
     let source: String
 }
 
+func freshestEbookProgressBook(captured: Book, cached: Book?) -> Book {
+    guard let cached else { return captured }
+    if cached.lastUpdate > captured.lastUpdate { return cached }
+    if cached.lastUpdate < captured.lastUpdate { return captured }
+    if cached.epubLocator != nil || cached.ebookProgress != nil { return cached }
+    return captured
+}
+
 @MainActor
 final class PerBookSerialQueue {
     private var active: [String: Task<Void, Never>] = [:]
@@ -227,7 +235,9 @@ final class SyncCoordinator {
 
     private func handleForeground() async {
         await flushPendingSyncs()
-        await CloudProgressService.shared.refreshCurrentBookFromServer()
+        async let cloudSync: Void = CloudProgressService.shared.syncOnAppLaunch(books: AppState.shared.allBooks)
+        async let providerSync: Void = CloudProgressService.shared.refreshCurrentBookFromServer()
+        _ = await (cloudSync, providerSync)
     }
 
     @discardableResult
@@ -266,6 +276,10 @@ final class SyncCoordinator {
         await CloudProgressService.shared.syncOnAppLaunch(books: books)
     }
 
+    func syncNewBooksFromCloud(_ books: [Book]) async {
+        await CloudProgressService.shared.syncNewBooksFromCloud(books)
+    }
+
     func getCloudProgress(for book: Book) async -> (position: TimeInterval, deviceName: String?)? {
         await CloudProgressService.shared.getCloudProgress(for: book)
     }
@@ -279,6 +293,13 @@ final class SyncCoordinator {
 
     func resolveEbookConflict(bookStableId: String, useServer: Bool) {
         guard let conflict = EbookConflictStore.shared.remove(stableId: bookStableId) else { return }
+
+        if let book = AppState.shared.bookInMemory(stableId: bookStableId) {
+            RemoteRewindTracker.shared.recordUserResolution(
+                scope: RemoteProgressScope(book: book, domain: .ebook, source: conflict.remoteSource),
+                acceptedRemote: useServer
+            )
+        }
 
         if useServer {
             let updated = AppState.shared.mutateBook(stableId: bookStableId) { book in
@@ -368,7 +389,12 @@ final class SyncCoordinator {
             localPosition: localProgress,
             localDate: localDate,
             serverPosition: snapshot.progress,
-            serverDate: snapshot.lastUpdate
+            serverDate: snapshot.lastUpdate,
+            localLocator: usesEbookProgress ? book.epubLocator : nil,
+            serverLocator: usesEbookProgress ? snapshot.locator : nil
+        )
+        AppLogger.sync.info(
+            "[SyncCoordinator] pullOnOpen local=\(Int(localProgress * 100))%@\(localDate.ISO8601Format()) \(snapshot.source)=\(Int(snapshot.progress * 100))%@\(snapshot.lastUpdate.ISO8601Format()) direction=\(direction) bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId))"
         )
 
         switch direction {
@@ -385,28 +411,52 @@ final class SyncCoordinator {
             emit(.pullCompleted(bookId: bookId, applied: false))
             await pushProgress(book: book, forceImmediate: true, domain: domain)
         case .conflict:
-            AppLogger.sync.info(
-                "[SyncCoordinator] Conflict detected for bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId))"
+            let verdict = RemoteRewindTracker.shared.assess(
+                scope: RemoteProgressScope(book: book, domain: domain, source: snapshot.source),
+                observation: RemoteProgressObservation(
+                    progress: snapshot.progress,
+                    positionSeconds: snapshot.positionSeconds > 0 ? snapshot.positionSeconds : nil,
+                    locator: snapshot.locator,
+                    observedAt: snapshot.lastUpdate
+                ),
+                localProgress: localProgress
             )
-            EbookConflictStore.shared.add(
-                EbookSyncConflict(
-                    bookStableId: bookId,
-                    bookTitle: book.title,
-                    localProgress: localProgress,
-                    serverProgress: snapshot.progress,
-                    serverLocator: snapshot.locator,
-                    serverDate: snapshot.lastUpdate
+
+            switch verdict {
+            case .confirmed:
+                EbookConflictStore.shared.remove(stableId: bookId)
+                AppLogger.sync.info(
+                    "[SyncCoordinator] Confirmed intentional \(snapshot.source) rewind for bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId))"
                 )
-            )
-            emit(
-                .conflictDetected(
-                    bookId: bookId,
-                    localProgress: localProgress,
-                    remoteProgress: snapshot.progress,
-                    remoteSource: snapshot.source
+                await applySnapshot(snapshot, to: book, usesEbookProgress: usesEbookProgress)
+                emit(.pullCompleted(bookId: bookId, applied: true))
+            case .echo, .dismissed:
+                emit(.pullCompleted(bookId: bookId, applied: false))
+            case .notRewind, .unconfirmed:
+                AppLogger.sync.info(
+                    "[SyncCoordinator] Conflict detected for bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId))"
                 )
-            )
-            emit(.pullCompleted(bookId: bookId, applied: false))
+                EbookConflictStore.shared.add(
+                    EbookSyncConflict(
+                        bookStableId: bookId,
+                        bookTitle: book.title,
+                        localProgress: localProgress,
+                        serverProgress: snapshot.progress,
+                        serverLocator: snapshot.locator,
+                        serverDate: snapshot.lastUpdate,
+                        remoteSource: snapshot.source
+                    )
+                )
+                emit(
+                    .conflictDetected(
+                        bookId: bookId,
+                        localProgress: localProgress,
+                        remoteProgress: snapshot.progress,
+                        remoteSource: snapshot.source
+                    )
+                )
+                emit(.pullCompleted(bookId: bookId, applied: false))
+            }
         case .none:
             emit(.pullCompleted(bookId: bookId, applied: false))
         }
@@ -436,6 +486,25 @@ final class SyncCoordinator {
                 sourceEngine: sourceEngine,
                 domain: domain
             )
+        }
+    }
+
+    func pushCloudProgress(_ update: ProgressUpdate) async {
+        guard syncEnabled else { return }
+        if update.domain == .ebook,
+            EbookConflictStore.shared.contains(stableId: update.book.stableId)
+        {
+            return
+        }
+
+        await serialQueue.enqueue(bookId: update.book.stableId) {
+            do {
+                try await CloudKitProgressSync.shared.push(update)
+            } catch {
+                AppLogger.sync.error(
+                    "iCloud push failed for bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: update.book.stableId)): \(error.localizedDescription)"
+                )
+            }
         }
     }
 
@@ -479,53 +548,6 @@ final class SyncCoordinator {
         domain: ProgressSyncDomain
     ) async {
         await performPush(book: book, isFinished: true, domain: domain)
-    }
-
-    func pushAbandoned(
-        book: Book,
-        domain: ProgressSyncDomain
-    ) async {
-        guard let provider = providerResolver.provider(for: book) else { return }
-        guard provider.syncCapability.contains(.pushProgress) else { return }
-        let bookId = book.stableId
-        emit(.pushStarted(bookId: bookId))
-        do {
-            if domain.usesEbookProgress {
-                if book.isStorytellerReadAloud,
-                    let storyteller = provider as? StorytellerProvider
-                {
-                    guard let locator = book.epubLocator else {
-                        throw ProviderError.invalidResponse
-                    }
-                    try await StorytellerPositionSyncService.shared.submit(
-                        book: book,
-                        locatorJSON: locator,
-                        observedAt: book.lastUpdate,
-                        through: storyteller
-                    )
-                } else {
-                    guard let progressProvider = provider as? any EbookProgressPushing else { return }
-                    try await progressProvider.updateEbookProgress(
-                        for: book,
-                        progress: book.canonicalEbookProgress,
-                        epubLocator: book.epubLocator
-                    )
-                }
-            } else {
-                guard let progressProvider = provider as? any AudiobookProgressPushing else { return }
-                let position = BookProgressStore.shared.loadProgress(for: book)?.progress ?? 0
-                try await progressProvider.updatePlaybackProgress(
-                    book: book,
-                    sessionId: nil,
-                    currentTime: position,
-                    isFinished: false,
-                    timeListened: 0
-                )
-            }
-            emit(.pushCompleted(bookId: bookId))
-        } catch {
-            emit(.pushFailed(bookId: bookId, error: error.localizedDescription, retryable: true))
-        }
     }
 
     @discardableResult
@@ -587,7 +609,7 @@ final class SyncCoordinator {
     func pushHardcoverIfNeeded(book: Book, progress: Double, sessionService: PlayerSessionService) async {
         let bookId = book.stableId
         let last = lastHardcoverProgress[bookId] ?? -1
-        let isFinishing = progress >= 0.99
+        let isFinishing = progress >= Book.finishedProgressThreshold
         guard abs(progress - last) >= hardcoverThreshold || isFinishing else { return }
         lastHardcoverProgress[bookId] = progress
         if isFinishing {
@@ -595,10 +617,6 @@ final class SyncCoordinator {
         } else {
             await sessionService.syncHardcoverProgress(book: book, progress: progress)
         }
-    }
-
-    func resetHardcoverProgress(bookId: String) {
-        lastHardcoverProgress[bookId] = nil
     }
 
     func subscribe(book: Book) -> AsyncStream<SyncEvent> {
@@ -638,7 +656,7 @@ final class SyncCoordinator {
         return snapshots.max { $0.lastUpdate < $1.lastUpdate }
     }
 
-    private func applySnapshot(
+    func applySnapshot(
         _ snapshot: SyncSnapshot,
         to book: Book,
         usesEbookProgress: Bool
@@ -662,9 +680,13 @@ final class SyncCoordinator {
                     resolvedLocator = loc
                 }
             }
+            let narratedAudioTime = EpubLocationBridge.narratedAudioTime(from: resolvedLocator)
             let updatedBook = AppState.shared.mutateBook(stableId: book.stableId) { updated in
                 updated.ebookProgress = snapshot.progress
-                updated.isFinished = snapshot.isFinished || snapshot.progress >= 0.99
+                if let narratedAudioTime {
+                    updated.currentTime = narratedAudioTime
+                }
+                updated.isFinished = snapshot.isFinished || snapshot.progress >= Book.finishedProgressThreshold
                 updated.serverReadStatus = updated.isFinished ? "READ" : nil
                 if let loc = resolvedLocator {
                     updated.epubLocator = loc
@@ -675,13 +697,26 @@ final class SyncCoordinator {
             }
             EbookLinkStore.shared.saveLinks()
             if let updatedBook {
-                await AppState.shared.bookStore.updateEbookProgress(
-                    uniqueId: updatedBook.uniqueId,
-                    ebookProgress: snapshot.progress,
-                    epubLocator: updatedBook.epubLocator,
-                    isFinished: updatedBook.isFinished,
-                    lastUpdate: snapshot.lastUpdate
-                )
+                if let narratedAudioTime {
+                    NarratedAudioPositionStore.shared.recordNarration(
+                        audioTime: narratedAudioTime,
+                        for: updatedBook
+                    )
+                }
+                await AppState.shared.bookStore.applyAuthoritativeProgress([
+                    AuthoritativeProgressUpdate(
+                        bookUniqueId: updatedBook.uniqueId,
+                        stableId: updatedBook.stableId,
+                        currentTime: updatedBook.currentTime,
+                        duration: updatedBook.duration ?? 0,
+                        ebookProgress: snapshot.progress,
+                        epubLocator: updatedBook.epubLocator,
+                        isFinished: updatedBook.isFinished,
+                        lastUpdate: snapshot.lastUpdate,
+                        hideFromContinue: updatedBook.hideFromContinue,
+                        serverReadStatus: updatedBook.serverReadStatus
+                    )
+                ])
                 await LinkedBookProgressCoordinator.shared.recordEbookProgress(
                     book: updatedBook,
                     progression: snapshot.progress,
@@ -710,12 +745,20 @@ final class SyncCoordinator {
                 $0.lastUpdate = snapshot.lastUpdate
             }
             if let updatedBook {
-                await AppState.shared.bookStore.updateProgress(
-                    uniqueId: updatedBook.uniqueId,
-                    currentTime: position,
-                    isFinished: snapshot.isFinished,
-                    lastUpdate: snapshot.lastUpdate
-                )
+                await AppState.shared.bookStore.applyAuthoritativeProgress([
+                    AuthoritativeProgressUpdate(
+                        bookUniqueId: updatedBook.uniqueId,
+                        stableId: updatedBook.stableId,
+                        currentTime: position,
+                        duration: duration,
+                        ebookProgress: updatedBook.ebookProgress,
+                        epubLocator: updatedBook.epubLocator,
+                        isFinished: snapshot.isFinished,
+                        lastUpdate: snapshot.lastUpdate,
+                        hideFromContinue: updatedBook.hideFromContinue,
+                        serverReadStatus: updatedBook.serverReadStatus
+                    )
+                ])
                 await LinkedBookProgressCoordinator.shared.recordAudiobookProgress(
                     book: updatedBook,
                     currentTime: position,
@@ -733,9 +776,18 @@ final class SyncCoordinator {
         sourceEngine: ReaderEngineKind? = nil,
         domain: ProgressSyncDomain
     ) async {
+        let pushBook: Book
+        if domain.usesEbookProgress {
+            let cached =
+                AppState.shared.bookInMemory(uniqueId: book.uniqueId)
+                ?? AppState.shared.bookInMemory(stableId: book.stableId)
+            pushBook = freshestEbookProgressBook(captured: book, cached: cached)
+        } else {
+            pushBook = book
+        }
         await performPush(
             update: buildProgressUpdate(
-                book: book,
+                book: pushBook,
                 isFinished: isFinished,
                 sourceEngine: sourceEngine,
                 domain: domain
@@ -747,6 +799,8 @@ final class SyncCoordinator {
         let book = update.book
         let bookId = book.stableId
         guard syncEnabled else { return }
+        // Until the user picks a side, pushing would overwrite the position they may still choose.
+        if update.domain.usesEbookProgress, EbookConflictStore.shared.contains(stableId: bookId) { return }
 
         let sinks = PluginRegistry.shared.sinks(applicableTo: book, domain: update.domain)
         let providerSink = sinks.first { $0.id == ProviderSyncSink.identifier }
@@ -760,10 +814,12 @@ final class SyncCoordinator {
             guard let self else { return }
             var providerSucceeded = false
             var providerError: Error?
+            var anySinkSucceeded = false
 
             for sink in sinks {
                 do {
                     try await sink.push(update)
+                    anySinkSucceeded = true
                     if sink.id == ProviderSyncSink.identifier {
                         providerSucceeded = true
                     }
@@ -776,6 +832,15 @@ final class SyncCoordinator {
                         )
                     }
                 }
+            }
+
+            if anySinkSucceeded {
+                RemoteRewindTracker.shared.recordOutboundWrite(
+                    key: RemoteProgressWriteKey(book: book, domain: update.domain),
+                    progress: update.progress,
+                    positionSeconds: update.positionSeconds > 0 ? update.positionSeconds : nil,
+                    locator: update.locator
+                )
             }
 
             if let providerError {
@@ -830,7 +895,7 @@ final class SyncCoordinator {
         let position = BookProgressStore.shared.loadProgress(for: book)?.progress ?? 0
         let duration = book.duration ?? 0
         let progress = duration > 0 ? position / duration : 0
-        let finished = isFinished || (duration > 0 && position >= duration * 0.99)
+        let finished = isFinished || (duration > 0 && position >= duration * Book.finishedProgressThreshold)
         return ProgressUpdate(
             book: book,
             domain: .audiobook,
@@ -853,15 +918,6 @@ extension SyncCoordinator {
     ) {
         Task { @MainActor in
             await SyncCoordinator.shared.pullOnOpen(book: book, domain: domain)
-        }
-    }
-
-    nonisolated func pushProgressDetached(
-        book: Book,
-        domain: ProgressSyncDomain
-    ) {
-        Task { @MainActor in
-            await SyncCoordinator.shared.pushProgress(book: book, domain: domain)
         }
     }
 }

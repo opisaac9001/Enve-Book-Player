@@ -57,12 +57,12 @@ struct MiniPlayer_tvOS: View {
                 .progressViewStyle(.linear)
                 .tint(.white)
             HStack {
-                Text(formatTime(playerVM.progress))
+                Text(PlaybackTime.clock(playerVM.progress))
                     .font(.caption2)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
                 Spacer()
-                Text("-\(formatTime(max(0, playerVM.duration - playerVM.progress)))")
+                Text("-\(PlaybackTime.clock(max(0, playerVM.duration - playerVM.progress)))")
                     .font(.caption2)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
@@ -93,14 +93,6 @@ struct MiniPlayer_tvOS: View {
                     )
             }
         }
-    }
-
-    private func formatTime(_ seconds: TimeInterval) -> String {
-        let total = Int(seconds)
-        let h = total / 3600
-        let m = (total % 3600) / 60
-        let s = total % 60
-        return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
     }
 }
 

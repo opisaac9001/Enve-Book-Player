@@ -27,7 +27,6 @@ sealed class GrimmoryOidcCallback {
     data class Failed(val message: String) : GrimmoryOidcCallback()
 }
 
-// PKCE state held in this @Singleton so it survives VM recreation across the browser hop.
 @Singleton
 class GrimmoryOidcFlow @Inject constructor(
     private val repository: GrimmoryRepository,
@@ -123,7 +122,6 @@ class GrimmoryOidcFlow @Inject constructor(
         )
     }
 
-    // Call after the connection has been upserted, so tokens land under the right connectionId.
     suspend fun persistTokensForConnection(connectionId: String) {
         val accessToken = prefs.accessToken.first()
         val refreshToken = prefs.refreshToken.first()

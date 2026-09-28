@@ -69,10 +69,6 @@ final class BookHotCache {
         pinned.remove(uniqueId)
     }
 
-    func setPinned(uniqueIds: Set<String>) {
-        pinned = uniqueIds.intersection(Set(entries.keys))
-    }
-
     private func touch(_ uniqueId: String) {
         accessCounter &+= 1
         lastAccess[uniqueId] = accessCounter

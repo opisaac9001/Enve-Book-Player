@@ -282,11 +282,11 @@ final class AdminGrimmoryStatsModel {
         let calendar = Calendar.current
         let now = Date()
         weeklyReadingSeconds = sessions.filter {
-            guard let date = adminParseDate($0.startTime) else { return false }
+            guard let date = ISO8601Timestamp.parse($0.startTime) else { return false }
             return calendar.dateComponents([.day], from: date, to: now).day ?? 999 < 7
         }.reduce(0) { $0 + ($1.durationSeconds ?? 0) }
         monthlyReadingSeconds = sessions.filter {
-            guard let date = adminParseDate($0.startTime) else { return false }
+            guard let date = ISO8601Timestamp.parse($0.startTime) else { return false }
             return calendar.dateComponents([.day], from: date, to: now).day ?? 999 < 30
         }.reduce(0) { $0 + ($1.durationSeconds ?? 0) }
     }
@@ -317,7 +317,7 @@ final class AdminGrimmoryStatsModel {
             dailyMap[formatter.string(from: day)] = (0, 0, day)
         }
         for session in sessions {
-            guard let date = adminParseDate(session.startTime) else { continue }
+            guard let date = ISO8601Timestamp.parse(session.startTime) else { continue }
             let key = formatter.string(from: calendar.startOfDay(for: date))
             if var entry = dailyMap[key] {
                 entry.minutes += (session.durationSeconds ?? 0) / 60
@@ -337,7 +337,7 @@ final class AdminGrimmoryStatsModel {
 
         var activeDays = Set<String>()
         for session in sessions {
-            if let date = adminParseDate(session.startTime) {
+            if let date = ISO8601Timestamp.parse(session.startTime) {
                 activeDays.insert(formatter.string(from: calendar.startOfDay(for: date)))
             }
         }
@@ -354,7 +354,7 @@ final class AdminGrimmoryStatsModel {
 
     private func adminIsFinished(_ book: GrimmoryRecentBook) -> Bool {
         let status = book.readStatus?.lowercased() ?? ""
-        return status == "read" || status == "completed" || status == "finished" || (book.readProgress ?? 0) >= 99
+        return status == "read" || status == "completed" || status == "finished" || (book.readProgress ?? 0) >= Book.finishedProgressThreshold
     }
 
     private func adminIsInProgress(_ book: GrimmoryRecentBook) -> Bool {
@@ -367,13 +367,5 @@ final class AdminGrimmoryStatsModel {
         let status = book.readStatus?.lowercased() ?? ""
         return (book.readProgress ?? 0) == 0
             && !["reading", "in_progress", "read", "completed", "finished", "abandoned"].contains(status)
-    }
-
-    private func adminParseDate(_ string: String) -> Date? {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: string) { return date }
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: string)
     }
 }

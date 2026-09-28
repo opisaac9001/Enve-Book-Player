@@ -1,6 +1,7 @@
 package com.enve.app.ui.screens.reader
 
 import androidx.compose.foundation.background
+import com.enve.core.reader.highlightColorHex
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -31,8 +32,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -69,11 +68,14 @@ import com.enve.app.viewmodel.ReaderViewModel
 import com.enve.core.data.model.AnnotationKind
 import com.enve.core.data.model.AnnotationStyle
 import com.enve.core.data.model.ReaderAnnotation
+import com.enve.hearth.design.EmberAccent
 import com.enve.hearth.design.Hearth
 import com.enve.hearth.design.HearthChip
 import com.enve.hearth.design.HearthText
+import com.enve.hearth.design.HearthToggleRow
 import com.enve.hearth.design.Overline
 import com.enve.hearth.design.hearthDisplay
+import com.enve.hearth.design.parseHexColor
 import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -154,7 +156,7 @@ private fun NoteSheet(vm: ReaderViewModel, state: ReaderUiState) {
             NARRATION_INKS.forEach { hex ->
                 val selected = hex == ink
                 Box(
-                    Modifier.size(30.dp).clip(CircleShape).background(parseHex(hex))
+                    Modifier.size(30.dp).clip(CircleShape).background(parseHexColor(hex) ?: EmberAccent)
                         .border(if (selected) 2.dp else 0.dp, if (selected) palette.ember else Color.Transparent, CircleShape)
                         .clickable { ink = hex },
                 )
@@ -206,21 +208,21 @@ private fun ReadAloudSheet(vm: ReaderViewModel, state: ReaderUiState) {
             { vm.updatePreferences(prefs.copy(readAloudSyncOffsetMs = (prefs.readAloudSyncOffsetMs + 100).coerceIn(-1000, 1000))) },
         )
 
-        ToggleRow("Highlight read aloud", prefs.readAloudHighlight) { vm.updatePreferences(prefs.copy(readAloudHighlight = it)) }
+        HearthToggleRow("Highlight read aloud", prefs.readAloudHighlight) { vm.updatePreferences(prefs.copy(readAloudHighlight = it)) }
         if (prefs.readAloudHighlight) {
             Row(horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.M)) {
                 NARRATION_INKS.forEach { hex ->
                     val selected = hex.equals(prefs.readAloudHighlightHex, ignoreCase = true)
                     Box(
-                        Modifier.size(30.dp).clip(CircleShape).background(parseHex(hex))
+                        Modifier.size(30.dp).clip(CircleShape).background(parseHexColor(hex) ?: EmberAccent)
                             .border(if (selected) 2.dp else 0.dp, if (selected) palette.ember else Color.Transparent, CircleShape)
                             .clickable { vm.updatePreferences(prefs.copy(readAloudHighlightHex = hex)) },
                     )
                 }
             }
         }
-        ToggleRow("Turn pages with read aloud", prefs.readAloudAutoTurn) { vm.updatePreferences(prefs.copy(readAloudAutoTurn = it)) }
-        ToggleRow("Skip footnotes & page numbers", prefs.readAloudSkipAsides) { vm.updatePreferences(prefs.copy(readAloudSkipAsides = it)) }
+        HearthToggleRow("Turn pages with read aloud", prefs.readAloudAutoTurn) { vm.updatePreferences(prefs.copy(readAloudAutoTurn = it)) }
+        HearthToggleRow("Skip footnotes & page numbers", prefs.readAloudSkipAsides) { vm.updatePreferences(prefs.copy(readAloudSkipAsides = it)) }
 
         Overline("Clips in this chapter")
         if (state.readAlongChapterClips.isEmpty()) {
@@ -234,11 +236,13 @@ private fun ReadAloudSheet(vm: ReaderViewModel, state: ReaderUiState) {
                             .padding(vertical = Hearth.Spacing.S),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        val label = row.text.ifBlank { "Clip ${row.index + 1}" }
                         Text(
-
-                            if (current) "▸ Clip ${row.index + 1}" else "Clip ${row.index + 1}",
+                            if (current) "▸ $label" else label,
                             style = if (current) HearthText.Body.copy(fontWeight = FontWeight.SemiBold) else HearthText.Body,
                             color = if (current) palette.ember else palette.text,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f),
                         )
                         if (row.skippable) {
@@ -293,8 +297,8 @@ private fun AppearanceSheet(vm: ReaderViewModel, state: ReaderUiState, customFon
         }
 
         Overline("Status strip")
-        ToggleRow("Show clock", prefs.showClock) { vm.updatePreferences(prefs.copy(showClock = it)) }
-        ToggleRow("Show battery", prefs.showBattery) { vm.updatePreferences(prefs.copy(showBattery = it)) }
+        HearthToggleRow("Show clock", prefs.showClock) { vm.updatePreferences(prefs.copy(showClock = it)) }
+        HearthToggleRow("Show battery", prefs.showBattery) { vm.updatePreferences(prefs.copy(showBattery = it)) }
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S)) {
             ReaderProgressDisplay.entries.forEach { mode ->
                 HearthChip(mode.label, selected = prefs.progressDisplay == mode, onClick = { vm.updatePreferences(prefs.copy(progressDisplay = mode)) })
@@ -311,7 +315,7 @@ private fun AppearanceSheet(vm: ReaderViewModel, state: ReaderUiState, customFon
                 )
             }
         }
-        ToggleRow("Left-edge brightness swipe", prefs.edgeBrightnessSwipe) {
+        HearthToggleRow("Left-edge brightness swipe", prefs.edgeBrightnessSwipe) {
             vm.updatePreferences(prefs.copy(edgeBrightnessSwipe = it))
         }
 
@@ -352,8 +356,8 @@ private fun AppearanceSheet(vm: ReaderViewModel, state: ReaderUiState, customFon
             HearthChip("Scrolled", selected = prefs.scroll, onClick = { vm.updatePreferences(prefs.copy(scroll = true)) })
         }
 
-        ToggleRow("Justified text", prefs.justified) { vm.updatePreferences(prefs.copy(justified = it)) }
-        ToggleRow("Respect publisher styles", prefs.publisherStyles) { vm.updatePreferences(prefs.copy(publisherStyles = it)) }
+        HearthToggleRow("Justified text", prefs.justified) { vm.updatePreferences(prefs.copy(justified = it)) }
+        HearthToggleRow("Respect publisher styles", prefs.publisherStyles) { vm.updatePreferences(prefs.copy(publisherStyles = it)) }
     }
 }
 
@@ -384,15 +388,6 @@ private fun Stepper(label: String, value: String, onDec: () -> Unit, onInc: () -
             Text(value, style = HearthText.Caption, color = palette.textSecondary)
             Text("+", style = HearthText.Body.copy(fontWeight = FontWeight.Bold, fontSize = 22.sp), color = palette.ember, modifier = Modifier.clip(CircleShape).clickable(onClick = onInc).padding(horizontal = Hearth.Spacing.S))
         }
-    }
-}
-
-@Composable
-private fun ToggleRow(label: String, checked: Boolean, onCheck: (Boolean) -> Unit) {
-    val palette = Hearth.palette
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(label, style = HearthText.Body, color = palette.text)
-        Switch(checked = checked, onCheckedChange = onCheck, colors = SwitchDefaults.colors(checkedTrackColor = palette.ember, checkedThumbColor = palette.readableOnEmber))
     }
 }
 
@@ -467,7 +462,7 @@ private fun ContentsSheet(vm: ReaderViewModel, state: ReaderUiState) {
                     items(filteredNotes, key = { it.id }) { a ->
                         AnnotationRow(
                             a = a,
-                            dot = parseHex(a.colorHex),
+                            dot = highlightColorHex(a.colorHex)?.let(::parseHexColor) ?: EmberAccent,
                             onOpen = { vm.seekToAnnotation(a); vm.showToc(false) },
                             onEdit = { vm.showDecorationPopover(a.id); vm.showToc(false) },
                             onDelete = { vm.deleteAnnotation(a) },
@@ -554,7 +549,7 @@ private fun SearchSheet(vm: ReaderViewModel, state: ReaderUiState) {
             )
         }
         if (state.searchOptionsAvailable) {
-            ToggleRow("Whole words", state.searchWholeWords, vm::updateSearchWholeWords)
+            HearthToggleRow("Whole words", state.searchWholeWords, vm::updateSearchWholeWords)
             Text(
                 if (state.searchWholeWords) "Word or exact phrase. Matching headings appear first."
                 else "Includes partial words. Large books may take longer.",

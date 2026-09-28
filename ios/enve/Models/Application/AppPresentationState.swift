@@ -28,8 +28,4 @@ final class AppPresentationState {
         lastUserFacingError = (title, message, Date())
         userFacingError = UserFacingError(title: title, message: message)
     }
-
-    func dismissError() {
-        userFacingError = nil
-    }
 }

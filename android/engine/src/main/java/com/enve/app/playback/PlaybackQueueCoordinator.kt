@@ -7,6 +7,7 @@ import com.enve.core.data.local.PreferencesManager
 import com.enve.core.data.local.toBook
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
+import com.enve.core.data.util.FINISHED_PROGRESS_THRESHOLD
 import com.enve.engine.playback.PlaybackQueueItem
 import com.enve.engine.playback.PlaybackQueueOrigin
 import kotlinx.coroutines.CancellationException
@@ -35,7 +36,7 @@ internal object PlaybackQueuePolicy {
     }
 
     fun isFinished(book: Book): Boolean =
-        book.isFinished || book.progress >= 0.99f ||
+        book.isFinished || book.progress >= FINISHED_PROGRESS_THRESHOLD ||
             book.serverReadStatus?.uppercase() in setOf("READ", "COMPLETED", "FINISHED")
 
     fun seriesAutoAdvanceCandidates(current: Book, books: List<Book>): List<Book> {
@@ -219,7 +220,7 @@ class PlaybackQueueCoordinator @Inject constructor(
 
     private suspend fun start(book: Book, positionMs: Long? = null): Boolean {
         val started = try {
-            starter.start(book)
+            starter.start(book, resolveOpenProgress = positionMs == null)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

@@ -9,6 +9,7 @@ import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.BrowseGroup
 import com.enve.core.data.model.Library
 import com.enve.core.data.model.ReadStatus
+import com.enve.core.data.util.FINISHED_PROGRESS_THRESHOLD
 import com.enve.engine.library.LibraryFacade
 import com.enve.engine.library.BookOrbitCollectionEdit
 import com.enve.engine.library.LibraryConnectionOption
@@ -811,7 +812,7 @@ class HearthLibraryViewModel @Inject constructor(
         !isRead(b) && statusAllowsContinue(b) &&
             (b.readStatus == ReadStatus.IN_PROGRESS ||
                 b.serverReadStatus?.uppercase() in setOf("READING", "RE_READING", "IN_PROGRESS") ||
-                b.readProgress in 0.01f..0.99f || b.currentTime > 0L || (b.epubProgress ?: 0f) in 0.01f..0.99f)
+                b.readProgress in 0.01f..FINISHED_PROGRESS_THRESHOLD || b.currentTime > 0L || (b.epubProgress ?: 0f) in 0.01f..FINISHED_PROGRESS_THRESHOLD)
 
     private fun isRead(book: Book): Boolean =
         book.isFinished || book.readStatus == ReadStatus.COMPLETED ||

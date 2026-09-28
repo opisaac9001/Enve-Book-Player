@@ -121,12 +121,6 @@ class VocabViewModel @Inject constructor(
         viewModelScope.launch { repo.delete(entry.id) }
     }
 
-    fun saveNote(entry: VocabEntry, note: String) {
-        viewModelScope.launch {
-            repo.updateNoteAndDefinition(entry.id, note.ifBlank { null }, entry.definitionSnapshot)
-        }
-    }
-
     private inline fun MutableStateFlow<StudySessionState>.update(block: (StudySessionState) -> StudySessionState) {
         value = block(value)
     }

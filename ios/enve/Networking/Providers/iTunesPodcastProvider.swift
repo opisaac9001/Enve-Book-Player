@@ -54,21 +54,7 @@ actor iTunesPodcastProvider {
 
         let searchResponse = try makeDecoder().decode(iTunesSearchResponse.self, from: data)
 
-        return searchResponse.results.compactMap { result -> iTunesPodcast? in
-            guard let feedURL = result.feedUrl, !feedURL.isEmpty else { return nil }
-
-            return iTunesPodcast(
-                id: String(result.collectionId ?? result.trackId ?? 0),
-                title: result.collectionName ?? result.trackName ?? "Unknown",
-                author: result.artistName,
-                feedURL: feedURL,
-                coverURL: result.artworkUrl600.flatMap { URL(string: $0) }
-                    ?? result.artworkUrl100.flatMap { URL(string: $0) },
-                genres: result.genres ?? [],
-                trackCount: result.trackCount ?? 0,
-                releaseDate: result.releaseDate
-            )
-        }
+        return searchResponse.results.compactMap(Self.podcast(from:))
     }
 
     func lookup(collectionId: String) async throws -> iTunesPodcast? {
@@ -85,20 +71,75 @@ actor iTunesPodcastProvider {
 
         let searchResponse = try makeDecoder().decode(iTunesSearchResponse.self, from: data)
 
-        guard let result = searchResponse.results.first,
-            let feedURL = result.feedUrl, !feedURL.isEmpty
-        else { return nil }
+        return searchResponse.results.first.flatMap(Self.podcast(from:))
+    }
 
+    func topPodcasts(genreId: Int?, limit: Int = 40) async throws -> [iTunesPodcast] {
+        let storefront = (Locale.current.region?.identifier ?? "US").lowercased()
+        let genrePath = genreId.map { "/genre=\($0)" } ?? ""
+        guard let chartURL = URL(string: "https://itunes.apple.com/\(storefront)/rss/toppodcasts/limit=\(limit)\(genrePath)/json") else {
+            throw PodcastSearchError.invalidURL
+        }
+        let (chartData, chartResponse) = try await URLSession.shared.data(from: chartURL)
+        guard (chartResponse as? HTTPURLResponse)?.statusCode == 200 else {
+            throw PodcastSearchError.searchFailed
+        }
+        let ids = try JSONDecoder().decode(ChartResponse.self, from: chartData).feed.entry?.map(\.id.attributes.id) ?? []
+        guard !ids.isEmpty else { return [] }
+
+        var components = URLComponents(string: "https://itunes.apple.com/lookup")!
+        components.queryItems = [
+            URLQueryItem(name: "id", value: ids.joined(separator: ",")),
+            URLQueryItem(name: "entity", value: "podcast"),
+            URLQueryItem(name: "country", value: storefront),
+        ]
+        guard let lookupURL = components.url else { throw PodcastSearchError.invalidURL }
+        let (data, response) = try await URLSession.shared.data(from: lookupURL)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw PodcastSearchError.searchFailed
+        }
+        let shows = try makeDecoder().decode(iTunesSearchResponse.self, from: data).results.compactMap(Self.podcast(from:))
+        let showsById = Dictionary(shows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return ids.compactMap { showsById[$0] }
+    }
+
+    private static func podcast(from result: iTunesResult) -> iTunesPodcast? {
+        guard let feedURL = result.feedUrl, !feedURL.isEmpty else { return nil }
         return iTunesPodcast(
-            id: String(result.collectionId ?? 0),
-            title: result.collectionName ?? "Unknown",
+            id: String(result.collectionId ?? result.trackId ?? 0),
+            title: result.collectionName ?? result.trackName ?? "Unknown",
             author: result.artistName,
             feedURL: feedURL,
-            coverURL: result.artworkUrl600.flatMap { URL(string: $0) },
+            coverURL: result.artworkUrl600.flatMap { URL(string: $0) }
+                ?? result.artworkUrl100.flatMap { URL(string: $0) },
             genres: result.genres ?? [],
             trackCount: result.trackCount ?? 0,
             releaseDate: result.releaseDate
         )
+    }
+
+    private struct ChartResponse: Decodable {
+        let feed: Feed
+
+        struct Feed: Decodable {
+            let entry: [Entry]?
+        }
+
+        struct Entry: Decodable {
+            let id: EntryID
+        }
+
+        struct EntryID: Decodable {
+            let attributes: Attributes
+        }
+
+        struct Attributes: Decodable {
+            let id: String
+
+            enum CodingKeys: String, CodingKey {
+                case id = "im:id"
+            }
+        }
     }
 
     private struct iTunesSearchResponse: Codable {

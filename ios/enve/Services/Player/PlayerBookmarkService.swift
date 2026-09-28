@@ -45,7 +45,7 @@ public class PlayerBookmarkService {
         } else if let chapter = chapterTitle, !chapter.isEmpty {
             autoTitle = "Bookmark - \(chapter)"
         } else {
-            autoTitle = "Bookmark at \(formatTime(position))"
+            autoTitle = "Bookmark at \(PlaybackTime.clock(position))"
         }
         let bookmark = Bookmark(
             bookId: bookId,
@@ -85,17 +85,5 @@ public class PlayerBookmarkService {
 
     public func replaceBookmarks(bookId: String, bookmarks: [Bookmark]) {
         ReaderArtifactsStore.shared.saveBookmarks(bookId: bookId, bookmarks: bookmarks)
-    }
-
-    private func formatTime(_ seconds: TimeInterval) -> String {
-        let hours = Int(seconds) / 3600
-        let minutes = (Int(seconds) % 3600) / 60
-        let remainingSeconds = Int(seconds) % 60
-
-        if hours > 0 {
-            return String(format: "%d:%02d:%02d", hours, minutes, remainingSeconds)
-        } else {
-            return String(format: "%d:%02d", minutes, remainingSeconds)
-        }
     }
 }

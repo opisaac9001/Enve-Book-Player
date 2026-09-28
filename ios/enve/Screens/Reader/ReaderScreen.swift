@@ -29,7 +29,7 @@ struct ReaderScreen: View {
     @State private var readAloudControlsHideTask: Task<Void, Never>?
     @State private var ttsControlsHideToken = UUID()
     @State private var defineRequest: ReaderDefineRequest?
-    @State private var showingConflict = false
+    @State private var progressConflict: EbookSyncConflict?
     @State private var linkedAudiobook: Book?
     @State private var showingLibrarian = false
     @State private var librarianMessage: String?
@@ -37,9 +37,14 @@ struct ReaderScreen: View {
     @State private var epubScrubProgress: Double?
     @State private var nextSeriesIssue: Book?
     @State private var dismissedNextSeriesPrompt = false
+    @State private var restReminder = ReaderRestReminder()
+    @State private var restPromptShowsSettingsHint = false
+    @State private var showingRestReminderSettings = false
+    #if DEBUG
     @State private var footnoteFixtureTriggered = false
     @State private var readAloudFixtureTriggered = false
     @State private var ttsPlaybackFixtureTriggered = false
+    #endif
 
     init(book: Book, providerResolver: any LibraryProviderResolving) {
         self.book = book
@@ -142,6 +147,22 @@ struct ReaderScreen: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
+        .overlay {
+            if restReminder.isDue {
+                ReaderRestPrompt(
+                    minutes: restReminder.minutes,
+                    colors: restPromptColors,
+                    showsSettingsHint: restPromptShowsSettingsHint,
+                    onOpenSettings: {
+                        restReminder.dismiss()
+                        showingRestReminderSettings = true
+                    },
+                    onDismiss: { restReminder.dismiss() }
+                )
+                .padding(.horizontal, 18)
+                .transition(.scale(scale: 0.96).combined(with: .opacity))
+            }
+        }
         .overlay(alignment: nextSeriesPromptAlignment) {
             if let nextSeriesIssue, showsNextSeriesPrompt {
                 ReaderNextSeriesPrompt(book: nextSeriesIssue, title: nextSeriesPromptTitle, tint: ambient) {
@@ -161,6 +182,40 @@ struct ReaderScreen: View {
         .animation(.smooth(duration: 0.25), value: readAloudControlsVisible)
         .animation(.smooth(duration: 0.25), value: ttsControlsVisible)
         .animation(.smooth(duration: 0.28), value: showsNextSeriesPrompt)
+        .animation(.smooth(duration: 0.3), value: restReminder.isDue)
+        .sheet(
+            item: Binding(
+                get: { model.annotationController.editingAnnotation },
+                set: { model.annotationController.editingAnnotation = $0 }
+            )
+        ) { annotation in
+            ReaderAnnotationEditorSheet(
+                annotation: annotation,
+                onSave: { style, color, note in
+                    model.annotationController.updateAnnotation(
+                        annotation,
+                        style: style,
+                        colorHex: color,
+                        note: note,
+                        replaceNote: true
+                    )
+                    PlatformHaptics.impact(.light)
+                },
+                onRemove: { model.annotationController.removeAnnotation(annotation) }
+            )
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+            .hearthPresentationBackground()
+            .enveEnvironment()
+        }
+        .sheet(isPresented: $showingRestReminderSettings) {
+            NavigationStack {
+                RestReminderSettingsScreen(
+                    appearance: Binding(get: { model.appearance }, set: { model.appearance = $0 })
+                )
+            }
+            .enveEnvironment()
+        }
         .sheet(item: $tray) { presented in
             Group {
                 switch presented {
@@ -236,22 +291,27 @@ struct ReaderScreen: View {
             .preferredColorScheme(model.preferredColorScheme)
             .enveEnvironment()
         }
-        .alert("Two reading positions", isPresented: $showingConflict) {
-            if let conflict = EbookConflictStore.shared.find(stableId: book.stableId) {
-                Button("Keep this device (\(Int(conflict.localProgress * 100))%)") {
+        .sheet(item: $progressConflict) { conflict in
+            ReaderProgressConflictSheet(
+                book: book,
+                conflict: conflict,
+                onKeepLocal: {
                     SyncCoordinator.shared.resolveEbookConflict(bookStableId: book.stableId, useServer: false)
-                }
-                Button("Use the server (\(Int(conflict.serverProgress * 100))%)") {
+                },
+                onUseRemote: {
                     let serverLocator = conflict.serverLocator
                     SyncCoordinator.shared.resolveEbookConflict(bookStableId: book.stableId, useServer: true)
                     if let json = serverLocator, !json.isEmpty {
                         model.navigateTo(locatorJSON: json)
+                    } else {
+                        Task { await model.seek(toProgress: conflict.serverProgress) }
                     }
                 }
-                Button("Not now", role: .cancel) {}
-            }
-        } message: {
-            Text("This device and the server remember different places in this book.")
+            )
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+            .preferredColorScheme(model.preferredColorScheme)
+            .enveEnvironment()
         }
         .onReceive(model.ttsService.$highlightLocator.removeDuplicates()) { locator in
             model.applyTTSDecoration(locator)
@@ -302,6 +362,19 @@ struct ReaderScreen: View {
         .preferredColorScheme(model.preferredColorScheme)
         .statusBarHidden(!chromeVisible)
         .onAppear(perform: beginSession)
+        .onChange(of: restReminderInterval) { _, minutes in
+            restReminder.update(minutes: minutes)
+        }
+        .onChange(of: restReminder.isDue) { _, isDue in
+            guard isDue else { return }
+            restPromptShowsSettingsHint = !model.appearance.restReminderIntroShown
+            if restPromptShowsSettingsHint {
+                model.appearance.restReminderIntroShown = true
+                restReminder.keepPromptVisible()
+            }
+            PlatformHaptics.notification(.success)
+            AccessibilityNotification.Announcement("Time to rest your eyes").post()
+        }
         .onChange(of: colorScheme) { _, newValue in
             model.updateSystemColorScheme(newValue)
         }
@@ -485,13 +558,17 @@ struct ReaderScreen: View {
                     ReaderEngineControllerBridge(
                         adapter: adapter,
                         onHighlight: {
-                            model.annotationController.addAnnotationFromSelection(style: .highlight, colorHex: inkColor)
-                            PlatformHaptics.impact(.light)
+                            withLiveSelection {
+                                model.annotationController.addAnnotationFromSelection(style: .highlight, colorHex: inkColor)
+                                PlatformHaptics.impact(.light)
+                            }
                         },
                         onAnnotate: {
-                            if let selection = adapter.currentSelection {
-                                model.pendingSelection = selection
-                                noteDraft = ReaderNoteDraft(text: selection.locator.text.highlight ?? "")
+                            withLiveSelection {
+                                if let selection = adapter.currentSelection {
+                                    model.pendingSelection = selection
+                                    noteDraft = ReaderNoteDraft(text: selection.locator.text.highlight ?? "")
+                                }
                             }
                         },
                         onSelectionDismiss: {
@@ -638,7 +715,7 @@ struct ReaderScreen: View {
         VStack(spacing: 12) {
             if isComicReader {
                 comicPositionControls
-            } else {
+            } else if !(model.isReadAloudMode && model.overlayPlayer != nil) {
                 ReaderFooterProgressPill(
                     progress: epubScrubProgress ?? model.currentProgress ?? 0,
                     tint: ambient,
@@ -820,6 +897,8 @@ struct ReaderScreen: View {
                 .font(.hearthUI(17, weight: .semibold))
                 .foregroundStyle(hearth.text)
                 .frame(width: 44, height: 44)
+                .accessibilityLabel("More reader options")
+                .accessibilityIdentifier("Reader.MoreMenu")
                 .background {
                     HearthChromeBackground(
                         shape: .circle,
@@ -853,15 +932,15 @@ struct ReaderScreen: View {
 
     private var statusLine: String? {
         var parts: [String] = []
-        if let pages = model.pageSummaryText {
+        if !model.isReadAloudMode, let pages = model.pageSummaryText {
             parts.append(pages)
         }
-        parts.append(model.percentSummaryText)
         if let minutes = model.minutesLeftInChapter, minutes > 0 {
             parts.append("\(Self.minutesText(minutes)) left in chapter")
         } else if let minutes = model.minutesLeftInBook, minutes > 0 {
             parts.append("\(Self.minutesText(minutes)) left in the book")
         }
+        parts.append(model.percentSummaryText)
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
@@ -981,27 +1060,19 @@ struct ReaderScreen: View {
                 selectedColor: $inkColor,
                 onHighlight: { color in
                     inkColor = color
-                    model.annotationController.addAnnotationFromSelection(style: .highlight, colorHex: color)
-                    PlatformHaptics.impact(.light)
+                    annotateLiveSelection(style: .highlight, colorHex: color)
                 },
-                onUnderline: {
-                    model.annotationController.addAnnotationFromSelection(style: .underline, colorHex: inkColor)
-                    PlatformHaptics.impact(.light)
-                },
-                onStrikethrough: {
-                    model.annotationController.addAnnotationFromSelection(style: .strikethrough, colorHex: inkColor)
-                    PlatformHaptics.impact(.light)
-                },
-                onSquiggle: {
-                    model.annotationController.addAnnotationFromSelection(style: .squiggly, colorHex: inkColor)
-                    PlatformHaptics.impact(.light)
-                },
+                onUnderline: { annotateLiveSelection(style: .underline, colorHex: inkColor) },
+                onStrikethrough: { annotateLiveSelection(style: .strikethrough, colorHex: inkColor) },
+                onSquiggle: { annotateLiveSelection(style: .squiggly, colorHex: inkColor) },
                 onNote: {
-                    let current = currentEPUBSelection(fallback: selection)
-                    noteDraft = ReaderNoteDraft(text: current.locator.text.highlight ?? "")
+                    withLiveSelection {
+                        let current = currentEPUBSelection(fallback: selection)
+                        noteDraft = ReaderNoteDraft(text: current.locator.text.highlight ?? "")
+                    }
                 },
-                onCopy: { copySelection(currentEPUBSelection(fallback: selection)) },
-                onDefine: { handleDefine() }
+                onCopy: { withLiveSelection { copySelection(currentEPUBSelection(fallback: selection)) } },
+                onDefine: { withLiveSelection { handleDefine() } }
             )
             .position(annotateBarPosition(for: selection.frame, in: geo.size))
         }
@@ -1054,6 +1125,20 @@ struct ReaderScreen: View {
         UIPasteboard.general.string = text
         PlatformHaptics.impact(.light)
         dismissPendingSelection()
+    }
+
+    private func withLiveSelection(_ action: @escaping () -> Void) {
+        Task {
+            await model.refreshEngineSelection()
+            action()
+        }
+    }
+
+    private func annotateLiveSelection(style: ReaderAnnotationStyle, colorHex: String) {
+        withLiveSelection {
+            model.annotationController.addAnnotationFromSelection(style: style, colorHex: colorHex)
+            PlatformHaptics.impact(.light)
+        }
     }
 
     private func currentEPUBSelection(
@@ -1250,6 +1335,25 @@ struct ReaderScreen: View {
         }
     }
 
+    private var restPromptColors: ReaderRestPrompt.Colors {
+        if case .readyComic = model.state {
+            let background = model.appearance.comicBackgroundColor
+            let text: SwiftUI.Color = background == .white ? .black : .white
+            return .init(background: background.swiftUIColor, text: text, tint: text)
+        }
+        let appearance = model.effectiveAppearance
+        let text = SwiftUI.Color(appearance.shellTextColor)
+        return .init(
+            background: SwiftUI.Color(appearance.shellBackgroundColor),
+            text: text,
+            tint: appearance.theme == .eink ? text : hearth.ember
+        )
+    }
+
+    private var restReminderInterval: Int {
+        model.appearance.restReminderEnabled ? model.appearance.restReminderMinutes : 0
+    }
+
     private func beginSession() {
         model.updateSystemColorScheme(colorScheme)
         LastOpenedBookStore.shared.record(book)
@@ -1276,21 +1380,20 @@ struct ReaderScreen: View {
                 domain: .ebook,
                 excludingProvider: book.source == .storyteller
             )
-            if EbookConflictStore.shared.contains(stableId: book.stableId) {
-                showingConflict = true
-            }
+            progressConflict = EbookConflictStore.shared.find(stableId: book.stableId)
         }
         model.startAutoSaveTimer()
-        Task { await model.annotationController.syncNotebookEntriesIfNeeded() }
         Task {
             await EbookAudiobookLinker.shared.rebuildCacheIfNeeded()
             linkedAudiobook = await EbookAudiobookLinker.shared.linkedAudiobookAsync(for: book)
         }
         Task { nextSeriesIssue = await findNextSeriesIssue() }
+        restReminder.start(minutes: restReminderInterval)
     }
 
     private func endSession() {
         bookmarkToastTask?.cancel()
+        restReminder.stop()
         initialChromeHideTask?.cancel()
         readAloudControlsHideTask?.cancel()
         model.tapHandler = nil
@@ -1312,7 +1415,7 @@ struct ReaderScreen: View {
         model.saveReadingSpeedRecord()
 
         let progress = model.currentProgress ?? 0
-        if progress >= 0.99 {
+        if progress >= Book.finishedProgressThreshold {
             Task {
                 await HardcoverSyncService.shared.syncBookFinished(book: book)
                 if LibraryDisplayPreferencesStore.shared.loadPreferences().autoDeleteFinishedBooks,
@@ -1449,25 +1552,30 @@ private struct ReaderFooterProgressPill: View {
                         .offset(x: thumbOffset(width: geo.size.width))
                 }
                 .frame(maxHeight: .infinity)
-                Slider(
-                    value: Binding(
-                        get: { clamped },
-                        set: { onScrub($0) }
-                    ),
-                    in: 0...1,
-                    onEditingChanged: { editing in
-                        if !editing {
-                            onCommit(clamped)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            onScrub(ReaderScrubGeometry.progress(at: value.location.x, width: geo.size.width))
                         }
-                    }
+                        .onEnded { value in
+                            onCommit(ReaderScrubGeometry.progress(at: value.location.x, width: geo.size.width))
+                        }
                 )
-                .labelsHidden()
-                .opacity(0.01)
-                .accessibilityLabel("Reading progress")
-                .accessibilityValue(statusLine ?? "\(Int(clamped * 100)) percent")
-                .accessibilityIdentifier("reader-progress-slider")
             }
             .frame(height: 20)
+            .accessibilityElement()
+            .accessibilityLabel("Reading progress")
+            .accessibilityValue(statusLine ?? "\(Int(clamped * 100)) percent")
+            .accessibilityAdjustableAction { direction in
+                let step = 0.02
+                switch direction {
+                case .increment: onCommit(min(1, clamped + step))
+                case .decrement: onCommit(max(0, clamped - step))
+                @unknown default: break
+                }
+            }
+            .accessibilityIdentifier("reader-progress-slider")
 
             if let statusLine {
                 Text(statusLine)
@@ -1601,6 +1709,80 @@ private struct ReaderNextSeriesPrompt: View {
     }
 }
 
+private struct ReaderRestPrompt: View {
+    struct Colors {
+        let background: SwiftUI.Color
+        let text: SwiftUI.Color
+        let tint: SwiftUI.Color
+    }
+
+    let minutes: Int
+    let colors: Colors
+    let showsSettingsHint: Bool
+    let onOpenSettings: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "eye")
+                    .font(.hearthUI(18, weight: .semibold))
+                    .foregroundStyle(colors.tint)
+                    .frame(width: 28, height: 28)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("REST YOUR EYES")
+                        .font(.hearthUI(11, weight: .semibold))
+                        .tracking(1.6)
+                        .foregroundStyle(colors.text.opacity(0.65))
+                    Text("Look up for a moment")
+                        .font(.hearthDisplay(20, weight: .semibold))
+                        .foregroundStyle(colors.text)
+                    Text("You've been reading for \(minutes) minutes. Look at something far away for about 20 seconds.")
+                        .font(.hearthUI(13, weight: .medium))
+                        .foregroundStyle(colors.text.opacity(0.72))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                        .font(.hearthUI(12, weight: .semibold))
+                        .foregroundStyle(colors.text.opacity(0.65))
+                        .frame(width: 34, height: 34)
+                }
+                .buttonStyle(PressableStyle())
+                .accessibilityLabel("Dismiss rest reminder")
+            }
+
+            if showsSettingsHint {
+                Text("Turn this reminder off or customize it in Settings.")
+                    .font(.hearthUI(13, weight: .medium))
+                    .foregroundStyle(colors.text.opacity(0.72))
+                    .fixedSize(horizontal: false, vertical: true)
+                Button(action: onOpenSettings) {
+                    Label("Rest reminder settings", systemImage: "gearshape")
+                        .font(.hearthUI(14, weight: .semibold))
+                        .foregroundStyle(colors.text)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .overlay(Capsule().strokeBorder(colors.text.opacity(0.28), lineWidth: 1))
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(PressableStyle())
+            }
+        }
+        .padding(18)
+        .background {
+            let shape = RoundedRectangle(cornerRadius: Hearth.radiusCard, style: .continuous)
+            shape
+                .fill(colors.background)
+                .overlay(shape.fill(colors.text.opacity(0.06)))
+                .overlay(shape.strokeBorder(colors.text.opacity(0.18), lineWidth: 1))
+                .shadow(color: .black.opacity(0.25), radius: 14, y: 6)
+        }
+        .accessibilityElement(children: .contain)
+    }
+}
+
 private struct ComicPageScrubber: View {
     let currentIndex: Int
     let targetIndex: Int?
@@ -1685,6 +1867,7 @@ private struct ReaderReadAloudBar: View {
     let onStop: () -> Void
 
     @Environment(\.hearth) private var hearth
+    @State private var scrubTime: TimeInterval?
 
     private let speeds = ReaderCompanionSnapshot.readAloudSpeeds
 
@@ -1703,13 +1886,46 @@ private struct ReaderReadAloudBar: View {
                                 .frame(width: geo.size.width * progress, height: 4)
                                 .animation(.easeInOut(duration: 0.25), value: progress)
                         }
+                        .contentShape(Rectangle())
+                        .gesture(
+                            DragGesture(minimumDistance: 0)
+                                .onChanged { value in
+                                    guard player.totalDuration > 0 else { return }
+                                    scrubTime = ReaderScrubGeometry.time(
+                                        at: value.location.x,
+                                        width: geo.size.width,
+                                        duration: player.totalDuration
+                                    )
+                                }
+                                .onEnded { value in
+                                    guard player.totalDuration > 0 else { return }
+                                    let target = ReaderScrubGeometry.time(
+                                        at: value.location.x,
+                                        width: geo.size.width,
+                                        duration: player.totalDuration
+                                    )
+                                    model.seekReadAloud(toTime: target)
+                                    scrubTime = nil
+                                }
+                        )
                     }
-                    .frame(height: 4)
+                    .frame(height: 18)
+                    .accessibilityElement()
+                    .accessibilityLabel("Read Aloud position")
+                    .accessibilityValue("\(timeText(displayTime)) elapsed, \(timeText(remainingTime)) remaining")
+                    .accessibilityAdjustableAction { direction in
+                        let step: TimeInterval = 30
+                        switch direction {
+                        case .increment: model.seekReadAloud(toTime: min(player.totalDuration, displayTime + step))
+                        case .decrement: model.seekReadAloud(toTime: max(0, displayTime - step))
+                        @unknown default: break
+                        }
+                    }
 
                     HStack {
-                        Text(timeText(player.currentTime))
+                        Text(timeText(displayTime))
                         Spacer()
-                        Text(timeText(player.totalDuration))
+                        Text("\(timeText(remainingTime)) left")
                     }
                     .font(.hearthUI(11, weight: .medium).monospacedDigit())
                     .foregroundStyle(hearth.textSecondary)
@@ -1856,10 +2072,18 @@ private struct ReaderReadAloudBar: View {
 
     private var readAloudProgress: Double {
         if player.totalDuration > 0 {
-            return min(max(player.currentTime / player.totalDuration, 0), 1)
+            return min(max(displayTime / player.totalDuration, 0), 1)
         }
         guard model.overlayClipCount > 0 else { return 0 }
         return min(max(Double(player.currentClipIndex) / Double(model.overlayClipCount), 0), 1)
+    }
+
+    private var displayTime: TimeInterval {
+        scrubTime ?? player.currentTime
+    }
+
+    private var remainingTime: TimeInterval {
+        max(0, player.totalDuration - displayTime)
     }
 
     private func timeText(_ seconds: TimeInterval) -> String {

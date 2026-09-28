@@ -36,6 +36,9 @@ interface PreferencesFacade {
     val scrubScopeChapter: Flow<Boolean>
     val readNextEnabled: Flow<Boolean>
     val readNextPosition: Flow<ReadNextPosition>
+    val restReminderEnabled: Flow<Boolean>
+    val restReminderMinutes: Flow<Int>
+    val restReminderIntroShown: Flow<Boolean>
 
     val libraryColumns: Flow<Int>
 
@@ -57,6 +60,9 @@ interface PreferencesFacade {
     suspend fun setScrubScopeChapter(chapter: Boolean)
     suspend fun setReadNextEnabled(enabled: Boolean)
     suspend fun setReadNextPosition(position: ReadNextPosition)
+    suspend fun setRestReminderEnabled(enabled: Boolean)
+    suspend fun setRestReminderMinutes(minutes: Int)
+    suspend fun setRestReminderIntroShown(shown: Boolean)
     suspend fun setLibraryColumns(columns: Int)
     suspend fun setLibrarySortStack(encoded: String)
     suspend fun setLibraryAdvancedFilters(encoded: String)

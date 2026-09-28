@@ -51,11 +51,15 @@ final class MediaOverlayPlaybackService {
         let audioDirectory: URL
     }
 
+    // Version 2 added clip text progressions; older indexes rebuild from the EPUB.
+    private static let readAloudIndexSchemaVersion = 2
+
     private struct ReadAloudIndex: Codable {
         let schemaVersion: Int
         let fileSignature: String
         let clips: [AudioOverlayClip]
         let audioDurationsBySource: [String: TimeInterval]
+        let clipTextProgressions: [Double]
         let chapters: [Chapter]
     }
 
@@ -69,23 +73,7 @@ final class MediaOverlayPlaybackService {
             return cached
         }
 
-        guard let readiumURL = FileURL(url: fileURL) else {
-            throw OverlayPlaybackError.invalidURL(fileURL.path)
-        }
-
-        let httpClient = DefaultHTTPClient()
-        let assetRetriever = AssetRetriever(httpClient: httpClient)
-        let publicationOpener = PublicationOpener(
-            parser: DefaultPublicationParser(
-                httpClient: httpClient,
-                assetRetriever: assetRetriever,
-                pdfFactory: DefaultPDFDocumentFactory()
-            )
-        )
-
-        let asset = try await assetRetriever.retrieve(url: readiumURL).get()
-        let publication = try await publicationOpener.open(asset: asset, allowUserInteraction: false).get()
-
+        let publication = try await openPublication(at: fileURL)
         let clips = try await EPUB3SMILParser.parse(publication: publication, epubFileURL: fileURL)
         guard !clips.isEmpty else {
             throw OverlayPlaybackError.noOverlayClips
@@ -139,9 +127,14 @@ final class MediaOverlayPlaybackService {
             }
         }
 
+        let clipTextProgressions = await MediaOverlayTextProgression.clipProgressions(
+            for: clips,
+            publication: publication
+        )
         let timeline = MediaOverlayTimeline(
             clips: clips,
-            audioDurationsBySource: srcDurations
+            audioDurationsBySource: srcDurations,
+            clipTextProgressions: clipTextProgressions
         )
 
         var tracks = [AudioTrackInfo]()
@@ -186,11 +179,58 @@ final class MediaOverlayPlaybackService {
             epubFileURL: fileURL,
             clips: clips,
             audioDurationsBySource: srcDurations,
+            clipTextProgressions: clipTextProgressions,
             chapters: chapters,
             audioDirectory: audioDir
         )
 
         return result
+    }
+
+    private func openPublication(at fileURL: URL) async throws -> Publication {
+        guard let readiumURL = FileURL(url: fileURL) else {
+            throw OverlayPlaybackError.invalidURL(fileURL.path)
+        }
+
+        let httpClient = DefaultHTTPClient()
+        let assetRetriever = AssetRetriever(httpClient: httpClient)
+        let publicationOpener = PublicationOpener(
+            parser: DefaultPublicationParser(
+                httpClient: httpClient,
+                assetRetriever: assetRetriever,
+                pdfFactory: DefaultPDFDocumentFactory()
+            )
+        )
+
+        let asset = try await assetRetriever.retrieve(url: readiumURL).get()
+        return try await publicationOpener.open(asset: asset, allowUserInteraction: false).get()
+    }
+
+    func narrationTimeline(for book: Book) -> MediaOverlayTimeline? {
+        guard let activeResult, activeBookMatches(book) else { return nil }
+        return activeResult.timeline
+    }
+
+    /// The narration timeline of an EPUB already on this device, without extracting its audio.
+    func overlayTimeline(forLocalBook book: Book) async -> MediaOverlayTimeline? {
+        if let timeline = narrationTimeline(for: book) { return timeline }
+        guard let fileURL = UnifiedDownloadService.shared.existingReaderAsset(for: book) else { return nil }
+        if let index = loadReadAloudIndex(for: book, epubFileURL: fileURL) {
+            return MediaOverlayTimeline(
+                clips: index.clips,
+                audioDurationsBySource: index.audioDurationsBySource,
+                clipTextProgressions: index.clipTextProgressions
+            )
+        }
+        guard let publication = try? await openPublication(at: fileURL),
+            let clips = try? await EPUB3SMILParser.parse(publication: publication, epubFileURL: fileURL),
+            !clips.isEmpty
+        else { return nil }
+        // Without extracted audio each file is sized by its last clip, so trailing silence is dropped.
+        return MediaOverlayTimeline(
+            clips: clips,
+            clipTextProgressions: await MediaOverlayTextProgression.clipProgressions(for: clips, publication: publication)
+        )
     }
 
     @discardableResult
@@ -335,7 +375,7 @@ final class MediaOverlayPlaybackService {
                 uniqueId: current.uniqueId,
                 ebookProgress: position.progression,
                 epubLocator: position.locatorJSON,
-                isFinished: position.progression >= 0.99,
+                isFinished: position.progression >= Book.finishedProgressThreshold,
                 lastUpdate: position.observedAt
             )
             return current
@@ -398,7 +438,7 @@ final class MediaOverlayPlaybackService {
         guard let idx = result.timeline.clipIndex(atAudioTime: audioTime) else { return }
 
         let clampedAudioTime = min(max(audioTime, 0), result.totalDuration)
-        let ebookProgress = result.timeline.spokenProgression(
+        let ebookProgress = result.timeline.readingProgression(
             atAudioTime: clampedAudioTime,
             clipIndex: idx
         )
@@ -416,6 +456,7 @@ final class MediaOverlayPlaybackService {
         let now = Date()
         let current = libraryCache.bookInMemory(uniqueId: book.uniqueId) ?? book
         var syncBook = current
+        NarratedAudioPositionStore.shared.recordNarration(audioTime: clampedAudioTime, for: current)
 
         let mutated = libraryCache.mutateBook(uniqueId: current.uniqueId) { updated in
             updated.epubLocator = jsonString
@@ -457,6 +498,31 @@ final class MediaOverlayPlaybackService {
         let capturedCurrentBook = currentPersistedBook
         let capturedBook = persistedBook
 
+        Task { @MainActor in
+            await bookRepository.updateEbookProgress(
+                uniqueId: capturedCurrentBook.uniqueId,
+                ebookProgress: ebookProgress,
+                epubLocator: jsonString,
+                isFinished: ebookProgress >= Book.finishedProgressThreshold,
+                lastUpdate: now
+            )
+            await bookRepository.updateProgress(
+                uniqueId: capturedCurrentBook.uniqueId,
+                currentTime: clampedAudioTime,
+                isFinished: ebookProgress >= Book.finishedProgressThreshold,
+                lastUpdate: now
+            )
+            if capturedBook.uniqueId != capturedCurrentBook.uniqueId {
+                await bookRepository.updateEbookProgress(
+                    uniqueId: capturedBook.uniqueId,
+                    ebookProgress: ebookProgress,
+                    epubLocator: jsonString,
+                    isFinished: ebookProgress >= Book.finishedProgressThreshold,
+                    lastUpdate: now
+                )
+            }
+        }
+
         positionSyncTask?.cancel()
         positionSyncGeneration += 1
         let syncGeneration = positionSyncGeneration
@@ -478,25 +544,6 @@ final class MediaOverlayPlaybackService {
                 }
             }
             guard !Task.isCancelled, self.positionSyncGeneration == syncGeneration else { return }
-            await bookRepository.updateEbookProgress(
-                uniqueId: capturedCurrentBook.uniqueId,
-                ebookProgress: ebookProgress,
-                epubLocator: jsonString,
-                isFinished: ebookProgress >= 0.99,
-                lastUpdate: now
-            )
-            if capturedBook.uniqueId != capturedCurrentBook.uniqueId {
-                await bookRepository.updateEbookProgress(
-                    uniqueId: capturedBook.uniqueId,
-                    ebookProgress: ebookProgress,
-                    epubLocator: jsonString,
-                    isFinished: ebookProgress >= 0.99,
-                    lastUpdate: now
-                )
-            }
-
-            guard !Task.isCancelled, self.positionSyncGeneration == syncGeneration else { return }
-
             if capturedCurrentBook.isStorytellerReadAloud {
                 do {
                     try await StorytellerPositionSyncService.shared.submit(
@@ -571,9 +618,6 @@ final class MediaOverlayPlaybackService {
     }
 
     private func resolveEbookFile(for book: Book) async throws -> URL {
-        if let existing = LocalEbookImporter.shared.resolveEbookForOverlay(book: book) {
-            return existing
-        }
         return try await UnifiedDownloadService.shared.prepareReaderAsset(for: book)
     }
 
@@ -594,7 +638,8 @@ final class MediaOverlayPlaybackService {
 
         let timeline = MediaOverlayTimeline(
             clips: index.clips,
-            audioDurationsBySource: index.audioDurationsBySource
+            audioDurationsBySource: index.audioDurationsBySource,
+            clipTextProgressions: index.clipTextProgressions
         )
         guard
             let result = overlayResult(
@@ -659,7 +704,7 @@ final class MediaOverlayPlaybackService {
         let url = readAloudIndexURL(for: book)
         guard let data = try? Data(contentsOf: url),
             let index = try? JSONDecoder().decode(ReadAloudIndex.self, from: data),
-            index.schemaVersion == 1,
+            index.schemaVersion == Self.readAloudIndexSchemaVersion,
             index.fileSignature == readAloudFileSignature(for: epubFileURL)
         else {
             return nil
@@ -672,6 +717,7 @@ final class MediaOverlayPlaybackService {
         epubFileURL: URL,
         clips: [AudioOverlayClip],
         audioDurationsBySource: [String: TimeInterval],
+        clipTextProgressions: [Double],
         chapters: [Chapter],
         audioDirectory: URL
     ) {
@@ -681,10 +727,11 @@ final class MediaOverlayPlaybackService {
         else { return }
 
         let index = ReadAloudIndex(
-            schemaVersion: 1,
+            schemaVersion: Self.readAloudIndexSchemaVersion,
             fileSignature: readAloudFileSignature(for: epubFileURL),
             clips: clips,
             audioDurationsBySource: audioDurationsBySource,
+            clipTextProgressions: clipTextProgressions,
             chapters: chapters
         )
 

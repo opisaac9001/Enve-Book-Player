@@ -361,6 +361,54 @@ enum ReadiumTTSLocatorScript {
     }
 }
 
+enum ReadiumSelectionCFIScript {
+    static let make = """
+        (() => {
+            const selection = window.getSelection();
+            if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return null;
+            const range = selection.getRangeAt(0);
+            const children = parent => Array.from(parent.childNodes).filter(node =>
+                node.nodeType === Node.ELEMENT_NODE ||
+                (node.nodeType === Node.TEXT_NODE && node.data.length > 0)
+            );
+            const pointPath = (node, offset) => {
+                const steps = [];
+                let current = node;
+                if (current.nodeType === Node.TEXT_NODE) {
+                    const siblings = children(current.parentNode);
+                    const index = siblings.indexOf(current);
+                    if (index < 0) return null;
+                    steps.unshift(`${index * 2 + 1}:${Math.max(0, offset)}`);
+                    current = current.parentNode;
+                }
+                while (current && current !== document.documentElement) {
+                    const parent = current.parentNode;
+                    if (!parent) return null;
+                    const siblings = children(parent);
+                    const index = siblings.indexOf(current);
+                    if (index < 0) return null;
+                    steps.unshift(String((index + 1) * 2));
+                    current = parent;
+                }
+                return '/4/' + steps.join('/');
+            };
+            const start = pointPath(range.startContainer, range.startOffset);
+            const end = pointPath(range.endContainer, range.endOffset);
+            if (!start || !end) return null;
+            const a = start.split('/');
+            const b = end.split('/');
+            let commonCount = 0;
+            while (commonCount < a.length && commonCount < b.length && a[commonCount] === b[commonCount]) {
+                commonCount += 1;
+            }
+            const common = a.slice(0, commonCount).join('/') || '/4';
+            const startTail = '/' + a.slice(commonCount).join('/');
+            const endTail = '/' + b.slice(commonCount).join('/');
+            return `${common},${startTail},${endTail}`;
+        })()
+        """
+}
+
 @MainActor
 final class ReadiumReaderEngineAdapter: ReaderEngineAdapter {
     let navigator: EPUBNavigatorViewController
@@ -373,10 +421,29 @@ final class ReadiumReaderEngineAdapter: ReaderEngineAdapter {
     var onExternalLink: ((URL) -> Void)?
 
     private let keyboardNavigation = DirectionalNavigationAdapter(pointerPolicy: .init(types: []))
+    private var interactionToken: InputObservableToken?
+    var onUserInteraction: (() -> Void)?
+
+    private struct InteractionObserver: InputObserving {
+        let onInteraction: () -> Void
+
+        func didReceive(_ event: PointerEvent) async -> Bool {
+            if event.phase == .down { onInteraction() }
+            return false
+        }
+
+        func didReceive(_ event: KeyEvent) async -> Bool {
+            if event.phase == .down { onInteraction() }
+            return false
+        }
+    }
 
     init(navigator: EPUBNavigatorViewController, publication: Publication) {
         self.navigator = navigator
         self.publication = publication
+        interactionToken = navigator.addObserver(InteractionObserver { [weak self] in
+            self?.onUserInteraction?()
+        })
         keyboardNavigation.bind(to: navigator)
     }
 
@@ -390,13 +457,51 @@ final class ReadiumReaderEngineAdapter: ReaderEngineAdapter {
         navigator.currentSelection.map(ReaderSelectionSnapshot.init)
     }
 
+    func selectionEPUBCFI() async -> String? {
+        let result = try? await navigator.evaluateJavaScript(ReadiumSelectionCFIScript.make).get()
+        guard let local = result as? String, local.hasPrefix("/"),
+            let currentHref = navigator.currentLocation?.href.string
+        else {
+            return nil
+        }
+        let normalized = EpubLocationBridge.normalizedHref(currentHref)
+        guard let index = publication.readingOrder.firstIndex(where: {
+            EpubLocationBridge.normalizedHref($0.href) == normalized
+        }) else {
+            return nil
+        }
+        return "epubcfi(/6/\(2 * (index + 1))!\(local))"
+    }
+
     func restore(locatorJSON: String, animated: Bool) async -> Bool {
         guard let safeLocatorJSON = EpubLocationBridge.locatorForReadiumRestore(locatorJSON),
             let locator = try? Locator(jsonString: safeLocatorJSON)
         else {
             return false
         }
-        return await navigator.go(to: locator, options: .init(animated: animated))
+        guard await navigator.go(to: locator, options: .init(animated: animated)) else { return false }
+        guard let anchorID = locator.locations.fragments.first else { return true }
+        // A spread that finishes loading applies its own pending start 0.2 s later, which can undo this jump.
+        for _ in 0..<4 {
+            try? await Task.sleep(for: .milliseconds(350))
+            guard await isElementOnScreen(id: anchorID) == false else { return true }
+            _ = await navigator.go(to: locator, options: .init(animated: false))
+        }
+        return true
+    }
+
+    private func isElementOnScreen(id: String) async -> Bool? {
+        guard let data = try? JSONEncoder().encode(id), let quotedID = String(data: data, encoding: .utf8) else { return nil }
+        let script = """
+            (function() {
+                const element = document.getElementById(\(quotedID));
+                if (!element) return null;
+                const rect = element.getBoundingClientRect();
+                return rect.right > 0 && rect.left < window.innerWidth && rect.bottom > 0 && rect.top < window.innerHeight;
+            })();
+            """
+        guard case .success(let value) = await navigator.evaluateJavaScript(script) else { return nil }
+        return value as? Bool
     }
 
     func navigate(to locator: Locator, animated: Bool) async -> Bool {
@@ -571,5 +676,10 @@ final class ReadiumReaderEngineAdapter: ReaderEngineAdapter {
         _ = await navigator.go(to: locator, options: .init(animated: false))
     }
 
-    func tearDown() {}
+    func tearDown() {
+        if let interactionToken {
+            navigator.removeObserver(interactionToken)
+            self.interactionToken = nil
+        }
+    }
 }

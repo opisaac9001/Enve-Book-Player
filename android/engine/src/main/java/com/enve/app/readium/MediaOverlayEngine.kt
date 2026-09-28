@@ -6,6 +6,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import com.enve.app.playback.cumulativeTrackOffsets
 import com.enve.core.data.model.AudioTrack
+import com.enve.core.data.sync.AudioLocatorPosition
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
@@ -28,6 +29,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.readium.r2.shared.publication.Link
 import org.readium.r2.shared.publication.Publication
+import org.readium.r2.shared.publication.services.positionsByReadingOrder
 import org.readium.r2.shared.util.Url
 import org.readium.r2.shared.util.getOrElse
 
@@ -181,6 +183,8 @@ class MediaOverlayEngine(
 
     private var chaptersInReadingOrder: List<ChapterMO> = emptyList()
 
+    private var chapterStartProgressions: List<Double?> = emptyList()
+
     private var chapterByHref: Map<String, ChapterMO> = emptyMap()
 
     private val zipFallbackPathByHref = linkedMapOf<String, String>()
@@ -210,6 +214,7 @@ class MediaOverlayEngine(
     private var lastHandledEndedMediaId: String? = null
     private var lastHandledErrorRevision: Long = 0L
     @Volatile private var released: Boolean = false
+    @Volatile private var narrationCompleted: Boolean = false
 
     private var discoveryJob: Deferred<Unit>? = null
 
@@ -425,6 +430,9 @@ class MediaOverlayEngine(
             }
         }
 
+        chapterStartProgressions = publication.positionsByReadingOrder().map { positions ->
+            positions.firstOrNull()?.locations?.totalProgression
+        }
         chaptersInReadingOrder = chapters
         chapterByHref = chapters.associateBy { it.spineHref }
         Log.i(TAG, "Discovery: ${chapters.size} chapters with SMIL (out of ${publication.readingOrder.size} spine items) in ${android.os.SystemClock.elapsedRealtime() - tStart}ms")
@@ -465,9 +473,11 @@ class MediaOverlayEngine(
             }
 
             val lastIndex = (clipsRaw.size - 1).coerceAtLeast(1)
+            val textProgressions = clipTextProgressions(chapter, clipsRaw)
             val clips = clipsRaw.mapIndexed { index, clip ->
                 clip.copy(
                     resourceProgression = if (clipsRaw.size <= 1) 0.0 else index.toDouble() / lastIndex.toDouble(),
+                    textProgression = textProgressions?.get(index),
                 )
             }
             val fragIdx = buildMap<String, Int> {
@@ -480,6 +490,15 @@ class MediaOverlayEngine(
             Log.i(TAG, "Parsed SMIL for ${chapter.spineHref} → ${clips.size} clips in ${android.os.SystemClock.elapsedRealtime() - tStart}ms")
             return clips
         }
+    }
+
+    private suspend fun clipTextProgressions(chapter: ChapterMO, clips: List<SmilClip>): List<Double>? {
+        val span = MediaOverlayTextProgression.chapterSpan(chapterStartProgressions, chapter.readingOrderIndex)
+            ?: return null
+        val offsets = publication.readingOrder.getOrNull(chapter.readingOrderIndex)
+            ?.let { readResourceAsString(it) }
+            ?.let(MediaOverlayTextProgression::fragmentOffsets)
+        return MediaOverlayTextProgression.clipProgressions(clips, span, offsets)
     }
 
     private suspend fun readSmilFor(chapter: ChapterMO): Pair<String, String>? {
@@ -506,7 +525,7 @@ class MediaOverlayEngine(
         val resource = publication.get(link) ?: return null
         return try {
             resource.read().getOrElse {
-                Log.w(TAG, "Failed to read SMIL ${link.url()}: ${it.message}")
+                Log.w(TAG, "Failed to read ${link.url()}: ${it.message}")
                 return null
             }.decodeToString()
         } finally {
@@ -610,7 +629,14 @@ class MediaOverlayEngine(
         stop(clearPlaybackQueue, afterStopped = null)
     }
 
+    private fun completeNarration() {
+        narrationCompleted = true
+        onPlaybackCompleted?.invoke()
+        stop(clearPlaybackQueue = true)
+    }
+
     private fun stop(clearPlaybackQueue: Boolean, afterStopped: (() -> Unit)?) {
+        narrationCompleted = false
         playbackCommandJob?.cancel()
         playbackCommandJob = null
         clipMonitorJob?.cancel()
@@ -675,12 +701,10 @@ class MediaOverlayEngine(
                     if (parsedClips.isNotEmpty()) {
                         startPlayback(nextCh, 0, playWhenReady = isPlaying, notifyClipChanged = true, command)
                     } else {
-                        onPlaybackCompleted?.invoke()
-                        stop(clearPlaybackQueue = true)
+                        completeNarration()
                     }
                 } else {
-                    onPlaybackCompleted?.invoke()
-                    stop(clearPlaybackQueue = true)
+                    completeNarration()
                 }
             }
         }
@@ -920,6 +944,13 @@ class MediaOverlayEngine(
         return positionMs <= finalEnd
     }
 
+    suspend fun clipForAudioPosition(position: AudioLocatorPosition): SmilClip? {
+        position.timeMs?.let { return clipForAbsoluteAudioPosition(it) }
+        ensureDiscovered()
+        val total = totalAudioDurationMs() ?: return null
+        return clipForAbsoluteAudioPosition((position.progression * total).roundToLong())
+    }
+
     suspend fun absoluteAudioPositionForLocation(
         textHref: String,
         fragmentId: String? = null,
@@ -947,24 +978,8 @@ class MediaOverlayEngine(
         )
     }
 
-    fun currentAudioProgression(): Float? {
-        val position = currentAbsoluteAudioPositionMs() ?: return null
-        val total = externalAudioWindows.lastOrNull()
-            ?.let { it.startMs + it.durationMs }
-            ?.takeIf { it > 0L }
-            ?: declaredTotalAudioDurationMs()
-            ?: return null
-        if (total <= 0L) return null
-        return (position.toFloat() / total.toFloat()).coerceIn(0f, 1f)
-    }
-
-    suspend fun hasClipFragment(fragmentId: String): Boolean {
-        ensureDiscovered()
-
-        val ch = currentChapter ?: return false
-        val parsed = ch.fragmentIndex ?: return false
-        return parsed.containsKey(fragmentId)
-    }
+    fun readingProgression(clip: SmilClip): Double? =
+        MediaOverlayTextProgression.readingProgression(clip.textProgression, narrationCompleted)
 
     fun release(stopPlayback: Boolean = true) {
         if (released) return
@@ -1169,16 +1184,14 @@ class MediaOverlayEngine(
 
                         val nextCh = chaptersInReadingOrder.firstOrNull { it.readingOrderIndex > ch.readingOrderIndex }
                         if (nextCh == null) {
-                            onPlaybackCompleted?.invoke()
-                            stop(clearPlaybackQueue = true)
+                            completeNarration()
                             return@launch
                         }
 
                         val nextClips = parseChapter(nextCh) ?: emptyList()
                         val nextStart = nextAutoAdvanceIndex(nextClips, 0)
                         if (nextStart == null) {
-                            onPlaybackCompleted?.invoke()
-                            stop(clearPlaybackQueue = true)
+                            completeNarration()
                             return@launch
                         }
                         startPlayback(nextCh, nextStart, playWhenReady = true, notifyClipChanged = true)
@@ -1228,15 +1241,13 @@ class MediaOverlayEngine(
 
         val nextCh = chaptersInReadingOrder.firstOrNull { it.readingOrderIndex > ch.readingOrderIndex }
         if (nextCh == null) {
-            onPlaybackCompleted?.invoke()
-            stop(clearPlaybackQueue = true)
+            completeNarration()
             return
         }
         val nextClips = parseChapter(nextCh) ?: emptyList()
         val nextStart = nextAutoAdvanceIndex(nextClips, 0)
         if (nextStart == null) {
-            onPlaybackCompleted?.invoke()
-            stop(clearPlaybackQueue = true)
+            completeNarration()
             return
         }
         startPlaybackLocked(nextCh, nextStart, playWhenReady = true, notifyClipChanged = true, command)
@@ -1433,11 +1444,15 @@ class MediaOverlayEngine(
         return (end - clip.clipBeginMs).coerceAtLeast(0L)
     }
 
-    private fun declaredTotalAudioDurationMs(): Long? {
+    private fun totalAudioDurationMs(): Long? {
+        externalAudioWindows.lastOrNull()
+            ?.let { it.startMs + it.durationMs }
+            ?.takeIf { it > 0L }
+            ?.let { return it }
         val last = chaptersInReadingOrder.lastOrNull() ?: return null
         val start = last.bookStartMs ?: return null
         val duration = last.durationMs ?: return null
-        return start + duration
+        return (start + duration).takeIf { it > 0L }
     }
 
     private fun externalWindowForAudioHref(audioHref: String): ExternalAudioWindow? {

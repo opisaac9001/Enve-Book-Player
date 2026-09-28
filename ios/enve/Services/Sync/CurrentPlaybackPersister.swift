@@ -30,7 +30,7 @@ final class CurrentPlaybackPersister {
     func saveCurrent(reason: ProgressSaveReason) async -> Bool {
         let coordinator = SyncCoordinator.shared
         guard coordinator.syncEnabled else { return false }
-        guard coordinator.isCloudKitAvailable else {
+        guard await ensureCloudAvailability(using: coordinator) else {
             AppLogger.sync.warning("CloudKit not available, skipping save")
             return false
         }
@@ -74,7 +74,7 @@ final class CurrentPlaybackPersister {
         guard !isActiveReadAloudPlayback(book) else { return }
         let coordinator = SyncCoordinator.shared
         guard coordinator.syncEnabled else { return }
-        guard coordinator.isCloudKitAvailable else { return }
+        guard await ensureCloudAvailability(using: coordinator) else { return }
         guard position > 0 else { return }
 
         if let lastSave = lastCloudSaveTime, Date().timeIntervalSince(lastSave) < minimumCloudSyncInterval {
@@ -101,6 +101,13 @@ final class CurrentPlaybackPersister {
         playbackState.currentBook
     }
 
+    private func ensureCloudAvailability(using coordinator: SyncCoordinator) async -> Bool {
+        if coordinator.isCloudKitAvailable { return true }
+        let available = await CloudKitProgressSync.shared.isAvailable()
+        coordinator.updateCloudAvailability(available)
+        return available
+    }
+
     private func isActiveReadAloudPlayback(_ book: Book) -> Bool {
         let snapshot = playbackState.snapshot
         guard snapshot.isOverlayPlaybackActive,
@@ -120,7 +127,7 @@ final class CurrentPlaybackPersister {
 
     private func isCompleted(book: Book, position: TimeInterval) -> Bool {
         guard let duration = book.duration, duration > 0 else { return false }
-        return position / duration >= 0.99
+        return position / duration >= Book.finishedProgressThreshold
     }
 
     private func deviceName() -> String {

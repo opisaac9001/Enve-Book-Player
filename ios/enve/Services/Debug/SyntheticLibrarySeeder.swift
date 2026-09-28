@@ -52,10 +52,10 @@ final class SyntheticLibrarySeeder {
             providerId: Self.providerId,
             allowSparseResult: true
         )
-        let reconciliation = await store.beginReconciliation(
+        guard let reconciliation = try? await store.beginReconciliation(
             libraryId: Self.libraryId,
             providerId: Self.providerId
-        )
+        ) else { return }
 
         var written = 0
         var batch: [Book] = []

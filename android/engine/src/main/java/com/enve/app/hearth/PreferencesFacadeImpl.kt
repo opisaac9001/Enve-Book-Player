@@ -33,6 +33,9 @@ class PreferencesFacadeImpl @Inject constructor(
     override val scrubScopeChapter: Flow<Boolean> = hearthPrefs.scrubScopeChapter
     override val readNextEnabled: Flow<Boolean> = hearthPrefs.readNextEnabled
     override val readNextPosition: Flow<ReadNextPosition> = hearthPrefs.readNextPosition
+    override val restReminderEnabled: Flow<Boolean> = hearthPrefs.restReminderEnabled
+    override val restReminderMinutes: Flow<Int> = hearthPrefs.restReminderMinutes
+    override val restReminderIntroShown: Flow<Boolean> = hearthPrefs.restReminderIntroShown
     override val libraryColumns: Flow<Int> = hearthPrefs.libraryColumns
     override val librarySortStack: Flow<String> = hearthPrefs.librarySortStack
     override val libraryAdvancedFilters: Flow<String> = hearthPrefs.libraryAdvancedFilters
@@ -60,6 +63,9 @@ class PreferencesFacadeImpl @Inject constructor(
     override suspend fun setScrubScopeChapter(chapter: Boolean) = hearthPrefs.setScrubScopeChapter(chapter)
     override suspend fun setReadNextEnabled(enabled: Boolean) = hearthPrefs.setReadNextEnabled(enabled)
     override suspend fun setReadNextPosition(position: ReadNextPosition) = hearthPrefs.setReadNextPosition(position)
+    override suspend fun setRestReminderEnabled(enabled: Boolean) = hearthPrefs.setRestReminderEnabled(enabled)
+    override suspend fun setRestReminderMinutes(minutes: Int) = hearthPrefs.setRestReminderMinutes(minutes)
+    override suspend fun setRestReminderIntroShown(shown: Boolean) = hearthPrefs.setRestReminderIntroShown(shown)
     override suspend fun setLibraryColumns(columns: Int) = hearthPrefs.setLibraryColumns(columns)
     override suspend fun setLibrarySortStack(encoded: String) = hearthPrefs.setLibrarySortStack(encoded)
     override suspend fun setLibraryAdvancedFilters(encoded: String) =

@@ -245,10 +245,6 @@ final class SourcesEngine {
         }
     }
 
-    func updateWebDAVRoot(server: WebDAVServerConfig, connectionId: UUID, selectedPath: String) async {
-        await updateWebDAVRoots(server: server, connectionId: connectionId, selectedPaths: [selectedPath])
-    }
-
     func updateWebDAVRoots(server: WebDAVServerConfig, connectionId: UUID, selectedPaths: [String]) async {
         var updated = server
         let normalized = normalizedWebDAVPaths(selectedPaths)
@@ -455,6 +451,14 @@ enum SourcesFinalizer {
     }
 
     private static func duplicateIndex(for connection: ServerConnection, in connections: [ServerConnection]) -> Int? {
+        if connection.type == .oneDrive, let driveId = connection.userId, !driveId.isEmpty {
+            return connections.firstIndex {
+                $0.id != connection.id
+                    && !$0.isArchived
+                    && $0.type == .oneDrive
+                    && $0.userId == driveId
+            }
+        }
         guard let target = normalizedEndpoint(connection.url) else { return nil }
         return connections.firstIndex {
             $0.id != connection.id

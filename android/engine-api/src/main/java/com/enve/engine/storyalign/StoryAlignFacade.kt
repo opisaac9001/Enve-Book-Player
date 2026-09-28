@@ -35,6 +35,8 @@ data class StoryAlignJobUi(
     val outputBookId: String?,
     val createdAt: Long,
     val updatedAt: Long,
+    val keptPreviousReason: String? = null,
+    val hasPreviousOutput: Boolean = false,
 ) {
     val isActive: Boolean
         get() = status == StoryAlignStatus.QUEUED || status == StoryAlignStatus.RUNNING || status == StoryAlignStatus.PAUSED
@@ -60,6 +62,8 @@ interface StoryAlignFacade {
     suspend fun cancelJob(jobId: String)
 
     suspend fun retryJob(jobId: String)
+
+    suspend fun restorePreviousOutput(jobId: String): Boolean
 
     suspend fun deleteJob(jobId: String, deleteOutput: Boolean = true)
 }

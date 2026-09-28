@@ -135,10 +135,14 @@ class PlaybackFacadeImpl @Inject constructor(
 
     @OptIn(ExperimentalCoroutinesApi::class)
     override val nowPlaying: StateFlow<NowPlaying?> =
-        combine(audioManager.currentBookIdFlow, audioManager.state) { bookId, state ->
-            bookId to state.mediaId?.let(AutoMediaBrowserHelper::cacheKeyFrom)
+        combine(
+            audioManager.currentBookIdFlow,
+            audioManager.state,
+            audioManager.nowPlayingMetadata,
+        ) { bookId, state, metadata ->
+            Triple(bookId, state.mediaId?.let(AutoMediaBrowserHelper::cacheKeyFrom), metadata)
         }.distinctUntilChanged()
-            .mapLatest { (id, key) ->
+            .mapLatest { (id, key, metadata) ->
                 if (id == null) return@mapLatest null
                 val exact = key?.let { bookCache.getByCacheKey(it) }?.takeIf { it.id == id }
                 (exact ?: bookCache.getById(id))?.let { cached ->
@@ -148,6 +152,14 @@ class PlaybackFacadeImpl @Inject constructor(
                         title = cached.title,
                         author = cached.author,
                         coverUrl = cached.coverUrl,
+                    )
+                } ?: metadata?.takeIf { it.bookId == id }?.let { uncached ->
+                    NowPlaying(
+                        bookId = id,
+                        bookKey = AutoMediaBrowserHelper.cacheKeyFrom(uncached.mediaId) ?: id,
+                        title = uncached.title,
+                        author = uncached.author,
+                        coverUrl = uncached.coverUrl,
                     )
                 }
             }

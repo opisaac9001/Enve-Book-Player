@@ -1,5 +1,6 @@
 package com.enve.bookorbit.dto
 
+import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
@@ -243,14 +244,6 @@ data class BookOrbitCurrentlyReadingBookDto(
 )
 
 @Serializable
-data class BookOrbitAudioProgressDto(
-    val percentage: Double? = null,
-    val currentFileId: Int? = null,
-    val positionSeconds: Double? = null,
-    val updatedAt: String? = null,
-)
-
-@Serializable
 data class BookOrbitFileProgressDto(
     val cfi: String? = null,
     val percentage: Double? = null,
@@ -259,16 +252,47 @@ data class BookOrbitFileProgressDto(
 )
 
 @Serializable
-data class BookOrbitAudioProgressRequest(
-    val percentage: Double,
-    val currentFileId: Int,
-    val positionSeconds: Double,
+data class BookOrbitAudiobookManifestDto(
+    val revision: String,
+    val assets: List<BookOrbitAudiobookAssetDto> = emptyList(),
+    val chapters: List<BookOrbitChapterDto> = emptyList(),
+    val totalDurationMs: Long = 0,
 )
 
 @Serializable
+data class BookOrbitAudiobookAssetDto(
+    val assetId: String,
+    val sequence: Int,
+    val format: String,
+    val durationMs: Long? = null,
+    val sizeBytes: Long? = null,
+    val etag: String? = null,
+)
+
+@Serializable
+data class BookOrbitAudiobookPlaybackStateDto(
+    val assetId: String,
+    val positionMs: Long = 0,
+    val percentage: Double? = null,
+    val revision: Int = 0,
+    val manifestRevision: String = "",
+)
+
+@Serializable
+data class BookOrbitAudiobookPlaybackStateRequest(
+    val assetId: String,
+    val positionMs: Long,
+    val capturedAt: String,
+    val operationId: String,
+    val baseRevision: Int,
+    val manifestRevision: String,
+)
+
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
 data class BookOrbitEbookProgressRequest(
     val percentage: Double,
-    val cfi: String? = null,
+    @EncodeDefault(EncodeDefault.Mode.NEVER) val cfi: String? = null,
 )
 
 @Serializable
@@ -279,14 +303,15 @@ data class BookOrbitStatusRequest(
 @Serializable
 data class BookOrbitAnnotationDto(
     val id: Int,
-    val bookId: Int,
-    val cfi: String,
-    val text: String,
-    val color: String,
-    val style: String,
+    val bookId: Int? = null,
+    val cfi: String? = null,
+    val pageno: Int? = null,
+    val text: String = "",
+    val color: String = "",
+    val style: String = "",
     val note: String? = null,
     val chapterTitle: String? = null,
-    val createdAt: String,
+    val createdAt: String? = null,
 )
 
 @Serializable
@@ -309,11 +334,11 @@ data class BookOrbitUpdateAnnotationRequest(
 @Serializable
 data class BookOrbitBookmarkDto(
     val id: Int,
-    val bookId: Int,
+    val bookId: Int? = null,
     val cfi: String? = null,
-    val title: String,
+    val title: String = "",
     val positionSeconds: Double? = null,
-    val createdAt: String,
+    val createdAt: String? = null,
 )
 
 @Serializable

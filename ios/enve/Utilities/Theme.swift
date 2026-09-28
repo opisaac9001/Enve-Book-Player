@@ -350,46 +350,7 @@ public struct Theme {
         )
     }
     #endif
-
-    nonisolated public static func headlineFont(visionMode: Bool) -> Font {
-        visionMode ? .system(size: 24, weight: .bold) : .headline
-    }
-
-    nonisolated public static func titleFont(visionMode: Bool) -> Font {
-        visionMode ? .system(size: 22, weight: .bold) : .title
-    }
-
-    nonisolated public static func bodyFont(visionMode: Bool) -> Font {
-        visionMode ? .system(size: 17) : .body
-    }
-
-    nonisolated public static func captionFont(visionMode: Bool) -> Font {
-        visionMode ? .system(size: 15) : .caption
-    }
-
-    nonisolated public static func spacingMultiplier(visionMode: Bool) -> CGFloat {
-        visionMode ? 1.5 : 1.0
-    }
-}
-
-struct ThemedPlaceholderModifier: ViewModifier {
-    let placeholder: String
-    let text: String
-
-    func body(content: Content) -> some View {
-        ZStack(alignment: .leading) {
-            if text.isEmpty {
-                Text(placeholder)
-                    .foregroundColor(Theme.placeholderText)
-            }
-            content
-                .foregroundColor(Theme.primaryText)
-        }
-    }
 }
 
 extension View {
-    func themedPlaceholder(_ placeholder: String, text: String) -> some View {
-        modifier(ThemedPlaceholderModifier(placeholder: placeholder, text: text))
-    }
 }

@@ -40,10 +40,4 @@ final class DevModeManager {
         isDevModeEnabled = false
     }
 
-    func forceReset() {
-        AppLogger.network.info("DevModeManager force reset")
-        isDevModeEnabled = false
-        UserDefaults.standard.removeObject(forKey: Self.persistenceKey)
-    }
-
 }

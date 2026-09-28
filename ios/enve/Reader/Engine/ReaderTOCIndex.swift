@@ -17,6 +17,8 @@ final class ReaderTOCIndex {
     private(set) var progressions: [(entry: ClassicTOCEntry, progression: Double)] = []
     private(set) var positionLocators: [Locator] = []
     private(set) var pageMarkers: [PageMarker] = []
+    /// Where each anchored entry starts inside its resource, for resources that hold several entries.
+    private(set) var anchorFractions: [String: Double] = [:]
 
     var pageCount: Int {
         pageMarkers.isEmpty ? positionLocators.count : pageMarkers.count
@@ -28,6 +30,45 @@ final class ReaderTOCIndex {
 
     func loadPageMarkers(_ markers: [PageMarker]) {
         pageMarkers = markers
+    }
+
+    func loadAnchorFractions(_ fractions: [String: Double]) {
+        anchorFractions = fractions
+    }
+
+    static func resolveAnchorFractions(for entries: [ClassicTOCEntry], in publication: Publication) async -> [String: Double] {
+        let byResource = Dictionary(grouping: entries) { normalizedResourcePath($0.href) }
+        var fractions: [String: Double] = [:]
+        for (resourcePath, siblings) in byResource where siblings.count > 1 {
+            guard !Task.isCancelled,
+                let resource = publication.get(Link(href: resourcePath)),
+                let data = try? await resource.read().get(),
+                let html = String(data: data, encoding: .utf8),
+                !html.isEmpty
+            else { continue }
+            let length = Double(html.utf8.count)
+            for entry in siblings {
+                guard let fragment = anchor(of: entry.href) else {
+                    fractions[entry.id] = 0
+                    continue
+                }
+                let offset = ["id=\"\(fragment)\"", "id='\(fragment)'", "name=\"\(fragment)\""].lazy
+                    .compactMap { html.range(of: $0) }
+                    .first
+                    .map { Double(html.utf8.distance(from: html.startIndex, to: $0.lowerBound)) }
+                if let offset {
+                    fractions[entry.id] = offset / length
+                }
+            }
+        }
+        return fractions
+    }
+
+    private static func anchor(of href: String) -> String? {
+        let parts = href.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
+        guard parts.count == 2 else { return nil }
+        let fragment = String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return fragment.isEmpty ? nil : (fragment.removingPercentEncoding ?? fragment)
     }
 
     func clearPositions() {
@@ -86,7 +127,7 @@ final class ReaderTOCIndex {
             } else {
                 let span = fileEndPosition - fileStartPosition
                 for (slotIdx, entryIdx) in entryIndices.enumerated() {
-                    let fraction = Double(slotIdx) / Double(entryIndices.count)
+                    let fraction = anchorFractions[entries[entryIdx].id] ?? Double(slotIdx) / Double(entryIndices.count)
                     let prog = fileStartPosition + fraction * span
                     result.append((entries[entryIdx], prog))
                 }
@@ -159,6 +200,9 @@ final class ReaderTOCIndex {
 
     func entry(for locator: Locator) -> ClassicTOCEntry? {
         let href = locator.href.string
+        if let anchored = anchoredEntry(for: locator) {
+            return anchored
+        }
         let normalizedHref = Self.normalizedChapterHref(href)
         if let exact = entries.first(where: { Self.normalizedChapterHref($0.href) == normalizedHref }) {
             return exact
@@ -177,6 +221,21 @@ final class ReaderTOCIndex {
             let entryPath = Self.normalizedResourcePath($0.href)
             return entryPath.hasSuffix(resourcePath) || resourcePath.hasSuffix(entryPath)
         }
+    }
+
+    /// A resource holding several entries (a single-file book) is resolved by where the reader is inside it.
+    private func anchoredEntry(for locator: Locator) -> ClassicTOCEntry? {
+        let resourcePath = Self.normalizedChapterHref(Self.normalizedResourcePath(locator.href.string))
+        let siblings = entries.filter { Self.normalizedChapterHref(Self.normalizedResourcePath($0.href)) == resourcePath }
+        guard siblings.count > 1 else { return nil }
+        let locatorFragments = Set(locator.locations.fragments)
+        if let matched = siblings.first(where: { Self.anchor(of: $0.href).map(locatorFragments.contains) == true }) {
+            return matched
+        }
+        guard let progression = locator.locations.progression else { return nil }
+        let anchored = siblings.compactMap { entry in anchorFractions[entry.id].map { (entry, $0) } }
+        guard !anchored.isEmpty else { return nil }
+        return anchored.filter { $0.1 <= progression + 0.001 }.max { $0.1 < $1.1 }?.0 ?? anchored.min { $0.1 < $1.1 }?.0
     }
 
     func fallbackSectionTitle(from locator: Locator) -> String? {

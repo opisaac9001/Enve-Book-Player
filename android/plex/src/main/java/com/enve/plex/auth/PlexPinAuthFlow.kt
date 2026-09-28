@@ -16,15 +16,10 @@ data class PlexPinSession(
 data class PlexAuthSuccess(
     val serverUrl: String,
     val accessToken: String,
-    /** Every reachable server the user has access to. Populated when the
-     *  caller wants to register each as its own connection. */
     val allServers: List<PlexResolvedServer> = emptyList(),
-    /** Raw user token from plex.tv (vs. a server-scoped accessToken). Needed
-     *  for /api/v2/home/users enumeration. */
     val userToken: String = accessToken,
 )
 
-// Polling cadence (1s × 300 = 5min) matches Plex's native client guidance.
 @Singleton
 class PlexPinAuthFlow @Inject constructor(
     private val plexPinAuth: PlexPinAuthService,
@@ -42,10 +37,6 @@ class PlexPinAuthFlow @Inject constructor(
         }
     }
 
-    // On success also resolves every reachable Plex server. The "primary"
-    // returned serverUrl/accessToken is the best (local > secure > relay) so
-    // callers that only register one connection still get the right default;
-    // callers that want every server are wired through [allServers].
     suspend fun pollUntilAuthorized(session: PlexPinSession, appName: String): Result<PlexAuthSuccess> {
         repeat(POLL_ATTEMPTS) {
             delay(POLL_INTERVAL_MS)

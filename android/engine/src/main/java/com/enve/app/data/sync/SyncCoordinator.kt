@@ -37,6 +37,7 @@ class SyncCoordinator @Inject constructor(
     private val annotationRepo: AnnotationRepository,
     private val bookCacheDao: com.enve.core.data.local.BookCacheDao,
     private val aggregatorRepository: AggregatorRepository,
+    private val rewindTracker: RemoteRewindTracker,
 
     private val adapters: Set<@JvmSuppressWildcards ProviderAdapter>,
 ) {
@@ -95,6 +96,8 @@ class SyncCoordinator @Inject constructor(
                 _events.emit(SyncEvent.Synced(book.id, snapshot.percentage, snapshot.source))
             }
             snapshot
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "pullOnOpen failed for ${book.id}", e)
             _events.emit(SyncEvent.Failed(book.id, e))
@@ -279,10 +282,15 @@ class SyncCoordinator @Inject constructor(
     }
 
     sealed class OpenSyncResult {
-        data class Apply(val snapshot: SyncSnapshot?, val useRemote: Boolean) : OpenSyncResult()
+        data class Apply(
+            val snapshot: SyncSnapshot?,
+            val useRemote: Boolean,
+            val allowRemoteCheckpoint: Boolean = true,
+        ) : OpenSyncResult()
         data class Conflict(
             val local: ProgressOption,
             val remote: ProgressOption,
+            val remoteSource: String,
         ) : OpenSyncResult()
     }
 
@@ -298,30 +306,68 @@ class SyncCoordinator @Inject constructor(
         localPercentage: Float,
         localUpdatedAt: Long?,
         localLocatorJson: String? = null,
+    ): OpenSyncResult = resolveFetchedSnapshot(
+        book = book,
+        snapshot = pullOnOpen(book),
+        localPercentage = localPercentage,
+        localUpdatedAt = localUpdatedAt,
+        localLocatorJson = localLocatorJson,
+    )
+
+    fun resolveFetchedSnapshot(
+        book: Book,
+        snapshot: SyncSnapshot?,
+        localPercentage: Float,
+        localUpdatedAt: Long?,
+        localLocatorJson: String? = null,
     ): OpenSyncResult {
-        val snapshot = pullOnOpen(book) ?: return OpenSyncResult.Apply(null, useRemote = false)
-        return when (ProgressResolutionPolicy.resolve(localPercentage, localUpdatedAt, snapshot)) {
+        if (snapshot == null) return OpenSyncResult.Apply(null, useRemote = false)
+        return when (ProgressResolutionPolicy.resolve(localPercentage, localUpdatedAt, snapshot, localLocatorJson)) {
             ProgressResolutionPolicy.Decision.NONE -> OpenSyncResult.Apply(snapshot, useRemote = false)
             ProgressResolutionPolicy.Decision.PULL -> OpenSyncResult.Apply(snapshot, useRemote = true)
-            ProgressResolutionPolicy.Decision.PUSH -> OpenSyncResult.Apply(snapshot, useRemote = false)
+            ProgressResolutionPolicy.Decision.PUSH -> OpenSyncResult.Apply(snapshot, useRemote = false, allowRemoteCheckpoint = false)
             ProgressResolutionPolicy.Decision.CONFLICT -> {
-                val localPositionMs = if (book.duration > 0L) (book.duration * localPercentage * 1000L).toLong() else null
-                OpenSyncResult.Conflict(
-                    local = ProgressOption(
-                        percentage = localPercentage,
-                        updatedAt = localUpdatedAt,
-                        locatorJson = localLocatorJson,
-                        positionMs = localPositionMs,
-                    ),
-                    remote = ProgressOption(
+                val verdict = rewindTracker.assess(
+                    scope = RemoteProgressScope.of(book, snapshot.source),
+                    observation = RemoteProgressObservation(
                         percentage = snapshot.percentage,
-                        updatedAt = snapshot.updatedAt,
-                        locatorJson = snapshot.locatorJson,
                         positionMs = snapshot.positionMs,
+                        locatorJson = snapshot.locatorJson,
+                        observedAt = snapshot.updatedAt,
                     ),
+                    localPercentage = localPercentage,
                 )
+                when (verdict) {
+                    RemoteRewindVerdict.CONFIRMED -> OpenSyncResult.Apply(snapshot, useRemote = true)
+                    RemoteRewindVerdict.ECHO,
+                    RemoteRewindVerdict.DISMISSED -> OpenSyncResult.Apply(snapshot, useRemote = false, allowRemoteCheckpoint = false)
+                    RemoteRewindVerdict.NOT_REWIND,
+                    RemoteRewindVerdict.UNCONFIRMED -> {
+                        val localPositionMs =
+                            if (book.duration > 0L) (book.duration * localPercentage * 1000L).toLong() else null
+                        OpenSyncResult.Conflict(
+                            local = ProgressOption(
+                                percentage = localPercentage,
+                                updatedAt = localUpdatedAt,
+                                locatorJson = localLocatorJson,
+                                positionMs = localPositionMs,
+                            ),
+                            remote = ProgressOption(
+                                percentage = snapshot.percentage,
+                                updatedAt = snapshot.updatedAt,
+                                locatorJson = snapshot.locatorJson,
+                                positionMs = snapshot.positionMs,
+                            ),
+                            remoteSource = snapshot.source,
+                        )
+                    }
+                }
             }
         }
+    }
+
+    fun recordConflictResolution(book: Book, remoteSource: String, acceptedRemote: Boolean) {
+        rewindTracker.recordUserResolution(RemoteProgressScope.of(book, remoteSource), acceptedRemote)
     }
 
     private suspend fun performPush(book: Book, currentTimeSec: Long, progressFraction: Float) {
@@ -358,6 +404,7 @@ class SyncCoordinator @Inject constructor(
                 } else {
                     null
                 }
+                var remoteWritten = false
                 val adapter = adapters.firstOrNull { it.source == book.source }
                 if (adapter != null && adapter.syncCapability.supports(SyncCapabilityFlag.PUSH_PROGRESS)) {
                     val result = when (book.mediaType) {
@@ -376,6 +423,7 @@ class SyncCoordinator @Inject constructor(
                         else -> Result.success(Unit)
                     }
                     result.getOrThrow()
+                    remoteWritten = true
                 }
 
                 if (book.source == BookSource.GRIMMORY && book.mediaType == AppMediaType.EBOOK) {
@@ -397,6 +445,15 @@ class SyncCoordinator @Inject constructor(
                         throw e
                     } catch (_: Exception) {
                     }
+                }
+
+                if (remoteWritten) {
+                    rewindTracker.recordOutboundWrite(
+                        key = RemoteProgressWriteKey.of(book),
+                        percentage = normalizedProgress,
+                        positionMs = (currentTimeSec * 1000L).takeIf { book.mediaType == AppMediaType.AUDIOBOOK && it > 0L },
+                        locatorJson = ebookLocator,
+                    )
                 }
                 _events.emit(SyncEvent.Synced(book.id, normalizedProgress, book.source.name))
             } catch (e: kotlinx.coroutines.CancellationException) {

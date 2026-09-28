@@ -6,11 +6,14 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -156,5 +159,17 @@ fun ShelfHeader(
                     .padding(horizontal = Hearth.Spacing.S),
             )
         }
+    }
+}
+
+@Composable
+fun HearthToggleRow(label: String, checked: Boolean, onCheck: (Boolean) -> Unit) {
+    val palette = Hearth.palette
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(label, style = HearthText.Body, color = palette.text)
+        Switch(
+            checked = checked, onCheckedChange = onCheck,
+            colors = SwitchDefaults.colors(checkedTrackColor = palette.ember, checkedThumbColor = palette.readableOnEmber),
+        )
     }
 }

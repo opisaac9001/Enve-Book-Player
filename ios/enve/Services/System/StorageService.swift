@@ -56,20 +56,4 @@ public final class StorageService {
         userDefaults.removePersistentDomain(forName: domain)
     }
 
-    func saveSearchHistory(_ history: [String]) {
-        userDefaults.set(history, forKey: "searchHistory")
-    }
-
-    func loadSearchHistory() -> [String] {
-        return userDefaults.stringArray(forKey: "searchHistory") ?? []
-    }
-
-    func saveConnectedServices(_ services: ConnectedServices) {
-        save(services, forKey: "connectedServices")
-    }
-
-    func loadConnectedServices() -> ConnectedServices {
-        return load(ConnectedServices.self, forKey: "connectedServices") ?? ConnectedServices()
-    }
-
 }

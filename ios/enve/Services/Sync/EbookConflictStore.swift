@@ -1,12 +1,15 @@
 import Foundation
 
-struct EbookSyncConflict: Equatable {
+struct EbookSyncConflict: Equatable, Identifiable {
+    var id: String { bookStableId }
+
     let bookStableId: String
     let bookTitle: String
     let localProgress: Double
     let serverProgress: Double
     let serverLocator: String?
     let serverDate: Date
+    let remoteSource: String
 }
 
 @MainActor
@@ -27,7 +30,10 @@ final class EbookConflictStore {
     }
 
     func add(_ conflict: EbookSyncConflict) {
-        guard !contains(stableId: conflict.bookStableId) else { return }
+        if let index = pending.firstIndex(where: { $0.bookStableId == conflict.bookStableId }) {
+            if conflict.serverDate >= pending[index].serverDate { pending[index] = conflict }
+            return
+        }
         pending.append(conflict)
     }
 

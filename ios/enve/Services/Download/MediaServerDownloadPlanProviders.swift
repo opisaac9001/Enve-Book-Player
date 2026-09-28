@@ -99,7 +99,7 @@ final class EmbyDownloadPlanProvider: DownloadPlanProviding {
     }
 
     static func streamURL(baseURL: String, itemId: String, token: String) -> URL? {
-        let normalized = EmbyProvider.normalizeServerURL(baseURL)
+        let normalized = MediaBrowserClient.normalizeServerURL(baseURL)
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard var components = URLComponents(string: "\(normalized)/Audio/\(itemId)/stream") else { return nil }
         components.queryItems = [
@@ -127,7 +127,7 @@ final class EmbyDownloadPlanProvider: DownloadPlanProviding {
             id: "emby_legacy",
             name: "Emby",
             type: .emby,
-            url: EmbyProvider.normalizeServerURL(credentials.serverUrl),
+            url: MediaBrowserClient.normalizeServerURL(credentials.serverUrl),
             token: credentials.token,
             enabled: true,
             username: credentials.username,

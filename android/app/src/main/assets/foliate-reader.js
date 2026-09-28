@@ -62,6 +62,7 @@ let userInteractionPending = false
 let userInteractionToken = 0
 let restorePending = true
 let annotationValues = new Map()
+let annotationRevision = 0
 let activeFootnote = null
 
 const READER_THEMES = {
@@ -681,7 +682,7 @@ view.addEventListener('draw-annotation', event => {
 })
 
 view.addEventListener('show-annotation', event => {
-    const id = annotationValues.get(event.detail.value)
+    const id = annotationValues.get(event.detail.value)?.id
     if (id) postNative('annotationActivated', { id })
 })
 
@@ -939,10 +940,29 @@ const hardenPublication = book => {
     })
 }
 
+const normalizedAnnotationText = text => text.normalize('NFC').replace(/\s+/gu, ' ').trim()
+
+const annotationRangeMatches = (range, text) => {
+    const actual = normalizedAnnotationText(range?.toString() ?? '')
+    const expected = normalizedAnnotationText(text ?? '')
+    return !!range && !range.collapsed && actual.length > 0 && (!expected || actual === expected)
+}
+
+const renderAnnotations = async () => {
+    for (const [cfi, annotation] of annotationValues) {
+        await view.addAnnotation({ value: cfi, color: annotation.color, style: annotation.style }).catch(() => {})
+    }
+}
+
+view.addEventListener('create-overlay', () => { renderAnnotations().catch(() => {}) })
+
 const annotationCfi = async annotation => {
     if (annotation.cfi?.startsWith('epubcfi(')) {
         try {
-            if (view.resolveCFI(annotation.cfi)) return annotation.cfi
+            const target = view.resolveCFI(annotation.cfi)
+            const section = view.book.sections[target?.index]
+            const doc = await section?.createDocument?.()
+            if (doc && annotationRangeMatches(target.anchor(doc), annotation.text)) return annotation.cfi
         } catch {}
     }
     const locator = annotation.locator
@@ -977,7 +997,7 @@ const annotationCfi = async annotation => {
                 value.selectNodeContents(anchor)
                 return value
             })()
-        return view.getCFI(resolved.index, range)
+        return annotationRangeMatches(range, annotation.text) ? view.getCFI(resolved.index, range) : null
     } catch {
         return null
     }
@@ -1025,20 +1045,22 @@ window.enveReader = {
         applyPreferences(next)
     },
     async applyAnnotations(annotations) {
-        for (const value of annotationValues.keys()) {
-            await view.deleteAnnotation({ value }).catch(() => {})
-        }
-        annotationValues = new Map()
+        const revision = ++annotationRevision
+        const verified = new Map()
+        const results = []
         for (const annotation of annotations ?? []) {
             const cfi = await annotationCfi(annotation)
-            if (!cfi) continue
-            annotationValues.set(cfi, annotation.id)
-            await view.addAnnotation({
-                value: cfi,
-                color: annotation.color,
-                style: annotation.style,
-            }).catch(() => {})
+            if (revision !== annotationRevision) return
+            results.push({ id: annotation.id, resolved: !!cfi })
+            if (cfi) verified.set(cfi, annotation)
         }
+        for (const value of annotationValues.keys()) {
+            await view.deleteAnnotation({ value }).catch(() => {})
+            if (revision !== annotationRevision) return
+        }
+        annotationValues = verified
+        await renderAnnotations()
+        if (revision === annotationRevision) postNative('annotationResolution', { results })
     },
     clearSelection() {
         view.deselect()

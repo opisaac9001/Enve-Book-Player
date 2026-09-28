@@ -56,6 +56,7 @@ internal fun HearthPdfChrome(
     readNextEnabled: Boolean,
     readNextPosition: ReadNextPosition,
     onReadNext: (Book) -> Unit,
+    restReminder: ReaderRestReminderSpec,
 ) {
     val palette = readerChromePalette(ReaderTheme.OLED, einkActive, EmberAccent)
     CompositionLocalProvider(
@@ -117,6 +118,12 @@ internal fun HearthPdfChrome(
                         ),
                 )
             }
+            ReaderRestReminder(
+                spec = restReminder,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(horizontal = Hearth.Spacing.XL),
+            )
         }
     }
 }

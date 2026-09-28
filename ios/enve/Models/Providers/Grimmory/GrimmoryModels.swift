@@ -4,49 +4,15 @@ import Logging
 import SwiftUI
 
 struct GrimmoryUser: Codable, Sendable {
-    let id: Int?
-    let username: String?
+    let id: Int
+    let username: String
+    let name: String
     let email: String?
-    let roles: [String]?
-    let permissions: GrimmoryPermissions?
-    let name: String?
+    let permissions: GrimmoryPermissions
 
-    enum CodingKeys: String, CodingKey {
-        case id, username, email, roles, permissions, name
-    }
+    var isAdmin: Bool { permissions.isAdmin == true }
 
-    init(id: Int?, username: String?, email: String?, roles: [String]?, permissions: GrimmoryPermissions?, name: String?) {
-        self.id = id
-        self.username = username
-        self.email = email
-        self.roles = roles
-        self.permissions = permissions
-        self.name = name
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decodeIfPresent(Int.self, forKey: .id)
-        username = try container.decodeIfPresent(String.self, forKey: .username)
-        email = try container.decodeIfPresent(String.self, forKey: .email)
-        roles = try container.decodeIfPresent([String].self, forKey: .roles)
-        name = try container.decodeIfPresent(String.self, forKey: .name)
-
-        if let nestedPermissions = try container.decodeIfPresent(GrimmoryPermissions.self, forKey: .permissions) {
-            permissions = nestedPermissions
-        } else {
-            permissions = try? GrimmoryPermissions(from: decoder)
-        }
-    }
-
-    var isAdmin: Bool {
-        if let perms = permissions, perms.isAdmin == true { return true }
-        return roles?.contains(where: { $0.lowercased() == "admin" || $0.lowercased() == "role_admin" }) ?? false
-    }
-
-    var displayName: String {
-        name ?? username ?? email ?? "Unknown User"
-    }
+    var displayName: String { name.isEmpty ? username : name }
 }
 
 struct GrimmoryPermissions: Codable, Sendable {
@@ -79,225 +45,33 @@ struct GrimmoryPermissions: Codable, Sendable {
     var canBulkResetBookReadStatus: Bool?
 
     enum CodingKeys: String, CodingKey {
-        case isAdmin
-        case admin
-        case permissionAdmin
+        case isAdmin = "admin"
         case canUpload
-        case permissionUpload
         case canDownload
-        case permissionDownload
         case canEditMetadata
-        case permissionEditMetadata
         case canManageLibrary
-        case permissionManageLibrary
         case canDeleteBook
-        case permissionDeleteBook
         case canEmailBook
-        case permissionEmailBook
         case canAccessOpds
-        case permissionAccessOpds
         case canAccessBookdrop
-        case permissionAccessBookdrop
         case canAccessLibraryStats
-        case permissionAccessLibraryStats
         case canAccessUserStats
-        case permissionAccessUserStats
         case canAccessTaskManager
-        case permissionAccessTaskManager
         case canSyncKoReader
-        case permissionSyncKoreader
         case canSyncKobo
-        case permissionSyncKobo
         case canManageMetadataConfig
-        case permissionManageMetadataConfig
         case canManageGlobalPreferences
-        case permissionManageGlobalPreferences
         case canManageIcons
-        case permissionManageIcons
         case canManageFonts
-        case permissionManageFonts
         case canBulkAutoFetchMetadata
-        case permissionBulkAutoFetchMetadata
         case canBulkCustomFetchMetadata
-        case permissionBulkCustomFetchMetadata
         case canBulkEditMetadata
-        case permissionBulkEditMetadata
         case canBulkRegenerateCover
-        case permissionBulkRegenerateCover
         case canMoveOrganizeFiles
-        case permissionMoveOrganizeFiles
         case canBulkLockUnlockMetadata
-        case permissionBulkLockUnlockMetadata
         case canBulkResetBookloreReadProgress
-        case permissionBulkResetBookloreReadProgress
         case canBulkResetKoReaderReadProgress
-        case permissionBulkResetKoReaderReadProgress
         case canBulkResetBookReadStatus
-        case permissionBulkResetBookReadStatus
-    }
-
-    init(
-        isAdmin: Bool? = nil,
-        canUpload: Bool? = nil,
-        canDownload: Bool? = nil,
-        canEditMetadata: Bool? = nil,
-        canManageLibrary: Bool? = nil,
-        canDeleteBook: Bool? = nil,
-        canEmailBook: Bool? = nil,
-        canAccessOpds: Bool? = nil,
-        canAccessBookdrop: Bool? = nil,
-        canAccessLibraryStats: Bool? = nil,
-        canAccessUserStats: Bool? = nil,
-        canAccessTaskManager: Bool? = nil,
-        canSyncKoReader: Bool? = nil,
-        canSyncKobo: Bool? = nil,
-        canManageMetadataConfig: Bool? = nil,
-        canManageGlobalPreferences: Bool? = nil,
-        canManageIcons: Bool? = nil,
-        canManageFonts: Bool? = nil,
-        canBulkAutoFetchMetadata: Bool? = nil,
-        canBulkCustomFetchMetadata: Bool? = nil,
-        canBulkEditMetadata: Bool? = nil,
-        canBulkRegenerateCover: Bool? = nil,
-        canMoveOrganizeFiles: Bool? = nil,
-        canBulkLockUnlockMetadata: Bool? = nil,
-        canBulkResetBookloreReadProgress: Bool? = nil,
-        canBulkResetKoReaderReadProgress: Bool? = nil,
-        canBulkResetBookReadStatus: Bool? = nil
-    ) {
-        self.isAdmin = isAdmin; self.canUpload = canUpload; self.canDownload = canDownload
-        self.canEditMetadata = canEditMetadata; self.canManageLibrary = canManageLibrary
-        self.canDeleteBook = canDeleteBook; self.canEmailBook = canEmailBook
-        self.canAccessOpds = canAccessOpds; self.canAccessBookdrop = canAccessBookdrop
-        self.canAccessLibraryStats = canAccessLibraryStats; self.canAccessUserStats = canAccessUserStats
-        self.canAccessTaskManager = canAccessTaskManager; self.canSyncKoReader = canSyncKoReader
-        self.canSyncKobo = canSyncKobo; self.canManageMetadataConfig = canManageMetadataConfig
-        self.canManageGlobalPreferences = canManageGlobalPreferences; self.canManageIcons = canManageIcons
-        self.canManageFonts = canManageFonts; self.canBulkAutoFetchMetadata = canBulkAutoFetchMetadata
-        self.canBulkCustomFetchMetadata = canBulkCustomFetchMetadata
-        self.canBulkEditMetadata = canBulkEditMetadata; self.canBulkRegenerateCover = canBulkRegenerateCover
-        self.canMoveOrganizeFiles = canMoveOrganizeFiles
-        self.canBulkLockUnlockMetadata = canBulkLockUnlockMetadata
-        self.canBulkResetBookloreReadProgress = canBulkResetBookloreReadProgress
-        self.canBulkResetKoReaderReadProgress = canBulkResetKoReaderReadProgress
-        self.canBulkResetBookReadStatus = canBulkResetBookReadStatus
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        isAdmin =
-            try container.decodeIfPresent(Bool.self, forKey: .isAdmin)
-            ?? container.decodeIfPresent(Bool.self, forKey: .admin)
-            ?? container.decodeIfPresent(Bool.self, forKey: .permissionAdmin)
-        canUpload =
-            try container.decodeIfPresent(Bool.self, forKey: .canUpload)
-            ?? container.decodeIfPresent(Bool.self, forKey: .permissionUpload)
-        canDownload =
-            try container.decodeIfPresent(Bool.self, forKey: .canDownload)
-            ?? container.decodeIfPresent(Bool.self, forKey: .permissionDownload)
-        canEditMetadata =
-            try container.decodeIfPresent(Bool.self, forKey: .canEditMetadata)
-            ?? container.decodeIfPresent(Bool.self, forKey: .permissionEditMetadata)
-        canManageLibrary =
-            try container.decodeIfPresent(Bool.self, forKey: .canManageLibrary)
-            ?? container.decodeIfPresent(Bool.self, forKey: .permissionManageLibrary)
-        canDeleteBook =
-            try container.decodeIfPresent(Bool.self, forKey: .canDeleteBook)
-            ?? container.decodeIfPresent(Bool.self, forKey: .permissionDeleteBook)
-        canEmailBook =
-            try container.decodeIfPresent(Bool.self, forKey: .canEmailBook)
-            ?? container.decodeIfPresent(Bool.self, forKey: .permissionEmailBook)
-        canAccessOpds =
-            try container.decodeIfPresent(Bool.self, forKey: .canAccessOpds)
-            ?? container.decodeIfPresent(Bool.self, forKey: .permissionAccessOpds)
-        canAccessBookdrop =
-            try container.decodeIfPresent(Bool.self, forKey: .canAccessBookdrop)
-            ?? container.decodeIfPresent(Bool.self, forKey: .permissionAccessBookdrop)
-        canAccessLibraryStats =
-            try container.decodeIfPresent(Bool.self, forKey: .canAccessLibraryStats)
-            ?? container.decodeIfPresent(Bool.self, forKey: .permissionAccessLibraryStats)
-        canAccessUserStats =
-            try container.decodeIfPresent(Bool.self, forKey: .canAccessUserStats)
-            ?? container.decodeIfPresent(Bool.self, forKey: .permissionAccessUserStats)
-        canAccessTaskManager =
-            try container.decodeIfPresent(Bool.self, forKey: .canAccessTaskManager)
-            ?? container.decodeIfPresent(Bool.self, forKey: .permissionAccessTaskManager)
-        canSyncKoReader =
-            try container.decodeIfPresent(Bool.self, forKey: .canSyncKoReader)
-            ?? container.decodeIfPresent(Bool.self, forKey: .permissionSyncKoreader)
-        canSyncKobo =
-            try container.decodeIfPresent(Bool.self, forKey: .canSyncKobo)
-            ?? container.decodeIfPresent(Bool.self, forKey: .permissionSyncKobo)
-        canManageMetadataConfig =
-            try container.decodeIfPresent(Bool.self, forKey: .canManageMetadataConfig)
-            ?? container.decodeIfPresent(Bool.self, forKey: .permissionManageMetadataConfig)
-        canManageGlobalPreferences =
-            try container.decodeIfPresent(Bool.self, forKey: .canManageGlobalPreferences)
-            ?? container.decodeIfPresent(Bool.self, forKey: .permissionManageGlobalPreferences)
-        canManageIcons =
-            try container.decodeIfPresent(Bool.self, forKey: .canManageIcons)
-            ?? container.decodeIfPresent(Bool.self, forKey: .permissionManageIcons)
-        canManageFonts =
-            try container.decodeIfPresent(Bool.self, forKey: .canManageFonts)
-            ?? container.decodeIfPresent(Bool.self, forKey: .permissionManageFonts)
-        canBulkAutoFetchMetadata =
-            try container.decodeIfPresent(Bool.self, forKey: .canBulkAutoFetchMetadata)
-            ?? container.decodeIfPresent(Bool.self, forKey: .permissionBulkAutoFetchMetadata)
-        canBulkCustomFetchMetadata =
-            try container.decodeIfPresent(Bool.self, forKey: .canBulkCustomFetchMetadata)
-            ?? container.decodeIfPresent(Bool.self, forKey: .permissionBulkCustomFetchMetadata)
-        canBulkEditMetadata =
-            try container.decodeIfPresent(Bool.self, forKey: .canBulkEditMetadata)
-            ?? container.decodeIfPresent(Bool.self, forKey: .permissionBulkEditMetadata)
-        canBulkRegenerateCover =
-            try container.decodeIfPresent(Bool.self, forKey: .canBulkRegenerateCover)
-            ?? container.decodeIfPresent(Bool.self, forKey: .permissionBulkRegenerateCover)
-        canMoveOrganizeFiles =
-            try container.decodeIfPresent(Bool.self, forKey: .canMoveOrganizeFiles)
-            ?? container.decodeIfPresent(Bool.self, forKey: .permissionMoveOrganizeFiles)
-        canBulkLockUnlockMetadata =
-            try container.decodeIfPresent(Bool.self, forKey: .canBulkLockUnlockMetadata)
-            ?? container.decodeIfPresent(Bool.self, forKey: .permissionBulkLockUnlockMetadata)
-        canBulkResetBookloreReadProgress =
-            try container.decodeIfPresent(Bool.self, forKey: .canBulkResetBookloreReadProgress)
-            ?? container.decodeIfPresent(Bool.self, forKey: .permissionBulkResetBookloreReadProgress)
-        canBulkResetKoReaderReadProgress =
-            try container.decodeIfPresent(Bool.self, forKey: .canBulkResetKoReaderReadProgress)
-            ?? container.decodeIfPresent(Bool.self, forKey: .permissionBulkResetKoReaderReadProgress)
-        canBulkResetBookReadStatus =
-            try container.decodeIfPresent(Bool.self, forKey: .canBulkResetBookReadStatus)
-            ?? container.decodeIfPresent(Bool.self, forKey: .permissionBulkResetBookReadStatus)
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encodeIfPresent(isAdmin, forKey: .isAdmin)
-        try container.encodeIfPresent(canUpload, forKey: .canUpload)
-        try container.encodeIfPresent(canDownload, forKey: .canDownload)
-        try container.encodeIfPresent(canEditMetadata, forKey: .canEditMetadata)
-        try container.encodeIfPresent(canManageLibrary, forKey: .canManageLibrary)
-        try container.encodeIfPresent(canDeleteBook, forKey: .canDeleteBook)
-        try container.encodeIfPresent(canEmailBook, forKey: .canEmailBook)
-        try container.encodeIfPresent(canAccessOpds, forKey: .canAccessOpds)
-        try container.encodeIfPresent(canAccessBookdrop, forKey: .canAccessBookdrop)
-        try container.encodeIfPresent(canAccessLibraryStats, forKey: .canAccessLibraryStats)
-        try container.encodeIfPresent(canAccessUserStats, forKey: .canAccessUserStats)
-        try container.encodeIfPresent(canAccessTaskManager, forKey: .canAccessTaskManager)
-        try container.encodeIfPresent(canSyncKoReader, forKey: .canSyncKoReader)
-        try container.encodeIfPresent(canSyncKobo, forKey: .canSyncKobo)
-        try container.encodeIfPresent(canManageMetadataConfig, forKey: .canManageMetadataConfig)
-        try container.encodeIfPresent(canManageGlobalPreferences, forKey: .canManageGlobalPreferences)
-        try container.encodeIfPresent(canManageIcons, forKey: .canManageIcons)
-        try container.encodeIfPresent(canManageFonts, forKey: .canManageFonts)
-        try container.encodeIfPresent(canBulkAutoFetchMetadata, forKey: .canBulkAutoFetchMetadata)
-        try container.encodeIfPresent(canBulkCustomFetchMetadata, forKey: .canBulkCustomFetchMetadata)
-        try container.encodeIfPresent(canBulkEditMetadata, forKey: .canBulkEditMetadata)
-        try container.encodeIfPresent(canBulkRegenerateCover, forKey: .canBulkRegenerateCover)
-        try container.encodeIfPresent(canMoveOrganizeFiles, forKey: .canMoveOrganizeFiles)
-        try container.encodeIfPresent(canBulkLockUnlockMetadata, forKey: .canBulkLockUnlockMetadata)
-        try container.encodeIfPresent(canBulkResetBookloreReadProgress, forKey: .canBulkResetBookloreReadProgress)
-        try container.encodeIfPresent(canBulkResetKoReaderReadProgress, forKey: .canBulkResetKoReaderReadProgress)
-        try container.encodeIfPresent(canBulkResetBookReadStatus, forKey: .canBulkResetBookReadStatus)
     }
 }
 

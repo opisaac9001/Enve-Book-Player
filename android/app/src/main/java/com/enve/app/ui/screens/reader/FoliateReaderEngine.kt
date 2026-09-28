@@ -174,6 +174,8 @@ class FoliateReaderEngine(
         evaluate("window.enveReader.applyPreferences(${preferences.toFoliateJson()})")
     }
 
+    override var onAnnotationResolution: ((Map<String, Boolean>) -> Unit)? = null
+
     override fun applyAnnotations(annotations: List<ReaderAnnotation>) {
         if (!ready) return
         val payload = JSONArray()
@@ -191,9 +193,9 @@ class FoliateReaderEngine(
                     } else {
                         EpubBridgeCheckpointCodec.foliateCfi(annotation.locatorJson)
                     }
-                if (cfi == null && locator == null) return@forEach
                 val item = JSONObject()
                     .put("id", annotation.id)
+                    .put("text", annotation.textQuoteExact ?: annotation.selectedText)
                     .put("color", annotation.colorHex)
                     .put("style", annotation.style.lowercase())
                 cfi?.let { item.put("cfi", it) }
@@ -471,6 +473,18 @@ class FoliateReaderEngine(
                 "ready" -> handleReady(payload as? JSONObject ?: JSONObject())
                 "relocate" -> handleRelocate(payload as? JSONObject ?: return)
                 "selection" -> handleSelection(payload as? JSONObject)
+                "annotationResolution" -> {
+                    val results = (payload as? JSONObject)?.optJSONArray("results") ?: return
+                    val resolution = buildMap {
+                        for (index in 0 until results.length()) {
+                            val item = results.optJSONObject(index) ?: return
+                            val id = item.optString("id").takeIf { it.isNotBlank() } ?: return
+                            val resolved = item.opt("resolved") as? Boolean ?: return
+                            put(id, resolved)
+                        }
+                    }
+                    webView.post { onAnnotationResolution?.invoke(resolution) }
+                }
                 "annotationActivated" -> {
                     val id = (payload as? JSONObject)?.optString("id").orEmpty()
                     if (id.isNotBlank()) webView.post { onAnnotationActivated(id) }

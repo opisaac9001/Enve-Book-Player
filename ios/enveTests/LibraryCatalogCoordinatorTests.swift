@@ -47,13 +47,14 @@ private final class CatalogNoopWriter: BookWriting {
 private final class CatalogProviderStub: @MainActor LibraryProvider {
     var connection: ServerConnection
     var capabilities: ProviderCapabilities = [.collections]
+    var libraries: [Library] = []
 
     init(connection: ServerConnection) {
         self.connection = connection
     }
 
     func validateConnection() async throws -> Bool { true }
-    func fetchLibraries() async throws -> [Library] { [] }
+    func fetchLibraries() async throws -> [Library] { libraries }
     func fetchBooks(libraryId: String) async throws -> [Book] { [] }
     func fetchRecentBooks(libraryId: String, limit: Int) async throws -> [Book] { [] }
     func fetchCollections(libraryId: String?) async throws -> [Collection] { [] }
@@ -235,6 +236,62 @@ struct LibraryCatalogCoordinatorTests {
         #expect(await fixture.store.book(uniqueId: remote.uniqueId) == nil)
         fixture.cleanUp()
     }
+
+    @Test func refreshDropsLibrariesTheServerNoLongerLists() async throws {
+        let fixture = try CatalogFixture()
+        let catalog = fixture.makeCoordinator()
+        let provider = CatalogProviderStub(connection: makeConnection())
+        let providerId = provider.connection.id
+        let kept = Library(id: "kept", name: "Kept", type: "book", providerId: providerId)
+        let removed = Library(id: "removed", name: "Removed", type: "book", providerId: providerId)
+        provider.libraries = [kept]
+        fixture.connections.connections = [provider.connection]
+        fixture.connections.allProviders = [providerId: provider]
+        catalog.libraries = [kept, removed]
+        let orphan = Book(
+            id: "orphan",
+            title: "Orphan",
+            source: .audiobookshelf,
+            mediaType: .audiobook,
+            providerId: providerId,
+            libraryId: removed.id
+        )
+        fixture.library.books = [orphan]
+        await fixture.store.upsertBooks([orphan])
+
+        await catalog.refreshConnectionLibraries(providerId: providerId, refreshCollections: false)
+
+        #expect(catalog.libraries.map(\.id) == [kept.id])
+        #expect(!fixture.library.books.contains { $0.libraryId == removed.id })
+        #expect(await fixture.store.book(uniqueId: orphan.uniqueId) == nil)
+        fixture.cleanUp()
+    }
+
+    /// An OPDS feed can offer a direct audio acquisition, and the provider has already classified it.
+    @Test func anOPDSAudiobookIsNotCoercedIntoAnEbook() throws {
+        let fixture = try CatalogFixture()
+        let catalog = fixture.makeCoordinator()
+
+        let normalized = catalog.normalizeCachedBookMediaType(
+            makeOPDSBook(mediaType: .audiobook, partKey: "https://catalog.example.invalid/opds/narrated.m4b")
+        )
+
+        #expect(normalized.mediaType == .audiobook)
+        fixture.cleanUp()
+    }
+
+    @Test func anOPDSEbookIsStillForcedToTheEbookMediaType() throws {
+        let fixture = try CatalogFixture()
+        let catalog = fixture.makeCoordinator()
+
+        let normalized = catalog.normalizeCachedBookMediaType(
+            makeOPDSBook(mediaType: .audiobook, partKey: "https://catalog.example.invalid/opds/book.epub")
+        )
+
+        #expect(normalized.mediaType == .ebook)
+        #expect(normalized.currentTime == 0)
+        fixture.cleanUp()
+    }
 }
 
 private func makeConnection() -> ServerConnection {
@@ -251,6 +308,19 @@ private func makeCollection(id: String, providerId: UUID) -> Collection {
         iconName: "books.vertical",
         color: "blue",
         providerId: providerId
+    )
+}
+
+private func makeOPDSBook(mediaType: AppMediaType, partKey: String) -> Book {
+    Book(
+        id: "urn:opds:1",
+        title: "Narrated",
+        duration: 3600,
+        partKey: partKey,
+        mediaType: mediaType,
+        libraryId: "opds-root",
+        providerId: UUID(uuidString: "1B1F5F1E-6C5B-4E3E-9C2A-9F52A0F6A124")!,
+        source: .opds
     )
 }
 

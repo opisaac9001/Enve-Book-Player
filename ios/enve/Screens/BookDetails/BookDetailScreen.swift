@@ -51,6 +51,14 @@ struct BookDetailScreen: View {
     }
 
     var body: some View {
+        if book.mediaType == .podcast, !book.isPodcastEpisode {
+            PodcastShowScreen(show: book)
+        } else {
+            detail
+        }
+    }
+
+    private var detail: some View {
         GeometryReader { geo in
             let contentWidth = HearthAdaptive.contentWidth(for: geo.size.width, maximum: 980)
             ScrollView {
@@ -891,11 +899,20 @@ struct BookDetailScreen: View {
 
     private var chapterList: [Chapter] {
 
-        let source = (shown.chapters?.isEmpty == false) ? shown.chapters! : cachedChapters
+        let source =
+            if let chapters = shown.chapters, !chapters.isEmpty, shown.mediaType == .ebook || chapters.hasAudioTimeline {
+                chapters
+            } else {
+                cachedChapters
+            }
         return source.sorted { $0.start < $1.start }
     }
 
     private func reloadCachedChapters() {
+        guard shown.mediaType == .ebook else {
+            cachedChapters = ReaderArtifactsStore.shared.loadCachedAudioChapters(for: shown) ?? []
+            return
+        }
         cachedChapters =
             ReaderArtifactsStore.shared.loadCachedChapters(bookId: shown.stableId)
             ?? ReaderArtifactsStore.shared.loadCachedChapters(bookId: book.id)

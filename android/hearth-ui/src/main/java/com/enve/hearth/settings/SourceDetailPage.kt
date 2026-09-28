@@ -20,6 +20,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.Login
+import androidx.compose.material.icons.automirrored.outlined.MenuBook
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
@@ -55,6 +56,7 @@ internal fun SourceDetailPage(
     onEnabled: (Boolean) -> Unit,
     onReauthenticate: () -> Unit,
     onDelete: () -> Unit,
+    onBrowseCatalog: (() -> Unit)? = null,
 ) {
     val palette = Hearth.palette
     var name by remember(connection.id) { mutableStateOf(connection.name) }
@@ -111,6 +113,22 @@ internal fun SourceDetailPage(
                 EmberButton("Save changes", onClick = {
                     onSave(connection.copy(name = name.trim(), serverUrl = address.trim(), username = username.trim(), enabled = enabled))
                 })
+            }
+
+            onBrowseCatalog?.let { browse ->
+                SourceCard {
+                    Overline("Catalog")
+                    Text(
+                        "Browse this OPDS catalog's navigation, groups, facets and search without waiting for a full library crawl.",
+                        style = HearthText.Body,
+                        color = palette.textSecondary,
+                    )
+                    OutlinedButton(onClick = browse, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.AutoMirrored.Outlined.MenuBook, null)
+                        Spacer(Modifier.size(Hearth.Spacing.S))
+                        Text("Browse catalog")
+                    }
+                }
             }
 
             SourceCard {

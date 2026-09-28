@@ -10,6 +10,8 @@ struct PlayerScreen: View {
     @State private var ambient: Color = Hearth.accent
     @State private var sortedChapters: [Chapter] = []
     @State private var scrubTime: TimeInterval?
+    @State private var readModeOn = false
+    @State private var isReadAloudBook = false
     @State private var activeSheet: PlayerSheet?
     @State private var sleepChapterLabel: String?
     @State private var linkedEbook: Book?
@@ -31,11 +33,13 @@ struct PlayerScreen: View {
         }
         .task(id: engine.playback.currentBook?.stableId) {
             guard let book = engine.playback.currentBook else { return }
+            refreshReadAloudAvailability()
             ambient = await AmbientColorStore.shared.resolve(for: book)
             linkedEbook = book.mediaType == .audiobook ? await EbookAudiobookLinker.shared.linkedEbookAsync(for: book) : nil
         }
         .onAppear {
             playerVM.refreshFromCurrentPlayback()
+            refreshReadAloudAvailability()
             rebuildChapters()
         }
         .task {
@@ -60,11 +64,15 @@ struct PlayerScreen: View {
         }
         .onChange(of: engine.playback.currentBook?.stableId) {
             playerVM.refreshFromCurrentPlayback()
+            refreshReadAloudAvailability()
             rebuildChapters()
         }
         .onChange(of: playerVM.chapters) { rebuildChapters() }
         .onChange(of: playerVM.currentBook?.chapters) { rebuildChapters() }
-        .onChange(of: playerVM.duration) { rebuildChapters() }
+        .onChange(of: playerVM.duration) {
+            refreshReadAloudAvailability()
+            rebuildChapters()
+        }
         .onChange(of: playerVM.sleepTimer) { _, timer in
             if timer == nil { sleepChapterLabel = nil }
         }
@@ -156,9 +164,21 @@ struct PlayerScreen: View {
             topRow
                 .padding(.horizontal, 20)
             Spacer(minLength: 12)
-            CoverTile(book: book, width: coverWidth)
-                .shadow(color: ambient.opacity(0.25), radius: 24, y: 8)
-                .accessibilityHidden(true)
+            Group {
+                if readModeOn, isReadAloudBook {
+                    PlayerReadAloudLyricsView(
+                        book: book,
+                        width: coverWidth,
+                        currentTime: displayTime,
+                        ambient: ambient,
+                        onSeek: { playerVM.seek(to: $0) }
+                    )
+                } else {
+                    CoverTile(book: book, width: coverWidth)
+                        .accessibilityHidden(true)
+                }
+            }
+            .shadow(color: ambient.opacity(0.25), radius: 24, y: 8)
             Spacer(minLength: 22)
             titleBlock(book: book)
             Spacer(minLength: 22)
@@ -363,6 +383,17 @@ struct PlayerScreen: View {
                 activeSheet = .chapters
             }
             PlayerUtilityPill(glyph: "waveform", label: "Audio") { activeSheet = .audio }
+            if isReadAloudBook {
+                PlayerUtilityPill(
+                    glyph: nil,
+                    usesReadAloudMark: true,
+                    label: "Read",
+                    tint: readModeOn ? ambient : nil
+                ) {
+                    readModeOn.toggle()
+                }
+                .accessibilityIdentifier("Player.ReadModeToggle")
+            }
             Menu {
                 Button {
                     activeSheet = .bookmarks
@@ -406,6 +437,14 @@ struct PlayerScreen: View {
     }
 
     private var displayTime: TimeInterval { scrubTime ?? playerVM.progress }
+
+    private func refreshReadAloudAvailability() {
+        // Check the book here. The overlay session may not be ready yet, which can hide the toggle.
+        let available = engine.playback.currentBook?.epub3Features?.hasMediaOverlay == true
+            || MediaOverlayPlaybackService.shared.activeResult != nil
+        isReadAloudBook = available
+        if !available { readModeOn = false }
+    }
 
     private var scrubScope: PlayerScrubScope {
         get { PlayerScrubScope(rawValue: scrubScopeRaw) ?? .book }
@@ -635,7 +674,8 @@ private struct PlayerPlayCircle: View {
 }
 
 private struct PlayerUtilityPill: View {
-    let glyph: String
+    let glyph: String?
+    var usesReadAloudMark = false
     let label: String
     var tint: Color?
     var disabled = false
@@ -647,8 +687,8 @@ private struct PlayerUtilityPill: View {
             action()
         } label: {
             ViewThatFits(in: .horizontal) {
-                PlayerUtilityPillLabel(glyph: glyph, label: label, tint: tint)
-                PlayerUtilityPillLabel(glyph: glyph, label: nil, tint: tint)
+                PlayerUtilityPillLabel(glyph: glyph, usesReadAloudMark: usesReadAloudMark, label: label, tint: tint)
+                PlayerUtilityPillLabel(glyph: glyph, usesReadAloudMark: usesReadAloudMark, label: nil, tint: tint)
             }
                 .frame(maxWidth: .infinity)
         }
@@ -659,7 +699,8 @@ private struct PlayerUtilityPill: View {
 }
 
 private struct PlayerUtilityPillLabel: View {
-    let glyph: String
+    let glyph: String?
+    var usesReadAloudMark = false
     let label: String?
     let tint: Color?
 
@@ -667,8 +708,13 @@ private struct PlayerUtilityPillLabel: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: glyph)
-                .font(.hearthUI(13, weight: .medium))
+            if usesReadAloudMark {
+                StorytellerReadAloudMark()
+                    .frame(width: 13, height: 15)
+            } else if let glyph {
+                Image(systemName: glyph)
+                    .font(.hearthUI(13, weight: .medium))
+            }
             if let label {
                 Text(label)
                     .font(.hearthUI(13, weight: .medium).monospacedDigit())

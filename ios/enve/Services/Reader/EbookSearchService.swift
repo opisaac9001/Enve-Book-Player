@@ -25,8 +25,23 @@ struct EbookSearchResult: Identifiable, Equatable {
         self.locator = locator
         self.locatorJSON = locatorJSON
         self.chapterTitle = chapterTitle
-        self.contextBefore = contextBefore
-        self.contextAfter = contextAfter
+        self.contextBefore = Self.snippetLead(contextBefore)
+        self.contextAfter = Self.collapsingWhitespace(contextAfter)
+    }
+
+    // A result row shows three lines, so a long lead-in would push the match out of view.
+    static func snippetLead(_ text: String, limit: Int = 60) -> String {
+        var lead = collapsingWhitespace(text)
+        let trailingSpace = lead.hasSuffix(" ") ? " " : ""
+        lead = lead.trimmingCharacters(in: .whitespaces)
+        guard lead.count > limit else { return lead + trailingSpace }
+        let tail = lead.suffix(limit)
+        let wholeWords = tail.firstIndex(of: " ").map { tail[tail.index(after: $0)...] } ?? tail
+        return "…" + wholeWords + trailingSpace
+    }
+
+    private static func collapsingWhitespace(_ text: String) -> String {
+        text.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
     }
 
     static func == (lhs: EbookSearchResult, rhs: EbookSearchResult) -> Bool {

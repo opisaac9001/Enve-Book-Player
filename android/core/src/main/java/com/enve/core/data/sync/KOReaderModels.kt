@@ -2,6 +2,7 @@ package com.enve.core.data.sync
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import java.io.File
 
 data class KOReaderHubConfig(
     val serverUrl: String = "",
@@ -36,11 +37,28 @@ data class KOReaderProgress(
 )
 
 @Serializable
+data class KOReaderFileIdentity(
+    val path: String,
+    val sizeBytes: Long,
+    val modifiedAtMilliseconds: Long,
+) {
+    companion object {
+        fun read(file: File): KOReaderFileIdentity? {
+            if (!file.isFile) return null
+            return KOReaderFileIdentity(file.absolutePath, file.length(), file.lastModified())
+        }
+    }
+}
+
+@Serializable
 data class KOReaderBookLink(
     val bookStableId: String,
-    val documentHash: String,
+    val documentHash: String = "",
 
     val isAutomatic: Boolean,
     val lastSyncedAt: Long? = null,
     val lastSyncedPercentage: Double? = null,
+    val fileIdentity: KOReaderFileIdentity? = null,
+    val filename: String? = null,
+    val previousHashes: List<String> = emptyList(),
 )

@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import org.readium.r2.shared.publication.Link
 import org.readium.r2.shared.publication.Locator
 import org.readium.r2.shared.publication.Publication
 import org.readium.r2.shared.publication.services.positionsByReadingOrder
@@ -85,6 +86,20 @@ private inline fun <T> friendlySearch(message: String, block: () -> T): T =
         throw EbookSearchException(message, error)
     }
 
+internal fun tocTitlesByReadingOrder(readingOrderHrefs: List<String>, toc: List<Pair<String, String>>): List<String?> {
+    val firstTitleByHref = HashMap<String, String>()
+    toc.forEach { (href, title) -> firstTitleByHref.putIfAbsent(href, title) }
+    var chapter: String? = null
+    return readingOrderHrefs.map { href -> firstTitleByHref[href]?.also { chapter = it } ?: chapter }
+}
+
+private fun Link.resourceHref(): String = url().removeFragment().normalize().toString()
+
+private fun List<Link>.titledEntries(): List<Pair<String, String>> = flatMap { link ->
+    val title = link.title?.trim()?.takeIf { it.isNotEmpty() }
+    listOfNotNull(title?.let { link.resourceHref() to it }) + link.children.titledEntries()
+}
+
 private class SearchHit(val sectionIndex: Int, val start: Int, val end: Int) {
     val key: Long = (sectionIndex.toLong() shl 32) or (start.toLong() and 0xFFFF_FFFFL)
 }
@@ -100,6 +115,9 @@ private class EbookSearchSession(
     private val indexer = EbookSearchIndexer(publication, handle.database)
     private val readingOrder = publication.readingOrder
     private val total = readingOrder.size
+    private val sectionTitles by lazy {
+        tocTitlesByReadingOrder(readingOrder.map { it.resourceHref() }, publication.tableOfContents.titledEntries())
+    }
     private val cap = limit + 1
 
     private val foldedQuery = SearchText.fold(query)
@@ -250,7 +268,9 @@ private class EbookSearchSession(
         val highlightStart = (hit.start - windowStart).coerceIn(0, window.length)
         val highlightEnd = (hit.end - windowStart).coerceIn(highlightStart, window.length)
         val locator = base.copy(
-            title = base.title?.takeIf { it.isNotBlank() } ?: "Section ${hit.sectionIndex + 1}",
+            title = sectionTitles[hit.sectionIndex]
+                ?: base.title?.takeIf { it.isNotBlank() }
+                ?: "Section ${hit.sectionIndex + 1}",
             locations = base.locations.copy(
                 progression = progression,
                 totalProgression = anchor?.locations?.totalProgression ?: base.locations.totalProgression,

@@ -75,6 +75,14 @@ class AutoMediaBrowserHelper @Inject constructor(
         fun isChapterMediaId(mediaId: String): Boolean =
             mediaId.startsWith(BOOK_PREFIX) && "#chapter:" in mediaId
 
+        fun <T> paginate(items: List<T>, page: Int, pageSize: Int): List<T> {
+            if (page < 0 || pageSize <= 0) return emptyList()
+            val from = page.toLong() * pageSize
+            if (from >= items.size) return emptyList()
+            val to = (from + pageSize).coerceAtMost(items.size.toLong())
+            return items.subList(from.toInt(), to.toInt())
+        }
+
         internal data class ChapterSegment(
             val chapter: Chapter,
             val startMs: Long,

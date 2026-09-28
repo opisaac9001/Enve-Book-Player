@@ -19,13 +19,14 @@ The dependency graph enforces this: `:hearth-ui` cannot see an engine class, so 
 | `LibraryFacade` | `AggregatorRepository`, `BookCacheDao`, paging sources | Home and library flows (`continueBooks`, `recentlyAdded`, `downloaded`, `allBooks`, `libraries`), series/author/shelf browsing and paging, edition links, collection membership, progress and finished mutations. |
 | `PlaybackFacade` | `AudioPlaybackManager` via `MediaController` | `transport` / `nowPlaying` / `queue` StateFlows, `open`, `playAll`, queue mutation, transport controls, an error `SharedFlow`. |
 | `PlayerSessionFacade` | `PlayerChapterService`, `PlayerBookmarkService`, `PlayerSleepTimerService`, `PlayerProgressService`, `PlaybackChapterStore` | Chapter list and current index, bookmark CRUD and seek, sleep timer including end-of-chapter. |
-| `AnnotationsFacade` | `AnnotationRepository`, `AnnotationDao` | Per-book annotation flow, tags, refresh, update, delete. |
+| `AnnotationsFacade` | `AnnotationRepository`, `ReaderAnnotationDao` | Per-book annotation flow, tags, refresh, update, delete. |
 | `SourcesFacade` | `ConnectionRegistry` | Connection list, enable/disable, edit, remove. Provider auth flows stay in their own Activities. |
 | `PreferencesFacade` | `PreferencesManager` (DataStore) | Typed slices only — theme mode, OLED, accent, text scale, reduce motion, skip intervals, default speed, library layout/sort/filters, start tab, home section order. Not a whole-store passthrough. |
 | `EinkFacade` | `EinkManager`, `EpdRefreshManager` | `state: StateFlow<EinkState>`, `requestFullRefresh(view)`, mode / refresh-strength / bold-text writes. See [eink.md](eink.md). |
 | `ServerToolsFacade` | Per-provider admin and stats APIs | Available targets plus stats, achievements, highlights, bookmarks, history, and related books per connection. |
 | `BookOrbitFacade` | BookOrbit provider reads | Insight and achievement DTOs for the BookOrbit screens. |
 | `StoryAlignFacade` | StoryAlign job pipeline | Job and candidate-pair flows, create / cancel / retry / delete. |
+| `PodcastsFacade` | `AggregatorRepository` → `ProviderAdapter.getPodcastShow`; `PodcastFeedClient` for the show's RSS feed | Podcast show metadata and its stored episodes (episode `Book`s carrying `episodeId` / `podcastLibraryItemId`), plus feed-only RSS episodes merged in (`podcastEnclosureUrl` set; streamed from the enclosure with local-only progress). All play through `PlaybackFacade.open`. |
 | `SleepDataFacade` | `HealthConnectSleepDataFacade` | Sleep-session snapshot for the sleep-tracking surfaces. |
 
 Readium, downloads, and per-book sync are not yet behind facades. Reader Activities in `:app` still talk to `ReadiumManager`, `OfflineDownloadManager`, and `SyncCoordinator` directly, because those engines need Android lifecycle integration. New general-purpose UI must not follow that path — add a facade instead.

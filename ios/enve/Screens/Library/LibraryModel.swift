@@ -139,6 +139,7 @@ final class LibraryModel {
     private(set) var authorAggregates: [BrowseAuthorAggregate] = []
     private(set) var narratorAggregates: [BrowseNarratorAggregate] = []
     private(set) var genreAggregates: [BrowseGenreAggregate] = []
+    private(set) var loadedAggregateFacets: Set<LibraryFacet> = []
     private(set) var totalLibraryCount = 0
     private(set) var resultTotalCount = 0
     private(set) var downloadedBookIds: Set<String> = []
@@ -1027,17 +1028,22 @@ final class LibraryModel {
     }
 
     private func loadSeriesAggregates(gen: Int, library: LibraryEngine) async {
-        if sourceFilter != .all || status != .all || advancedFilters.isActive {
+        let isSourceOnly = status == .all && !advancedFilters.isActive
+        let merged: [BrowseSeriesAggregate]
+        switch sourceFilter {
+        case .all where isSourceOnly:
+            merged = await library.seriesAggregates(mediaScope: mediaScope)
+        case .connection(let providerId) where isSourceOnly:
+            merged = await library.seriesAggregates(mediaScope: mediaScope, providerId: providerId)
+        case .library(let providerId, let libraryId) where isSourceOnly:
+            merged = await library.seriesAggregates(mediaScope: mediaScope, providerId: providerId, libraryId: libraryId)
+        default:
             let books = await sourceScopedBooksForCurrentMedia(library: library, boundedForSupportData: true)
-            let merged = library.seriesAggregates(from: books)
-            guard gen == generation else { return }
-            seriesAggregates = merged
-            return
+            merged = library.seriesAggregates(from: books)
         }
-
-        let merged = await library.seriesAggregates(mediaScope: mediaScope)
         guard gen == generation else { return }
         seriesAggregates = merged
+        loadedAggregateFacets.insert(.series)
     }
 
     private func loadAuthorAggregates(gen: Int, library: LibraryEngine) async {
@@ -1046,12 +1052,14 @@ final class LibraryModel {
             let merged = library.authorAggregates(from: books)
             guard gen == generation else { return }
             authorAggregates = merged
+            loadedAggregateFacets.insert(.authors)
             return
         }
 
         let merged = await library.authorAggregates(mediaScope: mediaScope)
         guard gen == generation else { return }
         authorAggregates = merged
+        loadedAggregateFacets.insert(.authors)
     }
 
     private func loadNarratorAggregates(gen: Int, library: LibraryEngine) async {
@@ -1060,12 +1068,14 @@ final class LibraryModel {
             let merged = library.narratorAggregates(from: books)
             guard gen == generation else { return }
             narratorAggregates = merged
+            loadedAggregateFacets.insert(.narrators)
             return
         }
 
         let merged = await library.narratorAggregates(mediaScope: mediaScope)
         guard gen == generation else { return }
         narratorAggregates = merged
+        loadedAggregateFacets.insert(.narrators)
     }
 
     private func loadGenreAggregates(gen: Int, library: LibraryEngine) async {
@@ -1074,12 +1084,14 @@ final class LibraryModel {
             let merged = library.genreAggregates(from: books)
             guard gen == generation else { return }
             genreAggregates = merged
+            loadedAggregateFacets.insert(.genres)
             return
         }
 
         let merged = await library.genreAggregates(mediaScope: mediaScope)
         guard gen == generation else { return }
         genreAggregates = merged
+        loadedAggregateFacets.insert(.genres)
     }
 
     func books(forGenre aggregate: BrowseGenreAggregate) async -> [Book] {

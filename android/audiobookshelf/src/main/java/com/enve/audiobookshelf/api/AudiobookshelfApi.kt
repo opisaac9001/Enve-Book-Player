@@ -2,6 +2,7 @@ package com.enve.audiobookshelf.api
 
 import com.enve.audiobookshelf.dto.*
 import com.enve.core.data.remote.dto.*
+import kotlinx.serialization.json.JsonObject
 import retrofit2.Response
 import retrofit2.http.*
 
@@ -42,6 +43,11 @@ interface AudiobookshelfApi {
         @Path("itemId") itemId: String,
     ): Response<AbsLibraryItemDto>
 
+    @GET("api/items/{itemId}?expanded=1")
+    suspend fun getExpandedItem(
+        @Path("itemId") itemId: String,
+    ): Response<AbsLibraryItemDto>
+
     @PATCH("api/items/{itemId}/media")
     suspend fun updateMetadata(
         @Path("itemId") itemId: String,
@@ -64,6 +70,13 @@ interface AudiobookshelfApi {
         @Body request: AbsPlaybackStartRequest = AbsPlaybackStartRequest(),
     ): Response<AbsPlaybackSessionDto>
 
+    @POST("api/items/{itemId}/play/{episodeId}")
+    suspend fun startEpisodePlaybackSession(
+        @Path("itemId") itemId: String,
+        @Path("episodeId") episodeId: String,
+        @Body request: AbsPlaybackStartRequest = AbsPlaybackStartRequest(),
+    ): Response<AbsPlaybackSessionDto>
+
     @POST("api/session/{sessionId}/sync")
     suspend fun syncPlaybackSession(
         @Path("sessionId") sessionId: String,
@@ -82,12 +95,31 @@ interface AudiobookshelfApi {
         @Body request: AbsProgressUpdateRequest,
     ): Response<Unit>
 
+    @PATCH("api/me/progress/{libraryItemId}/{episodeId}")
+    suspend fun updateEpisodeProgress(
+        @Path("libraryItemId") libraryItemId: String,
+        @Path("episodeId") episodeId: String,
+        @Body request: AbsProgressUpdateRequest,
+    ): Response<Unit>
+
+    @PATCH("api/me/progress/{libraryItemId}")
+    suspend fun updateEbookProgress(
+        @Path("libraryItemId") libraryItemId: String,
+        @Body body: JsonObject,
+    ): Response<Unit>
+
     @GET("api/me/items-in-progress")
     suspend fun getItemsInProgress(@Query("limit") limit: Int = 40): Response<AbsLibraryItemsResponse>
 
     @GET("api/me/progress/{libraryItemId}")
     suspend fun getProgress(
         @Path("libraryItemId") libraryItemId: String,
+    ): Response<AbsMediaProgressDto>
+
+    @GET("api/me/progress/{libraryItemId}/{episodeId}")
+    suspend fun getEpisodeProgress(
+        @Path("libraryItemId") libraryItemId: String,
+        @Path("episodeId") episodeId: String,
     ): Response<AbsMediaProgressDto>
 
     @GET("api/libraries/{libraryId}/authors")

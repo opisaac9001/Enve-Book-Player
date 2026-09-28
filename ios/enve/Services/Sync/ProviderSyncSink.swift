@@ -40,7 +40,7 @@ final class ProviderSyncSink: SyncSink {
                     positionSeconds: 0,
                     locator: authoritative.position.locatorJSON,
                     lastUpdate: authoritative.position.observedAt,
-                    isFinished: authoritative.position.progression >= 0.99,
+                    isFinished: authoritative.position.progression >= Book.finishedProgressThreshold,
                     source: sourceName
                 )
             }
@@ -53,7 +53,7 @@ final class ProviderSyncSink: SyncSink {
                 positionSeconds: 0,
                 locator: result.locator,
                 lastUpdate: result.updatedAt ?? .distantPast,
-                isFinished: result.readState.isAbandoned || result.readState.isFinished || result.progress >= 0.99,
+                isFinished: result.readState.isFinished || result.progress >= Book.finishedProgressThreshold,
                 source: sourceName
             )
         } else {
@@ -68,7 +68,7 @@ final class ProviderSyncSink: SyncSink {
                 positionSeconds: result.positionSeconds,
                 locator: nil,
                 lastUpdate: result.updatedAt ?? .distantPast,
-                isFinished: result.readState.isAbandoned || result.readState.isFinished || result.percentage >= 0.99 || prog >= 0.99,
+                isFinished: result.readState.isFinished || result.percentage >= Book.finishedProgressThreshold || prog >= Book.finishedProgressThreshold,
                 source: sourceName
             )
         }

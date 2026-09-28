@@ -27,6 +27,10 @@ final class PodcastsEngine {
         !subscriptions.isEmpty
     }
 
+    var includesAudiobookshelfPodcasts: Bool {
+        LibraryDisplayPreferencesStore.shared.loadPreferences().includeAudiobookshelfPodcasts
+    }
+
     func isSubscribed(feedURL: String) -> Bool {
         subscriptions.contains { $0.feedURL == feedURL }
     }
@@ -58,6 +62,10 @@ final class PodcastsEngine {
     }
 
     func fetchServerShows() async -> (shows: [AudiobookshelfProvider.PodcastShow], failed: Bool) {
+        guard includesAudiobookshelfPodcasts else {
+            return ([], false)
+        }
+
         var shows: [AudiobookshelfProvider.PodcastShow] = []
         var sawFailure = false
 
@@ -65,8 +73,11 @@ final class PodcastsEngine {
             guard let provider = PluginRegistry.shared.makeLibraryProvider(for: connection) as? AudiobookshelfProvider else { continue }
             do {
                 let libraries = try await provider.fetchLibraries()
+                let selectedLibraryIds = connection.selectedLibraryIds ?? []
                 let podcastLibraries = libraries.filter {
-                    $0.type.lowercased() == "podcast" || $0.type.lowercased() == "podcasts"
+                    let type = $0.type.lowercased()
+                    return (type == "podcast" || type == "podcasts")
+                        && (selectedLibraryIds.isEmpty || selectedLibraryIds.contains($0.id))
                 }
                 for library in podcastLibraries {
                     do {

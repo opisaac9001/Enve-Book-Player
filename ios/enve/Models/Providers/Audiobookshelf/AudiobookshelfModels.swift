@@ -428,14 +428,6 @@ public struct ABSCollection: Codable, Identifiable {
             UserDefaults.standard.string(forKey: "custom_cover_abs_\(id)")
         }
     }
-
-    public func setCustomCoverPath(_ path: String?) {
-        if let path = path {
-            UserDefaults.standard.set(path, forKey: "custom_cover_abs_\(id)")
-        } else {
-            UserDefaults.standard.removeObject(forKey: "custom_cover_abs_\(id)")
-        }
-    }
 }
 
 public struct ABSCollectionRequest: Codable {
@@ -462,6 +454,7 @@ public struct ABSMediaProgress: Codable {
     public let isFinished: Bool?
     public let hideFromContinueListening: Bool?
     public let ebookProgress: Double?
+    public let ebookLocation: String?
     public let lastUpdate: Double?
     public let startedAt: Double?
     public let finishedAt: Double?
@@ -475,12 +468,41 @@ public struct ABSMediaProgress: Codable {
         return (progress ?? 0) * 100
     }
 
+    public var hasEbookPosition: Bool {
+        Self.hasEbookPosition(ebookProgress: ebookProgress, ebookLocation: ebookLocation)
+    }
+
+    public var hasAudioPosition: Bool {
+        Self.hasAudioPosition(currentTime: currentTime, progress: progress, isFinished: isFinished == true)
+    }
+
+    public func ebookFraction(itemHasAudio: Bool) -> Double? {
+        Self.ebookFraction(ebookProgress: ebookProgress, ebookLocation: ebookLocation, progress: progress, itemHasAudio: itemHasAudio)
+    }
+
+    /// ABS creates a record with `ebookProgress` 0 for any first write, so an audio-only record has an empty ebook side.
+    public static func hasEbookPosition(ebookProgress: Double?, ebookLocation: String?) -> Bool {
+        (ebookProgress ?? 0) > 0 || ebookLocation?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
+
+    /// The same holds for the audio side of a record that an ebook push created.
+    public static func hasAudioPosition(currentTime: Double?, progress: Double?, isFinished: Bool) -> Bool {
+        (currentTime ?? 0) > 0 || (progress ?? 0) > 0 || isFinished
+    }
+
+    /// The record's ebook position, or nil when an item with audio has an empty ebook side: that record was written
+    /// by audio pushes, and its `progress` is the audio's. An ebook-only record is only ever written by ebook pushes.
+    public static func ebookFraction(ebookProgress: Double?, ebookLocation: String?, progress: Double?, itemHasAudio: Bool) -> Double? {
+        guard itemHasAudio else { return ebookProgress ?? progress ?? 0 }
+        return hasEbookPosition(ebookProgress: ebookProgress, ebookLocation: ebookLocation) ? ebookProgress ?? 0 : nil
+    }
+
     public var resolvedIsFinished: Bool {
-        if isFinished == true || finishedAt != nil || (progress ?? 0) >= 0.99 {
+        if isFinished == true || finishedAt != nil || (progress ?? 0) >= Book.finishedProgressThreshold {
             return true
         }
         guard let duration, duration > 0, let currentTime else { return false }
-        return currentTime >= duration * 0.99
+        return currentTime >= duration * Book.finishedProgressThreshold
     }
 }
 
@@ -664,10 +686,6 @@ public struct ABSSearchTagResult: Codable {
     public let books: [ABSLibraryItem]?
 }
 
-public struct ABSMetadataUpdateRequest: Codable {
-    public let metadata: ABSMetadataPayload
-}
-
 public struct ABSMetadataPayload: Codable {
     public let title: String?
     public let subtitle: String?
@@ -719,11 +737,6 @@ public struct ABSAuthFormData: Codable {
     public let authOpenIDIsConfigured: Bool?
     public let authOpenIDButtonText: String?
     public let authOpenIDAutoLaunch: Bool?
-}
-
-public struct ABSBatchUpdateRequest: Codable {
-    public let libraryItemIds: [String]
-    public let updates: ABSMetadataPayload
 }
 
 public struct ABSLibrariesResponse: Codable {
@@ -836,52 +849,6 @@ public struct ABSBackup: Codable, Identifiable {
         guard let createdAt = createdAt else { return nil }
         return Date(timeIntervalSince1970: createdAt / 1000)
     }
-}
-
-public struct ABSServerSettings: Codable {
-    public var id: String?
-    public var scannerFindCovers: Bool?
-    public var scannerCoverProvider: String?
-    public var scannerParseSubtitle: Bool?
-    public var scannerPreferMatchedMetadata: Bool?
-    public var scannerDisableWatcher: Bool?
-    public var storeCoverWithItem: Bool?
-    public var storeMetadataWithItem: Bool?
-    public var metadataFileFormat: String?
-    public var rateLimitLoginRequests: Int?
-    public var rateLimitLoginWindow: Int?
-    public var backupSchedule: String?
-    public var backupsToKeep: Int?
-    public var maxBackupSize: Int?
-    public var loggerDailyLogsToKeep: Int?
-    public var loggerScannerLogsToKeep: Int?
-    public var sortingIgnorePrefix: Bool?
-    public var sortingPrefixes: [String]?
-    public var chromecastEnabled: Bool?
-    public var dateFormat: String?
-    public var timeFormat: String?
-    public var language: String?
-    public var logLevel: Int?
-    public var version: String?
-}
-
-public struct ABSServerSettingsUpdate: Codable {
-    public var scannerFindCovers: Bool?
-    public var scannerCoverProvider: String?
-    public var scannerParseSubtitle: Bool?
-    public var scannerPreferMatchedMetadata: Bool?
-    public var scannerDisableWatcher: Bool?
-    public var storeCoverWithItem: Bool?
-    public var storeMetadataWithItem: Bool?
-    public var metadataFileFormat: String?
-    public var backupSchedule: String?
-    public var backupsToKeep: Int?
-    public var maxBackupSize: Int?
-    public var sortingIgnorePrefix: Bool?
-    public var chromecastEnabled: Bool?
-    public var logLevel: Int?
-
-    public init() {}
 }
 
 public struct ABSLibraryRequest: Codable {

@@ -1,6 +1,6 @@
 # Google Play submission
 
-Use this record for Enve Book Player 1.2 build 46. Recheck the answers against the signed production candidate before submitting them in Play Console.
+Use this record for Enve Book Player 1.2 build 52. Recheck the answers against the signed production candidate before submitting them in Play Console.
 
 ## Privacy policy
 

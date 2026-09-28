@@ -23,6 +23,7 @@ import com.enve.core.data.provider.ProviderEbookResource
 import com.enve.core.reader.EpubBridgeCheckpointCodec
 import com.enve.core.reader.ReaderEngineKind
 import com.enve.core.data.sync.CfiLocatorConverter
+import com.enve.core.data.sync.SyncSnapshot
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -38,21 +39,10 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import com.enve.core.data.remote.ConnectionScope
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.booleanOrNull
-import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.doubleOrNull
-import kotlinx.serialization.json.floatOrNull
-import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
@@ -62,6 +52,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Credentials
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.security.MessageDigest
 import java.net.URLDecoder
@@ -100,6 +91,34 @@ private val BookSource.requiresConfiguredServer: Boolean
 
 private val GRIMMORY_EBOOK_PROGRESS_TYPES = setOf("EPUB", "PDF", "CBX", "FB2", "MOBI", "AZW3")
 
+private const val KAVITA_PAGE_SIZE = 100
+
+private val WEBDAV_HREF = Regex("<(?:[a-z]+:)?href>(.*?)</(?:[a-z]+:)?href>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+
+private val HTML_ANCHOR_HREF = Regex("<a\\b[^>]*href=[\"']([^\"']+)[\"']", RegexOption.IGNORE_CASE)
+
+private val WEBDAV_PROPFIND_XML = """
+    <?xml version="1.0" encoding="utf-8" ?>
+    <d:propfind xmlns:d="DAV:">
+      <d:prop>
+        <d:resourcetype />
+        <d:getcontentlength />
+        <d:getlastmodified />
+      </d:prop>
+    </d:propfind>
+""".trimIndent()
+
+internal fun kavitaReaderFormat(format: Int): String? = when (format) {
+    KavitaMangaFormat.IMAGE -> "CBZ"
+    KavitaMangaFormat.ARCHIVE -> "CBX"
+    KavitaMangaFormat.EPUB -> "EPUB"
+    KavitaMangaFormat.PDF -> "PDF"
+    else -> null
+}
+
+internal fun kavitaPageNum(percentage: Float, pages: Int): Int =
+    if (percentage >= FINISHED_PROGRESS_THRESHOLD) pages else (percentage.coerceIn(0f, 1f) * pages).roundToInt().coerceIn(0, pages)
+
 internal fun Request.Builder.applyGrimmoryOidcHeaders(
     headers: Map<String, String>,
 ): Request.Builder = apply {
@@ -109,11 +128,13 @@ internal fun Request.Builder.applyGrimmoryOidcHeaders(
 internal fun grimmoryOidcScopes(configuredScopes: String?): String =
     configuredScopes?.takeIf { it.isNotBlank() } ?: "openid profile email groups"
 
-internal fun grimmoryOidcUsername(responseBody: String): String? =
-    Json.parseToJsonElement(responseBody)
-        .jsonObject["username"]
-        ?.jsonPrimitive
-        ?.contentOrNull
+@Serializable
+private data class GrimmoryOidcUserDto(val username: String)
+
+private val grimmoryOidcUserJson = Json { ignoreUnknownKeys = true }
+
+internal fun grimmoryOidcUsername(responseBody: String): String =
+    grimmoryOidcUserJson.decodeFromString<GrimmoryOidcUserDto>(responseBody).username
 
 internal fun grimmoryEbookFileProgress(
     bookFileId: Long,
@@ -167,6 +188,7 @@ class GrimmoryRepository @Inject constructor(
     private val prefs: PreferencesManager,
     private val vault: CredentialVault,
     private val connectionRegistry: com.enve.core.data.local.ConnectionRegistry,
+    private val listProgress: GrimmoryListProgressResolver,
     @ApplicationContext private val context: Context,
 ) {
 
@@ -748,7 +770,7 @@ class GrimmoryRepository @Inject constructor(
             if (source == BookSource.GRIMMORY && !skipPersistentBookCacheNextFetch) {
                 val cachedSummaries = loadBooksIndexFromDisk(source, serverUrl, libraryId)
                 if (!cachedSummaries.isNullOrEmpty()) {
-                    val cachedMapped = appendCompanionAudiobooks(cachedSummaries.map { it.toBook(serverUrl, token) }, serverUrl, token)
+                    val cachedMapped = appendCompanionAudiobooks(cachedSummaries.toBooks(serverUrl, token), serverUrl, token)
                     val withOverrides = applyCachedTitleOverrides(cachedMapped)
                     booksCache = CacheEntry(Pair(libraryId, withOverrides))
                     resolveAmbiguousAudiobookTitlesInBackground(
@@ -771,7 +793,7 @@ class GrimmoryRepository @Inject constructor(
             val resolved = when (source) {
                 BookSource.GRIMMORY -> {
                     val summaries = fetchAllBooks(libraryId = libraryId, page = page, size = size, sort = sort, dir = dir)
-                    val mapped = appendCompanionAudiobooks(summaries.map { it.toBook(serverUrl, token) }, serverUrl, token)
+                    val mapped = appendCompanionAudiobooks(summaries.toBooks(serverUrl, token), serverUrl, token)
 
                     val resolvedTitles = resolveAmbiguousAudiobookTitles(mapped, api, audiobookTitleOverrideCache, audiobookDurationOverrideCache)
                     saveBooksIndexToDisk(source, serverUrl, libraryId, summaries)
@@ -803,7 +825,7 @@ class GrimmoryRepository @Inject constructor(
             if (ctx.source == BookSource.GRIMMORY) {
                 val cachedSummaries = loadBooksIndexFromDisk(ctx.source, ctx.serverUrl, libraryId)
                 if (!cachedSummaries.isNullOrEmpty()) {
-                    val cachedMapped = appendCompanionAudiobooks(cachedSummaries.map { it.toBook(ctx.serverUrl, ctx.token) }, ctx.serverUrl, ctx.token)
+                    val cachedMapped = appendCompanionAudiobooks(cachedSummaries.toBooks(ctx.serverUrl, ctx.token), ctx.serverUrl, ctx.token)
                     val resolved = resolveAndEnrichAudiobooks(cachedMapped, ctx.serverUrl, ctx.token)
                     booksCache = CacheEntry(Pair(libraryId, resolved))
                     return Result.success(resolved)
@@ -891,7 +913,7 @@ class GrimmoryRepository @Inject constructor(
             val lane = all
                 .asSequence()
                 .filter { it.mediaType == AppMediaType.AUDIOBOOK }
-                .filter { it.progress in 0.01f..0.98f || it.lastReadTime > 0L }
+                .filter { it.progress in 0.01f..FINISHED_PROGRESS_THRESHOLD || it.lastReadTime > 0L }
                 .sortedByDescending { it.lastReadTime }
                 .take(20)
                 .toList()
@@ -906,7 +928,7 @@ class GrimmoryRepository @Inject constructor(
             if (response.isSuccessful) {
                 val summaries = response.body().orEmpty()
                 saveHomeLaneToDisk(source, serverUrl, "continue-listening", summaries)
-                val books = summaries.map { it.toBook(serverUrl, token) }
+                val books = summaries.toBooks(serverUrl, token)
                 val resolved = resolveAndEnrichAudiobooks(books, serverUrl, token)
                 val lane = resolved
                     .filter { it.mediaType == AppMediaType.AUDIOBOOK && it.isEligibleForGrimmoryContinue() }
@@ -931,7 +953,7 @@ class GrimmoryRepository @Inject constructor(
             val serverUrl = ctx.serverUrl
             val token = ctx.token
             val diskFallback = loadHomeLaneFromDisk(source, serverUrl, "continue-listening")
-                ?.map { it.toBook(serverUrl, token) }
+                ?.toBooks(serverUrl, token)
                 .orEmpty()
             if (diskFallback.isNotEmpty()) {
                 val resolved = resolveAndEnrichAudiobooks(diskFallback, serverUrl, token)
@@ -958,7 +980,7 @@ class GrimmoryRepository @Inject constructor(
             .filter { it.isEligibleForGrimmoryContinue() }
             .filter {
                 val p = it.progress
-                p in 0.01f..0.98f || it.currentTime > 0L || it.lastReadTime > 0L
+                p in 0.01f..FINISHED_PROGRESS_THRESHOLD || it.currentTime > 0L || it.lastReadTime > 0L
             }
             .sortedByDescending { it.lastReadTime }
             .take(20)
@@ -973,7 +995,7 @@ class GrimmoryRepository @Inject constructor(
             val lane = all
                 .asSequence()
                 .filter { it.mediaType == AppMediaType.EBOOK }
-                .filter { it.readProgress in 0.01f..0.98f }
+                .filter { it.readProgress in 0.01f..FINISHED_PROGRESS_THRESHOLD }
                 .sortedByDescending { it.lastReadTime }
                 .take(20)
                 .toList()
@@ -988,7 +1010,7 @@ class GrimmoryRepository @Inject constructor(
             if (response.isSuccessful) {
                 val summaries = response.body().orEmpty()
                 saveHomeLaneToDisk(source, serverUrl, "continue-reading", summaries)
-                val books = summaries.map { it.toBook(serverUrl, token) }
+                val books = summaries.toBooks(serverUrl, token)
                 val resolved = resolveAndEnrichAudiobooks(books, serverUrl, token)
                 val lane = resolved
                     .filter { it.mediaType == AppMediaType.EBOOK && it.isEligibleForGrimmoryContinue() }
@@ -1013,7 +1035,7 @@ class GrimmoryRepository @Inject constructor(
             val serverUrl = ctx.serverUrl
             val token = ctx.token
             val diskFallback = loadHomeLaneFromDisk(source, serverUrl, "continue-reading")
-                ?.map { it.toBook(serverUrl, token) }
+                ?.toBooks(serverUrl, token)
                 .orEmpty()
             if (diskFallback.isNotEmpty()) {
                 val resolved = resolveAndEnrichAudiobooks(diskFallback, serverUrl, token)
@@ -1038,7 +1060,7 @@ class GrimmoryRepository @Inject constructor(
             .asSequence()
             .filter { it.mediaType == AppMediaType.EBOOK }
             .filter { it.isEligibleForGrimmoryContinue() }
-            .filter { (it.epubProgress ?: it.readProgress) in 0.01f..0.98f }
+            .filter { (it.epubProgress ?: it.readProgress) in 0.01f..FINISHED_PROGRESS_THRESHOLD }
             .sortedByDescending { it.lastReadTime }
             .take(20)
             .toList()
@@ -1069,7 +1091,7 @@ class GrimmoryRepository @Inject constructor(
             if (!skipPersistentBookCacheNextFetch) {
                 val cachedSummaries = loadHomeLaneFromDisk(source, serverUrl, "recently-added")
                 if (!cachedSummaries.isNullOrEmpty()) {
-                    val cached = resolveAndEnrichAudiobooks(cachedSummaries.map { it.toBook(serverUrl, token) }, serverUrl, token)
+                    val cached = resolveAndEnrichAudiobooks(cachedSummaries.toBooks(serverUrl, token), serverUrl, token)
                     recentlyAddedCache = CacheEntry(cached)
                     return Result.success(cached)
                 }
@@ -1079,7 +1101,7 @@ class GrimmoryRepository @Inject constructor(
             if (response.isSuccessful) {
                 val summaries = response.body().orEmpty()
                 saveHomeLaneToDisk(source, serverUrl, "recently-added", summaries)
-                val books = summaries.map { it.toBook(serverUrl, token) }
+                val books = summaries.toBooks(serverUrl, token)
                 val resolved = resolveAndEnrichAudiobooks(books, serverUrl, token)
                 val lane = resolved.takeIf { it.isNotEmpty() } ?: deriveRecentlyAddedFromLibrary()
                 skipPersistentBookCacheNextFetch = false
@@ -1101,7 +1123,7 @@ class GrimmoryRepository @Inject constructor(
             val serverUrl = ctx.serverUrl
             val token = ctx.token
             val diskFallback = loadHomeLaneFromDisk(source, serverUrl, "recently-added")
-                ?.map { it.toBook(serverUrl, token) }
+                ?.toBooks(serverUrl, token)
                 .orEmpty()
             if (diskFallback.isNotEmpty()) {
                 val resolved = resolveAndEnrichAudiobooks(diskFallback, serverUrl, token)
@@ -1134,7 +1156,7 @@ class GrimmoryRepository @Inject constructor(
             val response = api.searchBooks(query)
             if (response.isSuccessful) {
                 val ctx = resolveScopedContext()
-                val books = response.body()?.content.orEmpty().map { it.toBook(ctx.serverUrl, ctx.token) }
+                val books = response.body()?.content.orEmpty().toBooks(ctx.serverUrl, ctx.token)
                 Result.success(resolveAmbiguousAudiobookTitles(books, api, audiobookTitleOverrideCache))
             } else {
                 Result.failure(Exception("Search failed"))
@@ -1151,7 +1173,7 @@ class GrimmoryRepository @Inject constructor(
             val response = api.getRecentlyScanned()
             if (response.isSuccessful) {
                 val ctx = resolveScopedContext()
-                val books = response.body().orEmpty().map { it.toBook(ctx.serverUrl, ctx.token) }
+                val books = response.body().orEmpty().toBooks(ctx.serverUrl, ctx.token)
                 Result.success(resolveAmbiguousAudiobookTitles(books, api, audiobookTitleOverrideCache))
             } else {
                 Result.failure(Exception("Failed to fetch recently scanned"))
@@ -1168,7 +1190,7 @@ class GrimmoryRepository @Inject constructor(
             val response = api.getRandomBooks(libraryId = libraryId)
             if (response.isSuccessful) {
                 val ctx = resolveScopedContext()
-                val books = response.body()?.content.orEmpty().map { it.toBook(ctx.serverUrl, ctx.token) }
+                val books = response.body()?.content.orEmpty().toBooks(ctx.serverUrl, ctx.token)
                 Result.success(resolveAmbiguousAudiobookTitles(books, api, audiobookTitleOverrideCache))
             } else {
                 Result.failure(Exception("Failed to fetch random books"))
@@ -1456,7 +1478,7 @@ class GrimmoryRepository @Inject constructor(
 
             val response = api.getSeriesBooks(seriesName)
             if (response.isSuccessful) {
-                val books = response.body()?.content.orEmpty().map { it.toBook(ctx.serverUrl, ctx.token) }
+                val books = response.body()?.content.orEmpty().toBooks(ctx.serverUrl, ctx.token)
                 Result.success(resolveAmbiguousAudiobookTitles(books, api, audiobookTitleOverrideCache))
             } else {
                 Result.failure(Exception("Failed to fetch series books"))
@@ -1699,7 +1721,7 @@ class GrimmoryRepository @Inject constructor(
 
             val response = api.getShelfBooks(shelfId)
             if (response.isSuccessful) {
-                val books = response.body().orEmpty().map { it.toBookSummaryDto(fallbackLibraryId = null).toBook(ctx.serverUrl, ctx.token) }
+                val books = response.body().orEmpty().map { it.toBookSummaryDto(fallbackLibraryId = null) }.toBooks(ctx.serverUrl, ctx.token)
                 Result.success(resolveAmbiguousAudiobookTitles(books, api, audiobookTitleOverrideCache))
             } else {
                 Result.failure(Exception("Failed to fetch shelf books"))
@@ -1715,26 +1737,15 @@ class GrimmoryRepository @Inject constructor(
         return try {
             val response = api.getAppBookProgress(book.id.grimmoryServerBookId())
             val body = response.body() ?: return Result.success(null)
-            val finished = body.readStatus.equals("READ", ignoreCase = true)
-            val rawPct = body.audiobookProgress?.percentage?.let { normalizeFraction(it) }
-                ?: body.readProgress?.let { normalizeFraction(it) }
-            val pct = rawPct ?: if (finished) 1f else return Result.success(null)
-            if (pct <= 0f && !finished) return Result.success(null)
+            val snapshot = grimmoryAudiobookProgressSnapshot(
+                body = body,
+                updatedAtMs = parseIsoToEpochMs(body.audiobookProgress?.updatedAt),
+            ) ?: return Result.success(null)
             val ab = body.audiobookProgress
-
             val trackStarts = if ((ab?.trackIndex ?: 0) > 0) {
                 resolveAudiobookInfo(book.id)?.trackStartsByIndex()
             } else null
-            val positionMs = grimmoryGlobalAudiobookPositionMs(ab, trackStarts)
-            Result.success(
-                com.enve.core.data.sync.SyncSnapshot(
-                    percentage = if (finished) maxOf(pct, 1f) else pct,
-                    positionMs = positionMs,
-                    source = "Grimmory",
-                    updatedAt = parseIsoToEpochMs(body.audiobookProgress?.updatedAt),
-                    finished = finished,
-                )
-            )
+            Result.success(snapshot.copy(positionMs = grimmoryGlobalAudiobookPositionMs(ab, trackStarts)))
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -1751,35 +1762,15 @@ class GrimmoryRepository @Inject constructor(
             }
             val body = response.body()
                 ?: error("Grimmory ebook progress returned an empty response.")
-            val finished = body.readStatus.equals("READ", ignoreCase = true)
-            val epubProgress = body.epubProgress
-            val rawPct = epubProgress?.percentage?.let { normalizeFraction(it) }
-                ?: body.pdfProgress?.percentage?.let { normalizeFraction(it) }
-                ?: body.cbxProgress?.percentage?.let { normalizeFraction(it) }
-                ?: body.koreaderProgress?.percentage?.coerceIn(0f, 1f)
-                ?: body.readProgress?.let { normalizeFraction(it) }
-            val pct = rawPct ?: if (finished) 1f else return Result.success(null)
-            if (pct <= 0f && !finished) return Result.success(null)
-            val exactCfi = epubProgress?.cfi
-                ?.trim()
-                ?.takeIf(EpubBridgeCheckpointCodec::isFullEpubCfi)
             Result.success(
-                com.enve.core.data.sync.SyncSnapshot(
-                    percentage = if (finished) maxOf(pct, 1f) else pct,
-                    epubCfi = exactCfi,
-                    href = exactCfi?.let {
-                        epubProgress.href?.trim()?.takeIf(String::isNotBlank)
-                    },
-                    locatorJson = body.pdfProgress?.page?.let { "{\"page\":$it}" }
-                        ?: body.cbxProgress?.page?.let { "cbz-page:$it" },
-                    source = "Grimmory",
-                    updatedAt = parseIsoToEpochMs(
-                        epubProgress?.updatedAt
+                grimmoryEbookProgressSnapshot(
+                    body = body,
+                    updatedAtMs = parseIsoToEpochMs(
+                        body.epubProgress?.updatedAt
                             ?: body.pdfProgress?.updatedAt
-                            ?: body.cbxProgress?.updatedAt
+                            ?: body.cbxProgress?.updatedAt,
                     ),
-                    finished = finished,
-                )
+                ),
             )
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
@@ -2150,6 +2141,12 @@ class GrimmoryRepository @Inject constructor(
         )
     }
 
+    private suspend fun List<BookSummaryDto>.toBooks(serverUrl: String, token: String): List<Book> {
+        val scope = resolveScopedContext().connectionId ?: serverUrl
+        val fractions = listProgress.fractions(scope, map { it.listProgress() })
+        return map { it.toBook(serverUrl, token, fractions.getValue(it.id)) }
+    }
+
     private fun appendCompanionAudiobooks(books: List<Book>, serverUrl: String, token: String? = null): List<Book> {
         if (books.none { it.source == BookSource.GRIMMORY && it.mediaType == AppMediaType.EBOOK && it.hasAudio }) return books
         return buildList(books.size) {
@@ -2250,107 +2247,29 @@ class GrimmoryRepository @Inject constructor(
     private suspend fun fetchJellyfinLibraries(): List<Library> {
         val meResponse = api.jellyfinMe()
         if (!meResponse.isSuccessful) return emptyList()
-        val userId = meResponse.body()?.optString("Id") ?: return emptyList()
+        val userId = meResponse.body()?.Id ?: return emptyList()
 
         val viewsResponse = api.jellyfinViews(userId)
         if (!viewsResponse.isSuccessful) return emptyList()
-        val views = viewsResponse.body()?.optArray("Items") ?: JsonArray(emptyList())
-
-        return views.mapNotNull { element ->
-            val obj = element.asObjectOrNull() ?: return@mapNotNull null
-            val collectionType = obj.optString("CollectionType")?.lowercase()
-            if (collectionType != "books" && collectionType != "audiobooks") return@mapNotNull null
-            val id = obj.optString("Id") ?: return@mapNotNull null
-            val name = obj.optString("Name") ?: return@mapNotNull null
-            Library(
-                id = id,
-                name = name,
-                bookCount = obj.optInt("ChildCount") ?: 0,
-            )
-        }
+        return viewsResponse.body()?.items.orEmpty().mapNotNull { it.toBookLibraryOrNull() }
     }
 
     private suspend fun fetchJellyfinBooks(libraryId: String?, serverUrl: String): List<Book> {
         val meResponse = api.jellyfinMe()
         if (!meResponse.isSuccessful) return emptyList()
-        val userId = meResponse.body()?.optString("Id") ?: return emptyList()
+        val userId = meResponse.body()?.Id ?: return emptyList()
 
         val parentId = libraryId ?: fetchJellyfinLibraries().firstOrNull()?.id ?: return emptyList()
         val itemsResponse = api.jellyfinItems(userId = userId, parentId = parentId)
         if (!itemsResponse.isSuccessful) return emptyList()
-
-        val items = itemsResponse.body()?.optArray("Items") ?: JsonArray(emptyList())
-        return items.mapNotNull { element ->
-            val obj = element.asObjectOrNull() ?: return@mapNotNull null
-            val id = obj.optString("Id") ?: return@mapNotNull null
-            val title = obj.optString("Name") ?: return@mapNotNull null
-
-            val runtimeTicks = obj.optLong("RunTimeTicks") ?: 0L
-            val durationSec = if (runtimeTicks > 0L) runtimeTicks / 10_000_000L else 0L
-
-            val userData = obj.optObject("UserData")
-            val playbackTicks = userData?.optLong("PlaybackPositionTicks") ?: 0L
-            val positionSec = if (playbackTicks > 0L) playbackTicks / 10_000_000L else 0L
-            val progress = normalizeFraction(userData?.optFloat("PlayedPercentage"))
-
-            val people = obj.optArray("People")
-            val author = people?.firstOrNull { it.asObjectOrNull()?.optString("Type") == "Author" }
-                ?.asObjectOrNull()?.optString("Name")
-
-            val narrator = people?.firstOrNull { it.asObjectOrNull()?.optString("Type") == "Narrator" }
-                ?.asObjectOrNull()?.optString("Name")
-
-            val itemType = obj.optString("Type")?.uppercase()
-            val mediaType = when (itemType) {
-                "BOOK" -> AppMediaType.EBOOK
-                "AUDIOBOOK" -> AppMediaType.AUDIOBOOK
-                else -> AppMediaType.AUDIOBOOK
-            }
-
-            val imageTags = obj.optObject("ImageTags")
-            val primaryTag = imageTags?.optString("Primary")
-            val coverUrl = if (primaryTag != null) {
-                "${serverUrl.trimEnd('/')}/Items/$id/Images/Primary?tag=$primaryTag"
-            } else {
-                "${serverUrl.trimEnd('/')}/Items/$id/Images/Primary"
-            }
-
-            Book(
-                id = id,
-                title = title,
-                author = author,
-                narrator = narrator,
-                description = obj.optString("Overview"),
-                coverUrl = coverUrl,
-                duration = durationSec,
-                currentTime = positionSec,
-                readProgress = progress,
-                source = BookSource.JELLYFIN,
-                mediaType = mediaType,
-                libraryId = parentId,
-                isFinished = progress >= 0.99f,
-            )
-        }
+        return itemsResponse.body()?.items.orEmpty().mapNotNull { it.toJellyfinBook(serverUrl, parentId) }
     }
 
     private suspend fun fetchEmbyLibraries(): List<Library> {
         val userId = fetchEmbyUserId() ?: return emptyList()
         val viewsResponse = api.embyViews(userId)
         if (!viewsResponse.isSuccessful) return emptyList()
-        val views = viewsResponse.body()?.optArray("Items") ?: JsonArray(emptyList())
-
-        return views.mapNotNull { element ->
-            val obj = element.asObjectOrNull() ?: return@mapNotNull null
-            val collectionType = obj.optString("CollectionType")?.lowercase()
-            if (collectionType != "books" && collectionType != "audiobooks") return@mapNotNull null
-            val id = obj.optString("Id") ?: return@mapNotNull null
-            val name = obj.optString("Name") ?: return@mapNotNull null
-            Library(
-                id = id,
-                name = name,
-                bookCount = obj.optInt("ChildCount") ?: 0,
-            )
-        }
+        return viewsResponse.body()?.items.orEmpty().mapNotNull { it.toBookLibraryOrNull() }
     }
 
     private suspend fun fetchEmbyBooks(libraryId: String?, serverUrl: String): List<Book> {
@@ -2359,64 +2278,7 @@ class GrimmoryRepository @Inject constructor(
         val parentId = libraryId ?: fetchEmbyLibraries().firstOrNull()?.id ?: return emptyList()
         val itemsResponse = api.embyItems(userId = userId, parentId = parentId)
         if (!itemsResponse.isSuccessful) return emptyList()
-
-        val items = itemsResponse.body()?.optArray("Items") ?: JsonArray(emptyList())
-        return items.mapNotNull { element ->
-            val obj = element.asObjectOrNull() ?: return@mapNotNull null
-            val id = obj.optString("Id") ?: return@mapNotNull null
-            val title = obj.optString("Name") ?: return@mapNotNull null
-
-            val runtimeTicks = obj.optLong("RunTimeTicks") ?: 0L
-            val durationSec = if (runtimeTicks > 0L) runtimeTicks / 10_000_000L else 0L
-
-            val userData = obj.optObject("UserData")
-            val playbackTicks = userData?.optLong("PlaybackPositionTicks") ?: 0L
-            val positionSec = if (playbackTicks > 0L) playbackTicks / 10_000_000L else 0L
-            val progress = normalizeFraction(userData?.optFloat("PlayedPercentage"))
-
-            val people = obj.optArray("People")
-            val author = people?.firstOrNull { it.asObjectOrNull()?.optString("Type") == "Author" }
-                ?.asObjectOrNull()?.optString("Name")
-
-            val itemType = obj.optString("Type")?.uppercase()
-            val mediaType = when (itemType) {
-                "BOOK" -> AppMediaType.EBOOK
-                "AUDIOBOOK" -> AppMediaType.AUDIOBOOK
-                else -> AppMediaType.AUDIOBOOK
-            }
-            val ownImageTag = obj.optObject("ImageTags")?.optString("Primary")
-            val primaryImageItemId = obj.optString("PrimaryImageItemId")
-            val primaryImageTag = obj.optString("PrimaryImageTag")
-            val parentImageItemId = obj.optString("ParentPrimaryImageItemId")
-            val parentImageTag = obj.optString("ParentPrimaryImageTag")
-            val albumId = obj.optString("AlbumId")
-            val albumImageTag = obj.optString("AlbumPrimaryImageTag")
-            val imageReference = when {
-                ownImageTag != null -> id to ownImageTag
-                primaryImageItemId != null && primaryImageTag != null -> primaryImageItemId to primaryImageTag
-                parentImageItemId != null && parentImageTag != null -> parentImageItemId to parentImageTag
-                albumId != null && albumImageTag != null -> albumId to albumImageTag
-                else -> null
-            }
-            val coverUrl = imageReference?.let { (coverItemId, imageTag) ->
-                "${serverUrl.trimEnd('/')}/Items/$coverItemId/Images/Primary?tag=$imageTag"
-            }
-
-            Book(
-                id = id,
-                title = title,
-                author = author,
-                description = obj.optString("Overview"),
-                coverUrl = coverUrl,
-                duration = durationSec,
-                currentTime = positionSec,
-                readProgress = progress,
-                source = BookSource.EMBY,
-                mediaType = mediaType,
-                libraryId = parentId,
-                isFinished = progress >= 0.99f,
-            )
-        }
+        return itemsResponse.body()?.items.orEmpty().mapNotNull { it.toEmbyBook(serverUrl, parentId) }
     }
 
     private suspend fun fetchEmbyUserId(): String? {
@@ -2425,74 +2287,96 @@ class GrimmoryRepository @Inject constructor(
         val response = api.embyUsers()
         if (!response.isSuccessful) return null
         return response.body()
-            ?.mapNotNull { it.asObjectOrNull() }
-            ?.firstOrNull { it.optString("Name").equals(username, ignoreCase = true) }
-            ?.optString("Id")
+            ?.firstOrNull { it.Name.equals(username, ignoreCase = true) }
+            ?.Id
     }
 
     private suspend fun fetchKavitaLibraries(): List<Library> {
         val response = api.kavitaLibraries()
-        if (!response.isSuccessful) return emptyList()
-        val body = response.body() ?: return emptyList()
-        val libs = body.optArray("data")
-            ?: body.optArray("libraries")
-            ?: body.optArray("items")
-            ?: JsonArray(emptyList())
+        if (!response.isSuccessful) error("Kavita libraries failed (HTTP ${response.code()})")
+        return response.body().orEmpty().map { Library(id = it.id.toString(), name = it.name) }
+    }
 
-        return libs.mapNotNull { element ->
-            val obj = element.asObjectOrNull() ?: return@mapNotNull null
-            val id = obj.optString("id") ?: obj.optString("libraryId") ?: return@mapNotNull null
-            val name = obj.optString("name") ?: obj.optString("title") ?: return@mapNotNull null
-            Library(
-                id = id,
-                name = name,
-                bookCount = obj.optInt("bookCount") ?: obj.optInt("itemCount") ?: 0,
+    private suspend fun fetchKavitaBooks(libraryId: String?, serverUrl: String): List<Book> {
+        val filter = KavitaSeriesFilterDto.forLibrary(libraryId)
+        val series = mutableListOf<KavitaSeriesDto>()
+        var pageNumber = 1
+        do {
+            val response = api.kavitaSeries(pageNumber = pageNumber, pageSize = KAVITA_PAGE_SIZE, filter = filter)
+            if (!response.isSuccessful) error("Kavita series failed (HTTP ${response.code()})")
+            val page = response.body().orEmpty()
+            series += page
+            pageNumber++
+        } while (page.size == KAVITA_PAGE_SIZE)
+
+        val base = serverUrl.trimEnd('/')
+        return series.map { item ->
+            Book(
+                id = item.id.toString(),
+                title = item.name.orEmpty(),
+                coverUrl = "$base/api/image/series-cover?seriesId=${item.id}",
+                source = BookSource.KAVITA,
+                mediaType = AppMediaType.EBOOK,
+                primaryFileType = kavitaReaderFormat(item.format),
+                libraryId = item.libraryId?.toString() ?: libraryId,
+                pageCount = item.pages.takeIf { it > 0 },
+                readProgress = if (item.pages > 0) (item.pagesRead.toFloat() / item.pages).coerceIn(0f, 1f) else 0f,
+                addedOn = parseIsoToEpochMs(item.created) ?: 0L,
+                lastReadTime = parseIsoToEpochMs(item.latestReadDate)?.takeIf { item.pagesRead > 0 } ?: 0L,
             )
         }
     }
 
-    private suspend fun fetchKavitaBooks(libraryId: String?, serverUrl: String): List<Book> {
-        val targetLibrary = libraryId ?: fetchKavitaLibraries().firstOrNull()?.id ?: return emptyList()
-        val response = api.kavitaLibraryBooks(libraryId = targetLibrary)
-        if (!response.isSuccessful) return emptyList()
-        val body = response.body() ?: return emptyList()
-        val items = body.optArray("data")
-            ?: body.optArray("items")
-            ?: body.optArray("content")
-            ?: JsonArray(emptyList())
-
-        return items.mapNotNull { element ->
-            val obj = element.asObjectOrNull() ?: return@mapNotNull null
-            val id = obj.optString("id") ?: return@mapNotNull null
-            val title = obj.optString("title") ?: obj.optString("name") ?: return@mapNotNull null
-
-            val author = obj.optString("author")
-                ?: obj.optArray("authors")?.mapNotNull { it.jsonPrimitive.contentOrNull }?.joinToString(", ")
-
-            val format = obj.optString("format")?.lowercase().orEmpty()
-            val mediaType = if (format.contains("audio")) AppMediaType.AUDIOBOOK else AppMediaType.EBOOK
-
-            val coverPath = obj.optString("coverImage") ?: obj.optString("coverUrl")
-            val coverUrl = when {
-                coverPath.isNullOrBlank() -> null
-                coverPath.startsWith("http") -> coverPath
-                else -> "${serverUrl.trimEnd('/')}/${coverPath.trimStart('/')}"
-            }
-
-            Book(
-                id = id,
-                title = title,
-                author = author,
-                description = obj.optString("summary") ?: obj.optString("description"),
-                coverUrl = coverUrl,
-                source = BookSource.KAVITA,
-                mediaType = mediaType,
-                libraryId = targetLibrary,
-                readProgress = normalizeFraction(obj.optFloat("readProgress") ?: obj.optFloat("progress")),
-                addedOn = parseServerDate(obj.optString("created") ?: obj.optString("createdUtc")),
-                lastReadTime = parseServerDate(obj.optString("lastRead") ?: obj.optString("lastReadUtc")),
-            )
+    suspend fun getKavitaEbookDownloadUrl(seriesId: String): String? = withSourceContext(BookSource.KAVITA) {
+        runSuspendCatching {
+            val (_, chapter) = kavitaReadingChapter(seriesId.toInt())
+            "${resolveScopedContext().serverUrl.trimEnd('/')}/api/Download/chapter?chapterId=${chapter.id}"
         }
+    }.getOrNull()
+
+    suspend fun syncKavitaEbookProgress(seriesId: String, percentage: Float): Result<Unit> =
+        withSourceContext(BookSource.KAVITA) {
+            runSuspendCatching {
+                val id = seriesId.toInt()
+                val (volume, chapter) = kavitaReadingChapter(id)
+                val libraryId = api.kavitaSeriesDetail(id).body()?.libraryId
+                    ?: error("Kavita series $id has no library")
+                val response = api.kavitaSaveProgress(
+                    KavitaSaveProgressDto(
+                        seriesId = id,
+                        libraryId = libraryId,
+                        volumeId = volume.id,
+                        chapterId = chapter.id,
+                        pageNum = kavitaPageNum(percentage, chapter.pages),
+                    ),
+                )
+                if (!response.isSuccessful) error("Kavita progress sync failed (HTTP ${response.code()})")
+            }
+        }
+
+    suspend fun fetchKavitaEbookProgress(seriesId: String): Result<SyncSnapshot?> =
+        withSourceContext(BookSource.KAVITA) {
+            runSuspendCatching {
+                val (_, chapter) = kavitaReadingChapter(seriesId.toInt())
+                val response = api.kavitaProgress(chapter.id)
+                if (!response.isSuccessful) error("Kavita progress fetch failed (HTTP ${response.code()})")
+                val pageNum = response.body()?.pageNum ?: 0
+                if (pageNum <= 0 || chapter.pages <= 0) return@runSuspendCatching null
+                SyncSnapshot(
+                    percentage = (pageNum.toFloat() / chapter.pages).coerceIn(0f, 1f),
+                    source = BookSource.KAVITA.displayName,
+                    updatedAt = parseIsoToEpochMs(response.body()?.lastModifiedUtc),
+                    finished = pageNum >= chapter.pages,
+                )
+            }
+        }
+
+    private suspend fun kavitaReadingChapter(seriesId: Int): Pair<KavitaVolumeDto, KavitaChapterDto> {
+        val response = api.kavitaVolumes(seriesId)
+        if (!response.isSuccessful) error("Kavita volumes failed (HTTP ${response.code()})")
+        val volume = response.body()?.firstOrNull { it.chapters.isNotEmpty() }
+            ?: error("Kavita series $seriesId has no chapters")
+        return volume to volume.chapters.first()
     }
 
     private suspend fun fetchOpdsBooks(serverUrl: String): List<Book> {
@@ -2571,18 +2455,8 @@ class GrimmoryRepository @Inject constructor(
         if (base.isBlank()) return emptyList()
 
         suspend fun listingFor(url: String): String? {
-            val propfindBody = """
-                <?xml version="1.0" encoding="utf-8" ?>
-                <d:propfind xmlns:d="DAV:">
-                  <d:prop>
-                    <d:resourcetype />
-                    <d:getcontentlength />
-                    <d:getlastmodified />
-                  </d:prop>
-                </d:propfind>
-            """.trimIndent().toRequestBody("application/xml; charset=utf-8".toMediaType())
             val propfind = runSuspendCatching {
-                val response = api.propfindRawUrl(url, body = propfindBody)
+                val response = api.propfindRawUrl(url, body = webDavPropfindBody())
                 check(response.isSuccessful)
                 response.body()?.string()
             }
@@ -2592,24 +2466,6 @@ class GrimmoryRepository @Inject constructor(
                 if (!response.isSuccessful) return@runSuspendCatching null
                 response.body()?.string()
             }.getOrNull()
-        }
-
-        fun hrefsFromListing(url: String, listingText: String): List<String> {
-            val hrefsFromXml = Regex("<(?:[a-z]+:)?href>(.*?)</(?:[a-z]+:)?href>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
-                .findAll(listingText)
-                .mapNotNull { it.groupValues.getOrNull(1)?.trim() }
-                .toList()
-
-            val hrefsFromHtml = Regex("<a\\b[^>]*href=[\"']([^\"']+)[\"']", RegexOption.IGNORE_CASE)
-                .findAll(listingText)
-                .mapNotNull { it.groupValues.getOrNull(1)?.trim() }
-                .toList()
-
-            return (hrefsFromXml + hrefsFromHtml)
-                .map { decodeXmlEntities(it) }
-                .map { resolveAgainst(url, it) }
-                .filter { it.isNotBlank() }
-                .distinct()
         }
 
         val supportedExtensions = setOf("epub", "pdf", "cbz", "cbr", "cbx", "mobi", "azw3", "mp3", "m4b", "aac", "flac", "ogg")
@@ -2781,7 +2637,7 @@ class GrimmoryRepository @Inject constructor(
         val covers = mutableListOf<CloudCoverFile>()
         var offset = 0
         val limit = 1000
-        val seenItemIds = mutableSetOf<String>()
+        val seenItemIds = mutableSetOf<Long>()
 
         while (offset < TORBOX_MAX_LIST_ITEMS && files.size < TORBOX_MAX_AUDIO_FILES) {
             val url = buildProviderUrl(baseUrl, typePath, "mylist")
@@ -2793,57 +2649,48 @@ class GrimmoryRepository @Inject constructor(
                 ?.build()
                 ?.toString()
                 ?: return files
-            val items = fetchWrappedJsonArray(url, "data")
+            val items = fetchTorBoxList(url)
             if (items.isEmpty()) break
-            val newItems = items.filter { item ->
-                val itemId = item.string("id") ?: item.string("id_")
-                itemId != null && seenItemIds.add(itemId)
-            }
+            val newItems = items.filter { seenItemIds.add(it.id) }
             if (newItems.isEmpty()) break
 
             newItems.forEach { item ->
-                val hasAvailabilityFlag = item.containsKey("cached") ||
-                    item.containsKey("download_present") ||
-                    item.containsKey("download_finished")
-                if (hasAvailabilityFlag && !item.bool("cached") && !item.bool("download_present") && !item.bool("download_finished")) {
+                val hasAvailabilityFlag = item.downloadPresent != null || item.downloadFinished != null
+                if (hasAvailabilityFlag && item.downloadPresent != true && item.downloadFinished != true) {
                     return@forEach
                 }
-                val itemId = item.string("id") ?: item.string("id_") ?: return@forEach
-                val itemName = (item.string("name") ?: item.string("filename") ?: item.string("hash") ?: itemId)
+                val itemId = item.id.toString()
+                val itemName = (item.name?.takeIf { it.isNotBlank() } ?: item.hash?.takeIf { it.isNotBlank() } ?: itemId)
                     .let(::decodeUrlPath)
-                item["files"]
-                    ?.jsonArrayOrNull()
-                    ?.mapNotNull { it.jsonObjectOrNull() }
-                    .orEmpty()
-                    .forEach { file ->
-                        val fileId = file.string("id") ?: file.string("id_") ?: return@forEach
-                        val fullPath = torBoxDisplayPath(file, itemName)?.let(::decodeUrlPath) ?: return@forEach
-                        val name = (file.string("short_name") ?: fullPath.substringAfterLast('/'))
-                            .let(::decodeUrlPathSegment)
-                        val link = buildTorBoxRequestDownloadUrl(baseUrl, token, typePath, idParameter, itemId, fileId)
-                            ?: return@forEach
-                        val parentPath = fullPath.trim('/').substringBeforeLast('/', missingDelimiterValue = "")
-                            .takeIf { it.isNotBlank() }
-                            ?: itemName
-                        if (isCloudCoverFile(name)) {
-                            covers += CloudCoverFile(
-                                path = fullPath,
-                                parentFolder = parentPath,
-                                link = link,
-                                rank = cloudCoverRank(name),
-                            )
-                            return@forEach
-                        }
-                        if (!isCloudAudioFile(name)) return@forEach
-                        files += CloudAudioFile(
-                            id = "$idPrefix-$itemId-$fileId",
-                            name = name,
+                item.files.forEach { file ->
+                    val fileId = file.id.toString()
+                    val fullPath = torBoxDisplayPath(file, itemName)?.let(::decodeUrlPath) ?: return@forEach
+                    val name = (file.shortName?.takeIf { it.isNotBlank() } ?: fullPath.substringAfterLast('/'))
+                        .let(::decodeUrlPathSegment)
+                    val link = buildTorBoxRequestDownloadUrl(baseUrl, token, typePath, idParameter, itemId, fileId)
+                        ?: return@forEach
+                    val parentPath = fullPath.trim('/').substringBeforeLast('/', missingDelimiterValue = "")
+                        .takeIf { it.isNotBlank() }
+                        ?: itemName
+                    if (isCloudCoverFile(name)) {
+                        covers += CloudCoverFile(
                             path = fullPath,
                             parentFolder = parentPath,
                             link = link,
-                            size = file.long("size"),
+                            rank = cloudCoverRank(name),
                         )
+                        return@forEach
                     }
+                    if (!isCloudAudioFile(name)) return@forEach
+                    files += CloudAudioFile(
+                        id = "$idPrefix-$itemId-$fileId",
+                        name = name,
+                        path = fullPath,
+                        parentFolder = parentPath,
+                        link = link,
+                        size = file.size,
+                    )
+                }
             }
 
             offset += items.size
@@ -2864,7 +2711,7 @@ class GrimmoryRepository @Inject constructor(
             val dir = pendingDirs.removeFirst().trimEnd('/') + "/"
             if (!visitedDirs.add(dir)) continue
             val listing = torBoxWebDavListing(dir, token) ?: continue
-            torBoxHrefsFromListing(dir, listing).forEach { href ->
+            hrefsFromListing(dir, listing).forEach { href ->
                 val clean = href.substringBefore('#').substringBefore('?')
                 if (clean.trimEnd('/') == dir.trimEnd('/')) return@forEach
                 if (clean.endsWith("/")) {
@@ -2903,19 +2750,9 @@ class GrimmoryRepository @Inject constructor(
     }
 
     private fun torBoxWebDavListing(url: String, token: String): String? = try {
-        val propfindBody = """
-            <?xml version="1.0" encoding="utf-8" ?>
-            <d:propfind xmlns:d="DAV:">
-              <d:prop>
-                <d:resourcetype />
-                <d:getcontentlength />
-                <d:getlastmodified />
-              </d:prop>
-            </d:propfind>
-        """.trimIndent().toRequestBody("application/xml; charset=utf-8".toMediaType())
         val request = Request.Builder()
             .url(url)
-            .method("PROPFIND", propfindBody)
+            .method("PROPFIND", webDavPropfindBody())
             .header("Depth", "1")
             .header("Authorization", Credentials.basic("torbox", token))
             .build()
@@ -2929,16 +2766,17 @@ class GrimmoryRepository @Inject constructor(
         null
     }
 
-    private fun torBoxHrefsFromListing(url: String, listingText: String): List<String> {
-        return Regex("<(?:[a-z]+:)?href>(.*?)</(?:[a-z]+:)?href>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
-            .findAll(listingText)
+    private fun webDavPropfindBody(): RequestBody =
+        WEBDAV_PROPFIND_XML.toRequestBody("application/xml; charset=utf-8".toMediaType())
+
+    private fun hrefsFromListing(url: String, listingText: String): List<String> =
+        (WEBDAV_HREF.findAll(listingText) + HTML_ANCHOR_HREF.findAll(listingText))
             .mapNotNull { it.groupValues.getOrNull(1)?.trim() }
             .map { decodeXmlEntities(it) }
             .map { resolveAgainst(url, it) }
             .filter { it.isNotBlank() }
             .distinct()
             .toList()
-    }
 
     private fun torBoxWebDavRelativePath(base: String, url: String): String? {
         val basePath = base.trimEnd('/') + "/"
@@ -2975,10 +2813,10 @@ class GrimmoryRepository @Inject constructor(
             if (folderId != null && !visitedFolderIds.add(folderId)) continue
 
             fetchPremiumizeFolder(baseUrl, folderId).forEach { entry ->
-                val name = entry.string("name") ?: return@forEach
-                val id = entry.string("id") ?: entry.string("file_id") ?: stableId(name)
-                val link = entry.string("link").orEmpty()
-                val type = entry.string("type").orEmpty()
+                val name = entry.optNonBlankString("name") ?: return@forEach
+                val id = entry.optNonBlankString("id") ?: entry.optNonBlankString("file_id") ?: stableId(name)
+                val link = entry.optNonBlankString("link").orEmpty()
+                val type = entry.optNonBlankString("type").orEmpty()
                 val isFolder = type.contains("folder", ignoreCase = true) || link.isBlank()
 
                 if (isFolder) {
@@ -2992,10 +2830,10 @@ class GrimmoryRepository @Inject constructor(
                 files += CloudAudioFile(
                     id = id,
                     name = name,
-                    path = entry.string("path") ?: folderName?.let { "$it/$name" } ?: name,
+                    path = entry.optNonBlankString("path") ?: folderName?.let { "$it/$name" } ?: name,
                     parentFolder = folderName,
                     link = link,
-                    size = entry.long("size"),
+                    size = entry.optLong("size"),
                 )
             }
         }
@@ -3016,8 +2854,8 @@ class GrimmoryRepository @Inject constructor(
 
         return fetchJsonObject(url)
             ?.get("content")
-            ?.jsonArrayOrNull()
-            ?.mapNotNull { it.jsonObjectOrNull() }
+            ?.asArrayOrNull()
+            ?.mapNotNull { it.asObjectOrNull() }
             .orEmpty()
     }
 
@@ -3027,43 +2865,43 @@ class GrimmoryRepository @Inject constructor(
         val files = mutableListOf<CloudAudioFile>()
 
         for (torrent in torrents.take(250)) {
-            val torrentId = torrent.string("id") ?: continue
-            val torrentName = torrent.string("filename") ?: torrentId
+            val torrentId = torrent.optNonBlankString("id") ?: continue
+            val torrentName = torrent.optNonBlankString("filename") ?: torrentId
             val infoUrl = buildProviderUrl(baseUrl, "torrents", "info", torrentId) ?: continue
             val info = fetchJsonObject(infoUrl) ?: continue
             val selectedAudioFiles = info["files"]
-                ?.jsonArrayOrNull()
-                ?.mapNotNull { it.jsonObjectOrNull() }
-                ?.filter { it.int("selected") == 1 }
-                ?.filter { file -> isCloudAudioFile(file.string("path")?.substringAfterLast('/') ?: "") }
+                ?.asArrayOrNull()
+                ?.mapNotNull { it.asObjectOrNull() }
+                ?.filter { it.optInt("selected") == 1 }
+                ?.filter { file -> isCloudAudioFile(file.optNonBlankString("path")?.substringAfterLast('/') ?: "") }
                 .orEmpty()
             if (selectedAudioFiles.isEmpty()) continue
 
             val directLinks = mutableMapOf<String, String>()
             info["links"]
-                ?.jsonArrayOrNull()
+                ?.asArrayOrNull()
                 ?.mapNotNull { it.jsonPrimitive.contentOrNull }
                 .orEmpty()
                 .forEach { restrictedLink ->
                     val unrestricted = unrestrictRealDebridLink(baseUrl, restrictedLink) ?: return@forEach
-                    val filename = unrestricted.string("filename") ?: return@forEach
-                    val download = unrestricted.string("download") ?: return@forEach
+                    val filename = unrestricted.optNonBlankString("filename") ?: return@forEach
+                    val download = unrestricted.optNonBlankString("download") ?: return@forEach
                     if (isCloudAudioFile(filename)) {
                         directLinks[filename.lowercase()] = download
                     }
                 }
 
             selectedAudioFiles.forEach { file ->
-                val path = file.string("path") ?: return@forEach
+                val path = file.optNonBlankString("path") ?: return@forEach
                 val name = path.substringAfterLast('/')
                 val link = directLinks[name.lowercase()] ?: return@forEach
                 files += CloudAudioFile(
-                    id = "rd-$torrentId-${file.int("id") ?: stableId(path)}",
+                    id = "rd-$torrentId-${file.optInt("id") ?: stableId(path)}",
                     name = name,
                     path = "/torrents/$torrentId/$path",
                     parentFolder = groupingFolderName(path) ?: torrentName,
                     link = link,
-                    size = file.long("bytes"),
+                    size = file.optLong("bytes"),
                 )
             }
         }
@@ -3075,16 +2913,16 @@ class GrimmoryRepository @Inject constructor(
         val downloadsUrl = buildProviderUrl(baseUrl, "downloads") ?: return emptyList()
         return fetchJsonArray(downloadsUrl)
             .mapNotNull { item ->
-                val name = item.string("filename") ?: return@mapNotNull null
-                val link = item.string("download") ?: return@mapNotNull null
+                val name = item.optNonBlankString("filename") ?: return@mapNotNull null
+                val link = item.optNonBlankString("download") ?: return@mapNotNull null
                 if (!isCloudAudioFile(name) || link.isBlank()) return@mapNotNull null
                 CloudAudioFile(
-                    id = "rd-dl-${item.string("id") ?: stableId(link)}",
+                    id = "rd-dl-${item.optNonBlankString("id") ?: stableId(link)}",
                     name = name,
                     path = "/downloads/$name",
                     parentFolder = null,
                     link = link,
-                    size = item.long("filesize") ?: item.long("bytes"),
+                    size = item.optLong("filesize") ?: item.optLong("bytes"),
                 )
             }
     }
@@ -3095,7 +2933,7 @@ class GrimmoryRepository @Inject constructor(
             val response = api.postFormRawUrl(url, restrictedLink)
             if (!response.isSuccessful) return@runSuspendCatching null
             response.body()?.string()?.takeIf { it.isNotBlank() }?.let {
-                jsonSerializer.parseToJsonElement(it).jsonObjectOrNull()
+                jsonSerializer.parseToJsonElement(it).asObjectOrNull()
             }
         }.getOrNull()
     }
@@ -3104,7 +2942,7 @@ class GrimmoryRepository @Inject constructor(
         val response = api.fetchRawUrl(url)
         if (!response.isSuccessful) return@runSuspendCatching null
         response.body()?.string()?.takeIf { it.isNotBlank() }?.let {
-            jsonSerializer.parseToJsonElement(it).jsonObjectOrNull()
+            jsonSerializer.parseToJsonElement(it).asObjectOrNull()
         }
     }.getOrNull()
 
@@ -3112,20 +2950,14 @@ class GrimmoryRepository @Inject constructor(
         val response = api.fetchRawUrl(url)
         if (!response.isSuccessful) return@runSuspendCatching emptyList()
         response.body()?.string()?.takeIf { it.isNotBlank() }
-            ?.let { jsonSerializer.parseToJsonElement(it).jsonArrayOrNull() }
-            ?.mapNotNull { it.jsonObjectOrNull() }
+            ?.let { jsonSerializer.parseToJsonElement(it).asArrayOrNull() }
+            ?.mapNotNull { it.asObjectOrNull() }
             .orEmpty()
     }.getOrDefault(emptyList())
 
-    private suspend fun fetchWrappedJsonArray(url: String, key: String): List<JsonObject> = runSuspendCatching {
-        val response = api.fetchRawUrl(url)
-        if (!response.isSuccessful) return@runSuspendCatching emptyList()
-        response.body()?.string()?.takeIf { it.isNotBlank() }
-            ?.let { jsonSerializer.parseToJsonElement(it).jsonObjectOrNull() }
-            ?.get(key)
-            ?.jsonArrayOrNull()
-            ?.mapNotNull { it.jsonObjectOrNull() }
-            .orEmpty()
+    private suspend fun fetchTorBoxList(url: String): List<TorBoxDownloadDto> = runSuspendCatching {
+        val response = api.torBoxList(url)
+        if (response.isSuccessful) response.body()?.data.orEmpty() else emptyList()
     }.getOrDefault(emptyList())
 
     private fun groupCloudAudioFiles(files: List<CloudAudioFile>): List<CloudBookGroup> {
@@ -3357,42 +3189,19 @@ class GrimmoryRepository @Inject constructor(
     private fun torBoxRootFromLibraryId(libraryId: String): String =
         libraryId.removePrefix(TORBOX_LIBRARY_PREFIX).trim('/')
 
-    private fun torBoxDisplayPath(file: JsonObject, itemName: String): String? {
-        val name = file.string("name")
-        val shortName = file.string("short_name")
-        val explicitPath = file.string("path")
-        val s3Path = file.string("s3_path")
+    private fun torBoxDisplayPath(file: TorBoxFileDto, itemName: String): String? {
+        val name = file.name?.takeIf { it.isNotBlank() }
+        val shortName = file.shortName?.takeIf { it.isNotBlank() }
         return listOfNotNull(
-            explicitPath,
             name?.takeIf { '/' in it },
             shortName?.let { leaf ->
-                name?.takeIf { it.isNotBlank() && it != leaf }?.let { "$it/$leaf" }
+                name?.takeIf { it != leaf }?.let { "$it/$leaf" }
             },
             shortName?.let { "$itemName/$it" },
             name,
-            s3Path,
-        ).firstOrNull { it.isNotBlank() }?.trim('/')
+            file.s3Path?.takeIf { it.isNotBlank() },
+        ).firstOrNull()?.trim('/')
     }
-
-    private fun JsonObject.string(key: String): String? =
-        this[key]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
-
-    private fun JsonObject.long(key: String): Long? =
-        this[key]?.jsonPrimitive?.let { primitive ->
-            primitive.longOrNull ?: primitive.doubleOrNull?.toLong()
-        }
-
-    private fun JsonObject.int(key: String): Int? =
-        this[key]?.jsonPrimitive?.intOrNull
-
-    private fun JsonObject.bool(key: String): Boolean =
-        this[key]?.jsonPrimitive?.booleanOrNull == true
-
-    private fun JsonElement.jsonObjectOrNull(): JsonObject? =
-        runCatching { jsonObject }.getOrNull()
-
-    private fun JsonElement.jsonArrayOrNull(): JsonArray? =
-        runCatching { jsonArray }.getOrNull()
 
     private fun stableId(input: String): String {
         val digest = MessageDigest.getInstance("SHA-256").digest(input.toByteArray(Charsets.UTF_8))

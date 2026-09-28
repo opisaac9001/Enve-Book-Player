@@ -5,7 +5,7 @@ import android.content.Intent
 import com.enve.app.ui.readerFormat
 import com.enve.core.data.model.Book
 
-internal fun Context.readerIntentForBook(book: Book, hearthChrome: Boolean): Intent {
+internal fun Context.readerIntentForBook(book: Book): Intent {
     val readerFormat = book.readerFormat()
     return when (readerFormat?.uppercase()) {
         "PDF" -> PdfReaderActivity.createIntent(
@@ -16,7 +16,7 @@ internal fun Context.readerIntentForBook(book: Book, hearthChrome: Boolean): Int
             title = book.title,
             author = book.author.orEmpty(),
             locator = book.epubLocator,
-        ).apply { putExtra(PdfReaderActivity.EXTRA_HEARTH_CHROME, hearthChrome) }
+        )
         "CBZ", "CBX", "CBR" -> ComicReaderActivity.createIntent(
             context = this,
             bookId = book.id,
@@ -26,7 +26,7 @@ internal fun Context.readerIntentForBook(book: Book, hearthChrome: Boolean): Int
             author = book.author.orEmpty(),
             format = readerFormat,
             locator = book.epubLocator,
-        ).apply { putExtra(ComicReaderActivity.EXTRA_HEARTH_CHROME, hearthChrome) }
+        )
         else -> EbookReaderActivity.createIntent(
             context = this,
             bookId = book.id,
@@ -38,6 +38,6 @@ internal fun Context.readerIntentForBook(book: Book, hearthChrome: Boolean): Int
             epubLocator = book.epubLocator,
             epubProgress = book.epubProgress ?: book.readProgress,
             lastReadTime = book.lastReadTime,
-        ).apply { putExtra(EbookReaderActivity.EXTRA_HEARTH_CHROME, hearthChrome) }
+        )
     }
 }

@@ -17,6 +17,8 @@ import com.enve.core.data.model.ReaderAnnotation
 import com.enve.core.data.provider.ProviderPlaybackSession
 import com.enve.core.data.provider.ProviderEbookResource
 import com.enve.core.data.remote.ConnectionScope
+import com.enve.core.data.util.FINISHED_PROGRESS_THRESHOLD
+import com.enve.core.data.util.reachesFinishedThreshold
 import com.enve.core.reader.EpubBridgeCheckpointCodec
 import com.enve.core.data.sync.AcceptedAnnotation
 import com.enve.core.data.sync.AnnotationsPushResult
@@ -314,7 +316,7 @@ class SiloRepository @Inject constructor(
         val sessions = playbackSessions[sessionKey(book)] ?: return@runSuspendCatching
         val profileId = ensureProfile()
         val position = currentTimeSec.coerceAtLeast(0L)
-        val isPaused = progressFraction >= 0.99f
+        val isPaused = progressFraction >= FINISHED_PROGRESS_THRESHOLD
 
         if (sessions.size > 1) {
 
@@ -387,7 +389,7 @@ class SiloRepository @Inject constructor(
             source = BookSource.SILO.displayName,
 
             updatedAt = null,
-            finished = userData.played ?: (percentage >= 0.99f),
+            finished = userData.played ?: (percentage >= FINISHED_PROGRESS_THRESHOLD),
         )
     }
 
@@ -426,7 +428,7 @@ class SiloRepository @Inject constructor(
             epubCfi = location?.takeIf(EpubBridgeCheckpointCodec::isFullEpubCfi),
             source = BookSource.SILO.displayName,
             updatedAt = parseDateMillis(progress.updatedAt),
-            finished = value >= 0.99,
+            finished = value.reachesFinishedThreshold(),
         )
     }
 

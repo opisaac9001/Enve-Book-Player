@@ -68,6 +68,11 @@
             android:resource="@style/Theme.Enve.Car" />
 
         <activity
+            android:name=".widgets.WidgetReaderActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.NoDisplay" />
+
+        <activity
             android:name=".ui.screens.EbookReaderActivity"
             android:exported="false"
             android:configChanges="orientation|screenSize|screenLayout|uiMode|keyboard|keyboardHidden"
@@ -102,6 +107,12 @@
 
         <activity
             android:name=".ui.auth.AuthBrowserActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Enve"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".ui.auth.OpdsAuthBrowserActivity"
             android:exported="false"
             android:theme="@style/Theme.Enve"
             android:windowSoftInputMode="adjustResize" />

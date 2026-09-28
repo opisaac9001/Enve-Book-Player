@@ -5,6 +5,7 @@ import com.enve.app.storyalign.epub.EpubManifestItem
 class SentenceAligner(
     private val normalizer: WordNormalizer = WordNormalizer(),
     private val fuzzy: FuzzySearcher = FuzzySearcher(),
+    private val anchors: AnchorAligner = AnchorAligner(),
 ) {
     data class ChapterAlignment(
         val alignedSentences: List<AlignedSentence>,
@@ -12,94 +13,108 @@ class SentenceAligner(
         val endOffset: Int,
     )
 
-    private data class Located(val index: Int, val length: Int, val type: SentenceMatchType, val text: String)
-
     fun alignChapter(
         xhtmlSentences: List<String>,
         transcription: Transcription,
         startCharOffset: Int,
     ): ChapterAlignment {
-        val text = transcription.text
-        var offset = startCharOffset.coerceIn(0, text.length)
-        val matched = ArrayList<AlignedSentence>()
-
-        for ((sentenceId, sentence) in xhtmlSentences.withIndex()) {
-            val query = normalizeQuery(sentence)
-            if (query.isBlank()) continue
-            val located = locate(query, text, offset) ?: continue
-
-            val matchStart = located.index
-            val matchEnd = located.index + located.length
-            val startWordIdx = transcription.wordIndexAtOffset(matchStart) ?: continue
-            val endWordIdx = (transcription.wordIndexAtOffset((matchEnd - 1).coerceAtLeast(matchStart)) ?: startWordIdx)
-                .coerceAtLeast(startWordIdx)
-            val stamps = transcription.wordTimeline.subList(startWordIdx, endWordIdx + 1).toList()
-            if (stamps.isEmpty()) continue
-
-            val audioFile = stamps.first().audioFile
-            var start = stamps.first().start
-            val end = maxOf(stamps.last().end, start)
-
-            val prevAligned = matched.lastOrNull()
-            if (prevAligned != null &&
-                prevAligned.sentenceId == sentenceId - 1 &&
-                prevAligned.sentenceRange.audioFile == audioFile
-            ) {
-                val gap = start - prevAligned.sentenceRange.end
-                if (gap > 0) {
-                    start -= gap / 2
-                    prevAligned.sentenceRange.end = start
+        val refTokens = ArrayList<String>()
+        val refSentenceIds = ArrayList<Int>()
+        xhtmlSentences.forEachIndexed { sentenceId, sentence ->
+            sentenceTokens(sentence).forEach { token ->
+                val comparable = comparableToken(token)
+                if (comparable.isNotEmpty()) {
+                    refTokens.add(comparable)
+                    refSentenceIds.add(sentenceId)
                 }
             }
+        }
 
-            val range = SentenceRange(sentenceId, start, maxOf(end, start), audioFile, stamps)
-            matched.add(AlignedSentence(sentence, sentenceId, range, located.text, located.index, located.type))
-            offset = matchEnd
+        val timeline = transcription.wordTimeline
+        if (refTokens.isEmpty() || timeline.isEmpty()) {
+            return ChapterAlignment(emptyList(), skippedSentences(xhtmlSentences, emptySet()), startCharOffset)
+        }
+
+        val firstWord = transcription
+            .wordIndexAtOffset(startCharOffset.coerceIn(0, transcription.text.length))
+            ?: 0
+        val lastWord = minOf(timeline.size, firstWord + refTokens.size * HYP_WINDOW_FACTOR + HYP_WINDOW_SLACK)
+        if (firstWord >= lastWord) {
+            return ChapterAlignment(emptyList(), skippedSentences(xhtmlSentences, emptySet()), startCharOffset)
+        }
+        val hypTokens = timeline.subList(firstWord, lastWord).map { comparableToken(it.token) }
+
+        val matches = anchors.align(refTokens, hypTokens)
+        val matched = ArrayList<AlignedSentence>()
+        var cursor = 0
+        while (cursor < refTokens.size) {
+            val sentenceId = refSentenceIds[cursor]
+            var sentenceEnd = cursor
+            while (sentenceEnd < refTokens.size && refSentenceIds[sentenceEnd] == sentenceId) sentenceEnd++
+
+            val hits = (cursor until sentenceEnd).map { matches[it] }.filter { it != AnchorAligner.UNMATCHED }
+            if (hits.isNotEmpty()) {
+                val startWord = firstWord + hits.min()
+                val endWord = firstWord + hits.max()
+                val audioFile = timeline[startWord].audioFile
+                val stamps = timeline.subList(startWord, endWord + 1)
+                    .takeWhile { it.audioFile == audioFile }
+                    .toList()
+                if (stamps.isNotEmpty()) {
+                    var start = stamps.first().start
+                    val end = maxOf(stamps.last().end, start)
+
+                    val previous = matched.lastOrNull()
+                    if (previous != null &&
+                        previous.sentenceId == sentenceId - 1 &&
+                        previous.sentenceRange.audioFile == audioFile
+                    ) {
+                        val gap = start - previous.sentenceRange.end
+                        if (gap > 0) {
+                            start -= gap / 2
+                            previous.sentenceRange.end = start
+                        }
+                    }
+
+                    val range = SentenceRange(sentenceId, start, maxOf(end, start), audioFile, stamps)
+                    val complete = hits.size == sentenceEnd - cursor
+                    matched.add(
+                        AlignedSentence(
+                            xhtmlSentences[sentenceId],
+                            sentenceId,
+                            range,
+                            stamps.joinToString(" ") { it.token },
+                            timeline[startWord].startOffset,
+                            if (complete) SentenceMatchType.EXACT else SentenceMatchType.NEAREST,
+                        ),
+                    )
+                }
+            }
+            cursor = sentenceEnd
         }
 
         val withInterpolated = interpolate(matched, xhtmlSentences)
-
         val filledIds = withInterpolated.map { it.sentenceId }.toSet()
-        val skipped = xhtmlSentences.mapIndexedNotNull { id, s ->
-            if (id in filledIds || normalizeQuery(s).isBlank()) null else SkippedSentence(s, id)
-        }
-        return ChapterAlignment(withInterpolated, skipped, offset)
+        val lastMatchedWord = matches.filter { it != AnchorAligner.UNMATCHED }.maxOrNull()
+        val endOffset = lastMatchedWord
+            ?.let { timeline.getOrNull(firstWord + it)?.endOffset }
+            ?: startCharOffset
+        return ChapterAlignment(withInterpolated, skippedSentences(xhtmlSentences, filledIds), endOffset)
     }
+
+    private fun sentenceTokens(sentence: String): List<String> =
+        normalizeQuery(sentence).split(' ').filter { it.isNotBlank() }
+
+    private fun comparableToken(token: String): String =
+        buildString { token.forEach { if (it.isLetterOrDigit()) append(it.lowercaseChar()) } }
+
+    private fun skippedSentences(xhtmlSentences: List<String>, filledIds: Set<Int>): List<SkippedSentence> =
+        xhtmlSentences.mapIndexedNotNull { id, sentence ->
+            if (id in filledIds || normalizeQuery(sentence).isBlank()) null else SkippedSentence(sentence, id)
+        }
 
     private fun normalizeQuery(sentence: String): String =
         normalizer.normalizeWordsInSentence(sentence).trim().replace(Regex("\\s+"), " ").lowercase()
-
-    private fun locate(query: String, text: String, offset: Int): Located? {
-        if (offset >= text.length) return null
-        val windowSize = maxOf(query.length * WINDOW_FACTOR, MIN_WINDOW)
-        val windowEnd = minOf(offset + windowSize, text.length)
-        val window = text.substring(offset, windowEnd)
-
-        val lead = window.indexOfFirst { !it.isWhitespace() }.let { if (it < 0) 0 else it }
-        val anchored = window.substring(lead)
-        if (anchored.startsWith(query)) {
-            val type = if (lead == 0) SentenceMatchType.EXACT else SentenceMatchType.TRIMMED_LEADING
-            return Located(offset + lead, query.length, type, query)
-        }
-
-        stripPunct(anchored).let { stripped ->
-            val strippedQuery = stripPunct(query)
-            if (strippedQuery.isNotEmpty() && stripped.startsWith(strippedQuery)) {
-                val consumed = consumeToStrippedLength(anchored, strippedQuery.length)
-                if (consumed > 0) {
-                    return Located(offset + lead, consumed, SentenceMatchType.IGNORING_ALL_PUNCTUATION, anchored.substring(0, consumed))
-                }
-            }
-        }
-
-        if (query.length >= MIN_FUZZY_LEN) {
-            val maxDist = maxOf((query.length * 0.1).toInt(), 1)
-            fuzzy.findNearestMatch(query, window, maxDist)?.let { (matchStr, idx) ->
-                if (matchStr.isNotEmpty()) return Located(offset + idx, matchStr.length, SentenceMatchType.NEAREST, matchStr)
-            }
-        }
-        return null
-    }
 
     private fun interpolate(matched: List<AlignedSentence>, xhtmlSentences: List<String>): List<AlignedSentence> {
         if (matched.isEmpty()) return matched
@@ -175,23 +190,9 @@ class SentenceAligner(
         return fuzzy.findNearestMatch(probe, window, maxDist)?.let { afterOffset + it.second }
     }
 
-    private fun stripPunct(s: String): String =
-        buildString { for (c in s) if (c.isLetterOrDigit() || c == ' ') append(c) }
-
-    private fun consumeToStrippedLength(source: String, strippedLen: Int): Int {
-        var consumedStripped = 0
-        var i = 0
-        while (i < source.length && consumedStripped < strippedLen) {
-            val c = source[i]
-            if (c.isLetterOrDigit() || c == ' ') consumedStripped++
-            i++
-        }
-        return i
-    }
-
     companion object {
-        private const val WINDOW_FACTOR = 6
-        private const val MIN_WINDOW = 200
+        private const val HYP_WINDOW_FACTOR = 3
+        private const val HYP_WINDOW_SLACK = 400
         private const val MIN_FUZZY_LEN = 8
     }
 }

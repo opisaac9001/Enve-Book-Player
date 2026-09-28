@@ -18,6 +18,7 @@
 			<array>
 				<string>enve-book</string>
 				<string>storyteller</string>
+				<string>msauth.com.enve.enve</string>
 			</array>
 		</dict>
 	</array>
@@ -38,6 +39,8 @@
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Enve uses the local network to mirror books to the Read together app on your Apple TV.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Enve saves images that you explicitly choose from a book to your Photos library.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Enve uses on-device speech recognition for StoryAlign read-aloud books, audiobook read-along transcripts, and clip transcripts.</string>
 	<key>NSSupportsLiveActivities</key>

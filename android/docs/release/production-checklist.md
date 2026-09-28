@@ -1,10 +1,10 @@
 # Production release checklist
 
-Use this checklist for Enve 1.2 build 46. A production release is ready only when every gate is complete against the same source revision and signed app bundle.
+Use this checklist for Enve 1.2 build 52. A production release is ready only when every gate is complete against the same source revision and signed app bundle.
 
 ## Repository gate
 
-- [x] App and Wear version codes match at 46.
+- [x] App and Wear version codes match at 52.
 - [x] Target SDK is 36 and native libraries satisfy 16 KB page alignment.
 - [x] Privacy and website links use `https://envemedia.com`.
 - [x] In-app acknowledgements include the resolved release inventory and bundled legal documents.
@@ -12,13 +12,26 @@ Use this checklist for Enve 1.2 build 46. A production release is ready only whe
 - [x] libmobi, whisper.cpp, jcifs-ng, model, and provider-logo provenance are recorded.
 - [x] LGPL replacement and installation instructions are published.
 - [x] Release lint passes for the phone and Wear apps.
-- [x] Complete the local gate and connected-device suite. The final clean-checkout rerun remains part of signed-candidate production evidence:
+- [x] Complete the local gate. The final clean-checkout rerun remains part of signed-candidate production evidence:
 
   ```sh
   ./scripts/verify-provenance
   ./gradlew --no-daemon test :app:verifyAcknowledgementsInventory :app:generateReleaseDependencyInventory :app:lintRelease :wear:lintRelease :app:assembleDebug :wear:assembleDebug :app:assembleRelease :wear:assembleRelease :app:bundleRelease :wear:bundleRelease
+  ```
+
+- [x] Complete the connected-device suite on a device whose WebView is healthy:
+
+  ```sh
   ./gradlew --no-daemon :app:connectedDebugAndroidTest
   ```
+
+  Green on the HiBreak at build 52: 71 tests, no failures. Run it on a freshly rebooted device.
+  An earlier run on the same device, before rebooting, reported two failures that were not
+  build 52 regressions: `EbookSearchServiceTest.navigatesRepeatedQuotesWithoutChangingTheDocument`
+  timed out after 10 s because the device's sandboxed WebView services were marked
+  `process is bad`, failing identically on the pre-wave revision, and
+  `AndroidAutoMediaLibraryTest.playbackSpeedButtonCyclesAndPersists` failed in the full-suite run
+  while passing in isolation. Both pass after a reboot. Still to run on the Pixel 7a once it is authorized.
 
 ## Signed candidate and evidence
 
@@ -54,6 +67,8 @@ Use this checklist for Enve 1.2 build 46. A production release is ready only whe
 - [ ] Verify Health Connect permission grant, denial, revocation, 30-day sleep access, and data deletion behavior.
 - [ ] Verify each promoted server integration with a real account; include Komga reading direction with an affected library.
 - [ ] Exercise Qwen, Whisper, and Gemini Nano setup on supported hardware, including cancellation, corrupt-download rejection, and model removal.
+- [ ] Exercise sync reliability on a real linked pair: highlight location repair, KOReader hash repair against a live KOSync server, and the rewind confirmation path.
+- [ ] Exercise the StoryAlign quality chips, `Run again` and `Restore Previous`, against a real alignment job.
 
 ## Website and Play Console gate
 

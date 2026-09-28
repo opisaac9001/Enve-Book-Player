@@ -37,23 +37,6 @@ enum TranscriptSegmentNormalizer {
         return normalized
     }
 
-    static func mergedText(from segments: [TranscriptSegment]) -> String {
-        let fragments =
-            segments
-            .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-
-        guard var merged = fragments.first else { return "" }
-        for fragment in fragments.dropFirst() {
-            merged = mergeTextFragments(merged, fragment)
-        }
-
-        return
-            merged
-            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
     private static func shouldCollapse(_ next: TranscriptSegment, into previous: TranscriptSegment) -> Bool {
         guard previous.trackIndex == next.trackIndex else { return false }
 

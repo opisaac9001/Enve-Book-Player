@@ -149,19 +149,6 @@ actor DiskCodableCache {
         try? data.write(to: url, options: [.atomic])
     }
 
-    func loadRawData(key: String, maxAge: TimeInterval?) -> Data? {
-        loadPayload(key: key, maxAge: maxAge)
-    }
-
-    func saveRawData(_ data: Data, key: String) {
-        let url = fileURL(forKey: key)
-        guard let rootData = Self.makeEnvelopeData(payload: data, savedAt: Date()) else {
-            return
-        }
-
-        try? rootData.write(to: url, options: [.atomic])
-    }
-
     private func loadPayload(key: String, maxAge: TimeInterval?) -> Data? {
         let url = fileURL(forKey: key)
         guard let data = try? Data(contentsOf: url),
@@ -493,51 +480,11 @@ actor AppCache {
         await cache.removeData(forKey: coverCacheKey(for: book))
     }
 
-    func loadCodable<T: Codable & Sendable>(_ type: T.Type, key: String, maxAge: TimeInterval? = nil) async -> T? {
-        return await localMetadata.load(type, key: key, maxAge: maxAge)
-    }
-
-    func saveCodable<T: Codable & Sendable>(_ value: T, key: String) async {
-        await localMetadata.save(value, key: key)
-    }
-
-    @MainActor
-    func loadCodableMainActor<T: Codable>(_ type: T.Type, key: String, maxAge: TimeInterval? = nil) async -> T? {
-        guard let rawData = await localMetadata.loadRawData(key: key, maxAge: maxAge) else {
-            return nil
-        }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return try? decoder.decode(T.self, from: rawData)
-    }
-
-    @MainActor
-    func saveCodableMainActor<T: Codable>(_ value: T, key: String) async {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        guard let data = try? encoder.encode(value) else { return }
-        await localMetadata.saveRawData(data, key: key)
-    }
-
-    func removeCodable(key: String) async {
-        await localMetadata.remove(key: key)
-    }
-
     func activeCacheSizes() async -> (coversBytes: Int64, metadataBytes: Int64) {
         let coversCache = await activeCoversCache()
         async let covers = coversCache.totalDiskBytes()
         async let metadata = localMetadata.totalDiskBytes()
         return await (coversBytes: covers, metadataBytes: metadata)
-    }
-
-    func getCachedCoverCount(for books: [Book]) async -> Int {
-        var count = 0
-        for book in books {
-            if await getCoverData(for: book) != nil {
-                count += 1
-            }
-        }
-        return count
     }
 
     func cacheAllCovers(for books: [Book], progress: @Sendable @escaping (Int, Int) async -> Void) async throws {

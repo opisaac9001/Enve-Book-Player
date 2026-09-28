@@ -88,4 +88,40 @@ class SentenceAlignerTest {
         assertEquals(1, r.skippedSentences.size)
         assertEquals(1, r.skippedSentences[0].chapterSentenceId)
     }
+
+    @Test fun narrationTheBookDoesNotContainDoesNotStrandLaterSentences() {
+        val interjection = (
+            "chapter five of the recording read for you by a narrator " +
+                "this production was made in a studio over several long sessions " +
+                "and the publisher wishes to thank everyone involved in it"
+            ).split(" ").toTypedArray()
+
+        val t = transcription(
+            *"the quick brown fox jumped over the lazy dog".split(" ").toTypedArray(),
+            *interjection,
+            *"she sells sea shells by the shore".split(" ").toTypedArray(),
+            *"the tide came in before the evening".split(" ").toTypedArray(),
+        )
+
+        val r = aligner.alignChapter(
+            listOf(
+                "The quick brown fox jumped over the lazy dog.",
+                "She sells sea shells by the shore.",
+                "The tide came in before the evening.",
+            ),
+            t, 0,
+        )
+
+        assertEquals(3, r.alignedSentences.size)
+        assertTrue(r.skippedSentences.isEmpty())
+
+        val ids = r.alignedSentences.map { it.sentenceId }
+        assertEquals(listOf(0, 1, 2), ids)
+
+        val second = r.alignedSentences[1]
+        val third = r.alignedSentences[2]
+        assertTrue(second.sentenceRange.start > r.alignedSentences[0].sentenceRange.start)
+        assertTrue(third.sentenceRange.start >= second.sentenceRange.end - 1e-9)
+        assertEquals(7, second.sentenceRange.timeStamps.size)
+    }
 }

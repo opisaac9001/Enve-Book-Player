@@ -144,11 +144,7 @@ final class SiloAdminService {
     nonisolated private static func decodeDate(_ decoder: Decoder) throws -> Date {
         let container = try decoder.singleValueContainer()
         let raw = try container.decode(String.self)
-        let iso = ISO8601DateFormatter()
-        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = iso.date(from: raw) { return date }
-        iso.formatOptions = [.withInternetDateTime]
-        if let date = iso.date(from: raw) { return date }
+        if let date = ISO8601Timestamp.parse(raw) { return date }
         throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid date: \(raw)")
     }
 }

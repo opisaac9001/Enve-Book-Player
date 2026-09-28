@@ -26,6 +26,9 @@ final class ProviderReaderNotebookSync: ReaderNotebookSyncing {
     private let providerResolver: any LibraryProviderResolving
     private let siloIDMap: any SiloReaderArtifactIDMapping
     private let bookOrbitQueue: BookOrbitReaderArtifactSync
+    var bookOrbitSpineHrefs: (() -> [String: String])?
+    var activeReaderEngine: (() -> ReaderEngineKind)?
+    var epubFileURL: (() -> URL?)?
 
     private var bookDiagnosticID: String { DiagnosticLogSanitizer.identifier(for: book.stableId) }
 
@@ -249,7 +252,8 @@ final class ProviderReaderNotebookSync: ReaderNotebookSyncing {
                 bookID: book.id,
                 bookStableID: book.stableId
             )
-            return .replace(bookmarks: merged.bookmarks, annotations: merged.annotations)
+            let hydrated = await hydratingReadiumLocators(in: merged)
+            return .replace(bookmarks: hydrated.bookmarks, annotations: hydrated.annotations)
         } catch {
             AppLogger.general.error("Failed to fetch annotations bookDiagnosticID=\(bookDiagnosticID): \(error.localizedDescription)")
             do {
@@ -266,6 +270,34 @@ final class ProviderReaderNotebookSync: ReaderNotebookSyncing {
                 return .unchanged
             }
         }
+    }
+
+    private func hydratingReadiumLocators(in snapshot: ReaderNotebookMerge.Snapshot) async -> ReaderNotebookMerge.Snapshot {
+        guard activeReaderEngine?() == .readium,
+            let fileURL = epubFileURL?(),
+            fileURL.pathExtension.caseInsensitiveCompare("epub") == .orderedSame
+        else {
+            return snapshot
+        }
+
+        var hydrated = snapshot
+        for index in hydrated.annotations.indices {
+            let annotation = hydrated.annotations[index]
+            guard !EpubLocationBridge.canRestoreDirectly(annotation.locator),
+                let cfi = EpubLocationBridge.epubCFI(from: annotation.locator),
+                let locator = await EpubCFI.readiumLocatorJSON(
+                    forCFI: cfi,
+                    totalProgression: annotation.position,
+                    selectedText: annotation.text,
+                    epubFileURL: fileURL
+                )
+            else {
+                continue
+            }
+            let marked = EpubLocationBridge.markingSourceEngine(.readium, in: locator) ?? locator
+            hydrated.annotations[index].locator = EpubLocationBridge.markingEPUBCFI(cfi, in: marked) ?? marked
+        }
+        return hydrated
     }
 
     private func pullSilo(mergingInto localArtifacts: () -> ReaderNotebookMerge.Snapshot) async -> ReaderNotebookSyncOutcome {
@@ -288,7 +320,11 @@ final class ProviderReaderNotebookSync: ReaderNotebookSyncing {
 
     private func syncBookOrbit() async -> ReaderNotebookSyncOutcome {
         guard let provider = providerResolver.provider(for: book.providerId) as? BookOrbitProvider else { return .unchanged }
-        _ = await bookOrbitQueue.sync(book: book, provider: provider)
+        _ = await bookOrbitQueue.sync(
+            book: book,
+            provider: provider,
+            spineHrefs: bookOrbitSpineHrefs?() ?? [:]
+        )
         return .reload
     }
 }

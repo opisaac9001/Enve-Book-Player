@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:atom="http://www.w3.org/2005/Atom">
+<channel>
+<title>Accidental Tech Podcast</title>
+<link>https://atp.fm/</link>
+<description>Three nerds discussing tech, Apple, programming, and loosely related matters.</description>
+<itunes:author>Marco Arment, Casey Liss, John Siracusa</itunes:author>
+<itunes:image href="https://cdn.atp.fm/artwork"/>
+<image><url>https://cdn.atp.fm/artwork</url><title>Accidental Tech Podcast</title></image>
+<item>
+<guid isPermaLink="false">mupxmwzqadfzlu12</guid>
+<pubDate>Thu, 24 Sep 2026 17:13:33 +0000</pubDate>
+<title>710: That New Mouse Pad Feeling</title>
+<itunes:title>That New Mouse Pad Feeling</itunes:title>
+<itunes:duration>02:13:17</itunes:duration>
+<enclosure url="https://atp.fm/audio/mupxmwzqadfzlu12/atp710.mp3" length="128176680" type="audio/mpeg"/>
+<link>https://atp.fm/710</link>
+<description><![CDATA[<ul><li>It&#8217;s <a href="https://stjude.org/atp">St. Jude</a> time!</li></ul>]]></description>
+</item>
+<item>
+<guid isPermaLink="false">svdeou1mmfjhwknm</guid>
+<pubDate>Thu, 17 Sep 2026 21:26:09 +0000</pubDate>
+<title>709: Steel-Cable Insurance</title>
+<itunes:duration>7662</itunes:duration>
+<enclosure url="https://atp.fm/audio/svdeou1mmfjhwknm/atp709.mp3" length="123083911" type="audio/mpeg"/>
+<description>A mountain of follow-up.</description>
+</item>
+<item>
+<pubDate>Wed, 9 Sep 2026 17:00:00 EDT</pubDate>
+<title>708: Duo &amp; Done</title>
+<itunes:duration>1:02:03</itunes:duration>
+<enclosure url="http://atp.fm/audio/708/atp708.mp3" type="audio/mpeg"/>
+<content:encoded><![CDATA[<p>Encoded notes only.</p>]]></content:encoded>
+</item>
+<item>
+<guid>members-only-707</guid>
+<pubDate>Thu, 03 Sep 2026 20:00:00 GMT</pubDate>
+<title>707: Bootleg</title>
+<description>No enclosure, so not playable.</description>
+</item>
+<item>
+<guid isPermaLink="false">atp706</guid>
+<pubDate>2026-08-27T18:30:00Z</pubDate>
+<title>706: Élan Vital</title>
+<itunes:duration>45:30</itunes:duration>
+<enclosure url="https://atp.fm/audio/atp706/atp706.mp3" type="audio/mpeg"/>
+<itunes:summary>Summary fallback.</itunes:summary>
+</item>
+</channel>
+</rss>

@@ -131,7 +131,7 @@ public actor ListeningStatsTracker {
         let remoteSessions = await HistorySessionStore.shared.loadListeningSessions().filter { $0.source == .bookOrbit }
         let remotelyCompleted = Set(
             remoteSessions.compactMap { session in
-                session.endProgress.map { $0 >= 0.99 ? session.bookId : nil } ?? nil
+                session.endProgress.map { $0 >= Book.finishedProgressThreshold ? session.bookId : nil } ?? nil
             }
         )
 

@@ -11,10 +11,8 @@ import com.enve.engine.playback.PlaybackQueueItem
 import com.enve.engine.playback.PlaybackTransport
 import com.enve.engine.playback.PlayerSessionFacade
 import com.enve.engine.prefs.PreferencesFacade
-import com.enve.engine.sleep.SleepDataAccess
 import com.enve.engine.sleep.SleepDataFacade
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -40,7 +38,6 @@ class HearthPlayerViewModel @Inject constructor(
     val bookmarks: StateFlow<List<AudiobookBookmark>> = session.bookmarks
     val sleepRemainingSec: StateFlow<Long?> = session.sleepRemainingSec
     private val mutableSleepTracker = MutableStateFlow(SleepTrackerUiState())
-    private var sleepTrackerJob: Job? = null
     val sleepTracker: StateFlow<SleepTrackerUiState> = mutableSleepTracker.asStateFlow()
     val scrubChapter: StateFlow<Boolean> =
         prefs.scrubScopeChapter.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
@@ -74,13 +71,8 @@ class HearthPlayerViewModel @Inject constructor(
 
     fun refreshSleepTracker() {
         if (mutableSleepTracker.value.loading) return
-        sleepTrackerJob = viewModelScope.launch {
-            val current = mutableSleepTracker.value
-            mutableSleepTracker.value = current.copy(
-                loading = true,
-                summary = if (current.isDemo) null else current.summary,
-                isDemo = false,
-            )
+        viewModelScope.launch {
+            mutableSleepTracker.value = mutableSleepTracker.value.copy(loading = true)
             val snapshot = sleepData.load()
             val summary = SleepInsightsPolicy.build(
                 periods = snapshot.periods,
@@ -93,15 +85,6 @@ class HearthPlayerViewModel @Inject constructor(
                 summary = summary,
             )
         }
-    }
-
-    fun loadDemoSleepTracker() {
-        sleepTrackerJob?.cancel()
-        mutableSleepTracker.value = SleepTrackerUiState(
-            access = SleepDataAccess.AVAILABLE,
-            summary = SleepDemoData.build(),
-            isDemo = true,
-        )
     }
 
     fun setScrubChapter(chapter: Boolean) {

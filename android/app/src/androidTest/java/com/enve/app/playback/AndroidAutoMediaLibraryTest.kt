@@ -358,6 +358,67 @@ class AndroidAutoMediaLibraryTest {
     }
 
     @Test
+    fun controllersConnectedWhileIdleGainSeekCommandsAfterLoad() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val audio = File(context.cacheDir, "android-auto-idle-connect.wav")
+        writeSilentWav(audio)
+        val audioManager = EntryPointAccessors.fromApplication(
+            context,
+            AndroidAutoDebugEntryPoint::class.java,
+        ).audioPlaybackManager()
+        val token = SessionToken(context, ComponentName(context, PlaybackService::class.java))
+        val controllerThread = HandlerThread("android-auto-idle-connect-test").apply { start() }
+        val controllerHandler = Handler(controllerThread.looper)
+        val setupBrowser = MediaBrowser.Builder(context, token)
+            .setApplicationLooper(controllerThread.looper)
+            .buildAsync()
+            .get(15, TimeUnit.SECONDS)
+        var browser: MediaBrowser? = null
+
+        try {
+            controllerHandler.call {
+                setupBrowser.stop()
+                setupBrowser.clearMediaItems()
+            }
+            waitUntil(controllerHandler) { setupBrowser.mediaItemCount == 0 }
+
+            val idleConnected = MediaBrowser.Builder(context, token)
+                .setApplicationLooper(controllerThread.looper)
+                .buildAsync()
+                .get(15, TimeUnit.SECONDS)
+            browser = idleConnected
+
+            val bookId = "android-auto-idle-connect"
+            audioManager.play(
+                streamUrl = Uri.fromFile(audio).toString(),
+                bookId = bookId,
+                title = "Android Auto Idle Connect",
+                author = "Enve",
+                coverUrl = null,
+                mediaId = AutoMediaBrowserHelper.mediaIdForCacheKey(bookId),
+            )
+            waitUntil(controllerHandler) {
+                idleConnected.mediaItemCount == 1 && idleConnected.duration >= 30_000L
+            }
+            waitUntil(controllerHandler) {
+                idleConnected.isCommandAvailable(Player.COMMAND_SEEK_TO_MEDIA_ITEM) &&
+                    idleConnected.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
+            }
+            controllerHandler.call {
+                idleConnected.pause()
+                idleConnected.seekTo(0, 12_000)
+            }
+            waitForPosition(controllerHandler, idleConnected, 12_000)
+        } finally {
+            audioManager.stop()
+            browser?.let { active -> controllerHandler.call { active.release() } }
+            controllerHandler.call { setupBrowser.release() }
+            controllerThread.quitSafely()
+            audio.delete()
+        }
+    }
+
+    @Test
     fun mediaBrowserExposesCarShelves() {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val chapterStore = EntryPointAccessors.fromApplication(

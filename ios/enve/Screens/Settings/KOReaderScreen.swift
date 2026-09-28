@@ -12,6 +12,8 @@ struct KOReaderScreen: View {
     @State private var username = KOReaderSyncService.shared.config.username
     @State private var password = ""
     @State private var autoSync = KOReaderSyncService.shared.config.autoSyncEnabled
+    @State private var documentMatching = KOReaderSyncService.shared.config.documentMatching
+    @State private var sendsMetadata = KOReaderSyncService.shared.config.sendsDocumentMetadata
 
     @State private var isConnecting = false
     @State private var isRegistering = false
@@ -43,6 +45,7 @@ struct KOReaderScreen: View {
 
                 if service.config.isConfigured {
                     connectedCard
+                    matchingCard
                     linksCard
                     bookBridgeCard
                 } else {
@@ -117,9 +120,53 @@ struct KOReaderScreen: View {
                     serverURL = ""
                     username = ""
                     password = ""
+                    documentMatching = service.config.documentMatching
+                    sendsMetadata = service.config.sendsDocumentMetadata
                     statusMessage = "Disconnected."
                 }
             }
+        }
+    }
+
+    private var matchingCard: some View {
+        SourcesCard {
+            Overline("Document matching")
+            SettingsMenuRow(title: "Match books by", value: documentMatching.displayName) {
+                ForEach(KOReaderDocumentMatching.allCases, id: \.self) { option in
+                    Button(option.displayName) { apply(documentMatching: option) }
+                }
+            }
+            Text(matchingCaption)
+                .font(.hearthCaption)
+                .foregroundStyle(hearth.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            SourcesToggleRow(
+                title: "Send book details",
+                subtitle: "Adds the file name, title, and author to each update.",
+                isOn: $sendsMetadata
+            )
+            .onChange(of: sendsMetadata) { _, newValue in
+                service.updateConfig(
+                    serverURL: service.config.serverURL,
+                    username: service.config.username,
+                    plaintextPassword: nil,
+                    autoSync: service.config.autoSyncEnabled,
+                    sendsDocumentMetadata: newValue
+                )
+            }
+        }
+    }
+
+    private var matchingCaption: String {
+        switch documentMatching {
+        case .binary:
+            return "KOReader's default. Both devices must hold byte-identical files."
+        case .filename:
+            return "Matches on the file name alone, so differently converted copies still pair up."
+        case .smart:
+            return
+                "Reads every identifier and keeps writing to whichever one your other reader used. Pick this when you do not know how the other device matches."
         }
     }
 
@@ -174,7 +221,7 @@ struct KOReaderScreen: View {
         SourcesCard {
             Overline("About KOSync")
             Text(
-                "KOReader identifies books by a partial MD5 of the file. Progress pushes whenever you turn a page with auto-sync on; Sync Now pulls remote progress in. You can self-host a kosync server or use a public instance like sync.koreader.rocks."
+                "KOReader identifies books by a hash of the file. Progress pushes whenever you turn a page with auto-sync on; Sync Now pulls remote progress in. You can self-host a kosync server or use a public instance like sync.koreader.rocks or CrossPoint's."
             )
             .font(.hearthCaption)
             .foregroundStyle(hearth.textSecondary)
@@ -184,6 +231,17 @@ struct KOReaderScreen: View {
 
     private var connectCard: some View {
         SourcesCard {
+            Overline("Preset")
+            HStack(spacing: 8) {
+                ForEach(ServerPreset.allCases) { preset in
+                    HearthChip(title: preset.title, isSelected: selectedPreset == preset) { apply(preset: preset) }
+                }
+            }
+            Text(presetCaption)
+                .font(.hearthCaption)
+                .foregroundStyle(hearth.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+
             SourcesField(label: "Server", text: $serverURL, placeholder: "https://sync.example.com", keyboard: .URL)
             SourcesField(label: "Username", text: $username)
             SourcesField(label: "Password", text: $password, secure: true)
@@ -212,6 +270,66 @@ struct KOReaderScreen: View {
         isConnecting || serverURL.isEmpty || username.isEmpty || password.isEmpty
     }
 
+    private enum ServerPreset: String, CaseIterable, Identifiable {
+        case crossPoint
+        case koreader
+        case custom
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .crossPoint: return "CrossPoint"
+            case .koreader: return "KOReader"
+            case .custom: return "Custom"
+            }
+        }
+
+        var url: String? {
+            switch self {
+            case .crossPoint: return KOReaderConfig.crossPointServerURL
+            case .koreader: return KOReaderConfig.koreaderServerURL
+            case .custom: return nil
+            }
+        }
+    }
+
+    private var selectedPreset: ServerPreset {
+        let normalized = serverURL.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return ServerPreset.allCases.first { $0.url?.lowercased() == normalized } ?? .custom
+    }
+
+    private var presetCaption: String {
+        switch selectedPreset {
+        case .crossPoint:
+            return
+                "CrossPoint's free sync server speaks plain KOSync, so CrossPoint readers, KOReader, and Enve share one account. Register once, then connect with the same credentials everywhere. Picking it also matches books by file name, the way CrossPoint readers do."
+        case .koreader:
+            return "The public KOReader instance. Accounts are per server and are not shared with CrossPoint."
+        case .custom:
+            return "Point at your own kosync server, or pick a preset."
+        }
+    }
+
+    private func apply(preset: ServerPreset) {
+        guard let url = preset.url else { return }
+        serverURL = url
+        // CrossPoint firmware matches on the file name out of the box, and a content hash never
+        // agrees with one, so a clean account only pairs if the first push uses the same identifier.
+        if preset == .crossPoint { documentMatching = .filename }
+    }
+
+    private func apply(documentMatching option: KOReaderDocumentMatching) {
+        documentMatching = option
+        service.updateConfig(
+            serverURL: service.config.serverURL,
+            username: service.config.username,
+            plaintextPassword: nil,
+            autoSync: service.config.autoSyncEnabled,
+            documentMatching: option
+        )
+    }
+
     private func connect() {
         isConnecting = true
         errorMessage = nil
@@ -222,7 +340,8 @@ struct KOReaderScreen: View {
                     serverURL: serverURL,
                     username: username,
                     plaintextPassword: password,
-                    autoSync: autoSync
+                    autoSync: autoSync,
+                    documentMatching: documentMatching
                 )
                 try await service.authorize()
                 password = ""
@@ -246,7 +365,8 @@ struct KOReaderScreen: View {
                     serverURL: serverURL,
                     username: username,
                     plaintextPassword: password,
-                    autoSync: autoSync
+                    autoSync: autoSync,
+                    documentMatching: documentMatching
                 )
                 password = ""
                 statusMessage = "Account created and connected."

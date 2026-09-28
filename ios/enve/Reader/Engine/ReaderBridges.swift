@@ -64,6 +64,7 @@ final class AnnotationResponderBridge: UIViewController {
     private var foliateSelectionLongPressGesture: UILongPressGestureRecognizer?
     private var lastFoliatePagePanTranslation = CGPoint.zero
     private var lockedPagingScrollViews: [(view: UIScrollView, wasEnabled: Bool)] = []
+    private var selectionPageHolds: [SelectionPageHold] = []
 
     init(adapter: any ReaderEngineAdapter) {
         self.adapter = adapter
@@ -163,7 +164,9 @@ final class AnnotationResponderBridge: UIViewController {
             for (scrollView, _) in lockedPagingScrollViews {
                 scrollView.isScrollEnabled = false
             }
+            selectionPageHolds = pagingScrollViews.map(SelectionPageHold.init)
         } else {
+            selectionPageHolds.removeAll()
             for (scrollView, wasEnabled) in lockedPagingScrollViews {
                 scrollView.isScrollEnabled = wasEnabled
             }
@@ -775,4 +778,49 @@ extension DateFormatter {
         formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
         return formatter
     }()
+}
+
+// WebKit auto-scrolls a paginated web view while a selection handle nears the page edge, which strands
+// the reader between pages. The hold snaps each nudge back; a sustained push turns exactly one page.
+@MainActor
+private final class SelectionPageHold {
+    private static let nudgeGap: TimeInterval = 0.25
+    private static let turnDwell: TimeInterval = 0.5
+
+    private let scrollView: UIScrollView
+    private var heldX: CGFloat
+    private var observation: NSKeyValueObservation?
+    private var isRestoring = false
+    private var isArmed = false
+    private var nudgeStart = Date.distantPast
+    private var lastNudge = Date.distantPast
+
+    init(scrollView: UIScrollView) {
+        self.scrollView = scrollView
+        let width = max(scrollView.bounds.width, 1)
+        heldX = (scrollView.contentOffset.x / width).rounded() * width
+        observation = scrollView.observe(\.bounds, options: [.new]) { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.offsetChanged() }
+        }
+    }
+
+    private func offsetChanged() {
+        guard !isRestoring, abs(scrollView.contentOffset.x - heldX) > 0.5 else { return }
+        let now = Date()
+        let forward = scrollView.contentOffset.x > heldX
+        if now.timeIntervalSince(lastNudge) > Self.nudgeGap {
+            nudgeStart = now
+            isArmed = true
+        }
+        lastNudge = now
+        if isArmed, now.timeIntervalSince(nudgeStart) >= Self.turnDwell {
+            let width = scrollView.bounds.width
+            let maxX = max(0, scrollView.contentSize.width - width)
+            heldX = min(max(0, heldX + (forward ? width : -width)), maxX)
+            isArmed = false
+        }
+        isRestoring = true
+        scrollView.contentOffset.x = heldX
+        isRestoring = false
+    }
 }

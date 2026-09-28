@@ -39,9 +39,12 @@ final class DetailChapterFetcher {
             "[Chapters] Manual fetch started for \(book.title) source=\(book.source.rawValue) existing=\(book.chapters?.count ?? 0)"
         )
 
-        if let cached = ReaderArtifactsStore.shared.loadCachedChapters(bookId: book.stableId)
-            ?? ReaderArtifactsStore.shared.loadCachedChapters(bookId: book.id),
-            hasAdequateChapters(cached, for: book)
+        let cachedChapters =
+            book.mediaType == .ebook
+            ? ReaderArtifactsStore.shared.loadCachedChapters(bookId: book.stableId)
+                ?? ReaderArtifactsStore.shared.loadCachedChapters(bookId: book.id)
+            : ReaderArtifactsStore.shared.loadCachedAudioChapters(for: book)
+        if let cached = cachedChapters, hasAdequateChapters(cached, for: book)
         {
             AppLogger.network.info("[Chapters] Using adequate cached chapters: \(cached.count)")
             apply(cached, to: book, library: library)
@@ -217,6 +220,7 @@ final class DetailChapterFetcher {
 
     private func hasAdequateChapters(_ chapters: [Chapter], for book: Book) -> Bool {
         guard !chapters.isEmpty else { return false }
+        if book.mediaType != .ebook, !chapters.hasAudioTimeline { return false }
         if chapters.count > 1 { return true }
         let duration = book.duration ?? chapters.first?.end ?? 0
         return duration > 0 && duration <= 1_800

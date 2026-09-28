@@ -78,9 +78,12 @@ class KosyncClient @Inject constructor(
 
             okHttpClient.newCall(httpRequest).execute().use { response ->
                 when {
+                    response.code == 204 -> null
                     response.isSuccessful -> {
-                        val bodyStr = response.body?.string() ?: return@use null
+                        val bodyStr = response.body?.string()
+                        if (bodyStr.isNullOrBlank()) return@use null
                         json.decodeFromString(KosyncProgressResponse.serializer(), bodyStr)
+                            .takeIf { !it.positionData.isNullOrBlank() || (it.percentage ?: 0f) > 0f }
                     }
                     response.code == 404 ->
                         throw KosyncHttpException(404, "No progress for hash=$documentHash")

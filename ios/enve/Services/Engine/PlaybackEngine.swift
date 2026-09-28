@@ -110,18 +110,18 @@ final class PlaybackEngine {
         }
     }
 
-    func openEbook(_ book: Book) {
-        readerOpen.open(book)
+    func openEbook(_ book: Book, at locator: String? = nil) {
+        readerOpen.open(book, at: locator)
     }
 
     func presentReader(for book: Book) {
         readerOpen.open(book)
     }
 
-    func presentReaderAfterDismissingPlayer(for book: Book) {
+    func presentReaderAfterDismissingPlayer(for book: Book, at locator: String? = nil) {
         dismissPlayer()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-            self.presentReader(for: book)
+            self.readerOpen.open(book, at: locator)
         }
     }
 
@@ -197,7 +197,6 @@ final class PlaybackEngine {
         if book.mediaType == .ebook {
             return book.canonicalEbookProgress
         }
-        guard let duration = duration(for: book), duration > 0 else { return 0 }
-        return min(max(position(for: book) / duration, 0), 1)
+        return Book.audioProgressFraction(currentTime: position(for: book), duration: duration(for: book))
     }
 }

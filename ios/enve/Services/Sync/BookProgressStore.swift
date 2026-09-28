@@ -225,6 +225,57 @@ final class BookProgressStore {
         }
     }
 
+    // One-shot rekey of audio-owned state; preserves the newest destination value and clears the source.
+    func migrateAudiobookArtifacts(fromStableId oldStableId: String, to companion: Book) {
+        let newStableId = companion.stableId
+        guard oldStableId != newStableId else { return }
+
+        let oldProgressKey = "bookProgress_\(oldStableId)"
+        if let old = readProgress(forKey: oldProgressKey) {
+            let newProgressKey = "bookProgress_\(newStableId)"
+            let existing = readProgress(forKey: newProgressKey)
+            if existing == nil || old.lastUpdated > existing!.lastUpdated {
+                let progressData: [String: Any] = [
+                    "progress": old.progress,
+                    "duration": old.duration,
+                    "lastUpdated": old.lastUpdated,
+                ]
+                userDefaults.set(progressData, forKey: newProgressKey)
+            }
+            userDefaults.removeObject(forKey: oldProgressKey)
+        }
+
+        let oldStampKey = "serverStamp_\(oldStableId)"
+        if let oldStamp = userDefaults.object(forKey: oldStampKey) as? TimeInterval {
+            let newStampKey = "serverStamp_\(newStableId)"
+            let newStamp = userDefaults.object(forKey: newStampKey) as? TimeInterval
+            if newStamp == nil || oldStamp > newStamp! {
+                userDefaults.set(oldStamp, forKey: newStampKey)
+            }
+            userDefaults.removeObject(forKey: oldStampKey)
+        }
+
+        var snapshots = loadSnapshots()
+        var didChange = false
+        for index in snapshots.indices where snapshots[index].stableId == oldStableId {
+            snapshots[index] = RecentlyPlayedSnapshot(
+                stableId: newStableId,
+                book: companion,
+                lastUpdated: snapshots[index].lastUpdated
+            )
+            didChange = true
+        }
+        if didChange {
+            var seen = Set<String>()
+            snapshots.removeAll { snapshot in
+                if seen.contains(snapshot.stableId) { return true }
+                seen.insert(snapshot.stableId)
+                return false
+            }
+            persistSnapshots(snapshots)
+        }
+    }
+
     func removeOrphaned(bookIds: [String]) {
         var existing = loadSnapshots()
         let before = existing.count

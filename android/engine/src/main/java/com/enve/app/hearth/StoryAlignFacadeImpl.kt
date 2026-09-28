@@ -10,6 +10,8 @@ import androidx.work.WorkManager
 import com.enve.app.data.links.BookLinkRepository
 import com.enve.app.storyalign.StoryAlignJobEntity
 import com.enve.app.storyalign.StoryAlignJobRepository
+import com.enve.app.storyalign.StoryAlignOutputStore
+import com.enve.app.storyalign.StoryAlignReport
 import com.enve.app.storyalign.StoryAlignWorker
 import com.enve.core.data.local.LinkedBookPair
 import com.enve.core.data.model.Book
@@ -35,6 +37,7 @@ class StoryAlignFacadeImpl @Inject constructor(
     @ApplicationContext private val context: Context,
     private val repo: StoryAlignJobRepository,
     private val bookLinks: BookLinkRepository,
+    private val outputs: StoryAlignOutputStore,
 ) : StoryAlignFacade {
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -106,13 +109,28 @@ class StoryAlignFacadeImpl @Inject constructor(
         enqueue(jobId, settings, ExistingWorkPolicy.REPLACE)
     }
 
+    override suspend fun restorePreviousOutput(jobId: String): Boolean {
+        val job = repo.get(jobId) ?: return false
+        if (job.status in setOf(StoryAlignStatus.QUEUED.name, StoryAlignStatus.RUNNING.name, StoryAlignStatus.PAUSED.name)) return false
+        val report = StoryAlignReport.decode(job.reportJson) ?: return false
+        if (outputs.restorePrevious(jobId) == null) return false
+
+        repo.upsert(
+            job.copy(
+                reportJson = StoryAlignReport.encode(report.restored()),
+                updatedAt = System.currentTimeMillis(),
+            ),
+        )
+        return true
+    }
+
     override suspend fun deleteJob(jobId: String, deleteOutput: Boolean) {
         WorkManager.getInstance(context).cancelUniqueWork(workName(jobId))
         val job = repo.get(jobId)
         repo.delete(jobId)
         if (job != null) {
             File(job.sessionDir).deleteRecursively()
-            if (deleteOutput) job.outputPath?.let { File(it).delete() }
+            if (deleteOutput) outputs.deleteAll(jobId)
         }
     }
 
@@ -132,20 +150,25 @@ class StoryAlignFacadeImpl @Inject constructor(
 
     private fun workName(jobId: String) = "storyalign:$jobId"
 
-    private fun StoryAlignJobEntity.toUi() = StoryAlignJobUi(
-        id = id,
-        ebookTitle = ebookTitle,
-        audiobookTitle = audiobookTitle,
-        author = author,
-        status = runCatching { StoryAlignStatus.valueOf(status) }.getOrDefault(StoryAlignStatus.QUEUED),
-        stage = runCatching { StoryAlignStage.valueOf(stage) }.getOrDefault(StoryAlignStage.DOWNLOAD),
-        stageProgress = stageProgress,
-        overallProgress = overallProgress,
-        errorMessage = errorMessage,
-        outputBookId = outputBookId,
-        createdAt = createdAt,
-        updatedAt = updatedAt,
-    )
+    private fun StoryAlignJobEntity.toUi(): StoryAlignJobUi {
+        val report = StoryAlignReport.decode(reportJson)
+        return StoryAlignJobUi(
+            id = id,
+            ebookTitle = ebookTitle,
+            audiobookTitle = audiobookTitle,
+            author = author,
+            status = runCatching { StoryAlignStatus.valueOf(status) }.getOrDefault(StoryAlignStatus.QUEUED),
+            stage = runCatching { StoryAlignStage.valueOf(stage) }.getOrDefault(StoryAlignStage.DOWNLOAD),
+            stageProgress = stageProgress,
+            overallProgress = overallProgress,
+            errorMessage = errorMessage,
+            outputBookId = outputBookId,
+            createdAt = createdAt,
+            updatedAt = updatedAt,
+            keptPreviousReason = report?.takeIf { !it.lastRunAccepted }?.lastRunExplanation,
+            hasPreviousOutput = outputs.previousFile(id).isFile,
+        )
+    }
 
     private data class ResolvedPair(
         val ebookKey: String,

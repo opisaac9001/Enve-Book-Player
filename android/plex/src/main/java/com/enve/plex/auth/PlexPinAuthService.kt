@@ -22,11 +22,6 @@ import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/**
- * Resolved Plex server discovered via plex.tv `/api/v2/resources` after a
- * successful PIN OAuth. The chosen `url` is the best reachable connection
- * (local > secure > relay-last).
- */
 data class PlexResolvedServer(
     val url: String,
     val accessToken: String,
@@ -34,15 +29,6 @@ data class PlexResolvedServer(
     val name: String? = null,
 )
 
-/**
- * plex.tv PIN OAuth + server discovery. Talks directly to plex.tv (not the
- * user's PMS) so it uses its own [OkHttpClient] without the app's
- * Authorization / DynamicUrl interceptors attached.
- *
- * Extracted from `GrimmoryRepository` — the PIN flow has no Grimmory
- * dependency and was just co-located by historical accident. The 5 call
- * sites live in `AuthViewModel`.
- */
 @Singleton
 class PlexPinAuthService @Inject constructor() {
 
@@ -101,7 +87,6 @@ class PlexPinAuthService @Inject constructor() {
                 val body = response.body?.string()
                     ?: return@withContext Result.success(null)
                 val jsonElement = jsonSerializer.parseToJsonElement(body).jsonObject
-                // authToken is null until the user completes login in the browser
                 val authToken = jsonElement["authToken"]?.jsonPrimitive?.contentOrNull
                 Result.success(authToken)
             } catch (e: Exception) {
@@ -135,8 +120,6 @@ class PlexPinAuthService @Inject constructor() {
             val body = response.body?.string()
                 ?: return@withContext Result.failure(Exception("Empty Plex resources response"))
 
-            // Same response-shape handling as resolveAllPlexServers — see the
-            // comment there for the four variants plex.tv returns.
             val parsed = jsonSerializer.parseToJsonElement(body)
             val devices: JsonArray = when (parsed) {
                 is JsonArray -> parsed
@@ -194,8 +177,6 @@ class PlexPinAuthService @Inject constructor() {
             }
 
             val sorted = candidates.sortedWith(
-                // Remote HTTPS first, then local HTTPS, then HTTP variants,
-                // relay last. See resolveAllPlexServers for the rationale.
                 compareByDescending<PlexCandidate> { it.secure }
                     .thenBy { it.local }
                     .thenBy { it.relay }
@@ -223,14 +204,6 @@ class PlexPinAuthService @Inject constructor() {
         }
     }
 
-    /**
-     * Discovers every Plex server the user has access to (including shared
-     * servers) and returns one [PlexResolvedServer] per server, with the URL
-     * already resolved through the local > secure > relay-last fallback chain.
-     *
-     * Used after PIN OAuth when the user opted to register every server as
-     * its own ConnectionRegistry entry.
-     */
     suspend fun resolveAllPlexServers(
         userToken: String,
         clientId: String,
@@ -253,13 +226,6 @@ class PlexPinAuthService @Inject constructor() {
             }
             val body = response.body?.string()
                 ?: return@withContext Result.failure(Exception("Empty Plex resources response"))
-            // plex.tv/api/v2/resources returns ONE OF:
-            //   - bare JSON array: [{...server...}, {...server...}]  (modern)
-            //   - {"MediaContainer": {"Device": [...]}} (XML-mirror)
-            //   - {"MediaContainer": {"devices": [...]}}
-            //   - {"Device": [...]} | {"devices": [...]} (no container)
-            // The modern response is what observed real accounts get (logcat
-            // confirmed devices=0 with a body that started with `[{`).
             val parsed = jsonSerializer.parseToJsonElement(body)
             val devices: JsonArray = when (parsed) {
                 is JsonArray -> parsed
@@ -281,10 +247,6 @@ class PlexPinAuthService @Inject constructor() {
                     val serverToken = server.optString("accessToken").takeUnless { it.isNullOrBlank() } ?: userToken
                     val machineId = server.optString("clientIdentifier")
                     val name = server.optString("name")
-                    // plex.tv returns the connections array under one of three keys
-                    // depending on the response shape (modern lowercase, XML-mirror
-                    // PascalCase, or the singular variant). Check all three so we
-                    // don't drop the device just because we picked the wrong case.
                     val connections = server.optArray("connections")
                         ?: server.optArray("Connection")
                         ?: server.optArray("Connections")
@@ -308,12 +270,6 @@ class PlexPinAuthService @Inject constructor() {
                             name = name,
                         )
                     }.sortedWith(
-                        // Mirror iOS PlexService.findBestConnection ordering:
-                        // remote HTTPS → local HTTPS → remote HTTP → local HTTP →
-                        // relay. Remote first because LAN URLs are unreachable
-                        // when the phone isn't on the server's network and we
-                        // can't know that ahead of time. The reachability probe
-                        // below still gets to override.
                         compareByDescending<PlexCandidate> { it.secure }
                             .thenBy { it.local }
                             .thenBy { it.relay }
@@ -359,15 +315,6 @@ class PlexPinAuthService @Inject constructor() {
         }
     }
 
-    // ── Plex Home users ──────────────────────────────────────────────────────
-
-    /**
-     * Plex Home: a shared account where multiple users live under one owner.
-     * Each user can have their own listening history, watched/finished state,
-     * and (optionally) a 4-digit PIN. The owner's auth token can enumerate the
-     * Home users; switching to one returns a user-scoped token that should be
-     * stored in CredentialVault as that connection's access token.
-     */
     suspend fun getHomeUsers(ownerToken: String, clientId: String): Result<List<PlexHomeUser>> =
         withContext(Dispatchers.IO) {
             try {
@@ -408,11 +355,6 @@ class PlexPinAuthService @Inject constructor() {
             }
         }
 
-    /**
-     * Switches the Plex auth to a different Home user. Returns a token scoped
-     * to that user — caller persists it in CredentialVault for the connection.
-     * A 4-digit PIN is required only for users with `protected = true`.
-     */
     suspend fun switchHomeUser(
         ownerToken: String,
         clientId: String,
@@ -443,14 +385,11 @@ class PlexPinAuthService @Inject constructor() {
     }
 
     private fun parseSwitchUserToken(body: String): String? {
-        // Switch endpoint returns either JSON (modern) or XML (legacy). Try
-        // JSON first since we set Accept: application/json.
         return runCatching {
             val obj = jsonSerializer.parseToJsonElement(body).jsonObject
             obj.optString("authToken")
                 ?: (obj["user"] as? JsonObject)?.optString("authToken")
         }.getOrNull() ?: run {
-            // XML fallback. We only need the authToken attribute on <user>.
             Regex("""authToken="([^"]+)"""").find(body)?.groupValues?.getOrNull(1)
         }
     }
@@ -499,10 +438,6 @@ private data class PlexCandidate(
     val name: String?,
 )
 
-/**
- * A Plex Home user. `protected = true` means a PIN is required to switch.
- * `admin = true` is the account owner.
- */
 data class PlexHomeUser(
     val id: Long,
     val uuid: String? = null,

@@ -28,7 +28,6 @@ import com.enve.core.data.model.SortDirection
 import com.enve.core.data.model.SortOption
 import com.enve.core.data.model.SubtitleHandling
 import com.enve.core.data.model.TitleDisplayMode
-import com.enve.core.data.model.toLegacyLibrary
 import com.enve.core.data.model.toShallowBook
 import com.enve.core.data.remote.ConnectionScope
 import com.enve.app.data.paging.AudiobookshelfBooksPagingSource
@@ -37,7 +36,6 @@ import com.enve.app.data.paging.GrimmoryBooksPagingSource
 import com.enve.app.data.paging.KomgaBooksPagingSource
 import com.enve.app.data.paging.OpdsBooksPagingSource
 import com.enve.app.data.metadata.LibraryMetadataRefreshRepository
-import com.enve.app.data.metadata.LibraryMetadataRefreshSummary
 import com.enve.app.data.repository.AggregatorRepository
 import com.enve.audiobookshelf.AudiobookshelfRepository
 import com.enve.bookorbit.BookOrbitRepository
@@ -49,7 +47,6 @@ import com.enve.app.data.repository.OpdsRepository
 import com.enve.storyteller.StorytellerRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.Flow
@@ -61,10 +58,7 @@ import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.flow.flowOf
-import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -660,11 +654,6 @@ class LibraryViewModel @Inject constructor(
         SortOption.SERIES_ORDER -> "seriesNumber"
     }
 
-    fun loadBooks() {
-
-        viewModelScope.launch { refreshLibraries() }
-    }
-
     fun refresh() {
         viewModelScope.launch {
             _state.update { it.copy(isRefreshing = true) }
@@ -682,25 +671,6 @@ class LibraryViewModel @Inject constructor(
 
     suspend fun checkAllConnectionsHealth(): Map<String, Boolean> =
         aggregatorRepository.checkAllConnectionsHealth()
-
-    suspend fun refreshProviderMetadata(): LibraryMetadataRefreshSummary {
-        val libraries = _state.value.libraries
-        if (libraries.isEmpty()) {
-            return LibraryMetadataRefreshSummary(queued = 0, unsupported = 0, failed = emptyList())
-        }
-        _state.update { it.copy(isRefreshing = true) }
-        return try {
-            val summary = libraryMetadataRefreshRepository.refresh(libraries)
-            refreshLibraries()
-            summary
-        } finally {
-            _state.update { it.copy(isRefreshing = false) }
-        }
-    }
-
-    fun setSearchQuery(query: String) {
-        _state.update { it.copy(searchQuery = query) }
-    }
 
     fun setSortOption(option: SortOption) {
         android.util.Log.i("LibraryViewModel", "setSortOption: persisting ${option.name}")
@@ -720,12 +690,6 @@ class LibraryViewModel @Inject constructor(
         viewModelScope.launch { prefs.setLibrarySortDirection(direction.name) }
     }
 
-    fun toggleSortDirection() {
-        val newDirection = if (_state.value.sortDirection == SortDirection.ASCENDING)
-            SortDirection.DESCENDING else SortDirection.ASCENDING
-        setSortDirection(newDirection)
-    }
-
     fun setLayout(layout: LibraryLayout) {
         viewModelScope.launch { prefs.setLibraryLayout(layout.name) }
         _state.update { it.copy(layout = layout) }
@@ -742,39 +706,9 @@ class LibraryViewModel @Inject constructor(
         viewModelScope.launch { prefs.setLibraryFilterReadStatus(status?.name) }
     }
 
-    fun setShowDownloadedOnly(value: Boolean) {
-        _state.update { it.copy(showDownloadedOnly = value) }
-        viewModelScope.launch { prefs.setLibraryFilterDownloadedOnly(value) }
-    }
-
-    fun setShowInProgressOnly(value: Boolean) {
-        _state.update { it.copy(showInProgressOnly = value) }
-        viewModelScope.launch { prefs.setLibraryFilterInProgressOnly(value) }
-    }
-
-    fun setShowCompletedOnly(value: Boolean) {
-        _state.update { it.copy(showCompletedOnly = value) }
-        viewModelScope.launch { prefs.setLibraryFilterCompletedOnly(value) }
-    }
-
-    fun setShowNotStartedOnly(value: Boolean) {
-        _state.update { it.copy(showNotStartedOnly = value) }
-        viewModelScope.launch { prefs.setLibraryFilterNotStartedOnly(value) }
-    }
-
     fun setSeriesFilter(name: String?) {
         if (_state.value.seriesFilter == name) return
         _state.update { it.copy(seriesFilter = name) }
-    }
-
-    fun setAuthorFilter(name: String?) {
-        if (_state.value.authorFilter == name) return
-        _state.update { it.copy(authorFilter = name) }
-    }
-
-    fun setGenreFilter(name: String?) {
-        if (_state.value.genreFilter == name) return
-        _state.update { it.copy(genreFilter = name) }
     }
 
     fun toggleLibraryExclusion(libraryId: String) {
@@ -792,9 +726,6 @@ class LibraryViewModel @Inject constructor(
             if (clearSelection) prefs.setLibrarySelectedId(null)
         }
     }
-
-    fun isLibraryExcluded(libraryId: String): Boolean =
-        _state.value.excludedLibraryIds.contains(libraryId)
 
     fun setBookCardStyle(style: BookCardStyle) {
         _state.update { it.copy(bookCardStyle = style) }
@@ -844,112 +775,6 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
-    fun clearAllFilters() {
-        _state.update {
-            it.copy(
-                sortOption = SortOption.DATE_ADDED,
-                secondarySortOption = null,
-                sortDirection = SortDirection.DESCENDING,
-                selectedFilter = null,
-                showDownloadedOnly = false,
-                showInProgressOnly = false,
-                showCompletedOnly = false,
-                showNotStartedOnly = false,
-                authorFilter = null,
-                genreFilter = null,
-            )
-        }
-        viewModelScope.launch { prefs.clearLibraryFilters() }
-    }
-
-    fun toggleSelectionMode() {
-        _state.update {
-            if (it.isSelectionMode) it.copy(isSelectionMode = false, selectedBookIds = emptySet())
-            else it.copy(isSelectionMode = true, selectedBookIds = emptySet())
-        }
-    }
-
-    fun toggleBookSelection(book: Book) {
-        _state.update {
-            val newIds = it.selectedBookIds.toMutableSet()
-            if (newIds.contains(book.id)) newIds.remove(book.id) else newIds.add(book.id)
-            it.copy(selectedBookIds = newIds)
-        }
-    }
-
-    fun selectAll(visibleIds: Collection<String>) {
-        _state.update { it.copy(selectedBookIds = visibleIds.toSet()) }
-    }
-
-    fun deselectAll() {
-        _state.update { it.copy(selectedBookIds = emptySet()) }
-    }
-
-    fun isBookSelected(book: Book): Boolean = _state.value.selectedBookIds.contains(book.id)
-
-    fun hideSelectedBooks() {
-        val selected = _state.value.selectedBookIds
-        if (selected.isEmpty()) return
-        val newHidden = _state.value.hiddenBookIds + selected
-        _state.update {
-            it.copy(
-                hiddenBookIds = newHidden,
-                selectedBookIds = emptySet(),
-                isSelectionMode = false,
-            )
-        }
-        viewModelScope.launch { prefs.setLibraryHiddenBookIds(newHidden) }
-    }
-
-    fun deleteSelectedBooks(visibleBooks: List<Book>) {
-        val selected = _state.value.selectedBookIds
-        if (selected.isEmpty()) return
-
-        val selectedBooks = visibleBooks.filter { it.id in selected }
-        val localBooks = selectedBooks.filter { it.source == BookSource.LOCAL }
-        val remoteIds = selected - localBooks.mapTo(mutableSetOf()) { it.id }
-
-        _state.update {
-            it.copy(
-                selectedBookIds = emptySet(),
-                isSelectionMode = false,
-                hiddenBookIds = it.hiddenBookIds + remoteIds,
-            )
-        }
-
-        viewModelScope.launch {
-            if (remoteIds.isNotEmpty()) {
-                prefs.setLibraryHiddenBookIds(_state.value.hiddenBookIds)
-            }
-            localBooks.forEach { book ->
-                offlineDownloadManager.removeDownload(book.id)
-                comicOfflineService.removeDownload(book.id)
-                aggregatorRepository.deleteBook(book)
-            }
-        }
-    }
-
-    fun downloadVisible(books: List<Book>) {
-        if (books.isEmpty()) return
-        val (audio, comics) = books.partition {
-            it.mediaType == AppMediaType.AUDIOBOOK &&
-                offlineDownloadManager.supportsAudiobookDownload(it.source)
-        }
-        audio.forEach { offlineDownloadManager.startAudiobookDownload(it) }
-        if (comics.isNotEmpty()) comicOfflineService.startDownloadAll(comics)
-        _state.update { it.copy(isSelectionMode = false, selectedBookIds = emptySet()) }
-    }
-
-    fun removeDownloadsFromSelected() {
-        val ids = _state.value.selectedBookIds
-        if (ids.isEmpty()) return
-        ids.forEach {
-            offlineDownloadManager.removeDownload(it)
-            comicOfflineService.removeDownload(it)
-        }
-        _state.update { it.copy(isSelectionMode = false, selectedBookIds = emptySet()) }
-    }
-
     fun unhideBooks(ids: Collection<String>) {
         if (ids.isEmpty()) return
         val newHidden = _state.value.hiddenBookIds - ids.toSet()
@@ -961,12 +786,6 @@ class LibraryViewModel @Inject constructor(
         if (_state.value.hiddenBookIds.isEmpty()) return
         _state.update { it.copy(hiddenBookIds = emptySet()) }
         viewModelScope.launch { prefs.setLibraryHiddenBookIds(emptySet()) }
-    }
-
-    fun setSelectedLibrary(libraryId: String?) {
-        val visibleLibraryId = libraryId?.takeUnless { it in _state.value.excludedLibraryIds }
-        _state.update { it.copy(selectedLibraryId = visibleLibraryId) }
-        viewModelScope.launch { prefs.setLibrarySelectedId(visibleLibraryId) }
     }
 
     private data class PagerInputs(

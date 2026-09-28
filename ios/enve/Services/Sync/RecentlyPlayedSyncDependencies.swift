@@ -11,7 +11,7 @@ protocol RecentlyPlayedProgressAPI: AnyObject {
         isFinished: Bool,
         backend: BackendConfig
     ) async throws
-    func pushEbookProgress(libraryItemId: String, progress: Double, isFinished: Bool, backend: BackendConfig) async throws
+    func pushEbookProgress(libraryItemId: String, progress: Double, itemHasAudio: Bool, backend: BackendConfig) async throws
 }
 
 @MainActor
@@ -42,11 +42,11 @@ final class AudiobookshelfRecentlyPlayedProgressAPI: RecentlyPlayedProgressAPI {
         )
     }
 
-    func pushEbookProgress(libraryItemId: String, progress: Double, isFinished: Bool, backend: BackendConfig) async throws {
+    func pushEbookProgress(libraryItemId: String, progress: Double, itemHasAudio: Bool, backend: BackendConfig) async throws {
         try await service.updateEbookProgress(
             libraryItemId: libraryItemId,
             ebookProgress: progress,
-            isFinished: isFinished,
+            itemHasAudio: itemHasAudio,
             backend: backend
         )
     }

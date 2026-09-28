@@ -55,6 +55,7 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
     private var lastNowPlayingPushAt: TimeInterval = 0
     private var lastFragmentPublishAt: TimeInterval = 0
     private var frozenElapsed: TimeInterval?
+    private var pendingSeek: (id: UUID, audioTime: TimeInterval)?
     private var reachedEnd = false
     private var handledFailedItems: Set<ObjectIdentifier> = []
 
@@ -402,10 +403,28 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
     }
 
     private func seekToCurrentClip() {
-        guard let player, currentClipIdx < clips.count else { return }
+        guard currentClipIdx < clips.count else { return }
+        let group = clipToGroupIdx[currentClipIdx]
+        if currentGroupIndex() != group {
+            buildQueue(startingAtGroup: group)
+        }
         let clip = clips[currentClipIdx]
-        let time = CMTime(seconds: clip.clipBegin, preferredTimescale: 600)
-        player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
+        seekPlayer(to: clip.clipBegin, audioTime: groupCumulativeStarts[group] + clip.clipBegin)
+    }
+
+    private func seekPlayer(to fileTime: TimeInterval, audioTime: TimeInterval) {
+        guard let player else { return }
+        let id = UUID()
+        pendingSeek = (id, audioTime)
+        let time = CMTime(seconds: fileTime, preferredTimescale: 600)
+        player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, pendingSeek?.id == id else { return }
+                pendingSeek = nil
+                resyncClipFromPlayhead(forcePublish: true)
+                updateNowPlayingInfo()
+            }
+        }
     }
 
     private func currentGroupIndex() -> Int? {
@@ -520,7 +539,7 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
     }
 
     private func resyncClipFromPlayhead(forcePublish: Bool = false) {
-        guard let timeline,
+        guard pendingSeek == nil, let timeline,
             let idx = timeline.clipIndex(atAudioTime: globalElapsed() + syncOffset)
         else { return }
         if idx != currentClipIdx {
@@ -587,6 +606,7 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
     }
 
     private func teardownObservers() {
+        pendingSeek = nil
         if let boundaryObserver { player?.removeTimeObserver(boundaryObserver) }
         if let periodicObserver { player?.removeTimeObserver(periodicObserver) }
         boundaryObserver = nil
@@ -645,6 +665,7 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
     }
 
     private func globalElapsed() -> Double {
+        if let pendingSeek { return pendingSeek.audioTime }
         if player == nil, let frozenElapsed { return frozenElapsed }
         guard let groupIdx = currentGroupIndex(),
             groupIdx < groupCumulativeStarts.count
@@ -706,9 +727,7 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
         if currentGroupIndex() != targetGroup || player == nil {
             buildQueue(startingAtGroup: targetGroup)
         }
-        guard let player else { return }
-        let time = CMTime(seconds: within, preferredTimescale: 600)
-        player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
+        seekPlayer(to: within, audioTime: clamped)
         publishCurrentFragment(force: true)
         if isPlaying {
             applyRate()

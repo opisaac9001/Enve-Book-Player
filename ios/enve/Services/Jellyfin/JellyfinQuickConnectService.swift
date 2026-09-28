@@ -1,10 +1,6 @@
 import Foundation
 import Logging
 
-#if canImport(UIKit)
-import UIKit
-#endif
-
 struct QuickConnectResult: Codable {
     let Secret: String
     let Code: String
@@ -61,36 +57,6 @@ final class JellyfinQuickConnectService {
     private let maxPollAttempts = 150
     private let pollInterval: TimeInterval = 2.0
 
-    private var clientName: String { "Enve" }
-    private var clientVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
-    }
-    private var deviceId: String {
-        #if canImport(UIKit)
-        return UIDevice.current.identifierForVendor?.uuidString ?? UUID().uuidString
-        #else
-        return UUID().uuidString
-        #endif
-    }
-    private var deviceName: String {
-        #if canImport(UIKit)
-        let raw = UIDevice.current.name
-        return raw.replacingOccurrences(of: "\"", with: "")
-            .replacingOccurrences(of: "'", with: "")
-        #else
-        return "Enve Client"
-        #endif
-    }
-
-    private func buildAuthHeader(token: String? = nil) -> String {
-        var header =
-            "MediaBrowser Client=\"\(clientName)\", Device=\"\(deviceName)\", DeviceId=\"\(deviceId)\", Version=\"\(clientVersion)\""
-        if let token {
-            header += ", Token=\"\(token)\""
-        }
-        return header
-    }
-
     private func applyCustomHeaders(_ customHeaders: [String: String], to request: inout URLRequest) {
         for (key, value) in customHeaders {
             request.setValue(value, forHTTPHeaderField: key)
@@ -106,7 +72,7 @@ final class JellyfinQuickConnectService {
         var request = URLRequest(url: url)
         request.timeoutInterval = 10
         applyCustomHeaders(customHeaders, to: &request)
-        let auth = buildAuthHeader()
+        let auth = MediaBrowserClient.authorizationHeader(token: nil)
         request.setValue(auth, forHTTPHeaderField: "X-Emby-Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
@@ -134,7 +100,7 @@ final class JellyfinQuickConnectService {
         request.httpMethod = "POST"
         request.timeoutInterval = 15
         applyCustomHeaders(customHeaders, to: &request)
-        let auth = buildAuthHeader()
+        let auth = MediaBrowserClient.authorizationHeader(token: nil)
         request.setValue(auth, forHTTPHeaderField: "X-Emby-Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
@@ -225,7 +191,7 @@ final class JellyfinQuickConnectService {
         applyCustomHeaders(customHeaders, to: &request)
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        let auth = buildAuthHeader()
+        let auth = MediaBrowserClient.authorizationHeader(token: nil)
         request.setValue(auth, forHTTPHeaderField: "X-Emby-Authorization")
 
         let body = QuickConnectAuthRequest(Secret: secret)

@@ -28,7 +28,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
@@ -51,6 +50,7 @@ import com.enve.hearth.design.Overline
 import com.enve.hearth.bookorbit.BookOrbitAchievementsScreen
 import com.enve.hearth.bookorbit.BookOrbitHighlightsScreen
 import com.enve.hearth.bookorbit.BookOrbitInsightsScreen
+import com.enve.hearth.design.parseHexColor
 import com.enve.hearth.detail.BookDetailScreen
 import com.enve.hearth.home.HearthHomeScreen
 import com.enve.hearth.journal.HearthCompletionCenterScreen
@@ -59,6 +59,8 @@ import com.enve.hearth.journal.HearthJournalScreen
 import com.enve.hearth.journal.HearthStatsHubScreen
 import com.enve.hearth.library.HearthLibraryScreen
 import com.enve.hearth.player.PlayerScreen
+import com.enve.hearth.podcasts.PodcastShowScreen
+import com.enve.hearth.podcasts.isPodcastShow
 import com.enve.hearth.player.HearthSleepInsightsScreen
 import com.enve.hearth.settings.HearthSettingsDestination
 import com.enve.hearth.settings.HearthSettingsScreen
@@ -75,7 +77,9 @@ fun HearthRoot(
     onAskLibrarian: (Book) -> Unit = {},
     onManageSources: () -> Unit = {},
     onOpenSettingsDestination: (HearthSettingsDestination) -> Unit = {},
+    onOpdsAuthorize: (connectionId: String, methodType: String, authorizeUrl: String) -> Unit = { _, _, _ -> },
     playerTopAction: @Composable () -> Unit = {},
+    playerOverlay: @Composable () -> Unit = {},
 ) {
     val vm: HearthShellViewModel = hiltViewModel()
     val mode by vm.themeMode.collectAsStateWithLifecycle()
@@ -92,7 +96,7 @@ fun HearthRoot(
 
     HearthTheme(
         mode = mode,
-        accent = accentColor(accentHex),
+        accent = parseHexColor(accentHex) ?: EmberAccent,
         oledEnabled = oled,
         uiTextScale = uiTextScale,
         reduceMotion = reduceMotion,
@@ -166,14 +170,13 @@ fun HearthRoot(
                 if (nowPlaying == null && pending == null) showPlayer = false
                 if (showPlayer && pending != null && nowPlaying?.bookId == pending) {
                     pendingPlayerBookId = null
-                    detailBook = null
+                    if (detailBook?.isPodcastShow != true) detailBook = null
                 }
             }
             val bookOrbitOverlayVisible = showBookOrbitInsights || showBookOrbitAchievements || showBookOrbitHighlights
-            BackHandler(
-                enabled = showPlayer || showSettings || showCompletionCenter || showInsights ||
-                    showStatsHub || showSleepInsights || bookOrbitOverlayVisible || detailBook != null || tab != HearthTab.HEARTH,
-            ) {
+            val overlayVisible = showPlayer || showSettings || showCompletionCenter || showInsights ||
+                showStatsHub || showSleepInsights || bookOrbitOverlayVisible || detailBook != null
+            BackHandler(enabled = overlayVisible || tab != HearthTab.HEARTH) {
                 when {
                     showPlayer -> {
                         showPlayer = false
@@ -195,6 +198,8 @@ fun HearthRoot(
             val playBook: (Book) -> Unit = { book ->
                 if (book.mediaType == AppMediaType.EBOOK) {
                     onOpenEbook(book)
+                } else if (book.isPodcastShow) {
+                    detailBook = book
                 } else {
                     pendingPlayerBookId = book.id
                     vm.openAudio(book)
@@ -259,6 +264,7 @@ fun HearthRoot(
                         onOpenSettings = { showSettings = true },
                     )
                     HearthTab.LIBRARY -> HearthLibraryScreen(
+                        covered = overlayVisible,
                         onSelectBook = selectBook,
                         onPlayBook = playBook,
                         onPlaybackStarted = { showPlayer = true },
@@ -379,27 +385,42 @@ fun HearthRoot(
                     exit = exitT,
                 ) {
                     detailBook?.let { b ->
-                        BookDetailScreen(
-                            initial = b,
-                            onBack = {
-                                detailBook = null
-                                pendingPlayerBookId = null
-                            },
-                            onListen = {
-                                pendingPlayerBookId = it.id
-                                vm.openAudio(it)
-                                showPlayer = true
-                            },
-                            onListenAt = { book, positionMs ->
-                                pendingPlayerBookId = book.id
-                                vm.openAudioAt(book, positionMs)
-                                showPlayer = true
-                            },
-                            onRead = { onOpenEbook(it); detailBook = null },
-                            onOpenBook = { detailBook = it },
-                            onAskLibrarian = onAskLibrarian,
-                            onOpenAnnotation = jumpToAnnotation,
-                        )
+                        if (b.isPodcastShow) {
+                            PodcastShowScreen(
+                                initial = b,
+                                onBack = {
+                                    detailBook = null
+                                    pendingPlayerBookId = null
+                                },
+                                onPlay = {
+                                    pendingPlayerBookId = it.id
+                                    vm.openAudio(it)
+                                    showPlayer = true
+                                },
+                            )
+                        } else {
+                            BookDetailScreen(
+                                initial = b,
+                                onBack = {
+                                    detailBook = null
+                                    pendingPlayerBookId = null
+                                },
+                                onListen = {
+                                    pendingPlayerBookId = it.id
+                                    vm.openAudio(it)
+                                    showPlayer = true
+                                },
+                                onListenAt = { book, positionMs ->
+                                    pendingPlayerBookId = book.id
+                                    vm.openAudioAt(book, positionMs)
+                                    showPlayer = true
+                                },
+                                onRead = { onOpenEbook(it); detailBook = null },
+                                onOpenBook = { detailBook = it },
+                                onAskLibrarian = onAskLibrarian,
+                                onOpenAnnotation = jumpToAnnotation,
+                            )
+                        }
                     }
                 }
 
@@ -412,6 +433,7 @@ fun HearthRoot(
                         onBack = { showSettings = false },
                         onManageSources = onManageSources,
                         onOpenDestination = onOpenSettingsDestination,
+                        onOpdsAuthorize = onOpdsAuthorize,
                     )
                 }
 
@@ -428,6 +450,8 @@ fun HearthRoot(
                         topAction = playerTopAction,
                     )
                 }
+
+                playerOverlay()
 
                 val playbackNotice by vm.playbackNotice.collectAsStateWithLifecycle()
                 playbackNotice?.let { msg ->
@@ -467,11 +491,4 @@ private fun NoticeCapsule(text: String, modifier: Modifier = Modifier) {
     ) {
         Text(text, style = HearthText.Caption, color = palette.text)
     }
-}
-
-private fun accentColor(hex: String): Color {
-    val cleaned = hex.trim().removePrefix("#")
-    if (cleaned.length != 6) return EmberAccent
-    val value = cleaned.toLongOrNull(16) ?: return EmberAccent
-    return Color(0xFF000000 or value)
 }

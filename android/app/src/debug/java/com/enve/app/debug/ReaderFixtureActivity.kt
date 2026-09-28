@@ -30,7 +30,7 @@ class ReaderFixtureActivity : Activity() {
                 epubLocator = null,
                 epubProgress = 0f,
                 readerEngine = engine,
-            ).putExtra(EbookReaderActivity.EXTRA_HEARTH_CHROME, true),
+            ),
         )
         finish()
     }

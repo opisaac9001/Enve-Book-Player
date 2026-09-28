@@ -5,6 +5,7 @@ import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.ReadStatus
+import com.enve.core.data.util.FINISHED_PROGRESS_THRESHOLD
 import kotlinx.coroutines.flow.Flow
 
 @Entity(
@@ -65,6 +66,8 @@ data class CachedBook(
 
     val narratorEnrichedAt: Long = 0L,
     val serverReadStatus: String? = null,
+    val opdsAcquisitionUrl: String? = null,
+    val opdsProgressionUrl: String? = null,
 )
 
 @Dao
@@ -123,6 +126,13 @@ interface BookCacheDao {
 
     @Query("SELECT * FROM book_cache WHERE id = :bookId LIMIT 1")
     suspend fun getById(bookId: String): CachedBook?
+
+    @Query("""
+        UPDATE book_cache SET opdsAcquisitionUrl = :url
+        WHERE id = :bookId
+          AND (connectionId = :connectionId OR (:connectionId IS NULL AND connectionId IS NULL))
+    """)
+    suspend fun setOpdsAcquisitionUrl(bookId: String, connectionId: String?, url: String): Int
 
     @Query("SELECT * FROM book_cache WHERE id = :bookId LIMIT 1")
     fun observeById(bookId: String): Flow<CachedBook?>
@@ -411,6 +421,9 @@ interface BookCacheDao {
     """)
     suspend fun deleteStaleForConnectionLibrary(connectionId: String, libraryId: String, refreshedAt: Long)
 
+    @Query("DELETE FROM book_cache WHERE connectionId = :connectionId AND libraryId = :libraryId")
+    suspend fun deleteForConnectionLibrary(connectionId: String, libraryId: String)
+
     @Query("DELETE FROM book_cache WHERE source = :source AND connectionId IS NULL")
     suspend fun deleteBySource(source: String)
 
@@ -454,6 +467,20 @@ interface BookCacheDao {
         LIMIT :limit
     """)
     suspend fun getInProgressOnce(limit: Int = 50): List<CachedBook>
+
+    @Query("""
+        SELECT * FROM book_cache
+        WHERE inProgress = 1 AND isFinished = 0 AND hideFromContinue = 0
+          AND source = :source AND connectionId = :connectionId
+          AND opdsProgressionUrl IS NOT NULL AND TRIM(opdsProgressionUrl) != ''
+        ORDER BY lastReadTime DESC, addedOn DESC
+        LIMIT :limit
+    """)
+    suspend fun getInProgressWithProgressionService(
+        source: String,
+        connectionId: String,
+        limit: Int,
+    ): List<CachedBook>
 
     @Query("""
         SELECT * FROM book_cache
@@ -558,12 +585,12 @@ interface BookCacheDao {
                libraryName, seriesName, seriesNumber, publisher, publishedDate,
                language, pageCount, isbn13, personalRating, goodreadsRating,
                primaryFileType, isDownloaded, hideFromContinue,
-               readAlongAvailable, hasAudio, hasEbook, inProgress, serverReadStatus
+               readAlongAvailable, hasAudio, hasEbook, inProgress, serverReadStatus,
+               opdsAcquisitionUrl, opdsProgressionUrl
         FROM book_cache
         ORDER BY addedOn DESC
-        LIMIT :limit
     """)
-    fun observeAllForList(limit: Int = 20000): Flow<List<CachedBookListItem>>
+    fun observeAllForList(): Flow<List<CachedBookListItem>>
 
     @Query("""
         SELECT cacheKey, id, connectionId, source, mediaType, title, subtitle,
@@ -572,16 +599,13 @@ interface BookCacheDao {
                libraryName, seriesName, seriesNumber, publisher, publishedDate,
                language, pageCount, isbn13, personalRating, goodreadsRating,
                primaryFileType, isDownloaded, hideFromContinue,
-               readAlongAvailable, hasAudio, hasEbook, inProgress, serverReadStatus
+               readAlongAvailable, hasAudio, hasEbook, inProgress, serverReadStatus,
+               opdsAcquisitionUrl, opdsProgressionUrl
         FROM book_cache
         WHERE libraryId IS NULL OR libraryId NOT IN (:excludedLibraryIds)
         ORDER BY addedOn DESC
-        LIMIT :limit
     """)
-    fun observeAllForListExcludingLibraries(
-        excludedLibraryIds: List<String>,
-        limit: Int = 20000,
-    ): Flow<List<CachedBookListItem>>
+    fun observeAllForListExcludingLibraries(excludedLibraryIds: List<String>): Flow<List<CachedBookListItem>>
 
     @Query("""
         SELECT seriesName AS name, COUNT(*) AS count
@@ -774,6 +798,8 @@ data class CachedBookListItem(
     val hasEbook: Boolean,
     val inProgress: Boolean,
     val serverReadStatus: String?,
+    val opdsAcquisitionUrl: String?,
+    val opdsProgressionUrl: String?,
 )
 
 private val cacheJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
@@ -829,6 +855,8 @@ fun CachedBook.toBook(): Book {
         hideFromContinue = hideFromContinue,
         serverReadStatus = normalizedStatus,
         isDownloaded = isDownloaded,
+        opdsAcquisitionUrl = opdsAcquisitionUrl,
+        opdsProgressionUrl = opdsProgressionUrl,
     )
 }
 
@@ -880,6 +908,8 @@ fun CachedBookListItem.toBook(): Book {
         hideFromContinue = hideFromContinue,
         serverReadStatus = normalizedStatus,
         isDownloaded = isDownloaded,
+        opdsAcquisitionUrl = opdsAcquisitionUrl,
+        opdsProgressionUrl = opdsProgressionUrl,
     )
 }
 
@@ -891,8 +921,8 @@ fun Book.toCachedBook(nowMs: Long = System.currentTimeMillis()): CachedBook {
     val audioProgress = if (duration > 0 && currentTime > 0) currentTime.toFloat() / duration else readProgress
     val epubProg = epubProgress ?: 0f
     val inProg = !isFinished && !statusFinished && !hideFromContinue && statusAllowsContinue && (
-        audioProgress in 0.01f..0.99f ||
-        epubProg in 0.01f..0.99f ||
+        audioProgress in 0.01f..FINISHED_PROGRESS_THRESHOLD ||
+        epubProg in 0.01f..FINISHED_PROGRESS_THRESHOLD ||
         currentTime > 0L
     )
     val effectiveLastReadTime = lastReadTime.takeIf { it > 0L } ?: if (inProg) nowMs else 0L
@@ -943,6 +973,8 @@ fun Book.toCachedBook(nowMs: Long = System.currentTimeMillis()): CachedBook {
         inProgress = inProg,
         cachedAt = nowMs,
         serverReadStatus = normalizedStatus,
+        opdsAcquisitionUrl = opdsAcquisitionUrl,
+        opdsProgressionUrl = opdsProgressionUrl,
     )
 }
 

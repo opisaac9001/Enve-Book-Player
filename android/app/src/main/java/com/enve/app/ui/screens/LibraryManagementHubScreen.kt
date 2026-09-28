@@ -24,6 +24,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.enve.core.data.model.BookSource
+import com.enve.hearth.design.EmberAccent
 import com.enve.hearth.design.hearthDisplay
 import com.enve.core.data.model.Library
 import com.enve.app.ui.components.SettingsCard
@@ -38,7 +39,6 @@ import com.enve.app.ui.theme.scaled
 import com.enve.app.viewmodel.LibraryViewModel
 import kotlinx.coroutines.launch
 
-private val HearthEmber = Color(0xFFF5921A)
 private val HearthSage = Color(0xFF6F8F6A)
 private val HearthSlate = Color(0xFF64748B)
 private val HearthWine = Color(0xFFA05252)
@@ -216,7 +216,7 @@ fun LibraryManagementHubScreen(
                     ) {
                         HubStatItem(value = state.libraries.size, label = "Libraries", color = HearthSlate)
                         HubStatItem(value = state.totalBookCount, label = "Books", color = HearthSage)
-                        HubStatItem(value = state.connections.size, label = "Connections", color = HearthEmber)
+                        HubStatItem(value = state.connections.size, label = "Connections", color = EmberAccent)
                     }
                 }
 
@@ -237,7 +237,7 @@ fun LibraryManagementHubScreen(
 
                     val cols = 2
                     val actions = listOf(
-                        Triple("Scan All", Icons.Default.Refresh, HearthEmber),
+                        Triple("Scan All", Icons.Default.Refresh, EmberAccent),
                         Triple("Refresh Metadata", Icons.Default.SyncAlt, HearthWine),
                         Triple("Check Health", Icons.Default.FavoriteBorder, HearthSage),
                         Triple("Library Connections", Icons.Default.Dns, HearthSlate),

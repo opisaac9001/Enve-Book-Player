@@ -52,7 +52,7 @@ public class PlayerProgressService {
             book: book,
             position: progress,
             sessionId: nil,
-            isFinished: progress >= duration * 0.99,
+            isFinished: progress >= duration * Book.finishedProgressThreshold,
             timeListened: 0
         )
     }

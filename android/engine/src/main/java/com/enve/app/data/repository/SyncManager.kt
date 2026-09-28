@@ -20,6 +20,7 @@ import com.enve.app.data.sync.KosyncHttpException
 import com.enve.app.data.sync.KosyncProgressRequest
 import com.enve.app.data.sync.PartialMd5
 import com.enve.app.data.repository.grimmory.grimmoryServerBookId
+import com.enve.core.data.util.FINISHED_PROGRESS_THRESHOLD
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
@@ -154,7 +155,7 @@ class SyncManager @Inject constructor(
                             connectionKey = queueTarget.connectionKey,
                             mediaType = mediaType.name,
                             percentage = percentage,
-                            isFinished = percentage >= 0.99f,
+                            isFinished = percentage >= FINISHED_PROGRESS_THRESHOLD,
                             createdAt = existing?.createdAt ?: now,
                             attempts = (existing?.attempts ?: 0) + 1,
                             lastAttemptAt = now,
@@ -180,11 +181,13 @@ class SyncManager @Inject constructor(
                 source = runCatching { BookSource.valueOf(entry.source) }.getOrDefault(BookSource.GRIMMORY),
                 connectionKey = entry.connectionKey,
             )
+            if (queueTarget.source != BookSource.GRIMMORY) {
+                runCatching { pendingProgressDao.delete(entry.bookId, entry.source, entry.connectionKey) }
+                continue
+            }
             val mediaType = runCatching { AppMediaType.valueOf(entry.mediaType) }.getOrNull()
                 ?: continue
-            val outcome = if (queueTarget.source != BookSource.GRIMMORY) {
-                SourceOutcome.Skipped(SkipReason.GrimmoryNotLoggedIn)
-            } else if (entry.connectionKey.isBlank()) {
+            val outcome = if (entry.connectionKey.isBlank()) {
                 flushPendingEntry(entry)
             } else {
                 withContext(ConnectionScope.asContextElement(entry.connectionKey)) {

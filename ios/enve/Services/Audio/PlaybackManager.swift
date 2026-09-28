@@ -416,6 +416,13 @@ final class PlaybackManager {
 
     private func persistRecentPlaybackSnapshot() {
         guard var book = currentBook else { return }
+        if isOverlayPlaybackActive,
+            let current = libraryCache.bookInMemory(uniqueId: book.uniqueId)
+        {
+            book.ebookProgress = current.ebookProgress
+            book.epubLocator = current.epubLocator
+            book.isFinished = current.isFinished
+        }
         book.currentTime = currentTime
         if duration > 0 {
             book.duration = duration
@@ -1227,7 +1234,7 @@ final class PlaybackManager {
             BookProgressStore.shared.saveProgress(for: resolvedBook, progress: resume, duration: duration)
             if let serverStamp { BookProgressStore.shared.saveServerStamp(for: resolvedBook, serverStamp) }
             AppLogger.player.debug(
-                "[Grimmory open] pulling server \(Int(resume))s over local \(Int(localTime))s for bookDiagnosticID=\(diagnosticBookID(resolvedBook))"
+                "[Booklore open] pulling server \(Int(resume))s over local \(Int(localTime))s for bookDiagnosticID=\(diagnosticBookID(resolvedBook))"
             )
             startGrimmoryPlayback(book: resolvedBook, provider: provider, resumeTime: resume)
 
@@ -1245,7 +1252,7 @@ final class PlaybackManager {
         case .conflict(let local, let server):
 
             AppLogger.player.debug(
-                "[Grimmory open] conflict: server \(Int(server))s behind local \(Int(local))s for bookDiagnosticID=\(diagnosticBookID(resolvedBook))"
+                "[Booklore open] conflict: server \(Int(server))s behind local \(Int(local))s for bookDiagnosticID=\(diagnosticBookID(resolvedBook))"
             )
             currentBook = resolvedBook
             currentProvider = provider
@@ -1309,8 +1316,7 @@ final class PlaybackManager {
             duration > 0,
             result.percentage > 0
         {
-            let fraction = result.percentage > 1 ? result.percentage / 100 : result.percentage
-            serverTime = fraction * duration
+            serverTime = result.percentage * duration
         }
 
         guard serverTime > 0 else { return initialResumeTime }
@@ -2512,10 +2518,6 @@ final class PlaybackManager {
         return result.isEmpty ? nil : result
     }
 
-    private func makeLocalTrack(for book: Book) -> AudioTrackInfo? {
-        return makeLocalTracks(for: book)?.first
-    }
-
     private func buildLocalTrackInfos(from book: Book) -> [AudioTrackInfo]? {
         guard let tracks = book.audioTracks, !tracks.isEmpty else { return nil }
 
@@ -2788,6 +2790,20 @@ final class PlaybackManager {
             }
         }
 
+        #if os(iOS)
+        if isOverlayPlaybackActive {
+            MediaOverlayPlaybackService.shared.syncEbookPositionFromAudio(
+                audioTime: time,
+                book: book,
+                authoritative: force
+            )
+            lastLocalPersistedTime = time
+            lastLocalPersistedAt = now
+            lastLocalPersistedFinished = finished
+            return
+        }
+        #endif
+
         let progress = UserMediaProgress(
             id: UUID().uuidString,
             libraryItemId: book.isPodcastEpisode ? (book.podcastLibraryItemId ?? book.id) : book.id,
@@ -2811,18 +2827,6 @@ final class PlaybackManager {
         lastLocalPersistedTime = time
         lastLocalPersistedAt = now
         lastLocalPersistedFinished = finished
-
-        #if os(iOS)
-
-        if isOverlayPlaybackActive {
-            MediaOverlayPlaybackService.shared.syncEbookPositionFromAudio(
-                audioTime: time,
-                book: book,
-                authoritative: force
-            )
-            return
-        }
-        #endif
 
         Task {
             await LinkedBookProgressCoordinator.shared.recordAudiobookProgress(

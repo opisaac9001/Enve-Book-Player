@@ -201,7 +201,7 @@ struct LibraryBookRow: View {
         if let author = book.author, !author.isEmpty {
             details.append(author)
         }
-        let progress = LibraryBookActions.progressFraction(book)
+        let progress = book.canonicalProgress
         if book.isFinished {
             details.append("Finished")
         } else if progress > 0.001 {
@@ -234,7 +234,7 @@ struct LibraryBookRow: View {
                         .foregroundStyle(hearth.textSecondary)
                         .lineLimit(1)
                 }
-                let fraction = LibraryBookActions.progressFraction(book)
+                let fraction = book.canonicalProgress
                 if fraction > 0.001, !book.isFinished {
                     Ribbon(progress: fraction, tint: hearth.ember)
                         .padding(.top, 2)

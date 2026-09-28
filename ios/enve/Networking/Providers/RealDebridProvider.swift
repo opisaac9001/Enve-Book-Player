@@ -133,9 +133,9 @@ final class RealDebridProvider: WholeSnapshotCatalogProvider, PlaybackSessionPro
         {
             AppLogger.network.info("[RealDebrid] Inadequate chapters (\(chapters.count)), attempting embedded chapter extraction...")
             do {
-                let extractedChapters = try await extractChaptersFromAudioFile(streamURL: streamURL, bookDuration: totalDuration)
+                let extractedChapters = try await AudioFileSupport.embeddedChapters(in: AVURLAsset(url: streamURL))
                 if !extractedChapters.isEmpty {
-                    chapters = normalizeChapters(extractedChapters, bookDuration: totalDuration)
+                    chapters = AudioFileSupport.chaptersWithResolvedEnds(extractedChapters, bookDuration: totalDuration)
                     AppLogger.network.info("Extracted \(chapters.count) embedded chapters from audio file")
                 } else {
                     AppLogger.network.info("No embedded chapters found, using track-based chapters")
@@ -264,7 +264,7 @@ final class RealDebridProvider: WholeSnapshotCatalogProvider, PlaybackSessionPro
                 startOffset: track.startOffset,
                 duration: track.duration,
                 contentUrl: content,
-                mimeType: mimeType(for: content)
+                mimeType: AudioFileSupport.mimeType(forExtension: URL(string: content)?.pathExtension ?? "") ?? "audio/mpeg"
             )
         }
 
@@ -747,78 +747,6 @@ final class RealDebridProvider: WholeSnapshotCatalogProvider, PlaybackSessionPro
         return false
     }
 
-    private func extractChaptersFromAudioFile(streamURL: URL, bookDuration: Double) async throws -> [Chapter] {
-        let asset = AVURLAsset(url: streamURL)
-        let startTime = Date()
-        let chapterLocales = try await asset.load(.availableChapterLocales)
-
-        guard Date().timeIntervalSince(startTime) < 10 else {
-            throw NSError(
-                domain: "ChapterExtraction",
-                code: -1,
-                userInfo: [NSLocalizedDescriptionKey: "Timeout loading chapter locales"]
-            )
-        }
-
-        var extractedChapters: [Chapter] = []
-
-        for locale in chapterLocales {
-            let chapterGroups = try await asset.loadChapterMetadataGroups(
-                withTitleLocale: locale,
-                containingItemsWithCommonKeys: [.commonKeyArtwork]
-            )
-
-            for (index, group) in chapterGroups.enumerated() {
-                let chapterStartTime = CMTimeGetSeconds(group.timeRange.start)
-                let duration = CMTimeGetSeconds(group.timeRange.duration)
-                let chapterEndTime = chapterStartTime + duration
-
-                var title = "Chapter \(index + 1)"
-                if let titleItem = group.items.first(where: { $0.commonKey == .commonKeyTitle }),
-                    let titleValue = try? await titleItem.load(.value) as? String
-                {
-                    title = titleValue
-                }
-
-                extractedChapters.append(
-                    Chapter(
-                        id: String(index),
-                        start: chapterStartTime,
-                        end: chapterEndTime,
-                        title: title,
-                        index: index
-                    )
-                )
-            }
-
-            if !extractedChapters.isEmpty { break }
-        }
-
-        return extractedChapters
-    }
-
-    private func normalizeChapters(_ chapters: [Chapter], bookDuration: Double?) -> [Chapter] {
-        guard !chapters.isEmpty else { return [] }
-        let sorted = chapters.sorted { $0.start < $1.start }
-        return sorted.enumerated().map { index, chapter in
-            let end: TimeInterval
-            if chapter.end > chapter.start {
-                end = chapter.end
-            } else if index + 1 < sorted.count {
-                end = sorted[index + 1].start
-            } else {
-                end = bookDuration ?? chapter.start + 1
-            }
-            return Chapter(
-                id: chapter.id,
-                start: chapter.start,
-                end: end,
-                title: chapter.title,
-                index: index
-            )
-        }
-    }
-
     private func isAudioFile(named name: String) -> Bool {
         let ext = (name as NSString).pathExtension.lowercased()
         return supportedAudioExtensions.contains(ext)
@@ -872,20 +800,6 @@ final class RealDebridProvider: WholeSnapshotCatalogProvider, PlaybackSessionPro
     private func trackTitle(from fileName: String) -> String {
         let base = (fileName as NSString).deletingPathExtension
         return base.isEmpty ? fileName : base
-    }
-
-    private func mimeType(for contentUrl: String) -> String {
-        let ext = (URL(string: contentUrl)?.pathExtension.lowercased() ?? "")
-        switch ext {
-        case "m4b": return "audio/mp4"
-        case "m4a": return "audio/mp4"
-        case "aac": return "audio/aac"
-        case "flac": return "audio/flac"
-        case "ogg": return "audio/ogg"
-        case "opus": return "audio/ogg"
-        case "wav": return "audio/wav"
-        default: return "audio/mpeg"
-        }
     }
 
     private func canStartPlaybackDirectly(from book: Book) -> Bool {

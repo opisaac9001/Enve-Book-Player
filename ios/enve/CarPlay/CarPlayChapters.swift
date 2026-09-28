@@ -37,7 +37,7 @@ final class CarPlayChapters {
     }
 
     private func createListItem(for chapter: Chapter, number: Int, isCurrent: Bool) -> CPListItem {
-        let durationText = formatDuration(chapter.duration)
+        let durationText = PlaybackTime.clock(chapter.duration)
         let title = "\(number). \(chapter.title)"
 
         let item = CPListItem(
@@ -64,18 +64,5 @@ final class CarPlayChapters {
             animated: true,
             completion: carPlayInterfaceCompletion("Close chapters", then: completion)
         )
-    }
-
-    private func formatDuration(_ duration: TimeInterval) -> String {
-        let totalSeconds = Int(duration)
-        let hours = totalSeconds / 3600
-        let minutes = (totalSeconds % 3600) / 60
-        let seconds = totalSeconds % 60
-
-        if hours > 0 {
-            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
-        } else {
-            return String(format: "%d:%02d", minutes, seconds)
-        }
     }
 }

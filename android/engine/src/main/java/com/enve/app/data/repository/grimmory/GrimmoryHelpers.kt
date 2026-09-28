@@ -13,13 +13,14 @@ import com.enve.app.data.remote.dto.AudiobookProgressDto
 import com.enve.app.data.remote.dto.BookDetailDto
 import com.enve.app.data.remote.dto.BookFileDto
 import com.enve.app.data.remote.dto.BookSummaryDto
+import com.enve.app.data.remote.dto.GrimmoryAppBookProgressDto
 import com.enve.app.data.remote.dto.LibraryDto
-import com.enve.core.data.util.normalizeFraction
+import com.enve.core.data.sync.SyncSnapshot
+import com.enve.core.data.util.FINISHED_PROGRESS_THRESHOLD
 import com.enve.core.data.util.parseServerDate
-import com.enve.core.data.util.resolveAudiobookPositionSeconds
-import com.enve.core.data.util.resolveDurationSeconds
 import com.enve.core.data.util.runSuspendCatching
 import com.enve.core.data.util.titleFromPrimaryFileName
+import com.enve.core.reader.EpubBridgeCheckpointCodec
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -166,13 +167,29 @@ internal fun ReadStatus.toGrimmoryWireStatus(): String = when (this) {
     ReadStatus.COMPLETED -> "READ"
 }
 
+internal fun grimmoryPercentFraction(percent: Float?): Float? =
+    percent?.let { (it / 100f).coerceIn(0f, 1f) }
+
+internal fun grimmoryReadProgressFraction(readProgress: Float?, koreaderProgressPresent: Boolean): Float? =
+    if (koreaderProgressPresent) readProgress?.coerceIn(0f, 1f) else grimmoryPercentFraction(readProgress)
+
+private fun BookDetailDto.progressFraction(includeAudiobook: Boolean = false): Float =
+    grimmoryReadProgressFraction(readProgress, koreaderProgress != null)
+        ?: grimmoryPercentFraction(audiobookProgress?.percentage)?.takeIf { includeAudiobook }
+        ?: grimmoryPercentFraction(epubProgress?.percentage)
+        ?: grimmoryPercentFraction(pdfProgress?.percentage)
+        ?: grimmoryPercentFraction(cbxProgress?.percentage)
+        ?: 0f
+
 internal fun LibraryDto.toLibrary() = Library(
     id = id,
     name = name,
     bookCount = bookCount ?: 0,
 )
 
-internal fun BookSummaryDto.toBook(serverUrl: String, token: String? = null): Book {
+internal fun BookSummaryDto.listProgress() = GrimmoryListProgress(id, readProgress, lastReadTime.orEmpty())
+
+internal fun BookSummaryDto.toBook(serverUrl: String, token: String?, progressFraction: Float): Book {
     val effectivePrimaryFileType = primaryFile?.bookType ?: primaryFileType
     val mediaType = effectivePrimaryFileType.toMediaType()
     val resolvedTitle = if (mediaType == AppMediaType.AUDIOBOOK) {
@@ -180,7 +197,6 @@ internal fun BookSummaryDto.toBook(serverUrl: String, token: String? = null): Bo
     } else {
         resolveGrimmoryTitle(title, mediaType, primaryFile)
     }
-    val progressFraction = normalizeFraction(readProgress ?: epubProgress?.percentage)
     val normalizedReadStatus = readStatus?.uppercase()
     val hasAudio = mediaType == AppMediaType.AUDIOBOOK || hasAudioFormat()
     val hasEbook = mediaType == AppMediaType.EBOOK || hasEbookFormat()
@@ -200,18 +216,11 @@ internal fun BookSummaryDto.toBook(serverUrl: String, token: String? = null): Bo
         readProgress = progressFraction,
         readStatus = toReadStatus(readStatus),
         serverReadStatus = normalizedReadStatus,
-        isFinished = progressFraction >= 0.99f || normalizedReadStatus == "READ" || dateFinished != null,
+        isFinished = progressFraction >= FINISHED_PROGRESS_THRESHOLD || normalizedReadStatus == "READ" || dateFinished != null,
         hideFromContinue = normalizedReadStatus == "ABANDONED",
         personalRating = personalRating?.div(2f),
         source = BookSource.GRIMMORY,
         mediaType = mediaType,
-        duration = resolveDurationSeconds(
-            durationSeconds = durationSeconds,
-            durationValue = duration,
-            durationMs = durationMs?.toLong(),
-        ),
-        epubProgress = normalizeFraction(epubProgress?.percentage).takeIf { it > 0f },
-        epubLocator = epubProgress?.cfi,
         hasAudio = hasAudio,
         hasEbook = hasEbook,
         publishedDate = publishedDate,
@@ -249,26 +258,20 @@ internal fun BookDetailDto.toBook(serverUrl: String, token: String? = null): Boo
         seriesNumber = seriesNumber,
         addedOn = parseServerDate(addedOn),
         lastReadTime = parseServerDate(lastReadTime),
-        readProgress = normalizeFraction(readProgress ?: epubProgress?.percentage ?: pdfProgress?.percentage ?: cbxProgress?.percentage),
+        readProgress = progressFraction(),
         readStatus = toReadStatus(readStatus),
         serverReadStatus = normalizedReadStatus,
         personalRating = personalRating?.div(2f),
         primaryFileType = selectedFile()?.bookType ?: primaryFileType,
         shelves = shelves.orEmpty().map { it.name },
-        epubProgress = normalizeFraction(readProgress ?: epubProgress?.percentage ?: pdfProgress?.percentage ?: cbxProgress?.percentage),
+        epubProgress = progressFraction(),
         epubLocator = epubProgress?.cfi ?: pdfProgress?.page?.let { "{\"page\":$it}" } ?: cbxProgress?.page?.let { "cbz-page:$it" },
         readAlongAvailable = hasEpubMediaOverlay(),
-        currentTime = resolveAudiobookPositionSeconds(
-            positionMs = grimmoryGlobalAudiobookPositionMs(audiobookProgress, null),
-            percentage = audiobookProgress?.percentage,
-            durationSeconds = durationSeconds,
-            duration = duration,
-        ),
-        isFinished = normalizeFraction(readProgress ?: audiobookProgress?.percentage ?: epubProgress?.percentage ?: pdfProgress?.percentage ?: cbxProgress?.percentage) >= 0.99f || normalizedReadStatus == "READ" || dateFinished != null,
+        currentTime = grimmoryAudiobookPositionSeconds(audiobookProgress, null),
+        isFinished = progressFraction(includeAudiobook = true) >= FINISHED_PROGRESS_THRESHOLD || normalizedReadStatus == "READ" || dateFinished != null,
         hideFromContinue = normalizedReadStatus == "ABANDONED",
         source = BookSource.GRIMMORY,
         mediaType = mediaType,
-        duration = resolveDurationSeconds(durationSeconds = durationSeconds, durationValue = duration, durationMs = durationMs?.toLong()),
         hasAudio = hasAudio,
         hasEbook = hasEbook,
     )
@@ -335,6 +338,62 @@ internal fun grimmoryGlobalAudiobookPositionMs(
     return local
 }
 
+private fun grimmoryAudiobookPositionSeconds(
+    progress: AudiobookProgressDto?,
+    trackStartsByIndex: Map<Int, Long>?,
+): Long = (grimmoryGlobalAudiobookPositionMs(progress, trackStartsByIndex) ?: 0L).coerceAtLeast(0L) / 1000L
+
+internal fun grimmoryAudiobookProgressSnapshot(
+    body: GrimmoryAppBookProgressDto,
+    updatedAtMs: Long?,
+): SyncSnapshot? {
+    val ebookProgressPresent = body.epubProgress != null || body.pdfProgress != null || body.cbxProgress != null
+    val globalRead = body.readStatus.equals("READ", ignoreCase = true)
+    val audiobookPct = grimmoryPercentFraction(body.audiobookProgress?.percentage)
+    val rawPct = audiobookPct
+        ?: grimmoryReadProgressFraction(body.readProgress, body.koreaderProgress != null)?.takeUnless { ebookProgressPresent }
+    val finished = globalRead && (!ebookProgressPresent || (audiobookPct ?: 0f) >= FINISHED_PROGRESS_THRESHOLD)
+    val pct = rawPct ?: if (finished) 1f else return null
+    if (pct <= 0f && !finished) return null
+    return SyncSnapshot(
+        percentage = if (finished) maxOf(pct, 1f) else pct,
+        source = "Grimmory",
+        updatedAt = updatedAtMs,
+        finished = finished,
+    )
+}
+
+internal fun grimmoryEbookProgressSnapshot(
+    body: GrimmoryAppBookProgressDto,
+    updatedAtMs: Long?,
+): SyncSnapshot? {
+    val audioProgressPresent = body.audiobookProgress != null
+    val globalRead = body.readStatus.equals("READ", ignoreCase = true)
+    val epubProgress = body.epubProgress
+    val formatPct = grimmoryPercentFraction(epubProgress?.percentage)
+        ?: grimmoryPercentFraction(body.pdfProgress?.percentage)
+        ?: grimmoryPercentFraction(body.cbxProgress?.percentage)
+        ?: body.koreaderProgress?.percentage?.takeUnless { audioProgressPresent }?.coerceIn(0f, 1f)
+    val rawPct = formatPct
+        ?: grimmoryReadProgressFraction(body.readProgress, body.koreaderProgress != null)?.takeUnless { audioProgressPresent }
+    val finished = globalRead && (!audioProgressPresent || (formatPct ?: 0f) >= FINISHED_PROGRESS_THRESHOLD)
+    val pct = rawPct ?: if (finished) 1f else return null
+    if (pct <= 0f && !finished) return null
+    val exactCfi = epubProgress?.cfi
+        ?.trim()
+        ?.takeIf(EpubBridgeCheckpointCodec::isFullEpubCfi)
+    return SyncSnapshot(
+        percentage = if (finished) maxOf(pct, 1f) else pct,
+        epubCfi = exactCfi,
+        href = exactCfi?.let { epubProgress.href?.trim()?.takeIf(String::isNotBlank) },
+        locatorJson = body.pdfProgress?.page?.let { "{\"page\":$it}" }
+            ?: body.cbxProgress?.page?.let { "cbz-page:$it" },
+        source = "Grimmory",
+        updatedAt = updatedAtMs,
+        finished = finished,
+    )
+}
+
 internal fun mergeListedAudiobook(
     book: Book,
     detail: BookDetailDto?,
@@ -346,18 +405,8 @@ internal fun mergeListedAudiobook(
 
     if (detail != null) {
         val primaryFile = detail.selectedFile()
-        val detailProgress = normalizeFraction(detail.audiobookProgress?.percentage)
-        val detailDurationSeconds = resolveDurationSeconds(
-            durationSeconds = detail.durationSeconds,
-            durationValue = detail.duration,
-            durationMs = detail.durationMs?.toLong(),
-        )
-        val detailCurrentTime = resolveAudiobookPositionSeconds(
-            positionMs = grimmoryGlobalAudiobookPositionMs(detail.audiobookProgress, info?.trackStartsByIndex()),
-            percentage = detailProgress,
-            durationSeconds = detail.durationSeconds,
-            duration = detail.duration,
-        )
+        val detailProgress = grimmoryPercentFraction(detail.audiobookProgress?.percentage) ?: 0f
+        val detailCurrentTime = grimmoryAudiobookPositionSeconds(detail.audiobookProgress, info?.trackStartsByIndex())
 
         val resolvedTitle = resolveGrimmoryTitle(detail.title, AppMediaType.AUDIOBOOK, primaryFile)
             .takeIf { it.isNotBlank() }
@@ -372,8 +421,7 @@ internal fun mergeListedAudiobook(
             coverUrl = serverUrl?.let { resolveCoverUrl(it, detail.thumbnailUrl, detail.id, AppMediaType.AUDIOBOOK, token) } ?: enriched.coverUrl,
             readProgress = detailProgress.takeIf { it > 0f } ?: enriched.readProgress,
             currentTime = detailCurrentTime.takeIf { it > 0L } ?: enriched.currentTime,
-            duration = detailDurationSeconds.takeIf { it > 0 } ?: enriched.duration,
-            isFinished = detailProgress >= 0.99f || detail.readStatus == "READ" || detail.dateFinished != null || enriched.isFinished,
+            isFinished = detailProgress >= FINISHED_PROGRESS_THRESHOLD || detail.readStatus == "READ" || detail.dateFinished != null || enriched.isFinished,
             hideFromContinue = detail.readStatus == "ABANDONED" || enriched.hideFromContinue,
             addedOn = parseServerDate(detail.addedOn).takeIf { it > 0 } ?: enriched.addedOn,
             lastReadTime = parseServerDate(detail.lastReadTime).takeIf { it > 0 } ?: enriched.lastReadTime,
@@ -386,8 +434,7 @@ internal fun mergeListedAudiobook(
         enriched = enriched.copy(
             author = info.author?.takeIf { it.isNotBlank() } ?: enriched.author,
             narrator = info.narrator?.takeIf { it.isNotBlank() } ?: enriched.narrator,
-            duration = resolveDurationSeconds(durationSeconds = null, durationValue = null, durationMs = info.durationMs)
-                .takeIf { it > 0 } ?: enriched.duration,
+            duration = info.durationMs?.div(1000L)?.takeIf { it > 0L } ?: enriched.duration,
             codec = info.codec ?: enriched.codec,
             bitrate = info.bitrate ?: enriched.bitrate,
             sampleRate = info.sampleRate ?: enriched.sampleRate,
@@ -425,7 +472,7 @@ internal fun mergeListedAudiobook(
 }
 
 internal fun mergeListedEbook(book: Book, detail: BookDetailDto, serverUrl: String, token: String? = null): Book {
-    val rawProgress = normalizeFraction(detail.readProgress ?: detail.epubProgress?.percentage ?: detail.pdfProgress?.percentage ?: detail.cbxProgress?.percentage)
+    val rawProgress = detail.progressFraction()
     val selectedFile = detail.selectedFile()
     val resolvedTitle = selectedFile?.fileName
         ?.substringBeforeLast('.')
@@ -446,7 +493,7 @@ internal fun mergeListedEbook(book: Book, detail: BookDetailDto, serverUrl: Stri
         readProgress = rawProgress.takeIf { it > 0f } ?: book.readProgress,
         epubProgress = rawProgress.takeIf { it > 0f } ?: book.epubProgress,
         epubLocator = detail.epubProgress?.cfi ?: detail.pdfProgress?.page?.let { "{\"page\":$it}" } ?: detail.cbxProgress?.page?.let { "cbz-page:$it" } ?: book.epubLocator,
-        isFinished = rawProgress >= 0.99f || detail.readStatus == "READ" || detail.dateFinished != null || book.isFinished,
+        isFinished = rawProgress >= FINISHED_PROGRESS_THRESHOLD || detail.readStatus == "READ" || detail.dateFinished != null || book.isFinished,
         hideFromContinue = detail.readStatus == "ABANDONED" || book.hideFromContinue,
         addedOn = parseServerDate(detail.addedOn).takeIf { it > 0 } ?: book.addedOn,
         lastReadTime = parseServerDate(detail.lastReadTime).takeIf { it > 0 } ?: book.lastReadTime,
@@ -511,22 +558,13 @@ internal suspend fun resolveAmbiguousAudiobookTitles(
                         ?.let { resolveGrimmoryTitle(it.title, AppMediaType.AUDIOBOOK, it.selectedFile()) }
                         ?.takeIf { it.isNotBlank() }
 
-                val durationFromDetail = detail?.let {
-                    resolveDurationSeconds(
-                        durationSeconds = it.durationSeconds,
-                        durationValue = it.duration,
-                        durationMs = it.durationMs?.toLong(),
-                    )
-                }?.takeIf { it > 0L }
-                val resolvedDurationSeconds = when {
-                    !needsDuration -> cachedDuration
-                    durationFromDetail != null -> durationFromDetail
-                    else -> {
-                        val info = runSuspendCatching { api.getAudiobookInfo(rawBookId) }.getOrNull()?.body()
-                        info?.durationMs
-                            ?.let { resolveDurationSeconds(durationSeconds = null, durationValue = null, durationMs = it) }
-                            ?.takeIf { it > 0L }
-                    }
+                val resolvedDurationSeconds = if (needsDuration) {
+                    runSuspendCatching { api.getAudiobookInfo(rawBookId) }.getOrNull()?.body()
+                        ?.durationMs
+                        ?.div(1000L)
+                        ?.takeIf { it > 0L }
+                } else {
+                    cachedDuration
                 }
 
                 if (!resolvedTitle.isNullOrBlank()) {
@@ -584,7 +622,7 @@ internal fun rewriteLegacyCoverPath(path: String, mediaType: AppMediaType): Stri
 internal fun resolveCoverUrl(serverUrl: String, path: String?, bookId: String, mediaType: AppMediaType, token: String? = null): String {
     val resolvedPath = when {
         path.isNullOrBlank() -> fallbackCoverPath(bookId, mediaType)
-        path.startsWith("http") -> return rewriteLegacyCoverUrl(path, mediaType)
+        path.startsWith("http://") || path.startsWith("https://") -> return rewriteLegacyCoverUrl(path, mediaType)
         path.startsWith("/api/books/") -> rewriteLegacyCoverPath(path, mediaType)
         else -> path
     }
@@ -593,7 +631,8 @@ internal fun resolveCoverUrl(serverUrl: String, path: String?, bookId: String, m
 }
 
 internal fun rewriteLegacyCoverUrl(url: String, mediaType: AppMediaType): String {
-    val slashAfterHost = url.indexOf('/', url.indexOf("//") + 2).takeIf { it >= 0 } ?: return url
+    val schemeEnd = url.indexOf("//").takeIf { it >= 0 } ?: return url
+    val slashAfterHost = url.indexOf('/', schemeEnd + 2).takeIf { it >= 0 } ?: return url
     val path = url.substring(slashAfterHost)
     val rewritten = rewriteLegacyCoverPath(path, mediaType)
     return if (rewritten != path) url.substring(0, slashAfterHost) + rewritten else url

@@ -282,6 +282,7 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
             )
         }
         isTTSFollowSuspendedByUser = false
+        progress.noteReadingActivity()
 
         ttsStartTask = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -337,6 +338,7 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
         presentation: AppPresentationState = AppState.shared.presentation,
         bookStore: BookStoreRepository = AppState.shared.bookStore
     ) {
+        let notebookSync = ProviderReaderNotebookSync(book: book, providerResolver: providerResolver)
         self.book = book
         self.readerEngineOverride = readerEngineOverride
         self.providerResolver = providerResolver
@@ -345,7 +347,7 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
         self.annotationController = ReaderAnnotationController(
             book: book,
             store: ReaderArtifactsAdapter(book: book),
-            sync: ProviderReaderNotebookSync(book: book, providerResolver: providerResolver),
+            sync: notebookSync,
             persistVocab: { await bookStore.upsertVocabEntry($0) }
         )
         let appearanceController = ReaderAppearanceController()
@@ -388,6 +390,14 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
             providerResolver: providerResolver
         )
         super.init()
+        notebookSync.bookOrbitSpineHrefs = { [weak self] in
+            guard let publication = self?.publicationSession.publication else { return [:] }
+            return Dictionary(uniqueKeysWithValues: publication.readingOrder.enumerated().map { index, link in
+                ("/6/\(2 * (index + 1))", link.href)
+            })
+        }
+        notebookSync.activeReaderEngine = { [weak self] in self?.activeReaderEngineKind ?? .readium }
+        notebookSync.epubFileURL = { [weak self] in self?.publicationSession.fileURL }
         currentProgress = book.canonicalEbookProgress
         locationPipeline.reset(initialProgression: book.canonicalEbookProgress)
         annotationController.onChange = { [weak self] in
@@ -402,7 +412,7 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
         annotationController.contextProvider = { [weak self] in
             guard let self else { return nil }
             return ReaderAnnotationController.Context(
-                selection: readerEngineAdapter?.currentSelection ?? pendingSelection,
+                selection: pendingSelection ?? readerEngineAdapter?.currentSelection,
                 engineKind: activeReaderEngineKind,
                 progress: currentProgress,
                 chapterTitle: currentSectionTitle
@@ -490,6 +500,11 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
     }
 
     private func open() async {
+        defer {
+            Task { @MainActor [weak self] in
+                await self?.annotationController.syncNotebookEntriesIfNeeded()
+            }
+        }
         await pagedContent.refreshServerFormatIfNeeded()
         if await pagedContent.openServerStreamedComicIfAvailable() { return }
 
@@ -726,6 +741,7 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
             guard let self else { return }
             tocIndex.loadPositions(positionsByReadingOrder)
             tocIndex.loadPageMarkers(await ReaderTOCIndex.resolvePageMarkers(in: publication))
+            tocIndex.loadAnchorFractions(await ReaderTOCIndex.resolveAnchorFractions(for: tocIndex.entries, in: publication))
             totalPages = tocIndex.pageCount
             await ReadingStatsTracker.shared.updateBookTotalPages(bookId: book.id, totalPages: totalPages)
             buildTOCProgressionTable(readingOrderPositions: positionsByReadingOrder)
@@ -793,6 +809,7 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
             let positionsByReadingOrder = (try? await publication.positionsByReadingOrder().get()) ?? []
             tocIndex.loadPositions(positionsByReadingOrder)
             tocIndex.loadPageMarkers(await ReaderTOCIndex.resolvePageMarkers(in: publication))
+            tocIndex.loadAnchorFractions(await ReaderTOCIndex.resolveAnchorFractions(for: tocIndex.entries, in: publication))
             totalPages = tocIndex.pageCount
 
             await ReadingStatsTracker.shared.updateBookTotalPages(bookId: book.id, totalPages: totalPages)
@@ -801,7 +818,8 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
             updateEPUBPageState(using: lastKnownLocator)
         }
 
-        if !hasOverlayResources, !tocEntries.isEmpty {
+        // A dual item's audiobook shares this cache key, and untimed contents would replace its chapters.
+        if !hasOverlayResources, book.mediaType == .ebook, !tocEntries.isEmpty {
             let bookChapters = tocEntries.map { Chapter(id: $0.id, start: 0, end: 0, title: $0.displayTitle) }
             ReaderArtifactsStore.shared.saveCachedChapters(bookId: book.id, chapters: bookChapters)
         }
@@ -883,10 +901,14 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
                 config: makeConfig(from: effectiveAppearance)
             )
             navigator.delegate = self
-            readerEngineAdapter = ReadiumReaderEngineAdapter(
+            let adapter = ReadiumReaderEngineAdapter(
                 navigator: navigator,
                 publication: publication
             )
+            adapter.onUserInteraction = { [weak self] in
+                self?.markUserEPUBNavigation()
+            }
+            readerEngineAdapter = adapter
             state = .readyEPUB(navigator)
             readiumNavigator = navigator
             progress.noteInitialLocation(navigator.currentLocation ?? safeInitialLocation)
@@ -1180,14 +1202,14 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
         pendingSelection = nil
     }
 
-    private func markUserEPUBNavigation() {
+    private func markUserEPUBNavigation(afterRenderedMove: Bool = false) {
         if ttsService.isPlaying || ttsService.isPaused {
             isTTSFollowSuspendedByUser = true
             pendingTTSNavigationLocator = nil
             ttsNavigationTask?.cancel()
             ttsNavigationTask = nil
         }
-        progress.noteUserNavigation()
+        progress.noteUserNavigation(afterRenderedMove: afterRenderedMove)
         readAloud.clearVisibleClipCache()
     }
 
@@ -1316,23 +1338,35 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
     }
 
     func seekToAnnotation(_ annotation: ReaderAnnotation) async {
-        guard
-            let bookmark = annotation.locator.map({ locator in
-                Bookmark(
-                    bookId: book.id,
-                    position: annotation.position,
-                    title: annotation.text,
-                    note: annotation.note,
-                    locator: locator,
-                    mediaType: .ebook,
-                    chapterTitle: currentSectionTitle,
-                    remoteID: annotation.remoteID,
-                    isRemotePlaceholder: annotation.isRemotePlaceholder
-                )
-            })
-        else { return }
+        switch state {
+        case .readyEPUB, .readyFoliate:
+            break
+        default:
+            return
+        }
+        guard let adapter = readerEngineAdapter else { return }
 
-        await seekToBookmark(bookmark)
+        markUserEPUBNavigation()
+        if let locator = annotation.locator,
+            await adapter.restore(locatorJSON: locator, animated: false)
+        {
+            return
+        }
+
+        let query = annotation.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if ReaderInitialLocationPolicy.isSnippetSearchable(query) {
+            let preferredHref = annotation.locator
+                .flatMap { try? Locator(jsonString: $0) }?
+                .href.string
+            let results = await adapter.search(query: query)
+            let result = results.first(where: { preferredHref != nil && $0.locator.href.string == preferredHref })
+                ?? results.first
+            if let result, await adapter.navigate(to: result.locator, animated: false) {
+                return
+            }
+        }
+
+        _ = await adapter.navigate(toFraction: min(max(annotation.position, 0), 1), animated: false)
     }
 
     func applyTTSDecoration(_ locator: Locator?) {
@@ -1624,6 +1658,10 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
         readAloud.skipForward(seconds: seconds)
     }
 
+    func seekReadAloud(toTime time: TimeInterval) {
+        readAloud.seek(toTime: time)
+    }
+
     func setReadAloudSpeed(_ speed: Double) {
         readAloud.setSpeed(speed)
     }
@@ -1713,7 +1751,8 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
                   top: rect.top,
                   left: rect.left,
                   intersects: intersects,
-                  atOrAboveTop: rect.top <= viewportTop && rect.left <= viewportRight
+                  // A paginated heading on an earlier page sits left of the viewport at any height.
+                  atOrAboveTop: rect.right <= viewportLeft || (rect.top <= viewportTop && rect.left <= viewportRight)
                 });
               }
               if (!visible.length) return null;
@@ -1783,6 +1822,12 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
         )
     }
 
+    // WebKit doesn't emit `selectionchange` in Foliate's section frames while a selection handle is dragged.
+    func refreshEngineSelection() async {
+        guard let foliate = readerEngineAdapter as? FoliateReaderEngineAdapter else { return }
+        _ = await foliate.refreshSelection()
+    }
+
     private func wireFoliateAdapter(_ adapter: FoliateReaderEngineAdapter) {
         adapter.onRelocation = { [weak self] relocation in
             self?.handleEngineRelocation(relocation, readiumNavigator: nil)
@@ -1790,16 +1835,23 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
         adapter.onSelectionChange = { [weak self] selection in
             self?.pendingSelection = selection
         }
+        adapter.onAnnotationResolution = { [weak self] resolution in
+            self?.annotationController.updateAnchorResolution(resolution)
+        }
         adapter.onAnnotationActivated = { [weak self] id in
             self?.annotationController.activateAnnotation(id: id)
         }
-        adapter.onTap = { [weak self] point, size in
+        adapter.onTap = { [weak self, weak adapter] point, size in
             guard let self else { return }
             pendingSingleTapTask?.cancel()
             pendingSingleTapTask = Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .milliseconds(300))
-                guard !Task.isCancelled else { return }
-                self?.tapHandler?(point, size)
+                guard !Task.isCancelled, let self else { return }
+                if let id = await adapter?.annotationID(at: point) {
+                    self.annotationController.activateAnnotation(id: id)
+                    return
+                }
+                self.tapHandler?(point, size)
             }
         }
         adapter.onExternalLink = { url in
@@ -1826,7 +1878,7 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
         let locator = relocation.locator
         updateEPUBPageState(using: locator)
         if relocation.isUserInitiated {
-            markUserEPUBNavigation()
+            markUserEPUBNavigation(afterRenderedMove: true)
         }
         progress.armBridgeWriteIfUserInteractionPending()
         let enginePageRange: ClosedRange<Int>? = {
@@ -1900,7 +1952,7 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
         if locationPipeline.shouldRecordStats(progression: update.progression) {
             Task {
                 await ReadingStatsTracker.shared.recordTick(bookId: book.stableId, positionProgression: update.progression, isReading: true)
-                if update.progression >= 0.99 {
+                if update.progression >= Book.finishedProgressThreshold {
                     await ReadingStatsTracker.shared.markBookAsFinished(bookId: book.stableId)
                     if book.source == .storyteller {
                         var finishedBook = book
@@ -1981,7 +2033,21 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
     }
 
     func navigator(_ navigator: any SelectableNavigator, shouldShowMenuForSelection selection: Selection) -> Bool {
-        pendingSelection = ReaderSelectionSnapshot(selection)
+        let snapshot = ReaderSelectionSnapshot(selection)
+        pendingSelection = snapshot
+        if let adapter = readerEngineAdapter as? ReadiumReaderEngineAdapter {
+            Task { @MainActor [weak self] in
+                guard let self, let cfi = await adapter.selectionEPUBCFI(),
+                    self.pendingSelection?.locatorJSON == snapshot.locatorJSON
+                else { return }
+                self.pendingSelection = ReaderSelectionSnapshot(
+                    locator: snapshot.locator,
+                    locatorJSON: snapshot.locatorJSON,
+                    frame: snapshot.frame,
+                    epubCFI: cfi
+                )
+            }
+        }
         return false
     }
 

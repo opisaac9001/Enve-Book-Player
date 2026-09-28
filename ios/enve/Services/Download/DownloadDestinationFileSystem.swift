@@ -18,6 +18,23 @@ nonisolated struct DownloadDestinationFileSystem: Sendable {
         return directory
     }
 
+    // Refuses to replace a nonempty destination so a stalled migration stays retryable.
+    @discardableResult
+    func moveBookDirectory(from oldBookId: String, to newBookId: String) throws -> Bool {
+        let fileManager = FileManager.default
+        let source = bookDirectory(for: oldBookId)
+        guard fileManager.fileExists(atPath: source.path) else { return false }
+        let destination = bookDirectory(for: newBookId)
+        if fileManager.fileExists(atPath: destination.path) {
+            guard try fileManager.contentsOfDirectory(atPath: destination.path).isEmpty else {
+                throw CocoaError(.fileWriteFileExists)
+            }
+            try fileManager.removeItem(at: destination)
+        }
+        try fileManager.moveItem(at: source, to: destination)
+        return true
+    }
+
     @discardableResult
     func removeBookDirectory(for bookId: String) throws -> Bool {
         let directory = bookDirectory(for: bookId)

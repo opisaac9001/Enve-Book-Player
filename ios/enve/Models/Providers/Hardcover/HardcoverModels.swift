@@ -397,18 +397,6 @@ public struct HardcoverFinishedBookEntry: Identifiable, Hashable, Sendable {
 }
 
 public enum HardcoverDateFormatter {
-    private static let iso8601: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f
-    }()
-
-    private static let iso8601NoFraction: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime]
-        return f
-    }()
-
     private static let dateOnly: DateFormatter = {
         let f = DateFormatter()
         f.calendar = Calendar(identifier: .gregorian)
@@ -419,7 +407,7 @@ public enum HardcoverDateFormatter {
     }()
 
     public static func parseISO8601(_ string: String) -> Date? {
-        iso8601.date(from: string) ?? iso8601NoFraction.date(from: string) ?? parseDate(string)
+        ISO8601Timestamp.parse(string) ?? parseDate(string)
     }
 
     public static func parseDate(_ string: String) -> Date? {

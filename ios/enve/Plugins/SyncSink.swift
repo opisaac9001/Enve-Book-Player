@@ -1,6 +1,6 @@
 import Foundation
 
-enum ProgressSyncDomain: Sendable {
+enum ProgressSyncDomain: String, Codable, Sendable {
     case audiobook
     case ebook
 

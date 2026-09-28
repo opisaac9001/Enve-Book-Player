@@ -280,9 +280,9 @@ struct AdminGrimmoryScreen: View {
                     Spacer()
                     VStack(alignment: .trailing, spacing: 2) {
                         if let progress = book.readProgress {
-                            Text("\(Int(progress))%")
+                            Text("\(Int(progress * 100))%")
                                 .font(.hearthUI(12, weight: .medium))
-                                .foregroundStyle(progress >= 99 ? hearth.statusOK : hearth.ember)
+                                .foregroundStyle(progress >= Book.finishedProgressThreshold ? hearth.statusOK : hearth.ember)
                         }
                         if let status = book.readStatus {
                             Text(status.replacingOccurrences(of: "_", with: " ").lowercased())

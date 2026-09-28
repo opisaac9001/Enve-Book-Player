@@ -104,7 +104,7 @@ struct OnboardingPlaceholder_tvOS: View {
                 .font(.system(size: 48, weight: .bold))
 
             Text(
-                "Add a media server here, or open enve on your iPhone or iPad with \"Sync to Apple TV\" turned on and your servers appear automatically."
+                "Add a media server here, or turn on \"Sync to Apple TV\" in enve on your iPhone or iPad (Settings › Sync) and your servers appear automatically."
             )
             .font(.title3)
             .foregroundStyle(.secondary)

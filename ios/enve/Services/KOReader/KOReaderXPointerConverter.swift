@@ -1,6 +1,5 @@
 import Foundation
 import Logging
-import Zip
 
 enum KOReaderXPointerConverter {
 
@@ -9,200 +8,67 @@ enum KOReaderXPointerConverter {
         percentage: Double,
         epubFileURL: URL
     ) async -> String? {
-        await Task.detached(priority: .utility) {
-            do {
-                return try convert(xpointer: xpointer, percentage: percentage, epubFileURL: epubFileURL)
-            } catch {
-                AppLogger.sync.warning("KOReader xpointer conversion failed: \(error.localizedDescription)")
-                return nil
-            }
-        }.value
-    }
-
-    nonisolated private static func convert(
-        xpointer: String,
-        percentage: Double,
-        epubFileURL: URL
-    ) throws -> String {
-        let parsed = try parseXPointer(xpointer)
-        let spineHrefs = try readSpineHrefs(epubFileURL: epubFileURL)
-
-        guard parsed.spineIndex < spineHrefs.count else {
-            throw ConversionError.spineIndexOutOfBounds(parsed.spineIndex, spineHrefs.count)
+        #if os(tvOS)
+        // The tvOS target has no reader and does not link a zip reader.
+        return nil
+        #else
+        let work = Task.detached(priority: .utility) {
+            try await convert(xpointer: xpointer, percentage: percentage, epubFileURL: epubFileURL)
         }
-
-        let spineHref = spineHrefs[parsed.spineIndex]
-        let spineItemData = try readEPUBEntry(epubFileURL: epubFileURL, entryPath: spineHref)
-        guard let html = String(data: spineItemData, encoding: .utf8) ?? String(data: spineItemData, encoding: .isoLatin1) else {
-            throw ConversionError.htmlDecodingFailed(spineHref)
-        }
-
-        let partialCfi = try buildPartialCFI(
-            html: html,
-            elementPath: parsed.elementPath,
-            textOffset: parsed.textOffset
-        )
-
-        return buildLocatorJSON(
-            href: spineHref,
-            partialCfi: partialCfi,
-            progression: percentage
-        )
-    }
-
-    private struct ParsedXPointer {
-        let spineIndex: Int
-        let elementPath: [PathSegment]
-        let textOffset: Int?
-    }
-
-    fileprivate struct PathSegment {
-        let tagName: String
-        let index: Int
-    }
-
-    nonisolated private static func parseXPointer(_ xpointer: String) throws -> ParsedXPointer {
-
-        let docFragmentRegex = try NSRegularExpression(pattern: #"^/body/DocFragment\[(\d+)\]/body(.*?)(?:/text\(\)\.(\d+))?$"#)
-        let range = NSRange(xpointer.startIndex..., in: xpointer)
-        guard let match = docFragmentRegex.firstMatch(in: xpointer, range: range) else {
-            throw ConversionError.invalidXPointer(xpointer)
-        }
-
-        let spineN = Int((xpointer as NSString).substring(with: match.range(at: 1)))!
-        let spineIndex = spineN - 1
-
-        let bodyPath =
-            match.range(at: 2).location != NSNotFound
-            ? (xpointer as NSString).substring(with: match.range(at: 2))
-            : ""
-
-        let textOffset: Int? =
-            match.range(at: 3).location != NSNotFound
-            ? Int((xpointer as NSString).substring(with: match.range(at: 3)))
-            : nil
-
-        let elementPath = try parseElementPath(bodyPath)
-        return ParsedXPointer(spineIndex: spineIndex, elementPath: elementPath, textOffset: textOffset)
-    }
-
-    nonisolated private static func parseElementPath(_ path: String) throws -> [PathSegment] {
-        guard !path.isEmpty else { return [] }
-        let segments = path.split(separator: "/", omittingEmptySubsequences: true)
-        return try segments.map { segment in
-            let s = String(segment)
-            if s.range(of: #"^(\w+)\[(\d+)\]$"#, options: .regularExpression) != nil {
-                let parts = s.components(separatedBy: "[")
-                let tag = parts[0]
-                let idx = Int(parts[1].dropLast())!
-                return PathSegment(tagName: tag.lowercased(), index: idx)
-            } else if s.range(of: #"^\w+$"#, options: .regularExpression) != nil {
-                return PathSegment(tagName: s.lowercased(), index: 1)
-            } else {
-                throw ConversionError.invalidPathSegment(s)
-            }
-        }
-    }
-
-    nonisolated private static func readSpineHrefs(epubFileURL: URL) throws -> [String] {
-        let tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("koreader_xptr_\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: tempDir) }
-
-        try Zip.unzipFile(epubFileURL, destination: tempDir, overwrite: true, password: nil)
-
-        let containerURL = tempDir.appendingPathComponent("META-INF/container.xml")
-        let containerData = try Data(contentsOf: containerURL)
-        let opfRelativePath = try parseOPFPath(from: containerData)
-
-        let opfURL = tempDir.appendingPathComponent(opfRelativePath)
-        let opfData = try Data(contentsOf: opfURL)
-        let opfBaseDir = (opfRelativePath as NSString).deletingLastPathComponent
-
-        return try parseSpineHrefs(opfData: opfData, opfBaseDir: opfBaseDir)
-    }
-
-    nonisolated private static func parseOPFPath(from containerData: Data) throws -> String {
-        let parser = OPFPathParser()
-        let xmlParser = XMLParser(data: containerData)
-        xmlParser.delegate = parser
-        xmlParser.parse()
-        guard let path = parser.opfPath else {
-            throw ConversionError.missingOPFPath
-        }
-        return path
-    }
-
-    nonisolated private static func parseSpineHrefs(opfData: Data, opfBaseDir: String) throws -> [String] {
-        let parser = SpineParser()
-        let xmlParser = XMLParser(data: opfData)
-        xmlParser.delegate = parser
-        xmlParser.parse()
-
-        return parser.spineIdrefs.compactMap { idref in
-            guard let href = parser.manifestHrefByID[idref] else { return nil }
-            if opfBaseDir.isEmpty { return href }
-            return opfBaseDir + "/" + href
-        }
-    }
-
-    nonisolated private static func readEPUBEntry(epubFileURL: URL, entryPath: String) throws -> Data {
-        let tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("koreader_entry_\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: tempDir) }
-
-        try Zip.unzipFile(epubFileURL, destination: tempDir, overwrite: true, password: nil)
-        let fileURL = tempDir.appendingPathComponent(entryPath)
-        return try Data(contentsOf: fileURL)
-    }
-
-    nonisolated private static func buildPartialCFI(
-        html: String,
-        elementPath: [PathSegment],
-        textOffset: Int?
-    ) throws -> String {
-        let domParser = HTMLDOMParser()
-        try domParser.parse(html: html)
-
-        guard !elementPath.isEmpty else {
-            return "/4"
-        }
-
-        let targetNode = try domParser.resolve(path: elementPath)
-        let cfiSteps = domParser.cfiSteps(for: targetNode)
-
-        var cfi = "/4" + cfiSteps
-        if let offset = textOffset {
-            cfi += "/1:\(offset)"
-        }
-        return cfi
-    }
-
-    nonisolated private static func buildLocatorJSON(href: String, partialCfi: String, progression: Double) -> String {
-
-        let escapedHref = href.replacingOccurrences(of: "\"", with: "\\\"")
-        let escapedCfi = partialCfi.replacingOccurrences(of: "\"", with: "\\\"")
-        let prog = min(max(progression, 0), 1)
-        return """
-            {"href":"\(escapedHref)","type":"application/xhtml+xml","locations":{"totalProgression":\(prog),"otherLocations":{"partialCfi":"\(escapedCfi)"}}}
-            """
+        return await outcome(of: work, describing: "KOReader xpointer conversion failed")
+        #endif
     }
 
     nonisolated static func xpointer(
         forLocatorJSON locatorJSON: String,
         epubFileURL: URL
     ) async -> String? {
-        await Task.detached(priority: .utility) {
-            do {
-                return try reverseConvert(locatorJSON: locatorJSON, epubFileURL: epubFileURL)
-            } catch {
-                AppLogger.sync.warning("KOReader reverse xpointer failed: \(error.localizedDescription)")
-                return nil
-            }
-        }.value
+        #if os(tvOS)
+        return nil
+        #else
+        let work = Task.detached(priority: .utility) {
+            try await reverseConvert(locatorJSON: locatorJSON, epubFileURL: epubFileURL)
+        }
+        return await outcome(of: work, describing: "KOReader reverse xpointer failed")
+        #endif
     }
 
-    nonisolated private static func reverseConvert(locatorJSON: String, epubFileURL: URL) throws -> String {
+    #if !os(tvOS)
+
+    /// Detaching keeps the archive read and the DOM walk off the main actor; the cancellation
+    /// handler restores the link to the caller that a detached task does not inherit.
+    nonisolated private static func outcome(of work: Task<String, Error>, describing failure: String) async -> String? {
+        do {
+            return try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
+        } catch is CancellationError {
+            return nil
+        } catch {
+            AppLogger.sync.warning("\(failure): \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    nonisolated private static func convert(
+        xpointer: String,
+        percentage: Double,
+        epubFileURL: URL
+    ) async throws -> String {
+        let parsed = try parseXPointer(xpointer)
+        let archive = try await EpubArchive(url: epubFileURL)
+        let spineHrefs = linearSpineHrefs(in: archive.package)
+
+        guard parsed.spineIndex >= 0, parsed.spineIndex < spineHrefs.count else {
+            throw ConversionError.spineIndexOutOfBounds(parsed.spineIndex, spineHrefs.count)
+        }
+
+        let spineHref = spineHrefs[parsed.spineIndex]
+        let html = try await archive.html(at: spineHref)
+        let partialCfi = try buildPartialCFI(html: html, parsed: parsed)
+
+        return buildLocatorJSON(href: spineHref, partialCfi: partialCfi, progression: percentage)
+    }
+
+    nonisolated private static func reverseConvert(locatorJSON: String, epubFileURL: URL) async throws -> String {
         guard let data = locatorJSON.data(using: .utf8),
             let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
@@ -219,277 +85,281 @@ enum KOReaderXPointerConverter {
             throw ConversionError.invalidXPointer("no partialCfi")
         }
 
-        let _ = (locations?["totalProgression"] as? Double) ?? 0
-
-        let spineHrefs = try readSpineHrefs(epubFileURL: epubFileURL)
+        let archive = try await EpubArchive(url: epubFileURL)
+        let spineHrefs = linearSpineHrefs(in: archive.package)
 
         guard let spineIndex = spineHrefs.firstIndex(where: { $0.hasSuffix(href) || $0 == href }) else {
             throw ConversionError.spineIndexOutOfBounds(-1, spineHrefs.count)
         }
 
-        let spineHref = spineHrefs[spineIndex]
-        let spineItemData = try readEPUBEntry(epubFileURL: epubFileURL, entryPath: spineHref)
-        guard let html = String(data: spineItemData, encoding: .utf8) ?? String(data: spineItemData, encoding: .isoLatin1) else {
-            throw ConversionError.htmlDecodingFailed(spineHref)
-        }
-
-        let (elementPath, textOffset) = try buildXPointerPath(html: html, partialCfi: partialCfi)
-
-        let docN = spineIndex + 1
-        var xpointer = "/body/DocFragment[\(docN)]/body"
-        for seg in elementPath {
-            xpointer += "/\(seg.tagName)[\(seg.index)]"
-        }
-        if let offset = textOffset {
-            xpointer += "/text().\(offset)"
-        } else {
-            xpointer += ".0"
-        }
-
-        return xpointer
+        let html = try await archive.html(at: spineHrefs[spineIndex])
+        let suffix = try xpointerSuffix(forPartialCFI: partialCfi, html: html)
+        return "/body/DocFragment[\(spineIndex + 1)]/body" + suffix
     }
 
-    nonisolated private static func buildXPointerPath(html: String, partialCfi: String) throws -> (path: [PathSegment], textOffset: Int?) {
-        let domParser = HTMLDOMParser()
+    /// KOReader's DocFragment numbering skips non-linear spine items.
+    nonisolated private static func linearSpineHrefs(in package: EpubPackage) -> [String] {
+        package.spine.filter(\.isLinear).map(\.href)
+    }
+
+    #endif
+
+    /// Where a KOReader xpointer points inside one element: either into a text node or, when the
+    /// offset sits on the element itself, at the element's own content boundary.
+    fileprivate enum XPointerOffset: Equatable {
+        /// `/text()[K].N` — `K` is 1 for the unbracketed `/text().N` form.
+        case text(nodeIndex: Int, characterOffset: Int)
+        /// `.N` on an element. crengine counts child nodes here, not characters.
+        case element
+    }
+
+    fileprivate struct ParsedXPointer {
+        let spineIndex: Int
+        let elementPath: [PathSegment]
+        let offset: XPointerOffset?
+    }
+
+    fileprivate struct PathSegment {
+        let tagName: String
+        let index: Int
+    }
+
+    nonisolated private static func parseXPointer(_ xpointer: String) throws -> ParsedXPointer {
+        // Trailing groups: the optional `/text()` marker, its optional `[K]` index, and the
+        // optional `.N` offset that may follow either the text node or the element itself.
+        let docFragmentRegex = try NSRegularExpression(
+            pattern: #"^/body/DocFragment\[(\d+)\]/body(.*?)(/text\(\)(?:\[(\d+)\])?)?(?:\.(\d+))?$"#
+        )
+        let range = NSRange(xpointer.startIndex..., in: xpointer)
+        guard let match = docFragmentRegex.firstMatch(in: xpointer, range: range) else {
+            throw ConversionError.invalidXPointer(xpointer)
+        }
+
+        let source = xpointer as NSString
+        func group(_ index: Int) -> String? {
+            let range = match.range(at: index)
+            return range.location == NSNotFound ? nil : source.substring(with: range)
+        }
+
+        guard let spineN = group(1).flatMap(Int.init) else { throw ConversionError.invalidXPointer(xpointer) }
+        let elementPath = try parseElementPath(group(2) ?? "")
+        let characterOffset = group(5).flatMap(Int.init)
+
+        let offset: XPointerOffset?
+        if group(3) != nil {
+            offset = .text(nodeIndex: group(4).flatMap(Int.init) ?? 1, characterOffset: characterOffset ?? 0)
+        } else {
+            offset = characterOffset == nil ? nil : .element
+        }
+
+        return ParsedXPointer(spineIndex: spineN - 1, elementPath: elementPath, offset: offset)
+    }
+
+    nonisolated private static func parseElementPath(_ path: String) throws -> [PathSegment] {
+        guard !path.isEmpty else { return [] }
+        let segments = path.split(separator: "/", omittingEmptySubsequences: true)
+        return try segments.map { segment in
+            let s = String(segment)
+            if let open = s.firstIndex(of: "["), s.hasSuffix("]") {
+                let tag = String(s[s.startIndex..<open])
+                guard let index = Int(s[s.index(after: open)..<s.index(before: s.endIndex)]), index >= 1,
+                    isTagName(tag)
+                else {
+                    throw ConversionError.invalidPathSegment(s)
+                }
+                return PathSegment(tagName: tag.lowercased(), index: index)
+            }
+            guard isTagName(s) else { throw ConversionError.invalidPathSegment(s) }
+            return PathSegment(tagName: s.lowercased(), index: 1)
+        }
+    }
+
+    nonisolated private static func isTagName(_ candidate: String) -> Bool {
+        !candidate.isEmpty && candidate.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" }
+    }
+
+    /// Spine-item half of the forward conversion: the DOM walk, without the EPUB access around it.
+    nonisolated static func partialCFI(forXPointer xpointer: String, html: String) throws -> String {
+        try buildPartialCFI(html: html, parsed: parseXPointer(xpointer))
+    }
+
+    nonisolated private static func buildPartialCFI(html: String, parsed: ParsedXPointer) throws -> String {
+        let domParser = EpubXHTMLDocument()
+        try domParser.parse(html: html)
+
+        let targetNode = try domParser.resolve(path: parsed.elementPath)
+        var cfi = "/4" + domParser.cfiSteps(for: targetNode)
+
+        // An element-level offset is a child index in crengine, not a character offset, so the
+        // element itself is the honest anchor; a text offset maps onto a CFI text node.
+        if case .text(let nodeIndex, let characterOffset) = parsed.offset {
+            let position = domParser.cfiTextPosition(
+                in: targetNode,
+                textNodeIndex: nodeIndex,
+                characterOffset: characterOffset
+            )
+            cfi += "/\(position.step):\(position.offset)"
+        }
+        return cfi
+    }
+
+    nonisolated private static func buildLocatorJSON(href: String, partialCfi: String, progression: Double) -> String {
+
+        let escapedHref = href.replacingOccurrences(of: "\"", with: "\\\"")
+        let escapedCfi = partialCfi.replacingOccurrences(of: "\"", with: "\\\"")
+        let prog = min(max(progression, 0), 1)
+        return """
+            {"href":"\(escapedHref)","type":"application/xhtml+xml","locations":{"totalProgression":\(prog),"otherLocations":{"partialCfi":"\(escapedCfi)"}}}
+            """
+    }
+
+    /// Spine-item half of the reverse conversion: everything a KOReader xpointer carries after
+    /// `/body/DocFragment[n]/body`.
+    nonisolated static func xpointerSuffix(forPartialCFI partialCfi: String, html: String) throws -> String {
+        let domParser = EpubXHTMLDocument()
         try domParser.parse(html: html)
 
         var cfi = partialCfi
         if cfi.hasPrefix("/4") { cfi = String(cfi.dropFirst(2)) }
 
-        var textOffset: Int? = nil
-
-        let textRe = try NSRegularExpression(pattern: #"(?:/1)?:(\d+)$"#)
-        let cfiNS = cfi as NSString
-        if let tm = textRe.firstMatch(in: cfi, range: NSRange(cfi.startIndex..., in: cfi)) {
-            textOffset = Int(cfiNS.substring(with: tm.range(at: 1)))
-            cfi = String(cfi.prefix(tm.range.location))
+        // A character offset may carry a CFI text assertion; it is a repair hint, not a position.
+        var characterOffset: Int?
+        if let (value, remainder) = try trailingCapture(in: cfi, pattern: #":(\d+)(?:\[[^\]]*\])?$"#) {
+            characterOffset = Int(value)
+            cfi = remainder
         }
-        let textNodeRe = try NSRegularExpression(pattern: #"/text\(\)\[\d+\]$"#)
-        cfi = textNodeRe.stringByReplacingMatches(in: cfi, range: NSRange(cfi.startIndex..., in: cfi), withTemplate: "")
 
-        let stepRe = try NSRegularExpression(pattern: #"/(\d+)(?:\[([^\]]*)\])?"#)
-        let matches = stepRe.matches(in: cfi, range: NSRange(cfi.startIndex..., in: cfi))
+        // A text node is an odd CFI step. An even trailing step is an element and stays in the path.
+        var textStep: Int?
+        if let (value, remainder) = try trailingCapture(in: cfi, pattern: #"/(\d+)(?:\[[^\]]*\])?$"#),
+            let step = Int(value), step % 2 == 1
+        {
+            textStep = step
+            cfi = remainder
+        }
 
-        var node = domParser.bodyNode()
-        var path: [PathSegment] = []
+        let stepRegex = try NSRegularExpression(pattern: #"/(\d+)(?:\[([^\]]*)\])?"#)
+        let cfiNS = cfi as NSString
+        var node = try domParser.bodyNode()
+        var suffix = ""
 
-        for match in matches {
-            let stepStr = cfiNS.substring(with: match.range(at: 1))
-            guard let step = Int(stepStr), step % 2 == 0 else { continue }
-            let elementPos = step / 2
-
+        for match in stepRegex.matches(in: cfi, range: NSRange(cfi.startIndex..., in: cfi)) {
+            guard let step = Int(cfiNS.substring(with: match.range(at: 1))), step % 2 == 0 else { continue }
             let idHint =
                 match.range(at: 2).location != NSNotFound
                 ? cfiNS.substring(with: match.range(at: 2))
                 : nil
 
-            guard let nextNode = domParser.elementChild(of: node, at: elementPos, idHint: idHint) else { break }
-            let tagIndex = domParser.koreaderIndex(of: nextNode, in: node)
-            path.append(PathSegment(tagName: nextNode.tagName, index: tagIndex))
-            node = nextNode
+            guard let next = domParser.elementChild(of: node, at: step / 2, idHint: idHint) else { break }
+            suffix += "/\(next.tagName)[\(domParser.siblingIndex(of: next, in: node))]"
+            node = next
         }
 
-        return (path, textOffset)
+        guard let characterOffset else { return suffix + ".0" }
+        guard let text = domParser.textRunPosition(in: node, cfiStep: textStep ?? 1, cfiOffset: characterOffset) else {
+            return suffix + "/text().\(characterOffset)"
+        }
+        // crengine writes the unbracketed form when it means the first text node.
+        let selector = text.index > 1 ? "/text()[\(text.index)]" : "/text()"
+        return suffix + selector + ".\(text.offset)"
+    }
+
+    /// Matches an end-anchored pattern with one capture and returns it alongside the text in front of it.
+    nonisolated private static func trailingCapture(in text: String, pattern: String) throws -> (String, String)? {
+        let regex = try NSRegularExpression(pattern: pattern)
+        guard let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+            let whole = Range(match.range, in: text),
+            let captured = Range(match.range(at: 1), in: text)
+        else { return nil }
+        return (String(text[captured]), String(text[text.startIndex..<whole.lowerBound]))
     }
 
     enum ConversionError: Error, LocalizedError {
         case invalidXPointer(String)
         case invalidPathSegment(String)
-        case missingOPFPath
         case spineIndexOutOfBounds(Int, Int)
         case elementNotFound(String)
-        case htmlDecodingFailed(String)
 
         var errorDescription: String? {
             switch self {
             case .invalidXPointer(let s): return "Invalid KoReader xpointer: \(s)"
             case .invalidPathSegment(let s): return "Invalid xpointer segment: \(s)"
-            case .missingOPFPath: return "EPUB container.xml missing OPF path"
             case .spineIndexOutOfBounds(let i, let c): return "Spine index \(i) out of bounds (\(c) items)"
             case .elementNotFound(let p): return "Element not found at path: \(p)"
-            case .htmlDecodingFailed(let f): return "Could not decode HTML: \(f)"
             }
         }
     }
 }
 
-private final class OPFPathParser: NSObject, XMLParserDelegate {
-    nonisolated(unsafe) var opfPath: String?
 
-    nonisolated override init() { super.init() }
-
-    nonisolated func parser(
-        _ parser: XMLParser,
-        didStartElement elementName: String,
-        namespaceURI: String?,
-        qualifiedName: String?,
-        attributes: [String: String] = [:]
-    ) {
-        if elementName == "rootfile" || qualifiedName == "rootfile",
-            let path = attributes["full-path"], opfPath == nil
-        {
-            opfPath = path
-        }
-    }
-}
-
-private final class SpineParser: NSObject, XMLParserDelegate {
-    nonisolated(unsafe) var manifestHrefByID: [String: String] = [:]
-    nonisolated(unsafe) var spineIdrefs: [String] = []
-
-    nonisolated override init() { super.init() }
-
-    nonisolated func parser(
-        _ parser: XMLParser,
-        didStartElement elementName: String,
-        namespaceURI: String?,
-        qualifiedName: String?,
-        attributes: [String: String] = [:]
-    ) {
-        let tag = (qualifiedName ?? elementName).components(separatedBy: ":").last ?? elementName
-        switch tag {
-        case "item":
-            if let id = attributes["id"], let href = attributes["href"] {
-                manifestHrefByID[id] = href
+extension EpubXHTMLDocument {
+    /// Walks the whole ancestry. KOReader indexes each step among its own siblings, so resolving
+    /// only the last step against the document would land in the wrong branch whenever a tag
+    /// repeats across containers.
+    nonisolated fileprivate func resolve(path: [KOReaderXPointerConverter.PathSegment]) throws -> Node {
+        var current = try bodyNode()
+        for segment in path {
+            guard let next = elementChild(of: current, tagName: segment.tagName, occurrence: segment.index) else {
+                throw KOReaderXPointerConverter.ConversionError.elementNotFound("\(segment.tagName)[\(segment.index)]")
             }
-        case "itemref":
-            if let idref = attributes["idref"] {
-                if attributes["linear"] != "no" {
-                    spineIdrefs.append(idref)
-                }
-            }
-        default:
-            break
+            current = next
         }
+        return current
     }
-}
 
-private final class HTMLDOMParser: NSObject, XMLParserDelegate {
-
-    final class Node {
-        let tagName: String
-        nonisolated(unsafe) weak var parent: Node?
-        nonisolated(unsafe) var children: [Node] = []
-        nonisolated(unsafe) var childIndexAmongParent: Int = 0
-
-        nonisolated init(tagName: String, parent: Node?) {
-            self.tagName = tagName
-            self.parent = parent
+    nonisolated private func elementChild(of parent: Node, tagName: String, occurrence: Int) -> Node? {
+        guard occurrence >= 1 else { return nil }
+        var seen = 0
+        for child in parent.children where child.tagName == tagName {
+            seen += 1
+            if seen == occurrence { return child }
         }
+        return nil
     }
 
-    nonisolated(unsafe) private var root: Node?
-    nonisolated(unsafe) private var stack: [Node] = []
-    nonisolated(unsafe) private var allByTag: [String: [Node]] = [:]
-
-    nonisolated override init() { super.init() }
-
-    nonisolated func parse(html: String) throws {
-        let xmlString: String
-        if html.contains("<?xml") || html.contains("<html") {
-            xmlString = html
-        } else {
-            xmlString = "<root>\(html)</root>"
+    /// CFI numbers a text node `2 * elementsBefore + 1` and counts its offset in UTF-16 units,
+    /// while a KOReader offset counts Unicode scalars inside one crengine text node.
+    nonisolated fileprivate func cfiTextPosition(in node: Node, textNodeIndex: Int, characterOffset: Int) -> (step: Int, offset: Int) {
+        guard textNodeIndex >= 1, textNodeIndex <= node.textRuns.count else {
+            // The sending device saw markup we do not have; the leading text node is the closest anchor.
+            return (1, characterOffset)
         }
-        guard let data = xmlString.data(using: .utf8) else { return }
-        let parser = XMLParser(data: data)
-        parser.delegate = self
-        parser.shouldProcessNamespaces = false
-        parser.shouldReportNamespacePrefixes = false
-        parser.parse()
+        let run = node.textRuns[textNodeIndex - 1]
+        return (2 * run.elementsBefore + 1, run.cfiOffset + Self.utf16Offset(in: run.text, scalarOffset: characterOffset))
     }
 
-    nonisolated func parser(
-        _ parser: XMLParser,
-        didStartElement elementName: String,
-        namespaceURI: String?,
-        qualifiedName: String?,
-        attributes: [String: String] = [:]
-    ) {
-        let tag = elementName.lowercased()
-        let node = Node(tagName: tag, parent: stack.last)
-        stack.last?.children.append(node)
+    nonisolated fileprivate func textRunPosition(in node: Node, cfiStep: Int, cfiOffset: Int) -> (index: Int, offset: Int)? {
+        guard cfiStep % 2 == 1, cfiOffset >= 0 else { return nil }
+        let elementsBefore = (cfiStep - 1) / 2
 
-        if let parent = stack.last {
-            let sameTag = parent.children.filter { $0.tagName == tag }
-            node.childIndexAmongParent = sameTag.count
-        } else {
-            node.childIndexAmongParent = 1
+        var found: (index: Int, run: TextRun)?
+        for (position, run) in node.textRuns.enumerated()
+        where run.elementsBefore == elementsBefore && run.cfiOffset <= cfiOffset {
+            found = (position + 1, run)
         }
-
-        allByTag[tag, default: []].append(node)
-
-        if root == nil { root = node }
-        stack.append(node)
+        guard let found else { return nil }
+        return (found.index, Self.scalarOffset(in: found.run.text, utf16Offset: cfiOffset - found.run.cfiOffset))
     }
 
-    nonisolated func parser(
-        _ parser: XMLParser,
-        didEndElement elementName: String,
-        namespaceURI: String?,
-        qualifiedName: String?
-    ) {
-        if !stack.isEmpty { stack.removeLast() }
-    }
-
-    nonisolated func resolve(path: [KOReaderXPointerConverter.PathSegment]) throws -> Node {
-        guard !path.isEmpty else {
-            guard let body = findBody() else {
-                throw KOReaderXPointerConverter.ConversionError.elementNotFound("body")
-            }
-            return body
+    nonisolated private static func utf16Offset(in text: String, scalarOffset: Int) -> Int {
+        var remaining = scalarOffset
+        var width = 0
+        for scalar in text.unicodeScalars {
+            guard remaining > 0 else { break }
+            width += UTF16.width(scalar)
+            remaining -= 1
         }
+        return width
+    }
 
-        let last = path.last!
-        let tag = last.tagName
-        let idx = last.index - 1
-
-        guard let globalList = allByTag[tag], idx < globalList.count else {
-            throw KOReaderXPointerConverter.ConversionError.elementNotFound("\(tag)[\(last.index)]")
+    nonisolated private static func scalarOffset(in text: String, utf16Offset: Int) -> Int {
+        var consumed = 0
+        var scalars = 0
+        for scalar in text.unicodeScalars {
+            guard consumed < utf16Offset else { break }
+            consumed += UTF16.width(scalar)
+            scalars += 1
         }
-        return globalList[idx]
-    }
-
-    nonisolated private func findBody() -> Node? {
-        allByTag["body"]?.first
-    }
-
-    nonisolated func bodyNode() -> Node {
-        findBody() ?? (root ?? Node(tagName: "root", parent: nil))
-    }
-
-    nonisolated func elementChild(of parent: Node, at position: Int, idHint: String?) -> Node? {
-        let elementChildren = parent.children.filter { !$0.tagName.hasPrefix("#") }
-        if let id = idHint, !id.isEmpty {
-            if let found = elementChildren.first(where: {
-                $0.tagName == id || allByTag[$0.tagName]?.firstIndex(where: { $0 === $0 }) != nil
-            }) {
-                return found
-            }
-        }
-        guard position >= 1, position <= elementChildren.count else { return nil }
-        return elementChildren[position - 1]
-    }
-
-    nonisolated func koreaderIndex(of node: Node, in parent: Node) -> Int {
-        let siblings = parent.children.filter { $0.tagName == node.tagName }
-        return (siblings.firstIndex(where: { $0 === node }) ?? 0) + 1
-    }
-
-    nonisolated func cfiSteps(for node: Node) -> String {
-        var current: Node? = node
-        var parts: [String] = []
-
-        while let n = current, n.tagName != "body", n.tagName != "html", n.tagName != "root" {
-            guard let parent = n.parent else { break }
-            let pos = allChildIndex(of: n, in: parent)
-            parts.insert("/\(pos * 2)", at: 0)
-            current = parent
-        }
-        return parts.joined()
-    }
-
-    nonisolated private func allChildIndex(of node: Node, in parent: Node) -> Int {
-        return (parent.children.firstIndex(where: { $0 === node }) ?? 0) + 1
+        return scalars
     }
 }

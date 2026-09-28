@@ -1,21 +1,28 @@
 # Changelog
 
-## 1.2.3 (1) — 2026-09-15
+## 1.2.5 — 2026-09-28
 
-- Preserve exact BookOrbit EPUB CFIs through full sync, Continue Reading, conflict resolution, Foliate restoration, and upload.
-- Prefer newer exact BookOrbit positions even when their percentages fall within the normal progress deadband.
-- Add built-in and imported reader-font support to Foliate.
-- Improve multi-format Grimmory progress handling, tolerate malformed catalog records, and simplify temporary Tip Jar errors.
+Changes since the iOS 1.2.3 public snapshot.
 
-## 1.2.2 (1) — 2026-09-08
+### Reading and sync
 
-- Preserve square audiobook artwork across library, player, and queue surfaces.
-- Improve progress reconciliation, pending-write protection, and error reporting across library providers.
-- Correct Plex album grouping and playback URLs, BookOrbit series numbering, and OPDS feed URL handling.
-- Fix CarPlay chapter controls and playback-session lifecycle, and preserve database backups before corruption recovery.
-- Add on-device passage matching for downloaded, linked audiobooks and ebooks on iOS 26 or newer. Older iOS versions show an update-required prompt; the app still supports iOS 17.
+- Added passages to reading-position conflicts so you can see where each device left off.
+- Fixed stale positions overwriting newer server progress when opening a book. Enve also recognises deliberate rewinds and ignores its own sync updates.
+- Improved Audiobookshelf listen-along resume, EPUB positions, and chapter matching. An empty reading or listening position no longer replaces a saved one.
+- Imported highlights are checked against the book text. Highlights that cannot be located stay saved and are retried.
+- KOReader links now detect replaced EPUB files and update their hashes.
+- Expanded OPDS browsing, downloads, sign-in, and reading-progress support.
+- Fixed provider metadata and progress handling for Komga, Kavita, Grimmory, Jellyfin, Emby, and TorBox.
 
-Live speech-to-ebook matching remains pending device verification.
+### iOS
+
+- Added OneDrive connection support.
+- Fixed tvOS target membership and chapter handling for the new OneDrive source.
+- Quick Sync keeps the previous calibration when a new match scores worse. You can restore it from the match screen.
+- Fixed BookOrbit opening the wrong cached file when book IDs share a prefix.
+- Improved chapter labels, search snippets, podcast episode lists, and series counts.
+- Added a configurable rest-your-eyes reminder and improved text selection and highlight removal.
+- Fixed overlapping text-selection menus in Foliate and added missing accessibility labels.
 
 ## 1.2 (117) — 2026-07-31
 

@@ -61,7 +61,7 @@ public struct Bookmark: Identifiable, Codable, Equatable {
         if mediaType == .ebook {
             return "\(Int(position * 100))%"
         }
-        return formatTime(position)
+        return PlaybackTime.clock(position)
     }
 
     public var formattedDate: String {
@@ -69,17 +69,5 @@ public struct Bookmark: Identifiable, Codable, Equatable {
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
         return formatter.string(from: timestamp)
-    }
-}
-
-private func formatTime(_ seconds: TimeInterval) -> String {
-    let hours = Int(seconds) / 3600
-    let minutes = Int(seconds) / 60 % 60
-    let secs = Int(seconds) % 60
-
-    if hours > 0 {
-        return String(format: "%d:%02d:%02d", hours, minutes, secs)
-    } else {
-        return String(format: "%d:%02d", minutes, secs)
     }
 }

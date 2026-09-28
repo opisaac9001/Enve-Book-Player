@@ -123,17 +123,10 @@ data class BookSummaryDto(
     val contentRating: String? = null,
     val fileSizeKb: Long? = null,
     val metadataMatchScore: Float? = null,
-
-    val duration: Double? = null,
-
-    val durationMs: Double? = null,
-    val durationSeconds: Long? = null,
     val primaryFile: BookFileDto? = null,
     val fileTypes: List<String>? = null,
     val files: List<BookFileDto>? = null,
     val alternativeFormats: List<BookFileDto>? = null,
-
-    val epubProgress: EbookProgressObjectDto? = null,
 )
 
 @Serializable
@@ -167,14 +160,11 @@ data class BookDetailDto(
     val fileTypes: List<String>? = null,
     val files: List<BookFileDto>? = null,
     val primaryFile: BookFileDto? = null,
-    val duration: Double? = null,
-    val durationSeconds: Long? = null,
-
-    val durationMs: Double? = null,
     val audiobookProgress: AudiobookProgressDto? = null,
     val epubProgress: EbookProgressObjectDto? = null,
     val pdfProgress: PageProgressDto? = null,
     val cbxProgress: PageProgressDto? = null,
+    val koreaderProgress: GrimmoryKoreaderProgressDto? = null,
     val coverUpdatedOn: String? = null,
     val audiobookCoverUpdatedOn: String? = null,
 )

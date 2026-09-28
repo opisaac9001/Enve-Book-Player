@@ -517,7 +517,7 @@ final class PlayerStreamURLResolver {
             )
             AppLogger.player.info("Built \(targetType.rawValue) stream URL: \(streamUrl.redacted)")
             return streamUrl
-        case .webdav, .torbox, .realdebrid:
+        case .webdav, .torbox, .realdebrid, .oneDrive:
             if let provider = providerConnections.capability(PlaybackSessionProvider.self, for: book) {
                 return provider.getAudioURL(for: book)
             }
@@ -628,7 +628,22 @@ final class PlayerStreamURLResolver {
                 code: -1,
                 userInfo: [NSLocalizedDescriptionKey: "Provider not available"]
             )
-        case .komga, .kavita, .opds:
+        case .opds:
+            // Only a direct audio acquisition on the feed origin resolves; anything else is not streamable.
+            if let url = providerConnections.capability(PlaybackSessionProvider.self, for: book)?
+                .getAudioURL(for: book)
+            {
+                return url
+            }
+            throw NSError(
+                domain: "PlayerStreamURLResolver",
+                code: -1,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "This OPDS publication does not offer a playable audio file."
+                ]
+            )
+        case .komga, .kavita:
             throw NSError(
                 domain: "PlayerStreamURLResolver",
                 code: -1,
@@ -789,7 +804,7 @@ final class PlayerStreamURLResolver {
     }
 
     private func buildEmbyJellyfinStreamURL(baseUrl: String, itemId: String, token: String, typeName: String) throws -> URL {
-        let normalizedBase = EmbyProvider.normalizeServerURL(baseUrl)
+        let normalizedBase = MediaBrowserClient.normalizeServerURL(baseUrl)
         guard var components = URLComponents(string: "\(normalizedBase)/Audio/\(itemId)/stream") else {
             throw NSError(
                 domain: "PlayerStreamURLResolver",

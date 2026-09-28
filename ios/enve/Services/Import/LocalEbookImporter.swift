@@ -162,7 +162,7 @@ final class LocalEbookImporter: @unchecked Sendable {
         let fileName: String
         if let bookIdentifier, !bookIdentifier.isEmpty {
             let safeIdentifier = sanitizeFilename(bookIdentifier)
-            if safeIdentifier.isEmpty || sanitizedName.hasPrefix(safeIdentifier) {
+            if safeIdentifier.isEmpty || Self.matchesRemoteBookIdentifier(sanitizedName, identifier: safeIdentifier) {
                 fileName = sanitizedName
             } else {
                 fileName = "\(safeIdentifier)-\(sanitizedName)"
@@ -253,6 +253,10 @@ final class LocalEbookImporter: @unchecked Sendable {
             || Self.validEbookExtensions.contains(url.pathExtension.lowercased())
     }
 
+    static func matchesRemoteBookIdentifier(_ filename: String, identifier: String) -> Bool {
+        filename.hasPrefix(identifier + "-") || filename.hasPrefix(identifier + ".")
+    }
+
     private func existingRemoteEbook(forBookId bookId: String, roots: [URL]) -> URL? {
         let safeId = sanitizeFilename(bookId)
         guard !safeId.isEmpty else { return nil }
@@ -265,7 +269,7 @@ final class LocalEbookImporter: @unchecked Sendable {
                     options: [.skipsHiddenFiles]
                 )) ?? []
             if let match = contents.first(where: {
-                $0.lastPathComponent.hasPrefix(safeId)
+                Self.matchesRemoteBookIdentifier($0.lastPathComponent, identifier: safeId)
                     && Self.validEbookExtensions.contains($0.pathExtension.lowercased())
             }) {
                 return match
@@ -279,7 +283,7 @@ final class LocalEbookImporter: @unchecked Sendable {
         let fileName: String
         if let bookIdentifier, !bookIdentifier.isEmpty {
             let safeIdentifier = sanitizeFilename(bookIdentifier)
-            if safeIdentifier.isEmpty || sanitizedName.hasPrefix(safeIdentifier) {
+            if safeIdentifier.isEmpty || Self.matchesRemoteBookIdentifier(sanitizedName, identifier: safeIdentifier) {
                 fileName = sanitizedName
             } else {
                 fileName = "\(safeIdentifier)-\(sanitizedName)"
@@ -304,6 +308,9 @@ final class LocalEbookImporter: @unchecked Sendable {
             isExistingEbook(readaloud)
         {
             return readaloud
+        }
+        if book.source == .storyteller {
+            return nil
         }
         if let offline = persistedRemoteEbook(forBookId: book.id),
             isExistingEbook(offline)
@@ -477,14 +484,17 @@ final class LocalEbookImporter: @unchecked Sendable {
         }
 
         let smilResources = publication.resources.filterByMediaType(.smil)
+        let archiveFeatures = format == .epub
+            ? await EPUB3SMILParser.detectFeatures(epubFileURL: fileURL)
+            : nil
         let epub3Features: EPUB3Features? = {
-            let hasOverlays = !smilResources.isEmpty
-            let isFixed = publication.metadata.layout == .fixed
+            let hasOverlays = !smilResources.isEmpty || archiveFeatures?.hasMediaOverlay == true
+            let isFixed = publication.metadata.layout == .fixed || archiveFeatures?.hasFixedLayout == true
             guard hasOverlays || isFixed else { return nil }
             return EPUB3Features(
                 hasMediaOverlay: hasOverlays,
                 hasFixedLayout: isFixed,
-                smilFileCount: smilResources.count
+                smilFileCount: max(smilResources.count, archiveFeatures?.smilFileCount ?? 0)
             )
         }()
 

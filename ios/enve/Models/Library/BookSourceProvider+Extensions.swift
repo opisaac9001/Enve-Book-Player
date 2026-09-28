@@ -30,24 +30,6 @@ extension BookSourceProvider {
 }
 
 extension RemoteItem {
-    static func fromFileURL(_ url: URL, parentId: String? = nil) -> RemoteItem {
-        var isDirectory: ObjCBool = false
-        FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
-
-        let size = try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64
-        let modifiedDate = try? FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate] as? Date
-
-        return RemoteItem(
-            id: url.path,
-            name: url.lastPathComponent,
-            isFolder: isDirectory.boolValue,
-            size: size,
-            mimeType: url.mimeType,
-            modifiedDate: modifiedDate,
-            pathHint: url.path,
-            parentId: parentId
-        )
-    }
 
     var formattedSize: String? {
         guard let size = size else { return nil }
@@ -156,68 +138,16 @@ extension SourceBookMetadata {
 }
 
 extension BookSourceProvider {
-    func handleHTTPResponse(
-        _ response: URLResponse,
-        data: Data,
-        validStatusCodes: Range<Int> = 200..<300
-    ) throws {
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw URLError(.badServerResponse)
-        }
-
-        guard validStatusCodes.contains(httpResponse.statusCode) else {
-            let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
-            throw HTTPError.statusCode(httpResponse.statusCode, message: errorMessage)
-        }
-    }
-}
-
-enum HTTPError: LocalizedError {
-    case statusCode(Int, message: String)
-
-    var errorDescription: String? {
-        switch self {
-        case .statusCode(let code, let message):
-            return "HTTP \(code): \(message)"
-        }
-    }
-}
-
-extension BookSourceProvider {
-    func downloadFile(
-        from url: URL,
-        authHeader: String? = nil,
-        progressHandler: @escaping (Double) -> Void
-    ) async throws -> URL {
-        var request = URLRequest(url: url)
-        if let authHeader = authHeader {
-            request.setValue(authHeader, forHTTPHeaderField: "Authorization")
-        }
-
-        let session = URLSession.shared
-        let (localURL, response) = try await session.download(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse,
-            httpResponse.statusCode == 200
-        else {
-            throw URLError(.badServerResponse)
-        }
-
-        return localURL
-    }
 }
 
 extension BookSourceProvider {
     func log(_ message: String, level: LogLevel = .info) {
-        let prefix: String
         switch level {
-        case .debug: prefix = "🔍"
-        case .info: prefix = "ℹ️"
-        case .warning: prefix = "⚠️"
-        case .error: prefix = "❌"
+        case .debug: AppLogger.network.debug("[\(displayName)] \(message)")
+        case .info: AppLogger.network.info("[\(displayName)] \(message)")
+        case .warning: AppLogger.network.warning("[\(displayName)] \(message)")
+        case .error: AppLogger.network.error("[\(displayName)] \(message)")
         }
-
-        AppLogger.network.info("\(prefix) [\(displayName)] \(message)")
     }
 }
 
@@ -297,19 +227,4 @@ private final class MockBookSourceProvider: BookSourceProvider {
 
 extension ISO8601DateFormatter {
     static let shared = ISO8601DateFormatter()
-
-    static func parseFlexible(_ string: String) -> Date? {
-        if let date = shared.date(from: string) {
-            return date
-        }
-
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: string) {
-            return date
-        }
-
-        formatter.formatOptions = [.withFullDate]
-        return formatter.date(from: string)
-    }
 }

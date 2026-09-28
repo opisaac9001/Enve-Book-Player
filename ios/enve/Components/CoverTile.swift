@@ -100,7 +100,7 @@ private struct CoverReadAloudBadge: View {
     }
 }
 
-private struct StorytellerReadAloudMark: View {
+struct StorytellerReadAloudMark: View {
     var body: some View {
         GeometryReader { geo in
             let scale = min(geo.size.width / 26, geo.size.height / 30)

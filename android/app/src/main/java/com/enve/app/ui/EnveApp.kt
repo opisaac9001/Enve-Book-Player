@@ -10,36 +10,21 @@ import androidx.compose.animation.*
 import com.enve.app.ui.components.EnveAnimations
 import com.enve.app.ui.auth.AuthViewModel
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.*
-import com.enve.core.data.model.Book
 import com.enve.app.eink.EpdRefreshManager
 import com.enve.app.ui.screens.*
 import com.enve.hearth.storyalign.HearthStoryAlignScreen
-import com.enve.app.ui.theme.DS
 import com.enve.app.ui.theme.EnveTheme
-import com.enve.app.ui.theme.rememberAdaptiveMetrics
-import com.enve.app.ui.theme.scaled
 import com.enve.app.viewmodel.*
 
 object Routes {
@@ -72,7 +57,6 @@ object Routes {
     const val HARDCOVER_HUB = "settings/hardcoverHub"
     const val METADATA_HUB = "settings/metadataHub"
     const val ACHIEVEMENTS = "settings/achievements"
-    const val STORYALIGN_HUB = "settings/storyAlign"
     const val STORYALIGN_STUDIO = "settings/storyAlignStudio"
     const val EINK_HUB = "settings/einkHub"
     const val QUICK_CONNECT = "quickConnect"
@@ -281,31 +265,6 @@ fun EnveApp(
             composable(Routes.METADATA_HUB) {
                 MetadataHubScreen(
                     onBack = goBack,
-                )
-            }
-
-            composable(Routes.STORYALIGN_HUB) {
-                val context = LocalContext.current
-                StoryAlignHubScreen(
-                    onBack = goBack,
-                    onConnectStoryteller = { navController.navigate(Routes.serviceLogin(BookSource.STORYTELLER)) },
-                    onManageServers = { navController.navigate(Routes.SERVER_MANAGEMENT) },
-                    onOpenBook = { book ->
-                        context.startActivity(
-                            EbookReaderActivity.createIntent(
-                                context = context,
-                                bookId = book.id,
-                                bookSource = book.source,
-                                connectionId = book.connectionId,
-                                title = book.title,
-                                author = book.author ?: "",
-                                bookFormat = book.readerFormat() ?: "READALOUD",
-                                epubLocator = book.epubLocator,
-                                epubProgress = book.epubProgress ?: book.readProgress,
-                                lastReadTime = book.lastReadTime,
-                            )
-                        )
-                    },
                 )
             }
 
@@ -783,7 +742,7 @@ fun EnveApp(
             val discordUrl = "https://discord.gg/nXtASwRkQy"
             AlertDialog(
                 onDismissRequest = { authViewModel.dismissDiscordAnnouncement() },
-                title = { Text("Enve now has a Discord 🎉") },
+                title = { Text("Enve now has a Discord") },
                 text = {
                     Text(
                         "I've finally set up a Discord server, this is the best place to report issues, share feedback, and stay up to date on what's happening with the app. Hope to see you there!"

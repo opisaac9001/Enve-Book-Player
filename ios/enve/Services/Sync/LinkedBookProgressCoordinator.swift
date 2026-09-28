@@ -42,6 +42,33 @@ final class LinkedBookProgressCoordinator {
         var chapterLandmarks: [LinkedBookChapterLandmark]?
         var exactAnchors: [Anchor]
         var calibratedAnchors: [LinkedBookCalibrationAnchor]?
+        var calibrationQuality: LinkedBookAlignmentQuality?
+        var previousCalibratedAnchors: [LinkedBookCalibrationAnchor]?
+        var previousCalibrationQuality: LinkedBookAlignmentQuality?
+
+        var calibration: LinkedBookCalibrationVersions {
+            get {
+                LinkedBookCalibrationVersions(
+                    accepted: calibratedAnchors,
+                    acceptedQuality: calibrationQuality,
+                    previous: previousCalibratedAnchors,
+                    previousQuality: previousCalibrationQuality
+                )
+            }
+            set {
+                calibratedAnchors = newValue.accepted
+                calibrationQuality = newValue.acceptedQuality
+                previousCalibratedAnchors = newValue.previous
+                previousCalibrationQuality = newValue.previousQuality
+            }
+        }
+    }
+
+    struct CalibrationSummary: Equatable, Sendable {
+        let anchorCount: Int
+        let averageConfidence: Double
+        let quality: LinkedBookAlignmentQuality?
+        let hasPreviousVersion: Bool
     }
 
     private struct Pair {
@@ -139,59 +166,70 @@ final class LinkedBookProgressCoordinator {
         persistMappings()
     }
 
+    @discardableResult
     func installCalibration(
         ebookStableId: String,
         audiobookStableId: String,
         anchors: [LinkedBookCalibrationAnchor]
-    ) {
-        let normalized =
-            anchors
-            .filter {
-                $0.ebookProgress.isFinite
-                    && $0.audioProgress.isFinite
-                    && $0.confidence.isFinite
-                    && !$0.quote.isEmpty
-            }
-            .map {
-                LinkedBookCalibrationAnchor(
-                    ebookProgress: Self.clamp($0.ebookProgress),
-                    audioProgress: Self.clamp($0.audioProgress),
-                    quote: $0.quote,
-                    href: $0.href,
-                    confidence: Self.clamp($0.confidence)
-                )
-            }
-            .sorted { $0.audioProgress < $1.audioProgress }
-        guard normalized.count >= 2 else { return }
+    ) -> LinkedBookAlignmentDecision {
+        var versions = calibrationVersions(
+            ebookStableId: ebookStableId,
+            audiobookStableId: audiobookStableId
+        )
+        let decision = versions.install(anchors)
+        guard decision.isAccepted else { return decision }
 
         updateMapping(ebookStableId: ebookStableId, audiobookStableId: audiobookStableId) {
-            $0.calibratedAnchors = normalized
+            $0.calibration = versions
         }
+        return decision
+    }
+
+    @discardableResult
+    func restorePreviousCalibration(ebookStableId: String, audiobookStableId: String) -> Bool {
+        var versions = calibrationVersions(
+            ebookStableId: ebookStableId,
+            audiobookStableId: audiobookStableId
+        )
+        guard versions.restorePrevious() else { return false }
+
+        updateMapping(ebookStableId: ebookStableId, audiobookStableId: audiobookStableId) {
+            $0.calibration = versions
+        }
+        return true
     }
 
     func removeCalibration(ebookStableId: String, audiobookStableId: String) {
         updateMapping(ebookStableId: ebookStableId, audiobookStableId: audiobookStableId) {
-            $0.calibratedAnchors = nil
+            $0.calibration.clear()
         }
     }
 
     func calibrationSummary(
         ebookStableId: String,
         audiobookStableId: String
-    ) -> (anchorCount: Int, averageConfidence: Double)? {
-        guard
-            let anchors = mappings.first(where: {
-                $0.ebookStableId == ebookStableId
-                    && $0.audiobookStableId == audiobookStableId
-            })?.calibratedAnchors,
-            !anchors.isEmpty
-        else {
-            return nil
-        }
-        return (
-            anchors.count,
-            anchors.reduce(0) { $0 + $1.confidence } / Double(anchors.count)
+    ) -> CalibrationSummary? {
+        let versions = calibrationVersions(
+            ebookStableId: ebookStableId,
+            audiobookStableId: audiobookStableId
         )
+        guard let anchors = versions.accepted, !anchors.isEmpty else { return nil }
+        return CalibrationSummary(
+            anchorCount: anchors.count,
+            averageConfidence: anchors.reduce(0) { $0 + $1.confidence } / Double(anchors.count),
+            quality: versions.acceptedQuality,
+            hasPreviousVersion: versions.hasPrevious
+        )
+    }
+
+    private func calibrationVersions(
+        ebookStableId: String,
+        audiobookStableId: String
+    ) -> LinkedBookCalibrationVersions {
+        mappings.first {
+            $0.ebookStableId == ebookStableId
+                && $0.audiobookStableId == audiobookStableId
+        }?.calibration ?? LinkedBookCalibrationVersions()
     }
 
     func calibratedLocatorHint(
@@ -228,7 +266,10 @@ final class LinkedBookProgressCoordinator {
             guard book.hasEPUB3MediaOverlay,
                 let exactAudioTime,
                 let exactAudioDuration,
-                exactAudioDuration > 0
+                Self.narrationMatchesAudio(
+                    narrationDuration: exactAudioDuration,
+                    audioDuration: resolvedAudioDuration(for: pair.audiobook)
+                )
             else {
                 return nil
             }
@@ -262,7 +303,7 @@ final class LinkedBookProgressCoordinator {
         _ = await applyAudioProgress(
             audioProgress,
             to: pair.audiobook,
-            isFinished: progression >= 0.99,
+            isFinished: progression >= Book.finishedProgressThreshold,
             observedAt: observedAt,
             forceRemote: authoritative
         )
@@ -304,7 +345,7 @@ final class LinkedBookProgressCoordinator {
 
         let ebookProgress = pair.ebook.canonicalEbookProgress
         let ebookObservation: (progress: Double, observedAt: Date, isFinished: Bool)? = {
-            let isFinished = pair.ebook.isFinished || ebookProgress >= 0.99
+            let isFinished = pair.ebook.isFinished || ebookProgress >= Book.finishedProgressThreshold
             guard ebookProgress > 0.001 || isFinished else { return nil }
             return (
                 isFinished ? 1 : ebookProgress,
@@ -387,6 +428,11 @@ final class LinkedBookProgressCoordinator {
             observedAt: observedAt,
             forceRemote: true
         )
+    }
+
+    // One recording re-muxed into overlay files drifts under 1% (padding, trimmed silence); other narrations drift more.
+    nonisolated static func narrationMatchesAudio(narrationDuration: TimeInterval, audioDuration: TimeInterval) -> Bool {
+        narrationDuration > 0 && audioDuration > 0 && abs(narrationDuration - audioDuration) <= audioDuration * 0.01
     }
 
     private func shouldPropagate(pairKey: String, direction: String, at date: Date) -> Bool {
@@ -874,7 +920,10 @@ final class LinkedBookProgressCoordinator {
                 chapterProgressions: [],
                 chapterLandmarks: nil,
                 exactAnchors: [],
-                calibratedAnchors: nil
+                calibratedAnchors: nil,
+                calibrationQuality: nil,
+                previousCalibratedAnchors: nil,
+                previousCalibrationQuality: nil
             )
             transform(&mapping)
             mappings.append(mapping)

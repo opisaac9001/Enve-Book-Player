@@ -33,9 +33,9 @@ struct PlayerPassageSheet: View {
                         .foregroundStyle(hearth.textSecondary)
                     Button("Open passage in ebook") {
                         do {
-                            let target = try LinkedBookPassageService.bookForOpening(ebook, match: match)
+                            let locator = try LinkedBookPassageService.locatorForOpening(match)
                             dismiss()
-                            engine.playback.presentReaderAfterDismissingPlayer(for: target)
+                            engine.playback.presentReaderAfterDismissingPlayer(for: ebook, at: locator)
                         } catch {
                             failure = error.localizedDescription
                         }

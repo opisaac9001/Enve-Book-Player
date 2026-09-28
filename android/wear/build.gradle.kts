@@ -12,8 +12,8 @@ android {
         applicationId = "com.enve.app"
         minSdk = 30
         targetSdk = 36
-        versionCode = 51
-        versionName = "1.2 build 51"
+        versionCode = 52
+        versionName = "1.2 build 52"
     }
 
     buildTypes {

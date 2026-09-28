@@ -22,6 +22,7 @@ data class ReaderEngineLocation(
 )
 
 interface ReaderEngineNavigator {
+    var onAnnotationResolution: ((Map<String, Boolean>) -> Unit)?
     val kind: ReaderEngineKind
     val currentLocator: Locator?
     val currentSelection: Locator?

@@ -38,7 +38,7 @@ struct AddSourceScreen: View {
                     )
                     grid(
                         title: "Cloud drives",
-                        providers: [.icloudDrive],
+                        providers: [.oneDrive, .icloudDrive],
                         width: HearthAdaptive.contentWidth(for: geo.size.width, maximum: 980)
                     )
                     grid(
@@ -88,7 +88,7 @@ enum AddSourceProvider: String, CaseIterable, Identifiable {
     case audiobookshelf, plex, jellyfin, emby, grimmory, storyteller, silo
     case komga, kavita, bookOrbit, opds
     case webdav, torbox, premiumize, realdebrid, smb
-    case googleDrive, dropbox, icloudDrive
+    case googleDrive, dropbox, oneDrive, icloudDrive
     case files
 
     var id: String { rawValue }
@@ -113,6 +113,7 @@ enum AddSourceProvider: String, CaseIterable, Identifiable {
         case .smb: "SMB share"
         case .googleDrive: "Google Drive"
         case .dropbox: "Dropbox"
+        case .oneDrive: "OneDrive"
         case .icloudDrive: "iCloud Drive"
         case .files: "Files"
         }
@@ -135,7 +136,7 @@ enum AddSourceProvider: String, CaseIterable, Identifiable {
         case .torbox: ProviderType.torbox.assetIconName
         case .premiumize: UnifiedWebDAVPreset.premiumize.assetIconName
         case .realdebrid: UnifiedWebDAVPreset.realdebrid.assetIconName
-        case .smb, .googleDrive, .dropbox, .icloudDrive, .files: nil
+        case .smb, .googleDrive, .dropbox, .oneDrive, .icloudDrive, .files: nil
         }
     }
 
@@ -146,6 +147,7 @@ enum AddSourceProvider: String, CaseIterable, Identifiable {
         case .smb: "externaldrive.connected.to.line.below"
         case .googleDrive: "internaldrive"
         case .dropbox: "shippingbox.fill"
+        case .oneDrive: "cloud.fill"
         case .icloudDrive: "icloud"
         case .files: "folder"
         case .grimmory: ProviderType.booklore.iconName
@@ -168,7 +170,7 @@ enum AddSourceProvider: String, CaseIterable, Identifiable {
         case .opds: .opds
         case .webdav, .premiumize, .realdebrid: .webdav
         case .torbox: .torbox
-        case .plex, .smb, .googleDrive, .dropbox, .icloudDrive, .files: nil
+        case .plex, .smb, .googleDrive, .dropbox, .oneDrive, .icloudDrive, .files: nil
         }
     }
 
@@ -177,6 +179,7 @@ enum AddSourceProvider: String, CaseIterable, Identifiable {
         case .googleDrive: .googleDrive
         case .dropbox: .dropbox
         case .icloudDrive: .icloud
+        case .oneDrive: nil
         default: nil
         }
     }
@@ -243,6 +246,8 @@ private struct AddSourceRouter: View {
                 SourcesSMBScreen(onAdded: onAdded)
             case .files:
                 SourcesFilesScreen(onAdded: onAdded)
+            case .oneDrive:
+                SourcesOneDriveScreen(onAdded: onAdded)
             default:
                 EmptyView()
             }

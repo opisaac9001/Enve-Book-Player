@@ -1,6 +1,8 @@
 package com.enve.app.hearth
 
 import com.enve.app.data.servertools.GrimmoryNote
+import com.enve.app.data.remote.dto.GrimmoryBookTimelineEntryDto
+import com.enve.app.data.remote.dto.GrimmoryLongestAudiobookDto
 import com.enve.app.data.servertools.GrimmoryReadingStats
 import com.enve.app.data.servertools.KavitaAnnotation
 import com.enve.app.data.servertools.KavitaReadingStats
@@ -50,6 +52,49 @@ class ServerToolsMappingTest {
         assertEquals(1, groups.size)
         assertEquals("Your Grimmory year", groups.single().title)
         assertEquals(listOf("Current streak", "Longest streak"), groups.single().stats.map { it.label })
+    }
+
+    @Test
+    fun grimmoryTimelineFractionAndListeningPercentUseTheirOwnUnits() {
+        val groups = ServerToolsMapping.grimmoryStats(
+            GrimmoryReadingStats(
+                year = 2026,
+                bookTimeline = listOf(
+                    GrimmoryBookTimelineEntryDto(
+                        bookId = 22,
+                        title = "Synthetic FB2",
+                        firstSessionDate = "2026-08-08",
+                        lastSessionDate = "2026-08-11",
+                        totalSessions = 2,
+                        totalDurationSeconds = 532,
+                        maxProgress = 0.57,
+                    ),
+                    GrimmoryBookTimelineEntryDto(
+                        bookId = 4,
+                        title = "Synthetic PDF",
+                        firstSessionDate = "2026-08-09",
+                        lastSessionDate = "2026-08-09",
+                        totalSessions = 1,
+                        totalDurationSeconds = 840,
+                        maxProgress = 1.0,
+                    ),
+                ),
+                longestAudiobooks = listOf(
+                    GrimmoryLongestAudiobookDto(
+                        bookId = 13,
+                        title = "Drama",
+                        totalDurationSeconds = 6057,
+                        listenedDurationSeconds = 1410,
+                        progressPercent = 27.0,
+                    ),
+                ),
+            ),
+        )
+
+        val lives = groups.single { it.title == "Reading lives" }.stats
+        assertTrue(lives.single { it.label == "Synthetic FB2" }.detail!!.endsWith(" · 57%"))
+        assertTrue(lives.single { it.label == "Synthetic PDF" }.detail!!.endsWith(" · 100%"))
+        assertEquals("27% complete", groups.single { it.title == "Longest listens" }.stats.single().detail)
     }
 
     @Test

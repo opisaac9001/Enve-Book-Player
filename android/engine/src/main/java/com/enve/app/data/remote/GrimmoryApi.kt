@@ -4,7 +4,6 @@ import com.enve.app.data.remote.dto.*
 import com.enve.core.data.remote.dto.AuthResponse
 import com.enve.core.data.remote.dto.LoginRequest
 import com.enve.core.data.remote.dto.RefreshRequest
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import okhttp3.RequestBody
 import okhttp3.ResponseBody
@@ -18,6 +17,11 @@ interface GrimmoryApi {
     suspend fun fetchRawUrl(
         @Url url: String,
     ): Response<ResponseBody>
+
+    @GET
+    suspend fun torBoxList(
+        @Url url: String,
+    ): Response<TorBoxListResponseDto>
 
     @FormUrlEncoded
     @POST
@@ -73,14 +77,26 @@ interface GrimmoryApi {
     suspend fun kavitaLogin(@Body request: LoginRequest): Response<JsonObject>
 
     @GET("api/Library/libraries")
-    suspend fun kavitaLibraries(): Response<JsonObject>
+    suspend fun kavitaLibraries(): Response<List<KavitaLibraryDto>>
 
-    @GET("api/Book/library/{libraryId}")
-    suspend fun kavitaLibraryBooks(
-        @Path("libraryId") libraryId: String,
-        @Query("pageNumber") pageNumber: Int = 1,
-        @Query("pageSize") pageSize: Int = 100,
-    ): Response<JsonObject>
+    @POST("api/Series/v2")
+    suspend fun kavitaSeries(
+        @Query("pageNumber") pageNumber: Int,
+        @Query("pageSize") pageSize: Int,
+        @Body filter: KavitaSeriesFilterDto,
+    ): Response<List<KavitaSeriesDto>>
+
+    @GET("api/Series/volumes")
+    suspend fun kavitaVolumes(@Query("seriesId") seriesId: Int): Response<List<KavitaVolumeDto>>
+
+    @GET("api/Series/{seriesId}")
+    suspend fun kavitaSeriesDetail(@Path("seriesId") seriesId: Int): Response<KavitaSeriesDto>
+
+    @GET("api/Reader/get-progress")
+    suspend fun kavitaProgress(@Query("chapterId") chapterId: Int): Response<KavitaProgressDto>
+
+    @POST("api/Reader/progress")
+    suspend fun kavitaSaveProgress(@Body progress: KavitaSaveProgressDto): Response<Unit>
 
     @GET("api/Account")
     suspend fun kavitaAccount(): Response<KavitaAccountDto>
@@ -98,23 +114,23 @@ interface GrimmoryApi {
     suspend fun kavitaAnnotationsForSeries(@Query("seriesId") seriesId: Int): Response<List<KavitaAnnotationDto>>
 
     @GET("Users")
-    suspend fun embyUsers(): Response<JsonArray>
+    suspend fun embyUsers(): Response<List<JellyfinUserDto>>
 
     @GET("Users/{userId}/Views")
     suspend fun embyViews(
         @Path("userId") userId: String,
-    ): Response<JsonObject>
+    ): Response<MediaBrowserItemsDto>
 
     @GET("Users/{userId}/Items")
     suspend fun embyItems(
         @Path("userId") userId: String,
         @Query("ParentId") parentId: String,
         @Query("IncludeItemTypes") includeItemTypes: String = "Book,MusicAlbum",
-        @Query("Fields") fields: String = "ImageTags,ParentId,PrimaryImageItemId,PrimaryImageTag,ParentPrimaryImageItemId,ParentPrimaryImageTag,AlbumId,AlbumPrimaryImageTag",
+        @Query("Fields") fields: String = "ImageTags,ParentId,PrimaryImageItemId,PrimaryImageTag,ParentPrimaryImageItemId,ParentPrimaryImageTag,AlbumId,AlbumPrimaryImageTag,Composers",
         @Query("Recursive") recursive: Boolean = true,
         @Query("Limit") limit: Int = 100,
         @Query("StartIndex") startIndex: Int = 0,
-    ): Response<JsonObject>
+    ): Response<MediaBrowserItemsDto>
 
     @GET("api/v1/app/libraries")
     suspend fun getLibraries(): Response<List<LibraryDto>>
@@ -130,22 +146,23 @@ interface GrimmoryApi {
     ): Response<List<LegacyBookloreBookDto>>
 
     @GET("Users/Me")
-    suspend fun jellyfinMe(): Response<JsonObject>
+    suspend fun jellyfinMe(): Response<JellyfinUserDto>
 
     @GET("Users/{userId}/Views")
     suspend fun jellyfinViews(
         @Path("userId") userId: String,
-    ): Response<JsonObject>
+    ): Response<MediaBrowserItemsDto>
 
     @GET("Users/{userId}/Items")
     suspend fun jellyfinItems(
         @Path("userId") userId: String,
         @Query("ParentId") parentId: String,
         @Query("IncludeItemTypes") includeItemTypes: String = "AudioBook,Book",
+        @Query("Fields") fields: String = "People",
         @Query("Recursive") recursive: Boolean = true,
         @Query("Limit") limit: Int = 100,
         @Query("StartIndex") startIndex: Int = 0,
-    ): Response<JsonObject>
+    ): Response<MediaBrowserItemsDto>
 
     @GET("Users/{userId}/Items/{itemId}")
     suspend fun jellyfinItemDetail(

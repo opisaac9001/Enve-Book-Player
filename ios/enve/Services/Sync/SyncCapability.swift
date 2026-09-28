@@ -29,7 +29,11 @@ extension LibraryProvider {
             return [.pullProgress, .pushProgress]
         case .storyteller:
             return [.pullProgress, .pushProgress]
-        case .opds, .webdav, .premiumize, .realdebrid, .local, .torbox:
+        case .opds:
+            // Only for publications whose feed entry advertises an OPDS Progression service; the provider
+            // answers `nil` and pushes nothing for the rest. The draft has no mark-finished operation.
+            return [.pullProgress, .pushProgress]
+        case .webdav, .premiumize, .realdebrid, .local, .torbox, .oneDrive:
             return .none
         }
     }

@@ -29,6 +29,125 @@ struct BookloreCatalogMapperTests {
         try JSONDecoder().decode(BookloreLegacyBook.self, from: Data(json.utf8))
     }
 
+    @Test(arguments: [true, false])
+    func dualFormatCatalogIsIndependentOfPrimaryFile(audioFirst: Bool) throws {
+        let primary = audioFirst ? "AUDIOBOOK" : "EPUB"
+        let alternate = audioFirst ? "EPUB" : "AUDIOBOOK"
+        let legacy = try decodeLegacy("""
+            {"id":42,"metadata":{"title":"Mixed formats"},
+             "primaryFile":{"bookType":"\(primary)","fileName":"Primary.\(audioFirst ? "m4b" : "epub")"},
+             "alternativeFormats":[{"bookType":"\(alternate)","fileName":"Alternate.\(audioFirst ? "epub" : "m4b")"}],
+             "epubProgress":{"percentage":25},"audiobookProgress":{"percentage":80}}
+            """)
+        let summary = try decodeSummary("""
+            {"id":42,"title":"Mixed formats","primaryFileType":"\(primary)","readProgress":80,"durationSeconds":100}
+            """)
+        let books = [
+            BookloreCatalogMapper.book(from: legacy, context: context),
+            BookloreCatalogMapper.applyingFormats(legacy, to: BookloreCatalogMapper.book(from: summary, context: context)),
+        ]
+        for book in books {
+            #expect(book.id == "42")
+            #expect(book.mediaType == .ebook)
+            #expect(book.ebookFormat == "epub")
+            #expect(book.hasAlternateFormat)
+            #expect(book.ebookProgress == 0.25)
+            #expect(book.currentTime == 0)
+            #expect(book.duration == nil)
+            #expect(book.filePath?.hasSuffix(".epub") == true)
+        }
+    }
+
+    @Test @MainActor
+    func resyncCorrectsMediaTypeWithoutRewindingNewerProgress() throws {
+        let summary = try decodeSummary("""
+            {"id":42,"title":"Mixed formats","primaryFileType":"AUDIOBOOK","readProgress":80,"durationSeconds":100,
+             "lastReadTime":"2026-03-01T00:00:00Z"}
+            """)
+        var previous = BookloreCatalogMapper.book(from: summary, context: context)
+        previous.lastUpdate = isoDate("2026-06-01T00:00:00Z")
+        let record = BookRecord(from: previous)
+        let formats = try decodeLegacy("""
+            {"id":42,"primaryFile":{"bookType":"AUDIOBOOK"},
+             "alternativeFormats":[{"bookType":"EPUB","fileName":"Book.epub"}],
+             "epubProgress":{"percentage":25}}
+            """)
+        var corrected = BookloreCatalogMapper.applyingFormats(formats, to: BookloreCatalogMapper.book(from: summary, context: context))
+        #expect(corrected.lastUpdate == isoDate("2026-03-01T00:00:00Z"))
+
+        record.update(from: corrected)
+        #expect(record.mediaType == AppMediaType.ebook.rawValue)
+        #expect(record.filePath == "Book.epub")
+        #expect(record.currentTime == 80)
+        #expect(record.ebookProgress == nil)
+        #expect(record.lastUpdate == isoDate("2026-06-01T00:00:00Z"))
+
+        corrected.lastUpdate = isoDate("2026-07-01T00:00:00Z")
+        record.update(from: corrected)
+        #expect(record.ebookProgress == 0.25)
+        #expect(record.currentTime == 0)
+        #expect(record.lastUpdate == isoDate("2026-07-01T00:00:00Z"))
+    }
+
+    @Test(arguments: [true, false])
+    func applyingFormatsWithoutDetailedProgressKeepsSummaryProgress(audioFirst: Bool) throws {
+        let primary = audioFirst ? "AUDIOBOOK" : "EPUB"
+        let summary = try decodeSummary("""
+            {"id":7,"title":"No detail","primaryFileType":"\(primary)","readProgress":40,"durationSeconds":200}
+            """)
+        let formats = try decodeLegacy("""
+            {"id":7,"primaryFile":{"bookType":"\(primary)","fileName":"Primary.\(audioFirst ? "m4b" : "epub")"},
+             "alternativeFormats":[{"bookType":"\(audioFirst ? "EPUB" : "AUDIOBOOK")","fileName":"Alternate.\(audioFirst ? "epub" : "m4b")"}]}
+            """)
+        let applied = BookloreCatalogMapper.applyingFormats(formats, to: BookloreCatalogMapper.book(from: summary, context: context))
+        #expect(applied.id == "7")
+        #expect(applied.mediaType == .ebook)
+        #expect(applied.hasAlternateFormat)
+        #expect(applied.ebookProgress == 0.4)
+        #expect(applied.isFinished == false)
+    }
+
+    @Test func applyingFormatsKeepsSummaryFinishedState() throws {
+        let summary = try decodeSummary("""
+            {"id":9,"title":"Done","primaryFileType":"EPUB","dateFinished":"2026-02-01T00:00:00Z"}
+            """)
+        let formats = try decodeLegacy("""
+            {"id":9,"primaryFile":{"bookType":"EPUB"},"alternativeFormats":[{"bookType":"AUDIOBOOK"}]}
+            """)
+        let applied = BookloreCatalogMapper.applyingFormats(formats, to: BookloreCatalogMapper.book(from: summary, context: context))
+        #expect(applied.isFinished)
+        #expect(applied.ebookProgress == 0)
+    }
+
+    @Test @MainActor
+    func companionAudiobookKeepsOriginalIdAsEbookAndDerivesStableCompanionId() throws {
+        let provider = BookloreProvider(
+            connection: ServerConnection(name: "Lab", url: "http://books.example:6060", type: .booklore)
+        )
+        let uuid = provider.connection.id.uuidString
+        let summary = try decodeSummary("""
+            {"id":42,"title":"Mixed formats","primaryFileType":"EPUB","audiobookCoverUpdatedOn":"2026-01-02T00:00:00Z"}
+            """)
+        let providerContext = BookloreCatalogMapper.Context(
+            providerId: provider.connection.id,
+            libraryId: "1",
+            source: .booklore,
+            serverURL: "http://books.example:6060/"
+        )
+        var books = [BookloreCatalogMapper.book(from: summary, context: providerContext)]
+        let companions = provider.makeCompanionAudiobooks(forEbooks: &books)
+
+        #expect(books[0].id == "42")
+        #expect(books[0].mediaType == .ebook)
+        #expect(books[0].hasAlternateFormat == false)
+        #expect(books[0].linkedAudiobookStableId == "grimmory:\(uuid):grimmory-ab-42")
+        #expect(companions.count == 1)
+        #expect(companions[0].id == "grimmory-ab-42")
+        #expect(companions[0].mediaType == .audiobook)
+        #expect(companions[0].stableId == "grimmory:\(uuid):grimmory-ab-42")
+        #expect(companions[0].linkedAudiobookStableId == "grimmory:\(uuid):42")
+    }
+
     @Test func appBooksPageEnvelopeDecodesAndMapsAudiobookSummary() throws {
         let fixture = Data(
             """
@@ -366,7 +485,7 @@ struct BookloreCatalogMapperTests {
         #expect(book.seriesSequence == "2.0")
         #expect(book.description == "Invented description.")
         #expect(book.publisher == "Invented House")
-        #expect(book.duration == 0)
+        #expect(book.duration == nil)
         #expect(book.thumb == "http://books.example:6060/api/v1/media/book/37/cover")
         #expect(book.hasAlternateFormat == true)
         #expect(book.isFinished == false)
@@ -375,7 +494,7 @@ struct BookloreCatalogMapperTests {
         #expect(book.addedAt == isoDate("2026-03-21T03:11:09Z"))
         #expect(book.lastUpdate == isoDate("2026-03-21T03:11:09Z"))
         #expect(book.genres == [])
-        #expect(book.filePath == nil)
+        #expect(book.filePath == "/books/invented-legacy.epub")
     }
 
     @Test func legacyAudiobookTakesTitleFromFileName() throws {

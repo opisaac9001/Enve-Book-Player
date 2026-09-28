@@ -103,6 +103,7 @@ import androidx.compose.ui.unit.sp
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HearthLibraryScreen(
+    covered: Boolean,
     onSelectBook: (Book) -> Unit,
     onPlayBook: (Book) -> Unit = {},
     onPlaybackStarted: () -> Unit = {},
@@ -142,13 +143,15 @@ fun HearthLibraryScreen(
     var pendingBulkAction by remember { mutableStateOf<BulkAction?>(null) }
     var batchCollectionCreateConnection by remember { mutableStateOf<LibraryConnectionOption?>(null) }
     val palette = Hearth.palette
-    BackHandler(enabled = drill != null || selectionMode || searchExpanded) {
+    BackHandler(enabled = !covered && (drill != null || selectionMode || searchExpanded)) {
         when {
             searchExpanded -> { searchExpanded = false; vm.setQuery("") }
             selectionMode -> vm.endSelection()
             else -> vm.clearDrill()
         }
     }
+    val keyboard = LocalSoftwareKeyboardController.current
+    LaunchedEffect(covered) { if (covered) keyboard?.hide() }
 
     val compact = Hearth.typeCompact
     val headerGap = if (compact) Hearth.Spacing.S else Hearth.Spacing.M
@@ -272,12 +275,28 @@ fun HearthLibraryScreen(
                 BookGrid(books, columns, vm, selectionMode, selection, onSelectBook, onPlayBook)
             }
 
+            facet == LibraryFacet.SERIES && series.isEmpty() -> BrowseEmptyState(
+                "No series yet",
+                "Books with series details from your servers will be grouped here.",
+            )
             facet == LibraryFacet.SERIES -> BrowseLayout(series, columns) { vm.openSeries(it.name) }
+            facet == LibraryFacet.AUTHORS && authors.isEmpty() -> BrowseEmptyState(
+                "No authors yet",
+                "Books with author details from your servers will be grouped here.",
+            )
             facet == LibraryFacet.AUTHORS -> BrowseLayout(authors, columns) { vm.openAuthor(it.name) }
+            facet == LibraryFacet.NARRATORS && narrators.isEmpty() -> BrowseEmptyState(
+                "No narrators yet",
+                "Audiobooks with narrator details from your servers will be grouped here.",
+            )
             facet == LibraryFacet.NARRATORS -> BrowseLayout(narrators, columns) { vm.openNarrator(it.name) }
             facet == LibraryFacet.SHELVES -> when {
                 shelvesLoading -> BrowseLoadingState()
-                shelves.isEmpty() && bookOrbitAdminConnections.isEmpty() -> EmptyShelvesState(hasGrimmoryConnection)
+                shelves.isEmpty() && bookOrbitAdminConnections.isEmpty() -> if (hasGrimmoryConnection) {
+                    BrowseEmptyState("No shelves found", "Create a shelf in Grimmory, then refresh.")
+                } else {
+                    BrowseEmptyState("No server collections found", "BookOrbit collections and Grimmory shelves will appear here.")
+                }
                 else -> ShelvesList(
                     groups = shelves,
                     canCreate = bookOrbitAdminConnections.isNotEmpty(),
@@ -1607,19 +1626,16 @@ private fun BrowseLoadingState() {
 }
 
 @Composable
-private fun EmptyShelvesState(hasGrimmoryConnection: Boolean) {
+private fun BrowseEmptyState(title: String, message: String) {
     val palette = Hearth.palette
     Box(Modifier.fillMaxSize().padding(horizontal = Hearth.Spacing.XL), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.S)) {
+            Text(title, style = hearthDisplay(20.sp, FontWeight.SemiBold), color = palette.text)
             Text(
-                if (hasGrimmoryConnection) "No shelves found" else "No server collections found",
-                style = hearthDisplay(20.sp, FontWeight.SemiBold),
-                color = palette.text,
-            )
-            Text(
-                if (hasGrimmoryConnection) "Create a shelf in Grimmory, then refresh." else "BookOrbit collections and Grimmory shelves will appear here.",
+                message,
                 style = HearthText.Caption,
                 color = palette.textSecondary,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
             )
         }
     }

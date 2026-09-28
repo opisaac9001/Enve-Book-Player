@@ -74,4 +74,22 @@ struct ClassicReaderAppearanceTests {
         #expect(missing.nextSeriesPromptPlacement == .bottom)
         #expect(decoded.nextSeriesPromptPlacement == .top)
     }
+
+    @Test func restReminderDefaultsOnAtSixtyMinutesAndRoundTrips() throws {
+        let missing = try JSONDecoder().decode(ClassicReaderAppearance.self, from: Data("{}".utf8))
+        var appearance = ClassicReaderAppearance()
+        appearance.restReminderEnabled = false
+        appearance.restReminderMinutes = 35
+        appearance.restReminderIntroShown = true
+
+        let data = try JSONEncoder().encode(appearance)
+        let decoded = try JSONDecoder().decode(ClassicReaderAppearance.self, from: data)
+
+        #expect(missing.restReminderEnabled)
+        #expect(missing.restReminderMinutes == 60)
+        #expect(!missing.restReminderIntroShown)
+        #expect(!decoded.restReminderEnabled)
+        #expect(decoded.restReminderMinutes == 35)
+        #expect(decoded.restReminderIntroShown)
+    }
 }

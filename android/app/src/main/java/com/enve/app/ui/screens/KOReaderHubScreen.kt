@@ -1,5 +1,6 @@
 package com.enve.app.ui.screens
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -26,7 +27,6 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
-import com.enve.core.data.model.Book
 import com.enve.app.ui.components.*
 import com.enve.app.ui.components.ScreenBackButton
 import com.enve.app.ui.theme.DS
@@ -35,10 +35,24 @@ import com.enve.app.ui.theme.eink
 import com.enve.app.ui.theme.rememberAdaptiveMetrics
 import com.enve.app.ui.theme.scaled
 import com.enve.app.viewmodel.KOReaderHubViewModel
+import com.enve.app.viewmodel.KOReaderLinkEditorState
 import com.enve.hearth.design.hearthDisplay
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+
+private enum class KOReaderServerPreset(val displayName: String, val url: String, val hint: String) {
+    CROSSPOINT(
+        displayName = "CrossPoint",
+        url = "https://sync.crosspointreader.com",
+        hint = "CrossPoint Reader matches books by file name.",
+    ),
+    KOREADER(
+        displayName = "KOReader",
+        url = "https://sync.koreader.rocks:443",
+        hint = "KOReader matches books by a partial MD5 of the file.",
+    ),
+}
 
 @Composable
 fun KOReaderHubScreen(
@@ -145,7 +159,7 @@ private fun HubContent(
             SettingsNavigationRow(
                 icon = Icons.AutoMirrored.Filled.MenuBook,
                 title = "Linked Books",
-                subtitle = "${state.linkedCount} linked • match by KOReader document hash",
+                subtitle = "${state.linkedCount} linked • match by document hash or file name",
                 onClick = onManageLinks,
             )
         }
@@ -166,7 +180,8 @@ private fun HubContent(
                     fontSize = 11.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.6.sp)
             }
             InfoLine("KOReader identifies books by a partial MD5 of the file. Enve computes this automatically when the ebook is downloaded.", colors, metrics)
-            InfoLine("For books with no local file, open Linked Books and paste the hash shown on KOReader's Book Information page.", colors, metrics)
+            InfoLine("CrossPoint Reader identifies books by file name instead. Open Linked Books and enter the file name for each book you sync with CrossPoint — file-name matching is never assumed.", colors, metrics)
+            InfoLine("For books with no local file, paste the hash shown on KOReader's Book Information page.", colors, metrics)
             InfoLine("Self-host a kosync server or use a public one like sync.koreader.rocks.", colors, metrics)
         }
     }
@@ -198,6 +213,26 @@ private fun ServerConfigCard(
                 title = "Server",
                 subtitle = if (state.isConfigured) null else "Enter your kosync server credentials.",
             )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(DS.Spacing.SM.scaled(metrics)),
+            ) {
+                KOReaderServerPreset.entries.forEach { preset ->
+                    val selected = state.serverUrl.trim().trimEnd('/') == preset.url
+                    OutlinedButton(
+                        onClick = { viewModel.setServerUrl(preset.url) },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(999.dp),
+                        border = BorderStroke(if (selected) 2.dp else 1.dp, colors.accent),
+                    ) { Text(preset.displayName, color = colors.accent) }
+                }
+            }
+            KOReaderServerPreset.entries
+                .firstOrNull { state.serverUrl.trim().trimEnd('/') == it.url }
+                ?.let {
+                    Text(it.hint, color = colors.secondaryText,
+                        fontSize = DS.FontSize.Caption.scaled(metrics))
+                }
             OutlinedTextField(
                 value = state.serverUrl,
                 onValueChange = viewModel::setServerUrl,
@@ -253,7 +288,7 @@ private fun ServerConfigCard(
                         enabled = hasCreds && !state.busy && state.password.isNotBlank(),
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(999.dp),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, colors.accent),
+                        border = BorderStroke(1.dp, colors.accent),
                     ) { Text("Register", color = colors.accent) }
                 }
             }
@@ -261,7 +296,7 @@ private fun ServerConfigCard(
             state.statusMessage?.let {
                 val mono = EnveTheme.eink.monochrome
                 Text(
-                    if (mono && state.statusIsError) "⚠ $it" else it,
+                    if (state.statusIsError) EnveTheme.eink.errorMessage(it) else it,
                     color = when {
                         mono -> colors.primaryText
                         state.statusIsError -> Color(0xFFB3453E)
@@ -287,7 +322,6 @@ private fun LinkedBooksContent(
     metrics: com.enve.app.ui.theme.AdaptiveMetrics,
 ) {
     var query by remember { mutableStateOf("") }
-    var editing by remember { mutableStateOf<Book?>(null) }
 
     val filtered = remember(query, state.ebooks) {
         if (query.isBlank()) state.ebooks
@@ -318,7 +352,7 @@ private fun LinkedBooksContent(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .enveClickable { editing = book }
+                        .enveClickable { viewModel.openLinkEditor(book) }
                         .padding(horizontal = DS.Spacing.LG.scaled(metrics), vertical = DS.Spacing.SM.scaled(metrics)),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -327,8 +361,10 @@ private fun LinkedBooksContent(
                             fontSize = DS.FontSize.Subheadline.scaled(metrics),
                             fontWeight = FontWeight.Medium, maxLines = 1)
                         if (link != null) {
-                            Text("${link.documentHash.take(10)}… ${if (link.isAutomatic) "(auto)" else "(manual)"}",
-                                color = colors.tertiaryText, fontSize = DS.FontSize.Caption2.scaled(metrics))
+                            val identity = link.filename
+                                ?: "${link.documentHash.take(10)}… ${if (link.isAutomatic) "(auto)" else "(manual)"}"
+                            Text(identity, color = colors.tertiaryText, maxLines = 1,
+                                fontSize = DS.FontSize.Caption2.scaled(metrics))
                         } else {
                             Text("Not linked", color = colors.tertiaryText,
                                 fontSize = DS.FontSize.Caption2.scaled(metrics))
@@ -346,41 +382,49 @@ private fun LinkedBooksContent(
         }
     }
 
-    editing?.let { book ->
+    state.linkEditor?.let { editor ->
+        val book = editor.book
         LinkEditorDialog(
-            book = book,
-            existingHash = state.links[book.uniqueKey]?.documentHash ?: "",
-            hasLocalFile = viewModel.hasLocalFile(book),
+            editor = editor,
             onCompute = { cb -> viewModel.computeHashFromFile(book, cb) },
-            onSave = { hash -> viewModel.saveLink(book, hash); editing = null },
+            documentIdForFilename = viewModel::documentIdForFilename,
+            onSave = { hash, filename -> viewModel.saveLink(book, hash, filename) },
             onRemove = if (state.links.containsKey(book.uniqueKey)) {
-                { viewModel.removeLink(book); editing = null }
+                { viewModel.removeLink(book) }
             } else null,
-            onDismiss = { editing = null },
+            onDismiss = viewModel::closeLinkEditor,
         )
     }
 }
 
 @Composable
 private fun LinkEditorDialog(
-    book: Book,
-    existingHash: String,
-    hasLocalFile: Boolean,
+    editor: KOReaderLinkEditorState,
     onCompute: ((String?) -> Unit) -> Unit,
-    onSave: (String) -> Unit,
+    documentIdForFilename: (String) -> String?,
+    onSave: (hash: String, filename: String?) -> Unit,
     onRemove: (() -> Unit)?,
     onDismiss: () -> Unit,
 ) {
-    var hash by remember { mutableStateOf(existingHash) }
+    var hash by remember { mutableStateOf(editor.existingHash) }
+    var filename by remember { mutableStateOf(editor.suggestedFilename) }
     var computing by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    val valid = hash.trim().length == 32 && hash.trim().all { it.isDigit() || it.lowercaseChar() in 'a'..'f' }
+    val trimmedHash = hash.trim()
+    val hashValid = trimmedHash.length == 32 && trimmedHash.all { it.isDigit() || it.lowercaseChar() in 'a'..'f' }
+    val trimmedFilename = filename.trim()
+    val filenameId = remember(trimmedFilename) {
+        trimmedFilename.takeIf { it.isNotEmpty() }?.let(documentIdForFilename)
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Link “${book.title}”") },
+        title = { Text("Link “${editor.book.title}”") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
                 OutlinedTextField(
                     value = hash,
                     onValueChange = { hash = it; error = null },
@@ -389,10 +433,10 @@ private fun LinkEditorDialog(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 error?.let {
-                    val mono = EnveTheme.eink.monochrome
+                    val eink = EnveTheme.eink
                     Text(
-                        if (mono) "⚠ $it" else it,
-                        color = if (mono) EnveTheme.colors.primaryText else Color(0xFFB3453E),
+                        eink.errorMessage(it),
+                        color = if (eink.monochrome) EnveTheme.colors.primaryText else Color(0xFFB3453E),
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
@@ -404,16 +448,34 @@ private fun LinkEditorDialog(
                             if (result != null) hash = result else error = "Could not read the local ebook file."
                         }
                     },
-                    enabled = hasLocalFile && !computing,
+                    enabled = editor.hasLocalFile && !computing,
                 ) { Text(if (computing) "Computing…" else "Compute From Local File") }
+
+                HorizontalDivider()
+
+                OutlinedTextField(
+                    value = filename,
+                    onValueChange = { filename = it },
+                    label = { Text("File name (CrossPoint)") },
+                    placeholder = { Text("book.epub") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                filenameId?.let {
+                    Text("CrossPoint document ID ${it.take(10)}…",
+                        style = MaterialTheme.typography.bodySmall)
+                }
                 Text(
-                    "Open the book in KOReader → Book Information to find its hash. Paste it here to sync even when files differ between devices.",
+                    "Open the book in KOReader → Book Information to find its hash. CrossPoint Reader matches on the file name as stored on its SD card. With a file name set, Enve reads both identities and writes to the file-name one.",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
         },
         confirmButton = {
-            TextButton(onClick = { onSave(hash.trim().lowercase()) }, enabled = valid) { Text("Save") }
+            TextButton(
+                onClick = { onSave(if (hashValid) trimmedHash.lowercase() else "", trimmedFilename.ifBlank { null }) },
+                enabled = hashValid || trimmedFilename.isNotEmpty(),
+            ) { Text("Save") }
         },
         dismissButton = {
             Row {

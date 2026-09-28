@@ -49,7 +49,7 @@ private final class ProgressAPIStub: RecentlyPlayedProgressAPI {
     struct EbookPush: Equatable {
         let libraryItemId: String
         let progress: Double
-        let isFinished: Bool
+        let itemHasAudio: Bool
     }
 
     var progressByBackend: [String: Result<[ABSMediaProgress], Error>] = [:]
@@ -77,9 +77,9 @@ private final class ProgressAPIStub: RecentlyPlayedProgressAPI {
         )
     }
 
-    func pushEbookProgress(libraryItemId: String, progress: Double, isFinished: Bool, backend: BackendConfig) async throws {
+    func pushEbookProgress(libraryItemId: String, progress: Double, itemHasAudio: Bool, backend: BackendConfig) async throws {
         if let ebookPushError { throw ebookPushError }
-        ebookPushes.append(EbookPush(libraryItemId: libraryItemId, progress: progress, isFinished: isFinished))
+        ebookPushes.append(EbookPush(libraryItemId: libraryItemId, progress: progress, itemHasAudio: itemHasAudio))
     }
 }
 
@@ -222,10 +222,13 @@ private let testProviderId = UUID(uuidString: "6B1F5F1E-6C5B-4E3E-9C2A-9F52A0F6A
 
 private func makeBook(
     id: String,
+    partKey: String? = nil,
     mediaType: AppMediaType = .audiobook,
     duration: TimeInterval? = 600,
+    epubLocator: String? = nil,
     ebookProgress: Double? = nil,
     lastUpdate: Date = Date(timeIntervalSince1970: 1_000),
+    hasAlternateFormat: Bool = false,
     readAloudSourceStableId: String? = nil,
     backendId: String = "abs"
 ) -> Book {
@@ -233,13 +236,16 @@ private func makeBook(
         id: id,
         title: "Book \(id)",
         duration: duration,
+        partKey: partKey,
         mediaType: mediaType,
+        epubLocator: epubLocator,
         ebookProgress: ebookProgress,
         lastUpdate: lastUpdate,
         libraryId: "library",
         providerId: testProviderId,
         backendId: backendId,
         source: .audiobookshelf,
+        hasAlternateFormat: hasAlternateFormat,
         readAloudSourceStableId: readAloudSourceStableId
     )
 }
@@ -278,6 +284,7 @@ private func makeProgress(
     currentTime: Double? = nil,
     duration: Double? = nil,
     ebookProgress: Double? = nil,
+    ebookLocation: String? = nil,
     progress: Double? = nil,
     isFinished: Bool? = false,
     lastUpdateSeconds: TimeInterval
@@ -292,6 +299,7 @@ private func makeProgress(
         isFinished: isFinished,
         hideFromContinueListening: nil,
         ebookProgress: ebookProgress,
+        ebookLocation: ebookLocation,
         lastUpdate: lastUpdateSeconds * 1_000,
         startedAt: nil,
         finishedAt: nil
@@ -365,6 +373,7 @@ struct RecentlyPlayedSyncServiceTests {
     }
 
     @Test func pullsEbookProgressWhenTheServerIsNewer() async throws {
+        let serverLocator = #"{"href":"text/ch1.xhtml","type":"application/xhtml+xml","locations":{"fragments":["ch1-sentence59"]}}"#
         let fixture = try WorkerFixture()
         fixture.connections.backends = [makeBackend(id: "abs")]
 
@@ -373,7 +382,7 @@ struct RecentlyPlayedSyncServiceTests {
         fixture.libraryCache.allBooks = [book]
 
         fixture.progressAPI.progressByBackend["abs"] = .success([
-            makeProgress(libraryItemId: "ebook", ebookProgress: 0.5, lastUpdateSeconds: 5_000)
+            makeProgress(libraryItemId: "ebook", ebookProgress: 0.5, ebookLocation: serverLocator, lastUpdateSeconds: 5_000)
         ])
 
         let result = await fixture.makeService().sync(trigger: .appLaunch)
@@ -384,7 +393,9 @@ struct RecentlyPlayedSyncServiceTests {
         #expect(fixture.libraryCache.mutatedStableIds == [book.stableId])
         #expect(fixture.ebookLinks.relationshipSaveCount == 1)
         #expect(fixture.libraryCache.allBooks[0].ebookProgress == 0.5)
+        #expect(fixture.libraryCache.allBooks[0].epubLocator == serverLocator)
         #expect(await fixture.store.book(uniqueId: book.uniqueId)?.ebookProgress == 0.5)
+        #expect(await fixture.store.book(uniqueId: book.uniqueId)?.epubLocator == serverLocator)
     }
 
     @Test func pushesEbookProgressWhenTheLocalCopyIsNewer() async throws {
@@ -409,8 +420,71 @@ struct RecentlyPlayedSyncServiceTests {
 
         #expect(result.pushedItemCount == 1)
         #expect(result.pulledItemCount == 0)
-        #expect(fixture.progressAPI.ebookPushes == [.init(libraryItemId: "ebook", progress: 0.6, isFinished: false)])
+        #expect(fixture.progressAPI.ebookPushes == [.init(libraryItemId: "ebook", progress: 0.6, itemHasAudio: false)])
         #expect(fixture.libraryCache.mutatedStableIds.isEmpty)
+    }
+
+    @Test func anAudioOnlyRecordNeverRewindsADualItemsEbook() async throws {
+        let localLocator = #"{"href":"text/ch2.xhtml","type":"application/xhtml+xml","locations":{"progression":0.5,"totalProgression":1}}"#
+        let fixture = try WorkerFixture()
+        fixture.connections.backends = [makeBackend(id: "abs")]
+
+        let ebook = makeBook(
+            id: "dual_ebook",
+            partKey: "dual",
+            mediaType: .ebook,
+            duration: nil,
+            epubLocator: localLocator,
+            ebookProgress: 1,
+            hasAlternateFormat: true
+        )
+        await fixture.store.upsertBooks([ebook])
+        fixture.libraryCache.allBooks = [ebook]
+
+        fixture.progressAPI.progressByBackend["abs"] = .success([
+            makeProgress(
+                libraryItemId: "dual",
+                currentTime: 600,
+                duration: 2_400,
+                ebookProgress: 0,
+                progress: 0.25,
+                lastUpdateSeconds: 5_000
+            )
+        ])
+
+        let result = await fixture.makeService().sync(trigger: .appLaunch)
+
+        #expect(result.pulledItemCount == 0)
+        #expect(fixture.libraryCache.mutatedStableIds.isEmpty)
+        #expect(await fixture.store.book(uniqueId: ebook.uniqueId)?.ebookProgress == 1)
+        #expect(await fixture.store.book(uniqueId: ebook.uniqueId)?.epubLocator == localLocator)
+        #expect(fixture.progressAPI.ebookPushes == [.init(libraryItemId: "dual", progress: 1, itemHasAudio: true)])
+    }
+
+    @Test func aDualItemsEbookResetToItsStartStillPulls() async throws {
+        let fixture = try WorkerFixture()
+        fixture.connections.backends = [makeBackend(id: "abs")]
+
+        let ebook = makeBook(id: "dual_ebook", partKey: "dual", mediaType: .ebook, duration: nil, ebookProgress: 0.4, hasAlternateFormat: true)
+        await fixture.store.upsertBooks([ebook])
+        fixture.libraryCache.allBooks = [ebook]
+
+        fixture.progressAPI.progressByBackend["abs"] = .success([
+            makeProgress(
+                libraryItemId: "dual",
+                currentTime: 600,
+                duration: 2_400,
+                ebookProgress: 0,
+                ebookLocation: "epubcfi(/6/2!/4/2)",
+                progress: 0.25,
+                lastUpdateSeconds: 5_000
+            )
+        ])
+
+        let result = await fixture.makeService().sync(trigger: .appLaunch)
+
+        #expect(result.pulledItemCount == 1)
+        #expect(fixture.libraryCache.allBooks[0].ebookProgress == 0)
     }
 
     @Test func failedEbookPushMarksTheBackendFailed() async throws {
@@ -479,6 +553,37 @@ struct RecentlyPlayedSyncServiceTests {
             ]
         )
         #expect(fixture.progressCache.savedProgress.isEmpty)
+    }
+
+    @Test func anEbookOnlyRecordNeverRewindsADualItemsAudio() async throws {
+        let fixture = try WorkerFixture()
+        fixture.connections.backends = [makeBackend(id: "abs")]
+
+        let audiobook = makeBook(id: "dual", partKey: "dual", duration: 2_400, hasAlternateFormat: true)
+        await fixture.store.upsertBooks([audiobook])
+        fixture.progressCache.stored[audiobook.stableId] = .init(progress: 600, duration: 2_400, lastUpdated: 1_000)
+
+        fixture.progressAPI.progressByBackend["abs"] = .success([
+            makeProgress(
+                libraryItemId: "dual",
+                currentTime: 0,
+                duration: 0,
+                ebookProgress: 0.4,
+                ebookLocation: "epubcfi(/6/20!/4/2)",
+                progress: 0,
+                lastUpdateSeconds: 5_000
+            )
+        ])
+
+        let result = await fixture.makeService().sync(trigger: .appLaunch)
+
+        #expect(result.pulledItemCount == 0)
+        #expect(fixture.progressCache.savedProgress.isEmpty)
+        #expect(
+            fixture.progressAPI.audiobookPushes == [
+                .init(libraryItemId: "dual", currentTime: 600, duration: 2_400, isFinished: false)
+            ]
+        )
     }
 
     @Test func matchingPositionsResolveToANoOp() async throws {

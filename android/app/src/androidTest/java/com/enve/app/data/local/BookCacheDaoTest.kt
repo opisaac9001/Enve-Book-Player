@@ -423,13 +423,24 @@ class BookCacheDaoTest {
             excludedLibraryIds = listOf("connection-a::hidden"),
             limit = 1,
         ).first()
-        val all = dao.observeAllForListExcludingLibraries(
-            excludedLibraryIds = listOf("connection-a::hidden"),
-            limit = 1,
-        ).first()
+        val all = dao.observeAllForListExcludingLibraries(listOf("connection-a::hidden")).first()
 
         assertEquals(listOf("visible-older"), recent.map { it.id })
         assertEquals(listOf("visible-older"), all.map { it.id })
+    }
+
+    @Test
+    fun listQueriesReturnEveryCachedBookBeyondTwentyThousand() = runBlocking {
+        val total = 20_050
+        dao.upsert((0 until total).map { index -> cachedBook(id = "book-$index", addedOn = index.toLong()) })
+        dao.upsert(listOf(cachedBook(id = "oldest-small-source", addedOn = -1L).copy(libraryId = "kavita::1")))
+
+        val all = dao.observeAllForList().first()
+        val visible = dao.observeAllForListExcludingLibraries(listOf("connection-a::hidden")).first()
+
+        assertEquals(total + 1, all.size)
+        assertEquals("oldest-small-source", all.last().id)
+        assertEquals(total + 1, visible.size)
     }
 
     @Test

@@ -165,26 +165,36 @@ struct ReaderListenAlongBar: View {
     }
 
     private func readerToggleListenAlong() {
-        if player.currentBook?.stableId == audiobook.stableId {
+        // A mini player restored at launch names the audiobook but has not loaded it yet.
+        if player.currentBook?.stableId == audiobook.stableId, player.isPlaybackLoaded {
             player.togglePlay()
             return
         }
 
-        let chapterIndex = model.currentChapterIndex ?? 0
-        let seekTarget = EbookAudiobookLinker.shared.audiobookTimeForEbookChapter(chapterIndex, ebook: ebook) ?? 0
+        let locatorJSON = model.lastKnownLocatorJSON
+        let chapterIndex = model.currentChapterIndex
 
         model.saveProgress()
         Task { @MainActor in
+            let seekTarget = await EbookAudiobookLinker.shared.audiobookTime(
+                forReadingLocator: locatorJSON,
+                chapterIndex: chapterIndex,
+                ebook: ebook,
+                audiobook: audiobook
+            )
             EnveEngine.shared.playback.play(audiobook, presentPlayer: false)
             for _ in 0..<20 {
                 if player.currentBook?.stableId == audiobook.stableId,
+                    player.isPlaybackLoaded,
                     !player.isLoading
                 {
                     break
                 }
                 try? await Task.sleep(nanoseconds: 150_000_000)
             }
-            player.seek(to: seekTarget)
+            if let seekTarget {
+                player.seek(to: seekTarget)
+            }
             if !player.isPlaying {
                 player.togglePlay()
             }

@@ -245,9 +245,9 @@ final class BookloreAudiobookSyncStrategy: ProviderSyncStrategy {
                         persistedBook.currentTime = serverTime
                         persistedBook.lastUpdate = serverDate
                         if duration > 0 {
-                            persistedBook.isFinished = serverResult.percentage >= 0.99
+                            persistedBook.isFinished = serverResult.percentage >= Book.finishedProgressThreshold
                         }
-                        let isPercentFinished = serverResult.percentage >= 0.99
+                        let isPercentFinished = serverResult.percentage >= Book.finishedProgressThreshold
                         let mutated = AppState.shared.mutateBook(stableId: book.stableId) {
                             $0.hideFromContinue = false
                             $0.serverReadStatus = serverResult.readState.persistedStatus ?? "READING"

@@ -1,0 +1,38 @@
+{
+  "mediaProgress": [
+    {
+      "id": "1cb89e37-ff12-4ec7-9604-f0f830766aae",
+      "libraryItemId": "8aeea38a-8dde-4c85-907f-31fefb255b40",
+      "episodeId": "48745f0f-cdb4-4e02-a472-0e4f97e228a0",
+      "mediaItemId": "48745f0f-cdb4-4e02-a472-0e4f97e228a0",
+      "mediaItemType": "podcastEpisode",
+      "duration": 30.0065,
+      "progress": 0,
+      "currentTime": 0,
+      "isFinished": false,
+      "hideFromContinueListening": false,
+      "ebookLocation": null,
+      "ebookProgress": 0,
+      "lastUpdate": 1790123963186,
+      "startedAt": 1790123963186,
+      "finishedAt": null
+    },
+    {
+      "id": "3bbfafc3-137f-4484-b3fc-b7320f7b6333",
+      "libraryItemId": "69705e22-3e69-43f3-ba42-64178e997530",
+      "episodeId": "7ac76a99-00a6-4801-9659-82a6d809db7f",
+      "mediaItemId": "7ac76a99-00a6-4801-9659-82a6d809db7f",
+      "mediaItemType": "podcastEpisode",
+      "duration": 7662.497959,
+      "progress": 0,
+      "currentTime": 0,
+      "isFinished": false,
+      "hideFromContinueListening": false,
+      "ebookLocation": null,
+      "ebookProgress": 0,
+      "lastUpdate": 1790124630530,
+      "startedAt": 1790124630529,
+      "finishedAt": null
+    }
+  ]
+}

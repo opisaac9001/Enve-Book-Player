@@ -6,19 +6,30 @@ import Logging
 @MainActor
 struct LibraryRecoveryStores {
     var mirrorCheckpoints: ServerMirrorCheckpointStore
+    var opdsProgressionEndpoints: OPDSProgressionEndpointStore
+    var opdsAuthentication: OPDSAuthenticationStore
     var userCollections: UserCollectionStore
     var smartCollections: SmartCollectionStore
     var pendingSync: PendingSyncQueueStore
+    var progressCache: BookProgressStore
+    var readerArtifacts: ReaderArtifactsStore
     var purgeCachedArtifacts: (Book) -> Void
     var purgeDownloadArtifacts: (String) -> Void
     var cleanupAlignmentCaches: ([Book]) -> Void
+    var isAudiobookDownloadActive: (String) -> Bool
+    var migrateDownloadedAudiobook: (String, String) -> Bool
+    var reassignDownloadTasks: (String, String) -> Void
 
     static func live() -> LibraryRecoveryStores {
         LibraryRecoveryStores(
             mirrorCheckpoints: .shared,
+            opdsProgressionEndpoints: .shared,
+            opdsAuthentication: .shared,
             userCollections: .shared,
             smartCollections: .shared,
             pendingSync: .shared,
+            progressCache: .shared,
+            readerArtifacts: .shared,
             purgeCachedArtifacts: { book in
                 ReaderArtifactsStore.shared.clearCachedChapters(bookId: book.stableId)
                 ReaderArtifactsStore.shared.clearCachedChapters(bookId: book.id)
@@ -41,7 +52,13 @@ struct LibraryRecoveryStores {
                 if #available(iOS 26.0, *) {
                     StoryAlignService.shared.cleanupOrphanedCaches(allBooks: books)
                 }
-            }
+            },
+            isAudiobookDownloadActive: { bookId in
+                UnifiedDownloadService.shared.hasActiveTaskForBookId(bookId)
+                    || BookDownloadManager.shared.isBookIdActiveDownload(bookId)
+            },
+            migrateDownloadedAudiobook: { LocalStorageManager.shared.migrateDownloadedAudiobook(from: $0, to: $1) },
+            reassignDownloadTasks: { UnifiedDownloadService.shared.reassignInactiveDownloadTasks(fromBookId: $0, toBookId: $1) }
         )
     }
 }
@@ -67,6 +84,7 @@ final class LibraryRecoveryCoordinator {
     private static let legacyEbookLinksMigratedKey = "enve.legacyEbookLinksMigratedToBookStoreV1"
     private static let legacyEbookRelationshipStoreKey = "ebook_audiobook_relationships"
     static let acknowledgedRescuedDownloadsKey = "enve.acknowledgedRescuedDownloadsV1"
+    static let grimmoryDualFormatMigratedPairsKey = "enve.grimmoryDualFormatPairsMigratedV1"
 
     init(
         library: LibraryBookCache = AppState.shared.libraryCache,
@@ -94,7 +112,54 @@ final class LibraryRecoveryCoordinator {
 
     func runStartupMigrations() async {
         await migrateLegacyEbookRelationshipsIfNeeded()
+        await migrateGrimmoryDualFormatArtifactsIfNeeded()
         await reconcileDuplicateStorytellerConnectionsIfNeeded()
+    }
+
+    // Completion is tracked per pair so later ebook data under the original ID never moves.
+    private func migrateGrimmoryDualFormatArtifactsIfNeeded() async {
+        let links = await bookStore.ebookLinkedAudiobookIds(source: Book.BookSource.booklore.rawValue)
+        guard !links.isEmpty else { return }
+
+        var migratedPairs = Set(defaults.stringArray(forKey: Self.grimmoryDualFormatMigratedPairsKey) ?? [])
+        var didChange = false
+
+        for link in links {
+            let original = link.ebookStableId
+            let companion = link.audiobookStableId
+            guard companion == Self.grimmoryCompanionStableId(forOriginal: original) else { continue }
+            let pairToken = "\(original)>\(companion)"
+            guard !migratedPairs.contains(pairToken) else { continue }
+
+            guard let companionBook = await bookStore.book(stableId: companion) else { continue }
+            if stores.isAudiobookDownloadActive(original) || stores.isAudiobookDownloadActive(companion) {
+                continue
+            }
+
+            guard stores.migrateDownloadedAudiobook(original, companion) else { continue }
+            guard await bookStore.migrateAudiobookArtifacts(fromBookStableId: original, toBookStableId: companion) else { continue }
+
+            stores.progressCache.migrateAudiobookArtifacts(fromStableId: original, to: companionBook)
+            stores.readerArtifacts.migrateAudiobookArtifacts(fromBookId: original, toBookId: companion)
+            stores.reassignDownloadTasks(original, companion)
+            migratedPairs.insert(pairToken)
+            didChange = true
+            AppLogger.general.info(
+                "Grimmory dual-format artifact migration completed pairDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: original))"
+            )
+        }
+
+        if didChange {
+            defaults.set(migratedPairs.sorted(), forKey: Self.grimmoryDualFormatMigratedPairsKey)
+        }
+    }
+
+    private static func grimmoryCompanionStableId(forOriginal original: String) -> String? {
+        let parts = original.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false)
+        guard parts.count == 3, parts[0] == "grimmory",
+            !parts[2].hasPrefix(BookloreProvider.companionAudiobookIDPrefix)
+        else { return nil }
+        return "grimmory:\(parts[1]):\(BookloreProvider.companionAudiobookIDPrefix)\(parts[2])"
     }
 
     private func reconcileDuplicateStorytellerConnectionsIfNeeded() async {
@@ -732,7 +797,7 @@ final class LibraryRecoveryCoordinator {
         guard !removedIds.isEmpty else { return }
 
         AppLogger.general.info(
-            "📊 [EarlyPrune] Removed \(beforeCount - library.books.count) stale books (\(beforeCount) → \(library.books.count)) mem=\(AppState.currentMemoryMB())MB"
+            "[EarlyPrune] Removed \(beforeCount - library.books.count) stale books (\(beforeCount) → \(library.books.count)) mem=\(AppState.currentMemoryMB())MB"
         )
 
         pendingBookStoreDeletions.formUnion(removedIds)
@@ -744,9 +809,11 @@ final class LibraryRecoveryCoordinator {
         let activeConnections = providerConnections.connections.filter { !$0.isArchived }
         let validProviderIds = Set(activeConnections.map { $0.id })
         stores.mirrorCheckpoints.retainConnections(validProviderIds)
+        stores.opdsProgressionEndpoints.retainConnections(validProviderIds)
+        stores.opdsAuthentication.retainConnections(validProviderIds)
 
         AppLogger.general.info(
-            "📊 [Prune] \(activeConnections.count) active connections, \(validProviderIds.count) valid providers, \(library.books.count) books before prune"
+            "[Prune] \(activeConnections.count) active connections, \(validProviderIds.count) valid providers, \(library.books.count) books before prune"
         )
 
         let allowedLibraryIdsByProvider: [UUID: Set<String>?] = Dictionary(
@@ -837,7 +904,7 @@ final class LibraryRecoveryCoordinator {
                 pendingBookStoreDeletions.formUnion(removedBookIds)
             }
             AppLogger.general.info(
-                "📊 [Prune] Pruned: \(beforeBooks) → \(library.books.count) books, \(beforeLibraries) → \(catalog.libraries.count) libs, \(beforeCollections) → \(catalog.collections.count) collections"
+                "[Prune] Pruned: \(beforeBooks) → \(library.books.count) books, \(beforeLibraries) → \(catalog.libraries.count) libs, \(beforeCollections) → \(catalog.collections.count) collections"
             )
         }
 
@@ -855,7 +922,7 @@ final class LibraryRecoveryCoordinator {
                 restrictedLibraryIds: restrictedLibraryIds
             )
             guard removed > 0 else { return }
-            AppLogger.general.info("📊 [Prune] Purged \(removed) orphan books from BookStore after library/connection removal")
+            AppLogger.general.info("[Prune] Purged \(removed) orphan books from BookStore after library/connection removal")
             self?.library.changes.send(())
         }
     }
@@ -992,6 +1059,8 @@ final class LibraryRecoveryCoordinator {
 
         DeletedBooksTombstoneStore.shared.clearAll()
         stores.mirrorCheckpoints.clearAll()
+        stores.opdsProgressionEndpoints.clearAll()
+        stores.opdsAuthentication.clearAll()
     }
 
     func resetBookDataState() async {
@@ -1004,6 +1073,8 @@ final class LibraryRecoveryCoordinator {
         library.books.removeAll()
         catalog.collections.removeAll()
         stores.mirrorCheckpoints.clearAll()
+        stores.opdsProgressionEndpoints.clearAll()
+        stores.opdsAuthentication.clearAll()
         stores.userCollections.clearAll()
         stores.smartCollections.clearAll()
         catalog.series.removeAll()
@@ -1019,7 +1090,6 @@ final class LibraryRecoveryCoordinator {
     }
 
     private func migrateLegacyEbookRelationshipsIfNeeded() async {
-        let defaults = UserDefaults.standard
         guard !defaults.bool(forKey: Self.legacyEbookLinksMigratedKey) else { return }
         guard let data = defaults.data(forKey: Self.legacyEbookRelationshipStoreKey) else {
             defaults.set(true, forKey: Self.legacyEbookLinksMigratedKey)
@@ -1057,7 +1127,7 @@ final class LibraryRecoveryCoordinator {
             if delaySeconds > 0 {
                 try? await Task.sleep(nanoseconds: delaySeconds * 1_000_000_000)
             }
-            AppLogger.general.info("📊 [BookStore] Starting stale-row cleanup for \(ids.count) rows")
+            AppLogger.general.info("[BookStore] Starting stale-row cleanup for \(ids.count) rows")
             let idList = Array(ids)
 
             let chunkSize = 100
@@ -1069,7 +1139,7 @@ final class LibraryRecoveryCoordinator {
                 await Task.yield()
             }
             let storeCount = await store.bookCount()
-            AppLogger.general.info("📊 [BookStore] Deleted \(ids.count) stale rows, \(storeCount) rows remain")
+            AppLogger.general.info("[BookStore] Deleted \(ids.count) stale rows, \(storeCount) rows remain")
         }
     }
 

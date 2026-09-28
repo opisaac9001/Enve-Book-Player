@@ -48,61 +48,6 @@ class JellyfinConnectionManager: ObservableObject {
     private var jellyfinProvider: JellyfinProvider?
     private var currentConnectionId: UUID?
 
-    func authenticateWithCredentials(serverURL: String, username: String, password: String) async throws {
-        AppLogger.network.info("[JellyfinConnectionManager] ===== AUTHENTICATION STARTED =====")
-        AppLogger.network.info("[JellyfinConnectionManager] Server URL: \(URL(string: serverURL)?.redacted.absoluteString ?? "<invalid>")")
-        AppLogger.network.info("[JellyfinConnectionManager] Username: \(username)")
-
-        let provider = JellyfinProvider()
-
-        try await provider.authenticate(serverURL: serverURL, username: username, password: password)
-
-        AppLogger.network.info("[JellyfinConnectionManager] Authentication successful")
-
-        self.jellyfinProvider = provider
-        self.serverURL = serverURL
-        self.authenticationState = .authenticated
-
-        let connectionId = UUID()
-        let connection = ServerConnection(
-            id: connectionId,
-            name: "Jellyfin",
-            url: serverURL,
-            type: .jellyfin,
-            username: username,
-            token: provider.connection.token,
-            userId: provider.connection.userId,
-            isConnected: true,
-            lastVerified: Date(),
-            selectedLibraryIds: nil
-        )
-
-        self.currentConnectionId = connectionId
-
-        AppLogger.network.info("[JellyfinConnectionManager] Saving connection to AppState...")
-
-        if let existingIndex = AppState.shared.providerConnections.connections.firstIndex(where: {
-            $0.type == .jellyfin && $0.url == serverURL && $0.username == username
-        }) {
-            var updatedConnection = AppState.shared.providerConnections.connections[existingIndex]
-            updatedConnection.token = connection.token
-            updatedConnection.userId = connection.userId
-            updatedConnection.isConnected = true
-            updatedConnection.lastVerified = Date()
-            AppState.shared.providerConnections.connections[existingIndex] = updatedConnection
-            self.currentConnectionId = updatedConnection.id
-            AppLogger.network.info("[JellyfinConnectionManager] Updated existing connection")
-        } else {
-            AppState.shared.providerConnections.connections.append(connection)
-            AppLogger.network.info("[JellyfinConnectionManager] Added new connection")
-        }
-
-        AppLogger.network.info(
-            "[JellyfinConnectionManager] Connection saved to AppState (Total: \(AppState.shared.providerConnections.connections.count) connections)"
-        )
-        AppLogger.network.info("[JellyfinConnectionManager] ===== AUTHENTICATION COMPLETE =====")
-    }
-
     func refreshAuthentication() async throws {
         AppLogger.network.info("[JellyfinConnectionManager] Refreshing authentication...")
         if let connectionId = currentConnectionId,

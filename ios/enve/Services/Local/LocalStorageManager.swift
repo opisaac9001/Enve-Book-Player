@@ -111,7 +111,7 @@ final class LocalStorageManager {
         case .plex:
             appendUnique("plex:\(book.id)")
             appendUnique("plex:\(book.ratingKey)")
-        case .audiobookshelf, .webdav, .jellyfin, .emby, .booklore, .realdebrid, .komga, .kavita, .opds, .storyteller, .bookOrbit, .silo,
+        case .audiobookshelf, .webdav, .jellyfin, .emby, .booklore, .realdebrid, .komga, .kavita, .opds, .storyteller, .bookOrbit, .silo, .oneDrive,
             .torbox:
             appendUnique("\(book.source.rawValue):\(book.backendId ?? "unknown"):\(book.id)")
             appendUnique("\(book.source.rawValue):\(book.providerId.uuidString):\(book.id)")
@@ -151,11 +151,6 @@ final class LocalStorageManager {
             }
             return metadata.stableId == book.stableId
         }
-    }
-
-    nonisolated func bookAudioPath(for bookId: String, chapterIndex: Int) -> URL {
-        let directory = bookAudioDirectory(for: bookId)
-        return directory.appendingPathComponent("chapter_\(chapterIndex).m4b", isDirectory: false)
     }
 
     func isAudiobookDownloaded(_ bookId: String) -> Bool {
@@ -562,29 +557,11 @@ final class LocalStorageManager {
         try fileManager.removeItem(at: path)
     }
 
-    func performCleanup() {
-        operationQueue.async(flags: .barrier) { [weak self] in
-            guard let self else { return }
-
-            let downloadedIds = self.downloadedAudiobookIds()
-            AppLogger.network.info(
-                "Local storage: \(downloadedIds.count) audiobooks, \(self.formatBytes(self.totalAudiobooksSize())) total"
-            )
-        }
-    }
-
     nonisolated private func formatBytes(_ bytes: Int64) -> String {
         let formatter = ByteCountFormatter()
         formatter.allowedUnits = [.useGB, .useMB, .useKB, .useBytes]
         formatter.countStyle = .file
         return formatter.string(fromByteCount: bytes)
-    }
-
-    func availableDiskSpace() -> Int64 {
-        guard let attributes = try? fileManager.attributesOfFileSystem(forPath: NSHomeDirectory()) else {
-            return 0
-        }
-        return attributes[.systemFreeSize] as? Int64 ?? 0
     }
 
     func markNeedsReVerification(bookId: String) {
@@ -599,31 +576,41 @@ final class LocalStorageManager {
         }
     }
 
-    func clearReVerification(bookId: String) {
-        reVerificationQueue.async(flags: .barrier) {
-            self.needsReVerification.remove(bookId)
-        }
-    }
+    // Unlike reassociateDownload, never replaces existing destination data; false means retry later.
+    func migrateDownloadedAudiobook(from oldKey: String, to newKey: String) -> Bool {
+        let oldSanitized = LocalStorageManager.sanitizedId(for: oldKey)
+        let newSanitized = LocalStorageManager.sanitizedId(for: newKey)
+        guard oldSanitized != newSanitized else { return true }
 
-    func reVerifyAndRedownloadIfNeeded(bookId: String) async -> Bool {
-        if let localURL = localAudiobookFileURLIfExists(bookId: bookId) {
-            let fileManager = FileManager.default
-            if fileManager.fileExists(atPath: localURL.path) {
-                AppLogger.network.info(
-                    "Deleting corrupted file \(DiagnosticLogSanitizer.fileDescriptor(for: localURL))"
+        let fm = FileManager.default
+        var movedAudio = false
+        for audiobooksRoot in candidateAudiobooksDirectories() {
+            let destinations = DownloadDestinationFileSystem(audiobooksRoot: audiobooksRoot)
+            do {
+                guard try destinations.moveBookDirectory(from: oldKey, to: newKey) else { continue }
+                movedAudio = true
+                break
+            } catch {
+                AppLogger.network.error(
+                    "Download migration blocked for bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: newKey)): \(error.localizedDescription)"
                 )
-                try? fileManager.removeItem(at: localURL)
-
-                let bookDir = localURL.deletingLastPathComponent()
-                if let contents = try? fileManager.contentsOfDirectory(at: bookDir, includingPropertiesForKeys: nil),
-                    contents.isEmpty
-                {
-                    try? fileManager.removeItem(at: bookDir)
-                }
+                return false
             }
         }
+        guard movedAudio else { return true }
 
-        clearReVerification(bookId: bookId)
+        let sidecars = [
+            (metadataOverridePath(for: oldKey), metadataOverridePath(for: newKey)),
+            (coverOverridePath(for: oldKey), coverOverridePath(for: newKey)),
+            (playbackStatePath(for: oldKey), playbackStatePath(for: newKey)),
+        ]
+        for (oldFile, newFile) in sidecars
+        where fm.fileExists(atPath: oldFile.path) && !fm.fileExists(atPath: newFile.path) {
+            try? fm.moveItem(at: oldFile, to: newFile)
+        }
+
+        invalidateDownloadedIdsCache()
+        AppLogger.network.info("Migrated download: \(oldSanitized) -> \(newSanitized)")
         return true
     }
 

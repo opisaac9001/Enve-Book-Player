@@ -34,6 +34,7 @@ struct MediaOverlayTimeline: Sendable {
     let clipTimings: [ClipTiming]
     let totalAudioDuration: TimeInterval
     let totalSpokenDuration: TimeInterval
+    let clipTextProgressions: [Double]
 
     private let audioFileIndexBySource: [String: Int]
     private let clipIndicesByFragment: [String: [Int]]
@@ -42,9 +43,11 @@ struct MediaOverlayTimeline: Sendable {
     init(
         clips: [AudioOverlayClip],
         audioDurationsBySource: [String: TimeInterval] = [:],
-        orderedAudioDurations: [TimeInterval] = []
+        orderedAudioDurations: [TimeInterval] = [],
+        clipTextProgressions: [Double] = []
     ) {
         self.clips = clips
+        self.clipTextProgressions = clipTextProgressions.count == clips.count ? clipTextProgressions : []
 
         var orderedSources: [String] = []
         var seenSources = Set<String>()
@@ -209,6 +212,28 @@ struct MediaOverlayTimeline: Sendable {
         return min(max(spokenElapsed(atAudioTime: time, clipIndex: clipIndex) / totalSpokenDuration, 0), 1)
     }
 
+    func textProgression(clipIndex: Int) -> Double? {
+        clipTextProgressions.indices.contains(clipIndex) ? clipTextProgressions[clipIndex] : nil
+    }
+
+    // The book position on Readium's text scale; spoken audio fraction only when text offsets are unavailable.
+    func readingProgression(atAudioTime time: TimeInterval, clipIndex preferredClipIndex: Int? = nil) -> Double {
+        // Finishing the narration finishes the book, even with un-narrated back matter after it.
+        if totalAudioDuration > 0, time >= totalAudioDuration { return 1 }
+        if let clipIndex = preferredClipIndex ?? clipIndex(atAudioTime: time),
+            let progression = textProgression(clipIndex: clipIndex)
+        {
+            return progression
+        }
+        return spokenProgression(atAudioTime: time, clipIndex: preferredClipIndex)
+    }
+
+    func clipIndex(atReadingProgression progression: Double) -> Int? {
+        guard !clipTextProgressions.isEmpty else { return clipIndex(atSpokenProgression: progression) }
+        let target = min(max(progression, 0), 1)
+        return clipTextProgressions.lastIndex(where: { $0 <= target }) ?? 0
+    }
+
     func chapterProgression(atAudioTime time: TimeInterval, clipIndex: Int) -> Double {
         guard clips.indices.contains(clipIndex) else { return 0 }
         let href = clips[clipIndex].textHref
@@ -258,8 +283,11 @@ struct MediaOverlayTimeline: Sendable {
         if let fragment = fragments.first(where: {
             !$0.hasPrefix("t=") && !$0.hasPrefix("epubcfi(")
         }), let clipIndex = clipIndex(fragmentId: fragment, preferredHref: href),
-            let audioTime = audioTime(forClipIndex: clipIndex)
+            let clipStart = audioTime(forClipIndex: clipIndex)
         {
+            let audioTime = fragments.compactMap(Self.audioTimeFragment).first.flatMap { candidate in
+                self.clipIndex(atAudioTime: candidate) == clipIndex ? candidate : nil
+            } ?? clipStart
             return ResolvedPosition(clipIndex: clipIndex, audioTime: audioTime, source: .fragment)
         }
 
@@ -272,7 +300,7 @@ struct MediaOverlayTimeline: Sendable {
         }
 
         if let progression = Self.doubleValue(locations["totalProgression"]),
-            let clipIndex = clipIndex(atSpokenProgression: progression),
+            let clipIndex = clipIndex(atReadingProgression: progression),
             let audioTime = audioTime(forClipIndex: clipIndex)
         {
             return ResolvedPosition(clipIndex: clipIndex, audioTime: audioTime, source: .progression)
@@ -311,12 +339,12 @@ struct MediaOverlayTimeline: Sendable {
             "href": clip.textHref,
             "type": "application/xhtml+xml",
             "locations": [
-                "fragments": [clip.fragmentId],
+                "fragments": [clip.fragmentId, "t=\(clampedAudioTime)"],
                 "progression": chapterProgression(atAudioTime: clampedAudioTime, clipIndex: clipIndex),
                 "totalProgression": min(
                     max(
                         totalProgression
-                            ?? spokenProgression(
+                            ?? readingProgression(
                                 atAudioTime: clampedAudioTime,
                                 clipIndex: clipIndex
                             ),
@@ -330,12 +358,6 @@ struct MediaOverlayTimeline: Sendable {
         return String(data: data, encoding: .utf8)
     }
 
-    func audioFilePosition(atAudioTime audioTime: TimeInterval) -> (file: AudioFile, localTime: TimeInterval)? {
-        guard let file = audioFile(atAudioTime: audioTime) else { return nil }
-        let localTime = min(max(audioTime - file.start, 0), file.duration)
-        return (file, localTime)
-    }
-
     private func audioFile(atAudioTime audioTime: TimeInterval) -> AudioFile? {
         guard !audioFiles.isEmpty else { return nil }
         let clampedTime = min(max(audioTime, 0), totalAudioDuration)
@@ -343,11 +365,17 @@ struct MediaOverlayTimeline: Sendable {
     }
 
     private static func fragments(in locations: [String: Any]) -> [String] {
-        if let fragments = locations["fragments"] as? [String] {
-            return fragments
-        }
-        if let fragments = locations["fragments"] as? [Any] {
+        if let fragments = locations["fragments"] as? [Any], !fragments.isEmpty {
             return fragments.compactMap { $0 as? String }
+        }
+        // The Android reader anchors a narrated sentence by its element id in the DOM range.
+        if let domRange = locations["domRange"] as? [String: Any],
+            let start = domRange["start"] as? [String: Any],
+            let selector = start["cssSelector"] as? String,
+            selector.hasPrefix("#"), selector.count > 1,
+            !selector.dropFirst().contains(where: { " >.:[".contains($0) })
+        {
+            return [String(selector.dropFirst())]
         }
         return []
     }
@@ -358,7 +386,12 @@ struct MediaOverlayTimeline: Sendable {
         return nil
     }
 
-    private static func hrefMatches(_ lhs: String, _ rhs: String) -> Bool {
+    private static func audioTimeFragment(_ fragment: String) -> TimeInterval? {
+        guard fragment.hasPrefix("t=") else { return nil }
+        return TimeInterval(fragment.dropFirst(2))
+    }
+
+    nonisolated static func hrefMatches(_ lhs: String, _ rhs: String) -> Bool {
         let a = normalizedHref(lhs)
         let b = normalizedHref(rhs)
         guard !a.isEmpty, !b.isEmpty else { return a == b }
@@ -368,7 +401,7 @@ struct MediaOverlayTimeline: Sendable {
         return !fileA.isEmpty && fileA == fileB
     }
 
-    private static func normalizedHref(_ href: String) -> String {
+    private nonisolated static func normalizedHref(_ href: String) -> String {
         let withoutFragment =
             href.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
             .first

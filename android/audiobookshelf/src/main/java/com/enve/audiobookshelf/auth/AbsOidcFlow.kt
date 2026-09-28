@@ -21,7 +21,6 @@ sealed class AbsOidcCallback {
     data class Failed(val message: String) : AbsOidcCallback()
 }
 
-// PKCE state is held in this @Singleton so it survives VM recreation across the browser hop.
 @Singleton
 class AbsOidcFlow @Inject constructor(
     private val absRepository: AudiobookshelfRepository,

@@ -7,7 +7,7 @@ class EmbyService {
     private init() {}
 
     func authenticate(serverUrl: String, username: String, password: String) async throws {
-        let normalizedURL = EmbyProvider.normalizeServerURL(serverUrl)
+        let normalizedURL = MediaBrowserClient.normalizeServerURL(serverUrl)
         try await EmbyProvider.shared.authenticate(serverURL: normalizedURL, username: username, password: password)
         AppLogger.network.info("[EmbyService] Authentication successful")
     }

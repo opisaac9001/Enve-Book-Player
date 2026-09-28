@@ -1,10 +1,5 @@
-import AVFoundation
 import Foundation
 import Logging
-
-#if canImport(UIKit)
-import UIKit
-#endif
 
 class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, AudiobookProgressProvider,
     EbookDownloadProvider, @unchecked Sendable
@@ -19,7 +14,7 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         ]
     }
 
-    private let session = URLSession.shared
+    private let session: URLSession
 
     static var shared: EmbyProvider = {
         let defaultConnection = ServerConnection(
@@ -30,8 +25,9 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         return EmbyProvider(connection: defaultConnection)
     }()
 
-    init(connection: ServerConnection) {
+    init(connection: ServerConnection, session: URLSession = .shared) {
         self.connection = connection
+        self.session = session
     }
 
     @discardableResult
@@ -44,7 +40,7 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         )
         try await authenticate(username: username, password: password)
         AppLogger.network.info(
-            "[EmbyProvider] Authentication complete for: \(URL(string: serverURL)?.redacted.absoluteString ?? "<invalid>")"
+            "[Emby] Authentication complete for: \(URL(string: serverURL)?.redacted.absoluteString ?? "<invalid>")"
         )
         guard let token = connection.token, !token.isEmpty else {
             throw ProviderError.unauthorized
@@ -52,55 +48,13 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         return token
     }
 
-    private var clientName: String { "Enve" }
-    private var clientVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
-    }
-    private var deviceId: String {
-        #if canImport(UIKit)
-        return UIDevice.current.identifierForVendor?.uuidString ?? StorageService.shared.loadDeviceUUID()
-        #else
-        return StorageService.shared.loadDeviceUUID()
-        #endif
-    }
-    private var deviceName: String {
-        #if canImport(UIKit)
-        return UIDevice.current.name.replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "'", with: "")
-        #elseif os(macOS)
-        return (Host.current().localizedName ?? "Mac").replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "'", with: "")
-        #else
-        return "Enve Client"
-        #endif
-    }
-
-    public static func normalizeServerURL(_ input: String) -> String {
-        var trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-
-        if trimmed.isEmpty { return input }
-
-        if !trimmed.lowercased().hasPrefix("http") {
-            if trimmed.contains("8920") {
-                trimmed = "https://\(trimmed)"
-            } else {
-                trimmed = "http://\(trimmed)"
-            }
-        }
-
-        return trimmed
-    }
-
-    private func buildAuthHeader(includeToken: Bool = true) -> String {
-        var header =
-            "MediaBrowser Client=\"\(clientName)\", Device=\"\(deviceName)\", DeviceId=\"\(deviceId)\", Version=\"\(clientVersion)\""
-        if includeToken, let token = connection.token {
-            header += ", Token=\"\(token)\""
-        }
-        return header
+    // Still referenced by the agent-locked LoginDelegates.swift.
+    static func normalizeServerURL(_ input: String) -> String {
+        MediaBrowserClient.normalizeServerURL(input)
     }
 
     private func addAuthHeaders(_ request: inout URLRequest) {
-        request.setValue(buildAuthHeader(), forHTTPHeaderField: "X-Emby-Authorization")
+        request.setValue(MediaBrowserClient.authorizationHeader(token: connection.token), forHTTPHeaderField: "X-Emby-Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         applyCustomHeaders(to: &request)
     }
@@ -134,7 +88,7 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
     }
 
     private func checkSystemInfo() async throws -> Bool {
-        let base = EmbyProvider.normalizeServerURL(connection.url)
+        let base = MediaBrowserClient.normalizeServerURL(connection.url)
         guard let url = URL(string: "\(base)/System/Info/Public") else {
             throw ProviderError.invalidURL
         }
@@ -151,7 +105,7 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
     }
 
     private func authenticate(username: String, password: String) async throws {
-        let base = Self.normalizeServerURL(connection.url)
+        let base = MediaBrowserClient.normalizeServerURL(connection.url)
         guard let authURL = URL(string: "\(base)/Users/AuthenticateByName") else {
             throw ProviderError.invalidURL
         }
@@ -159,7 +113,7 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         var request = URLRequest(url: authURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(buildAuthHeader(includeToken: false), forHTTPHeaderField: "X-Emby-Authorization")
+        request.setValue(MediaBrowserClient.authorizationHeader(token: nil), forHTTPHeaderField: "X-Emby-Authorization")
         applyCustomHeaders(to: &request)
 
         let body = ["Username": username, "Pw": password]
@@ -200,7 +154,7 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
 
     func fetchLibraries() async throws -> [Library] {
         guard let userId = connection.userId else { throw ProviderError.unauthorized }
-        let base = EmbyProvider.normalizeServerURL(connection.url)
+        let base = MediaBrowserClient.normalizeServerURL(connection.url)
 
         guard let url = URL(string: "\(base)/Users/\(userId)/Views") else {
             throw ProviderError.invalidURL
@@ -231,7 +185,7 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
 
     func fetchBooks(libraryId: String) async throws -> [Book] {
         guard let userId = connection.userId else { throw ProviderError.unauthorized }
-        let base = EmbyProvider.normalizeServerURL(connection.url)
+        let base = MediaBrowserClient.normalizeServerURL(connection.url)
 
         let pageSize = 500
         var startIndex = 0
@@ -251,7 +205,7 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
                 URLQueryItem(
                     name: "Fields",
                     value:
-                        "Overview,MediaSources,RunTimeTicks,ParentId,ChildCount,ProductionYear,AlbumArtist,AlbumArtists,ArtistItems,SeriesName,IndexNumber,Studios,Genres,UserData,People,Path,Chapters,ImageTags,PrimaryImageItemId,PrimaryImageTag,ParentPrimaryImageItemId,ParentPrimaryImageTag,AlbumId,AlbumPrimaryImageTag"
+                        "Overview,MediaSources,RunTimeTicks,ParentId,ChildCount,ProductionYear,AlbumArtist,AlbumArtists,ArtistItems,SeriesName,IndexNumber,Studios,Genres,UserData,People,Composers,Path,Chapters,ImageTags,PrimaryImageItemId,PrimaryImageTag,ParentPrimaryImageItemId,ParentPrimaryImageTag,AlbumId,AlbumPrimaryImageTag"
                 ),
                 URLQueryItem(name: "SortBy", value: "SortName"),
                 URLQueryItem(name: "SortOrder", value: "Ascending"),
@@ -400,7 +354,7 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
 
     private func fetchIncrementalCatalogPage(libraryId: String, page: Int) async throws -> LibraryCatalogPage {
         guard let userId = connection.userId else { throw ProviderError.unauthorized }
-        let base = EmbyProvider.normalizeServerURL(connection.url)
+        let base = MediaBrowserClient.normalizeServerURL(connection.url)
         let pageSize = 500
         let startIndex = page * pageSize
         guard var components = URLComponents(string: "\(base)/Users/\(userId)/Items") else {
@@ -412,7 +366,7 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
             URLQueryItem(name: "Recursive", value: "true"),
             URLQueryItem(
                 name: "Fields",
-                value: "Overview,MediaSources,RunTimeTicks,ParentId,ChildCount,ProductionYear,AlbumArtist,AlbumArtists,ArtistItems,SeriesName,IndexNumber,Studios,Genres,UserData,People,Path,Chapters,ImageTags,PrimaryImageItemId,PrimaryImageTag,ParentPrimaryImageItemId,ParentPrimaryImageTag,AlbumId,AlbumPrimaryImageTag"
+                value: "Overview,MediaSources,RunTimeTicks,ParentId,ChildCount,ProductionYear,AlbumArtist,AlbumArtists,ArtistItems,SeriesName,IndexNumber,Studios,Genres,UserData,People,Composers,Path,Chapters,ImageTags,PrimaryImageItemId,PrimaryImageTag,ParentPrimaryImageItemId,ParentPrimaryImageTag,AlbumId,AlbumPrimaryImageTag"
             ),
             URLQueryItem(name: "SortBy", value: "SortName"),
             URLQueryItem(name: "SortOrder", value: "Ascending"),
@@ -473,7 +427,7 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         guard book.mediaType == .ebook else { throw ProviderError.invalidResponse }
         guard let token = connection.token else { throw ProviderError.unauthorized }
 
-        let base = EmbyProvider.normalizeServerURL(connection.url)
+        let base = MediaBrowserClient.normalizeServerURL(connection.url)
         guard var components = URLComponents(string: "\(base)/Items/\(book.id)/File") else {
             throw ProviderError.invalidURL
         }
@@ -532,14 +486,14 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
 
     func fetchFullBookDetails(bookId: String, libraryId: String) async throws -> Book {
         guard let userId = connection.userId else { throw ProviderError.unauthorized }
-        let base = EmbyProvider.normalizeServerURL(connection.url)
+        let base = MediaBrowserClient.normalizeServerURL(connection.url)
 
         guard var components = URLComponents(string: "\(base)/Users/\(userId)/Items/\(bookId)") else { throw ProviderError.invalidURL }
         components.queryItems = [
             URLQueryItem(
                 name: "Fields",
                 value:
-                    "Overview,MediaSources,RunTimeTicks,ParentId,ChildCount,ProductionYear,AlbumArtist,AlbumArtists,ArtistItems,SeriesName,IndexNumber,Studios,Genres,UserData,Chapters,People,Path,ImageTags,PrimaryImageItemId,PrimaryImageTag,ParentPrimaryImageItemId,ParentPrimaryImageTag,AlbumId,AlbumPrimaryImageTag"
+                    "Overview,MediaSources,RunTimeTicks,ParentId,ChildCount,ProductionYear,AlbumArtist,AlbumArtists,ArtistItems,SeriesName,IndexNumber,Studios,Genres,UserData,Chapters,People,Composers,Path,ImageTags,PrimaryImageItemId,PrimaryImageTag,ParentPrimaryImageItemId,ParentPrimaryImageTag,AlbumId,AlbumPrimaryImageTag"
             )
         ]
 
@@ -629,7 +583,7 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
                 }
                 let streamURLString = "\(base)/Audio/\(streamId)/stream?static=true&api_key=\(token)"
                 if let streamURL = URL(string: streamURLString) {
-                    let extracted = await extractChaptersFromStream(url: streamURL)
+                    let extracted = await MediaBrowserClient.extractChapters(fromStream: streamURL)
                     if !extracted.isEmpty {
                         AppLogger.network.info("Successfully extracted \(extracted.count) chapters from stream")
                         chapters = extracted
@@ -691,60 +645,12 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
             )
         }
 
-        book = await applyMetadataFallback(book: book, item: item, childTracks: childTracks)
-
-        return book
-    }
-
-    private func applyMetadataFallback(book: Book, item: EmbyItem, childTracks: [EmbyItem]) async -> Book {
-        var book = book
-        let base = EmbyProvider.normalizeServerURL(connection.url)
-
-        if book.author == "Unknown Author" || (book.narrator == nil || book.narrator?.isEmpty == true) || book.seriesInfo == nil {
-            AppLogger.network.warning(
-                "Essential metadata missing for '\(book.title)' (Author/Narrator/Series), attempting to read from file tags..."
-            )
-            if let token = connection.token {
-                var streamId = item.Id
-                if (item.RunTimeTicks ?? 0) == 0 {
-                    if let firstTrack = childTracks.first {
-                        streamId = firstTrack.Id
-                    }
-                }
-
-                let streamURLString = "\(base)/Audio/\(streamId)/stream?static=true&api_key=\(token)"
-                if let streamURL = URL(string: streamURLString) {
-                    let fileMetadata = await extractMetadataFromStream(url: streamURL)
-
-                    if book.author == "Unknown Author", let fileAuthor = fileMetadata.author {
-                        AppLogger.network.debug(
-                            "Using embedded author bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId))"
-                        )
-                        book.author = fileAuthor
-                    }
-
-                    if book.narrator == nil || book.narrator?.isEmpty == true, let fileNarrator = fileMetadata.narrator {
-                        AppLogger.network.debug(
-                            "Using embedded narrator bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId))"
-                        )
-                        book.narrator = fileNarrator
-                    }
-
-                    if book.series == nil, let fileSeries = fileMetadata.series {
-                        AppLogger.network.debug(
-                            "Using embedded series bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId))"
-                        )
-                        book.series = fileSeries
-                    }
-                }
-            }
-        }
         return book
     }
 
     private func fetchChildAudioItems(parentId: String) async throws -> [EmbyItem] {
         guard let userId = connection.userId else { return [] }
-        let base = EmbyProvider.normalizeServerURL(connection.url)
+        let base = MediaBrowserClient.normalizeServerURL(connection.url)
 
         guard var components = URLComponents(string: "\(base)/Users/\(userId)/Items") else { return [] }
         components.queryItems = [
@@ -756,7 +662,7 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
             URLQueryItem(
                 name: "Fields",
                 value:
-                    "Overview,MediaSources,RunTimeTicks,ParentId,ChildCount,ProductionYear,AlbumArtist,AlbumArtists,ArtistItems,SeriesName,IndexNumber,Studios,Genres,UserData,People,Artists,Artist"
+                    "Overview,MediaSources,RunTimeTicks,ParentId,ChildCount,ProductionYear,AlbumArtist,AlbumArtists,ArtistItems,SeriesName,IndexNumber,Studios,Genres,UserData,People,Composers,Artists"
             ),
         ]
 
@@ -776,133 +682,8 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         return result.Items
     }
 
-    private func extractChaptersFromStream(url: URL) async -> [Chapter] {
-        let asset = AVURLAsset(url: url)
-        var chapters: [Chapter] = []
-
-        do {
-            let locales = try await asset.load(.availableChapterLocales)
-            for locale in locales {
-                let metadataGroups = try await asset.loadChapterMetadataGroups(bestMatchingPreferredLanguages: [locale.identifier])
-                for (index, group) in metadataGroups.enumerated() {
-                    let timeRange = group.timeRange
-                    let start = CMTimeGetSeconds(timeRange.start)
-                    let chapterDuration = CMTimeGetSeconds(timeRange.duration)
-
-                    var title = "Chapter \(index + 1)"
-                    for item in group.items {
-                        if item.commonKey == .commonKeyTitle {
-                            if let val = try? await item.load(.stringValue) {
-                                title = val
-                                break
-                            }
-                        }
-                    }
-
-                    chapters.append(
-                        Chapter(
-                            id: "extracted_\(index)",
-                            start: start,
-                            end: start + chapterDuration,
-                            title: title
-                        )
-                    )
-                }
-                if !chapters.isEmpty { break }
-            }
-        } catch {
-            AppLogger.network.error("Extraction failed: \(error)")
-        }
-
-        return chapters.sorted { $0.start < $1.start }
-    }
-
-    private struct FileMetadata {
-        var author: String?
-        var narrator: String?
-        var series: String?
-    }
-
-    private func extractMetadataFromStream(url: URL) async -> FileMetadata {
-        let asset = AVURLAsset(url: url)
-        var metadata = FileMetadata()
-        var potentialNarrators: [String] = []
-
-        do {
-            let formats = try await asset.load(.availableMetadataFormats)
-            AppLogger.network.info("Available metadata formats: \(formats.map { $0.rawValue })")
-
-            for format in formats {
-                let items = try await asset.loadMetadata(for: format)
-                AppLogger.network.info("Format \(format.rawValue) has \(items.count) tags:")
-
-                for item in items {
-                    let key = item.commonKey?.rawValue ?? item.key?.description ?? "unknown"
-                    let value = try? await item.load(.stringValue)
-                    let val = value ?? "<no string value>"
-                    AppLogger.network.info("Tag: '\(key)' = '\(val)'")
-
-                    guard let actualVal = value, !actualVal.trimmingCharacters(in: .whitespaces).isEmpty else { continue }
-                    let trimmedVal = actualVal.trimmingCharacters(in: .whitespaces)
-
-                    let lowerKey = key.lowercased()
-
-                    if metadata.author == nil
-                        && (lowerKey.contains("artist") || lowerKey.contains("author") || lowerKey == "tpe1" || lowerKey == "©art")
-                    {
-                        metadata.author = trimmedVal
-                        AppLogger.network.info("Extracted Author from '\(key)': \(trimmedVal)")
-                    }
-
-                    if metadata.narrator == nil
-                        && (lowerKey.contains("composer") || lowerKey.contains("narrator") || lowerKey.contains("album_artist")
-                            || lowerKey == "tcom" || lowerKey == "©wrt" || lowerKey == "©lyr" || lowerKey == "text"
-                            || lowerKey.contains("tpe2") || lowerKey.contains("aart"))
-                    {
-                        if trimmedVal.lowercased() != (metadata.author ?? "").lowercased() {
-                            metadata.narrator = trimmedVal
-                            AppLogger.network.info("Extracted Narrator from '\(key)': \(trimmedVal)")
-                        }
-                    }
-
-                    if key.contains("-1451789708") || key.contains("1631670869") {
-                        if trimmedVal.lowercased() != (metadata.author ?? "").lowercased() {
-                            potentialNarrators.append(trimmedVal)
-                            AppLogger.network.info("Potential narrator from iTunes atom '\(key)': \(trimmedVal)")
-                        }
-                    }
-
-                    if metadata.narrator == nil && key.hasPrefix("-") && trimmedVal.lowercased() != (metadata.author ?? "").lowercased() {
-                        let words = trimmedVal.components(separatedBy: " ")
-                        if words.count >= 2 && words.count <= 5 && trimmedVal.count < 50 {
-                            if !trimmedVal.contains("ISBN") && !trimmedVal.contains("©") && !trimmedVal.contains("http") {
-                                potentialNarrators.append(trimmedVal)
-                                AppLogger.network.info("Potential narrator from '\(key)': \(trimmedVal)")
-                            }
-                        }
-                    }
-
-                    if metadata.series == nil && (lowerKey.contains("album") || lowerKey.contains("talb") || lowerKey == "©alb") {
-                        metadata.series = trimmedVal
-                        AppLogger.network.info("Extracted Series from '\(key)': \(trimmedVal)")
-                    }
-                }
-            }
-
-            if metadata.narrator == nil, let firstCandidate = potentialNarrators.first {
-                metadata.narrator = firstCandidate
-                AppLogger.network.info("Using potential narrator: \(firstCandidate)")
-            }
-
-        } catch {
-            AppLogger.network.error("Metadata extraction failed: \(error)")
-        }
-
-        return metadata
-    }
-
     func startPlaybackSession(for book: Book) async throws -> PlaybackSessionInfo {
-        let base = EmbyProvider.normalizeServerURL(connection.url)
+        let base = MediaBrowserClient.normalizeServerURL(connection.url)
         guard let token = connection.token else { throw ProviderError.unauthorized }
 
         AppLogger.network.debug(
@@ -957,7 +738,6 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         }
 
         AppLogger.network.info("[Emby] Total tracks: \(tracks.count)")
-        AppLogger.network.info("[Emby] ===== PLAYBACK SESSION READY =====")
 
         return PlaybackSessionInfo(
             sessionId: UUID().uuidString,
@@ -974,7 +754,7 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         timeListened: TimeInterval
     ) async throws {
         guard let userId = connection.userId else { throw ProviderError.unauthorized }
-        let base = EmbyProvider.normalizeServerURL(connection.url)
+        let base = MediaBrowserClient.normalizeServerURL(connection.url)
 
         guard let url = URL(string: "\(base)/Users/\(userId)/Items/\(book.id)/UserData") else { throw ProviderError.invalidURL }
 
@@ -1000,7 +780,7 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
 
     func getAudioURL(for book: Book) -> URL? {
         guard let token = connection.token else { return nil }
-        let base = EmbyProvider.normalizeServerURL(connection.url)
+        let base = MediaBrowserClient.normalizeServerURL(connection.url)
         return URL(string: "\(base)/Audio/\(book.id)/stream?static=true&api_key=\(token)")
     }
 
@@ -1010,9 +790,9 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
 
     func fetchAudiobookProgress(
         for book: Book
-    ) async throws -> (positionSeconds: TimeInterval, percentage: Double, trackIndex: Int?, updatedAt: Date?, isAbandoned: Bool)? {
+    ) async throws -> (positionSeconds: TimeInterval, percentage: Double, trackIndex: Int?, updatedAt: Date?, isFinished: Bool)? {
         guard let userId = connection.userId else { throw ProviderError.unauthorized }
-        let base = EmbyProvider.normalizeServerURL(connection.url)
+        let base = MediaBrowserClient.normalizeServerURL(connection.url)
 
         guard let url = URL(string: "\(base)/Users/\(userId)/Items/\(book.id)?Fields=UserData") else { throw ProviderError.invalidURL }
         var request = URLRequest(url: url)
@@ -1026,7 +806,7 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
 
         let positionSeconds = Double(item.UserData?.PlaybackPositionTicks ?? 0) / 10_000_000.0
         let played = item.UserData?.Played ?? false
-        return (positionSeconds: positionSeconds, percentage: 0, trackIndex: nil, updatedAt: ProviderProgressDate.parse(item.UserData?.LastPlayedDate), isAbandoned: played)
+        return (positionSeconds: positionSeconds, percentage: 0, trackIndex: nil, updatedAt: ISO8601Timestamp.parse(item.UserData?.LastPlayedDate), isFinished: played)
     }
 
     func fetchCollections(libraryId: String?) async throws -> [Collection] { return [] }
@@ -1128,33 +908,12 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
 
         let author = getAuthor(item) ?? children.compactMap({ getAuthor($0) }).first ?? "Unknown Author"
 
-        let getNarrator = { (obj: EmbyItem, currentAuthor: String) -> String? in
-            let lowerAuthor = currentAuthor.lowercased()
-
-            if let narratorPerson = obj.People?.first(where: {
-                ($0.Role?.lowercased().contains("narrator") == true) || ($0.personType?.lowercased().contains("narrator") == true)
-            })?.Name {
-                return narratorPerson
-            }
-
-            if let artistItem = obj.ArtistItems?.first(where: {
-                let name = $0.Name.trimmingCharacters(in: .whitespaces)
-                return !name.isEmpty && name.lowercased() != lowerAuthor
-            })?.Name {
-                return artistItem
-            }
-
-            if let artistStr = (obj.Artists ?? [obj.Artist].compactMap { $0 }).first(where: {
-                let name = $0.trimmingCharacters(in: .whitespaces)
-                return !name.isEmpty && name.lowercased() != lowerAuthor
-            }) {
-                return artistStr
-            }
-
-            return nil
+        // Emby exposes the audiobook narrator (composer tag) only as Composers; People carries no narrator.
+        let getNarrator = { (obj: EmbyItem) -> String? in
+            obj.Composers?.first(where: { !$0.Name.isEmpty })?.Name
         }
 
-        let narrator = getNarrator(item, author) ?? children.compactMap({ getNarrator($0, author) }).first
+        let narrator = getNarrator(item) ?? children.compactMap(getNarrator).first
 
         let releaseYear = item.ProductionYear ?? children.compactMap({ $0.ProductionYear }).first
         var releaseDate: Date? = nil
@@ -1280,8 +1039,8 @@ private struct EmbyItem: Decodable {
     let ChildCount: Int?
     let MediaSources: [EmbyMediaSource]?
     let People: [EmbyPerson]?
+    let Composers: [EmbyNameIdPair]?
     let Artists: [String]?
-    let Artist: String?
     let Path: String?
 
     enum CodingKeys: String, CodingKey {
@@ -1289,8 +1048,8 @@ private struct EmbyItem: Decodable {
         case AlbumArtist, AlbumArtists, ArtistItems, ImageTags, Chapters, UserData
         case PrimaryImageItemId, PrimaryImageTag, ParentPrimaryImageItemId, ParentPrimaryImageTag
         case AlbumId, AlbumPrimaryImageTag
-        case SeriesName, IndexNumber, Studios, Genres, ChildCount, MediaSources, People
-        case Artists, Artist, Path
+        case SeriesName, IndexNumber, Studios, Genres, ChildCount, MediaSources, People, Composers
+        case Artists, Path
         case itemType = "Type"
     }
 }
@@ -1304,10 +1063,9 @@ private struct EmbyPerson: Decodable {
     let Name: String
     let Id: String
     let personType: String?
-    let Role: String?
 
     enum CodingKeys: String, CodingKey {
-        case Name, Id, Role
+        case Name, Id
         case personType = "Type"
     }
 }

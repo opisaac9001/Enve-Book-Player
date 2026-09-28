@@ -1,6 +1,7 @@
 package com.enve.app.data.remote.dto.grimmoryapp
 
 import com.enve.app.data.remote.dto.FlexibleIdSerializer
+import com.enve.app.data.remote.dto.GrimmoryKoreaderProgressDto
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
@@ -107,6 +108,7 @@ data class AppBookDetailDto(
     val pdfProgress: AppPdfProgressDto? = null,
     val cbxProgress: AppCbxProgressDto? = null,
     val audiobookProgress: AppAudiobookProgressDto? = null,
+    val koreaderProgress: GrimmoryKoreaderProgressDto? = null,
 )
 
 @Serializable

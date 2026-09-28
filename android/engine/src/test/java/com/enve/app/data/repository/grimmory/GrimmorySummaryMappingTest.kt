@@ -19,7 +19,7 @@ class GrimmorySummaryMappingTest {
             categories = listOf("Fantasy"),
             language = "en",
             isbn13 = "9781039414723",
-        ).toBook("http://grimmory.test")
+        ).toBook("http://grimmory.test", null, 0f)
 
         assertEquals("Marshal Arcane", book.title)
         assertEquals("John Lee", book.narrator)

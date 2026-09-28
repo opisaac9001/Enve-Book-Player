@@ -55,7 +55,7 @@ class KOReaderHubClient @Inject constructor(
                     .header("Content-Type", "application/json")
                     .build()
                 okHttpClient.newCall(request).execute().use { response ->
-                    if (response.code == 201) return@use
+                    if (isSuccess(response.code)) return@use
                     val body = response.peekBodyString()
                     val serverMessage = runCatching {
                         json.parseToJsonElement(body).let { el ->
@@ -112,15 +112,10 @@ class KOReaderHubClient @Inject constructor(
                 .build()
             okHttpClient.newCall(request).execute().use { response ->
                 when {
-                    response.code == 404 -> null
-                    response.isSuccessful -> {
-                        val body = response.body?.string().orEmpty()
-                        if (body.isBlank()) null
-                        else json.decodeFromString(KOReaderProgress.serializer(), body)
-                            .takeIf { it.document.isNotEmpty() }
-                    }
+                    response.code == 404 || response.code == 204 -> null
+                    isSuccess(response.code) -> parseProgress(response.body?.string(), document)
                     else -> {
-                        validateStatus(response.code, body = "")
+                        validateStatus(response.code, response.peekBodyString())
                         null
                     }
                 }
@@ -128,10 +123,19 @@ class KOReaderHubClient @Inject constructor(
         }
     }
 
+    private fun parseProgress(body: String?, document: String): KOReaderProgress? {
+        if (body.isNullOrBlank()) return null
+        val parsed = json.decodeFromString(KOReaderProgress.serializer(), body)
+        if (parsed.progress.isBlank() && parsed.percentage <= 0.0) return null
+        return if (parsed.document.isBlank()) parsed.copy(document = document) else parsed
+    }
+
+    private fun isSuccess(code: Int): Boolean = code in 200..299
+
     private fun validateStatus(code: Int, body: String) {
-        when (code) {
-            200, 201, 202 -> return
-            401, 402 -> throw KOReaderError.Unauthorized
+        when {
+            isSuccess(code) -> return
+            code == 401 || code == 402 -> throw KOReaderError.Unauthorized
             else -> throw KOReaderError.Server(code, body.ifBlank { "HTTP $code" })
         }
     }

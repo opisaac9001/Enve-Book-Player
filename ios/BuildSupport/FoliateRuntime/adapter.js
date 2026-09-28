@@ -718,7 +718,7 @@ const applyPreferenceCommand = async next => {
     if (typeof cfi === 'string') await view.goTo(cfi)
     else if (typeof fraction === 'number') await view.goToFraction(fraction)
     else if (typeof href === 'string' && href) await view.goTo(href)
-    await drawAnnotations(Array.from(annotationByCFI.values()))
+    await renderAnnotations()
     for (const content of view.renderer?.getContents?.() ?? []) {
         attachDocumentListeners(content.doc)
     }
@@ -767,6 +767,16 @@ const currentSelectionSnapshot = () => {
                 height: rect.height,
             },
         }
+    }
+    return null
+}
+
+const annotationIdAt = (x, y) => {
+    for (const content of view?.renderer?.getContents?.() ?? []) {
+        const frame = content.doc?.defaultView?.frameElement?.getBoundingClientRect()
+        const [value] = content.overlayer?.hitTest({ x: x - (frame?.left ?? 0), y: y - (frame?.top ?? 0) }) ?? []
+        const annotation = value ? annotationByCFI.get(value) : null
+        if (annotation) return annotation.id
     }
     return null
 }
@@ -870,25 +880,57 @@ const handleNavigationKeydown = event => {
 
 document.addEventListener('keydown', handleNavigationKeydown)
 
+let annotationRevision = 0
+const normalizedAnnotationText = text => text.normalize('NFC').replace(/\s+/gu, ' ').trim()
+
+const renderAnnotations = async () => {
+    for (const annotation of annotationByCFI.values()) {
+        try {
+            await view.addAnnotation({
+                value: annotation.cfi,
+                color: annotation.color,
+                style: annotation.style,
+                hasNote: annotation.hasNote,
+            })
+            drawnAnnotationCFIs.add(annotation.cfi)
+        } catch {}
+    }
+}
+
 const drawAnnotations = async annotations => {
-    const active = new Set(annotations.map(annotation => annotation.cfi))
-    for (const cfi of drawnAnnotationCFIs) {
-        if (!active.has(cfi)) {
-            await view.deleteAnnotation?.({ value: cfi })
-            drawnAnnotationCFIs.delete(cfi)
-            annotationByCFI.delete(cfi)
-        }
-    }
+    const revision = ++annotationRevision
+    const documents = new Map()
+    const verified = []
+    const results = []
     for (const annotation of annotations) {
-        annotationByCFI.set(annotation.cfi, annotation)
-        await view.addAnnotation?.({
-            value: annotation.cfi,
-            color: annotation.color,
-            style: annotation.style,
-            hasNote: annotation.hasNote,
-        })
-        drawnAnnotationCFIs.add(annotation.cfi)
+        let resolved = false
+        try {
+            const locator = parseLocator(annotation.locatorJSON)
+            const cfi = await mintCFIFromLocator(locator, false)
+            const target = cfi ? view.resolveCFI(cfi) : null
+            const section = book.sections[target?.index]
+            if (section?.createDocument && typeof target.anchor === 'function') {
+                if (!documents.has(target.index)) documents.set(target.index, await section.createDocument())
+                const range = target.anchor(documents.get(target.index))
+                const actual = normalizedAnnotationText(range?.toString() ?? '')
+                const expected = normalizedAnnotationText(annotation.text)
+                resolved = !!range && !range.collapsed && actual.length > 0
+                    && (!expected || actual === expected)
+            }
+            if (resolved) verified.push({ ...annotation, cfi })
+        } catch {}
+        if (revision !== annotationRevision) return
+        results.push({ id: annotation.id, resolved })
     }
+    for (const cfi of drawnAnnotationCFIs) {
+        await view.deleteAnnotation({ value: cfi }).catch(() => {})
+        if (revision !== annotationRevision) return
+    }
+    drawnAnnotationCFIs.clear()
+    annotationByCFI.clear()
+    for (const annotation of verified) annotationByCFI.set(annotation.cfi, annotation)
+    await renderAnnotations()
+    if (revision === annotationRevision) post('annotationResolution', { results })
 }
 
 const textNodeFromPoint = (doc, point) => {
@@ -989,17 +1031,17 @@ const rangeFromTextQuote = (root, exact, prefix, suffix) => {
         const index = mapped.text.indexOf(needle, searchFrom)
         if (index < 0) return null
         const preceding = mapped.text.slice(
-                Math.max(0, index - normalizedPrefix.length),
+                Math.max(0, index - normalizedPrefix.length - 32),
                 index
-            )
+            ).trimEnd()
         const prefixMatches = !normalizedPrefix
             || preceding.endsWith(normalizedPrefix)
             || (preceding.length > 0 && normalizedPrefix.endsWith(preceding))
         const normalizedEnd = index + needle.length
         const following = mapped.text.slice(
                 normalizedEnd,
-                normalizedEnd + normalizedSuffix.length
-            )
+                normalizedEnd + normalizedSuffix.length + 32
+            ).trimStart()
         const suffixMatches = !normalizedSuffix
             || following.startsWith(normalizedSuffix)
             || (following.length > 0 && normalizedSuffix.startsWith(following))
@@ -1078,6 +1120,12 @@ const semanticRangeForLocator = async (locator, navigateToResource = true) => {
         content = view.renderer?.getContents?.()
             .find(item => item.index === expectedIndex)
     }
+    if (!content?.doc && !navigateToResource) {
+        const section = book.sections[expectedIndex]
+        if (section?.createDocument) {
+            content = { index: expectedIndex, doc: await section.createDocument() }
+        }
+    }
     if (!content?.doc) return null
     let selectedElement = null
     if (locator.cssSelector) {
@@ -1107,12 +1155,13 @@ const semanticRangeForLocator = async (locator, navigateToResource = true) => {
         ) ?? rangeFromTextQuote(selectedElement, locator.exact, null, null)
     }
     if (!range && locator.exact) {
+        const searchRoot = content.doc.body ?? content.doc.documentElement
         range = rangeFromTextQuote(
-            content.doc.body,
+            searchRoot,
             locator.exact,
             locator.prefix,
             locator.suffix
-        ) ?? rangeFromTextQuote(content.doc.body, locator.exact, null, null)
+        ) ?? rangeFromTextQuote(searchRoot, locator.exact, null, null)
     }
     if (!range && selectedElement) {
         range = content.doc.createRange()
@@ -1520,11 +1569,12 @@ const validatePreferences = value => {
 const validateAnnotations = value => {
     if (!Array.isArray(value)) throw new TypeError('Annotations must be an array')
     return value.map(annotation => {
-        if (!hasExactKeys(annotation, ['id', 'cfi', 'color', 'style', 'hasNote'])) {
+        if (!hasExactKeys(annotation, ['id', 'locatorJSON', 'text', 'color', 'style', 'hasNote'])) {
             throw new TypeError('Annotation schema is invalid')
         }
         if (typeof annotation.id !== 'string'
-            || typeof annotation.cfi !== 'string'
+            || typeof annotation.locatorJSON !== 'string'
+            || typeof annotation.text !== 'string'
             || typeof annotation.color !== 'string'
             || typeof annotation.hasNote !== 'boolean'
             || !['highlight', 'underline', 'strikethrough', 'squiggly'].includes(annotation.style)) {
@@ -1630,6 +1680,11 @@ const command = async envelope => {
         if (!hasExactKeys(payload, [])) throw new TypeError('Clear-selection payload is invalid')
         clearSelection()
         return { cleared: true }
+    case 'annotationAt':
+        if (!hasExactKeys(payload, ['x', 'y']) || !Number.isFinite(payload.x) || !Number.isFinite(payload.y)) {
+            throw new TypeError('Annotation-at payload is invalid')
+        }
+        return { id: annotationIdAt(payload.x, payload.y) }
     case 'refreshSelection':
         if (!hasExactKeys(payload, [])) throw new TypeError('Refresh-selection payload is invalid')
         emitSelection()
@@ -1776,7 +1831,7 @@ const boot = async () => {
         for (const content of view.renderer?.getContents?.() ?? []) {
             attachDocumentListeners(content.doc)
         }
-        drawAnnotations(annotations).catch(postError)
+        renderAnnotations().catch(postError)
     })
     view.addEventListener('draw-annotation', event => {
         const { annotation, draw } = event.detail

@@ -122,7 +122,7 @@ final class RSSPodcastParser: NSObject, XMLParserDelegate {
 
         case "item":
             isInsideItem = true
-            currentEpisode = ParsedEpisode(id: UUID().uuidString)
+            currentEpisode = ParsedEpisode(id: "")
 
         case "enclosure":
             if isInsideItem {
@@ -184,7 +184,9 @@ final class RSSPodcastParser: NSObject, XMLParserDelegate {
             case "itunes:episodeType":
                 currentEpisode?.episodeType = trimmed
             case "item":
-                if let episode = currentEpisode, episode.audioURL != nil {
+                if var episode = currentEpisode, let audioURL = episode.audioURL {
+                    // Feeds without <guid> still need an identity that survives refetches.
+                    if episode.id.isEmpty { episode.id = audioURL.absoluteString }
                     currentFeed.episodes.append(episode)
                 }
                 currentEpisode = nil

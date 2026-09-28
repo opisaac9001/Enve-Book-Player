@@ -7,23 +7,51 @@ import com.enve.app.data.history.HistorySessionStore
 import com.enve.app.data.remote.GrimmoryApi
 import com.enve.app.data.remote.dto.ReadingSessionRequest
 import com.enve.app.data.repository.grimmory.grimmoryServerBookId
+import com.enve.core.data.local.PodcastFeedProgress
+import com.enve.core.data.local.PodcastFeedProgressStore
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.HistorySession
 import com.enve.core.data.remote.ConnectionScope
+import com.enve.core.di.ApplicationScope
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.time.Instant
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.round
 import kotlin.math.roundToLong
 
-private const val ABS_SESSION_SYNC_INTERVAL_MS = 30_000L
+private const val PERIODIC_FLUSH_INTERVAL_MS = 30_000L
+private const val SEEK_SETTLE_MS = 2_000L
+private const val SEEK_TOLERANCE_SEC = 2L
+private const val MAX_PLAYBACK_SPEED = 4L
+
+internal class ListeningLedger {
+    var totalMs = 0L
+        private set
+    private var syncedMs = 0L
+
+    val unsyncedMs: Long
+        get() = totalMs - syncedMs
+
+    fun add(ms: Long) {
+        if (ms > 0L) totalMs += ms
+    }
+
+    fun acknowledge(ms: Long) {
+        syncedMs = (syncedMs + ms).coerceAtMost(totalMs)
+    }
+}
 
 @Singleton
 class PlayerSessionService @Inject constructor(
@@ -32,10 +60,14 @@ class PlayerSessionService @Inject constructor(
     private val bookOrbitHistorySync: BookOrbitHistorySessionSync,
     private val siloRepository: SiloRepository,
     private val history: HistorySessionStore,
+    private val feedProgress: PodcastFeedProgressStore,
+    @ApplicationScope private val appScope: CoroutineScope,
 ) {
     private val mutex = Mutex()
+    private val remoteMutex = Mutex()
     private var active: ActiveSession? = null
     private var lastResumeRealtimeMs: Long? = null
+    private val seekSettleJob = AtomicReference<Job?>(null)
 
     val hasActiveSession: Boolean
         get() = active != null
@@ -66,20 +98,25 @@ class PlayerSessionService @Inject constructor(
                 startPositionSec = positionSec.coerceAtLeast(0),
                 lastPositionSec = positionSec.coerceAtLeast(0),
                 absSessionId = providerSessionId.takeIf { book.source == BookSource.AUDIOBOOKSHELF && !it.isNullOrBlank() },
-                lastAbsSyncAtMs = startedAtMs,
+                lastFlushAtMs = startedAtMs,
             )
             lastResumeRealtimeMs = null
             current
         }
-        sessionToClose?.let { submitSession(it) }
+        sessionToClose?.let { onAppScope { submitSession(it, finished = false) } }
     }
 
     suspend fun markPlaybackChanged(isPlaying: Boolean, positionSec: Long, durationSec: Long) {
-        var absSync: AbsSessionSnapshot? = null
+        var flushNow = false
+        var seeked = false
         mutex.withLock {
             val session = active ?: return
             val now = System.currentTimeMillis()
-            session.lastPositionSec = positionSec.coerceAtLeast(0)
+            val wasPlaying = lastResumeRealtimeMs != null
+            val position = positionSec.coerceAtLeast(0)
+            seeked = session.isJump(position, now, wasPlaying)
+            session.lastPositionSec = position
+            session.lastTickAtMs = now
             session.durationSec = durationSec.coerceAtLeast(0)
             if (isPlaying) {
                 if (lastResumeRealtimeMs == null) {
@@ -87,19 +124,27 @@ class PlayerSessionService @Inject constructor(
                 } else {
                     accumulateLocked(now)
                 }
-                if (session.shouldSyncAbs(now)) {
-                    session.lastAbsSyncAtMs = now
-                    absSync = session.absSnapshot()
+                if (session.isFlushDue(now)) {
+                    session.lastFlushAtMs = now
+                    flushNow = true
                 }
             } else {
                 accumulateLocked(now)
                 lastResumeRealtimeMs = null
+                flushNow = wasPlaying
             }
         }
-        absSync?.let { syncAbsSession(it) }
+        when {
+            flushNow -> flush()
+            seeked -> scheduleSeekSettleFlush()
+        }
     }
 
-    suspend fun close(positionSec: Long, durationSec: Long) {
+    fun flush() {
+        appScope.launch { flushActive() }
+    }
+
+    suspend fun close(positionSec: Long, durationSec: Long, finished: Boolean = false) {
         val session = mutex.withLock {
             val current = active ?: return@withLock null
             current.lastPositionSec = positionSec.coerceAtLeast(0)
@@ -109,19 +154,46 @@ class PlayerSessionService @Inject constructor(
             active = null
             current
         } ?: return
-        submitSession(session)
+        seekSettleJob.getAndSet(null)?.cancel()
+        onAppScope { submitSession(session, finished) }
+    }
+
+    private suspend fun onAppScope(block: suspend () -> Unit) {
+        appScope.launch { block() }.join()
+    }
+
+    private fun scheduleSeekSettleFlush() {
+        val job = appScope.launch {
+            delay(SEEK_SETTLE_MS)
+            flushActive()
+        }
+        seekSettleJob.getAndSet(job)?.cancel()
+    }
+
+    private suspend fun flushActive() {
+        remoteMutex.withLock {
+            val snapshot = mutex.withLock {
+                val session = active ?: return@withLock null
+                val now = System.currentTimeMillis()
+                accumulateLocked(now)
+                session.lastFlushAtMs = now
+                session.snapshot()
+            } ?: return
+            when {
+                snapshot.isFeedOnly -> saveFeedProgress(snapshot, finished = false)
+                snapshot.absSessionId != null -> syncAbsSession(snapshot, close = false)
+            }
+        }
     }
 
     private fun accumulateLocked(now: Long = System.currentTimeMillis()) {
         val resumedAt = lastResumeRealtimeMs ?: return
-        if (now > resumedAt) {
-            active?.timeListenedMs = (active?.timeListenedMs ?: 0L) + now - resumedAt
-        }
+        if (now > resumedAt) active?.listening?.add(now - resumedAt)
         lastResumeRealtimeMs = now
     }
 
-    private suspend fun submitSession(session: ActiveSession) {
-        val listenedMs = session.timeListenedMs.coerceAtLeast(0)
+    private suspend fun submitSession(session: ActiveSession, finished: Boolean) {
+        val listenedMs = session.listening.totalMs
         val endAtMs = System.currentTimeMillis()
         val historySession = if (listenedMs >= 1_000L) {
             HistorySession(
@@ -146,8 +218,16 @@ class PlayerSessionService @Inject constructor(
             withConnection(session.book) { siloRepository.stopPlaybackSession(session.book) }
         }
 
-        session.absSnapshot()?.let {
-            closeAbsSession(it)
+        if (session.absSessionId != null || session.isFeedOnly) {
+            remoteMutex.withLock {
+                val snapshot = mutex.withLock { session.snapshot() }
+                if (session.isFeedOnly) {
+                    saveFeedProgress(snapshot, finished)
+                } else {
+                    syncAbsSession(snapshot, close = true)
+                    if (finished && session.book.episodeId != null) markEpisodeFinished(snapshot)
+                }
+            }
             return
         }
 
@@ -220,36 +300,54 @@ class PlayerSessionService @Inject constructor(
         }.joinToString(" ")
     }
 
-    private suspend fun syncAbsSession(snapshot: AbsSessionSnapshot) {
-        if (snapshot.durationSec <= 0L) return
+    private suspend fun syncAbsSession(snapshot: SessionSnapshot, close: Boolean) {
+        val sessionId = snapshot.absSessionId ?: return
+        if (!close && snapshot.durationSec <= 0L) return
         val result = withConnection(snapshot.book) {
-            audiobookshelfRepository.syncPlaybackSession(
-                sessionId = snapshot.sessionId,
-                currentTimeSec = snapshot.positionSec,
-                timeListenedMs = snapshot.timeListenedMs,
-                durationSec = snapshot.durationSec,
-            )
+            if (close) {
+                audiobookshelfRepository.closePlaybackSession(
+                    sessionId = sessionId,
+                    currentTimeSec = snapshot.positionSec,
+                    timeListenedMs = snapshot.unsyncedListenedMs,
+                    durationSec = snapshot.durationSec,
+                )
+            } else {
+                audiobookshelfRepository.syncPlaybackSession(
+                    sessionId = sessionId,
+                    currentTimeSec = snapshot.positionSec,
+                    timeListenedMs = snapshot.unsyncedListenedMs,
+                    durationSec = snapshot.durationSec,
+                )
+            }
         }
-        if (result.isFailure) {
+        if (result.isSuccess) {
+            mutex.withLock { snapshot.listening.acknowledge(snapshot.unsyncedListenedMs) }
+        } else {
             syncAbsProgressDirectly(snapshot)
         }
     }
 
-    private suspend fun closeAbsSession(snapshot: AbsSessionSnapshot) {
-        val result = withConnection(snapshot.book) {
-            audiobookshelfRepository.closePlaybackSession(
-                sessionId = snapshot.sessionId,
-                currentTimeSec = snapshot.positionSec,
-                timeListenedMs = snapshot.timeListenedMs,
-                durationSec = snapshot.durationSec,
-            )
-        }
-        if (result.isFailure) {
-            syncAbsProgressDirectly(snapshot)
+    private suspend fun markEpisodeFinished(snapshot: SessionSnapshot) {
+        val durationSec = snapshot.durationSec.takeIf { it > 0L } ?: snapshot.book.duration
+        withConnection(snapshot.book) {
+            audiobookshelfRepository.syncAudiobookProgress(snapshot.book.copy(duration = durationSec), durationSec, 1f)
         }
     }
 
-    private suspend fun syncAbsProgressDirectly(snapshot: AbsSessionSnapshot) {
+    private suspend fun saveFeedProgress(snapshot: SessionSnapshot, finished: Boolean) {
+        val durationSec = snapshot.durationSec.takeIf { it > 0L } ?: snapshot.book.duration
+        feedProgress.save(
+            snapshot.book.uniqueKey,
+            PodcastFeedProgress(
+                positionSec = if (finished) durationSec else snapshot.positionSec,
+                durationSec = durationSec,
+                isFinished = finished,
+                updatedAtMs = System.currentTimeMillis(),
+            ),
+        )
+    }
+
+    private suspend fun syncAbsProgressDirectly(snapshot: SessionSnapshot) {
         if (snapshot.durationSec <= 0L) return
         val progress = (snapshot.positionSec.toFloat() / snapshot.durationSec.toFloat()).coerceIn(0f, 1f)
         withConnection(snapshot.book) {
@@ -270,31 +368,44 @@ class PlayerSessionService @Inject constructor(
         val startPositionSec: Long,
         var lastPositionSec: Long,
         var absSessionId: String? = null,
-        var lastAbsSyncAtMs: Long = startedAtMs,
-        var timeListenedMs: Long = 0L,
+        var lastFlushAtMs: Long = startedAtMs,
+        var lastTickAtMs: Long? = null,
+        val listening: ListeningLedger = ListeningLedger(),
     ) {
-        fun shouldSyncAbs(nowMs: Long): Boolean =
-            absSessionId != null &&
-                durationSec > 0L &&
-                nowMs - lastAbsSyncAtMs >= ABS_SESSION_SYNC_INTERVAL_MS
+        val isFeedOnly: Boolean
+            get() = book.podcastEnclosureUrl != null
 
-        fun absSnapshot(): AbsSessionSnapshot? {
-            val sessionId = absSessionId ?: return null
-            return AbsSessionSnapshot(
-                book = book,
-                sessionId = sessionId,
-                positionSec = lastPositionSec,
-                durationSec = durationSec,
-                timeListenedMs = timeListenedMs,
-            )
+        fun isFlushDue(nowMs: Long): Boolean =
+            (absSessionId != null || isFeedOnly) &&
+                durationSec > 0L &&
+                nowMs - lastFlushAtMs >= PERIODIC_FLUSH_INTERVAL_MS
+
+        fun isJump(positionSec: Long, nowMs: Long, wasPlaying: Boolean): Boolean {
+            val previousTickAt = lastTickAtMs ?: return false
+            val elapsedSec = (nowMs - previousTickAt + 999L) / 1_000L
+            val maxAdvanceSec = if (wasPlaying) elapsedSec * MAX_PLAYBACK_SPEED else 0L
+            return positionSec < lastPositionSec - SEEK_TOLERANCE_SEC ||
+                positionSec > lastPositionSec + maxAdvanceSec + SEEK_TOLERANCE_SEC
         }
+
+        fun snapshot(): SessionSnapshot = SessionSnapshot(
+            book = book,
+            absSessionId = absSessionId,
+            isFeedOnly = isFeedOnly,
+            positionSec = lastPositionSec,
+            durationSec = durationSec,
+            unsyncedListenedMs = listening.unsyncedMs,
+            listening = listening,
+        )
     }
 
-    private data class AbsSessionSnapshot(
+    private class SessionSnapshot(
         val book: Book,
-        val sessionId: String,
+        val absSessionId: String?,
+        val isFeedOnly: Boolean,
         val positionSec: Long,
         val durationSec: Long,
-        val timeListenedMs: Long,
+        val unsyncedListenedMs: Long,
+        val listening: ListeningLedger,
     )
 }

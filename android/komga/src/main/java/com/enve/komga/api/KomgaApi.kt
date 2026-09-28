@@ -4,8 +4,14 @@ import com.enve.komga.dto.KomgaBookDto
 import com.enve.komga.dto.KomgaCollectionDto
 import com.enve.komga.dto.KomgaLibraryDto
 import com.enve.komga.dto.KomgaPage
+import com.enve.komga.dto.KomgaPasswordUpdateDto
+import com.enve.komga.dto.KomgaR2Positions
+import com.enve.komga.dto.KomgaR2Progression
 import com.enve.komga.dto.KomgaReadListDto
 import com.enve.komga.dto.KomgaReadProgressUpdateDto
+import com.enve.komga.dto.KomgaUserCreationDto
+import com.enve.komga.dto.KomgaUserDto
+import com.enve.komga.dto.KomgaUserUpdateDto
 import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.DELETE
@@ -40,6 +46,22 @@ interface KomgaApi {
         @Path("bookId") bookId: String,
         @Body request: KomgaReadProgressUpdateDto,
     ): Response<Unit>
+
+    @GET("api/v1/books/{bookId}/progression")
+    suspend fun getProgression(
+        @Path("bookId") bookId: String,
+    ): Response<KomgaR2Progression>
+
+    @PUT("api/v1/books/{bookId}/progression")
+    suspend fun updateProgression(
+        @Path("bookId") bookId: String,
+        @Body request: okhttp3.RequestBody,
+    ): Response<Unit>
+
+    @GET("api/v1/books/{bookId}/positions")
+    suspend fun getPositions(
+        @Path("bookId") bookId: String,
+    ): Response<KomgaR2Positions>
 
     @PATCH("api/v1/books/{bookId}/metadata")
     suspend fun updateBookMetadata(
@@ -148,30 +170,28 @@ interface KomgaApi {
         @Query("size") size: Int = 200,
     ): Response<KomgaPage<com.enve.komga.dto.KomgaSeriesDto>>
 
-    @GET("api/v1/users/me")
-    suspend fun getCurrentUser(): Response<com.enve.komga.dto.KomgaUserDto>
+    @GET("api/v2/users/me")
+    suspend fun getCurrentUser(): Response<KomgaUserDto>
 
-    @GET("api/v1/users")
-    suspend fun adminListUsers(): Response<List<com.enve.komga.dto.KomgaUserDto>>
+    @GET("api/v2/users")
+    suspend fun adminListUsers(): Response<List<KomgaUserDto>>
 
-    @POST("api/v1/users")
-    suspend fun adminCreateUser(
-        @Body body: com.enve.komga.dto.KomgaUserCreationDto,
-    ): Response<com.enve.komga.dto.KomgaUserDto>
+    @POST("api/v2/users")
+    suspend fun adminCreateUser(@Body body: KomgaUserCreationDto): Response<KomgaUserDto>
 
-    @DELETE("api/v1/users/{id}")
+    @DELETE("api/v2/users/{id}")
     suspend fun adminDeleteUser(@Path("id") id: String): Response<Unit>
 
-    @PATCH("api/v1/users/{id}")
+    @PATCH("api/v2/users/{id}")
     suspend fun adminUpdateUser(
         @Path("id") id: String,
-        @Body body: com.enve.komga.dto.KomgaUserUpdateDto,
+        @Body body: KomgaUserUpdateDto,
     ): Response<Unit>
 
-    @PATCH("api/v1/users/{id}/password")
+    @PATCH("api/v2/users/{id}/password")
     suspend fun adminUpdateUserPassword(
         @Path("id") id: String,
-        @Body body: com.enve.komga.dto.KomgaPasswordUpdateDto,
+        @Body body: KomgaPasswordUpdateDto,
     ): Response<Unit>
 
     @POST("api/v1/libraries")

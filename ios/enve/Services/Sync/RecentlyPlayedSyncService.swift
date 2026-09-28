@@ -128,7 +128,8 @@ final class RecentlyPlayedSyncService: RecentlyPlayedSyncing {
                         let serverDate = item.lastUpdate.flatMap { Date(timeIntervalSince1970: $0 / 1000) } ?? .distantPast
 
                         if book.mediaType == .ebook {
-                            let serverEbookProgress = item.ebookProgress ?? item.progress ?? 0
+                            let serverEbookSide = item.ebookFraction(itemHasAudio: book.hasAlternateFormat)
+                            let serverEbookProgress = serverEbookSide ?? 0
                             let serverFinished = item.resolvedIsFinished
                             let localEbookProgress = book.ebookProgress ?? 0
 
@@ -136,28 +137,31 @@ final class RecentlyPlayedSyncService: RecentlyPlayedSyncing {
                                 localPosition: localEbookProgress,
                                 localDate: book.lastUpdate,
                                 serverPosition: serverEbookProgress,
-                                serverDate: serverDate
+                                serverDate: serverDate,
+                                localLocator: book.epubLocator,
+                                serverLocator: item.ebookLocation
                             )
 
-                            if serverDate > book.lastUpdate, serverEbookProgress == 0, localEbookProgress > 0 {
+                            if serverEbookSide == 0, serverDate > book.lastUpdate, localEbookProgress > 0 {
                                 direction = .pull
                             }
-                            if direction == .none, serverDate >= book.lastUpdate, book.isFinished != serverFinished {
+                            if serverEbookSide != nil, direction == .none, serverDate >= book.lastUpdate, book.isFinished != serverFinished {
                                 direction = .pull
                             }
                             switch direction {
                             case .pull:
+                                let serverLocator = item.ebookLocation.flatMap { $0.isEmpty ? nil : $0 }
                                 await progressRepository.updateEbookProgress(
                                     uniqueId: book.uniqueId,
                                     ebookProgress: serverEbookProgress,
-                                    epubLocator: nil,
+                                    epubLocator: serverLocator,
                                     isFinished: serverFinished,
                                     lastUpdate: serverDate
                                 )
                                 libraryCache.mutateBook(stableId: book.stableId) {
                                     $0.ebookProgress = serverEbookProgress
                                     $0.isFinished = serverFinished
-                                    $0.epubLocator = nil
+                                    $0.epubLocator = serverLocator
                                     $0.lastUpdate = serverDate
                                 }
                                 ebookLinks.saveLinks()
@@ -170,7 +174,7 @@ final class RecentlyPlayedSyncService: RecentlyPlayedSyncing {
                                     try await progressAPI.pushEbookProgress(
                                         libraryItemId: book.partKey ?? book.id,
                                         progress: localEbookProgress,
-                                        isFinished: localEbookProgress >= 0.99,
+                                        itemHasAudio: book.hasAlternateFormat,
                                         backend: backend
                                     )
                                     AppLogger.sync.debug(
@@ -203,10 +207,11 @@ final class RecentlyPlayedSyncService: RecentlyPlayedSyncing {
                             )
 
                             let serverFinished = item.resolvedIsFinished
-                            if serverDate > localDate, serverTime == 0, localTime > 0 {
+                            let serverHasAudioSide = !book.hasAlternateFormat || item.hasAudioPosition
+                            if serverHasAudioSide, serverDate > localDate, serverTime == 0, localTime > 0 {
                                 direction = .pull
                             }
-                            if direction == .none, serverDate >= localDate, book.isFinished != serverFinished {
+                            if serverHasAudioSide, direction == .none, serverDate >= localDate, book.isFinished != serverFinished {
                                 direction = .pull
                             }
                             switch direction {

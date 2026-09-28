@@ -22,7 +22,7 @@ import java.util.zip.ZipOutputStream
 
 class StoryAlignPipelineTest {
 
-    private val audio = AudioFile(0, 0.0, 10_000.0, "storyalign/Audio/0000.m4a")
+    private val audio = AudioFile(0, 0.0, 20.0, "storyalign/Audio/0000.m4a")
 
     @Test fun parseAlignExportProducesNarratedEpub() = runBlocking {
         val srcBytes = sampleEpub()
@@ -35,10 +35,16 @@ class StoryAlignPipelineTest {
             granularity = StoryAlignGranularity.SENTENCE,
             transcriber = transcriber,
             audioClips = listOf(ReadAloudEpubBuilder.AudioClipFile("0000.m4a", ByteArray(128) { 7 })),
+            audioDurationsByIndex = mapOf(audio.index to audio.duration),
             modifiedIso = "2026-07-05T00:00:00Z",
         )
 
-        assertTrue("score=${result.report.score}", result.report.score >= 0.8)
+        val quality = result.report.quality
+        assertTrue("defects=${quality.defects}", quality.isUsable)
+        assertEquals(1.0, quality.purity, 1e-9)
+        assertEquals(1.0, quality.monotonicity, 1e-9)
+        assertTrue("coverage=${quality.coverage}", quality.coverage >= 0.8)
+        assertTrue("largestGap=${quality.largestGap}", quality.largestGap <= 0.2)
         assertTrue(result.report.alignedSentences > 0)
 
         val outZip = EpubZip.from(ByteArrayInputStream(result.readAloudEpub))

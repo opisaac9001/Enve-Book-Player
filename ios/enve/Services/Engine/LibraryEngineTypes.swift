@@ -95,12 +95,4 @@ enum LibraryBookActions {
     static func removeDownload(_ book: Book) {
         Task { await EnveEngine.shared.downloads.removeLibraryDownload(for: book) }
     }
-
-    static func progressFraction(_ book: Book) -> Double {
-        if book.mediaType == .ebook {
-            return book.canonicalEbookProgress
-        }
-        guard let duration = book.duration, duration > 0 else { return 0 }
-        return min(max(book.currentTime / duration, 0), 1)
-    }
 }

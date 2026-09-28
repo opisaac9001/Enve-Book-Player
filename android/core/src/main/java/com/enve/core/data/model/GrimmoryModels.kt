@@ -8,6 +8,8 @@ data class BookSummary(
     val connectionId: String,
     val source: BookSource = BookSource.GRIMMORY,
     val title: String,
+    val subtitle: String? = null,
+    val description: String? = null,
     val authors: List<String> = emptyList(),
     val thumbnailUrl: String? = null,
     val seriesName: String? = null,
@@ -33,6 +35,9 @@ data class BookSummary(
     val language: String? = null,
     val isbn13: String? = null,
     val pageCount: Int? = null,
+    val durationSeconds: Long = 0L,
+    val opdsAcquisitionUrl: String? = null,
+    val opdsProgressionUrl: String? = null,
 ) {
     val uniqueKey: String get() = "$connectionId:$id"
 }

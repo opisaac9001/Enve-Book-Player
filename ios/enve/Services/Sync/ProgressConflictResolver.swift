@@ -27,6 +27,19 @@ struct ProgressConflictResolver: Sendable {
             if serverCFI != nil, serverDate > localDate { return .pull }
             if localCFI != nil, localDate > serverDate { return .push }
         }
+        // Narrated positions resolve to an exact sentence, so a newer sentence wins even inside the percentage tolerance.
+        let localSentence = narratedSentence(in: localLocator)
+        let serverSentence = narratedSentence(in: serverLocator)
+        if localSentence != serverSentence, localDate != .distantPast, serverDate != .distantPast,
+            abs(serverDate.timeIntervalSince(localDate)) >= timestampTieWindow
+        {
+            if serverSentence != nil, serverDate > localDate, !protectsAgainstBackwardProgress || serverPosition >= localPosition - 0.005 {
+                return .pull
+            }
+            if localSentence != nil, localDate > serverDate, !protectsAgainstBackwardProgress || localPosition >= serverPosition - 0.005 {
+                return .push
+            }
+        }
         if localPosition <= 0 && serverPosition <= 0 { return .none }
         if localPosition <= 0 { return .pull }
         if serverPosition <= 0 { return .push }
@@ -60,19 +73,45 @@ struct ProgressConflictResolver: Sendable {
         if localPosition > serverPosition { return .push }
         return .none
     }
+
+    private static func narratedSentence(in locator: String?) -> String? {
+        guard let data = locator?.data(using: .utf8),
+            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let href = object["href"] as? String,
+            let locations = object["locations"] as? [String: Any]
+        else { return nil }
+        if let fragment = (locations["fragments"] as? [Any])?.compactMap({ $0 as? String })
+            .first(where: { !$0.hasPrefix("t=") && !$0.hasPrefix("epubcfi(") })
+        {
+            return "\(EpubLocationBridge.normalizedHref(href))#\(fragment)"
+        }
+        if let start = (locations["domRange"] as? [String: Any])?["start"] as? [String: Any],
+            let selector = start["cssSelector"] as? String,
+            selector.hasPrefix("#"), selector.count > 1,
+            !selector.dropFirst().contains(where: { " >.:[".contains($0) })
+        {
+            return "\(EpubLocationBridge.normalizedHref(href))\(selector)"
+        }
+        return nil
+    }
 }
+
 
 func resolveProgressConflict(
     localPosition: Double,
     localDate: Date,
     serverPosition: Double,
-    serverDate: Date
+    serverDate: Date,
+    localLocator: String? = nil,
+    serverLocator: String? = nil
 ) -> SyncDirection {
     ProgressConflictResolver.resolve(
         localPosition: localPosition,
         localDate: localDate,
         serverPosition: serverPosition,
-        serverDate: serverDate
+        serverDate: serverDate,
+        localLocator: localLocator,
+        serverLocator: serverLocator
     )
 }
 
@@ -80,13 +119,17 @@ func resolveProgressConflictWithBackwardCheck(
     localPosition: Double,
     localDate: Date,
     serverPosition: Double,
-    serverDate: Date
+    serverDate: Date,
+    localLocator: String? = nil,
+    serverLocator: String? = nil
 ) -> SyncDirection {
     ProgressConflictResolver.resolve(
         localPosition: localPosition,
         localDate: localDate,
         serverPosition: serverPosition,
         serverDate: serverDate,
-        protectsAgainstBackwardProgress: true
+        protectsAgainstBackwardProgress: true,
+        localLocator: localLocator,
+        serverLocator: serverLocator
     )
 }

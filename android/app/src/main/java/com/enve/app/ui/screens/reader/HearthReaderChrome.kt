@@ -34,6 +34,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.List
 import androidx.compose.material.icons.automirrored.outlined.MenuBook
+import androidx.compose.material.icons.automirrored.outlined.Subject
 import androidx.compose.material.icons.outlined.AutoStories
 import androidx.compose.material.icons.outlined.Bookmark
 import androidx.compose.material.icons.outlined.BorderColor
@@ -99,6 +100,7 @@ import com.enve.hearth.design.LocalHearth
 import com.enve.hearth.design.LocalHearthEink
 import com.enve.hearth.design.Overline
 import com.enve.hearth.design.hearthDisplay
+import com.enve.hearth.design.parseHexColor
 
 private val INKS = listOf("#FFF59D", "#A5D6A7", "#90CAF9", "#F8BBD0", "#FFCC80", "#CE93D8")
 
@@ -115,6 +117,7 @@ fun HearthReaderChrome(
     readNextEnabled: Boolean = true,
     readNextPosition: ReadNextPosition = ReadNextPosition.BOTTOM,
     onReadNext: (Book) -> Unit = {},
+    restReminder: ReaderRestReminderSpec,
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     val knownTags by vm.knownTags.collectAsStateWithLifecycle()
@@ -231,6 +234,16 @@ fun HearthReaderChrome(
                 }
             }
 
+            if (state.showReadAloudLyrics) {
+                HearthReadAloudLyrics(
+                    rows = state.readAlongChapterClips,
+                    activeIndex = state.readAlongClipIndex,
+                    onSelect = { vm.jumpToReadAlongClip(it) },
+                    onClose = { vm.showReadAloudLyrics(false) },
+                    modifier = Modifier.matchParentSize(),
+                )
+            }
+
             if (state.showChrome && state.readAlongActive) {
                 Box(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = Hearth.Spacing.M).fillMaxWidth()) {
                     ReadAloudBar(
@@ -242,6 +255,7 @@ fun HearthReaderChrome(
                         onBack = vm::skipReadAlongBackward,
                         onForward = vm::skipReadAlongForward,
                         onTune = { vm.showReadAloudSheet(true) },
+                        onLyrics = { vm.showReadAloudLyrics(!state.showReadAloudLyrics) },
                         onClose = vm::toggleReadAlongMode,
                     )
                 }
@@ -353,6 +367,13 @@ fun HearthReaderChrome(
                         ),
                 )
             }
+
+            ReaderRestReminder(
+                spec = restReminder,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(horizontal = Hearth.Spacing.XL),
+            )
 
             HearthReaderSheets(vm = vm, state = state)
             if (state.showAnnotationsSheet) {
@@ -542,7 +563,7 @@ private fun ProgressRibbon(progress: Float, onSeek: (Float) -> Unit) {
 private fun ReadAloudBar(
     playing: Boolean, preparing: Boolean, clip: Int, clipCount: Int,
     onToggle: () -> Unit, onBack: () -> Unit, onForward: () -> Unit,
-    onTune: () -> Unit, onClose: () -> Unit,
+    onTune: () -> Unit, onLyrics: () -> Unit, onClose: () -> Unit,
 ) {
     val palette = Hearth.palette
     val shape = RoundedCornerShape(Hearth.Radius.Bar)
@@ -561,6 +582,7 @@ private fun ReadAloudBar(
                 .alpha(if (preparing) 0.38f else 1f),
         )
         GlyphBtn(Icons.Filled.SkipNext, "Next clip", onForward, palette.text, enabled = !preparing)
+        GlyphBtn(Icons.AutoMirrored.Outlined.Subject, "Read mode", onLyrics, palette.textSecondary)
         GlyphBtn(Icons.Outlined.Tune, "Read aloud settings", onTune, palette.textSecondary)
         GlyphBtn(Icons.Outlined.Close, "Stop read aloud", onClose, palette.textSecondary)
     }
@@ -670,7 +692,7 @@ private fun InkSwatch(hex: String, selected: Boolean, onClick: () -> Unit) {
         contentAlignment = Alignment.Center,
     ) {
         Box(
-            Modifier.size(26.dp).clip(CircleShape).background(parseHex(hex))
+            Modifier.size(26.dp).clip(CircleShape).background(parseHexColor(hex) ?: EmberAccent)
                 .border(if (selected) 2.dp else 1.dp, if (selected) ring else palette.hairline, CircleShape),
         )
     }
@@ -764,11 +786,6 @@ private fun annotationColorLabel(hex: String): String = when (hex.uppercase()) {
     "#FFCC80" -> "Orange"
     "#CE93D8" -> "Purple"
     else -> hex
-}
-
-internal fun parseHex(hex: String): Color {
-    val v = hex.removePrefix("#").toLongOrNull(16) ?: return EmberAccent
-    return Color(0xFF000000 or v)
 }
 
 internal fun readerChromePalette(theme: ReaderTheme, eink: Boolean, accent: Color): HearthPalette = when {

@@ -29,6 +29,7 @@ import com.enve.storyteller.dto.StorytellerSeriesDto
 import com.enve.storyteller.dto.StorytellerStatusDto
 import com.enve.storyteller.dto.StorytellerStatusUpdateRequest
 import com.enve.storyteller.dto.StorytellerUserDto
+import com.enve.core.data.sync.AudioLocatorPosition
 import com.enve.core.data.sync.SyncSnapshot
 import com.enve.core.data.util.runSuspendCatching
 import kotlinx.coroutines.Dispatchers
@@ -526,15 +527,7 @@ class StorytellerRepository @Inject constructor(
 
     suspend fun fetchEbookProgress(book: Book): Result<SyncSnapshot?> {
         val serverId = storytellerServerBookIdOrNull(book.id) ?: return Result.success(null)
-        return fetchPosition(serverId).map { position ->
-            val pct = position?.totalProgression()?.toFloat() ?: return@map null
-            SyncSnapshot(
-                percentage = pct,
-                locatorJson = position.ebookLocatorJsonString(),
-                source = "Storyteller",
-                updatedAt = position.timestamp.takeIf { it > 0L },
-            )
-        }
+        return fetchPosition(serverId).map { it?.toEbookSnapshot() }
     }
 
     fun invalidateListCaches() = Unit
@@ -668,17 +661,6 @@ class StorytellerRepository @Inject constructor(
         }.getOrNull()
     }
 
-    private fun StorytellerPositionResponse.locatorJsonString(): String? = normalizedLocatorElement()?.let { json.encodeToString(it) }
-
-    private fun StorytellerPositionResponse.ebookLocatorJsonString(): String? {
-        val element = normalizedLocatorElement() as? JsonObject ?: return null
-        val href = element["href"]?.jsonPrimitive?.contentOrNull
-        val type = element["type"]?.jsonPrimitive?.contentOrNull?.lowercase()
-        if (href.isNullOrBlank()) return null
-        if (type != null && (type.startsWith("audio") || type.contains("mpeg") || type.contains("mp3"))) return null
-        return json.encodeToString(element)
-    }
-
     private fun StorytellerPositionResponse.normalizedLocatorElement(): JsonElement? {
         val raw = locator ?: return null
         val primitive = raw as? JsonPrimitive
@@ -730,7 +712,7 @@ internal fun mapStorytellerBook(
     val hasEbook = book.ebook != null
     val hasReadaloudEntry = book.readaloud != null
     val isReadaloudReady = book.readaloud?.isReady == true
-    if (!hasAudiobook && !hasEbook) return null
+    if (!hasAudiobook && !hasEbook && !isReadaloudReady) return null
 
     val mediaType = when {
         hasReadaloudEntry -> AppMediaType.EBOOK
@@ -776,7 +758,7 @@ internal fun mapStorytellerBook(
         personalRating = book.rating?.toFloat(),
         publishedDate = book.publicationDate.trimToNull() ?: publishedYear?.toString(),
         language = book.language.trimToNull(),
-        primaryFileType = if (hasEbook) {
+        primaryFileType = if (hasEbook || isReadaloudReady) {
             "EPUB"
         } else {
             book.audiobook?.filepath?.substringAfterLast('.', "")?.uppercase().orEmpty().ifBlank { null }
@@ -892,6 +874,19 @@ private fun StorytellerPositionResponse.totalProgression(): Double? {
             ?.jsonPrimitive
             ?.doubleOrNull
     }.getOrNull()
+}
+
+internal fun StorytellerPositionResponse.toEbookSnapshot(): SyncSnapshot? {
+    val percentage = totalProgression()?.toFloat() ?: return null
+    val audioLocatorJson = normalizedLocatorElement()
+        ?.let { storytellerJson.encodeToString(it) }
+        ?.takeIf(AudioLocatorPosition::isAudioLocator)
+    return SyncSnapshot(
+        percentage = percentage,
+        locatorJson = audioLocatorJson ?: ebookLocatorJsonString(storytellerJson),
+        source = "Storyteller",
+        updatedAt = timestamp.takeIf { it > 0L },
+    )
 }
 
 private fun StorytellerPositionResponse.ebookLocatorJsonString(json: Json): String? {

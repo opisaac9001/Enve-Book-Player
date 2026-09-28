@@ -61,16 +61,20 @@ struct ReaderContentsTray: View {
             .enveEnvironment()
         }
         .sheet(item: $annotationEditor) { presentation in
-            ReaderAnnotationEditorSheet(annotation: presentation.annotation) { style, color, note in
-                model.annotationController.updateAnnotation(
-                    presentation.annotation,
-                    style: style,
-                    colorHex: color,
-                    note: note,
-                    replaceNote: true
-                )
-                PlatformHaptics.impact(.light)
-            }
+            ReaderAnnotationEditorSheet(
+                annotation: presentation.annotation,
+                onSave: { style, color, note in
+                    model.annotationController.updateAnnotation(
+                        presentation.annotation,
+                        style: style,
+                        colorHex: color,
+                        note: note,
+                        replaceNote: true
+                    )
+                    PlatformHaptics.impact(.light)
+                },
+                onRemove: { model.annotationController.removeAnnotation(presentation.annotation) }
+            )
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
             .hearthPresentationBackground()
@@ -281,6 +285,11 @@ struct ReaderContentsTray: View {
                             .font(.hearthCaption)
                             .foregroundStyle(hearth.textSecondary)
                             .lineLimit(2)
+                    }
+                    if let resolved = model.annotationController.anchorResolution[annotation.id] {
+                        Text(resolved ? "Located in this book" : "Saved · location needs repair")
+                            .font(.hearthCaption)
+                            .foregroundStyle(hearth.textSecondary)
                     }
                     Text(annotationCaption(annotation))
                         .font(.hearthCaption)
@@ -603,9 +612,10 @@ private struct ReaderBookmarkEditorSheet: View {
     }
 }
 
-private struct ReaderAnnotationEditorSheet: View {
+struct ReaderAnnotationEditorSheet: View {
     let annotation: ReaderAnnotation
     let onSave: (ReaderAnnotationStyle, String, String?) -> Void
+    let onRemove: () -> Void
 
     @Environment(\.hearth) private var hearth
     @Environment(\.dismiss) private var dismiss
@@ -616,9 +626,14 @@ private struct ReaderAnnotationEditorSheet: View {
 
     private static let inks = ["#FFF59D", "#A5D6A7", "#90CAF9", "#F8BBD0"]
 
-    init(annotation: ReaderAnnotation, onSave: @escaping (ReaderAnnotationStyle, String, String?) -> Void) {
+    init(
+        annotation: ReaderAnnotation,
+        onSave: @escaping (ReaderAnnotationStyle, String, String?) -> Void,
+        onRemove: @escaping () -> Void
+    ) {
         self.annotation = annotation
         self.onSave = onSave
+        self.onRemove = onRemove
         _style = State(initialValue: annotation.style)
         _colorHex = State(initialValue: annotation.colorHex)
         _note = State(initialValue: annotation.note ?? "")
@@ -692,6 +707,15 @@ private struct ReaderAnnotationEditorSheet: View {
                     }
 
                 HStack {
+                    Button(role: .destructive) {
+                        onRemove()
+                        dismiss()
+                    } label: {
+                        Label("Remove", systemImage: "trash")
+                            .font(.hearthUI(14, weight: .semibold))
+                            .foregroundStyle(hearth.statusError)
+                    }
+                    .buttonStyle(PressableStyle())
                     Spacer()
                     EmberButton(title: "Update Note") {
                         let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)

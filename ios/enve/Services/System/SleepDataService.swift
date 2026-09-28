@@ -68,44 +68,4 @@ actor SleepDataService {
             store.execute(query)
         }
     }
-
-    func fetchSleepOnset(after date: Date) async -> Date? {
-        guard isAvailable else { return nil }
-
-        let endBound = date.addingTimeInterval(maxRewindInterval)
-        let predicate = HKQuery.predicateForSamples(
-            withStart: date,
-            end: endBound,
-            options: .strictStartDate
-        )
-
-        let asleepValues: Set<Int> = [
-            HKCategoryValueSleepAnalysis.asleepUnspecified.rawValue,
-            HKCategoryValueSleepAnalysis.asleepCore.rawValue,
-            HKCategoryValueSleepAnalysis.asleepREM.rawValue,
-            HKCategoryValueSleepAnalysis.asleepDeep.rawValue,
-        ]
-
-        let sort = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)
-
-        return await withCheckedContinuation { continuation in
-            let query = HKSampleQuery(
-                sampleType: sleepType,
-                predicate: predicate,
-                limit: 20,
-                sortDescriptors: [sort]
-            ) { _, samples, error in
-                if let error {
-                    AppLogger.player.error("[SleepData] HealthKit query failed: \(error.localizedDescription)")
-                    continuation.resume(returning: nil)
-                    return
-                }
-                let onset = (samples as? [HKCategorySample])?
-                    .first { asleepValues.contains($0.value) }?
-                    .startDate
-                continuation.resume(returning: onset)
-            }
-            store.execute(query)
-        }
-    }
 }

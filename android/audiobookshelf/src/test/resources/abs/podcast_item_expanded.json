@@ -1,0 +1,61 @@
+{
+  "id": "69705e22-3e69-43f3-ba42-64178e997530",
+  "libraryId": "c37bb17d-2d06-4e6d-b763-66c6c0ff9c25",
+  "mediaType": "podcast",
+  "addedAt": 1790124394429,
+  "media": {
+    "id": "620fc285-6b8e-489d-9327-c2cb9c4672b8",
+    "metadata": {
+      "title": "Accidental Tech Podcast",
+      "author": "Marco Arment, Casey Liss, John Siracusa",
+      "description": "Three nerds discussing tech, Apple, programming, and loosely related matters.",
+      "genres": [
+        "Technology"
+      ],
+      "feedUrl": "https://cdn.atp.fm/rss/public?wtvryzdm",
+      "language": "",
+      "explicit": false
+    },
+    "numEpisodes": 1,
+    "episodes": [
+      {
+        "libraryItemId": "69705e22-3e69-43f3-ba42-64178e997530",
+        "podcastId": "620fc285-6b8e-489d-9327-c2cb9c4672b8",
+        "id": "7ac76a99-00a6-4801-9659-82a6d809db7f",
+        "index": null,
+        "season": "",
+        "episode": "709",
+        "episodeType": "",
+        "guid": "svdeou1mmfjhwknm",
+        "enclosure": {
+          "url": "https://atp.fm/audio/svdeou1mmfjhwknm/atp709.mp3",
+          "type": "audio/mpeg",
+          "length": "123083911"
+        },
+        "title": "709: Steel-Cable Insurance",
+        "subtitle": "A mountain of follow-up and updates about the iPhone event, new chips, iPhone 18 Pro, and iPhone Duo.",
+        "description": "<ul>\n<li>🗣️ New <a href=\"https://atp.fm/join\">ATP Member’s</a> Special: <a href=\"https://atp.fm/atp-insider-show-q-a\">ATP Insider: Show Q&amp;A</a></li>\n<li>🗣️ It’s <a href=\"https://stjude.org/atp\">St. Jude</a> time! 🗣️\n\n<ul>\n<li><a href=\"https://themarcooffset.com/\">The Marco Offset™</a></li>\n</ul></li>\n<li><a href=\"https://fxrant.blogspot.com/2026/09/apple-event-film-2018-vs-james-bond.html\">Todd Vaziri on James Bond homages in the event video</a>\n\n<ul>\n<li><a href=\"https://www.youtube.com/watch?v=8qm8NANO_ow\">Co",
+        "pubDate": "Thu, 17 Sep 2026 21:26:09 +0000",
+        "publishedAt": 1789680369000,
+        "addedAt": 1790124503308,
+        "updatedAt": 1790124503308,
+        "size": 122609256,
+        "duration": 7662.497959,
+        "audioFile": {
+          "index": 1,
+          "ino": "14560426",
+          "metadata": {
+            "filename": "709 - Steel-Cable Insurance.mp3",
+            "ext": ".mp3",
+            "size": 122609256
+          },
+          "duration": 7662.497959,
+          "mimeType": "audio/mpeg",
+          "codec": "mp3",
+          "bitRate": 128000,
+          "channels": 2
+        }
+      }
+    ]
+  }
+}

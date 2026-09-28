@@ -75,15 +75,6 @@ final class ComicVineService: Sendable {
         return !key.isEmpty
     }
 
-    func validateAPIKey(_ apiKey: String) async throws {
-        let trimmed = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            throw ComicVineError.noApiKey
-        }
-
-        _ = try await performSearch(query: "Made in Abyss", limit: 1, apiKey: trimmed)
-    }
-
     func search(query: String, limit: Int = 20) async throws -> [ComicVineMetadataLayer] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }

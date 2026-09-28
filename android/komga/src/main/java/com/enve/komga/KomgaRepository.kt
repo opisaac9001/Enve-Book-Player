@@ -8,10 +8,12 @@ import com.enve.core.data.model.Library
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.AudioTrack
 import com.enve.core.data.provider.ProviderMetadataUpdate
+import com.enve.core.data.util.FINISHED_PROGRESS_THRESHOLD
 import com.enve.core.data.util.runSuspendCatching
 import com.enve.komga.api.KomgaApi
 import com.enve.komga.dto.KomgaBookDto
 import com.enve.komga.dto.KomgaReadProgressUpdateDto
+import com.enve.komga.dto.KomgaUserDto
 import com.enve.komga.dto.displayMetadata
 import com.enve.core.di.RefreshClient
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -22,16 +24,12 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -42,6 +40,8 @@ import java.time.LocalDate
 import java.time.OffsetDateTime
 import kotlin.math.ceil
 import java.io.File
+import java.net.HttpURLConnection.HTTP_BAD_REQUEST
+import java.net.HttpURLConnection.HTTP_CONFLICT
 
 @Singleton
 class KomgaRepository @Inject constructor(
@@ -124,10 +124,10 @@ class KomgaRepository @Inject constructor(
         return java.io.File(cacheDir, name)
     }
 
-    suspend fun fetchCurrentUser(): Result<com.enve.komga.dto.KomgaUserDto> = runSuspendCatching {
+    suspend fun fetchCurrentUser(): Result<KomgaUserDto> = runSuspendCatching {
         val resp = api.getCurrentUser()
         if (!resp.isSuccessful) error("getCurrentUser HTTP ${resp.code()}")
-        resp.body() ?: error("Empty body for /users/me")
+        resp.body() ?: error("Empty body for /api/v2/users/me")
     }
 
     suspend fun fetchLibrariesRaw(): Result<List<com.enve.komga.dto.KomgaLibraryDto>> = runSuspendCatching {
@@ -168,7 +168,7 @@ class KomgaRepository @Inject constructor(
         Result.failure(e)
     }
 
-    suspend fun adminListUsers(): Result<List<com.enve.komga.dto.KomgaUserDto>> = wrap { api.adminListUsers() }
+    suspend fun adminListUsers(): Result<List<KomgaUserDto>> = wrap { api.adminListUsers() }
     suspend fun adminCreateUser(body: com.enve.komga.dto.KomgaUserCreationDto) = wrap { api.adminCreateUser(body) }
     suspend fun adminDeleteUser(id: String) = wrapUnit { api.adminDeleteUser(id) }
     suspend fun adminUpdateUser(id: String, body: com.enve.komga.dto.KomgaUserUpdateDto) = wrapUnit { api.adminUpdateUser(id, body) }
@@ -579,7 +579,7 @@ class KomgaRepository @Inject constructor(
             addedOn = addedOn,
             lastReadTime = lastReadTime,
             readProgress = progress,
-            isFinished = dto.readProgress?.completed == true || progress >= 0.99f,
+            isFinished = dto.readProgress?.completed == true || progress >= FINISHED_PROGRESS_THRESHOLD,
             epubLocator = savedPage?.let { "{\"page\":$it}" },
         )
     }
@@ -779,12 +779,7 @@ class KomgaRepository @Inject constructor(
                 if (!resp.isSuccessful) {
                     error("Komga session verification failed: HTTP ${resp.code}")
                 }
-                runCatching {
-                    val json = jsonSerializer.parseToJsonElement(body).jsonObject
-                    json["email"]?.jsonPrimitive?.contentOrNull
-                        ?: json["username"]?.jsonPrimitive?.contentOrNull
-                        ?: ""
-                }.getOrDefault("")
+                komgaSessionEmail(body)
             }
         }
     }
@@ -841,6 +836,10 @@ class KomgaRepository @Inject constructor(
             if (readProgress.completed) {
                 return Result.success(com.enve.core.data.sync.SyncSnapshot(percentage = 1f, source = "Komga"))
             }
+            if (dto.media?.usesReadiumProgression == true) {
+                val progression = api.getProgression(book.id).body() ?: return Result.success(null)
+                return Result.success(KomgaReadiumProgression.snapshot(progression))
+            }
             val totalPages = dto.media?.pagesCount?.takeIf { it > 0 } ?: return Result.success(null)
             val pct = readProgress.page.toFloat() / totalPages
             if (pct <= 0f) return Result.success(null)
@@ -862,33 +861,54 @@ class KomgaRepository @Inject constructor(
     suspend fun syncEbookProgress(
         bookId: String,
         percentage: Float,
+        locator: String? = null,
         page: Int? = null,
         pageCount: Int? = null,
-    ): Result<Unit> {
-        return try {
-            val normalized = percentage.coerceIn(0f, 1f)
-            val completed = normalized >= 0.99f
-            val resolvedPageCount = pageCount?.takeIf { it > 0 }
-                ?: api.getBook(bookId).body()?.media?.pagesCount?.takeIf { it > 0 }
-                ?: 1
-            val resolvedPage = page?.takeIf { it > 0 }
-                ?: ceil(normalized * resolvedPageCount.toFloat()).toInt().coerceIn(1, resolvedPageCount)
-
-            val response = api.updateReadProgress(
-                bookId = bookId,
-                request = if (completed) {
-                    KomgaReadProgressUpdateDto(completed = true)
-                } else {
-                    KomgaReadProgressUpdateDto(page = resolvedPage, completed = false)
-                }
-            )
-            if (response.isSuccessful) Result.success(Unit)
-            else Result.failure(Exception("Komga read-progress sync failed: HTTP ${response.code()}"))
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
+    ): Result<Unit> = runSuspendCatching {
+        val normalized = percentage.coerceIn(0f, 1f)
+        if (normalized >= FINISHED_PROGRESS_THRESHOLD) {
+            val response = api.updateReadProgress(bookId, KomgaReadProgressUpdateDto(completed = true))
+            if (!response.isSuccessful) error("Komga read-progress sync failed: HTTP ${response.code()}")
+            return@runSuspendCatching
         }
+        val readerLocator = KomgaReadiumProgression.locatorFrom(locator, normalized)
+        val media = if (pageCount == null || readerLocator != null) api.getBook(bookId).body()?.media else null
+        if (media?.usesReadiumProgression == true) {
+            pushReadiumProgression(bookId, normalized, readerLocator)
+            return@runSuspendCatching
+        }
+        val resolvedPageCount = pageCount?.takeIf { it > 0 } ?: media?.pagesCount?.takeIf { it > 0 } ?: 1
+        val resolvedPage = page?.takeIf { it > 0 }
+            ?: ceil(normalized * resolvedPageCount.toFloat()).toInt().coerceIn(1, resolvedPageCount)
+        val response = api.updateReadProgress(bookId, KomgaReadProgressUpdateDto(page = resolvedPage, completed = false))
+        if (!response.isSuccessful) error("Komga read-progress sync failed: HTTP ${response.code()}")
+    }
+
+    private suspend fun pushReadiumProgression(
+        bookId: String,
+        totalProgression: Float,
+        readerLocator: com.enve.komga.dto.KomgaR2Locator?,
+    ) {
+        val direct = readerLocator?.let { putProgression(bookId, it) }
+        if (direct != null && direct.code() != HTTP_BAD_REQUEST) return direct.requireProgressionWritten()
+        val positions = api.getPositions(bookId).body()?.positions.orEmpty()
+        val snapped = KomgaReadiumProgression.snapToPositions(readerLocator, totalProgression, positions)
+            ?: error("Komga returned no reading positions")
+        putProgression(bookId, snapped).requireProgressionWritten()
+    }
+
+    private suspend fun putProgression(
+        bookId: String,
+        locator: com.enve.komga.dto.KomgaR2Locator,
+    ): retrofit2.Response<Unit> = api.updateProgression(
+        bookId,
+        KomgaReadiumProgression.encode(locator, System.currentTimeMillis())
+            .toRequestBody("application/json".toMediaType()),
+    )
+
+    private fun retrofit2.Response<Unit>.requireProgressionWritten() {
+        if (isSuccessful || code() == HTTP_CONFLICT) return
+        error("Komga progression sync failed: HTTP ${code()}")
     }
 
     suspend fun getSeries(): Result<List<com.enve.core.data.remote.dto.SeriesSummaryDto>> {
@@ -949,6 +969,11 @@ class KomgaRepository @Inject constructor(
         }
     }
 }
+
+private val komgaSessionJson = Json { ignoreUnknownKeys = true }
+
+internal fun komgaSessionEmail(body: String): String =
+    komgaSessionJson.decodeFromString<KomgaUserDto>(body).email
 
 internal fun ProviderMetadataUpdate.toKomgaBookMetadataPatchJson(): JsonObject {
     val titleValue = title.clean()

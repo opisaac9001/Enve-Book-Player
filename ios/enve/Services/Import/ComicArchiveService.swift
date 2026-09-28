@@ -340,17 +340,6 @@ final class ComicArchiveService: @unchecked Sendable {
             .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
     }
 
-    private func pageTitle(for pageURL: URL, index: Int) -> String {
-        let baseName = pageURL.deletingPathExtension().lastPathComponent
-        if let separatorIndex = baseName.firstIndex(of: "-") {
-            let cleaned = String(baseName[baseName.index(after: separatorIndex)...]).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !cleaned.isEmpty {
-                return cleaned
-            }
-        }
-        return "Page \(index + 1)"
-    }
-
     static func stripIdPrefix(from name: String) -> String {
         guard let dashIndex = name.firstIndex(of: "-") else { return name }
         let prefix = String(name[name.startIndex..<dashIndex])

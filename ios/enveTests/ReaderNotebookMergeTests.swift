@@ -148,6 +148,22 @@ struct ReaderNotebookMergeTests {
         #expect(locations[EpubLocationBridge.sourceEngineLocationKey] as? String == ReaderEngineKind.foliate.rawValue)
     }
 
+    @Test func addingServerCFIPreservesTheOriginalReaderEngine() throws {
+        let existing = """
+            {"href":"chapter1.xhtml","type":"application/xhtml+xml","locations":{"progression":0.3,"enveSourceEngine":"readium"},"text":{"highlight":"Selected text"}}
+            """
+        let json = try #require(ReaderNotebookMerge.locatorJSON(
+            fromCFI: "epubcfi(/6/4!/4/2)",
+            existingLocator: existing
+        ))
+        let data = try #require(json.data(using: .utf8))
+        let decoded = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let locations = try #require(decoded["locations"] as? [String: Any])
+
+        #expect(locations["cfi"] as? String == "epubcfi(/6/4!/4/2)")
+        #expect(locations[EpubLocationBridge.sourceEngineLocationKey] as? String == ReaderEngineKind.readium.rawValue)
+    }
+
     @MainActor
     @Test func siloRecordsMergeIntoMappedLocalAnnotationInsteadOfDuplicating() throws {
         let idMap = InMemorySiloIDMap()

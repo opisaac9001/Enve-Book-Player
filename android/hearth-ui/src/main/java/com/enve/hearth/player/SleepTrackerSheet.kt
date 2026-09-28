@@ -3,7 +3,6 @@
 package com.enve.hearth.player
 
 import android.content.ActivityNotFoundException
-import android.content.pm.ApplicationInfo
 import android.content.Intent
 import android.content.Context
 import android.net.Uri
@@ -103,7 +102,6 @@ internal fun SleepInsightsSheet(
 ) {
     val context = LocalContext.current
     val state by vm.sleepTracker.collectAsStateWithLifecycle()
-    val isDebuggable = context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
     var selectedNightId by rememberSaveable { mutableStateOf<String?>(null) }
     val permission = HealthPermission.getReadPermission(SleepSessionRecord::class)
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -153,15 +151,6 @@ internal fun SleepInsightsSheet(
                 SleepDataAccess.AVAILABLE -> Unit
             }
         }
-        if (isDebuggable) {
-            item {
-                DemoDataCard(
-                    active = state.isDemo,
-                    onPreview = vm::loadDemoSleepTracker,
-                    onExit = vm::refreshSleepTracker,
-                )
-            }
-        }
         state.summary?.let { summary ->
             if (summary.nights.isNotEmpty()) {
                 val selectedNight = summary.nights.firstOrNull { it.period.id == selectedNightId } ?: summary.nights.first()
@@ -179,7 +168,7 @@ internal fun SleepInsightsSheet(
                     item { ListeningComparisonCard(comparison) }
                 }
                 item {
-                    SourceAndPrivacyCard(selectedNight.period.sourceName, state.isDemo) {
+                    SourceAndPrivacyCard(selectedNight.period.sourceName) {
                         openHealthConnectSettings(context)
                     }
                 }
@@ -195,22 +184,6 @@ internal fun SleepInsightsSheet(
                 color = Hearth.palette.textTertiary,
             )
         }
-    }
-}
-
-@Composable
-private fun DemoDataCard(active: Boolean, onPreview: () -> Unit, onExit: () -> Unit) {
-    SleepCard {
-        Overline("Debug preview")
-        Spacer(Modifier.size(Hearth.Spacing.S))
-        Text(
-            if (active) "Showing fabricated sleep and audiobook history. Nothing was written to Health Connect."
-            else "Preview two weeks of fabricated stages, naps, trends, and audiobook correlations.",
-            style = HearthText.Body,
-            color = Hearth.palette.textSecondary,
-        )
-        Spacer(Modifier.size(Hearth.Spacing.L))
-        SleepAction(if (active) "Exit demo" else "Preview demo data", if (active) onExit else onPreview)
     }
 }
 
@@ -508,7 +481,7 @@ private fun ListeningOverviewCard(overview: BedtimeListeningOverview) {
 }
 
 @Composable
-private fun SourceAndPrivacyCard(sourceName: String, isDemo: Boolean, onManage: () -> Unit) {
+private fun SourceAndPrivacyCard(sourceName: String, onManage: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(Hearth.Radius.Inner)).background(Hearth.palette.bgSunken)
             .padding(Hearth.Spacing.L),
@@ -517,21 +490,18 @@ private fun SourceAndPrivacyCard(sourceName: String, isDemo: Boolean, onManage: 
         Column(Modifier.weight(1f)) {
             Text("Sleep data from $sourceName", style = HearthText.Label, color = Hearth.palette.text)
             Text(
-                if (isDemo) "Generated locally · not saved to Health Connect"
-                else "Read through Health Connect · processed on device",
+                "Read through Health Connect · processed on device",
                 style = HearthText.Caption,
                 color = Hearth.palette.textTertiary,
             )
         }
-        if (!isDemo) {
-            Text(
-                "Manage",
-                style = HearthText.Label,
-                color = Hearth.palette.ember,
-                modifier = Modifier.clip(RoundedCornerShape(50)).clickable(onClick = onManage)
-                    .padding(horizontal = Hearth.Spacing.M, vertical = Hearth.Spacing.S),
-            )
-        }
+        Text(
+            "Manage",
+            style = HearthText.Label,
+            color = Hearth.palette.ember,
+            modifier = Modifier.clip(RoundedCornerShape(50)).clickable(onClick = onManage)
+                .padding(horizontal = Hearth.Spacing.M, vertical = Hearth.Spacing.S),
+        )
     }
 }
 

@@ -152,6 +152,32 @@ struct ReaderInitialLocationPolicyTests {
         )
     }
 
+    @Test func aPositionInAnUnnarratedChapterNeverRestoresIntoTheNeighbouringNarratedOne() {
+        let readingOrder = ["OEBPS/text/Chapter_1.xhtml", "OEBPS/text/Chapter_2.xhtml"]
+
+        #expect(
+            !ReaderReadAloudController.overlayClipKeepsStoredResource(
+                clipHref: "../text/Chapter_1.xhtml",
+                storedHref: "OEBPS/text/Chapter_2.xhtml",
+                readingOrderHrefs: readingOrder
+            )
+        )
+        #expect(
+            ReaderReadAloudController.overlayClipKeepsStoredResource(
+                clipHref: "../text/Chapter_1.xhtml",
+                storedHref: "OEBPS/text/Chapter_1.xhtml",
+                readingOrderHrefs: readingOrder
+            )
+        )
+        #expect(
+            ReaderReadAloudController.overlayClipKeepsStoredResource(
+                clipHref: "../text/Chapter_1.xhtml",
+                storedHref: "audiobook://item",
+                readingOrderHrefs: readingOrder
+            )
+        )
+    }
+
     @Test func withoutAStoredLocatorOnlyTheProgressLocatorRemains() {
         #expect(
             ReaderInitialLocationPolicy.storedRanking(

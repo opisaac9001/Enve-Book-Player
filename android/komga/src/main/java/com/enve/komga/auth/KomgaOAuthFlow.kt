@@ -10,7 +10,6 @@ sealed class KomgaOAuthCompletion {
     data class Failed(val message: String) : KomgaOAuthCompletion()
 }
 
-// Komga uses form-based SSO with a session cookie, not a token — WebView captures SESSION, we verify it server-side.
 @Singleton
 class KomgaOAuthFlow @Inject constructor(
     private val komgaRepository: KomgaRepository,

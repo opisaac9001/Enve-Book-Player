@@ -41,13 +41,6 @@ final class RARExtractor {
     static let rar5Signature: [UInt8] = [0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x01, 0x00]
     static let rar4Signature: [UInt8] = [0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x00]
 
-    static func isRARFile(at url: URL) -> Bool {
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
-        defer { handle.closeFile() }
-        let header = [UInt8](handle.readData(ofLength: 8))
-        return header.starts(with: rar5Signature) || header.starts(with: rar4Signature)
-    }
-
     static func extractAudioFiles(
         from rarURL: URL,
         to destinationDir: URL,

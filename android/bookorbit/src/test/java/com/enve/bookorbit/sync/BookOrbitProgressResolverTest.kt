@@ -61,4 +61,62 @@ class BookOrbitProgressResolverTest {
             BookOrbitProgressResolver.resolve(0.5f, 1_000L, 0.502f, 5_000L),
         )
     }
+
+    @Test
+    fun aTimestamplessRemotePercentageNeverOverwritesATimestampedLocalRead() {
+        assertEquals(
+            BookOrbitProgressDecision.PUSH,
+            BookOrbitProgressResolver.resolve(0.45f, 5_000L, 0.6f, null),
+        )
+        assertEquals(
+            BookOrbitProgressDecision.PUSH,
+            BookOrbitProgressResolver.resolve(
+                localPercentage = 0.45f,
+                localUpdatedAt = 5_000L,
+                remotePercentage = 0.6f,
+                remoteUpdatedAt = null,
+                localLocator = bookOrbitEpubLocator("epubcfi(/6/8!/4/2:20)", 0.45f),
+                remoteLocator = null,
+            ),
+        )
+    }
+
+    @Test
+    fun aTimestampedPercentageOnlyRemoteCannotReplaceAnExactLocalAnchor() {
+        assertEquals(
+            BookOrbitProgressDecision.PUSH,
+            BookOrbitProgressResolver.resolve(
+                localPercentage = 0.45f,
+                localUpdatedAt = 5_000L,
+                remotePercentage = 0.6f,
+                remoteUpdatedAt = 8_000L,
+                localLocator = bookOrbitEpubLocator("epubcfi(/6/8!/4/2:20)", 0.45f),
+                remoteLocator = null,
+            ),
+        )
+    }
+
+    @Test
+    fun timestamplessSidesStillFallBackToTheFurtherPosition() {
+        assertEquals(
+            BookOrbitProgressDecision.PULL,
+            BookOrbitProgressResolver.resolve(0.25f, null, 0.5f, null),
+        )
+        assertEquals(
+            BookOrbitProgressDecision.PULL,
+            BookOrbitProgressResolver.resolve(0.25f, null, 0.5f, 3_000L),
+        )
+        assertEquals(
+            BookOrbitProgressDecision.PUSH,
+            BookOrbitProgressResolver.resolve(0.5f, null, 0.25f, 3_000L),
+        )
+    }
+
+    @Test
+    fun aTimestamplessRemoteStillWinsWhenTheBookWasNeverOpenedLocally() {
+        assertEquals(
+            BookOrbitProgressDecision.PULL,
+            BookOrbitProgressResolver.resolve(0f, 5_000L, 0.6f, null),
+        )
+    }
 }

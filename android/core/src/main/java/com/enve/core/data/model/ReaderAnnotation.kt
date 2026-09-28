@@ -174,10 +174,10 @@ interface ReaderAnnotationDao {
     @Query("DELETE FROM reader_annotations WHERE id = :id")
     suspend fun purge(id: String)
 
-    @Query("DELETE FROM reader_annotations WHERE bookId = :bookId AND providerSource = :providerSource AND syncDirty = 0")
+    @Query("DELETE FROM reader_annotations WHERE bookId = :bookId AND providerSource = :providerSource AND syncDirty = 0 AND serverId IS NOT NULL")
     suspend fun purgeCleanProviderRows(bookId: String, providerSource: String)
 
-    @Query("DELETE FROM reader_annotations WHERE bookId = :bookId AND providerSource = :providerSource AND syncDirty = 0 AND serverId NOT IN (:serverIds)")
+    @Query("DELETE FROM reader_annotations WHERE bookId = :bookId AND providerSource = :providerSource AND syncDirty = 0 AND serverId IS NOT NULL AND serverId NOT IN (:serverIds)")
     suspend fun purgeCleanProviderRowsMissing(
         bookId: String,
         providerSource: String,

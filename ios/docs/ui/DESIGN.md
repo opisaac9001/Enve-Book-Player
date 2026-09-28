@@ -214,9 +214,8 @@ Readium 3.11 `jsonString()` call sites). All renderers (EPUB/PDF/comic/HTML) flo
 Settings as one calm screen, not hubs:
 
 - **Sources** — connected services as cards: provider logo (existing assets), name, URL,
-  status dot, book count; re-auth banner when `connectionsNeedingReauth`. Tap → source page
-  (rename, credentials/re-auth, library multi-select, archive, delete — same calls as old
-  `ServerSettingsView`). **Add a source** → provider grid (logo tiles) → per-provider form.
+  status dot, book count; re-auth banner when `connectionsNeedingReauth`. Tap → `SourceDetailScreen`
+  (rename, credentials/re-auth, library multi-select, archive, delete). **Add a source** → provider grid (logo tiles) → per-provider form.
 - **Add flows keep the exact service contracts** (`connections-layer.md` §4, invariants
   verbatim): reuse `ConnectionCapability`, `LoginDelegates`, `BrowserSessionLoginView`,
   MTLS import, Plex PIN polling, OIDC PKCE, Jellyfin QuickConnect, WebDAV presets +

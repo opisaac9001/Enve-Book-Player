@@ -82,12 +82,6 @@ final class ObsidianNotesCoordinator {
         vaultBookmarkIsStale = false
     }
 
-    func renderPreview(book: Book) async -> String? {
-        let prefs = LibraryDisplayPreferencesStore.shared.loadPreferences()
-        guard let payload = await buildPayload(book: book, prefs: prefs) else { return nil }
-        return NotesTemplateEngine.render(template: prefs.obsidianTemplateBody, payload: payload)
-    }
-
     private func enqueueExport(book: Book) {
         let stableId = book.stableId
 

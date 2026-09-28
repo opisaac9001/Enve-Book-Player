@@ -1,17 +1,6 @@
 import CryptoKit
 import Foundation
 
-enum ProviderProgressDate {
-    static func parse(_ value: String?) -> Date? {
-        guard let value else { return nil }
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: value) { return date }
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: value)
-    }
-}
-
 struct PlaybackSessionInfo {
     let sessionId: String
     let audioTracks: [AudioTrackInfo]
@@ -98,6 +87,8 @@ protocol LibraryCatalogProvider: ProviderConnectionHandling {
     func fetchSeries(libraryId: String) async throws -> [Series]
     func fetchUserMediaProgress(libraryId: String) async throws -> [UserMediaProgress]
     func fetchFullBookDetails(bookId: String, libraryId: String) async throws -> Book
+    /// Raised when catalog mapping changes, so libraries imported by older code are fully reconciled once.
+    var catalogMappingRevision: Int { get }
 }
 
 protocol PlaybackSessionProvider: ProviderConnectionHandling {
@@ -120,7 +111,7 @@ protocol AudiobookProgressPushing: ProviderConnectionHandling {
 protocol AudiobookProgressPulling: ProviderConnectionHandling {
     func fetchAudiobookProgress(
         for book: Book
-    ) async throws -> (positionSeconds: TimeInterval, percentage: Double, trackIndex: Int?, updatedAt: Date?, isAbandoned: Bool)?
+    ) async throws -> (positionSeconds: TimeInterval, percentage: Double, trackIndex: Int?, updatedAt: Date?, isFinished: Bool)?
     func fetchAudiobookProgressState(for book: Book) async throws -> ProviderAudiobookProgress?
 }
 
@@ -131,7 +122,7 @@ protocol EbookProgressPushing: ProviderConnectionHandling {
 }
 
 protocol EbookProgressPulling: ProviderConnectionHandling {
-    func fetchEbookProgress(for book: Book) async throws -> (progress: Double, locator: String?, updatedAt: Date?, isAbandoned: Bool)?
+    func fetchEbookProgress(for book: Book) async throws -> (progress: Double, locator: String?, updatedAt: Date?, isFinished: Bool)?
     func fetchEbookProgressState(for book: Book) async throws -> ProviderEbookProgress?
 }
 
@@ -451,7 +442,7 @@ extension EbookProgressPulling {
             progress: progress.progress,
             locator: progress.locator,
             updatedAt: progress.updatedAt,
-            readState: progress.isAbandoned ? .abandoned : .unspecified
+            readState: progress.isFinished ? .finished : .unspecified
         )
     }
 }
@@ -464,12 +455,14 @@ extension AudiobookProgressPulling {
             percentage: progress.percentage,
             trackIndex: progress.trackIndex,
             updatedAt: progress.updatedAt,
-            readState: progress.isAbandoned ? .abandoned : .unspecified
+            readState: progress.isFinished ? .finished : .unspecified
         )
     }
 }
 
 extension LibraryCatalogProvider {
+    var catalogMappingRevision: Int { 0 }
+
     func fetchBooksDelta(libraryId: String, since: Date) async throws -> (books: [Book], cursor: Date)? {
         return nil
     }

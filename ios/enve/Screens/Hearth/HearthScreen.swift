@@ -465,6 +465,7 @@ private extension Book.BookSource {
         case .storyteller: "Storyteller"
         case .bookOrbit: "BookOrbit"
         case .silo: "Silo"
+        case .oneDrive: "OneDrive"
         }
     }
 }
@@ -506,6 +507,7 @@ struct HearthPulse: View {
                 Image(systemName: "sparkle.magnifyingglass")
                     .font(.hearthUI(12, weight: .semibold))
                     .foregroundStyle(tint)
+                    .accessibilityHidden(true)
                 Overline("Today's stack", color: hearth.textTertiary)
                 Spacer(minLength: 8)
                 Text("\(progressPercent)% current")

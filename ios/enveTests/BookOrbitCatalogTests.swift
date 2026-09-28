@@ -16,8 +16,8 @@ nonisolated private final class BookOrbitCatalogProtocol: URLProtocol, @unchecke
         }
         cards.append(["id": 8, "title": "Without series index", "seriesName": "Series"])
         let payload: Any
-        if url.path == "/api/v1/books/9/audio-progress" {
-            if request.httpMethod == "PATCH" {
+        if url.path == "/api/v1/audiobooks/9/playback-state" {
+            if request.httpMethod == "PUT" {
                 var body = request.httpBody ?? Data()
                 if let stream = request.httpBodyStream {
                     stream.open()
@@ -30,14 +30,28 @@ nonisolated private final class BookOrbitCatalogProtocol: URLProtocol, @unchecke
                     }
                 }
                 let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any]
-                guard json?["currentFileId"] as? Int == 91,
-                      json?["positionSeconds"] as? Double == 15,
-                      json?["percentage"] as? Double == 62.5 else {
+                guard json?["assetId"] as? String == "asset-b",
+                      json?["positionMs"] as? Int == 15_000,
+                      json?["baseRevision"] as? Int == 4,
+                      json?["manifestRevision"] as? String == "manifest-1" else {
                     client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
                     return
                 }
             }
-            payload = ["currentFileId": 91, "positionSeconds": 15, "percentage": 62.5]
+            payload = [
+                "assetId": "asset-b", "positionMs": 15_000, "percentage": 62.5,
+                "revision": 4, "manifestRevision": "manifest-1"
+            ]
+        } else if url.path == "/api/v1/audiobooks/9/manifest" {
+            payload = [
+                "revision": "manifest-1",
+                "assets": [
+                    ["assetId": "asset-b", "sequence": 1, "format": "mp3", "durationMs": 60_000],
+                    ["assetId": "asset-a", "sequence": 0, "format": "mp3", "durationMs": 60_000]
+                ],
+                "chapters": [["title": "Opening", "startMs": 0]],
+                "totalDurationMs": 120_000
+            ]
         } else if url.path == "/api/v1/books/9" {
             payload = ["id": 9, "title": "Two-track audiobook", "files": [
                 ["id": 90, "format": "mp3", "role": "primary", "durationSeconds": 60],
@@ -80,7 +94,12 @@ struct BookOrbitCatalogTests {
         let book = try await provider.fetchFullBookDetails(bookId: "9", libraryId: "1")
         let playback = try await provider.startPlaybackSession(for: book)
         let playingBook = book.withPlaybackSessionTimeline(tracks: playback.audioTracks, duration: 120)
-        #expect(playingBook.audioTracks?.map(\.id) == ["90", "91"])
+        #expect(playback.audioTracks.map(\.id) == ["asset-a", "asset-b"])
+        #expect(playback.audioTracks.map(\.contentUrl) == [
+            "https://bookorbit.invalid/api/v1/audiobooks/9/assets/asset-a/content",
+            "https://bookorbit.invalid/api/v1/audiobooks/9/assets/asset-b/content"
+        ])
+        #expect(playback.chapters.first?.title == "Opening")
         try await provider.updatePlaybackProgress(book: playingBook, sessionId: playback.sessionId,
                                                   currentTime: 75, isFinished: false, timeListened: 0)
         let remote = try #require(await provider.fetchAudiobookProgress(for: playingBook))

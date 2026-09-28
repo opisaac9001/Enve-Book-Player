@@ -302,13 +302,31 @@ final class SwiftDataBookStore: BookStoreRepository, @unchecked Sendable {
             return bucket.map { BrowseNarratorAggregate(name: $0.key, bookCount: $0.value.count, representativeThumb: $0.value.thumb) }
         }
 
-        func fetchBrowseSeriesAggregates(mediaType: String) throws -> [BrowseSeriesAggregate] {
+        func fetchBrowseSeriesAggregates(
+            mediaType: String,
+            providerId: UUID? = nil,
+            libraryId: String? = nil
+        ) throws -> [BrowseSeriesAggregate] {
             let localMediaType = mediaType
-            var descriptor = FetchDescriptor<BookRecord>(
-                predicate: #Predicate<BookRecord> { record in
+            let localProviderId = providerId?.uuidString ?? ""
+            let localLibraryId = libraryId ?? ""
+            let predicate: Predicate<BookRecord>
+            switch (providerId, libraryId) {
+            case (nil, _):
+                predicate = #Predicate<BookRecord> { record in
                     record.mediaType == localMediaType && !record.isDeleted
                 }
-            )
+            case (.some, nil):
+                predicate = #Predicate<BookRecord> { record in
+                    record.mediaType == localMediaType && !record.isDeleted && record.providerId == localProviderId
+                }
+            case (.some, .some):
+                predicate = #Predicate<BookRecord> { record in
+                    record.mediaType == localMediaType && !record.isDeleted
+                        && record.providerId == localProviderId && record.libraryId == localLibraryId
+                }
+            }
+            var descriptor = FetchDescriptor<BookRecord>(predicate: predicate)
             descriptor.propertiesToFetch = [
                 \BookRecord.series,
                 \BookRecord.thumb,
@@ -336,7 +354,7 @@ final class SwiftDataBookStore: BookStoreRepository, @unchecked Sendable {
                 let progress = localMediaType == "ebook"
                     ? row.ebookProgress ?? 0
                     : row.duration.map { $0 > 0 ? row.currentTime / $0 : 0 } ?? 0
-                if row.isFinished || progress >= 0.99 {
+                if row.isFinished || progress >= Book.finishedProgressThreshold {
                     acc.completedCount += 1
                 }
                 acc.matchingNames.insert(raw)
@@ -662,6 +680,21 @@ final class SwiftDataBookStore: BookStoreRepository, @unchecked Sendable {
                 if let a = record.linkedAudiobookStableId, !a.isEmpty { ids.insert(a) }
             }
             return ids
+        }
+
+        func fetchEbookLinkedAudiobookIds(source sourceValue: String) throws -> [(ebookStableId: String, audiobookStableId: String)] {
+            let ebookType = AppMediaType.ebook.rawValue
+            var descriptor = FetchDescriptor<BookRecord>(
+                predicate: #Predicate {
+                    $0.source == sourceValue && $0.mediaType == ebookType && !$0.isDeleted
+                        && $0.linkedAudiobookStableId != nil
+                }
+            )
+            descriptor.propertiesToFetch = [\BookRecord.stableId, \BookRecord.linkedAudiobookStableId]
+            return try modelContext.fetch(descriptor).compactMap { record -> (ebookStableId: String, audiobookStableId: String)? in
+                guard let linked = record.linkedAudiobookStableId, !linked.isEmpty else { return nil }
+                return (ebookStableId: record.stableId, audiobookStableId: linked)
+            }
         }
 
         func fetchExistingAudiobookStableIds(from candidates: Set<String>) throws -> Set<String> {
@@ -1650,14 +1683,70 @@ final class SwiftDataBookStore: BookStoreRepository, @unchecked Sendable {
                     modelContext.insert(record)
                     existingByUniqueId[book.uniqueId] = record
                 }
+                try mirrorEbookProgressIfNeeded(
+                    bookUniqueId: book.uniqueId,
+                    stableId: book.stableId,
+                    currentTime: book.currentTime,
+                    duration: book.duration ?? 0,
+                    ebookProgress: book.ebookProgress,
+                    epubLocator: book.epubLocator,
+                    isFinished: book.isFinished,
+                    lastUpdate: book.lastUpdate,
+                    hideFromContinue: book.hideFromContinue
+                )
             }
             try modelContext.save()
+        }
+
+        private func mirrorEbookProgressIfNeeded(
+            bookUniqueId: String,
+            stableId: String,
+            currentTime: TimeInterval,
+            duration: TimeInterval,
+            ebookProgress: Double?,
+            epubLocator: String?,
+            isFinished: Bool,
+            lastUpdate: Date,
+            hideFromContinue: Bool
+        ) throws {
+            let locator = epubLocator.flatMap { $0.isEmpty ? nil : $0 }
+            guard ebookProgress != nil || locator != nil else { return }
+
+            var descriptor = FetchDescriptor<MediaProgressRecord>(
+                predicate: #Predicate { $0.bookUniqueId == bookUniqueId }
+            )
+            descriptor.fetchLimit = 1
+            if let existing = try modelContext.fetch(descriptor).first {
+                guard lastUpdate >= existing.lastUpdate else { return }
+                existing.stableId = stableId
+                existing.currentTime = currentTime
+                existing.duration = duration
+                existing.ebookProgress = ebookProgress
+                existing.epubLocator = locator
+                existing.isFinished = isFinished
+                existing.lastUpdate = lastUpdate
+                existing.hideFromContinue = hideFromContinue
+            } else {
+                modelContext.insert(
+                    MediaProgressRecord(
+                        bookUniqueId: bookUniqueId,
+                        stableId: stableId,
+                        currentTime: currentTime,
+                        duration: duration,
+                        ebookProgress: ebookProgress,
+                        epubLocator: locator,
+                        isFinished: isFinished,
+                        lastUpdate: lastUpdate,
+                        hideFromContinue: hideFromContinue
+                    )
+                )
+            }
         }
 
         func replaceLibrary(books: [Book], libraryId: String, providerId: String, allowSparseResult: Bool) throws {
             let books = deduplicatedBooks(books)
 
-            let start = beginReconciliation(libraryId: libraryId, providerId: providerId)
+            let start = try beginReconciliation(libraryId: libraryId, providerId: providerId)
 
             let pageSize = 500
             for chunkStart in stride(from: 0, to: books.count, by: pageSize) {
@@ -1673,13 +1762,12 @@ final class SwiftDataBookStore: BookStoreRepository, @unchecked Sendable {
             )
         }
 
-        func beginReconciliation(libraryId: String, providerId: String) -> ReconciliationStart {
-
+        func beginReconciliation(libraryId: String, providerId: String) throws -> ReconciliationStart {
             let generation = Int(Date().timeIntervalSinceReferenceDate * 1000)
             let descriptor = FetchDescriptor<BookRecord>(
                 predicate: #Predicate { $0.libraryId == libraryId && $0.providerId == providerId }
             )
-            let existingCount = (try? modelContext.fetchCount(descriptor)) ?? 0
+            let existingCount = try modelContext.fetchCount(descriptor)
             return ReconciliationStart(generation: generation, existingCount: existingCount)
         }
 
@@ -1723,7 +1811,7 @@ final class SwiftDataBookStore: BookStoreRepository, @unchecked Sendable {
                         && $0.syncGeneration == generation
                 }
             )
-            let incomingCount = (try? modelContext.fetchCount(incomingDescriptor)) ?? 0
+            let incomingCount = try modelContext.fetchCount(incomingDescriptor)
 
             if existingCountBefore >= 100
                 && incomingCount * 2 < existingCountBefore
@@ -1742,7 +1830,7 @@ final class SwiftDataBookStore: BookStoreRepository, @unchecked Sendable {
                         && $0.syncGeneration != generation
                 }
             )
-            let toDeleteCount = (try? modelContext.fetchCount(orphanDescriptor)) ?? 0
+            let toDeleteCount = try modelContext.fetchCount(orphanDescriptor)
 
             try modelContext.delete(
                 model: BookRecord.self,
@@ -1914,6 +2002,18 @@ final class SwiftDataBookStore: BookStoreRepository, @unchecked Sendable {
             record.isFinished = isFinished
             record.lastUpdate = lastUpdate
             record.refreshSortKeys()
+
+            try mirrorEbookProgressIfNeeded(
+                bookUniqueId: record.uniqueId,
+                stableId: record.stableId,
+                currentTime: record.currentTime,
+                duration: record.duration ?? 0,
+                ebookProgress: ebookProgress,
+                epubLocator: epubLocator,
+                isFinished: isFinished,
+                lastUpdate: lastUpdate,
+                hideFromContinue: record.hideFromContinue
+            )
             try modelContext.save()
         }
 
@@ -2291,6 +2391,46 @@ final class SwiftDataBookStore: BookStoreRepository, @unchecked Sendable {
             if let record = try modelContext.fetch(descriptor).first {
                 modelContext.delete(record)
             }
+            try modelContext.save()
+        }
+
+        // One transaction so the source is never cleared without the destination write.
+        func migrateAudiobookArtifactRecords(fromBookStableId oldId: String, toBookStableId newId: String) throws {
+            let audioType = AppMediaType.audiobook.rawValue
+            let sourceDescriptor = FetchDescriptor<BookmarkRecord>(
+                predicate: #Predicate { $0.bookStableId == oldId && $0.mediaType == audioType }
+            )
+            let sourceBookmarks = try modelContext.fetch(sourceDescriptor)
+            if !sourceBookmarks.isEmpty {
+                let destinationDescriptor = FetchDescriptor<BookmarkRecord>(
+                    predicate: #Predicate { $0.bookStableId == newId }
+                )
+                let destinationIds = Set(try modelContext.fetch(destinationDescriptor).map { $0.id })
+                for record in sourceBookmarks {
+                    if destinationIds.contains(record.id) {
+                        modelContext.delete(record)
+                    } else {
+                        record.bookStableId = newId
+                    }
+                }
+            }
+
+            var sourceChapters = FetchDescriptor<ChapterCacheRecord>(
+                predicate: #Predicate { $0.bookStableId == oldId }
+            )
+            sourceChapters.fetchLimit = 1
+            if let chapterCache = try modelContext.fetch(sourceChapters).first {
+                var destinationChapters = FetchDescriptor<ChapterCacheRecord>(
+                    predicate: #Predicate { $0.bookStableId == newId }
+                )
+                destinationChapters.fetchLimit = 1
+                if try modelContext.fetch(destinationChapters).first == nil {
+                    chapterCache.bookStableId = newId
+                } else {
+                    modelContext.delete(chapterCache)
+                }
+            }
+
             try modelContext.save()
         }
 
@@ -2768,6 +2908,16 @@ final class SwiftDataBookStore: BookStoreRepository, @unchecked Sendable {
         }
     }
 
+    func browseSeriesAggregates(mediaType: String, providerId: UUID, libraryId: String?) async -> [BrowseSeriesAggregate] {
+        let worker = makeWorker()
+        do {
+            return try await worker.fetchBrowseSeriesAggregates(mediaType: mediaType, providerId: providerId, libraryId: libraryId)
+        } catch {
+            AppLogger.general.error("BookStore.browseSeriesAggregates(providerId:) failed: \(error)")
+            return []
+        }
+    }
+
     func books(byAuthor author: String, mediaType: String, limit: Int) async -> [Book] {
         let worker = makeWorker()
         do {
@@ -3206,6 +3356,16 @@ final class SwiftDataBookStore: BookStoreRepository, @unchecked Sendable {
         }
     }
 
+    func ebookLinkedAudiobookIds(source: String) async -> [(ebookStableId: String, audiobookStableId: String)] {
+        let worker = makeWorker()
+        do {
+            return try await worker.fetchEbookLinkedAudiobookIds(source: source)
+        } catch {
+            AppLogger.general.error("BookStore.ebookLinkedAudiobookIds failed: \(error)")
+            return []
+        }
+    }
+
     func existingAudiobookStableIds(from candidates: Set<String>) async -> Set<String> {
         let worker = makeWorker()
         do {
@@ -3536,9 +3696,9 @@ final class SwiftDataBookStore: BookStoreRepository, @unchecked Sendable {
         }
     }
 
-    func beginReconciliation(libraryId: String, providerId: UUID) async -> ReconciliationStart {
+    func beginReconciliation(libraryId: String, providerId: UUID) async throws -> ReconciliationStart {
         let worker = makeWorker()
-        return await worker.beginReconciliation(libraryId: libraryId, providerId: providerId.uuidString)
+        return try await worker.beginReconciliation(libraryId: libraryId, providerId: providerId.uuidString)
     }
 
     func upsertReconciledPage(books: [Book], generation: Int, notifyChange: Bool) async throws {
@@ -4013,6 +4173,19 @@ final class SwiftDataBookStore: BookStoreRepository, @unchecked Sendable {
             try await worker.replaceBookmarkRecords(forBookStableId: sid, bookmarks: tuples)
         } catch {
             AppLogger.general.error("BookStore.replaceBookmarks failed: \(error)")
+        }
+    }
+
+    @discardableResult
+    func migrateAudiobookArtifacts(fromBookStableId oldId: String, toBookStableId newId: String) async -> Bool {
+        guard !oldId.isEmpty, !newId.isEmpty, oldId != newId else { return false }
+        let worker = makeWorker()
+        do {
+            try await worker.migrateAudiobookArtifactRecords(fromBookStableId: oldId, toBookStableId: newId)
+            return true
+        } catch {
+            AppLogger.general.error("BookStore.migrateAudiobookArtifacts failed: \(error)")
+            return false
         }
     }
 

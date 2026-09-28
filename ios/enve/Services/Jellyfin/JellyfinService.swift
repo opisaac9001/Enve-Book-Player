@@ -1,44 +1,11 @@
 import Foundation
 import Logging
 
-#if canImport(UIKit)
-import UIKit
-#endif
-
 class JellyfinService: @unchecked Sendable {
     static let shared = JellyfinService()
     private init() {}
 
-    private var clientName: String { "Enve" }
-    private var clientVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
-    }
-    private var deviceId: String {
-        #if canImport(UIKit)
-        return UIDevice.current.identifierForVendor?.uuidString ?? UUID().uuidString
-        #else
-        return UUID().uuidString
-        #endif
-    }
-    private var deviceName: String {
-        #if canImport(UIKit)
-        return UIDevice.current.name.replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "'", with: "")
-        #else
-        return "Enve Client"
-        #endif
-    }
-
-    private func buildAuthHeader(token: String?) -> String {
-        var header =
-            "MediaBrowser Client=\"\(clientName)\", Device=\"\(deviceName)\", DeviceId=\"\(deviceId)\", Version=\"\(clientVersion)\""
-        if let token = token {
-            header += ", Token=\"\(token)\""
-        }
-        return header
-    }
-
     func validateToken(backend: BackendConfig) async throws -> Bool {
-        AppLogger.network.info("[JellyfinService] ===== TOKEN VALIDATION STARTED =====")
         guard let token = backend.token, !token.isEmpty else {
             AppLogger.network.info("[JellyfinService] No token provided")
             return false
@@ -54,7 +21,7 @@ class JellyfinService: @unchecked Sendable {
 
         var request = URLRequest(url: url)
         request.timeoutInterval = 30
-        let auth = buildAuthHeader(token: token)
+        let auth = MediaBrowserClient.authorizationHeader(token: token)
         request.setValue(auth, forHTTPHeaderField: "Authorization")
         request.setValue(auth, forHTTPHeaderField: "X-Emby-Authorization")
         request.setValue(token, forHTTPHeaderField: "X-Emby-Token")
@@ -107,7 +74,7 @@ class JellyfinService: @unchecked Sendable {
         }
 
         var request = URLRequest(url: url)
-        let auth = buildAuthHeader(token: token)
+        let auth = MediaBrowserClient.authorizationHeader(token: token)
         request.setValue(auth, forHTTPHeaderField: "Authorization")
         request.setValue(auth, forHTTPHeaderField: "X-Emby-Authorization")
         request.setValue(token, forHTTPHeaderField: "X-Emby-Token")
@@ -162,7 +129,7 @@ class JellyfinService: @unchecked Sendable {
 
                 if let countUrl = URL(string: "\(normalizedURL)/Items?userId=\(userId)&parentId=\(item.Id)&limit=0") {
                     var countRequest = URLRequest(url: countUrl)
-                    let auth = buildAuthHeader(token: token)
+                    let auth = MediaBrowserClient.authorizationHeader(token: token)
                     countRequest.setValue(auth, forHTTPHeaderField: "Authorization")
                     countRequest.setValue(auth, forHTTPHeaderField: "X-Emby-Authorization")
                     countRequest.setValue(token, forHTTPHeaderField: "X-Emby-Token")
@@ -207,7 +174,7 @@ class JellyfinService: @unchecked Sendable {
         }
 
         var request = URLRequest(url: url)
-        let auth = buildAuthHeader(token: token)
+        let auth = MediaBrowserClient.authorizationHeader(token: token)
         request.setValue(auth, forHTTPHeaderField: "Authorization")
         request.setValue(auth, forHTTPHeaderField: "X-Emby-Authorization")
         request.setValue(token, forHTTPHeaderField: "X-Emby-Token")
@@ -264,7 +231,7 @@ class JellyfinService: @unchecked Sendable {
 
         var request = URLRequest(url: url)
         request.timeoutInterval = 30
-        let auth = buildAuthHeader(token: token)
+        let auth = MediaBrowserClient.authorizationHeader(token: token)
         request.setValue(auth, forHTTPHeaderField: "Authorization")
         request.setValue(auth, forHTTPHeaderField: "X-Emby-Authorization")
         request.setValue(token, forHTTPHeaderField: "X-Emby-Token")
@@ -291,7 +258,7 @@ class JellyfinService: @unchecked Sendable {
 
         var request = URLRequest(url: url)
         request.timeoutInterval = 30
-        let auth = buildAuthHeader(token: token)
+        let auth = MediaBrowserClient.authorizationHeader(token: token)
         request.setValue(auth, forHTTPHeaderField: "Authorization")
         request.setValue(auth, forHTTPHeaderField: "X-Emby-Authorization")
         request.setValue(token, forHTTPHeaderField: "X-Emby-Token")
@@ -318,7 +285,7 @@ class JellyfinService: @unchecked Sendable {
 
         var request = URLRequest(url: url)
         request.timeoutInterval = 30
-        let auth = buildAuthHeader(token: token)
+        let auth = MediaBrowserClient.authorizationHeader(token: token)
         request.setValue(auth, forHTTPHeaderField: "Authorization")
         request.setValue(auth, forHTTPHeaderField: "X-Emby-Authorization")
         request.setValue(token, forHTTPHeaderField: "X-Emby-Token")
@@ -346,7 +313,7 @@ class JellyfinService: @unchecked Sendable {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = 30
-        let auth = buildAuthHeader(token: token)
+        let auth = MediaBrowserClient.authorizationHeader(token: token)
         request.setValue(auth, forHTTPHeaderField: "Authorization")
         request.setValue(auth, forHTTPHeaderField: "X-Emby-Authorization")
         request.setValue(token, forHTTPHeaderField: "X-Emby-Token")
@@ -378,7 +345,7 @@ class JellyfinService: @unchecked Sendable {
         var request = URLRequest(url: url)
         request.httpMethod = "DELETE"
         request.timeoutInterval = 30
-        let auth = buildAuthHeader(token: token)
+        let auth = MediaBrowserClient.authorizationHeader(token: token)
         request.setValue(auth, forHTTPHeaderField: "Authorization")
         request.setValue(auth, forHTTPHeaderField: "X-Emby-Authorization")
         request.setValue(token, forHTTPHeaderField: "X-Emby-Token")
@@ -403,7 +370,7 @@ class JellyfinService: @unchecked Sendable {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = 30
-        let auth = buildAuthHeader(token: token)
+        let auth = MediaBrowserClient.authorizationHeader(token: token)
         request.setValue(auth, forHTTPHeaderField: "Authorization")
         request.setValue(auth, forHTTPHeaderField: "X-Emby-Authorization")
         request.setValue(token, forHTTPHeaderField: "X-Emby-Token")
@@ -430,7 +397,7 @@ class JellyfinService: @unchecked Sendable {
 
         var request = URLRequest(url: url)
         request.timeoutInterval = 30
-        let auth = buildAuthHeader(token: token)
+        let auth = MediaBrowserClient.authorizationHeader(token: token)
         request.setValue(auth, forHTTPHeaderField: "Authorization")
         request.setValue(auth, forHTTPHeaderField: "X-Emby-Authorization")
         request.setValue(token, forHTTPHeaderField: "X-Emby-Token")
@@ -457,7 +424,7 @@ class JellyfinService: @unchecked Sendable {
 
         var request = URLRequest(url: url)
         request.timeoutInterval = 30
-        let auth = buildAuthHeader(token: token)
+        let auth = MediaBrowserClient.authorizationHeader(token: token)
         request.setValue(auth, forHTTPHeaderField: "Authorization")
         request.setValue(auth, forHTTPHeaderField: "X-Emby-Authorization")
         request.setValue(token, forHTTPHeaderField: "X-Emby-Token")
@@ -485,7 +452,7 @@ class JellyfinService: @unchecked Sendable {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = 30
-        let auth = buildAuthHeader(token: token)
+        let auth = MediaBrowserClient.authorizationHeader(token: token)
         request.setValue(auth, forHTTPHeaderField: "Authorization")
         request.setValue(auth, forHTTPHeaderField: "X-Emby-Authorization")
         request.setValue(token, forHTTPHeaderField: "X-Emby-Token")
@@ -509,7 +476,7 @@ class JellyfinService: @unchecked Sendable {
 
         var request = URLRequest(url: url)
         request.timeoutInterval = 30
-        let auth = buildAuthHeader(token: token)
+        let auth = MediaBrowserClient.authorizationHeader(token: token)
         request.setValue(auth, forHTTPHeaderField: "Authorization")
         request.setValue(auth, forHTTPHeaderField: "X-Emby-Authorization")
         request.setValue(token, forHTTPHeaderField: "X-Emby-Token")
@@ -539,7 +506,7 @@ class JellyfinService: @unchecked Sendable {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = 30
-        let auth = buildAuthHeader(token: token)
+        let auth = MediaBrowserClient.authorizationHeader(token: token)
         request.setValue(auth, forHTTPHeaderField: "Authorization")
         request.setValue(auth, forHTTPHeaderField: "X-Emby-Authorization")
         request.setValue(token, forHTTPHeaderField: "X-Emby-Token")
@@ -564,7 +531,7 @@ class JellyfinService: @unchecked Sendable {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = 30
-        let auth = buildAuthHeader(token: token)
+        let auth = MediaBrowserClient.authorizationHeader(token: token)
         request.setValue(auth, forHTTPHeaderField: "Authorization")
         request.setValue(auth, forHTTPHeaderField: "X-Emby-Authorization")
         request.setValue(token, forHTTPHeaderField: "X-Emby-Token")

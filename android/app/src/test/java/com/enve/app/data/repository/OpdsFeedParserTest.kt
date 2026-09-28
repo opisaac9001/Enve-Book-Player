@@ -3,8 +3,6 @@ package com.enve.app.data.repository
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.BookSource
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -41,7 +39,8 @@ class OpdsFeedParserTest {
         assertEquals(connectionId, book.connectionId)
         assertEquals("EPUB", book.primaryFileType)
         assertEquals(AppMediaType.EBOOK, book.mediaType)
-        assertEquals("https://opds.example.com/books/1/download.epub", book.id)
+        assertEquals("urn:isbn:9780765326355", book.id)
+        assertEquals("https://opds.example.com/books/1/download.epub", book.opdsAcquisitionUrl)
     }
 
     @Test
@@ -157,7 +156,7 @@ class OpdsFeedParserTest {
         """.trimIndent()
 
         val parsed = OpdsFeedParser.parse(xml, baseUrl, connectionId)
-        assertEquals("https://cdn.other.com/book.epub", parsed.items.first().id)
+        assertEquals("https://cdn.other.com/book.epub", parsed.items.first().opdsAcquisitionUrl)
     }
 
     @Test
@@ -245,13 +244,27 @@ class OpdsFeedParserTest {
     }
 
     @Test
-    fun isAcquisition_recognizes_common_link_shapes() {
-        assertTrue(OpdsFeedParser.isAcquisition("""<link rel="http://opds-spec.org/acquisition" type="application/epub+zip" href="x"/>"""))
-        assertTrue(OpdsFeedParser.isAcquisition("""<link rel="http://opds-spec.org/acquisition/open-access" type="application/pdf" href="x"/>"""))
-        assertTrue(OpdsFeedParser.isAcquisition("""<link type="application/epub+zip" href="x"/>"""))
-        assertTrue(OpdsFeedParser.isAcquisition("""<link type="audio/mpeg" href="x"/>"""))
-        assertFalse(OpdsFeedParser.isAcquisition("""<link rel="subsection" type="application/atom+xml" href="x"/>"""))
-        assertFalse(OpdsFeedParser.isAcquisition("""<link rel="self" href="x"/>"""))
+    fun a_typed_link_without_an_acquisition_rel_is_still_an_acquisition() {
+        val xml = """
+            <feed xmlns="http://www.w3.org/2005/Atom">
+              <entry>
+                <title>Untagged</title><id>ut</id>
+                <link rel="self" href="/entry/ut"/>
+                <link type="application/epub+zip" href="/ut.epub"/>
+              </entry>
+              <entry>
+                <title>Only Metadata Links</title><id>om</id>
+                <link rel="self" href="/entry/om"/>
+                <link rel="alternate" type="text/html" href="/web/om"/>
+              </entry>
+            </feed>
+        """.trimIndent()
+
+        val parsed = OpdsFeedParser.parse(xml, baseUrl, connectionId)
+
+        assertEquals(listOf("Untagged"), parsed.items.map { it.title })
+        assertEquals("https://opds.example.com/ut.epub", parsed.items.first().opdsAcquisitionUrl)
+        assertTrue(parsed.navigationLinks.isEmpty())
     }
 
     @Test
@@ -361,6 +374,42 @@ class OpdsFeedParserTest {
     }
 
     @Test
+    fun picks_epub_deterministically_when_an_entry_offers_several_formats() {
+        val xml = """
+            <feed xmlns="http://www.w3.org/2005/Atom">
+              <entry>
+                <title>Many Formats</title><id>mf</id>
+                <link rel="http://opds-spec.org/acquisition" type="application/pdf" href="/mf.pdf"/>
+                <link rel="http://opds-spec.org/acquisition" type="application/epub+zip" href="/mf.epub"/>
+                <link rel="http://opds-spec.org/acquisition" type="application/x-mobipocket-ebook" href="/mf.mobi"/>
+              </entry>
+            </feed>
+        """.trimIndent()
+
+        val book = OpdsFeedParser.parse(xml, baseUrl, connectionId).items.first()
+        assertEquals("EPUB", book.primaryFileType)
+        assertEquals("https://opds.example.com/mf.epub", book.opdsAcquisitionUrl)
+    }
+
+    @Test
+    fun parses_a_paired_link_element_as_an_acquisition() {
+        val xml = """
+            <feed xmlns="http://www.w3.org/2005/Atom" xmlns:opds="http://opds-spec.org/2010/catalog">
+              <entry>
+                <title>Paired</title><id>pl</id>
+                <link rel="http://opds-spec.org/acquisition" type="application/epub+zip" href="/pl.epub">
+                  <opds:price currencycode="USD">0.00</opds:price>
+                </link>
+              </entry>
+            </feed>
+        """.trimIndent()
+
+        val parsed = OpdsFeedParser.parse(xml, baseUrl, connectionId)
+        assertEquals(1, parsed.items.size)
+        assertEquals("https://opds.example.com/pl.epub", parsed.items.first().opdsAcquisitionUrl)
+    }
+
+    @Test
     fun falls_back_to_updated_when_published_is_missing() {
         val xml = """
             <feed xmlns="http://www.w3.org/2005/Atom">
@@ -374,5 +423,75 @@ class OpdsFeedParserTest {
 
         val book = OpdsFeedParser.parse(xml, baseUrl, connectionId).items.first()
         assertEquals(1283212800000L, book.addedOn)
+    }
+
+    @Test
+    fun carries_the_dublin_core_metadata_an_atom_entry_publishes() {
+        val xml = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <feed xmlns="http://www.w3.org/2005/Atom"
+                  xmlns:dc="http://purl.org/dc/terms/">
+              <entry>
+                <title>Frankenstein</title>
+                <id>urn:isbn:9780141439471</id>
+                <author><name>Mary Shelley</name></author>
+                <summary>A modern Prometheus.</summary>
+                <dc:publisher>Penguin Classics</dc:publisher>
+                <dc:issued>1818-01-01</dc:issued>
+                <dc:language>en</dc:language>
+                <category term="FIC009000" label="Fiction / Horror"/>
+                <category term="FIC019000"/>
+                <link rel="http://opds-spec.org/acquisition/open-access"
+                      type="application/epub+zip"
+                      href="/books/frankenstein.epub"/>
+              </entry>
+            </feed>
+        """.trimIndent()
+
+        val book = OpdsFeedParser.parse(xml, baseUrl, connectionId).items.single()
+
+        assertEquals("A modern Prometheus.", book.description)
+        assertEquals("Penguin Classics", book.publisher)
+        assertEquals("1818-01-01", book.publishedDate)
+        assertEquals("en", book.language)
+        assertEquals(listOf("Fiction / Horror", "FIC019000"), book.categories)
+    }
+
+    @Test
+    fun drops_a_cover_link_that_is_not_http() {
+        val xml = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <feed xmlns="http://www.w3.org/2005/Atom">
+              <entry>
+                <title>Sketchy</title>
+                <id>urn:uuid:sketchy</id>
+                <link rel="http://opds-spec.org/image/thumbnail" href="data:image/png;base64,AAA"/>
+                <link rel="http://opds-spec.org/acquisition/open-access"
+                      type="application/epub+zip"
+                      href="/ok.epub"/>
+              </entry>
+            </feed>
+        """.trimIndent()
+
+        assertNull(OpdsFeedParser.parse(xml, baseUrl, connectionId).items.single().thumbnailUrl)
+    }
+
+    @Test
+    fun a_bare_atom_entry_document_is_a_single_publication() {
+        val xml = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <entry xmlns="http://www.w3.org/2005/Atom">
+              <title>Standalone</title>
+              <id>urn:uuid:standalone</id>
+              <link rel="http://opds-spec.org/acquisition/open-access"
+                    type="application/epub+zip"
+                    href="/standalone.epub"/>
+            </entry>
+        """.trimIndent()
+
+        val parsed = OpdsFeedParser.parse(xml, baseUrl, connectionId)
+
+        assertTrue(parsed.isSinglePublicationDocument)
+        assertEquals("Standalone", parsed.items.single().title)
     }
 }

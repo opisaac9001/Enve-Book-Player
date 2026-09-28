@@ -335,7 +335,8 @@ struct FoliateReaderPreferences {
 
 private struct FoliateAnnotationPayload {
     let id: String
-    let cfi: String
+    let locatorJSON: String
+    let text: String
     let color: String
     let style: String
     let hasNote: Bool
@@ -343,7 +344,8 @@ private struct FoliateAnnotationPayload {
     var jsonObject: [String: Any] {
         [
             "id": id,
-            "cfi": cfi,
+            "locatorJSON": locatorJSON,
+            "text": text,
             "color": color,
             "style": style,
             "hasNote": hasNote,
@@ -351,17 +353,15 @@ private struct FoliateAnnotationPayload {
     }
 
     static func make(from annotation: ReaderAnnotation) throws -> FoliateAnnotationPayload? {
-        guard !annotation.isRemotePlaceholder else { return nil }
-        guard
-            let cfi = EpubLocationBridge.canonicalFullEPUBCFI(
-                EpubLocationBridge.epubCFI(from: annotation.locator)
-            )
+        guard let locatorJSON = annotation.locator?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !locatorJSON.isEmpty
         else {
-            throw FoliateReaderError.unsupportedAnnotation
+            return nil
         }
         return FoliateAnnotationPayload(
             id: annotation.id,
-            cfi: cfi,
+            locatorJSON: locatorJSON,
+            text: annotation.text,
             color: annotation.colorHex,
             style: annotation.style.rawValue,
             hasNote: annotation.note?.isEmpty == false
@@ -544,6 +544,15 @@ private final class FoliateURLSchemeHandler: NSObject, WKURLSchemeHandler, @unch
                 userInfo: [NSLocalizedDescriptionKey: "Blocked local reader resource"]
             )
         )
+    }
+}
+
+// Enve's selection bar replaces the system Copy/Look Up menu, as Readium's editing actions do for its engine.
+private final class FoliateWebView: WKWebView {
+    override func buildMenu(with builder: any UIMenuBuilder) {}
+
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        action.description.hasPrefix("_accessibility") && super.canPerformAction(action, withSender: sender)
     }
 }
 
@@ -781,6 +790,10 @@ final class FoliateReaderEngineAdapter: UIViewController, ReaderEngineAdapter {
         }
     }
     var onSelectionChange: ((ReaderSelectionSnapshot?) -> Void)?
+    private var annotationResolution: [String: Bool] = [:]
+    var onAnnotationResolution: (([String: Bool]) -> Void)? {
+        didSet { onAnnotationResolution?(annotationResolution) }
+    }
     var onAnnotationActivated: ((String) -> Void)?
     var onTap: ((CGPoint, CGSize) -> Void)?
     var onExternalLink: ((URL) -> Void)?
@@ -803,9 +816,6 @@ final class FoliateReaderEngineAdapter: UIViewController, ReaderEngineAdapter {
         }
         let preferences = try FoliateReaderPreferences(appearance: appearance)
         let annotationPayloads = try annotations.compactMap(FoliateAnnotationPayload.make)
-        guard Set(annotationPayloads.map(\.cfi)).count == annotationPayloads.count else {
-            throw FoliateReaderError.unsupportedAnnotation
-        }
         let streamingJSON: Any
         let fileExtension: String
         switch source {
@@ -905,7 +915,7 @@ final class FoliateReaderEngineAdapter: UIViewController, ReaderEngineAdapter {
             schemeHandler,
             forURLScheme: FoliateRuntimeSupport.scheme
         )
-        webView = WKWebView(frame: .zero, configuration: configuration)
+        webView = FoliateWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.isOpaque = false
@@ -1082,6 +1092,21 @@ final class FoliateReaderEngineAdapter: UIViewController, ReaderEngineAdapter {
             currentSelection = snapshot
             onSelectionChange?(snapshot)
 
+        case "annotationResolution":
+            guard Set(payload.keys) == ["results"],
+                let results = payload["results"] as? [[String: Any]]
+            else { throw FoliateReaderError.invalidRuntimeMessage }
+            var resolution: [String: Bool] = [:]
+            for result in results {
+                guard Set(result.keys) == ["id", "resolved"],
+                    let id = result["id"] as? String,
+                    let resolved = result["resolved"] as? Bool
+                else { throw FoliateReaderError.invalidRuntimeMessage }
+                resolution[id] = resolved
+            }
+            annotationResolution = resolution
+            onAnnotationResolution?(resolution)
+
         case "annotationActivated":
             guard Set(payload.keys) == ["id"],
                 let id = payload["id"] as? String,
@@ -1232,6 +1257,17 @@ final class FoliateReaderEngineAdapter: UIViewController, ReaderEngineAdapter {
         }
     }
 
+    // iOS WebKit doesn't deliver a click on plain text to Foliate's document listener, so highlight taps are hit-tested here.
+    func annotationID(at point: CGPoint) async -> String? {
+        let webPoint = webView.convert(point, from: view)
+        guard let result = try? await command("annotationAt", payload: ["x": webPoint.x, "y": webPoint.y]),
+            Set(result.keys) == ["id"]
+        else {
+            return nil
+        }
+        return result["id"] as? String
+    }
+
     func refreshSelection() async -> Bool {
         guard let result = try? await command("refreshSelection", payload: [:]),
             Set(result.keys) == ["available"]
@@ -1270,9 +1306,6 @@ final class FoliateReaderEngineAdapter: UIViewController, ReaderEngineAdapter {
     func updateAnnotations(_ annotations: [ReaderAnnotation]) async {
         do {
             let payloads = try annotations.compactMap(FoliateAnnotationPayload.make)
-            guard Set(payloads.map(\.cfi)).count == payloads.count else {
-                throw FoliateReaderError.unsupportedAnnotation
-            }
             let result = try await command(
                 "annotations",
                 payload: ["annotations": payloads.map(\.jsonObject)]
@@ -1400,6 +1433,7 @@ final class FoliateReaderEngineAdapter: UIViewController, ReaderEngineAdapter {
         onRelocation = nil
         onSelectionChange = nil
         onAnnotationActivated = nil
+        onAnnotationResolution = nil
         onTap = nil
         onExternalLink = nil
     }

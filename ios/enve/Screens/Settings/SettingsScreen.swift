@@ -321,7 +321,7 @@ struct SettingsScreen: View {
         switch destination {
         case .sources:
             settingsCategory(title: "Sources & servers", subtitle: "Connections, imports, and server libraries") { sourcesGroup }
-        case .opds: SourcesOPDSBulkScreen()
+        case .opds: SourcesOPDSBrowseScreen()
         case .video: VideoPromoScreen()
         case .libraryDisplay: LibraryDisplayScreen()
         case .metadataMatching: MetadataBatchScreen()
@@ -341,6 +341,7 @@ struct SettingsScreen: View {
         case .rejectedContent: RejectedContentScreen()
         case .home: HomePreferencesScreen()
         case .comicReader: ComicReaderSettingsScreen()
+        case .restReminder: StoredRestReminderSettingsScreen()
         case .playback: PlaybackScreen()
         case .appearance: AppearanceScreen()
         case .accessibility: AccessibilityScreen()
@@ -378,10 +379,10 @@ struct SettingsScreen: View {
 
     private var sourceUtilitiesGroup: some View {
         SourcesCard {
-            settingsNav(SourcesOPDSBulkScreen()) {
+            settingsNav(SourcesOPDSBrowseScreen()) {
                 SettingsLinkRow(
-                    title: "OPDS import",
-                    subtitle: "Download a feed into a collection",
+                    title: "OPDS catalogue",
+                    subtitle: "Browse a feed, search it, and download",
                     systemImage: "tray.and.arrow.down.fill"
                 )
             }
@@ -574,6 +575,9 @@ struct SettingsScreen: View {
                         systemImage: "books.vertical.fill"
                     )
                 }
+                settingsNav(StoredRestReminderSettingsScreen()) {
+                    SettingsLinkRow(title: "Rest your eyes", subtitle: "Reading break reminders", systemImage: "eye")
+                }
                 settingsNav(PlaybackScreen()) {
                     SettingsLinkRow(title: "Playback", subtitle: "Speed, skips, smart rewind, sleep timer", systemImage: "play.circle.fill")
                 }
@@ -622,7 +626,7 @@ struct SettingsScreen: View {
                 settingsNav(SyncScreen()) {
                     SettingsLinkRow(
                         title: "Sync",
-                        subtitle: "iCloud, across your devices",
+                        subtitle: "iCloud progress and Apple TV servers",
                         detail: syncDetail,
                         systemImage: "icloud.and.arrow.up.fill"
                     )
@@ -813,7 +817,7 @@ struct SettingsScreen: View {
 private enum SettingsSearchDestination: String {
     case sources, opds, video, libraryDisplay, metadataMatching, pendingMatches, collections, duplicates
     case bookSync, storyAlign, koReader, hardcover, vocabulary, dictionaries, obsidian, dragAndDrop
-    case hiddenBooks, recentlyDeleted, rejectedContent, home, comicReader, playback, appearance, accessibility
+    case hiddenBooks, recentlyDeleted, rejectedContent, home, comicReader, restReminder, playback, appearance, accessibility
     case downloads, storage, dataManagement, sync, achievements, statsImport, advanced, metadataKeys
     case orphanedBooks, news, tipJar, reportIssue, tour
 }
@@ -830,7 +834,7 @@ private struct SettingsSearchItem: Identifiable {
 
     static let all: [SettingsSearchItem] = [
         item(.sources, "Sources & servers", "Connections and server libraries", "server.rack", "add source smb plex jellyfin emby audiobookshelf komga kavita booklore silo bookorbit"),
-        item(.opds, "OPDS import", "Download a feed into a collection", "tray.and.arrow.down.fill", "catalog feed"),
+        item(.opds, "OPDS catalogue", "Browse a feed, search it, and download", "tray.and.arrow.down.fill", "catalog feed opds search"),
         item(.video, "Video player", "The companion video app", "play.tv.fill", "plex movies television"),
         item(.libraryDisplay, "Library display", "Cards, titles, and grouping", "text.book.closed.fill", "covers shelves sort"),
         item(.metadataMatching, "Bulk metadata matching", "Match an entire library", "wand.and.stars", "google books comicvine isbn"),
@@ -850,13 +854,14 @@ private struct SettingsSearchItem: Identifiable {
         item(.rejectedContent, "Rejected content", "Items a source couldn't import", "exclamationmark.triangle.fill", "broken malformed skipped error"),
         item(.home, "Home & startup", "Start tab and Hearth shelf order", "house.fill", "launch start screen"),
         item(.comicReader, "Comic reader", "Streaming, preloading, and page cache", "books.vertical.fill", "cbz manga pages"),
+        item(.restReminder, "Rest your eyes", "Reading break reminders", "eye", "eye strain break health timer look away"),
         item(.playback, "Playback", "Speed, skips, smart rewind, and sleep timer", "play.circle.fill", "audio shake snooze sleep health"),
         item(.appearance, "Appearance", "Theme, accent, and navigation", "paintbrush.fill", "dark light oled color"),
         item(.accessibility, "Accessibility", "Vision-impaired mode and VoiceOver", "accessibility", "text size reduce motion"),
         item(.downloads, "Downloads", "Active, failed, and finished", "arrow.down.circle.fill", "offline queue"),
         item(.storage, "Storage", "Files on this phone and cleanup rules", "internaldrive.fill", "disk cache space"),
         item(.dataManagement, "Data management", "Clear caches, metadata, or reset Enve", "trash.circle.fill", "erase reset cleanup"),
-        item(.sync, "Sync", "iCloud across your devices", "icloud.and.arrow.up.fill", "cloud backup progress"),
+        item(.sync, "Sync", "iCloud across your devices", "icloud.and.arrow.up.fill", "cloud backup progress apple tv servers connections"),
         item(.achievements, "Achievements", "Levels and milestones", "trophy.fill", "goals awards journal"),
         item(.statsImport, "Import listening history", "Bring stats in from another app", "square.and.arrow.down", "statistics data"),
         item(.advanced, "Server tools", "Administration and recovery", "gearshape.2.fill", "advanced developer diagnostics admin"),

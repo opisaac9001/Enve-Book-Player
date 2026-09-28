@@ -6,12 +6,13 @@ import com.enve.bookorbit.dto.BookOrbitAnnotationBulkRequest
 import com.enve.bookorbit.dto.BookOrbitAnnotationBulkResultDto
 import com.enve.bookorbit.dto.BookOrbitAnnotationHubItemDto
 import com.enve.bookorbit.dto.BookOrbitAnnotationHubPageDto
-import com.enve.bookorbit.dto.BookOrbitAudioProgressDto
+import com.enve.bookorbit.dto.BookOrbitAudiobookManifestDto
+import com.enve.bookorbit.dto.BookOrbitAudiobookPlaybackStateDto
+import com.enve.bookorbit.dto.BookOrbitAudiobookPlaybackStateRequest
 import com.enve.bookorbit.dto.BookOrbitAnnotationDto
 import com.enve.bookorbit.dto.BookOrbitCompletionLatencyDto
 import com.enve.bookorbit.dto.BookOrbitCompletionTimelinePointDto
 import com.enve.bookorbit.dto.BookOrbitCreateAnnotationRequest
-import com.enve.bookorbit.dto.BookOrbitAudioProgressRequest
 import com.enve.bookorbit.dto.BookOrbitBookDetailDto
 import com.enve.bookorbit.dto.BookOrbitBookmarkDto
 import com.enve.bookorbit.dto.BookOrbitBookmarkRequest
@@ -57,6 +58,7 @@ import retrofit2.http.Header
 import retrofit2.http.HTTP
 import retrofit2.http.PATCH
 import retrofit2.http.POST
+import retrofit2.http.PUT
 import retrofit2.http.Path
 import retrofit2.http.Query
 import retrofit2.http.Url
@@ -133,13 +135,16 @@ interface BookOrbitApi {
     @GET("api/v1/dashboard/widgets/currently-reading")
     suspend fun currentlyReading(): Response<BookOrbitCurrentlyReadingWidgetDto>
 
-    @GET("api/v1/books/{bookId}/audio-progress")
-    suspend fun audioProgress(@Path("bookId") bookId: Int): Response<BookOrbitAudioProgressDto>
+    @GET("api/v1/audiobooks/{bookId}/manifest")
+    suspend fun audiobookManifest(@Path("bookId") bookId: Int): Response<BookOrbitAudiobookManifestDto>
 
-    @PATCH("api/v1/books/{bookId}/audio-progress")
-    suspend fun updateAudioProgress(
+    @GET("api/v1/audiobooks/{bookId}/playback-state")
+    suspend fun audiobookPlaybackState(@Path("bookId") bookId: Int): Response<BookOrbitAudiobookPlaybackStateDto>
+
+    @PUT("api/v1/audiobooks/{bookId}/playback-state")
+    suspend fun updateAudiobookPlaybackState(
         @Path("bookId") bookId: Int,
-        @Body request: BookOrbitAudioProgressRequest,
+        @Body request: BookOrbitAudiobookPlaybackStateRequest,
     ): Response<Unit>
 
     @GET("api/v1/books/files/{fileId}/progress")

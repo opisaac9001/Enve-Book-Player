@@ -56,19 +56,6 @@ actor BookBridgeClient {
         }
     }
 
-    func healthCheck(baseURL: URL) async -> Bool {
-        let url = baseURL.appendingPathComponent("api/health")
-        var req = URLRequest(url: url)
-        req.httpMethod = "GET"
-        req.setValue("application/json", forHTTPHeaderField: "Accept")
-        do {
-            let (_, response) = try await session.data(for: req)
-            return (response as? HTTPURLResponse)?.statusCode == 200
-        } catch {
-            return false
-        }
-    }
-
     func fetchMappings(baseURL: URL) async throws -> [BookBridgeMapping] {
         let url = baseURL.appendingPathComponent("api/kosync-documents")
         var req = URLRequest(url: url)

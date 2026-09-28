@@ -6,6 +6,7 @@ import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.HistorySession
+import com.enve.core.data.util.FINISHED_PROGRESS_THRESHOLD
 import com.enve.engine.library.LibraryFacade
 import com.enve.engine.servertools.ServerFeature
 import com.enve.engine.servertools.ServerStatGroup
@@ -121,7 +122,7 @@ class HearthJournalViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), List(HEATMAP_DAYS) { 0f })
 
     private fun inProgress(b: Book): Boolean =
-        !b.isFinished && (b.readProgress in 0.01f..0.99f || b.currentTime > 0L || (b.epubProgress ?: 0f) in 0.01f..0.99f)
+        !b.isFinished && (b.readProgress in 0.01f..FINISHED_PROGRESS_THRESHOLD || b.currentTime > 0L || (b.epubProgress ?: 0f) in 0.01f..FINISHED_PROGRESS_THRESHOLD)
 
     private companion object {
         const val HEATMAP_DAYS = 52 * 7
@@ -206,14 +207,14 @@ internal object JournalActivityPolicy {
 
     private fun inProgress(book: Book): Boolean =
         !book.isFinished &&
-            (book.readProgress in 0.01f..0.99f || book.currentTime > 0L || (book.epubProgress ?: 0f) in 0.01f..0.99f)
+            (book.readProgress in 0.01f..FINISHED_PROGRESS_THRESHOLD || book.currentTime > 0L || (book.epubProgress ?: 0f) in 0.01f..FINISHED_PROGRESS_THRESHOLD)
 }
 
 internal object CompletionCenterPolicy {
     fun almostFinished(books: List<Book>, limit: Int = 60): List<Book> =
         books.asSequence()
             .filter { it.mediaType != AppMediaType.PODCAST && !it.isFinished }
-            .filter { progress(it) in 0.75f..<0.99f }
+            .filter { progress(it) in 0.75f..<FINISHED_PROGRESS_THRESHOLD }
             .distinctBy(Book::uniqueKey)
             .sortedWith(
                 compareByDescending<Book>(::progress)

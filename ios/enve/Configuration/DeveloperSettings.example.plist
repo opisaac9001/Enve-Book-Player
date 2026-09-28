@@ -6,6 +6,8 @@
 	<string></string>
 	<key>GoogleDriveClientID</key>
 	<string></string>
+	<key>OneDriveClientID</key>
+	<string></string>
 	<key>OAuthRedirectScheme</key>
 	<string>com.enve.enve</string>
 </dict>

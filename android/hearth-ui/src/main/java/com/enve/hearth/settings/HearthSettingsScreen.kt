@@ -50,8 +50,6 @@ import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material.icons.outlined.Translate
 import androidx.compose.material.icons.outlined.ViewModule
 import androidx.compose.material3.Icon
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -65,6 +63,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import com.enve.core.data.model.BookSource
+import com.enve.hearth.design.EmberAccent
+import com.enve.hearth.design.HearthToggleRow
+import com.enve.hearth.design.parseHexColor
+import com.enve.hearth.opds.HearthOpdsCatalogScreen
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
@@ -139,13 +142,31 @@ fun HearthSettingsScreen(
     onBack: () -> Unit,
     onManageSources: () -> Unit,
     onOpenDestination: (HearthSettingsDestination) -> Unit = {},
+    onOpdsAuthorize: (connectionId: String, methodType: String, authorizeUrl: String) -> Unit = { _, _, _ -> },
 ) {
     val vm: HearthSettingsViewModel = hiltViewModel()
     val connections by vm.connections.collectAsStateWithLifecycle()
     var category by rememberSaveable { mutableStateOf<SettingsCategory?>(null) }
     var selectedConnectionId by rememberSaveable { mutableStateOf<String?>(null) }
+    var catalogConnectionId by rememberSaveable { mutableStateOf<String?>(null) }
     BackHandler(enabled = category != null || selectedConnectionId != null) {
         if (selectedConnectionId != null) selectedConnectionId = null else category = null
+    }
+
+    catalogConnectionId?.let { id ->
+        val connection = connections.firstOrNull { it.id == id }
+        if (connection != null) {
+            val context = LocalContext.current
+            HearthOpdsCatalogScreen(
+                connectionId = connection.id,
+                sourceName = connection.name.ifBlank { connection.source.displayName },
+                onBack = { catalogConnectionId = null },
+                onAuthorize = onOpdsAuthorize,
+                onOpenExternal = { url -> context.openExternally(url) },
+            )
+            return
+        }
+        catalogConnectionId = null
     }
 
     selectedConnectionId?.let { id ->
@@ -154,6 +175,8 @@ fun HearthSettingsScreen(
             SourceDetailPage(
                 connection = connection,
                 onBack = { selectedConnectionId = null },
+                onBrowseCatalog = { catalogConnectionId = connection.id }
+                    .takeIf { connection.source == BookSource.OPDS },
                 onSave = vm::updateConnection,
                 onEnabled = { vm.setConnectionEnabled(connection, it) },
                 onReauthenticate = onManageSources,
@@ -305,14 +328,14 @@ private fun AppearancePage(
         item {
             Group("Theme & accent") {
                 ChipRow(HearthThemeMode.entries.map { it.name.lowercase().replaceFirstChar(Char::uppercase) to (it == themeMode) }) { i -> vm.setThemeMode(HearthThemeMode.entries[i]) }
-                ToggleRow("OLED black", oled, vm::setOled)
+                HearthToggleRow("OLED black", oled, vm::setOled)
                 Overline("Accent")
                 Row(
                     Modifier.horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.XS),
                 ) {
                     ACCENTS.forEach { (name, hex) ->
-                        val c = parse(hex)
+                        val c = parseHexColor(hex) ?: EmberAccent
                         val selected = accentMatches(accent, hex)
                         Box(
                             Modifier
@@ -359,7 +382,7 @@ private fun AppearancePage(
         item {
             Group("E-Ink") {
                 ChipRow(EinkMode.entries.map { einkModeLabel(it) to (it == eink.mode) }) { i -> vm.setEinkMode(EinkMode.entries[i]) }
-                ToggleRow("Bold text", eink.boldText, vm::setEinkBold)
+                HearthToggleRow("Bold text", eink.boldText, vm::setEinkBold)
                 Spacer(Modifier.size(Hearth.Spacing.S))
                 Overline("Refresh strength")
                 ChipRow((0..3).map { it.toString() to (it == eink.refreshStrength) }) { i -> vm.setEinkStrength(i) }
@@ -427,6 +450,8 @@ private fun LibraryPage(
     val comicPageLoadingMode by vm.comicPageLoadingMode.collectAsStateWithLifecycle()
     val readNextEnabled by vm.readNextEnabled.collectAsStateWithLifecycle()
     val readNextPosition by vm.readNextPosition.collectAsStateWithLifecycle()
+    val restReminderEnabled by vm.restReminderEnabled.collectAsStateWithLifecycle()
+    val restReminderMinutes by vm.restReminderMinutes.collectAsStateWithLifecycle()
     SettingsPage("Settings", SettingsCategory.Library.pageTitle, onBack) {
         item {
             Group("Library") {
@@ -443,7 +468,7 @@ private fun LibraryPage(
         }
         item {
             Group("Reading") {
-                ToggleRow("Read Next suggestions", readNextEnabled, vm::setReadNextEnabled)
+                HearthToggleRow("Read Next suggestions", readNextEnabled, vm::setReadNextEnabled)
                 if (readNextEnabled) {
                     Text("Read Next position", style = HearthText.Caption, color = palette.textSecondary)
                     ChipRow(
@@ -452,6 +477,13 @@ private fun LibraryPage(
                         },
                     ) { index -> vm.setReadNextPosition(ReadNextPosition.entries[index]) }
                 }
+                Text("Rest your eyes", style = HearthText.Caption, color = palette.textSecondary)
+                RestReminderControls(
+                    enabled = restReminderEnabled,
+                    minutes = restReminderMinutes,
+                    onEnabledChange = vm::setRestReminderEnabled,
+                    onMinutesChange = vm::setRestReminderMinutes,
+                )
                 ToolRow(Icons.AutoMirrored.Outlined.ManageSearch, "Annotations", "Bookmarks, highlights, and notes") {
                     onOpenDestination(HearthSettingsDestination.Annotations)
                 }
@@ -727,18 +759,6 @@ private fun ChipRow(options: List<Pair<String, Boolean>>, onSelect: (Int) -> Uni
 }
 
 @Composable
-private fun ToggleRow(label: String, checked: Boolean, onCheck: (Boolean) -> Unit) {
-    val palette = Hearth.palette
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(label, style = HearthText.Body, color = palette.text)
-        Switch(
-            checked = checked, onCheckedChange = onCheck,
-            colors = SwitchDefaults.colors(checkedTrackColor = palette.ember, checkedThumbColor = palette.readableOnEmber),
-        )
-    }
-}
-
-@Composable
 private fun ConnectionRow(c: ProviderConnection, onClick: () -> Unit) {
     val palette = Hearth.palette
     val statusColor = when {
@@ -765,12 +785,13 @@ private fun ConnectionRow(c: ProviderConnection, onClick: () -> Unit) {
     }
 }
 
-private fun parse(hex: String): Color {
-    val v = hex.removePrefix("#").toLongOrNull(16) ?: return Hearth_ember
-    return Color(0xFF000000 or v)
-}
-private val Hearth_ember = Color(0xFFF5921A)
 private fun accentMatches(current: String, hex: String) = current.removePrefix("#").equals(hex.removePrefix("#"), ignoreCase = true)
 private fun einkModeLabel(m: EinkMode) = when (m) {
     EinkMode.OFF -> "Off"; EinkMode.AUTO -> "Auto"; EinkMode.ON -> "On"; EinkMode.ON_COLOR -> "On (color)"
+}
+
+private fun android.content.Context.openExternally(url: String) {
+    val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
+        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+    runCatching { startActivity(intent) }
 }

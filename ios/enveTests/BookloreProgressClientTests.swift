@@ -261,6 +261,57 @@ struct BookloreProgressClientTests {
         #expect(progress?.updatedAt == BookloreProgressClient.parseTimestamp("2026-08-21 12:30:00"))
     }
 
+    @Test func appEpubProgressPreservesReadAloudLocator() async throws {
+        let locator = "{\"href\":\"chapter.xhtml\",\"locations\":{\"totalProgression\":0.4,\"progression\":0.2,\"fragments\":[\"sentence-4\"]}}"
+        let fixture = try JSONSerialization.data(withJSONObject: [
+            "readProgress": 40,
+            "readStatus": "READING",
+            "epubProgress": [
+                "percentage": 40,
+                "cfi": locator,
+                "href": "chapter.xhtml",
+                "updatedAt": "2026-09-26T12:30:00Z",
+            ],
+        ])
+        let client = BookloreProgressClient(
+            makeRequest: { path in
+                URLRequest(url: URL(string: "https://example.invalid\(path)")!)
+            },
+            performAuthorizedRequest: { request in
+                (
+                    fixture,
+                    HTTPURLResponse(
+                        url: request.url!,
+                        statusCode: 200,
+                        httpVersion: nil,
+                        headerFields: ["Content-Type": "application/json"]
+                    )!
+                )
+            }
+        )
+        let book = Book(
+            id: "42",
+            title: "Read Aloud Fixture",
+            source: .booklore,
+            mediaType: .ebook,
+            providerId: UUID(),
+            libraryId: "tests"
+        )
+        let context = BookloreProgressClient.EbookProgressContext(
+            usesEpubProgress: true,
+            readProgress: nil,
+            readStatus: nil,
+            lastReadTime: nil,
+            pdfProgress: nil,
+            cbxProgress: nil
+        )
+
+        let progress = try await client.fetchEbookProgress(for: book, bookId: 42, context: context)
+
+        #expect(progress?.progress == 0.4)
+        #expect(progress?.locator == locator)
+    }
+
     @Test func appComicProgressMapsServerPageToLocalPage() async throws {
         let fixture = Data(
             """
@@ -371,6 +422,53 @@ struct BookloreProgressClientTests {
         #expect(fileProgress["positionHref"] as? String == "chapter.xhtml")
         #expect(fileProgress["progressPercent"] as? Double == 40)
         #expect(fileProgress["contentSourceProgressPercent"] as? Double == 40)
+    }
+
+    @Test func updateEbookProgressPreservesReadAloudLocatorForEPUBResource() async throws {
+        var capturedRequest: URLRequest?
+        let client = BookloreProgressClient(
+            makeRequest: { path in
+                URLRequest(url: URL(string: "https://example.invalid\(path)")!)
+            },
+            performAuthorizedRequest: { request in
+                capturedRequest = request
+                return (
+                    Data(),
+                    HTTPURLResponse(
+                        url: request.url!,
+                        statusCode: 204,
+                        httpVersion: nil,
+                        headerFields: nil
+                    )!
+                )
+            }
+        )
+        let book = Book(
+            id: "42",
+            title: "Read Aloud Push Fixture",
+            source: .booklore,
+            mediaType: .ebook,
+            providerId: UUID(),
+            libraryId: "tests"
+        )
+        let locator = "{\"href\":\"chapter.xhtml\",\"type\":\"application/xhtml+xml\",\"locations\":{\"totalProgression\":0.4,\"progression\":0.2,\"fragments\":[\"sentence-4\"]}}"
+
+        try await client.updateEbookProgress(
+            for: book,
+            bookId: 42,
+            resourceFileId: 107,
+            resourceFormat: "epub",
+            progress: 0.4,
+            epubLocator: locator,
+            sourceEngine: nil
+        )
+
+        let body = try #require(capturedRequest?.httpBody)
+        let root = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let fileProgress = try #require(root["fileProgress"] as? [String: Any])
+        #expect(fileProgress["positionData"] as? String == locator)
+        #expect(fileProgress["positionHref"] as? String == "chapter.xhtml")
+        #expect(fileProgress["contentSourceProgressPercent"] as? Double == 20)
     }
 
     @Test func updateEbookProgressUsesFileProgressContractForPDF() async throws {

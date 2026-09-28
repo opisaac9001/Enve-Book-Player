@@ -17,10 +17,14 @@ enum ABSMediaTypeClassifier {
         if libraryType == "podcast" || libraryType == "podcasts" {
             return .podcast
         }
-        if itemMediaType?.lowercased() == "ebook" {
+        let itemType = itemMediaType?.lowercased()
+        if itemType == "podcast" || itemType == "podcasts" {
+            return .podcast
+        }
+        if itemType == "ebook" {
             return .ebook
         }
-        if itemMediaType?.lowercased() == "audiobook" {
+        if itemType == "audiobook" {
             return .audiobook
         }
         if hasAudio {
@@ -30,6 +34,73 @@ enum ABSMediaTypeClassifier {
             return .ebook
         }
         return .audiobook
+    }
+}
+
+enum ABSPodcastEpisodeMerge {
+    /// Returns feed episodes not represented by a stored ABS episode, preserving feed order.
+    static func feedOnlyEpisodes(
+        stored: [AudiobookshelfProvider.PodcastItem.StoredEpisode],
+        feed: [RSSPodcastParser.ParsedEpisode]
+    ) -> [RSSPodcastParser.ParsedEpisode] {
+        var episodes: [RSSPodcastParser.ParsedEpisode] = []
+        var seenIDs = Set<String>()
+        var indexByGUID: [String: Int] = [:]
+        var indexByEnclosure: [String: Int] = [:]
+        var indicesByTitle: [String: [Int]] = [:]
+
+        for episode in feed {
+            guard seenIDs.insert(episode.id).inserted else { continue }
+            let index = episodes.count
+            episodes.append(episode)
+            indexByGUID[episode.id] = index
+            if let enclosure = normalizedEnclosure(episode.audioURL?.absoluteString), indexByEnclosure[enclosure] == nil {
+                indexByEnclosure[enclosure] = index
+            }
+            indicesByTitle[normalizedTitle(episode.title), default: []].append(index)
+        }
+
+        var claimed = Set<Int>()
+        for episode in stored {
+            if let guid = episode.guid?.trimmingCharacters(in: .whitespacesAndNewlines), !guid.isEmpty,
+                let index = indexByGUID[guid], !claimed.contains(index)
+            {
+                claimed.insert(index)
+                continue
+            }
+            if let enclosure = normalizedEnclosure(episode.enclosureURL),
+                let index = indexByEnclosure[enclosure], !claimed.contains(index)
+            {
+                claimed.insert(index)
+                continue
+            }
+            guard let publishedAt = episode.publishedAt, let title = episode.title else { continue }
+            let normalized = normalizedTitle(title)
+            guard !normalized.isEmpty else { continue }
+            let twin = indicesByTitle[normalized]?.first { index in
+                guard !claimed.contains(index), let feedDate = episodes[index].publishedDate else { return false }
+                return abs(feedDate.timeIntervalSince(publishedAt)) <= 86_400
+            }
+            if let twin { claimed.insert(twin) }
+        }
+
+        return episodes.indices.filter { !claimed.contains($0) }.map { episodes[$0] }
+    }
+
+    private static func normalizedEnclosure(_ raw: String?) -> String? {
+        guard let value = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+        // Feeds move between http and https without changing the episode.
+        if let separator = value.range(of: "://") {
+            return String(value[separator.upperBound...])
+        }
+        return value
+    }
+
+    private static func normalizedTitle(_ title: String) -> String {
+        title
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
     }
 }
 
@@ -52,6 +123,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
     private let absService = AudiobookshelfService.shared
 
     private var libraryMediaTypes: [String: String] = [:]
+    private var itemAudioDurations: [String: TimeInterval] = [:]
 
     private lazy var credentialsActor = ABSCredentialsActor(provider: self)
 
@@ -94,7 +166,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
                 connection.isConnected = true
                 saveRefreshToken(refreshed.refreshToken ?? refreshToken)
                 await MainActor.run { onTokenUpdated?(connection) }
-                AppLogger.player.info("[ABS Provider] Proactively refreshed access token")
+                AppLogger.network.info("[ABS Provider] Proactively refreshed access token")
 
                 if let jwt = ABSJWT(refreshed.accessToken), let exp = jwt.exp {
                     return .bearer(
@@ -105,7 +177,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
                 }
                 return .legacy(token: refreshed.accessToken)
             } catch {
-                AppLogger.player.error("[ABS Provider] Refresh token flow failed: \(error.localizedDescription)")
+                AppLogger.network.error("[ABS Provider] Refresh token flow failed: \(error.localizedDescription)")
             }
         }
 
@@ -157,7 +229,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
                 let legacyToken = user["token"] as? String
 
                 if let authToken = accessToken ?? legacyToken, !authToken.isEmpty {
-                    AppLogger.player.info("[ABS Provider] Login successful")
+                    AppLogger.network.info("[ABS Provider] Login successful")
 
                     connection.token = authToken
                     connection.password = password
@@ -262,7 +334,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         let (data, response) = try await InsecureURLSession.shared.data(for: mutableRequest)
 
         if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 401 {
-            AppLogger.player.info("[ABS Provider] Got 401 despite proactive refresh - forcing token refresh...")
+            AppLogger.network.info("[ABS Provider] Got 401 despite proactive refresh - forcing token refresh...")
             do {
                 let freshCreds = try await credentialsActor.forceRefresh()
                 var retryRequest = mutableRequest
@@ -271,7 +343,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
                 connection.isConnected = true
                 return try await InsecureURLSession.shared.data(for: retryRequest)
             } catch {
-                AppLogger.player.error("[ABS Provider] Force refresh after 401 failed: \(error.localizedDescription)")
+                AppLogger.network.error("[ABS Provider] Force refresh after 401 failed: \(error.localizedDescription)")
                 connection.isConnected = false
             }
         } else if let httpResponse = response as? HTTPURLResponse,
@@ -345,7 +417,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
                 }
             }
             if !rejected.isEmpty {
-                AppLogger.player.error("\(rejected.count) item(s) failed to decode on this page")
+                AppLogger.network.error("\(rejected.count) item(s) failed to decode on this page")
             }
             results = good
             rejectedItems = rejected
@@ -391,6 +463,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             let size: Int64?
             let numTracks: Int?
             let numAudioFiles: Int?
+            let numEpisodes: Int?
             let ebookFormat: String?
             let chapters: [Chapter]?
             let audioFiles: [AudioFile]?
@@ -399,7 +472,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             let tags: [String]?
 
             enum CodingKeys: String, CodingKey {
-                case metadata, coverPath, duration, size, numTracks, numAudioFiles, ebookFormat
+                case metadata, coverPath, duration, size, numTracks, numAudioFiles, numEpisodes, ebookFormat
                 case chapters, audioFiles, episodes, ebookFile, tags
             }
 
@@ -411,6 +484,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
                 size = try c.decodeIfPresent(Int64.self, forKey: .size)
                 numTracks = try c.decodeIfPresent(Int.self, forKey: .numTracks)
                 numAudioFiles = try c.decodeIfPresent(Int.self, forKey: .numAudioFiles)
+                numEpisodes = try c.decodeIfPresent(Int.self, forKey: .numEpisodes)
                 ebookFormat = try c.decodeIfPresent(String.self, forKey: .ebookFormat)
                 chapters = try c.decodeIfPresent([Chapter].self, forKey: .chapters)
                 if let raw = try? c.decode([RejectedDecodable<AudioFile>].self, forKey: .audioFiles) {
@@ -442,12 +516,15 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             let authors: [Author]?
             let narrators: [String]?
             let series: [SeriesTag]?
+            let author: String?
+            let feedUrl: String?
 
             enum CodingKeys: String, CodingKey {
                 case title, titleIgnorePrefix, subtitle, publishedYear, publishedDate
                 case publisher, description, isbn, asin, language, genres
                 case authorName, narratorName, seriesName
                 case authors, narrators, series
+                case author, feedUrl
             }
 
             init(from decoder: Decoder) throws {
@@ -468,61 +545,28 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
                 seriesName = try c.decodeIfPresent(String.self, forKey: .seriesName)
                 authors = try c.decodeIfPresent([Author].self, forKey: .authors)
                 narrators = try c.decodeIfPresent([String].self, forKey: .narrators)
-                if let arr = try? c.decode([SeriesTag].self, forKey: .series) {
-                    series = arr
-                } else if let single = try? c.decode(SeriesTag.self, forKey: .series) {
-                    series = [single]
-                } else {
-                    series = nil
-                }
+                series = try c.decodeIfPresent([SeriesTag].self, forKey: .series)
+                author = try c.decodeIfPresent(String.self, forKey: .author)
+                feedUrl = try c.decodeIfPresent(String.self, forKey: .feedUrl)
             }
         }
 
         struct Author: Decodable {
-            let id: String?
+            let id: String
             let name: String
-            enum CodingKeys: String, CodingKey { case id, name }
-            init(from decoder: Decoder) throws {
-                let c = try decoder.container(keyedBy: CodingKeys.self)
-                id = try c.decodeIfPresent(String.self, forKey: .id)
-                name = (try? c.decode(String.self, forKey: .name)) ?? "Unknown"
-            }
         }
 
         struct SeriesTag: Decodable {
-            let id: String?
+            let id: String
             let name: String
             let sequence: String?
-            enum CodingKeys: String, CodingKey { case id, name, sequence }
-            init(from decoder: Decoder) throws {
-                let c = try decoder.container(keyedBy: CodingKeys.self)
-                id = try c.decodeIfPresent(String.self, forKey: .id)
-                name = (try? c.decode(String.self, forKey: .name)) ?? ""
-                if let s = try? c.decode(String.self, forKey: .sequence) {
-                    sequence = s
-                } else if let i = try? c.decode(Int.self, forKey: .sequence) {
-                    sequence = String(i)
-                } else if let d = try? c.decode(Double.self, forKey: .sequence) {
-                    sequence = String(d)
-                } else {
-                    sequence = nil
-                }
-            }
         }
 
         struct Chapter: Decodable {
-            let id: Int?
+            let id: Int
             let start: Double
             let end: Double
             let title: String
-            enum CodingKeys: String, CodingKey { case id, start, end, title }
-            init(from decoder: Decoder) throws {
-                let c = try decoder.container(keyedBy: CodingKeys.self)
-                id = try c.decodeIfPresent(Int.self, forKey: .id)
-                start = (try? c.decode(Double.self, forKey: .start)) ?? 0
-                end = (try? c.decode(Double.self, forKey: .end)) ?? 0
-                title = (try? c.decode(String.self, forKey: .title)) ?? "Chapter"
-            }
         }
 
         struct AudioFile: Decodable {
@@ -550,11 +594,17 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             let title: String?
             let description: String?
             let pubDate: String?
+            let guid: String?
+            let enclosure: Enclosure?
             let audioFile: AudioFile?
             let publishedAt: Int64?
             let addedAt: Int64?
             let duration: Double?
             var effectiveDuration: Double? { duration ?? audioFile?.duration }
+
+            struct Enclosure: Decodable {
+                let url: String?
+            }
         }
 
         struct EbookFile: Decodable {
@@ -569,43 +619,16 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         let numBooks: Int?
         let books: [SeriesBook]?
 
-        enum CodingKeys: String, CodingKey { case id, name, numBooks, books, series }
-
-        init(from decoder: Decoder) throws {
-            let c = try decoder.container(keyedBy: CodingKeys.self)
-            if c.contains(.series) {
-                let nested = try c.nestedContainer(keyedBy: CodingKeys.self, forKey: .series)
-                id = try nested.decode(String.self, forKey: .id)
-                name = (try? nested.decode(String.self, forKey: .name)) ?? ""
-                numBooks = try nested.decodeIfPresent(Int.self, forKey: .numBooks)
-                books = try c.decodeIfPresent([SeriesBook].self, forKey: .books)
-            } else {
-                id = try c.decode(String.self, forKey: .id)
-                name = (try? c.decode(String.self, forKey: .name)) ?? ""
-                numBooks = try c.decodeIfPresent(Int.self, forKey: .numBooks)
-                books = try c.decodeIfPresent([SeriesBook].self, forKey: .books)
-            }
-        }
-
         struct SeriesBook: Decodable {
             let id: String
-            let sequence: String?
-            enum CodingKeys: String, CodingKey {
-                case id
-                case sequence = "seriesSequence"
+            let media: Media
+
+            struct Media: Decodable {
+                let metadata: Metadata
             }
-            init(from decoder: Decoder) throws {
-                let c = try decoder.container(keyedBy: CodingKeys.self)
-                id = try c.decode(String.self, forKey: .id)
-                if let s = try? c.decode(String.self, forKey: .sequence) {
-                    sequence = s
-                } else if let i = try? c.decode(Int.self, forKey: .sequence) {
-                    sequence = String(i)
-                } else if let d = try? c.decode(Double.self, forKey: .sequence) {
-                    sequence = String(d)
-                } else {
-                    sequence = nil
-                }
+
+            struct Metadata: Decodable {
+                let seriesName: String?
             }
         }
     }
@@ -641,12 +664,20 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         let ebookProgress: Double?
         let ebookLocation: String?
 
+        var hasEbookPosition: Bool {
+            ABSMediaProgress.hasEbookPosition(ebookProgress: ebookProgress, ebookLocation: ebookLocation)
+        }
+
+        func ebookFraction(itemHasAudio: Bool) -> Double? {
+            ABSMediaProgress.ebookFraction(ebookProgress: ebookProgress, ebookLocation: ebookLocation, progress: progress, itemHasAudio: itemHasAudio)
+        }
+
         var resolvedIsFinished: Bool {
-            if isFinished == true || (progress ?? 0) >= 0.99 {
+            if isFinished == true || (progress ?? 0) >= Book.finishedProgressThreshold {
                 return true
             }
             guard let duration, duration > 0, let currentTime else { return false }
-            return currentTime >= duration * 0.99
+            return currentTime >= duration * Book.finishedProgressThreshold
         }
     }
 
@@ -667,11 +698,11 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         do {
             decoded = try Self.absDecoder.decode(LibrariesResponse.self, from: data)
         } catch {
-            AppLogger.player.error("fetchLibraries decode failed: \(error)")
+            AppLogger.network.error("fetchLibraries decode failed: \(error)")
             throw error
         }
 
-        AppLogger.player.info("Fetched \(decoded.libraries.count) libraries")
+        AppLogger.network.info("Fetched \(decoded.libraries.count) libraries")
 
         let filtered = decoded.libraries.filter {
             let mt = $0.mediaType.lowercased()
@@ -759,11 +790,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             ).map { incoming in
                 var book = incoming
                 if let progress = progressMap[book.partKey ?? book.id] ?? progressMap[book.id] {
-                    book.progress = progress.progress
-                    book.currentTime = book.mediaType == .ebook ? 0 : progress.currentTime
-                    book.ebookProgress = progress.ebookProgress ?? book.ebookProgress
-                    book.isFinished = progress.isFinished
-                    book.lastUpdate = progress.lastUpdate
+                    Self.applyServerProgress(progress, to: &book)
                 }
                 return book
             }
@@ -816,11 +843,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
                             book in
                             var book = book
                             if let p = progressMap[book.partKey ?? book.id] ?? progressMap[book.id] {
-                                book.progress = p.progress
-                                book.currentTime = book.mediaType == .ebook ? 0 : p.currentTime
-                                book.ebookProgress = p.ebookProgress ?? book.ebookProgress
-                                book.isFinished = p.isFinished
-                                book.lastUpdate = p.lastUpdate
+                                Self.applyServerProgress(p, to: &book)
                             }
                             return book
                         }
@@ -843,7 +866,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
                             : iterationCeiling + 1
                         let totalPages = min(iterationCeiling + 1, neededPagesFromTotal)
                         if serverProvidedTotal && neededPagesFromTotal > totalPages {
-                            AppLogger.player.error(
+                            AppLogger.network.error(
                                 "[ABS] Library has \(firstPage.total) items, exceeds \(iterationCeiling * limit)-item runaway guard. Server may be reporting an unbounded total."
                             )
                         }
@@ -868,11 +891,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
                                 mergedBooks.reserveCapacity(pageBatch.books.count)
                                 for var book in pageBatch.books {
                                     if let p = progressMap[book.partKey ?? book.id] ?? progressMap[book.id] {
-                                        book.progress = p.progress
-                                        book.currentTime = book.mediaType == .ebook ? 0 : p.currentTime
-                                        book.ebookProgress = p.ebookProgress ?? book.ebookProgress
-                                        book.isFinished = p.isFinished
-                                        book.lastUpdate = p.lastUpdate
+                                        Self.applyServerProgress(p, to: &book)
                                     }
                                     mergedBooks.append(book)
                                 }
@@ -891,7 +910,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
                             nextPage = chunkEnd
                         }
                     }
-                    AppLogger.player.info("[ABS] streamed \(loadedSoFar) books from library \(libraryId)")
+                    AppLogger.network.info("[ABS] streamed \(loadedSoFar) books from library \(libraryId)")
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -917,10 +936,10 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         let iterationCeiling = 2_000
         let pageConcurrency = 6
 
-        AppLogger.player.info("Starting paginated fetch for library \(libraryId)...")
+        AppLogger.network.info("Starting paginated fetch for library \(libraryId)...")
 
         let firstPage = try await fetchPage(libraryId: libraryId, baseURL: baseURL, token: token, page: 0, limit: limit)
-        AppLogger.player.info(
+        AppLogger.network.info(
             "Library has \(firstPage.total) total items (\(firstPage.results.count) decoded, \(firstPage.failures) failed)"
         )
 
@@ -941,7 +960,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             let neededPagesFromTotal = serverProvidedTotal ? max(1, (firstPage.total + limit - 1) / limit) : iterationCeiling + 1
             let totalPages = min(iterationCeiling + 1, neededPagesFromTotal)
             if serverProvidedTotal && neededPagesFromTotal > totalPages {
-                AppLogger.player.error(
+                AppLogger.network.error(
                     "[ABS] Library has \(firstPage.total) items, exceeds \(iterationCeiling * limit)-item runaway guard. Server may be reporting an unbounded total."
                 )
             }
@@ -967,13 +986,13 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
                     }
                 }
                 self.publishImportProgress(libraryId: libraryId, loadedCount: allBooks.count, totalCount: firstPage.total)
-                AppLogger.player.info("Progress: \(allBooks.count)/\(firstPage.total) (pages \(nextPage)..<\(chunkEnd) done)")
+                AppLogger.network.info("Progress: \(allBooks.count)/\(firstPage.total) (pages \(nextPage)..<\(chunkEnd) done)")
 
                 nextPage = chunkEnd
             }
         }
 
-        AppLogger.player.info("Fetched \(allBooks.count) books from library \(libraryId)")
+        AppLogger.network.info("Fetched \(allBooks.count) books from library \(libraryId)")
 
         let progressList = await progressTask.value
         if !progressList.isEmpty {
@@ -983,14 +1002,10 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             )
             for i in allBooks.indices {
                 if let p = map[allBooks[i].partKey ?? allBooks[i].id] ?? map[allBooks[i].id] {
-                    allBooks[i].progress = p.progress
-                    allBooks[i].currentTime = allBooks[i].mediaType == .ebook ? 0 : p.currentTime
-                    allBooks[i].ebookProgress = p.ebookProgress ?? allBooks[i].ebookProgress
-                    allBooks[i].isFinished = p.isFinished
-                    allBooks[i].lastUpdate = p.lastUpdate
+                    Self.applyServerProgress(p, to: &allBooks[i])
                 }
             }
-            AppLogger.player.info("Merged progress for \(progressList.count) items")
+            AppLogger.network.info("Merged progress for \(progressList.count) items")
         }
 
         return allBooks
@@ -1073,7 +1088,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         let (data, response) = try await performRequest(request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             let code = (response as? HTTPURLResponse)?.statusCode ?? -1
-            AppLogger.player.info("fetchBooks HTTP \(code) on page \(page)")
+            AppLogger.network.info("fetchBooks HTTP \(code) on page \(page)")
             throw ProviderError.invalidResponse
         }
         do {
@@ -1081,7 +1096,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             updateRejectedContent(page, libraryId: libraryId)
             return page
         } catch {
-            AppLogger.player.error("fetchBooks decode failed page \(page): \(error)")
+            AppLogger.network.error("fetchBooks decode failed page \(page): \(error)")
             throw error
         }
     }
@@ -1114,6 +1129,65 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         var feedURL: String?
     }
 
+    struct PodcastItem {
+        struct StoredEpisode {
+            let id: String
+            let title: String?
+            let description: String?
+            let guid: String?
+            let enclosureURL: String?
+            let publishedAt: Date?
+            let addedAt: Date?
+            let duration: Double?
+            let audioFileIno: String?
+        }
+
+        let id: String
+        let title: String
+        let author: String?
+        let description: String?
+        let genres: [String]
+        let hasCover: Bool
+        let addedAt: Date?
+        let feedURL: String?
+        let storedEpisodeCount: Int?
+        /// nil when the payload omits `media.episodes`, which the library list does for every show.
+        let storedEpisodes: [StoredEpisode]?
+    }
+
+    static func decodePodcastItem(_ data: Data) throws -> PodcastItem {
+        try podcastItem(from: absDecoder.decode(ABSItem.self, from: data))
+    }
+
+    private static func podcastItem(from item: ABSItem) -> PodcastItem {
+        let metadata = item.media.metadata
+        let feedURL = metadata.feedUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return PodcastItem(
+            id: item.id,
+            title: metadata.title ?? "Unknown Podcast",
+            author: metadata.author ?? metadata.authorName ?? metadata.authors?.map(\.name).joined(separator: ", "),
+            description: metadata.description,
+            genres: metadata.genres ?? [],
+            hasCover: item.media.coverPath != nil,
+            addedAt: item.addedAt,
+            feedURL: feedURL?.isEmpty == false ? feedURL : nil,
+            storedEpisodeCount: item.media.numEpisodes,
+            storedEpisodes: item.media.episodes?.map { episode in
+                PodcastItem.StoredEpisode(
+                    id: episode.id,
+                    title: episode.title,
+                    description: episode.description,
+                    guid: episode.guid,
+                    enclosureURL: episode.enclosure?.url,
+                    publishedAt: episode.publishedAt.map { Date(timeIntervalSince1970: Double($0) / 1000) },
+                    addedAt: episode.addedAt.map { Date(timeIntervalSince1970: Double($0) / 1000) },
+                    duration: episode.effectiveDuration,
+                    audioFileIno: episode.audioFile?.ino
+                )
+            }
+        )
+    }
+
     func fetchPodcasts(libraryId: String) async throws -> [PodcastShow] {
         guard let baseURL = URL(string: connection.url),
             let token = connection.token, !token.isEmpty
@@ -1131,7 +1205,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             }
         }
 
-        var allShows: [PodcastShow] = []
+        var items: [PodcastItem] = []
         var page = 0
         let limit = 50
 
@@ -1158,59 +1232,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
 
             let pageResp = try Self.absDecoder.decode(PageResponse<ABSItem>.self, from: data)
             updateRejectedContent(pageResp, libraryId: libraryId)
-
-            for item in pageResp.results {
-                let podcastTitle = item.media.metadata.title ?? "Unknown Podcast"
-                let author =
-                    item.media.metadata.authorName
-                    ?? item.media.metadata.authors?.map(\.name).joined(separator: ", ")
-
-                let coverURL = self.coverURL(for: item.id, baseURL: baseURL, token: token, hasCover: item.media.coverPath != nil)
-
-                let episodes: [Book] = (item.media.episodes ?? []).compactMap { ep in
-                    guard let epTitle = ep.title, !epTitle.isEmpty else { return nil }
-                    var book = Book(
-                        id: "\(item.id)_\(ep.id)",
-                        title: epTitle,
-                        author: author,
-                        duration: ep.effectiveDuration ?? 0,
-                        coverURL: coverURL,
-                        partKey: item.id,
-                        audioFileIno: ep.audioFile?.ino,
-                        isPodcastEpisode: true,
-                        episodeId: ep.id,
-                        podcastLibraryItemId: item.id,
-                        podcastName: podcastTitle,
-                        dateAdded: ep.publishedAt.map { Date(timeIntervalSince1970: Double($0) / 1000) }
-                            ?? ep.addedAt.map { Date(timeIntervalSince1970: Double($0) / 1000) },
-                        description: ep.description,
-                        genres: item.media.metadata.genres ?? [],
-                        libraryId: libraryId,
-                        providerId: connection.id,
-                        backendId: connection.id.uuidString,
-                        source: .audiobookshelf
-                    )
-                    if let prog = progressMap["\(item.id)/\(ep.id)"] {
-                        book.currentTime = prog.currentTime
-                        book.isFinished = prog.isFinished
-                        book.lastUpdate = prog.lastUpdate
-                    }
-                    return book
-                }
-
-                allShows.append(
-                    PodcastShow(
-                        id: item.id,
-                        title: podcastTitle,
-                        author: author,
-                        description: item.media.metadata.description,
-                        coverURL: coverURL,
-                        genres: item.media.metadata.genres ?? [],
-                        episodes: episodes,
-                        addedAt: item.addedAt
-                    )
-                )
-            }
+            items.append(contentsOf: pageResp.results.map(Self.podcastItem(from:)))
 
             if pageResp.results.count < limit { break }
             page += 1
@@ -1218,53 +1240,181 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             try await Task.sleep(nanoseconds: 100_000_000)
         }
 
-        AppLogger.player.info("[ABS] Fetched \(allShows.count) podcast shows")
-        return allShows
+        let shows = await resolvePodcastShows(items, libraryId: libraryId, baseURL: baseURL, token: token, progress: progressMap)
+        AppLogger.network.info("[ABS] Fetched \(shows.count) podcast shows")
+        return shows
     }
 
-    func fetchPodcastEpisodes(podcastId: String) async throws -> [Book] {
-        guard let baseURL = URL(string: connection.url),
-            let token = connection.token, !token.isEmpty
-        else {
-            throw ProviderError.unauthorized
-        }
+    private static let podcastShowConcurrency = 4
 
-        let url = baseURL.appendingPathComponent("api/items/\(podcastId)")
-        let request = URLRequest(url: url)
+    /// Feed-only episodes belong to no connection; this is the sentinel local books already use.
+    private static let feedEpisodeProviderId = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
+
+    private func resolvePodcastShows(
+        _ items: [PodcastItem],
+        libraryId: String,
+        baseURL: URL,
+        token: String,
+        progress: [String: UserMediaProgress]
+    ) async -> [PodcastShow] {
+        var shows = [PodcastShow?](repeating: nil, count: items.count)
+        await withTaskGroup(of: (Int, PodcastShow).self) { group in
+            var nextIndex = 0
+            func addNextShow() {
+                guard nextIndex < items.count else { return }
+                let index = nextIndex
+                nextIndex += 1
+                group.addTask {
+                    (
+                        index,
+                        await self.resolvePodcastShow(
+                            items[index], libraryId: libraryId, baseURL: baseURL, token: token, progress: progress
+                        )
+                    )
+                }
+            }
+            for _ in 0..<min(Self.podcastShowConcurrency, items.count) { addNextShow() }
+            for await (index, show) in group {
+                shows[index] = show
+                addNextShow()
+            }
+        }
+        return shows.compactMap { $0 }
+    }
+
+    private func resolvePodcastShow(
+        _ item: PodcastItem,
+        libraryId: String,
+        baseURL: URL,
+        token: String,
+        progress: [String: UserMediaProgress]
+    ) async -> PodcastShow {
+        async let stored = storedEpisodes(for: item)
+        async let feed = feedEpisodes(for: item)
+        return await podcastShow(
+            from: item,
+            storedEpisodes: stored,
+            feedEpisodes: feed,
+            libraryId: libraryId,
+            baseURL: baseURL,
+            token: token,
+            progress: progress
+        )
+    }
+
+    private func storedEpisodes(for item: PodcastItem) async -> [PodcastItem.StoredEpisode] {
+        if let episodes = item.storedEpisodes { return episodes }
+        if item.storedEpisodeCount == 0 { return [] }
+        do {
+            return try await fetchPodcastItem(id: item.id).storedEpisodes ?? []
+        } catch {
+            AppLogger.network.warning(
+                "[ABS] Podcast detail unavailable showDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: item.id)): \(error.localizedDescription)"
+            )
+            return []
+        }
+    }
+
+    private func feedEpisodes(for item: PodcastItem) async -> [RSSPodcastParser.ParsedEpisode] {
+        guard let feedURL = item.feedURL else { return [] }
+        do {
+            return try await RSSPodcastParser.shared.parseFeed(from: feedURL).episodes
+        } catch {
+            AppLogger.network.warning(
+                "[ABS] Podcast feed unavailable showDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: item.id)): \(error.localizedDescription)"
+            )
+            return []
+        }
+    }
+
+    private func fetchPodcastItem(id: String) async throws -> PodcastItem {
+        guard let baseURL = URL(string: connection.url) else { throw ProviderError.invalidURL }
+        let request = URLRequest(url: baseURL.appendingPathComponent("api/items/\(id)"))
         let (data, response) = try await performRequest(request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             throw ProviderError.invalidResponse
         }
+        return try Self.decodePodcastItem(data)
+    }
 
-        let item = try Self.absDecoder.decode(ABSItem.self, from: data)
-        let podcastTitle = item.media.metadata.title ?? "Unknown Podcast"
-        let author = item.media.metadata.authorName
-        let coverURL = self.coverURL(for: podcastId, baseURL: baseURL, token: token, hasCover: item.media.coverPath != nil)
+    /// Keeps stored episodes on ABS while routing feed-only episodes directly to their enclosures.
+    func podcastShow(
+        from item: PodcastItem,
+        storedEpisodes: [PodcastItem.StoredEpisode],
+        feedEpisodes: [RSSPodcastParser.ParsedEpisode],
+        libraryId: String,
+        baseURL: URL,
+        token: String,
+        progress: [String: UserMediaProgress]
+    ) -> PodcastShow {
+        let coverURL = coverURL(for: item.id, baseURL: baseURL, token: token, hasCover: item.hasCover)
 
-        return (item.media.episodes ?? []).compactMap { ep -> Book? in
-            guard let epTitle = ep.title, !epTitle.isEmpty else { return nil }
-            return Book(
-                id: "\(podcastId)_\(ep.id)",
-                title: epTitle,
-                author: author,
-                duration: ep.effectiveDuration ?? 0,
+        let stored: [Book] = storedEpisodes.compactMap { episode in
+            guard let title = episode.title, !title.isEmpty else { return nil }
+            var book = Book(
+                id: "\(item.id)_\(episode.id)",
+                title: title,
+                author: item.author,
+                duration: episode.duration ?? 0,
                 coverURL: coverURL,
-                partKey: podcastId,
-                audioFileIno: ep.audioFile?.ino,
+                partKey: item.id,
+                audioFileIno: episode.audioFileIno,
                 isPodcastEpisode: true,
-                episodeId: ep.id,
-                podcastLibraryItemId: podcastId,
-                podcastName: podcastTitle,
-                dateAdded: ep.publishedAt.map { Date(timeIntervalSince1970: Double($0) / 1000) }
-                    ?? ep.addedAt.map { Date(timeIntervalSince1970: Double($0) / 1000) },
-                description: ep.description,
-                libraryId: item.libraryId ?? "",
+                episodeId: episode.id,
+                podcastLibraryItemId: item.id,
+                podcastName: item.title,
+                dateAdded: episode.publishedAt ?? episode.addedAt,
+                description: episode.description,
+                genres: item.genres,
+                libraryId: libraryId,
                 providerId: connection.id,
                 backendId: connection.id.uuidString,
                 source: .audiobookshelf
             )
+            if let entry = progress["\(item.id)/\(episode.id)"] {
+                book.currentTime = entry.currentTime
+                book.isFinished = entry.isFinished
+                book.lastUpdate = entry.lastUpdate
+            }
+            return book
         }
+
+        let feedOnly: [Book] = ABSPodcastEpisodeMerge.feedOnlyEpisodes(stored: storedEpisodes, feed: feedEpisodes)
+            .compactMap { episode in
+                guard !episode.title.isEmpty, let audioURL = episode.audioURL else { return nil }
+                return Book(
+                    id: "\(item.id)_rss_\(episode.id)",
+                    title: episode.title,
+                    author: item.author,
+                    thumb: (episode.coverURL ?? coverURL)?.absoluteString,
+                    partKey: audioURL.absoluteString,
+                    duration: episode.duration > 0 ? episode.duration : nil,
+                    isPodcastEpisode: true,
+                    episodeId: episode.id,
+                    podcastLibraryItemId: item.id,
+                    podcastName: item.title,
+                    description: episode.description,
+                    genres: item.genres.isEmpty ? nil : item.genres,
+                    addedAt: episode.publishedDate,
+                    providerId: Self.feedEpisodeProviderId,
+                    libraryId: libraryId
+                )
+            }
+
+        return PodcastShow(
+            id: item.id,
+            title: item.title,
+            author: item.author,
+            description: item.description,
+            coverURL: coverURL,
+            genres: item.genres,
+            episodes: stored + feedOnly,
+            addedAt: item.addedAt
+        )
     }
+
+    // 1: minified series names split into name and sequence.
+    var catalogMappingRevision: Int { 1 }
 
     func fetchBooksDelta(libraryId: String, since: Date) async throws -> (books: [Book], cursor: Date)? {
         guard let baseURL = URL(string: connection.url),
@@ -1336,7 +1486,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             page += 1
         }
 
-        AppLogger.player.info("[ABS] Delta: \(collected.count) changed items since \(since)")
+        AppLogger.network.info("[ABS] Delta: \(collected.count) changed items since \(since)")
         return (collected, hadDecodeFailures ? since : maxSeen)
     }
 
@@ -1384,7 +1534,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             rejectedItems: page.rejectedItems
         )
         guard !page.rejectedItems.isEmpty else { return }
-        AppLogger.player.warning(
+        AppLogger.network.warning(
             "[ABS] Skipped \(page.rejectedItems.count) malformed item(s) on page \(page.page)"
         )
     }
@@ -1414,7 +1564,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         do {
             decoded = try Self.absDecoder.decode(CollectionsResponse.self, from: data)
         } catch {
-            AppLogger.player.error("fetchCollections decode failed: \(error)")
+            AppLogger.network.error("fetchCollections decode failed: \(error)")
             throw error
         }
 
@@ -1430,6 +1580,19 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
                 color: "blue",
                 providerId: connection.id
             )
+        }
+    }
+
+    // Minified items join a book's series as "Name #sequence, Other #sequence".
+    static func seriesEntries(fromMinifiedName value: String?) -> [SeriesInfo] {
+        guard let value, !value.isEmpty else { return [] }
+        return value.components(separatedBy: ", ").compactMap { part in
+            let trimmed = part.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty else { return nil }
+            guard let marker = trimmed.range(of: " #", options: .backwards) else {
+                return SeriesInfo(name: trimmed, sequence: nil)
+            }
+            return SeriesInfo(name: String(trimmed[..<marker.lowerBound]), sequence: String(trimmed[marker.upperBound...]))
         }
     }
 
@@ -1468,13 +1631,14 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             if page > 20 { break }
         }
 
-        AppLogger.player.info("Fetched \(allResults.count) series")
+        AppLogger.network.info("Fetched \(allResults.count) series")
 
         return allResults.map { item in
             let bookIds = item.books?.map(\.id) ?? []
             var bookSequences: [String: String] = [:]
             for book in item.books ?? [] {
-                if let seq = book.sequence { bookSequences[book.id] = seq }
+                let entry = Self.seriesEntries(fromMinifiedName: book.media.metadata.seriesName).first { $0.name == item.name }
+                if let sequence = entry?.sequence { bookSequences[book.id] = sequence }
             }
             return Series(
                 id: item.id,
@@ -1501,14 +1665,14 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         let (data, response) = try await performRequest(request)
 
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            AppLogger.player.info("/api/me returned \((response as? HTTPURLResponse)?.statusCode ?? -1)")
+            AppLogger.network.info("/api/me returned \((response as? HTTPURLResponse)?.statusCode ?? -1)")
             return []
         }
 
         do {
             let user = try JSONDecoder().decode(ABSUser.self, from: data)
             let all = user.mediaProgress ?? []
-            AppLogger.player.info("/api/me returned \(all.count) progress entries")
+            AppLogger.network.info("/api/me returned \(all.count) progress entries")
 
             return all.compactMap { item -> UserMediaProgress? in
                 guard let itemId = item.libraryItemId else { return nil }
@@ -1522,11 +1686,11 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
                     isFinished: item.resolvedIsFinished,
                     duration: item.duration ?? 0,
                     lastUpdate: item.lastUpdateDate ?? Date.distantPast,
-                    ebookProgress: item.ebookProgress
+                    ebookProgress: item.hasEbookPosition ? item.ebookProgress : nil
                 )
             }
         } catch {
-            AppLogger.player.error("/api/me decode failed: \(error)")
+            AppLogger.network.error("/api/me decode failed: \(error)")
             return []
         }
     }
@@ -1557,10 +1721,8 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             throw ProviderError.unauthorized
         }
 
-        guard var components = URLComponents(url: baseURL.appendingPathComponent("api/items/\(bookId)"), resolvingAgainstBaseURL: false)
-        else { throw ProviderError.invalidURL }
-        components.queryItems = [URLQueryItem(name: "expanded", value: "1")]
-        guard let requestURL = components.url else { throw ProviderError.invalidURL }
+        let itemId = Self.itemId(forBookId: bookId)
+        guard let requestURL = Self.expandedItemURL(baseURL: baseURL, itemId: itemId) else { throw ProviderError.invalidURL }
 
         let request = URLRequest(url: requestURL)
         let (data, response) = try await performRequest(request)
@@ -1571,7 +1733,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         let item = try Self.absDecoder.decode(ABSItem.self, from: data)
 
         var progress: UserMediaProgress?
-        let progressURL = baseURL.appendingPathComponent("api/me/progress/\(bookId)")
+        let progressURL = baseURL.appendingPathComponent("api/me/progress/\(itemId)")
         let progressRequest = URLRequest(url: progressURL)
         if let (pData, pResp) = try? await performRequest(progressRequest),
             (pResp as? HTTPURLResponse)?.statusCode == 200,
@@ -1579,7 +1741,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         {
             progress = UserMediaProgress(
                 id: p.id,
-                libraryItemId: p.libraryItemId ?? bookId,
+                libraryItemId: p.libraryItemId ?? itemId,
                 providerId: connection.id,
                 episodeId: p.episodeId,
                 currentTime: p.currentTime ?? 0,
@@ -1587,34 +1749,47 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
                 isFinished: p.resolvedIsFinished,
                 duration: p.duration ?? 0,
                 lastUpdate: p.lastUpdate.map { Date(timeIntervalSince1970: $0 / 1000) } ?? Date.distantPast,
-                ebookProgress: p.ebookProgress
+                ebookProgress: p.hasEbookPosition ? p.ebookProgress : nil
             )
         }
 
-        guard var book = convertItemToBook(
-            item,
-            libraryId: item.libraryId ?? libraryId,
-            baseURL: baseURL,
-            token: token,
-            libraryMediaType: libraryMediaTypes[libraryId]
-        ) else {
+        guard
+            var book = convertItemToBooks(
+                item,
+                libraryId: item.libraryId ?? libraryId,
+                baseURL: baseURL,
+                token: token,
+                libraryMediaType: libraryMediaTypes[libraryId]
+            ).first(where: { $0.id == bookId })
+        else {
             throw ProviderError.invalidResponse
         }
         if let progress {
-            book.progress = progress.progress
-            book.currentTime = book.mediaType == .ebook ? 0 : progress.currentTime
-            book.ebookProgress = progress.ebookProgress
-            book.isFinished = progress.isFinished
-            book.lastUpdate = progress.lastUpdate
+            Self.applyServerProgress(progress, to: &book)
         }
         return book
+    }
+
+    /// An empty side leaves a dual item's book for that side untouched: ABS stamps both sides' pushes on one record.
+    static func applyServerProgress(_ progress: UserMediaProgress, to book: inout Book) {
+        if book.mediaType == .ebook, book.hasAlternateFormat, progress.ebookProgress == nil { return }
+        if book.mediaType == .audiobook, book.hasAlternateFormat,
+            !ABSMediaProgress.hasAudioPosition(currentTime: progress.currentTime, progress: progress.progress, isFinished: progress.isFinished)
+        {
+            return
+        }
+        book.progress = progress.progress
+        book.currentTime = book.mediaType == .ebook ? 0 : progress.currentTime
+        book.ebookProgress = progress.ebookProgress ?? book.ebookProgress
+        book.isFinished = progress.isFinished
+        book.lastUpdate = progress.lastUpdate
     }
 
     private func chapters(from media: ABSItem.Media) -> [Chapter] {
         if let mediaChapters = media.chapters, !mediaChapters.isEmpty {
             return mediaChapters.enumerated().map { index, chapter in
                 Chapter(
-                    id: String(chapter.id ?? index),
+                    id: String(chapter.id),
                     start: chapter.start,
                     end: chapter.end,
                     title: chapter.title,
@@ -1647,7 +1822,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
                 guard end > start else { continue }
                 chapters.append(
                     Chapter(
-                        id: "file_\(fileIndex)_\(chapter.id ?? chapters.count)",
+                        id: "file_\(fileIndex)_\(chapter.id)",
                         start: start,
                         end: end,
                         title: chapter.title,
@@ -1722,6 +1897,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         let author =
             item.media.metadata.authorName
             ?? item.media.metadata.authors?.map(\.name).joined(separator: ", ")
+            ?? item.media.metadata.author
             ?? "Unknown Author"
 
         let hasAudio =
@@ -1741,8 +1917,8 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         var seriesInfo: SeriesInfo?
         if let first = item.media.metadata.series?.first {
             seriesInfo = SeriesInfo(name: first.name, sequence: first.sequence)
-        } else if let sn = item.media.metadata.seriesName, !sn.isEmpty {
-            seriesInfo = SeriesInfo(name: sn, sequence: nil)
+        } else {
+            seriesInfo = Self.seriesEntries(fromMinifiedName: item.media.metadata.seriesName).first
         }
 
         let chapters = chapters(from: item.media)
@@ -1834,7 +2010,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
 
         primary.hasAlternateFormat = true
         var ebook = Book(
-            id: "\(item.id)_ebook",
+            id: "\(item.id)\(Self.ebookSideIdSuffix)",
             title: primary.title,
             author: primary.author,
             narrator: primary.narrator,
@@ -1893,13 +2069,17 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
             let (_, response) = try await performRequest(request)
-            guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
+            let sessionStatus = (response as? HTTPURLResponse)?.statusCode ?? 0
+            // ABS keeps sessions in memory; after a server restart the session is gone but the progress PATCH still lands.
+            if sessionStatus == 404 {
+                AppLogger.network.info("ABS no longer holds the playback session; saving progress without it")
+            } else if (200...299).contains(sessionStatus) {
+                AppLogger.network.info("Synced session \(sessionId) to \(currentTime)s (listened: \(timeListened)s)")
+            } else {
                 throw ProviderError.invalidResponse
             }
-            AppLogger.player.info("Synced session \(sessionId) to \(currentTime)s (listened: \(timeListened)s)")
 
-            let progressItemId = book.isPodcastEpisode ? (book.podcastLibraryItemId ?? book.id) : book.id
-            var progressPath = "api/me/progress/\(progressItemId)"
+            var progressPath = "api/me/progress/\(Self.libraryItemId(for: book))"
             if book.isPodcastEpisode, let epId = book.episodeId {
                 progressPath += "/\(epId)"
             }
@@ -1923,12 +2103,11 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             guard let progressHttp = progressResponse as? HTTPURLResponse, (200...299).contains(progressHttp.statusCode) else {
                 throw ProviderError.invalidResponse
             }
-            AppLogger.player.debug(
+            AppLogger.network.debug(
                 "Synced progress bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId)) position=\(Int(currentTime))s"
             )
         } else {
-            let itemId = book.isPodcastEpisode ? (book.podcastLibraryItemId ?? book.id) : book.id
-            var progressPath = "api/me/progress/\(itemId)"
+            var progressPath = "api/me/progress/\(Self.libraryItemId(for: book))"
             if book.isPodcastEpisode, let epId = book.episodeId {
                 progressPath += "/\(epId)"
             }
@@ -1950,8 +2129,14 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
                 throw ProviderError.invalidResponse
             }
-            AppLogger.player.debug(
+            AppLogger.network.debug(
                 "Synced progress bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId)) position=\(Int(currentTime))s"
+            )
+        }
+        if book.hasAlternateFormat, !book.isPodcastEpisode {
+            NarratedAudioPositionStore.shared.recordPush(
+                audioTime: currentTime,
+                forItem: NarratedAudioPositionStore.itemKey(connectionId: connection.id, itemId: Self.libraryItemId(for: book))
             )
         }
     }
@@ -1963,7 +2148,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             return nil
         }
 
-        let itemId = book.isPodcastEpisode ? (book.podcastLibraryItemId ?? book.id) : book.id
+        let itemId = Self.libraryItemId(for: book)
         var playPath = "api/items/\(itemId)/play"
         if book.isPodcastEpisode, let epId = book.episodeId {
             playPath = "api/items/\(itemId)/play/\(epId)"
@@ -2019,7 +2204,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             throw ProviderError.unauthorized
         }
 
-        let itemId = book.isPodcastEpisode ? (book.podcastLibraryItemId ?? book.id) : book.id
+        let itemId = Self.libraryItemId(for: book)
         var playPath = "api/items/\(itemId)/play"
         if book.isPodcastEpisode, let epId = book.episodeId {
             playPath = "api/items/\(itemId)/play/\(epId)"
@@ -2054,7 +2239,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         let (data, response) = try await performRequest(request)
 
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-            AppLogger.player.error("Playback session failed: \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+            AppLogger.network.error("Playback session failed: \((response as? HTTPURLResponse)?.statusCode ?? 0)")
             throw ProviderError.invalidResponse
         }
 
@@ -2082,8 +2267,8 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
 
         let sessionResponse = try JSONDecoder().decode(PlaybackResponse.self, from: data)
 
-        AppLogger.player.info("Playback session started: \(sessionResponse.id)")
-        AppLogger.player.info("Audio tracks: \(sessionResponse.audioTracks.count)")
+        AppLogger.network.info("Playback session started: \(sessionResponse.id)")
+        AppLogger.network.info("Audio tracks: \(sessionResponse.audioTracks.count)")
 
         let tracks = sessionResponse.audioTracks.map { track in
             let fullUrl = baseURL.absoluteString + track.contentUrl
@@ -2121,19 +2306,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             throw ProviderError.unauthorized
         }
 
-        let ino: String
-        if let catalogIno = book.audioFileIno {
-            ino = catalogIno
-        } else {
-            let itemId = book.partKey ?? book.id
-            let detailed = try await fetchFullBookDetails(bookId: itemId, libraryId: book.libraryId)
-            guard let detailedIno = detailed.audioFileIno else {
-                throw ProviderError.invalidResponse
-            }
-            ino = detailedIno
-        }
-
-        let downloadURL = baseURL.appendingPathComponent("api/items/\(book.partKey ?? book.id)/file/\(ino)/download")
+        let downloadURL = baseURL.appendingPathComponent("api/items/\(book.partKey ?? book.id)/ebook")
 
         var request = URLRequest(url: downloadURL)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -2159,20 +2332,10 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             throw ProviderError.invalidResponse
         }
 
-        let defaultFileName = "\(book.title.replacingOccurrences(of: "/", with: "-")).epub"
-        var filename = defaultFileName
-
-        if let header = httpResponse.allHeaderFields["Content-Disposition"] as? String,
-            let filenameRange = header.range(of: "filename=\"") ?? header.range(of: "filename=")
-        {
-            let start = filenameRange.upperBound
-            let end = header[start...].firstIndex(of: "\"") ?? header.endIndex
-            filename = String(header[start..<end])
-        }
-
+        let fileExtension = book.ebookFormat?.lowercased() ?? EbookFormat.epub.rawValue
         return try LocalEbookImporter.shared.cacheRemoteEbook(
             tempURL: tempURL,
-            preferredFilename: filename,
+            preferredFilename: "\(book.title.replacingOccurrences(of: "/", with: "-")).\(fileExtension)",
             bookIdentifier: book.id
         )
     }
@@ -2190,24 +2353,40 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        var body: [String: Any] = [
-            "ebookProgress": progress,
-            "isFinished": progress >= 0.99,
-        ]
-        if let epubLocator {
-            body["ebookLocation"] = epubLocator
+        var ebookLocation: String?
+        var audioPosition: (currentTime: TimeInterval, duration: TimeInterval)?
+        #if os(iOS)
+        if let epubLocator, let epubURL = UnifiedDownloadService.shared.existingReaderAsset(for: book) {
+            ebookLocation = await EpubCFI.providerCFI(forLocatorJSON: epubLocator, epubFileURL: epubURL)
+            if ebookLocation == nil {
+                AppLogger.network.info("ABS ebook position did not round-trip as a CFI; sending progress only")
+            }
         }
+        audioPosition = await narrationAudioPosition(for: book, locator: epubLocator)
+        #endif
 
+        let body = Self.ebookProgressBody(
+            progress: progress,
+            ebookLocation: ebookLocation,
+            itemHasAudio: book.hasAlternateFormat,
+            audioPosition: audioPosition
+        )
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (_, response) = try await performRequest(request)
         if let httpResponse = response as? HTTPURLResponse, !(200...299).contains(httpResponse.statusCode) {
             throw ProviderError.serverError("Failed to sync ABS ebook progress (HTTP \(httpResponse.statusCode))")
         }
-        AppLogger.player.info("Successfully synced ebook progress: \(Int(progress * 100))%")
+        if book.hasAlternateFormat {
+            NarratedAudioPositionStore.shared.recordPush(
+                audioTime: audioPosition?.currentTime,
+                forItem: NarratedAudioPositionStore.itemKey(connectionId: connection.id, itemId: book.partKey ?? book.id)
+            )
+        }
+        AppLogger.network.info("Successfully synced ebook progress: \(Int(progress * 100))%")
     }
 
-    func fetchEbookProgress(for book: Book) async throws -> (progress: Double, locator: String?, updatedAt: Date?, isAbandoned: Bool)? {
+    func fetchEbookProgress(for book: Book) async throws -> (progress: Double, locator: String?, updatedAt: Date?, isFinished: Bool)? {
         guard let baseURL = URL(string: connection.url),
             let token = connection.token
         else {
@@ -2224,15 +2403,171 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         guard http.statusCode == 200 else { throw ProviderError.invalidResponse }
         let p = try Self.absDecoder.decode(ABSProgressItem.self, from: data)
 
-        let progress = p.ebookProgress ?? p.progress ?? 0
-        let locator = p.ebookLocation
+        var progress = p.ebookFraction(itemHasAudio: book.hasAlternateFormat)
+        var locator: String?
+        switch Self.ebookLocation(fromServerValue: p.ebookLocation) {
+        case .readiumLocatorJSON(let json):
+            locator = json
+        case .cfi(let cfi):
+            #if os(iOS)
+            if let epubURL = UnifiedDownloadService.shared.existingReaderAsset(for: book) {
+                locator = await EpubCFI.readiumLocatorJSON(forCFI: cfi, totalProgression: progress ?? 0, epubFileURL: epubURL)
+            }
+            #endif
+        case nil:
+            break
+        }
+        #if os(iOS)
+        if let narrated = await narratedPositionFromItemAudio(record: p, book: book) {
+            locator = narrated.locator
+            progress = narrated.progress
+        }
+        #endif
+        guard let progress else { return nil }
         let updatedAt = p.lastUpdate.map { Date(timeIntervalSince1970: $0 / 1000) }
-        return (progress: progress, locator: locator, updatedAt: updatedAt, isAbandoned: p.isFinished == true)
+        return (progress: progress, locator: locator, updatedAt: updatedAt, isFinished: p.isFinished == true)
     }
+
+    enum ServerEbookLocation: Equatable {
+        case readiumLocatorJSON(String)
+        case cfi(String)
+    }
+
+    /// Older Enve builds stored Readium locator JSON in `ebookLocation`; ABS readers store an EPUB CFI.
+    static func ebookLocation(fromServerValue value: String?) -> ServerEbookLocation? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+        if value.hasPrefix("{"), EpubCFI.jsonObject(value) != nil { return .readiumLocatorJSON(value) }
+        if value.hasPrefix("epubcfi("), EpubCFI.parse(value) != nil { return .cfi(value) }
+        return nil
+    }
+
+    /// ABS keeps audio and ebook fields on one mediaProgress record, and a PATCH overwrites only the keys it sends.
+    static func ebookProgressBody(
+        progress: Double,
+        ebookLocation: String?,
+        itemHasAudio: Bool,
+        audioPosition: (currentTime: TimeInterval, duration: TimeInterval)?
+    ) -> [String: Any] {
+        var body: [String: Any] = ["ebookProgress": progress]
+        let isFinished = progress >= Book.finishedProgressThreshold
+        // Un-finishing an item on ABS also zeroes its audio currentTime.
+        if isFinished || !itemHasAudio { body["isFinished"] = isFinished }
+        if let ebookLocation { body["ebookLocation"] = ebookLocation }
+        if let audioPosition, audioPosition.duration > 0 {
+            body["currentTime"] = audioPosition.currentTime
+            body["duration"] = audioPosition.duration
+            body["progress"] = min(max(audioPosition.currentTime / audioPosition.duration, 0), 1)
+        }
+        return body
+    }
+
+    /// A dual item's ebook side is a separate Book whose id carries this suffix; ABS knows only the item id.
+    static let ebookSideIdSuffix = "_ebook"
+
+    static func itemId(forBookId bookId: String) -> String {
+        bookId.hasSuffix(ebookSideIdSuffix) ? String(bookId.dropLast(ebookSideIdSuffix.count)) : bookId
+    }
+
+    static func libraryItemId(for book: Book) -> String {
+        book.isPodcastEpisode ? (book.podcastLibraryItemId ?? book.id) : itemId(forBookId: book.id)
+    }
+
+    /// ABS omits `media.duration` (and tracks) from a library item unless it is requested expanded.
+    static func expandedItemURL(baseURL: URL, itemId: String) -> URL? {
+        var components = URLComponents(url: baseURL.appendingPathComponent("api/items/\(itemId)"), resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "expanded", value: "1")]
+        return components?.url
+    }
+
+    private func itemAudioDuration(itemId: String) async -> TimeInterval? {
+        if let cached = itemAudioDurations[itemId] { return cached }
+        guard let baseURL = URL(string: connection.url),
+            let url = Self.expandedItemURL(baseURL: baseURL, itemId: itemId),
+            let (data, response) = try? await performRequest(URLRequest(url: url)),
+            (response as? HTTPURLResponse)?.statusCode == 200,
+            let duration = (try? Self.absDecoder.decode(ABSItem.self, from: data))?.media.duration,
+            duration > 0
+        else { return nil }
+        itemAudioDurations[itemId] = duration
+        return duration
+    }
+
+    #if os(iOS)
+    /// The item's audio time for a narrated sentence, sent only while Enve narrates that very sentence.
+    private func narrationAudioPosition(
+        for book: Book,
+        locator: String?
+    ) async -> (currentTime: TimeInterval, duration: TimeInterval)? {
+        guard book.hasAlternateFormat, let locator,
+            let narrationTime = NarratedAudioPositionStore.shared.narrationAudioTime(for: book),
+            let timeline = MediaOverlayPlaybackService.shared.narrationTimeline(for: book),
+            let resolved = timeline.resolveEPUB3Locator(locatorJSON: locator),
+            resolved.source == .fragment,
+            let itemDuration = await itemAudioDuration(itemId: book.partKey ?? book.id)
+        else { return nil }
+        return Self.itemAudioPosition(
+            narrationTime: narrationTime,
+            clip: timeline.clipTimings[resolved.clipIndex],
+            overlayDuration: timeline.totalAudioDuration,
+            itemAudioDuration: itemDuration
+        )
+    }
+
+    static func itemAudioPosition(
+        narrationTime: TimeInterval,
+        clip: MediaOverlayTimeline.ClipTiming,
+        overlayDuration: TimeInterval,
+        itemAudioDuration: TimeInterval
+    ) -> (currentTime: TimeInterval, duration: TimeInterval)? {
+        guard LinkedBookProgressCoordinator.narrationMatchesAudio(
+            narrationDuration: overlayDuration,
+            audioDuration: itemAudioDuration
+        ),
+            // A locator saved while paging keeps the last narration time, which then lies outside its sentence.
+            narrationTime >= clip.audioStart - 0.5, narrationTime <= clip.audioEnd + 0.5
+        else { return nil }
+        return (narrationTime * itemAudioDuration / overlayDuration, itemAudioDuration)
+    }
+
+    /// ABS stamps one lastUpdate for both sides, so its audio side is newer only when it moved off the time Enve last synced.
+    private func narratedPositionFromItemAudio(
+        record: ABSProgressItem,
+        book: Book
+    ) async -> (locator: String, progress: Double)? {
+        let itemId = book.partKey ?? book.id
+        guard book.hasAlternateFormat, let audioTime = record.currentTime else { return nil }
+        let itemKey = NarratedAudioPositionStore.itemKey(connectionId: connection.id, itemId: itemId)
+        NarratedAudioPositionStore.shared.noteServerAudioTime(audioTime, forItem: itemKey)
+        guard book.hasEPUB3MediaOverlay, audioTime > 0,
+            NarratedAudioPositionStore.shared.isServerAudioNewer(audioTime, forItem: itemKey),
+            let itemDuration = await itemAudioDuration(itemId: itemId),
+            let timeline = await MediaOverlayPlaybackService.shared.overlayTimeline(forLocalBook: book),
+            LinkedBookProgressCoordinator.narrationMatchesAudio(
+                narrationDuration: timeline.totalAudioDuration,
+                audioDuration: itemDuration
+            )
+        else { return nil }
+        return Self.narratedLocator(itemAudioTime: audioTime, itemAudioDuration: itemDuration, timeline: timeline)
+    }
+
+    static func narratedLocator(
+        itemAudioTime: TimeInterval,
+        itemAudioDuration: TimeInterval,
+        timeline: MediaOverlayTimeline
+    ) -> (locator: String, progress: Double)? {
+        let overlayTime = itemAudioTime * timeline.totalAudioDuration / itemAudioDuration
+        guard let audioClip = timeline.clipIndex(atAudioTime: overlayTime),
+            let locator = timeline.textLocatorJSONString(clipIndex: audioClip, audioTime: overlayTime)
+        else {
+            return nil
+        }
+        return (locator, timeline.readingProgression(atAudioTime: overlayTime, clipIndex: audioClip))
+    }
+    #endif
 
     func fetchAudiobookProgress(
         for book: Book
-    ) async throws -> (positionSeconds: TimeInterval, percentage: Double, trackIndex: Int?, updatedAt: Date?, isAbandoned: Bool)? {
+    ) async throws -> (positionSeconds: TimeInterval, percentage: Double, trackIndex: Int?, updatedAt: Date?, isFinished: Bool)? {
         guard let baseURL = URL(string: connection.url),
             let token = connection.token
         else {
@@ -2256,7 +2591,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         let updatedAt = p.lastUpdate.map { Date(timeIntervalSince1970: $0 / 1000) }
         return (
             positionSeconds: positionSeconds, percentage: percentage, trackIndex: nil, updatedAt: updatedAt,
-            isAbandoned: p.isFinished == true
+            isFinished: p.isFinished == true
         )
     }
 }

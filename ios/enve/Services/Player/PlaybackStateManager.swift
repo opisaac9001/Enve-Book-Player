@@ -87,33 +87,6 @@ final class PlaybackStateManager {
         try context.save()
     }
 
-    func mostRecentlyPlayed() async throws -> (bookId: String, title: String, author: String?) {
-        guard let context = modelContext else {
-            throw NSError(
-                domain: "PlaybackStateManager",
-                code: -1,
-                userInfo: [
-                    NSLocalizedDescriptionKey: "Model context not initialized"
-                ]
-            )
-        }
-
-        let descriptor = FetchDescriptor<PlaybackState>(
-            sortBy: [SortDescriptor(\.lastPlayedDate, order: .reverse)]
-        )
-        if let recent = try context.fetch(descriptor).first {
-            return (bookId: recent.bookId, title: "Continue Listening", author: nil)
-        }
-
-        throw NSError(
-            domain: "PlaybackStateManager",
-            code: -2,
-            userInfo: [
-                NSLocalizedDescriptionKey: "No playback history found"
-            ]
-        )
-    }
-
     func getBookmarks(for bookId: String) throws -> [AudiobookBookmark] {
         guard modelContext != nil else {
             throw NSError(
@@ -271,102 +244,6 @@ final class PlaybackStateManager {
             context.delete(override)
             try context.save()
         }
-    }
-
-    func saveSyncedPlaybackState(
-        bookId: String,
-        deviceId: String,
-        position: TimeInterval,
-        speed: Double,
-        chapterIndex: Int,
-        lastPlayedDate: Date?
-    ) throws {
-        guard let context = modelContext else {
-            throw NSError(
-                domain: "PlaybackStateManager",
-                code: -1,
-                userInfo: [
-                    NSLocalizedDescriptionKey: "Model context not initialized"
-                ]
-            )
-        }
-
-        let descriptor = FetchDescriptor<SyncedPlaybackState>(
-            predicate: #Predicate { $0.bookId == bookId && $0.deviceId == deviceId }
-        )
-
-        if let existing = try context.fetch(descriptor).first {
-            existing.currentPosition = position
-            existing.playbackSpeed = speed
-            existing.currentChapterIndex = chapterIndex
-            existing.lastPlayedDate = lastPlayedDate
-            existing.lastSyncDate = Date()
-        } else {
-            let synced = SyncedPlaybackState(
-                bookId: bookId,
-                deviceId: deviceId,
-                currentPosition: position,
-                playbackSpeed: speed,
-                currentChapterIndex: chapterIndex,
-                lastPlayedDate: lastPlayedDate
-            )
-            context.insert(synced)
-        }
-
-        try context.save()
-    }
-
-    func getSyncedStates(for bookId: String) throws -> [SyncedPlaybackState] {
-        guard let context = modelContext else {
-            throw NSError(
-                domain: "PlaybackStateManager",
-                code: -1,
-                userInfo: [
-                    NSLocalizedDescriptionKey: "Model context not initialized"
-                ]
-            )
-        }
-
-        let descriptor = FetchDescriptor<SyncedPlaybackState>(
-            predicate: #Predicate { $0.bookId == bookId }
-        )
-        return try context.fetch(descriptor)
-    }
-
-    func deleteAllState(for bookId: String) throws {
-        guard let context = modelContext else {
-            throw NSError(
-                domain: "PlaybackStateManager",
-                code: -1,
-                userInfo: [
-                    NSLocalizedDescriptionKey: "Model context not initialized"
-                ]
-            )
-        }
-
-        let playbackDescriptor = FetchDescriptor<PlaybackState>(
-            predicate: #Predicate { $0.bookId == bookId }
-        )
-        if let state = try context.fetch(playbackDescriptor).first {
-            context.delete(state)
-        }
-
-        let metadataDescriptor = FetchDescriptor<MetadataOverride>(
-            predicate: #Predicate { $0.bookId == bookId }
-        )
-        if let override = try context.fetch(metadataDescriptor).first {
-            context.delete(override)
-        }
-
-        let syncedDescriptor = FetchDescriptor<SyncedPlaybackState>(
-            predicate: #Predicate { $0.bookId == bookId }
-        )
-        for synced in try context.fetch(syncedDescriptor) {
-            context.delete(synced)
-        }
-
-        try context.save()
-        AppLogger.player.info("All state deleted for: \(bookId)")
     }
 
     func clearAllData() throws {

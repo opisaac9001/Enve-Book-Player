@@ -189,7 +189,7 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDo
             progress: 0,
             currentTime: 0,
             isFinished: false,
-            lastUpdate: Date(),
+            lastUpdate: .distantPast,
             libraryId: libraryId,
             providerId: connection.id,
             source: .kavita,
@@ -280,7 +280,7 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDo
         }
     }
 
-    func fetchEbookProgress(for book: Book) async throws -> (progress: Double, locator: String?, updatedAt: Date?, isAbandoned: Bool)? {
+    func fetchEbookProgress(for book: Book) async throws -> (progress: Double, locator: String?, updatedAt: Date?, isFinished: Bool)? {
         let (_, chapter) = try await readingChapter(for: book)
         let request = try makeRequest(path: "/api/Reader/get-progress?chapterId=\(chapter.id)")
         let (data, response) = try await send(request)
@@ -289,7 +289,7 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDo
         }
         let progress = try JSONDecoder().decode(KavitaReadingProgress.self, from: data)
         let fraction = max(0, min(1, Double(progress.pageNum) / Double(chapter.pages)))
-        return (progress: fraction, locator: nil, updatedAt: ProviderProgressDate.parse(progress.lastModifiedUtc), isAbandoned: false)
+        return (progress: fraction, locator: nil, updatedAt: progress.lastModifiedUtc.flatMap(KavitaDate.parse), isFinished: false)
     }
 
     private func readingChapter(for book: Book) async throws -> (KavitaVolume, KavitaChapter) {
@@ -334,11 +334,37 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDo
     }
 
     func makeRequest(path: String, queryItems: [URLQueryItem] = []) throws -> URLRequest {
-        var request = try makeUnauthRequest(path: path, queryItems: queryItems)
-        if let token = jwtToken {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let request = try makeUnauthRequest(path: path, queryItems: queryItems)
+        return authenticatedRequest(from: request)
+    }
+
+    func fetchCoverImage(url: URL) async throws -> Data {
+        try await ensureAuthenticated()
+        let (data, response) = try await send(authenticatedRequest(from: URLRequest(url: url)))
+        guard response.statusCode == 200 else {
+            throw ProviderError.serverError("Failed to fetch Kavita cover (HTTP \(response.statusCode))")
+        }
+        return data
+    }
+
+    private func authenticatedRequest(from request: URLRequest) -> URLRequest {
+        var request = request
+        if usesPasswordLogin {
+            if let jwtToken {
+                request.setValue("Bearer \(jwtToken)", forHTTPHeaderField: "Authorization")
+            }
+        } else if let token = jwtToken, !token.isEmpty {
+            if token.split(separator: ".").count == 3 {
+                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            } else {
+                request.setValue(token, forHTTPHeaderField: "X-API-Key")
+            }
         }
         return request
+    }
+
+    private var usesPasswordLogin: Bool {
+        connection.username?.isEmpty == false && connection.password?.isEmpty == false
     }
 
     private func makeUnauthRequest(path: String, queryItems: [URLQueryItem] = []) throws -> URLRequest {
@@ -413,6 +439,8 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDo
 
     private func fileExtension(from value: String) -> String? {
         let normalized = value.lowercased()
+        // Kavita serves image-folder chapters as an octet-stream `.zip` of the pages.
+        if normalized.hasSuffix(".zip") { return EbookFormat.cbz.rawValue }
         for ext in EbookFormat.allExtensions where normalized.contains(".\(ext)") {
             return ext
         }
@@ -437,7 +465,7 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDo
             progress: 0,
             currentTime: 0,
             isFinished: false,
-            lastUpdate: series.created.flatMap { ISO8601DateFormatter().date(from: $0) } ?? Date(),
+            lastUpdate: .distantPast,
             libraryId: libraryId,
             providerId: connection.id,
             source: .kavita,
@@ -461,7 +489,6 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDo
         let name: String
         let summary: String?
         let writers: [String]?
-        let created: String?
         let libraryId: Int?
         let pagesRead: Int?
         let pages: Int?

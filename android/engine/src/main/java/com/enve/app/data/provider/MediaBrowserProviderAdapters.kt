@@ -15,14 +15,9 @@ import com.enve.core.data.provider.ProviderPlaybackSession
 import com.enve.core.data.provider.synthesizeChaptersFromTracks
 import com.enve.core.data.remote.ConnectionScope
 import com.enve.core.data.sync.SyncCapability
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.longOrNull
+import com.enve.core.data.util.runSuspendCatching
+import com.enve.app.data.remote.dto.MediaBrowserItemsDto
+import com.enve.app.data.repository.durationMs
 import retrofit2.Response
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -44,7 +39,7 @@ abstract class MediaBrowserProviderAdapter(
     override val syncCapability: SyncCapability = SyncCapability.READ_WRITE
 
     protected abstract suspend fun currentUserId(): String?
-    protected abstract suspend fun audioChildren(userId: String, parentId: String): Response<JsonObject>
+    protected abstract suspend fun audioChildren(userId: String, parentId: String): Response<MediaBrowserItemsDto>
 
     override suspend fun getLibraries(): Result<List<Library>> =
         repository.getLibrariesForSource(source)
@@ -66,31 +61,28 @@ abstract class MediaBrowserProviderAdapter(
     override suspend fun getRecentlyAdded(): Result<List<Book>> =
         repository.getRecentlyAddedForSource(source)
 
-    override suspend fun getAudioTracks(book: Book): Result<List<AudioTrack>> = runCatching {
-        if (book.mediaType != AppMediaType.AUDIOBOOK) return@runCatching emptyList()
+    override suspend fun getAudioTracks(book: Book): Result<List<AudioTrack>> = runSuspendCatching {
+        if (book.mediaType != AppMediaType.AUDIOBOOK) return@runSuspendCatching emptyList()
         val ctx = requestContext()
-        val userId = currentUserId() ?: return@runCatching singleTrack(book, ctx)
+        val userId = currentUserId() ?: return@runSuspendCatching singleTrack(book, ctx)
         val response = audioChildren(userId, book.id)
-        val children = response.body()?.array("Items").orEmpty()
-        if (children.isEmpty()) return@runCatching singleTrack(book, ctx)
+        val children = response.body()?.items.orEmpty().filter { it.type == "Audio" }
+        if (children.isEmpty()) return@runSuspendCatching singleTrack(book, ctx)
 
         var cumulativeStartMs = 0L
-        children.mapIndexedNotNull { index, element ->
-            val item = element.obj() ?: return@mapIndexedNotNull null
-            val id = item.string("Id") ?: return@mapIndexedNotNull null
-            val durationMs = ((item.long("RunTimeTicks") ?: 0L) / 10_000L).coerceAtLeast(0L)
+        children.mapIndexed { index, item ->
             AudioTrack(
                 index = index,
-                fileName = item.string("Name") ?: "Track ${index + 1}",
-                title = item.string("Name"),
-                durationMs = durationMs,
-                fileSizeBytes = item.long("Size") ?: 0L,
+                fileName = item.name ?: "Track ${index + 1}",
+                title = item.name,
+                durationMs = item.durationMs,
+                fileSizeBytes = 0L,
                 cumulativeStartMs = cumulativeStartMs,
-                contentUrl = streamUrl(ctx, id),
+                contentUrl = streamUrl(ctx, item.id),
             ).also {
-                cumulativeStartMs += durationMs
+                cumulativeStartMs += item.durationMs
             }
-        }.ifEmpty { singleTrack(book, ctx) }
+        }
     }
 
     override suspend fun startPlaybackSession(book: Book): Result<ProviderPlaybackSession> = runCatching {
@@ -173,9 +165,9 @@ class JellyfinProviderAdapter @Inject constructor(
     override val providerSource: BookSource = BookSource.JELLYFIN
 
     override suspend fun currentUserId(): String? =
-        api.jellyfinMe().takeIf { it.isSuccessful }?.body()?.string("Id")
+        api.jellyfinMe().takeIf { it.isSuccessful }?.body()?.Id
 
-    override suspend fun audioChildren(userId: String, parentId: String): Response<JsonObject> =
+    override suspend fun audioChildren(userId: String, parentId: String): Response<MediaBrowserItemsDto> =
         api.jellyfinItems(
             userId = userId,
             parentId = parentId,
@@ -200,12 +192,11 @@ class EmbyProviderAdapter @Inject constructor(
         val response = api.embyUsers()
         if (!response.isSuccessful) return null
         return response.body()
-            ?.mapNotNull { it.obj() }
-            ?.firstOrNull { it.string("Name").equals(username, ignoreCase = true) }
-            ?.string("Id")
+            ?.firstOrNull { it.Name.equals(username, ignoreCase = true) }
+            ?.Id
     }
 
-    override suspend fun audioChildren(userId: String, parentId: String): Response<JsonObject> =
+    override suspend fun audioChildren(userId: String, parentId: String): Response<MediaBrowserItemsDto> =
         api.embyItems(
             userId = userId,
             parentId = parentId,
@@ -214,11 +205,3 @@ class EmbyProviderAdapter @Inject constructor(
             limit = 1000,
         )
 }
-
-private fun JsonElement.obj(): JsonObject? = runCatching { jsonObject }.getOrNull()
-private fun JsonObject.string(key: String): String? =
-    this[key]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
-private fun JsonObject.long(key: String): Long? =
-    this[key]?.jsonPrimitive?.longOrNull
-private fun JsonObject.array(key: String): JsonArray? =
-    runCatching { this[key]?.jsonArray }.getOrNull()

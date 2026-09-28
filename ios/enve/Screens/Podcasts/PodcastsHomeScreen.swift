@@ -12,6 +12,9 @@ struct PodcastsHomeScreen: View {
     @State private var heroTint: Color = Hearth.accent
     @State private var browsePushed = false
     @State private var loaded = false
+    @State private var includeAudiobookshelfPodcasts = LibraryDisplayPreferencesStore.shared
+        .loadPreferences()
+        .includeAudiobookshelfPodcasts
 
     var body: some View {
         Group {
@@ -28,6 +31,7 @@ struct PodcastsHomeScreen: View {
         .refreshable { await model.load() }
         .task(id: isActive) {
             guard isActive else { return }
+            includeAudiobookshelfPodcasts = engine.podcasts.includesAudiobookshelfPodcasts
             await model.loadIfNeeded()
             loaded = true
             if let hero = model.continueListening.first {
@@ -36,6 +40,12 @@ struct PodcastsHomeScreen: View {
         }
         .onChange(of: engine.podcasts.subscriptionRevision) {
             Task { await model.reloadSubscriptions() }
+        }
+        .onChange(of: includeAudiobookshelfPodcasts) {
+            SettingsPrefs.mutate { preferences in
+                preferences.includeAudiobookshelfPodcasts = includeAudiobookshelfPodcasts
+            }
+            Task { await model.load() }
         }
     }
 
@@ -86,9 +96,28 @@ struct PodcastsHomeScreen: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             Overline(headerLine)
-            Text("Podcasts")
-                .font(.hearthScreenTitle)
-                .foregroundStyle(hearth.text)
+            HStack(alignment: .center) {
+                Text("Podcasts")
+                    .font(.hearthScreenTitle)
+                    .foregroundStyle(hearth.text)
+                Spacer(minLength: 12)
+                Menu {
+                    Section("Sources") {
+                        Toggle("Audiobookshelf podcasts", isOn: $includeAudiobookshelfPodcasts)
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.hearthUI(15, weight: .semibold))
+                        .foregroundStyle(hearth.text)
+                        .frame(width: 44, height: 44)
+                        .background {
+                            Circle()
+                                .fill(hearth.bgElevated)
+                                .overlay(Circle().strokeBorder(hearth.hairline, lineWidth: 1))
+                        }
+                }
+                .accessibilityLabel("Podcast options")
+            }
         }
         .padding(.horizontal, 24)
     }

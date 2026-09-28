@@ -719,39 +719,6 @@ final class BatchMetadataMatcher: @unchecked Sendable {
         MatchQueueStorage.shared.addMatchQueueEntry(entry)
     }
 
-    func approvePendingMatch(entryId: String, candidate: AudibleMatchCandidate) async throws {
-        let queue = MatchQueueStorage.shared.readMatchQueue()
-        guard let entry = queue.entries.first(where: { $0.id == entryId }) else {
-            throw BatchMatchError.entryNotFound
-        }
-
-        try await approveMatch(bookId: entry.bookId, match: candidate, entry: entry)
-
-        MatchQueueStorage.shared.removeMatchQueueEntry(entryId: entryId)
-    }
-
-    func rejectPendingMatch(entryId: String) {
-        let queue = MatchQueueStorage.shared.readMatchQueue()
-        guard let entry = queue.entries.first(where: { $0.id == entryId }) else {
-            return
-        }
-
-        let updatedEntry = MatchQueueEntry(
-            id: entry.id,
-            bookId: entry.bookId,
-            bookPath: entry.bookPath,
-            fileMetadata: entry.fileMetadata,
-            matchCandidates: entry.matchCandidates,
-            selectedMatch: nil,
-            status: .rejected,
-            createdAt: entry.createdAt,
-            reviewedAt: ISO8601DateFormatter().string(from: Date()),
-            bookCoverUrl: entry.bookCoverUrl
-        )
-
-        MatchQueueStorage.shared.updateMatchQueueEntry(updatedEntry)
-    }
-
     private func cleanQueryForSearch(_ query: String) -> String {
         var cleaned = query
 
@@ -900,24 +867,4 @@ final class BatchMetadataMatcher: @unchecked Sendable {
         return candidates.sorted { $0.confidence > $1.confidence }
     }
 
-}
-
-enum BatchMatchError: Error, LocalizedError {
-    case entryNotFound
-    case failedToFetchMetadata
-    case failedToWriteMetadata
-    case failedToUpdateQueue
-
-    var errorDescription: String? {
-        switch self {
-        case .entryNotFound:
-            return "Match queue entry not found"
-        case .failedToFetchMetadata:
-            return "Failed to fetch metadata from external service"
-        case .failedToWriteMetadata:
-            return "Failed to save metadata"
-        case .failedToUpdateQueue:
-            return "Failed to update match queue"
-        }
-    }
 }

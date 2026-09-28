@@ -59,6 +59,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
+import com.enve.core.data.util.FINISHED_PROGRESS_THRESHOLD
 import com.enve.hearth.design.CoverTile
 import com.enve.hearth.design.EmberButton
 import com.enve.hearth.design.EmberGlow
@@ -322,7 +323,7 @@ private fun TodayStack(activeCount: Int, downloadedCount: Int, freshCount: Int, 
             StackTile(Icons.Outlined.ArrowCircleDown, capped(downloadedCount, 16), "Saved", palette.statusOK, Modifier.weight(1f))
             StackTile(Icons.Outlined.AutoAwesome, capped(freshCount, 12), "Added", palette.ember, Modifier.weight(1f))
             StackTile(
-                if (progress >= 0.98f) Icons.Outlined.Verified else Icons.AutoMirrored.Outlined.TrendingUp,
+                if (progress >= FINISHED_PROGRESS_THRESHOLD) Icons.Outlined.Verified else Icons.AutoMirrored.Outlined.TrendingUp,
                 "$pct%", "Current", tint, Modifier.weight(1f),
             )
         }

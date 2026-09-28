@@ -17,6 +17,18 @@ enum ReaderPageTurnTiming {
     }
 }
 
+enum ReaderScrubGeometry {
+    nonisolated static func progress(at x: CGFloat, width: CGFloat) -> Double {
+        guard width > 0 else { return 0 }
+        return min(max(Double(x / width), 0), 1)
+    }
+
+    nonisolated static func time(at x: CGFloat, width: CGFloat, duration: TimeInterval) -> TimeInterval {
+        guard duration.isFinite, duration > 0 else { return 0 }
+        return progress(at: x, width: width) * duration
+    }
+}
+
 @MainActor
 final class ReadAloudPlaybackCoordinator {
     var onChange: (() -> Void)?

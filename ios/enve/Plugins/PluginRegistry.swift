@@ -45,13 +45,6 @@ final class PluginRegistry {
         libraryProviderFactories[connection.type]?(connection)
     }
 
-    func makeCapability<Capability>(
-        _ capability: Capability.Type,
-        for connection: ServerConnection
-    ) -> Capability? {
-        makeLibraryProvider(for: connection) as? Capability
-    }
-
     var registeredProviderTypes: Set<ProviderType> {
         Set(libraryProviderFactories.keys)
     }

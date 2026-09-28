@@ -49,6 +49,23 @@ class StorytellerImportParsingTest {
     }
 
     @Test
+    fun importsAlignedReadaloudWithoutSeparateEbookOrAudiobook() {
+        val payload = """
+            [{"uuid":"readaloud-only","title":"Aligned Book",
+              "readaloud":{"filepath":"aligned/book.epub","status":"ALIGNED","missing":false}}]
+        """.trimIndent()
+        val decoded = decodeLenientStorytellerArray<StorytellerBookDto>(json, payload)
+        val imported = mapStorytellerBook(decoded.values.single(), "https://storyteller.example")
+
+        assertNotNull(imported)
+        assertEquals(com.enve.core.data.model.AppMediaType.EBOOK, imported!!.mediaType)
+        assertEquals("EPUB", imported.primaryFileType)
+        assertTrue(imported.readAlongAvailable)
+        assertTrue(imported.hasEbook)
+        assertTrue(imported.hasAudio)
+    }
+
+    @Test
     fun missingIdAndTitleStillImportWithFallbacks() {
         val payload = """
             [

@@ -14,10 +14,14 @@ Reference material for the Android app. Start with the root files for anything t
 - [architecture/module-boundaries.md](architecture/module-boundaries.md) — Gradle module layout, the UI/backend dependency wall, and the boot contract
 - [architecture/engine-api.md](architecture/engine-api.md) — the facade contract the Compose UI is allowed to call
 - [architecture/eink.md](architecture/eink.md) — e-ink detection, refresh policy, and how the design system degrades on EPD panels
+- [architecture/opds-catalog.md](architecture/opds-catalog.md) — OPDS 1.2 and 2.0 catalog structure, crawl, search, acquisition, and OPDS Authentication 1.0
+- [architecture/koreader-sync.md](architecture/koreader-sync.md) — KOSync transport rules, document matching across KOReader and CrossPoint, and XPointer conversion
+- [architecture/opds-progression.md](architecture/opds-progression.md) — discovery, transport, references, and merge rules for the OPDS Progression 1.0 draft
 
 ## Guides
 
 - [guides/automation.md](guides/automation.md) — Tasker and broadcast-intent playback control
+- [guides/readium-lcp-integration.md](guides/readium-lcp-integration.md) — private runtime handoff, acquisition boundaries, and certification gate for Readium LCP
 
 ## Testing
 

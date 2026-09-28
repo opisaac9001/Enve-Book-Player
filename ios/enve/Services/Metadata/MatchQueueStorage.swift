@@ -63,10 +63,6 @@ final class MatchQueueStorage: @unchecked Sendable {
         writeMatchQueue(matchQueue)
     }
 
-    func updateMatchQueueEntry(_ entry: MatchQueueEntry) {
-        addMatchQueueEntry(entry)
-    }
-
     func getPendingMatches() -> [MatchQueueEntry] {
         let matchQueue = readMatchQueue()
         return matchQueue.entries.filter { $0.status == .pending }

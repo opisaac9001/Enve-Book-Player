@@ -48,6 +48,8 @@ internal fun selectConnectionForSource(
     ?.let { id -> connections.firstOrNull { it.id == id && it.source == source } }
     ?: connections.firstOrNull { it.source == source }
 
+internal fun compositeLibraryId(connectionId: String, rawId: String): String = "$connectionId::$rawId"
+
 @Singleton
 class AggregatorRepository @Inject constructor(
     private val activeSourceAdapter: ActiveSourceProviderAdapter,
@@ -124,8 +126,6 @@ class AggregatorRepository @Inject constructor(
         val rawId: String?,
     )
 
-    private fun compositeLibraryId(connectionId: String, rawId: String): String = "$connectionId::$rawId"
-
     private fun parseCompositeLibraryId(composite: String?): ParsedLibraryId {
         if (composite.isNullOrBlank()) return ParsedLibraryId(null, null, null)
         val parts = composite.split("::", limit = 2)
@@ -152,6 +152,11 @@ class AggregatorRepository @Inject constructor(
     private suspend fun connectionForBook(book: Book): ProviderConnection? {
         val connections = connectionRegistry.connections.first().filter { it.enabled }
         return selectConnectionForBook(book, connections)
+    }
+
+    private suspend fun <T> withBookConnection(book: Book, block: suspend (ProviderAdapter) -> Result<T>): Result<T> {
+        val connection = connectionForBook(book) ?: return block(getAdapterForSource(book.source))
+        return withConnectionContext(connection) { block(getAdapterForSource(connection.source)) }
     }
 
     private val connectionMutex = Mutex()
@@ -429,22 +434,12 @@ class AggregatorRepository @Inject constructor(
 
     suspend fun getComicPageCount(book: Book): Result<Int> {
         if (book.source != BookSource.KOMGA) return Result.failure(UnsupportedOperationException("Page streaming is not supported by ${book.source}"))
-        val connection = connectionForBook(book)
-        return if (connection != null) {
-            withConnectionContext(connection) { komgaRepository.getComicPageCount(book.id) }
-        } else {
-            komgaRepository.getComicPageCount(book.id)
-        }
+        return withBookConnection(book) { komgaRepository.getComicPageCount(book.id) }
     }
 
     suspend fun downloadComicPage(book: Book, pageIndex: Int, destination: java.io.File): Result<Unit> {
         if (book.source != BookSource.KOMGA) return Result.failure(UnsupportedOperationException("Page streaming is not supported by ${book.source}"))
-        val connection = connectionForBook(book)
-        return if (connection != null) {
-            withConnectionContext(connection) { komgaRepository.downloadComicPage(book.id, pageIndex, destination) }
-        } else {
-            komgaRepository.downloadComicPage(book.id, pageIndex, destination)
-        }
+        return withBookConnection(book) { komgaRepository.downloadComicPage(book.id, pageIndex, destination) }
     }
 
     suspend fun getReadaloudDownloadUrl(bookId: String, source: BookSource, connectionId: String? = null): String? {
@@ -462,14 +457,7 @@ class AggregatorRepository @Inject constructor(
     }
 
     suspend fun updateBookStatus(book: Book, status: String): Result<Unit> {
-        val connection = connectionForBook(book)
-        val result = if (connection != null) {
-            withConnectionContext(connection) {
-                getAdapterForSource(connection.source).updateBookStatus(book.id, status)
-            }
-        } else {
-            getAdapterForSource(book.source).updateBookStatus(book.id, status)
-        }
+        val result = withBookConnection(book) { it.updateBookStatus(book.id, status) }
         if (result.isSuccess) {
             val normalizedStatus = status.uppercase()
 
@@ -492,14 +480,7 @@ class AggregatorRepository @Inject constructor(
 
     suspend fun updatePersonalRating(book: Book, rating: Int): Result<Unit> {
         val normalizedRating = rating.coerceIn(1, 5)
-        val connection = connectionForBook(book)
-        val result = if (connection != null) {
-            withConnectionContext(connection) {
-                getAdapterForSource(connection.source).updatePersonalRating(book.id, normalizedRating)
-            }
-        } else {
-            getAdapterForSource(book.source).updatePersonalRating(book.id, normalizedRating)
-        }
+        val result = withBookConnection(book) { it.updatePersonalRating(book.id, normalizedRating) }
         if (result.isSuccess) {
             bookCacheDao.updatePersonalRating(
                 bookId = book.id,
@@ -512,14 +493,7 @@ class AggregatorRepository @Inject constructor(
     }
 
     suspend fun deleteBook(book: Book): Result<Unit> {
-        val connection = connectionForBook(book)
-        val result = if (connection != null) {
-            withConnectionContext(connection) {
-                getAdapterForSource(connection.source).deleteBook(book)
-            }
-        } else {
-            getAdapterForSource(book.source).deleteBook(book)
-        }
+        val result = withBookConnection(book) { it.deleteBook(book) }
         if (result.isSuccess) {
             bookCacheDao.deleteByCacheKeys(listOf(book.uniqueKey))
         }
@@ -527,14 +501,7 @@ class AggregatorRepository @Inject constructor(
     }
 
     suspend fun resetBookProgress(book: Book): Result<Unit> {
-        val connection = connectionForBook(book)
-        val result = if (connection != null) {
-            withConnectionContext(connection) {
-                getAdapterForSource(connection.source).resetBookProgress(book)
-            }
-        } else {
-            getAdapterForSource(book.source).resetBookProgress(book)
-        }
+        val result = withBookConnection(book) { it.resetBookProgress(book) }
         if (result.isSuccess) {
             runCatching {
                 bookCacheDao.updateUnifiedProgress(
@@ -557,23 +524,11 @@ class AggregatorRepository @Inject constructor(
     }
 
     suspend fun markSeriesRead(book: Book, seriesId: String): Result<Unit> {
-        val connection = connectionForBook(book)
-        if (connection != null) {
-            return withConnectionContext(connection) {
-                getAdapterForSource(connection.source).markSeriesRead(seriesId)
-            }
-        }
-        return getAdapterForSource(book.source).markSeriesRead(seriesId)
+        return withBookConnection(book) { it.markSeriesRead(seriesId) }
     }
 
     suspend fun markSeriesUnread(book: Book, seriesId: String): Result<Unit> {
-        val connection = connectionForBook(book)
-        if (connection != null) {
-            return withConnectionContext(connection) {
-                getAdapterForSource(connection.source).markSeriesUnread(seriesId)
-            }
-        }
-        return getAdapterForSource(book.source).markSeriesUnread(seriesId)
+        return withBookConnection(book) { it.markSeriesUnread(seriesId) }
     }
 
     data class KomgaListEntry(
@@ -687,46 +642,26 @@ class AggregatorRepository @Inject constructor(
     }
 
     suspend fun getAudioTracks(book: Book): Result<List<com.enve.core.data.model.AudioTrack>> {
-        val connection = connectionForBook(book)
-        if (connection != null) {
-            return withConnectionContext(connection) {
-                getAdapterForSource(connection.source).getAudioTracks(book)
-            }
-        }
-        val adapter = getAdapterForSource(book.source)
-        return adapter.getAudioTracks(book)
+        return withBookConnection(book) { it.getAudioTracks(book) }
     }
 
     suspend fun startPlaybackSession(book: Book): Result<com.enve.core.data.provider.ProviderPlaybackSession> {
-        val connection = connectionForBook(book)
-        if (connection != null) {
-            return withConnectionContext(connection) {
-                getAdapterForSource(connection.source).startPlaybackSession(book)
-            }
-        }
-        val adapter = getAdapterForSource(book.source)
-        return adapter.startPlaybackSession(book)
+        return withBookConnection(book) { it.startPlaybackSession(book) }
     }
 
     suspend fun fetchChapters(book: Book): Result<List<com.enve.core.data.model.Chapter>> {
-        val connection = connectionForBook(book)
-        if (connection != null) {
-            return withConnectionContext(connection) {
-                getAdapterForSource(connection.source).fetchChapters(book)
-            }
-        }
-        val adapter = getAdapterForSource(book.source)
-        return adapter.fetchChapters(book)
+        return withBookConnection(book) { it.fetchChapters(book) }
     }
 
-    suspend fun fetchEmbeddedChapters(book: Book): Result<List<com.enve.core.data.model.Chapter>> {
-        val connection = connectionForBook(book)
-        if (connection != null) {
-            return withConnectionContext(connection) {
-                fetchEmbeddedChapters(getAdapterForSource(connection.source), book)
-            }
+    suspend fun getPodcastShow(show: Book): Result<com.enve.core.data.model.PodcastShow> =
+        withBookConnection(show) { it.getPodcastShow(show) }.map { podcast ->
+            podcast.copy(
+                episodes = podcast.episodes.map { it.copy(connectionId = show.connectionId, libraryId = show.libraryId ?: it.libraryId) },
+            )
         }
-        return fetchEmbeddedChapters(getAdapterForSource(book.source), book)
+
+    suspend fun fetchEmbeddedChapters(book: Book): Result<List<com.enve.core.data.model.Chapter>> {
+        return withBookConnection(book) { fetchEmbeddedChapters(it, book) }
     }
 
     private suspend fun fetchEmbeddedChapters(
@@ -746,14 +681,7 @@ class AggregatorRepository @Inject constructor(
         currentTimeSec: Long,
         progressFraction: Float,
     ): Result<Unit> {
-        val connection = connectionForBook(book)
-        val result = if (connection != null) {
-            withConnectionContext(connection) {
-                getAdapterForSource(connection.source).syncAudiobookProgress(book, currentTimeSec, progressFraction)
-            }
-        } else {
-            getAdapterForSource(book.source).syncAudiobookProgress(book, currentTimeSec, progressFraction)
-        }
+        val result = withBookConnection(book) { it.syncAudiobookProgress(book, currentTimeSec, progressFraction) }
 
         if (result.isSuccess) {
             runCatching {
@@ -771,36 +699,15 @@ class AggregatorRepository @Inject constructor(
     }
 
     suspend fun fetchAudiobookProgress(book: Book): Result<com.enve.core.data.sync.SyncSnapshot?> {
-        val connection = connectionForBook(book)
-        return if (connection != null) {
-            withConnectionContext(connection) {
-                getAdapterForSource(connection.source).fetchAudiobookProgress(book)
-            }
-        } else {
-            getAdapterForSource(book.source).fetchAudiobookProgress(book)
-        }
+        return withBookConnection(book) { it.fetchAudiobookProgress(book) }
     }
 
     suspend fun fetchEbookProgress(book: com.enve.core.data.model.Book): Result<com.enve.core.data.sync.SyncSnapshot?> {
-        val connection = connectionForBook(book)
-        return if (connection != null) {
-            withConnectionContext(connection) {
-                getAdapterForSource(connection.source).fetchEbookProgress(book)
-            }
-        } else {
-            getAdapterForSource(book.source).fetchEbookProgress(book)
-        }
+        return withBookConnection(book) { it.fetchEbookProgress(book) }
     }
 
     suspend fun getComicReadingDirection(book: Book): Result<String?> {
-        val connection = connectionForBook(book)
-        return if (connection != null) {
-            withConnectionContext(connection) {
-                getAdapterForSource(connection.source).getComicReadingDirection(book)
-            }
-        } else {
-            getAdapterForSource(book.source).getComicReadingDirection(book)
-        }
+        return withBookConnection(book) { it.getComicReadingDirection(book) }
     }
 
     suspend fun syncEbookProgress(

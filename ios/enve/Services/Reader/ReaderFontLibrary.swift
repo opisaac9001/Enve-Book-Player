@@ -630,60 +630,12 @@ final class ReaderFontLibrary {
         installedFonts.first { $0.familyName == familyName }
     }
 
-    func sanitizeFontFamilySelection(_ familyName: String) -> String {
-        guard familyName != "Original", familyName != "OpenDyslexic" else {
-            return familyName
-        }
-
-        return hasUsableFontFamily(named: familyName) ? familyName : "Original"
-    }
-
     func hasUsableFontFamily(named familyName: String) -> Bool {
         guard let family = fontFamily(named: familyName) else {
             return false
         }
 
         return !fontFaces(for: family).isEmpty
-    }
-
-    func invalidReason(for familyName: String) -> String? {
-        guard let family = fontFamily(named: familyName) else {
-            return nil
-        }
-
-        let faces = fontFaces(for: family)
-        if !faces.isEmpty {
-            return nil
-        }
-
-        let missingFiles = family.files.filter {
-            !fileManager.fileExists(atPath: $0.filePath) || !fileManager.isReadableFile(atPath: $0.filePath)
-        }
-
-        if !missingFiles.isEmpty {
-            return "Font files are missing or unreadable."
-        }
-
-        return "Readium could not create a usable font face from this font."
-    }
-
-    func deleteFont(familyName: String) {
-        guard let font = installedFonts.first(where: { $0.familyName == familyName }) else {
-            return
-        }
-
-        for file in font.files {
-            let url = URL(fileURLWithPath: file.filePath)
-            CTFontManagerUnregisterFontsForURL(url as CFURL, .process, nil)
-        }
-
-        if let firstFile = font.files.first {
-            let directory = URL(fileURLWithPath: firstFile.filePath).deletingLastPathComponent()
-            try? fileManager.removeItem(at: directory)
-        }
-
-        installedFonts.removeAll { $0.familyName == familyName }
-        persist()
     }
 
     var readiumDeclarations: [AnyHTMLFontFamilyDeclaration] {

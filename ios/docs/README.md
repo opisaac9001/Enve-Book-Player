@@ -8,6 +8,9 @@ Start with the root [architecture guide](../ARCHITECTURE.md) for targets, source
 - [Deduplication](architecture/deduplication.md)
 - [Download ownership](architecture/download-ownership.md)
 - [Book identity contract](architecture/identity-contract.md)
+- [OPDS Authentication](architecture/opds-authentication.md)
+- [OPDS catalog](architecture/opds-catalog.md)
+- [OPDS Progression (draft)](architecture/opds-progression.md)
 - [Provider capability matrix](architecture/provider-capability-matrix.md)
 - [Server mirror contract](architecture/server-mirror-contract.md)
 
@@ -25,6 +28,8 @@ Start with the root [architecture guide](../ARCHITECTURE.md) for targets, source
 - [Audiobookshelf](reference/audiobookshelf/api_reference_audiobookshelf.md)
 - [Grimmory](reference/grimmory/master_doc.md)
 - [Hardcover](reference/hardcover-api.md)
+- [OneDrive](reference/onedrive.md)
+- [Readium LCP integration](reference/readium-lcp-integration.md)
 - [Storyteller](reference/storyteller/api_reference_storyteller.md)
 
 Provider reference documents describe external API shapes. Enve architecture and behavior are defined by the root architecture guide and the contracts under `docs/architecture/` and `docs/ui/`.

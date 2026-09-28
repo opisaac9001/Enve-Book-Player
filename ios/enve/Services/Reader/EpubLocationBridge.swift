@@ -63,17 +63,6 @@ enum EpubLocationBridge {
         return jsonString(json)
     }
 
-    static func removingSourceEngineMarker(from locator: String?) -> String? {
-        guard var json = locatorJSON(locator),
-            var locations = json["locations"] as? [String: Any]
-        else {
-            return nil
-        }
-        locations.removeValue(forKey: sourceEngineLocationKey)
-        json["locations"] = locations
-        return jsonString(json)
-    }
-
     static func removingEPUBCFI(from locator: String?) -> String? {
         guard var json = locatorJSON(locator),
             var locations = json["locations"] as? [String: Any]
@@ -101,6 +90,18 @@ enum EpubLocationBridge {
         return jsonString(json)
     }
 
+    static func markingEPUBCFI(_ epubCFI: String?, in locator: String?) -> String? {
+        guard let canonical = canonicalFullEPUBCFI(epubCFI),
+            var json = locatorJSON(locator),
+            var locations = json["locations"] as? [String: Any]
+        else {
+            return nil
+        }
+        locations["cfi"] = canonical
+        json["locations"] = locations
+        return jsonString(json)
+    }
+
     static func totalProgression(from readiumLocator: String?) -> Double? {
         guard let locations = locatorLocations(readiumLocator) else { return nil }
 
@@ -108,17 +109,35 @@ enum EpubLocationBridge {
         return min(max(progression, 0), 1)
     }
 
+    static func narratedAudioTime(from locator: String?) -> TimeInterval? {
+        guard let locations = locatorLocations(locator),
+            let fragments = locations["fragments"] as? [Any]
+        else { return nil }
+        for fragment in fragments.compactMap({ $0 as? String }) where fragment.hasPrefix("t=") {
+            let value = String(fragment.dropFirst(2))
+            if let seconds = TimeInterval(value), seconds.isFinite, seconds >= 0 {
+                return seconds
+            }
+        }
+        return nil
+    }
+
     static func canRestoreDirectly(_ readiumLocator: String?) -> Bool {
         guard let json = locatorJSON(readiumLocator) else { return false }
 
         if let text = json["text"] as? [String: Any],
             let highlight = text["highlight"] as? String,
-            highlight.trimmingCharacters(in: .whitespacesAndNewlines).count >= 8
+            !highlight.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         {
             return true
         }
 
         guard let locations = json["locations"] as? [String: Any] else { return false }
+        if let selector = locations["cssSelector"] as? String,
+            !selector.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
+            return true
+        }
         if let fragments = locations["fragments"] as? [Any],
             fragments.compactMap({ $0 as? String }).contains(where: isHTMLIDFragment)
         {
@@ -164,7 +183,7 @@ enum EpubLocationBridge {
         return false
     }
 
-    static func epubCFI(from locator: String?) -> String? {
+    nonisolated static func epubCFI(from locator: String?) -> String? {
         guard let locator else { return nil }
         let trimmed = locator.trimmingCharacters(in: .whitespacesAndNewlines)
         if let normalized = normalizedEPUBCFI(trimmed) {
@@ -202,7 +221,7 @@ enum EpubLocationBridge {
         return nil
     }
 
-    static func normalizedEPUBCFI(_ value: String?) -> String? {
+    nonisolated static func normalizedEPUBCFI(_ value: String?) -> String? {
         guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
             !value.isEmpty
         else { return nil }
@@ -215,14 +234,48 @@ enum EpubLocationBridge {
         return nil
     }
 
-    static func canonicalFullEPUBCFI(_ value: String?) -> String? {
+    nonisolated static func canonicalFullEPUBCFI(_ value: String?) -> String? {
         guard let cfi = normalizedEPUBCFI(value) else { return nil }
         let inner = cfi.dropFirst("epubcfi(".count).dropLast()
         guard inner.hasPrefix("/6/"), inner.contains("!") else { return nil }
         return cfi
     }
 
-    static func normalizedHref(_ href: String) -> String {
+    /// Returns the assertion-independent package path that identifies a spine document.
+    static func spineStep(ofCanonicalCFI value: String?) -> String? {
+        guard let cfi = canonicalFullEPUBCFI(value) else { return nil }
+        var step = ""
+        var assertionDepth = 0
+        var isEscaped = false
+        for character in cfi.dropFirst("epubcfi(".count).dropLast() {
+            // Escaped delimiters do not change the CFI structure.
+            if isEscaped {
+                isEscaped = false
+                if assertionDepth == 0 { step.append(character) }
+                continue
+            }
+            switch character {
+            case "^":
+                isEscaped = true
+            case "[":
+                assertionDepth += 1
+            case "]":
+                assertionDepth = max(assertionDepth - 1, 0)
+            case "!" where assertionDepth == 0:
+                return step
+            default:
+                if assertionDepth == 0 { step.append(character) }
+            }
+        }
+        return nil
+    }
+
+    static func href(from locator: String?) -> String? {
+        guard let href = locatorJSON(locator)?["href"] as? String, !href.isEmpty else { return nil }
+        return href
+    }
+
+    nonisolated static func normalizedHref(_ href: String) -> String {
         let withoutFragment =
             href
             .split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
@@ -366,6 +419,15 @@ enum EpubLocationBridge {
                 locations["fragments"] = safeFragments
             }
         }
+        // Readium ignores cssSelector unless the locator carries a text quote; an id selector is the same anchor as a fragment.
+        if locations["fragments"] == nil,
+            let selector = (locations["cssSelector"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+            selector.hasPrefix("#"),
+            isHTMLIDFragment(selector),
+            !selector.dropFirst().contains(where: { " >.:[#,+~()".contains($0) })
+        {
+            locations["fragments"] = [String(selector.dropFirst())]
+        }
         json["locations"] = locations
 
         guard canRestoreDirectly(jsonString(json)),
@@ -377,7 +439,7 @@ enum EpubLocationBridge {
         return String(data: data, encoding: .utf8)
     }
 
-    private static func locatorJSON(_ readiumLocator: String?) -> [String: Any]? {
+    private nonisolated static func locatorJSON(_ readiumLocator: String?) -> [String: Any]? {
         guard let locator = readiumLocator, !locator.isEmpty,
             let data = locator.data(using: .utf8),
             let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -387,7 +449,7 @@ enum EpubLocationBridge {
         return json
     }
 
-    private static func locatorLocations(_ readiumLocator: String?) -> [String: Any]? {
+    private nonisolated static func locatorLocations(_ readiumLocator: String?) -> [String: Any]? {
         locatorJSON(readiumLocator)?["locations"] as? [String: Any]
     }
 

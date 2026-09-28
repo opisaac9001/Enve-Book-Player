@@ -323,7 +323,7 @@ private struct LinkedBookQuickSyncPanel: View {
         return state
     }
 
-    private var calibration: (anchorCount: Int, averageConfidence: Double)? {
+    private var calibration: LinkedBookProgressCoordinator.CalibrationSummary? {
         _ = calibrationRevision
         return LinkedBookProgressCoordinator.shared.calibrationSummary(
             ebookStableId: ebook.stableId,
@@ -392,6 +392,9 @@ private struct LinkedBookQuickSyncPanel: View {
                 return error
             }
             if state.isComplete {
+                if let keptPreviousReason = state.keptPreviousReason {
+                    return "Kept the existing calibration because \(keptPreviousReason)."
+                }
                 switch state.method {
                 case .proportional:
                     return "Using approximate progress. You can still switch between formats."
@@ -428,7 +431,17 @@ private struct LinkedBookQuickSyncPanel: View {
                     }
                 }
             }
-            if calibration != nil, !quickSync.isRunning(ebook: ebook, audiobook: audiobook) {
+            if let calibration, !quickSync.isRunning(ebook: ebook, audiobook: audiobook) {
+                if calibration.hasPreviousVersion {
+                    QuietButton(title: "Restore Previous") {
+                        LinkedBookProgressCoordinator.shared.restorePreviousCalibration(
+                            ebookStableId: ebook.stableId,
+                            audiobookStableId: audiobook.stableId
+                        )
+                        quickSync.dismissResult()
+                        calibrationRevision += 1
+                    }
+                }
                 Button("Remove") {
                     LinkedBookProgressCoordinator.shared.removeCalibration(
                         ebookStableId: ebook.stableId,

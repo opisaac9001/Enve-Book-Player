@@ -2,26 +2,29 @@
 
 Release notes for the Android app. Versions are `<name> build <code>`, matching `versionName` and `versionCode` in `app/build.gradle.kts`.
 
-## Unreleased
+## 1.2 build 52 — 2026-09-28
 
-No pending changes.
+Changes since the Android build 51 public snapshot.
 
-## 1.2 build 51 — 2026-09-14
+### Reading and sync
 
-- Preserve exact BookOrbit EPUB CFIs through sync, caching, reopening, and upload, including newer positions within the percentage deadband.
-- Add persistent full-book EPUB search and bundled Literata, Atkinson Hyperlegible, and Lexend reader fonts.
-- Add the unified home-screen book widget and more reliable reader checkpoint uploads.
-- Correct multi-format Grimmory progress handling and validate the explicit BookOrbit server URL during password login.
-- Keep machine-specific test paths and sensitive source files out of published source snapshots.
+- Added passages to reading-position conflicts so you can see where each device left off.
+- Fixed stale positions overwriting newer server progress when opening a book. Enve also recognises deliberate rewinds and ignores its own sync updates.
+- Improved Audiobookshelf listen-along resume, EPUB positions, and chapter matching. An empty reading or listening position no longer replaces a saved one.
+- Imported highlights are checked against the book text. Highlights that cannot be located stay saved and are retried.
+- KOReader links now detect replaced EPUB files and update their hashes.
+- Expanded OPDS browsing, downloads, sign-in, and reading-progress support.
+- Fixed provider metadata and progress handling for Komga, Kavita, Grimmory, Jellyfin, Emby, and TorBox.
 
-## 1.2 build 50 — 2026-09-08
+### Android
 
-- Preserve square audiobook artwork throughout the app and match reader backgrounds to the selected reading theme.
-- Protect newer local listening positions and pending uploads during Audiobookshelf refreshes.
-- Add Library and Downloads shelves to Android Auto and chapter queues for single-file audiobooks.
-- Add on-device FB2-to-EPUB conversion and allow valid small ebook files.
-- Correct BookOrbit series numbering, Grimmory download URLs, and anonymous OPDS sign-in.
-- Serialize proactive and expired-token refreshes through a shared coordinator.
+- StoryAlign keeps the previous read-aloud book when a new alignment scores worse. You can restore the earlier version yourself.
+- Fixed BookOrbit highlights with attached notes not appearing in the reader.
+- Fixed reader page restoration, PDF page counts, comic edge taps, and highlight handles across paragraphs.
+- Removed unavailable libraries during refresh and stopped requesting covers for missing books.
+- Fixed repeated progress updates after an audiobook finishes and preserved reading positions when toggling reader controls.
+- Improved podcast episode lists, search labels, and large-library queries.
+- Added a configurable rest-your-eyes reminder.
 
 ## 1.2 build 46 — 2026-08-29
 

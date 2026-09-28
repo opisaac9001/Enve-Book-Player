@@ -202,16 +202,27 @@ class DiscoverService {
 
 extension String {
     func strippingHTMLTags() -> String {
-        return
-            self
-            .replacingOccurrences(of: "<br\\s*/?>|<br>", with: "\n", options: .regularExpression)
-            .replacingOccurrences(of: "&amp;", with: "&")
-            .replacingOccurrences(of: "&lt;", with: "<")
-            .replacingOccurrences(of: "&gt;", with: ">")
-            .replacingOccurrences(of: "&quot;", with: "\"")
-            .replacingOccurrences(of: "&#xa0;", with: " ")
-            .replacingOccurrences(of: "&nbsp;", with: " ")
+        replacingOccurrences(of: "<br\\s*/?>|</p>", with: "\n", options: [.regularExpression, .caseInsensitive])
             .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+            .decodingHTMLEntities()
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func decodingHTMLEntities() -> String {
+        let named: [String: String] = [
+            "amp": "&", "lt": "<", "gt": ">", "quot": "\"", "apos": "'", "nbsp": " ",
+            "hellip": "…", "mdash": "—", "ndash": "–", "lsquo": "‘", "rsquo": "’", "ldquo": "“", "rdquo": "”",
+        ]
+        let pattern = /&(#[xX][0-9A-Fa-f]+|#[0-9]+|[A-Za-z]+);/
+        return replacing(pattern) { match in
+            let entity = match.1
+            if entity.hasPrefix("#x") || entity.hasPrefix("#X") {
+                return UInt32(entity.dropFirst(2), radix: 16).flatMap(Unicode.Scalar.init).map(String.init) ?? String(match.0)
+            }
+            if entity.hasPrefix("#") {
+                return UInt32(entity.dropFirst()).flatMap(Unicode.Scalar.init).map(String.init) ?? String(match.0)
+            }
+            return named[String(entity)] ?? String(match.0)
+        }
     }
 }

@@ -73,11 +73,6 @@ nonisolated final class CompanionVideoEncoder: @unchecked Sendable {
         self.streamStart = nil
     }
 
-    func requestKeyframe() {
-
-        forceNextKeyframe = true
-    }
-
     private var forceNextKeyframe = false
 
     func encode(_ pixelBuffer: CVPixelBuffer, presentationTime: CMTime) {

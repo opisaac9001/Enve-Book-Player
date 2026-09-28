@@ -98,7 +98,7 @@ struct LibraryGridView_tvOS: View {
 
     private var emptyMessage: String {
         if appState.providerConnections.connections.isEmpty {
-            return "Add a server in Settings, or turn on \"Sync to Apple TV\" in enve on your iPhone."
+            return "Add a server in Settings, or turn on \"Sync to Apple TV\" in enve on your iPhone (Settings › Sync)."
         }
         switch filter {
         case .audiobooks:

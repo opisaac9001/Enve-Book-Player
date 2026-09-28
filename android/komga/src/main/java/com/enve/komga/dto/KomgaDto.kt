@@ -1,5 +1,7 @@
 package com.enve.komga.dto
 
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 
@@ -74,7 +76,12 @@ data class KomgaMediaDto(
     val mediaType: String? = null,
     val pagesCount: Int? = null,
     val comment: String? = null,
-)
+    val mediaProfile: String? = null,
+    val epubDivinaCompatible: Boolean? = null,
+) {
+    val usesReadiumProgression: Boolean
+        get() = mediaProfile == "EPUB" && epubDivinaCompatible != true
+}
 
 @Serializable
 data class KomgaBookMetadataDto(
@@ -145,6 +152,49 @@ data class KomgaReadProgressUpdateDto(
 )
 
 @Serializable
+data class KomgaR2Device(
+    val id: String,
+    val name: String,
+)
+
+@Serializable
+data class KomgaR2Locations(
+    val fragment: List<String>? = null,
+    val progression: Double? = null,
+    val position: Int? = null,
+    val totalProgression: Double? = null,
+)
+
+@Serializable
+data class KomgaR2LocatorText(
+    val before: String? = null,
+    val highlight: String? = null,
+    val after: String? = null,
+)
+
+@Serializable
+data class KomgaR2Locator(
+    val href: String = "",
+    val type: String = "",
+    val title: String? = null,
+    val locations: KomgaR2Locations? = null,
+    val text: KomgaR2LocatorText? = null,
+)
+
+@Serializable
+data class KomgaR2Progression(
+    val modified: String,
+    val device: KomgaR2Device,
+    val locator: KomgaR2Locator,
+)
+
+@Serializable
+data class KomgaR2Positions(
+    val total: Int = 0,
+    val positions: List<KomgaR2Locator> = emptyList(),
+)
+
+@Serializable
 data class KomgaReadListDto(
     val id: String,
     val name: String,
@@ -183,14 +233,14 @@ data class KomgaUserCreationDto(
     val roles: List<String> = emptyList(),
 )
 
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class KomgaUserUpdateDto(
-    val email: String? = null,
-    val roles: List<String>? = null,
-    val sharedLibraries: KomgaSharedLibrariesUpdateDto? = null,
-    val ageRestriction: KomgaAgeRestrictionUpdateDto? = null,
-    val labelsAllow: List<String>? = null,
-    val labelsExclude: List<String>? = null,
+    @EncodeDefault(EncodeDefault.Mode.NEVER) val roles: List<String>? = null,
+    @EncodeDefault(EncodeDefault.Mode.NEVER) val sharedLibraries: KomgaSharedLibrariesUpdateDto? = null,
+    @EncodeDefault(EncodeDefault.Mode.NEVER) val ageRestriction: KomgaAgeRestrictionUpdateDto? = null,
+    @EncodeDefault(EncodeDefault.Mode.NEVER) val labelsAllow: List<String>? = null,
+    @EncodeDefault(EncodeDefault.Mode.NEVER) val labelsExclude: List<String>? = null,
 )
 
 @Serializable

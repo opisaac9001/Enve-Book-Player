@@ -235,6 +235,7 @@ protocol BookQuerying: Sendable {
     func booksByIds(_ ids: Set<String>) async -> [String: Book]
     func booksByAnyIds(_ ids: Set<String>) async -> [String: Book]
     func booksByStableIds(_ ids: Set<String>) async -> [String: Book]
+    func ebookLinkedAudiobookIds(source: String) async -> [(ebookStableId: String, audiobookStableId: String)]
     func existingAudiobookStableIds(from candidates: Set<String>) async -> Set<String>
     func booksMatching(_ collection: SmartCollection, limit: Int?) async -> [Book]
     func bookCountMatching(_ collection: SmartCollection) async -> Int
@@ -265,6 +266,7 @@ protocol BookQuerying: Sendable {
     func browseAuthorAggregates(mediaType: String) async -> [BrowseAuthorAggregate]
     func browseNarratorAggregates(mediaType: String) async -> [BrowseNarratorAggregate]
     func browseSeriesAggregates(mediaType: String) async -> [BrowseSeriesAggregate]
+    func browseSeriesAggregates(mediaType: String, providerId: UUID, libraryId: String?) async -> [BrowseSeriesAggregate]
     func books(byAuthor author: String, mediaType: String, limit: Int) async -> [Book]
     func books(byAuthorNames authorNames: [String], mediaType: String, limit: Int) async -> [Book]
     func books(byNarrator narrator: String, mediaType: String, limit: Int) async -> [Book]
@@ -297,7 +299,7 @@ protocol BookWriting: Sendable {
 }
 
 protocol CatalogReconciling: Sendable {
-    func beginReconciliation(libraryId: String, providerId: UUID) async -> ReconciliationStart
+    func beginReconciliation(libraryId: String, providerId: UUID) async throws -> ReconciliationStart
     func upsertReconciledPage(books: [Book], generation: Int, notifyChange: Bool) async throws
     func endReconciliation(
         libraryId: String,
@@ -349,6 +351,8 @@ protocol ReaderArtifactRepository: Sendable {
     func deleteBookmark(id: String) async
     func replaceBookmarks(forBookStableId: String, bookmarks: [Bookmark]) async
     func importLegacyBookmarks(_ bookmarks: [Bookmark], bookStableId: String) async
+    @discardableResult
+    func migrateAudiobookArtifacts(fromBookStableId: String, toBookStableId: String) async -> Bool
 
     func annotations(forBookStableId: String) async -> [ReaderAnnotation]
     func upsertAnnotation(_ annotation: ReaderAnnotation, bookStableId: String) async

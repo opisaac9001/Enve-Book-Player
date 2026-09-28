@@ -1,6 +1,10 @@
 package com.enve.audiobookshelf.dto
 
 import com.enve.core.data.remote.dto.AbsUserDto
+import com.enve.core.data.util.FINISHED_PROGRESS_THRESHOLD
+import com.enve.core.data.util.reachesFinishedThreshold
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -50,6 +54,25 @@ data class AbsMediaDto(
     val ebookFile: AbsEbookFileDto? = null,
 
     val chapters: List<AbsChapter>? = null,
+    val episodes: List<AbsPodcastEpisodeDto>? = null,
+)
+
+@Serializable
+data class AbsPodcastEpisodeDto(
+    val id: String,
+    val title: String? = null,
+    val description: String? = null,
+    val publishedAt: Long? = null,
+    val addedAt: Long? = null,
+    val duration: Double? = null,
+    val audioFile: AbsAudioFileDto? = null,
+    val guid: String? = null,
+    val enclosure: AbsPodcastEnclosureDto? = null,
+)
+
+@Serializable
+data class AbsPodcastEnclosureDto(
+    val url: String? = null,
 )
 
 @Serializable
@@ -84,9 +107,11 @@ data class AbsMetadataDto(
     val subtitle: String? = null,
     val authors: List<AbsAuthorDto>? = null,
     val authorName: String? = null,
+    val author: String? = null,
+    val genres: List<String>? = null,
+    val feedUrl: String? = null,
     val narratorName: String? = null,
     val seriesName: String? = null,
-    val seriesNumber: String? = null,
     val description: String? = null,
 )
 
@@ -146,10 +171,10 @@ data class AbsMediaProgressDto(
 ) {
     val resolvedIsFinished: Boolean
         get() {
-            if (isFinished == true || finishedAt != null || (progress ?: 0f) >= 0.99f) return true
+            if (isFinished == true || finishedAt != null || (progress ?: 0f) >= FINISHED_PROGRESS_THRESHOLD) return true
             val total = duration ?: return false
             val position = currentTime ?: return false
-            return total > 0.0 && position >= total * 0.99
+            return total > 0.0 && (position / total).reachesFinishedThreshold()
         }
 }
 
@@ -216,14 +241,13 @@ data class AbsPlaybackTrackDto(
     val metadata: AbsFileMetadataDto? = null,
 )
 
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class AbsProgressUpdateRequest(
-    val currentTime: Double? = null,
-    val duration: Double? = null,
-    val progress: Float? = null,
-    val isFinished: Boolean? = null,
-    val ebookLocation: String? = null,
-    val ebookProgress: Float? = null,
+    val currentTime: Double,
+    val duration: Double?,
+    val progress: Float,
+    @EncodeDefault(EncodeDefault.Mode.NEVER) val isFinished: Boolean? = null,
 )
 
 @Serializable

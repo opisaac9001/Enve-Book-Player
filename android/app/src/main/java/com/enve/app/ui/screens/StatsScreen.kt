@@ -38,10 +38,10 @@ import com.enve.app.ui.theme.rememberAdaptiveMetrics
 import com.enve.app.ui.theme.scaled
 import com.enve.app.viewmodel.Achievement
 import com.enve.app.viewmodel.StatsState
+import com.enve.hearth.design.EmberAccent
 import com.enve.hearth.design.hearthDisplay
 import java.util.Locale
 
-private val StatEmber = Color(0xFFF5921A)
 private val StatSage = Color(0xFF6F8F6A)
 private val StatSlate = Color(0xFF64748B)
 private val StatWine = Color(0xFFA05252)
@@ -115,10 +115,10 @@ fun StatsScreen(
 
                 val error = state.error
                 if (error != null) {
-                    val mono = EnveTheme.eink.monochrome
+                    val eink = EnveTheme.eink
                     Text(
-                        text = if (mono) "⚠ $error" else error,
-                        color = if (mono) colors.primaryText else Color(0xFFB3453E),
+                        text = eink.errorMessage(error),
+                        color = if (eink.monochrome) colors.primaryText else Color(0xFFB3453E),
                         fontSize = DS.FontSize.Subheadline,
                         modifier = Modifier.padding(horizontal = DS.Spacing.LG),
                     )
@@ -364,19 +364,19 @@ private data class PremiumStat(
 private fun PremiumStatsGrid(state: StatsState) {
     val stats = when (state.mediaType) {
         AppMediaType.AUDIOBOOK -> listOf(
-            PremiumStat(Icons.Default.Schedule, "Hours", String.format(Locale.US, "%.1f", state.totalHoursListened), StatEmber),
+            PremiumStat(Icons.Default.Schedule, "Hours", String.format(Locale.US, "%.1f", state.totalHoursListened), EmberAccent),
             PremiumStat(Icons.Default.Headphones, "Sessions", state.totalSessions.toString(), StatSlate),
             PremiumStat(Icons.Default.CheckCircle, "Finished", state.booksFinished.toString(), StatSage),
             PremiumStat(Icons.Default.Person, "Authors", state.uniqueAuthors.toString(), StatWine),
         )
         AppMediaType.EBOOK -> listOf(
-            PremiumStat(Icons.Default.Schedule, "Hours Read", String.format(Locale.US, "%.1f", state.totalHoursListened), StatEmber),
+            PremiumStat(Icons.Default.Schedule, "Hours Read", String.format(Locale.US, "%.1f", state.totalHoursListened), EmberAccent),
             PremiumStat(Icons.AutoMirrored.Filled.MenuBook, "Sessions", state.totalSessions.toString(), StatSlate),
             PremiumStat(Icons.Default.CheckCircle, "Finished", state.booksFinished.toString(), StatSage),
             PremiumStat(Icons.Default.Description, "Pages Read", "0", StatWine),
         )
         AppMediaType.PODCAST -> listOf(
-            PremiumStat(Icons.Default.Schedule, "Hours", String.format(Locale.US, "%.1f", state.totalHoursListened), StatEmber),
+            PremiumStat(Icons.Default.Schedule, "Hours", String.format(Locale.US, "%.1f", state.totalHoursListened), EmberAccent),
             PremiumStat(Icons.Default.Headphones, "Sessions", state.totalSessions.toString(), StatSlate),
             PremiumStat(Icons.Default.CheckCircle, "Finished", state.booksFinished.toString(), StatSage),
             PremiumStat(Icons.Default.Person, "Authors", state.uniqueAuthors.toString(), StatWine),

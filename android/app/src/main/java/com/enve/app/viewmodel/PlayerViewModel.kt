@@ -100,23 +100,6 @@ class PlayerViewModel @Inject constructor(
     private val absRepository: com.enve.audiobookshelf.AudiobookshelfRepository,
 ) : ViewModel() {
 
-    fun addAudiobookBookmark(note: String = "") {
-        val s = _state.value
-        val book = s.currentBook ?: return
-        viewModelScope.launch {
-            annotationRepo.create(
-                bookId = book.id,
-                kind = com.enve.core.data.model.AnnotationKind.BOOKMARK,
-                media = com.enve.core.data.model.AnnotationMedia.AUDIOBOOK,
-                style = com.enve.core.data.model.AnnotationStyle.NONE,
-                audioPositionMs = s.currentTime,
-                chapterId = s.currentChapter?.title,
-                selectedText = s.currentChapter?.title.orEmpty(),
-                note = note,
-            )
-        }
-    }
-
     private val _state = MutableStateFlow(PlayerState())
     val state: StateFlow<PlayerState> = _state.asStateFlow()
 
@@ -285,10 +268,6 @@ class PlayerViewModel @Inject constructor(
             closePlaybackSession(_state.value)
         }
         _state.update { it.copy(playbackCompleted = true) }
-    }
-
-    fun clearPlaybackCompleted() {
-        _state.update { it.copy(playbackCompleted = false) }
     }
 
     fun loadBook(book: Book) {
@@ -788,14 +767,6 @@ class PlayerViewModel @Inject constructor(
         _state.update { it.copy(showChapterSheet = false) }
     }
 
-    fun toggleChapterSheet() {
-        _state.update { it.copy(showChapterSheet = !it.showChapterSheet) }
-    }
-
-    fun toggleBookmarkSheet() {
-        _state.update { it.copy(showBookmarkSheet = !it.showBookmarkSheet) }
-    }
-
     fun addBookmark(title: String? = null, note: String? = null) {
         viewModelScope.launch {
             val snapshot = _state.value
@@ -832,14 +803,11 @@ class PlayerViewModel @Inject constructor(
         _state.update { it.copy(showBookmarkSheet = false) }
     }
 
-    fun toggleSleepTimerSheet() {
-        _state.update { it.copy(showSleepTimerSheet = !it.showSleepTimerSheet) }
-    }
-
     fun syncProgress() {
         val state = _state.value
         val book = state.currentBook ?: return
         persistLocalProgress(state, force = true)
+        if (heldProgressBookKey == book.uniqueKey) return
         progressService.sync(
             book = book,
             currentTimeSec = state.currentTime,
@@ -850,6 +818,7 @@ class PlayerViewModel @Inject constructor(
     private fun syncProgressImmediate(snapshot: PlayerState) {
         val book = snapshot.currentBook ?: return
         persistLocalProgress(snapshot, force = true)
+        if (heldProgressBookKey == book.uniqueKey) return
         progressService.syncImmediate(
             book = book,
             currentTimeSec = snapshot.currentTime,
@@ -970,7 +939,10 @@ class PlayerViewModel @Inject constructor(
         return updated.sortedBy { it.timestamp }
     }
 
+    private var heldProgressBookKey: String? = null
+
     private suspend fun resolveStartTime(book: Book): Long {
+        if (heldProgressBookKey == book.uniqueKey) heldProgressBookKey = null
         val localStartTime = localStartSeconds(book)
         val result = try {
             syncCoordinator.pullOnOpenResolved(
@@ -1003,10 +975,20 @@ class PlayerViewModel @Inject constructor(
                     localUpdatedAt = result.local.updatedAt,
                     remotePercentage = result.remote.percentage,
                     remoteUpdatedAt = result.remote.updatedAt,
-                    remoteSource = book.source.displayName,
+                    remoteSource = result.remoteSource,
                 )
-                when (awaitProgressConflictChoice(prompt)) {
-                    ProgressConflictChoice.LOCAL -> localStartTime
+                val choice = awaitProgressConflictChoice(prompt)
+                if (choice == ProgressConflictChoice.LATER) {
+                    heldProgressBookKey = book.uniqueKey
+                } else {
+                    syncCoordinator.recordConflictResolution(
+                        book = book,
+                        remoteSource = result.remoteSource,
+                        acceptedRemote = choice == ProgressConflictChoice.REMOTE,
+                    )
+                }
+                when (choice) {
+                    ProgressConflictChoice.LOCAL, ProgressConflictChoice.LATER -> localStartTime
                     ProgressConflictChoice.REMOTE -> {
                         val remoteStartTime = startSecondsFrom(result.remote.positionMs, result.remote.percentage, book.duration)
                             ?: localStartTime
@@ -1097,9 +1079,8 @@ class PlayerViewModel @Inject constructor(
         positionMs?.let {
             return resolveAudiobookPositionSeconds(
                 positionMs = it,
-                percentage = percentage,
+                fraction = percentage,
                 durationSeconds = durationSec,
-                duration = durationSec.toDouble(),
             )
         }
         if (durationSec <= 0L) return null

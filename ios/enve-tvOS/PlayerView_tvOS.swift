@@ -117,12 +117,12 @@ struct PlayerView_tvOS: View {
                 .tint(.white)
 
             HStack {
-                Text(formatTime(playerVM.progress))
+                Text(PlaybackTime.clock(playerVM.progress))
                     .font(.caption)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
                 Spacer()
-                Text("-\(formatTime(max(0, playerVM.duration - playerVM.progress)))")
+                Text("-\(PlaybackTime.clock(max(0, playerVM.duration - playerVM.progress)))")
                     .font(.caption)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
@@ -218,18 +218,7 @@ struct PlayerView_tvOS: View {
     private var sleepTimerLabel: String {
         guard playerVM.sleepTimer != nil else { return "Sleep timer" }
         let remaining = max(0, playerVM.sleepTimerRemainingSeconds)
-        return formatTime(remaining)
-    }
-
-    private func formatTime(_ seconds: TimeInterval) -> String {
-        let total = Int(seconds)
-        let hours = total / 3600
-        let minutes = (total % 3600) / 60
-        let secs = total % 60
-        if hours > 0 {
-            return String(format: "%d:%02d:%02d", hours, minutes, secs)
-        }
-        return String(format: "%d:%02d", minutes, secs)
+        return PlaybackTime.clock(remaining)
     }
 }
 
@@ -294,17 +283,9 @@ struct ChapterListSheet_tvOS: View {
     }
 
     private func formatChapterRange(_ chapter: Chapter) -> String {
-        let start = formatTime(chapter.start)
-        let end = formatTime(chapter.end)
+        let start = PlaybackTime.clock(chapter.start)
+        let end = PlaybackTime.clock(chapter.end)
         return "\(start) - \(end)"
-    }
-
-    private func formatTime(_ seconds: TimeInterval) -> String {
-        let total = Int(seconds)
-        let h = total / 3600
-        let m = (total % 3600) / 60
-        let s = total % 60
-        return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
     }
 }
 
@@ -327,7 +308,7 @@ struct SleepTimerSheet_tvOS: View {
                                 Image(systemName: "moon.zzz")
                                 Text("Cancel sleep timer")
                                 Spacer()
-                                Text(formatTime(playerVM.sleepTimerRemainingSeconds))
+                                Text(PlaybackTime.clock(playerVM.sleepTimerRemainingSeconds))
                                     .foregroundStyle(.secondary)
                                     .monospacedDigit()
                             }
@@ -394,14 +375,6 @@ struct SleepTimerSheet_tvOS: View {
             return remaining == 0 ? "\(hours)h" : "\(hours)h \(remaining)m"
         }
         return "\(minutes) min"
-    }
-
-    private func formatTime(_ seconds: TimeInterval) -> String {
-        let total = Int(seconds)
-        let h = total / 3600
-        let m = (total % 3600) / 60
-        let s = total % 60
-        return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
     }
 }
 

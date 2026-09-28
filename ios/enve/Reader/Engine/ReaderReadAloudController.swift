@@ -34,6 +34,8 @@ final class ReaderReadAloudController {
     private var mediaOverlayPreparationTask: Task<Void, Never>?
     private var readAloudStartTask: Task<Void, Never>?
     private var normalReadingOverlayClipIndex: Int?
+    private var clipTextProgressions: [Double] = []
+    private var wasPlaying = false
 
     init(
         book: Book,
@@ -54,6 +56,7 @@ final class ReaderReadAloudController {
         }
         playback.onPlaybackChange = { [weak self] isPlaying in
             guard let self else { return }
+            defer { wasPlaying = isPlaying }
             guard playback.isReadAloudMode else {
                 playback.pendingPreflipTask?.cancel()
                 playback.pendingPreflipTask = nil
@@ -65,6 +68,9 @@ final class ReaderReadAloudController {
             } else {
                 playback.pendingPreflipTask?.cancel()
                 playback.pendingPreflipTask = nil
+                if wasPlaying {
+                    storytellerActivityAt = Date()
+                }
                 syncPositionNow()
                 host?.readAloudRequestsProgressFlush(reason: "pause")
                 stopPositionSyncTimer()
@@ -174,9 +180,12 @@ final class ReaderReadAloudController {
         do {
             let clips = try await EPUB3SMILParser.parse(publication: publication, epubFileURL: publicationFileURL)
             guard !Task.isCancelled, !clips.isEmpty else { return }
+            let textProgressions = await textProgressions(for: clips, publication: publication)
+            guard !Task.isCancelled else { return }
             let provisionalTimeline = MediaOverlayTimeline(
                 clips: clips,
-                orderedAudioDurations: orderedBookAudioDurations()
+                orderedAudioDurations: orderedBookAudioDurations(),
+                clipTextProgressions: textProgressions
             )
             playback.publishMapping(clips: clips, timeline: provisionalTimeline)
             _ = await captureVisibleOverlayPosition(in: navigator)
@@ -198,7 +207,8 @@ final class ReaderReadAloudController {
             let timeline = MediaOverlayTimeline(
                 clips: clips,
                 audioDurationsBySource: measuredDurations,
-                orderedAudioDurations: orderedBookAudioDurations()
+                orderedAudioDurations: orderedBookAudioDurations(),
+                clipTextProgressions: textProgressions
             )
 
             let chapterDurations: [String: TimeInterval]
@@ -258,6 +268,13 @@ final class ReaderReadAloudController {
         } catch {
             AppLogger.library.error("Failed to prepare media overlays: \(error)")
         }
+    }
+
+    private func textProgressions(for clips: [AudioOverlayClip], publication: Publication) async -> [Double] {
+        if clipTextProgressions.count == clips.count { return clipTextProgressions }
+        let progressions = await MediaOverlayTextProgression.clipProgressions(for: clips, publication: publication)
+        clipTextProgressions = progressions
+        return progressions
     }
 
     private func orderedBookAudioDurations() -> [TimeInterval] {
@@ -388,11 +405,6 @@ final class ReaderReadAloudController {
         {
             return playback.overlayClips[first].fragmentId
         }
-        guard let locator = navigator.currentLocation else { return nil }
-        let currentHref = locator.href.string
-        if let clip = playback.overlayClips.first(where: { ReadAloudOverlayTransform.hrefMatches($0.textHref, currentHref) }) {
-            return clip.fragmentId
-        }
         return nil
     }
 
@@ -461,7 +473,7 @@ final class ReaderReadAloudController {
         let audioTime = playback.overlayTimeline?.audioTime(forClipIndex: clipIdx) ?? 0
         let prog =
             totalProgression
-            ?? playback.overlayTimeline?.spokenProgression(atAudioTime: audioTime, clipIndex: clipIdx)
+            ?? playback.overlayTimeline?.readingProgression(atAudioTime: audioTime, clipIndex: clipIdx)
             ?? 0
         return overlayLocator(for: clipIdx, in: playback.overlayClips, totalProgression: prog)
     }
@@ -776,6 +788,14 @@ final class ReaderReadAloudController {
     }
 
     private func firstVisibleOverlayClipIndex(in navigator: EPUBNavigatorViewController) async -> Int? {
+        // A restored sentence lands on its page, whose first sentence is earlier; keep the exact one while it shows.
+        if let pending = playback.pendingInitialFragmentId,
+            CFAbsoluteTimeGetCurrent() - playback.pendingInitialSetAt < 120,
+            let pendingIndex = playback.bestClipIndex(for: pending, preferredHref: playback.pendingInitialHref),
+            await visibleOverlayClipIndices(in: navigator, fullyVisible: false)?.contains(pendingIndex) == true
+        {
+            return pendingIndex
+        }
         if let fullyVisible = await visibleOverlayClipIndices(in: navigator, fullyVisible: true),
             let first = fullyVisible.first
         {
@@ -977,10 +997,23 @@ final class ReaderReadAloudController {
         in navigator: EPUBNavigatorViewController,
         locator suppliedLocator: Locator? = nil
     ) async -> Bool {
-        guard let timeline = playback.overlayTimeline,
+        guard !isActive, let timeline = playback.overlayTimeline,
             let locator = suppliedLocator ?? navigator.currentLocation
         else { return false }
-        guard let clipIndex = await firstVisibleOverlayClipIndex(in: navigator),
+        let narratedClipIndex = playback.lastSyncedClipIndex
+        let clipIndex: Int?
+        // Stopped narration stays the reading position while its sentence is still on screen.
+        if playback.overlayClips.indices.contains(narratedClipIndex),
+            ReadAloudOverlayTransform.hrefMatches(playback.overlayClips[narratedClipIndex].textHref, locator.href.string),
+            await isOverlayFragmentVisible(playback.overlayClips[narratedClipIndex].fragmentId, in: navigator)
+        {
+            clipIndex = narratedClipIndex
+        } else {
+            clipIndex = await firstVisibleOverlayClipIndex(in: navigator)
+        }
+        guard let clipIndex,
+            !Task.isCancelled, !isActive,
+            navigator.currentLocation == locator,
             let audioTime = timeline.audioTime(forClipIndex: clipIndex)
         else { return false }
 
@@ -988,7 +1021,7 @@ final class ReaderReadAloudController {
             locator.locations.totalProgression
             ?? observedProgression
             ?? currentProgress
-            ?? timeline.spokenProgression(atAudioTime: audioTime, clipIndex: clipIndex)
+            ?? timeline.readingProgression(atAudioTime: audioTime, clipIndex: clipIndex)
         guard
             let locatorJSON = timeline.textLocatorJSONString(
                 clipIndex: clipIndex,
@@ -1306,6 +1339,12 @@ final class ReaderReadAloudController {
         syncPositionForUserAction()
     }
 
+    func seek(toTime time: TimeInterval) {
+        guard playback.isReadAloudMode, let player = playback.overlayPlayer else { return }
+        player.remoteSeek(to: time)
+        syncPositionForUserAction()
+    }
+
     func setSpeed(_ speed: Double) {
         guard let player = playback.overlayPlayer else { return }
         player.setSpeed(speed)
@@ -1381,9 +1420,10 @@ final class ReaderReadAloudController {
         if !allowRegression, !player.isPlaying, clipIdx < playback.lastSyncedClipIndex { return }
 
         let computedDuration = timeline.totalAudioDuration
-        let totalProgression = timeline.spokenProgression(atAudioTime: audioTime, clipIndex: clipIdx)
+        let totalProgression = timeline.readingProgression(atAudioTime: audioTime, clipIndex: clipIdx)
         let existingProgress = book.canonicalEbookProgress
-        if !allowRegression, totalProgression < 0.001 && existingProgress > 0.01 {
+        let isAtNarrationStart = timeline.spokenProgression(atAudioTime: audioTime, clipIndex: clipIdx) < 0.001
+        if !allowRegression, isAtNarrationStart, existingProgress > totalProgression + 0.01 {
             AppLogger.library.info("Skipping read-aloud sync at 0%. Preserving existing \(Int(existingProgress * 100))%")
             return
         }
@@ -1480,13 +1520,21 @@ final class ReaderReadAloudController {
         else { return nil }
         let timeline = MediaOverlayTimeline(
             clips: clips,
-            orderedAudioDurations: orderedBookAudioDurations()
+            orderedAudioDurations: orderedBookAudioDurations(),
+            clipTextProgressions: await textProgressions(for: clips, publication: publication)
         )
 
         if let resolved = timeline.resolveEPUB3Locator(locatorJSON: rawLocator) {
+            guard
+                Self.overlayClipKeepsStoredResource(
+                    clipHref: clips[resolved.clipIndex].textHref,
+                    storedHref: parsed.href.string,
+                    readingOrderHrefs: publication.readingOrder.map(\.href)
+                )
+            else { return ReaderLocationController.strippingCFIFragments(parsed) }
             let totalProgression =
                 parsed.locations.totalProgression
-                ?? timeline.spokenProgression(atAudioTime: resolved.audioTime, clipIndex: resolved.clipIndex)
+                ?? timeline.readingProgression(atAudioTime: resolved.audioTime, clipIndex: resolved.clipIndex)
             primeInitialPosition(clipIndex: resolved.clipIndex, in: clips)
             guard
                 let json = timeline.textLocatorJSONString(
@@ -1503,6 +1551,13 @@ final class ReaderReadAloudController {
         }
 
         return nil
+    }
+
+    /// A narrated book can leave whole chapters unnarrated, and the clip nearest a position in one of them belongs to
+    /// a neighbouring chapter, so a stored position there restores as stored.
+    static func overlayClipKeepsStoredResource(clipHref: String, storedHref: String, readingOrderHrefs: [String]) -> Bool {
+        MediaOverlayTimeline.hrefMatches(clipHref, storedHref)
+            || !readingOrderHrefs.contains { MediaOverlayTimeline.hrefMatches($0, storedHref) }
     }
 
     private func primeInitialPosition(clipIndex: Int, in clips: [AudioOverlayClip]) {
@@ -1563,7 +1618,11 @@ final class ReaderReadAloudController {
         let timeline =
             playback.overlayTimeline?.clips.count == clips.count
             ? playback.overlayTimeline
-            : MediaOverlayTimeline(clips: clips, orderedAudioDurations: orderedBookAudioDurations())
+            : MediaOverlayTimeline(
+                clips: clips,
+                orderedAudioDurations: orderedBookAudioDurations(),
+                clipTextProgressions: clipTextProgressions
+            )
         guard let timeline,
             let audioTime = timeline.audioTime(forClipIndex: clipIndex),
             let json = timeline.textLocatorJSONString(
@@ -1585,7 +1644,7 @@ final class ReaderReadAloudController {
 
         let clipIdx = player.currentClipIndex
         let audioTime = player.currentTime
-        let totalProgression = timeline.spokenProgression(atAudioTime: audioTime, clipIndex: clipIdx)
+        let totalProgression = timeline.readingProgression(atAudioTime: audioTime, clipIndex: clipIdx)
         let locator = timeline.textLocatorJSONString(
             clipIndex: clipIdx,
             audioTime: audioTime,

@@ -10,93 +10,29 @@ import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.automirrored.filled.ArrowForward
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.MenuBook
-import androidx.compose.material.icons.filled.AutoStories
-import androidx.compose.material.icons.filled.Bookmark
-import androidx.compose.material.icons.filled.BookmarkBorder
-import androidx.compose.material.icons.filled.BrightnessMedium
-import androidx.compose.material.icons.filled.ChevronLeft
-import androidx.compose.material.icons.filled.ChevronRight
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Fullscreen
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.SwipeRight
-import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
@@ -104,16 +40,12 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import coil.compose.AsyncImage
-import coil.imageLoader
-import coil.request.ImageRequest
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
 import com.enve.engine.prefs.ReadNextPosition
 import com.enve.core.data.local.LastOpenedBookStore
 import com.enve.app.ui.theme.EnveTheme
 import com.enve.app.viewmodel.ComicBackgroundTheme
-import com.enve.app.viewmodel.ComicPageFit
 import com.enve.app.viewmodel.ComicProgressionMode
 import com.enve.app.viewmodel.ComicReaderArgs
 import com.enve.app.viewmodel.ComicReaderSettings
@@ -123,15 +55,7 @@ import com.enve.app.viewmodel.ComicReadingDirection
 import com.enve.app.viewmodel.ComicSpreadMode
 import com.enve.app.viewmodel.ThemeViewModel
 import dagger.hilt.android.AndroidEntryPoint
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
-import java.io.File
-import kotlin.math.abs
-import kotlin.math.roundToInt
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.ui.graphics.Brush
 
 @AndroidEntryPoint
 class ComicReaderActivity : ComponentActivity() {
@@ -159,7 +83,6 @@ class ComicReaderActivity : ComponentActivity() {
         private const val EXTRA_AUTHOR = "author"
         private const val EXTRA_FORMAT = "format"
         private const val EXTRA_LOCATOR = "locator"
-        const val EXTRA_HEARTH_CHROME = "hearthChrome"
 
         fun createIntent(
             context: Context,
@@ -231,7 +154,7 @@ class ComicReaderActivity : ComponentActivity() {
             val readNextPosition by hearthPreferences.readNextPosition.collectAsStateWithLifecycle(
                 initialValue = ReadNextPosition.BOTTOM,
             )
-            val useHearthChrome = remember { intent.getBooleanExtra(EXTRA_HEARTH_CHROME, false) }
+            val restReminder = com.enve.app.ui.screens.reader.rememberReaderRestReminderSpec(hearthPreferences)
 
             val chromeVisible = (state.pages.isEmpty()) || (state.error != null) || state.showSettingsSheet
 
@@ -262,9 +185,9 @@ class ComicReaderActivity : ComponentActivity() {
                 ) {
                     ComicReaderScreen(
                         state = state,
-                        hearthChrome = useHearthChrome,
                         readNextEnabled = readNextEnabled,
                         readNextPosition = readNextPosition,
+                        restReminder = restReminder,
                         onSettingsChange = vm::updateSettings,
                         onBack = { finish() },
                         onPageChange = vm::showPage,
@@ -273,7 +196,7 @@ class ComicReaderActivity : ComponentActivity() {
                         onOpenSettings = vm::openSettingsSheet,
                         onCloseSettings = vm::closeSettingsSheet,
                         onOpenNextInSeries = { next ->
-                            startActivity(readerIntentForBook(next, hearthChrome = useHearthChrome))
+                            startActivity(readerIntentForBook(next))
                             finish()
                         },
                     )
@@ -319,9 +242,9 @@ class ComicReaderActivity : ComponentActivity() {
 @Composable
 private fun ComicReaderScreen(
     state: ComicReaderUiState,
-    hearthChrome: Boolean,
     readNextEnabled: Boolean,
     readNextPosition: ReadNextPosition,
+    restReminder: com.enve.app.ui.screens.reader.ReaderRestReminderSpec,
     onSettingsChange: (ComicReaderSettings) -> Unit,
     onBack: () -> Unit,
     onPageChange: (Int) -> Unit,
@@ -373,16 +296,6 @@ private fun ComicReaderScreen(
         }
     }
 
-    fun nextPage() {
-        val nextEntry = pageEntries.getOrNull(currentEntryIndex + 1) ?: return
-        onPageChange(nextEntry.first())
-    }
-
-    fun previousPage() {
-        val previousEntry = pageEntries.getOrNull(currentEntryIndex - 1) ?: return
-        onPageChange(previousEntry.first())
-    }
-
     val chromeVisible = showChrome || state.pages.isEmpty() || state.error != null
 
     Box(
@@ -424,9 +337,8 @@ private fun ComicReaderScreen(
                     settings = settings,
                     bgColor = bgColor,
                     onPageChange = onPageChange,
-                    onPrevious = ::previousPage,
-                    onNext = ::nextPage,
                     onToggleChrome = { showChrome = !showChrome },
+                    tapZoneWidth = state.tapZoneWidth,
                     onPagesNeeded = onPagesNeeded,
                     modifier = Modifier.fillMaxSize(),
                 )
@@ -446,54 +358,20 @@ private fun ComicReaderScreen(
             }
         }
 
-        if (hearthChrome) {
-            com.enve.app.ui.screens.reader.HearthComicChrome(
-                state = state,
-                baseSettings = baseSettings,
-                visiblePageIndices = currentEntry,
-                chromeVisible = chromeVisible,
-                einkActive = com.enve.app.ui.theme.EnveTheme.isEink,
-                onBack = onBack,
-                onToggleBookmark = { onToggleBookmark(state.currentPage) },
-                onOpenSettings = onOpenSettings,
-                onCloseSettings = onCloseSettings,
-                onSettingsChange = onSettingsChange,
-                onPageChange = onPageChange,
-            )
-        } else {
-            AnimatedVisibility(
-                visible = chromeVisible,
-                enter = fadeIn(tween(200)) + slideInVertically(tween(200)) { -it / 2 },
-                exit = fadeOut(tween(300)) + slideOutVertically(tween(300)) { -it / 2 },
-                modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth(),
-            ) {
-                ComicTopBar(
-                    title = state.title,
-                    author = state.author,
-                    formatLabel = state.formatLabel,
-                    isBookmarked = state.currentPage in state.bookmarks,
-                    onBack = onBack,
-                    onToggleBookmark = { onToggleBookmark(state.currentPage) },
-                    onOpenSettings = onOpenSettings,
-                )
-            }
-
-            AnimatedVisibility(
-                visible = chromeVisible && state.pages.isNotEmpty(),
-                enter = fadeIn(tween(200)) + slideInVertically(tween(200)) { it / 2 },
-                exit = fadeOut(tween(300)) + slideOutVertically(tween(300)) { it / 2 },
-                modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth(),
-            ) {
-                ComicBottomBar(
-                    state = state,
-                    visiblePageIndices = currentEntry,
-                    onPrevious = ::previousPage,
-                    onNext = ::nextPage,
-                    onPageChange = onPageChange,
-                    isRtl = state.settings.readingDirection == ComicReadingDirection.RIGHT_TO_LEFT,
-                )
-            }
-        }
+        com.enve.app.ui.screens.reader.HearthComicChrome(
+            state = state,
+            baseSettings = baseSettings,
+            visiblePageIndices = currentEntry,
+            chromeVisible = chromeVisible,
+            einkActive = com.enve.app.ui.theme.EnveTheme.isEink,
+            onBack = onBack,
+            onToggleBookmark = { onToggleBookmark(state.currentPage) },
+            onOpenSettings = onOpenSettings,
+            onCloseSettings = onCloseSettings,
+            onSettingsChange = onSettingsChange,
+            onPageChange = onPageChange,
+            restReminder = restReminder,
+        )
 
         val nextBook = state.nextInSeries
         val onLastPage = state.pages.isNotEmpty() && state.currentPage >= state.pages.lastIndex
@@ -515,14 +393,6 @@ private fun ComicReaderScreen(
                         start = 24.dp,
                         end = 24.dp,
                     ),
-            )
-        }
-
-        if (state.showSettingsSheet && !hearthChrome) {
-            ComicSettingsSheet(
-                settings = baseSettings,
-                onSettingsChange = onSettingsChange,
-                onDismiss = onCloseSettings,
             )
         }
     }

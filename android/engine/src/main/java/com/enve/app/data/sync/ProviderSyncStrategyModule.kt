@@ -1,5 +1,6 @@
 package com.enve.app.data.sync
 
+import com.enve.app.data.opds.OpdsProgressionSyncStrategy
 import com.enve.core.data.sync.ProviderSyncStrategy
 import dagger.Binds
 import dagger.Module
@@ -18,4 +19,8 @@ abstract class ProviderSyncStrategyModule {
     @Binds
     @IntoSet
     abstract fun bindGrimmoryAudiobook(impl: GrimmoryAudiobookSyncStrategy): ProviderSyncStrategy
+
+    @Binds
+    @IntoSet
+    abstract fun bindOpdsProgression(impl: OpdsProgressionSyncStrategy): ProviderSyncStrategy
 }

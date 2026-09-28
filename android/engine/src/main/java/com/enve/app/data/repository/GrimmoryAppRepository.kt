@@ -1,5 +1,6 @@
 package com.enve.app.data.repository
 
+import com.enve.app.data.repository.grimmory.resolveCoverUrl
 import com.enve.core.data.local.ConnectionRegistry
 import com.enve.core.auth.CredentialVault
 import com.enve.core.data.local.PreferencesManager
@@ -42,6 +43,10 @@ import com.enve.app.data.remote.dto.grimmoryapp.UpdateRatingRequest
 import com.enve.app.data.remote.dto.grimmoryapp.UpdateStatusRequest
 import com.enve.app.data.repository.grimmory.companionAudiobook
 import com.enve.app.data.repository.grimmory.grimmoryCompanionAudiobookId
+import com.enve.app.data.repository.grimmory.GrimmoryListProgress
+import com.enve.app.data.repository.grimmory.GrimmoryListProgressResolver
+import com.enve.app.data.repository.grimmory.grimmoryPercentFraction
+import com.enve.app.data.repository.grimmory.grimmoryReadProgressFraction
 import com.enve.app.data.repository.grimmory.grimmoryServerBookId
 import com.enve.app.data.repository.grimmory.isGrimmoryAudioType
 import com.enve.app.data.repository.grimmory.isGrimmoryEbookType
@@ -74,6 +79,7 @@ class GrimmoryAppRepository @Inject constructor(
     private val cache: GrimmoryDiskCache,
     private val offlineAudio: OfflineDownloadManager,
     private val offlineComic: ComicOfflineService,
+    private val listProgress: GrimmoryListProgressResolver,
 ) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     private val connectionMutex = Mutex()
@@ -250,8 +256,12 @@ class GrimmoryAppRepository @Inject constructor(
                 }
                 val list = resp.body().orEmpty()
                 if (list.isEmpty()) break
+                val fractions = listProgress.fractions(
+                    connectionId,
+                    list.map { GrimmoryListProgress(it.id, it.readProgress, it.lastReadTime.orEmpty()) },
+                )
                 list.forEach { dto ->
-                    merged += dto.toBookSummariesFromLegacy(connectionId, ctx.serverUrl, libId.toString())
+                    merged += dto.toBookSummariesFromLegacy(connectionId, ctx.serverUrl, libId.toString(), fractions.getValue(dto.id))
                 }
                 libraryTotal += list.size
                 if (list.size < pageSize) break
@@ -298,6 +308,7 @@ class GrimmoryAppRepository @Inject constructor(
         connectionId: String,
         serverUrl: String,
         fallbackLibraryId: String,
+        progressFraction: Float,
     ): List<BookSummary> {
         val primaryFileType = primaryFile?.bookType
         val mediaType = primaryFileTypeToMediaType(primaryFileType)
@@ -320,10 +331,10 @@ class GrimmoryAppRepository @Inject constructor(
             source = BookSource.GRIMMORY,
             title = resolvedTitle,
             authors = metadata?.authors.orEmpty(),
-            thumbnailUrl = resolveAppCoverUrl(serverUrl, metadata?.thumbnailUrl, id, mediaType),
+            thumbnailUrl = resolveCoverUrl(serverUrl, metadata?.thumbnailUrl, id, mediaType),
             seriesName = metadata?.seriesName,
             seriesNumber = metadata?.seriesNumber,
-            readProgress = (readProgress ?: 0f).coerceIn(0f, 1f),
+            readProgress = progressFraction,
             readStatus = parseReadStatus(readStatus),
             serverReadStatus = readStatus?.uppercase(),
             personalRating = null,
@@ -347,7 +358,7 @@ class GrimmoryAppRepository @Inject constructor(
             summary,
             summary.copy(
                 id = grimmoryCompanionAudiobookId(id),
-                thumbnailUrl = resolveAppCoverUrl(serverUrl, null, id, AppMediaType.AUDIOBOOK),
+                thumbnailUrl = resolveCoverUrl(serverUrl, null, id, AppMediaType.AUDIOBOOK),
                 primaryFileType = "AUDIOBOOK",
                 mediaType = AppMediaType.AUDIOBOOK,
                 hasAudio = true,
@@ -536,21 +547,21 @@ class GrimmoryAppRepository @Inject constructor(
         val resp = api.getContinueListening(limit)
         if (!resp.isSuccessful) return@withConnection Result.failure(Exception("HTTP ${resp.code()}"))
         val ctx = resolveContext(connectionId)
-        Result.success(resp.body().orEmpty().flatMap { it.toBookSummaries(connectionId, ctx.serverUrl) })
+        Result.success(resp.body().orEmpty().toBookSummaries(connectionId, ctx.serverUrl))
     }
 
     suspend fun getContinueReading(connectionId: String, limit: Int = 10): Result<List<BookSummary>> = withConnection(connectionId) {
         val resp = api.getContinueReading(limit)
         if (!resp.isSuccessful) return@withConnection Result.failure(Exception("HTTP ${resp.code()}"))
         val ctx = resolveContext(connectionId)
-        Result.success(resp.body().orEmpty().flatMap { it.toBookSummaries(connectionId, ctx.serverUrl) })
+        Result.success(resp.body().orEmpty().toBookSummaries(connectionId, ctx.serverUrl))
     }
 
     suspend fun getRecentlyAdded(connectionId: String, limit: Int = 10): Result<List<BookSummary>> = withConnection(connectionId) {
         val resp = api.getRecentlyAdded(limit)
         if (!resp.isSuccessful) return@withConnection Result.failure(Exception("HTTP ${resp.code()}"))
         val ctx = resolveContext(connectionId)
-        Result.success(resp.body().orEmpty().flatMap { it.toBookSummaries(connectionId, ctx.serverUrl) })
+        Result.success(resp.body().orEmpty().toBookSummaries(connectionId, ctx.serverUrl))
     }
 
     suspend fun getCurrentUser(connectionId: String): Result<GrimmoryUser> = withConnection(connectionId) {
@@ -642,8 +653,8 @@ class GrimmoryAppRepository @Inject constructor(
         id = id, name = name, icon = icon, iconType = iconType, publicShelf = publicShelf,
     )
 
-    private fun AppPageDto<AppBookSummaryDto>.toBookPage(connectionId: String, serverUrl: String) = BookSummaryPage(
-        items = content.flatMap { it.toBookSummaries(connectionId, serverUrl) },
+    private suspend fun AppPageDto<AppBookSummaryDto>.toBookPage(connectionId: String, serverUrl: String) = BookSummaryPage(
+        items = content.toBookSummaries(connectionId, serverUrl),
         page = page, totalPages = totalPages, totalElements = totalElements, hasNext = hasNext,
     )
 
@@ -652,7 +663,15 @@ class GrimmoryAppRepository @Inject constructor(
         page = page, totalPages = totalPages, totalElements = totalElements, hasNext = hasNext,
     )
 
-    private fun AppBookSummaryDto.toBookSummaries(connectionId: String, serverUrl: String): List<BookSummary> {
+    private suspend fun List<AppBookSummaryDto>.toBookSummaries(connectionId: String, serverUrl: String): List<BookSummary> {
+        val fractions = listProgress.fractions(
+            connectionId,
+            map { GrimmoryListProgress(it.id, it.readProgress, it.lastReadTime.toString()) },
+        )
+        return flatMap { it.toBookSummaries(connectionId, serverUrl, fractions.getValue(it.id)) }
+    }
+
+    private fun AppBookSummaryDto.toBookSummaries(connectionId: String, serverUrl: String, progressFraction: Float): List<BookSummary> {
         val primaryType = primaryFile?.resolvedType ?: primaryFileType
         val mediaType = primaryFileTypeToMediaType(primaryType)
         val hasAudio = mediaType == AppMediaType.AUDIOBOOK || hasAudioFormat()
@@ -668,10 +687,10 @@ class GrimmoryAppRepository @Inject constructor(
             source = BookSource.GRIMMORY,
             title = resolvedTitle.ifBlank { "Untitled" },
             authors = authors,
-            thumbnailUrl = resolveAppCoverUrl(serverUrl, thumbnailUrl, id, mediaType),
+            thumbnailUrl = resolveCoverUrl(serverUrl, thumbnailUrl, id, mediaType),
             seriesName = seriesName,
             seriesNumber = seriesNumber,
-            readProgress = readProgress.coerceIn(0f, 1f),
+            readProgress = progressFraction,
             readStatus = parseReadStatus(readStatus),
             serverReadStatus = readStatus?.uppercase(),
             personalRating = personalRating?.div(2f),
@@ -698,7 +717,7 @@ class GrimmoryAppRepository @Inject constructor(
             summary,
             summary.copy(
                 id = grimmoryCompanionAudiobookId(id),
-                thumbnailUrl = resolveAppCoverUrl(serverUrl, null, id, AppMediaType.AUDIOBOOK),
+                thumbnailUrl = resolveCoverUrl(serverUrl, null, id, AppMediaType.AUDIOBOOK),
                 primaryFileType = "AUDIOBOOK",
                 mediaType = AppMediaType.AUDIOBOOK,
                 hasAudio = true,
@@ -749,52 +768,6 @@ class GrimmoryAppRepository @Inject constructor(
         return types.any(::isGrimmoryEbookType) || epubProgress != null || pdfProgress != null || cbxProgress != null
     }
 
-    private fun resolveAppCoverUrl(
-        serverUrl: String,
-        path: String?,
-        bookId: String,
-        mediaType: AppMediaType,
-    ): String {
-        val base = serverUrl.trimEnd('/')
-        val resolvedPath = when {
-            path.isNullOrBlank() -> fallbackCoverPath(bookId, mediaType)
-            path.startsWith("http://") || path.startsWith("https://") ->
-                return rewriteAbsoluteLegacyCoverUrl(path, mediaType)
-            path.startsWith("/api/books/") -> rewriteLegacyCoverPath(path, mediaType)
-            else -> path
-        }
-        return base + if (resolvedPath.startsWith('/')) resolvedPath else "/$resolvedPath"
-    }
-
-    private fun fallbackCoverPath(bookId: String, mediaType: AppMediaType): String =
-        if (mediaType == AppMediaType.AUDIOBOOK) "/api/v1/media/book/$bookId/audiobook-thumbnail"
-        else "/api/v1/media/book/$bookId/cover"
-
-    private fun rewriteLegacyCoverPath(path: String, mediaType: AppMediaType): String {
-        if (!path.startsWith("/api/books/")) return path
-        val withoutPrefix = path.removePrefix("/api/books/")
-        val slashIdx = withoutPrefix.indexOf('/')
-        if (slashIdx < 0) return path
-        val id = withoutPrefix.substring(0, slashIdx)
-        val suffix = withoutPrefix.substring(slashIdx)
-        return when (suffix) {
-            "/cover" -> if (mediaType == AppMediaType.AUDIOBOOK) "/api/v1/media/book/$id/audiobook-thumbnail"
-                else "/api/v1/media/book/$id/cover"
-            "/thumbnail" -> if (mediaType == AppMediaType.AUDIOBOOK) "/api/v1/media/book/$id/audiobook-thumbnail"
-                else "/api/v1/media/book/$id/thumbnail"
-            "/audiobook-cover", "/audiobook-thumbnail" -> "/api/v1/media/book/$id$suffix"
-            else -> "/api/v1/media/book/$id$suffix"
-        }
-    }
-
-    private fun rewriteAbsoluteLegacyCoverUrl(url: String, mediaType: AppMediaType): String {
-        val schemeEnd = url.indexOf("//").takeIf { it >= 0 } ?: return url
-        val slashAfterHost = url.indexOf('/', schemeEnd + 2).takeIf { it >= 0 } ?: return url
-        val rawPath = url.substring(slashAfterHost)
-        val rewritten = rewriteLegacyCoverPath(rawPath, mediaType)
-        return if (rewritten != rawPath) url.substring(0, slashAfterHost) + rewritten else url
-    }
-
     private fun AppSeriesSummaryDto.toBrowseGroup(serverUrl: String): BrowseGroup {
         val coverBookId = coverBooks.firstOrNull()?.id
         val coverUrl = coverBookId?.let { coverUrl(serverUrl, it) }
@@ -843,18 +816,19 @@ class GrimmoryAppRepository @Inject constructor(
             title
         }
 
-        val unifiedProgress = audiobookProgress?.percentage
-            ?: epubProgress?.percentage
-            ?: pdfProgress?.percentage
-            ?: cbxProgress?.percentage
-            ?: readProgress
+        val unifiedProgress = grimmoryPercentFraction(audiobookProgress?.percentage)
+            ?: grimmoryPercentFraction(epubProgress?.percentage)
+            ?: grimmoryPercentFraction(pdfProgress?.percentage)
+            ?: grimmoryPercentFraction(cbxProgress?.percentage)
+            ?: grimmoryReadProgressFraction(readProgress, koreaderProgress != null)
+            ?: 0f
         return Book(
             id = id,
             title = resolvedTitle.ifBlank { "Untitled" },
             subtitle = subtitle,
             author = authorString,
             description = description,
-            coverUrl = resolveAppCoverUrl(serverUrl, thumbnailUrl, id, mediaType),
+            coverUrl = resolveCoverUrl(serverUrl, thumbnailUrl, id, mediaType),
             duration = 0L,
             currentTime = audiobookProgress?.let {
 
@@ -880,8 +854,8 @@ class GrimmoryAppRepository @Inject constructor(
             connectionId = connectionId,
             addedOn = addedOn,
             lastReadTime = lastReadTime,
-            readProgress = unifiedProgress.coerceIn(0f, 1f),
-            epubProgress = epubProgress?.percentage,
+            readProgress = unifiedProgress,
+            epubProgress = grimmoryPercentFraction(epubProgress?.percentage),
             epubLocator = epubProgress?.cfi,
             readAlongAvailable = false,
             hasEbook = hasEbook,

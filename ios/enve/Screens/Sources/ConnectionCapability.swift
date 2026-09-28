@@ -376,7 +376,7 @@ extension ConnectionCapability {
         case .opds: return .opds
         case .bookOrbit: return .bookOrbit
         case .silo: return .silo
-        case .plex, .premiumize, .realdebrid, .local:
+        case .plex, .premiumize, .realdebrid, .local, .oneDrive:
             return nil
         }
     }

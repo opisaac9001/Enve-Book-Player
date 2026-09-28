@@ -28,4 +28,12 @@ class ReaderAnnotationRenderColorTest {
             annotationRenderColorHex("#FFF59D", einkActive = true, theme = ReaderTheme.OLED),
         )
     }
+
+    @Test
+    fun namedHighlightColorsRenderAsHex() {
+        assertEquals(
+            "#F472B6",
+            annotationRenderColorHex("pink", einkActive = false, theme = ReaderTheme.LIGHT),
+        )
+    }
 }

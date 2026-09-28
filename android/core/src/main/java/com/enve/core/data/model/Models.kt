@@ -55,11 +55,17 @@ data class Book(
     val serverReadStatus: String? = null,
 
     val podcastName: String? = null,
+    val episodeId: String? = null,
+    val podcastLibraryItemId: String? = null,
+    val podcastEnclosureUrl: String? = null,
 
     val isDownloaded: Boolean = false,
     val downloadProgress: Float? = null,
 
     val shelves: List<String> = emptyList(),
+
+    val opdsAcquisitionUrl: String? = null,
+    val opdsProgressionUrl: String? = null,
 ) {
 
     val uniqueKey: String

@@ -255,7 +255,7 @@ struct PodcastBrowseScreen: View {
     private func loadGenre(_ genre: PodcastsGenre) async {
         isLoadingGenre = true
         defer { isLoadingGenre = false }
-        if let results = try? await iTunesPodcastProvider.shared.search(term: genre.searchTerm, limit: 40) {
+        if let results = try? await iTunesPodcastProvider.shared.topPodcasts(genreId: genre.chartGenreId) {
             genreResults = results
         }
     }

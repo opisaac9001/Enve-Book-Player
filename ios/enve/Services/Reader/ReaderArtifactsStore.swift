@@ -11,9 +11,11 @@ final class ReaderArtifactsStore {
 
     private static let migrationFlagKey = "enve.readerArtifactsMigratedToBookStoreV1"
 
-    private let userDefaults = UserDefaults.standard
+    private let userDefaults: UserDefaults
 
-    private init() {}
+    init(defaults: UserDefaults = .standard) {
+        userDefaults = defaults
+    }
 
     var hasMigratedToBookStore: Bool {
         userDefaults.bool(forKey: Self.migrationFlagKey)
@@ -78,16 +80,49 @@ final class ReaderArtifactsStore {
         userDefaults.removeObject(forKey: Self.bookmarksPrefix + bookId)
     }
 
-    func bookmarkedBookIds() -> Set<String> {
-        var result = Set<String>()
-        for (key, value) in userDefaults.dictionaryRepresentation() where key.hasPrefix(Self.bookmarksPrefix) {
-            guard let data = value as? Data,
-                let bookmarks = try? JSONDecoder().decode([Bookmark].self, from: data),
-                !bookmarks.isEmpty
-            else { continue }
-            result.insert(String(key.dropFirst(Self.bookmarksPrefix.count)))
+    // Rekeys audio-owned bookmarks and cached chapters; the source is cleared only after the destination write lands.
+    func migrateAudiobookArtifacts(fromBookId oldId: String, toBookId newId: String) {
+        guard oldId != newId else { return }
+
+        let source = loadBookmarks(bookId: oldId)
+        let moved = source.filter { $0.mediaType == .audiobook }
+        if !moved.isEmpty {
+            var destination = loadBookmarks(bookId: newId)
+            let destinationIds = Set(destination.map { $0.id })
+            for bookmark in moved where !destinationIds.contains(bookmark.id) {
+                destination.append(
+                    Bookmark(
+                        id: bookmark.id,
+                        bookId: newId,
+                        position: bookmark.position,
+                        title: bookmark.title,
+                        note: bookmark.note,
+                        timestamp: bookmark.timestamp,
+                        locator: bookmark.locator,
+                        mediaType: .audiobook,
+                        chapterTitle: bookmark.chapterTitle,
+                        remoteID: bookmark.remoteID,
+                        isRemotePlaceholder: bookmark.isRemotePlaceholder
+                    )
+                )
+            }
+            if let encoded = try? JSONEncoder().encode(destination) {
+                userDefaults.set(encoded, forKey: Self.bookmarksPrefix + newId)
+                let remaining = source.filter { $0.mediaType != .audiobook }
+                if remaining.isEmpty {
+                    clearBookmarks(bookId: oldId)
+                } else {
+                    saveBookmarks(bookId: oldId, bookmarks: remaining)
+                }
+            }
         }
-        return result
+
+        if let chapters = loadCachedChapters(bookId: oldId) {
+            if loadCachedChapters(bookId: newId) == nil {
+                saveCachedChapters(bookId: newId, chapters: chapters)
+            }
+            clearCachedChapters(bookId: oldId)
+        }
     }
 
     func saveAnnotations(bookId: String, annotations: [ReaderAnnotation]) {
@@ -126,6 +161,16 @@ final class ReaderArtifactsStore {
             return nil
         }
         return chapters
+    }
+
+    /// Drops a cache that holds untimed ebook contents so the audiobook's chapters are fetched again.
+    func loadCachedAudioChapters(for book: Book) -> [Chapter]? {
+        for bookId in book.id == book.stableId ? [book.stableId] : [book.stableId, book.id] {
+            guard let chapters = loadCachedChapters(bookId: bookId) else { continue }
+            if chapters.hasAudioTimeline { return chapters }
+            clearCachedChapters(bookId: bookId)
+        }
+        return nil
     }
 
     func clearCachedChapters(bookId: String) {

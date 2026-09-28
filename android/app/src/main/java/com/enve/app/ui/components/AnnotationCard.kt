@@ -1,6 +1,7 @@
 package com.enve.app.ui.components
 
 import androidx.compose.foundation.background
+import com.enve.core.reader.highlightColorHex
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -33,6 +34,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.enve.core.data.model.AnnotationKind
 import com.enve.core.data.model.ReaderAnnotation
+import com.enve.hearth.design.parseHexColor
 import java.text.DateFormat
 import java.util.Date
 
@@ -45,8 +47,7 @@ fun AnnotationCard(
     modifier: Modifier = Modifier,
 ) {
     val kind = AnnotationKind.parse(annotation.kind)
-    val accent = runCatching { Color(android.graphics.Color.parseColor(annotation.colorHex)) }
-        .getOrDefault(Color(0xFFFFF59D))
+    val accent = highlightColorHex(annotation.colorHex)?.let(::parseHexColor) ?: Color(0xFFFFF59D)
     val a11y = buildString {
         append(kind.label)
         append(", ")

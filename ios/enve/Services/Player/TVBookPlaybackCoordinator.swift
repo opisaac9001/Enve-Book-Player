@@ -529,7 +529,7 @@ final class TVBookPlaybackCoordinator: BookPlaybackStarting, RestoredPlaybackPre
                 await extractChaptersFromAsset(url: streamURL, book: book)
             }
 
-        case .plex, .jellyfin, .emby, .local, .webdav, .torbox, .realdebrid, .bookOrbit, .silo:
+        case .plex, .jellyfin, .emby, .local, .webdav, .torbox, .realdebrid, .oneDrive, .bookOrbit, .silo:
             await extractChaptersFromAsset(url: streamURL, book: book)
 
         case .smb:

@@ -1,15 +1,18 @@
 package com.enve.app.viewmodel
 
 import android.graphics.Color
-import androidx.annotation.ColorInt
+import com.enve.core.reader.highlightColorHex
+import androidx.compose.ui.graphics.toArgb
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.enve.app.readium.MediaOverlayEngine
 import com.enve.app.readium.ReadAloudCheckpoint
 import com.enve.app.readium.ReadAloudCheckpointRepository
 import com.enve.app.readium.ReadAloudCheckpointToken
+import com.enve.app.readium.ReadAloudLyricsBuilder
 import com.enve.app.readium.ReadAloudPlaybackCoordinator
 import com.enve.app.readium.ReadAloudPlaybackSession
+import com.enve.app.readium.ReaderNarrationStore
 import com.enve.app.readium.SmilClip
 import com.enve.bookorbit.sync.BookOrbitHistorySessionSync
 import com.enve.core.data.local.PreferencesManager
@@ -29,10 +32,16 @@ import com.enve.app.data.history.HistorySessionStore
 import com.enve.app.data.reader.EpubBridgeCheckpointStore
 import com.enve.app.data.reader.ReaderCheckpointLease
 import com.enve.app.data.reader.nextBookInSeries
+import com.enve.app.data.sync.RemoteProgressWriteKey
+import com.enve.app.data.sync.RemoteRewindTracker
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.HistorySession
 import com.enve.core.data.provider.ProviderEbookResource
+import com.enve.core.data.sync.ProgressConflictPassage
+import com.enve.core.data.sync.SyncSnapshot
+import com.enve.core.data.util.runSuspendCatching
+import com.enve.core.di.ApplicationScope
 import com.enve.core.reader.EpubBridgeCheckpoint
 import com.enve.core.reader.EpubBridgeCheckpointCodec
 import com.enve.core.reader.EpubBridgeRestoreMatcher
@@ -46,10 +55,13 @@ import com.enve.app.data.repository.AnnotationRepository
 import com.enve.app.data.repository.GrimmoryRepository
 import com.enve.app.data.repository.LocatorAnchors
 import com.enve.app.data.repository.SyncManager
+import com.enve.hearth.design.parseHexColor
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
@@ -64,6 +76,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.readium.r2.navigator.DecorableNavigator
 import org.readium.r2.navigator.Decoration
 import org.readium.r2.navigator.epub.EpubNavigatorFragment
@@ -109,6 +123,8 @@ data class TtsWordHighlight(
     val colorHex: String = "#0A84FF",
 )
 
+private data class ViewportAnchor(val locator: Locator, val page: String?)
+
 data class ReaderSearchResult(
     val id: String,
     val locator: Locator,
@@ -142,12 +158,15 @@ private fun Locator.toSearchResult(index: Int): ReaderSearchResult {
 private fun String.compactWhitespace(): String =
     replace(Regex("\\s+"), " ").trim()
 
+private fun Locator.toJSONOrNull(): String? =
+    try { toJSON().toString() } catch (_: Exception) { null }
+
 internal fun annotationRenderColorHex(
     storedColorHex: String,
     einkActive: Boolean,
     theme: ReaderTheme,
 ): String {
-    if (!einkActive) return storedColorHex
+    if (!einkActive) return highlightColorHex(storedColorHex) ?: storedColorHex
     return when (theme) {
         ReaderTheme.LIGHT, ReaderTheme.SEPIA -> "#000000"
         ReaderTheme.DARK, ReaderTheme.OLED -> "#FFFFFF"
@@ -188,6 +207,7 @@ data class ReaderUiState(
     val readAlongClipIndex:  Int       = 0,
     val readAlongClipCount:  Int       = 0,
     val showReadAloudSheet:  Boolean   = false,
+    val showReadAloudLyrics: Boolean   = false,
     val readAlongChapterClips: List<ReadAloudClipRow> = emptyList(),
     val pendingSelection:    Locator?  = null,
     val selectionText:       String    = "",
@@ -220,6 +240,7 @@ data class ReadAloudClipRow(
     val textHref: String,
     val fragmentId: String?,
     val resourceProgression: Double?,
+    val text: String = "",
 )
 
 data class CachedReaderProgress(
@@ -235,15 +256,40 @@ data class FoliateOpenPlan(
     val identity: EpubBridgeCheckpoint,
 )
 
+enum class OpenProgressAuthority { AUTOMATIC, LOCAL, REMOTE }
+
+data class OpenRemoteProgress(
+    val snapshot: SyncSnapshot?,
+    val authority: OpenProgressAuthority,
+)
+
+internal fun selectOpenCheckpoint(
+    authority: OpenProgressAuthority,
+    local: CheckpointCandidate?,
+    remote: CheckpointCandidate?,
+    launcher: CheckpointCandidate?,
+): EpubBridgeCheckpoint? {
+    if (authority == OpenProgressAuthority.REMOTE && remote != null) return remote.checkpoint
+    return selectCheckpointCandidate(
+        listOfNotNull(
+            local,
+            remote.takeIf { authority != OpenProgressAuthority.LOCAL },
+            launcher,
+        ),
+    )
+}
+
 data class ProgressConflictPrompt(
     val localPercentage: Float,
     val localUpdatedAt: Long?,
     val remotePercentage: Float,
     val remoteUpdatedAt: Long?,
     val remoteSource: String,
+    val localPassage: ProgressConflictPassage? = null,
+    val remotePassage: ProgressConflictPassage? = null,
 )
 
-enum class ProgressConflictChoice { LOCAL, REMOTE }
+enum class ProgressConflictChoice { LOCAL, REMOTE, LATER }
 
 internal suspend fun sourceOwnedEbookDownloadUrl(
     source: BookSource,
@@ -268,6 +314,7 @@ class ReaderViewModel @Inject constructor(
     private val einkManager: com.enve.app.eink.EinkManager,
     private val annotationRepo: AnnotationRepository,
     private val koreaderHub: com.enve.app.data.sync.KOReaderHubService,
+    private val rewindTracker: RemoteRewindTracker,
     private val vocabRepo: com.enve.app.data.repository.VocabRepository,
     private val tagIndex: com.enve.app.data.repository.TagIndexStore,
     private val customFontRepository: com.enve.app.data.repository.CustomFontRepository,
@@ -275,10 +322,12 @@ class ReaderViewModel @Inject constructor(
     private val audioPlaybackManager: com.enve.app.playback.AudioPlaybackManager,
     private val readAloudPlayback: ReadAloudPlaybackCoordinator,
     private val readAloudCheckpoints: ReadAloudCheckpointRepository,
+    private val narrationStore: ReaderNarrationStore,
     private val epubBridgeCheckpoints: EpubBridgeCheckpointStore,
     private val history: HistorySessionStore,
     private val ebookSearch: EbookSearchService,
     private val searchPreferences: ReaderSearchPreferences,
+    @ApplicationScope private val applicationScope: CoroutineScope,
 ) : ViewModel() {
 
     private val einkBoldActive: Boolean
@@ -291,6 +340,10 @@ class ReaderViewModel @Inject constructor(
         private const val READ_ALONG_DECORATION_GROUP = "readAlong"
         private const val READ_ALONG_DECORATION_ID = "readAlong-active"
         private const val MAX_SEARCH_RESULTS = 100
+        private const val PROGRESS_PUSH_DEBOUNCE_MS = 5_000L
+        private const val PROGRESS_PUSH_MAX_WAIT_MS = 15_000L
+        private const val RESTORED_SENTENCE_WINDOW_MS = 120_000L
+        private const val VIEWPORT_SETTLE_MS = 350L
     }
 
     private val _state = MutableStateFlow(ReaderUiState())
@@ -314,7 +367,10 @@ class ReaderViewModel @Inject constructor(
     private var readiumCheckpointDirty = false
     private var readiumCheckpointFingerprint: String? = null
     private var readiumUserInteractionPending = false
+    private val unleasedReadiumPosition = ReaderPositionBaseline()
     private var readiumRestoreJob: Job? = null
+    private var viewportAnchor: ViewportAnchor? = null
+    private var viewportReanchorJob: Job? = null
     private var publication: Publication? = null
     private var bookId: String = ""
     private var bookTitle: String = ""
@@ -328,10 +384,11 @@ class ReaderViewModel @Inject constructor(
     private var readAloudCheckpointToken: ReadAloudCheckpointToken? = null
     private var readAloudCheckpointRevision: Long = 0L
     private var latestReadAloudLocator: Locator? = null
-    private var latestReadAloudProgress: Float? = null
     private var readAlongClipUiJob: Job? = null
     private var readAlongPageFlipJob: Job? = null
     private var readAloudTimelinePrepared: Boolean = false
+    private var restoredReadAloudFragment: String? = null
+    private var restoredReadAloudFragmentAtMs: Long = 0L
 
     private var positions: List<Locator> = emptyList()
     private var pageMarkers: List<EpubPageMarker> = emptyList()
@@ -624,6 +681,7 @@ class ReaderViewModel @Inject constructor(
         launcherLocator: String?,
         launcherProgress: Float,
         launcherUpdatedAt: Long,
+        remote: OpenRemoteProgress,
     ): FoliateOpenPlan {
         val bookKey = ReaderCheckpointIdentity.key(
             source = bookSource,
@@ -639,48 +697,36 @@ class ReaderViewModel @Inject constructor(
             engine = engine,
         )
         val now = System.currentTimeMillis()
-        val remote = kotlinx.coroutines.withTimeoutOrNull(15_000L) {
-            aggregatorRepository.fetchEbookProgress(
-                Book(
-                    id = bookId,
-                    title = bookTitle.ifBlank { bookId },
-                    author = bookAuthor,
-                    source = bookSource,
-                    mediaType = com.enve.core.data.model.AppMediaType.EBOOK,
-                    connectionId = bookConnectionId,
-                ),
-            ).getOrNull()
-        }
-        val candidates = buildList {
-            lease.checkpoint?.let {
-                add(CheckpointCandidate(it, it.observedAt, local = true))
-            }
-            remote?.let { snapshot ->
-                checkpointFromProviderSnapshot(
-                    locator = snapshot.locatorJson,
-                    epubCfi = snapshot.epubCfi,
-                    href = snapshot.href,
-                    progression = snapshot.percentage,
-                    publicationSha256 = publicationSha256,
-                    providerFileId = resource.providerFileId,
-                    writerEpoch = lease.writerEpoch,
-                    observedAt = snapshot.updatedAt ?: 0L,
-                    engine = engine,
-                )?.let { add(CheckpointCandidate(it, snapshot.updatedAt ?: 0L)) }
-            }
+        val remoteCandidate = remote.snapshot?.let { snapshot ->
             checkpointFromProviderSnapshot(
-                locator = launcherLocator,
-                epubCfi = null,
-                href = EpubBridgeCheckpointCodec.href(launcherLocator),
-                progression = launcherProgress,
+                locator = snapshot.locatorJson,
+                epubCfi = snapshot.epubCfi,
+                href = snapshot.href,
+                progression = snapshot.percentage,
                 publicationSha256 = publicationSha256,
                 providerFileId = resource.providerFileId,
                 writerEpoch = lease.writerEpoch,
-                observedAt = launcherUpdatedAt.takeIf { it > 0L } ?: 0L,
+                observedAt = snapshot.updatedAt ?: 0L,
                 engine = engine,
-            )?.let { add(CheckpointCandidate(it, it.observedAt)) }
+            )?.let { CheckpointCandidate(it, snapshot.updatedAt ?: 0L) }
         }
-        val selected = selectCheckpointCandidate(candidates)?.copy(
+        val launcherCandidate = checkpointFromProviderSnapshot(
+            locator = launcherLocator,
+            epubCfi = null,
+            href = EpubBridgeCheckpointCodec.href(launcherLocator),
+            progression = launcherProgress,
+            publicationSha256 = publicationSha256,
+            providerFileId = resource.providerFileId,
+            writerEpoch = lease.writerEpoch,
+            observedAt = launcherUpdatedAt.takeIf { it > 0L } ?: 0L,
+            engine = engine,
+        )?.let { CheckpointCandidate(it, it.observedAt) }
+        val selected = selectOpenCheckpoint(
+            authority = remote.authority,
+            local = lease.checkpoint?.let { CheckpointCandidate(it, it.observedAt, local = true) },
+            remote = remoteCandidate,
+            launcher = launcherCandidate,
+        )?.copy(
             publicationSha256 = publicationSha256,
             providerFileId = resource.providerFileId,
             revision = lease.checkpoint?.revision ?: 0L,
@@ -696,6 +742,8 @@ class ReaderViewModel @Inject constructor(
         )
         epubCheckpointLease = lease
         latestEpubCheckpoint = selected
+        restoredReadAloudFragment = selected?.let(::narratedFragmentId)
+        restoredReadAloudFragmentAtMs = android.os.SystemClock.elapsedRealtime()
         foliateRestoreConfirmed = false
         foliateCheckpointSync.reset()
         readiumRestoreConfirmed = false
@@ -866,8 +914,6 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
-    fun getPublication(): Publication? = publication
-
     fun annotationForDecoration(id: String): ReaderAnnotation? =
         _state.value.annotations.firstOrNull { it.id == id }
             ?: _state.value.bookmarks.firstOrNull { it.id == id }
@@ -885,6 +931,14 @@ class ReaderViewModel @Inject constructor(
         navigator = null
         engineNavigator?.takeIf { it !== engine }?.close()
         engineNavigator = engine
+        engine.onAnnotationResolution = { resolution ->
+            if (engineNavigator === engine) {
+                val unresolved = resolution.count { !it.value }
+                if (unresolved > 0) {
+                    _state.update { it.copy(transientMessage = "$unresolved saved highlight(s) need location repair. They will be retried when the book opens.") }
+                }
+            }
+        }
         epubCheckpointLease = plan.lease
         latestEpubCheckpoint = plan.initialCheckpoint
         foliateExpectedCheckpoint = plan.initialCheckpoint
@@ -938,7 +992,7 @@ class ReaderViewModel @Inject constructor(
                     providerFileId = lease.providerFileId,
                     revision = latestEpubCheckpoint?.revision ?: lease.checkpoint?.revision ?: 0L,
                     writerEpoch = lease.writerEpoch,
-                    observedAt = System.currentTimeMillis(),
+                    observedAt = expected.observedAt,
                     sourceEngine = ReaderEngineKind.FOLIATE,
                 )
             }
@@ -1040,6 +1094,7 @@ class ReaderViewModel @Inject constructor(
         readiumRestoreJob?.cancel()
         readiumRestoreJob = null
         readiumUserInteractionPending = false
+        unleasedReadiumPosition.reset()
         foliateExpectedCheckpoint = null
         engineNavigator?.close()
         engineNavigator = null
@@ -1070,7 +1125,6 @@ class ReaderViewModel @Inject constructor(
         readAloudCheckpointToken = checkpointToken
         readAloudCheckpointRevision = 0L
         latestReadAloudLocator = null
-        latestReadAloudProgress = null
         readAloudTimelinePrepared = false
         val engine = buildMediaOverlayEngine(pub, epubFile, checkpointToken)
         mediaOverlayEngine = engine
@@ -1173,6 +1227,12 @@ class ReaderViewModel @Inject constructor(
         onPlaybackCompleted = {
             submitCurrentReadAloudCheckpoint()
             handleReadAlongStopped(clearHighlight = true)
+            latestReadAloudLocator?.let { locator ->
+                applicationScope.launch(Dispatchers.Main.immediate) {
+                    readAloudCheckpoints.flush(bookId, bookSource, bookConnectionId)
+                    pushProgress(locator)
+                }
+            }
         }
         onPlaybackSessionLost = {
             submitCurrentReadAloudCheckpoint()
@@ -1251,7 +1311,11 @@ class ReaderViewModel @Inject constructor(
                 }
                 val lease = epubCheckpointLease
                 if (lease == null) {
-                    scheduleSync(locator)
+                    if (readiumUserInteractionPending) {
+                        scheduleSync(locator)
+                    } else {
+                        unleasedReadiumPosition.confirm(locator.toJSONOrNull())
+                    }
                 } else if (readiumRestoreConfirmed && readiumUserInteractionPending) {
                     readiumUserInteractionPending = false
                     readiumCheckpointDirty = true
@@ -1375,6 +1439,9 @@ class ReaderViewModel @Inject constructor(
             if (capture != null && captureMatches) {
                 latestEpubCheckpoint = capture.checkpoint
                 readiumCheckpointFingerprint = checkpointFingerprint(capture.checkpoint)
+                viewportAnchor = EpubBridgeCheckpointCodec.toReadiumLocatorJson(expected)
+                    ?.let { runCatching { Locator.fromJSON(org.json.JSONObject(it)) }.getOrNull() }
+                    ?.let { ViewportAnchor(it, page = nav.currentLocator.value.pageKey()) }
                 readiumRestoreConfirmed = true
                 return
             }
@@ -1659,53 +1726,9 @@ class ReaderViewModel @Inject constructor(
         _state.update { it.copy(showSelectionPopup = false) }
     }
 
-    fun setSliderDragging(dragging: Boolean, previewPage: Int = 0) {
-        _state.update {
-            it.copy(
-                sliderDragging = dragging,
-                sliderPreviewPage = previewPage,
-                sliderPreviewPageLabel = pageMarkers
-                    .getOrNull(previewPage - 1)
-                    ?.label
-                    .takeIf { dragging },
-            )
-        }
-    }
-
     fun showAutoScrollPanel(show: Boolean) {
         _state.update { it.copy(showAutoScrollPanel = show, showChrome = if (show) true else it.showChrome) }
         if (!show) stopAutoScroll()
-    }
-
-    fun startAutoScroll(speed: Float) {
-        stopAutoScroll()
-        val nav = navigator
-        val alternate = engineNavigator
-        if (nav == null && alternate == null) return
-        _state.update { it.copy(autoScrollActive = true, prefs = it.prefs.copy(autoScrollSpeed = speed)) }
-        autoScrollJob = viewModelScope.launch {
-            val continuous = alternate != null && _state.value.prefs.scroll
-            val delayMs = if (continuous) {
-                100L
-            } else {
-                when {
-                    speed <= 0f -> Long.MAX_VALUE
-                    speed <= 1f -> 500L
-                    speed <= 3f -> 300L
-                    speed <= 5f -> 150L
-                    else -> 80L
-                }
-            }
-            val distance = speed.coerceAtLeast(0.25f) * 2.5f
-            while (true) {
-                delay(delayMs)
-                if (continuous) {
-                    alternate.autoScrollStep(distance)
-                } else {
-                    alternate?.goForward() ?: nav?.goForward()
-                }
-            }
-        }
     }
 
     fun stopAutoScroll() {
@@ -1714,26 +1737,8 @@ class ReaderViewModel @Inject constructor(
         _state.update { it.copy(autoScrollActive = false) }
     }
 
-    fun setAutoScrollSpeed(speed: Float) {
-        _state.update { it.copy(prefs = it.prefs.copy(autoScrollSpeed = speed)) }
-        if (_state.value.autoScrollActive && speed > 0f) {
-            startAutoScroll(speed)
-        } else if (speed <= 0f) {
-            stopAutoScroll()
-        }
-    }
-
     fun showToolbarCustomizer(show: Boolean) {
         _state.update { it.copy(showToolbarCustomizer = show, showChrome = if (show) true else it.showChrome) }
-    }
-
-    fun toggleToolbarButton(button: com.enve.app.data.reader.ReaderToolbarButton) {
-        val current = _state.value.prefs.toolbarButtons
-        val updated = if (current.contains(button)) current - button else current + button
-        _state.update { it.copy(prefs = it.prefs.copy(toolbarButtons = updated)) }
-        viewModelScope.launch {
-            prefs.saveReaderPreferences(toolbarButtons = updated.joinToString(",") { b -> b.name })
-        }
     }
 
     fun setTtsEngine(engine: android.speech.tts.TextToSpeech?) {
@@ -1762,15 +1767,6 @@ class ReaderViewModel @Inject constructor(
     fun stopTts() {
         ttsEngine?.stop()
         clearTtsHighlight()
-    }
-
-    fun highlightTtsWord(word: String, locator: Locator) {
-        _state.update {
-            it.copy(
-                ttsWordHighlight = TtsWordHighlight(word, locator),
-                ttsSpeaking = true,
-            )
-        }
     }
 
     fun clearTtsHighlight() {
@@ -1831,6 +1827,10 @@ class ReaderViewModel @Inject constructor(
 
         readAlongStartJob?.cancel()
         beginReadAlongRequest(engine)
+        val restoredFragment = restoredReadAloudFragment?.takeIf {
+            android.os.SystemClock.elapsedRealtime() - restoredReadAloudFragmentAtMs < RESTORED_SENTENCE_WINDOW_MS
+        }
+        restoredReadAloudFragment = null
 
         postTransientMessage("Preparing read aloud…")
         readAlongStartJob = viewModelScope.launch {
@@ -1841,8 +1841,10 @@ class ReaderViewModel @Inject constructor(
             val nav = navigator
             prepareStorytellerReadAloudTimeline(engine)
             phase("findVisibleClip:begin")
-            val visibleClip = nav?.let { firstVisibleReadAlongClip(it, targetHref, targetProgression) }
-                ?: engine.firstClipForHref(targetHref, targetProgression)
+            val visibleClip = nav?.let {
+                restoredVisibleReadAlongClip(it, restoredFragment, targetHref)
+                    ?: firstVisibleReadAlongClip(it, targetHref, targetProgression)
+            } ?: engine.firstClipForHref(targetHref, targetProgression)
             phase("findVisibleClip:end")
             if (visibleClip != null) {
                 engine.play(
@@ -1927,7 +1929,15 @@ class ReaderViewModel @Inject constructor(
         viewModelScope.launch {
             val preferredHref = engine.currentClip()?.textHref
                 ?: navigator?.currentLocator?.value?.href?.toString()
-            val rows = engine.chapterClips(preferredHref).mapIndexed { i, c ->
+            val clips = engine.chapterClips(preferredHref)
+            val chapterHref = clips.firstOrNull()?.textHref ?: preferredHref
+            val textByFragment = chapterHref
+                ?.let { href -> chapterHtml(href)?.let { html -> href to html } }
+                ?.let { (href, html) ->
+                    ReadAloudLyricsBuilder.lines(clips, html, href).associate { it.id to it.text }
+                }
+                .orEmpty()
+            val rows = clips.mapIndexed { i, c ->
                 ReadAloudClipRow(
                     index = i,
                     startMs = c.clipBeginMs,
@@ -1935,10 +1945,30 @@ class ReaderViewModel @Inject constructor(
                     textHref = c.textHref,
                     fragmentId = c.textFragmentId,
                     resourceProgression = c.resourceProgression,
+                    text = c.textFragmentId?.let { textByFragment[it] }.orEmpty(),
                 )
             }
             _state.update { it.copy(readAlongChapterClips = rows) }
         }
+    }
+
+    private suspend fun chapterHtml(href: String): String? {
+        val pub = publication ?: return null
+        val wanted = href.substringBefore('#').substringAfterLast('/')
+        val link = pub.readingOrder.firstOrNull {
+            it.url().toString().substringBefore('#').substringAfterLast('/') == wanted
+        } ?: return null
+        val resource = pub.get(link) ?: return null
+        return try {
+            resource.read().getOrNull()?.toString(Charsets.UTF_8)
+        } finally {
+            resource.close()
+        }
+    }
+
+    fun showReadAloudLyrics(show: Boolean) {
+        _state.update { it.copy(showReadAloudLyrics = show, showChrome = if (show) true else it.showChrome) }
+        if (show) loadReadAlongChapterClips()
     }
 
     fun jumpToReadAlongClip(row: ReadAloudClipRow) {
@@ -2099,7 +2129,7 @@ class ReaderViewModel @Inject constructor(
 
         val fragmentId = clip.textFragmentId
         val fragments = fragmentId?.let(::listOf) ?: emptyList()
-        val totalProgression = mediaOverlayEngine?.currentAudioProgression()?.toDouble()
+        val totalProgression = mediaOverlayEngine?.readingProgression(clip)
             ?: lastLocator?.locations?.totalProgression
             ?: baseLocator.locations.totalProgression
         return baseLocator.copyWithLocations(
@@ -2116,9 +2146,7 @@ class ReaderViewModel @Inject constructor(
             clearReadAlongHighlight()
             return
         }
-        val tint = p.readAloudHighlightHex.removePrefix("#").toLongOrNull(16)
-            ?.let { (0xFF000000L or it).toInt() }
-            ?: 0xFFFFF59D.toInt()
+        val tint = parseHexColor(p.readAloudHighlightHex)?.toArgb() ?: 0xFFFFF59D.toInt()
         val decoration = Decoration(
             id = READ_ALONG_DECORATION_ID,
             locator = locator,
@@ -2143,12 +2171,10 @@ class ReaderViewModel @Inject constructor(
     private fun submitReadAloudCheckpoint(token: ReadAloudCheckpointToken, locator: Locator) {
         if (token != readAloudCheckpointToken) return
         val engine = mediaOverlayEngine ?: return
-        val progress = (engine.currentAudioProgression()
-            ?: locator.locations.totalProgression?.toFloat()
-            ?: currentReadingProgress().toFloat()).coerceIn(0f, 1f)
+        val progress = (locator.locations.totalProgression ?: currentReadingProgress()).toFloat().coerceIn(0f, 1f)
         latestReadAloudLocator = locator
-        latestReadAloudProgress = progress
         val audioPositionMs = engine.currentAbsoluteAudioPositionMs() ?: return
+        narrationStore.recordNarration(bookId, audioPositionMs / 1000.0)
         val json = runCatching { locator.toJSON().toString() }.getOrNull()
             ?: return
         readAloudCheckpointRevision += 1L
@@ -2184,8 +2210,9 @@ class ReaderViewModel @Inject constructor(
     }
 
     private fun handleReadAlongStopped(clearHighlight: Boolean) {
-        syncJob?.cancel()
+        cancelScheduledProgressPush()
         syncJob = null
+        narrationStore.clearNarration(bookId)
         readAlongSyncJob?.cancel()
         readAlongStartJob?.cancel()
         readAlongStartJob = null
@@ -2250,48 +2277,62 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
+    private fun narratedFragmentId(checkpoint: EpubBridgeCheckpoint): String? =
+        checkpoint.cssSelector
+            ?.takeIf { it.length > 1 && it.startsWith("#") && it.drop(1).none { c -> c in " >.:[" } }
+            ?.drop(1)
+            ?: checkpoint.nativeReadiumLocatorJson
+                ?.let { runCatching { Locator.fromJSON(org.json.JSONObject(it)) }.getOrNull() }
+                ?.locations
+                ?.fragments
+                ?.firstOrNull { it.isNotBlank() && !it.startsWith("epubcfi(") && '=' !in it }
+
+    private suspend fun restoredVisibleReadAlongClip(
+        nav: EpubNavigatorFragment,
+        fragmentId: String?,
+        preferredHref: String,
+    ): SmilClip? {
+        if (fragmentId == null || !isReadAlongFragmentVisible(fragmentId, nav)) return null
+        return mediaOverlayEngine?.bestClipForFragment(fragmentId, preferredHref)
+    }
+
     private suspend fun firstVisibleReadAlongClip(
         nav: EpubNavigatorFragment,
         preferredHref: String,
         resourceProgression: Double?,
     ): SmilClip? {
-        val visibleIds = visibleReadAlongFragmentIds(nav).orEmpty()
         val engine = mediaOverlayEngine ?: return null
-        return if (visibleIds.isNotEmpty()) {
-            engine.firstVisibleClip(visibleIds, preferredHref)
-        } else {
-            engine.firstClipForHref(preferredHref, resourceProgression)
+        for (fullyVisible in listOf(true, false)) {
+            val visibleIds = visibleReadAlongFragmentIds(nav, fullyVisible) ?: continue
+            engine.firstVisibleClip(visibleIds, preferredHref)?.let { return it }
         }
+        return engine.firstClipForHref(preferredHref, resourceProgression)
     }
 
-    private suspend fun visibleReadAlongFragmentIds(nav: EpubNavigatorFragment): List<String>? {
+    private suspend fun visibleReadAlongFragmentIds(nav: EpubNavigatorFragment, fullyVisible: Boolean): List<String>? {
         val script = """
             (function() {
+                const fullyVisible = $fullyVisible;
                 const elements = Array.from(document.querySelectorAll('[id]'));
                 return elements.filter((el) => {
                     const rect = el.getBoundingClientRect();
-                    return rect.bottom > 0 && rect.top < window.innerHeight && rect.right > 0 && rect.left < window.innerWidth && (rect.width > 0 || rect.height > 0);
+                    if (rect.width <= 0 && rect.height <= 0) return false;
+                    if (fullyVisible) {
+                        return rect.top >= 0 && rect.bottom <= window.innerHeight && rect.left >= 0 && rect.right <= window.innerWidth;
+                    }
+                    return rect.bottom > 0 && rect.top < window.innerHeight && rect.right > 0 && rect.left < window.innerWidth;
                 }).sort((a, b) => {
                     const ar = a.getBoundingClientRect();
                     const br = b.getBoundingClientRect();
                     if (Math.abs(ar.top - br.top) > 1) return ar.top - br.top;
                     return ar.left - br.left;
-                }).map((el) => el.id).slice(0, 32);
+                }).map((el) => el.id).slice(0, 64);
             })();
         """.trimIndent()
 
         val result = nav.evaluateJavascript(script) ?: return null
         val json = runCatching { org.json.JSONArray(result) }.getOrNull() ?: return null
-        val engine = mediaOverlayEngine ?: return null
-        val ids = buildList {
-            for (index in 0 until json.length()) {
-                val id = json.optString(index)
-                if (id.isNotBlank() && engine.hasClipFragment(id)) {
-                    add(id)
-                }
-            }
-        }
-        return ids.ifEmpty { null }
+        return (0 until json.length()).map(json::optString).filter { it.isNotBlank() }.ifEmpty { null }
     }
 
     private suspend fun isReadAlongFragmentVisible(fragmentId: String, nav: EpubNavigatorFragment): Boolean {
@@ -2389,6 +2430,78 @@ class ReaderViewModel @Inject constructor(
     private fun normalizePublicationHref(href: String?): String? =
         parsePublicationHref(href)?.normalize()?.removeFragment()?.toString()
 
+    fun preserveReadiumPositionAcross(viewportChange: () -> Unit) {
+        val nav = navigator
+        if (nav == null || engineNavigator != null || !readiumRestoreConfirmed || _state.value.readAlongPlaying) {
+            viewportChange()
+            return
+        }
+        viewportReanchorJob?.cancel()
+        viewportReanchorJob = viewModelScope.launch {
+            val reused = viewportAnchor?.takeIf { it.page == null || it.page == nav.currentLocator.value.pageKey() }
+            val anchor = reused?.locator ?: firstVisibleTextLocator(nav)
+            if (anchor == null) {
+                viewportAnchor = null
+                viewportChange()
+                return@launch
+            }
+            viewportAnchor = ViewportAnchor(anchor, page = null)
+            viewportChange()
+            delay(VIEWPORT_SETTLE_MS)
+            if (nav.currentLocator.value.href != anchor.href) {
+                viewportAnchor = null
+                return@launch
+            }
+            nav.go(anchor, animated = false)
+            delay(VIEWPORT_SETTLE_MS)
+            viewportAnchor = ViewportAnchor(anchor, page = nav.currentLocator.value.pageKey())
+        }
+    }
+
+    private fun Locator.pageKey(): String = "$href|${locations.progression}"
+
+    private suspend fun firstVisibleTextLocator(nav: EpubNavigatorFragment): Locator? {
+        val current = nav.currentLocator.value
+        val expectedPath = org.json.JSONObject.quote(current.href.toString())
+        val script = """
+            (function() {
+                if (!decodeURIComponent(window.location.pathname).endsWith(decodeURIComponent($expectedPath))) return null;
+                const visible = (r) => r.width > 0 && r.height > 0 && r.right > 0 && r.left < window.innerWidth && r.bottom > 0 && r.top < window.innerHeight;
+                const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+                const range = document.createRange();
+                for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+                    const text = node.textContent;
+                    if (!text.trim()) continue;
+                    range.selectNodeContents(node);
+                    if (!Array.from(range.getClientRects()).some(visible)) continue;
+                    for (let i = 0; i < text.length; i++) {
+                        if (!text[i].trim()) continue;
+                        range.setStart(node, i);
+                        range.setEnd(node, i + 1);
+                        if (Array.from(range.getClientRects()).some(visible)) {
+                            return { before: text.slice(Math.max(0, i - 64), i), highlight: text.slice(i, i + 64) };
+                        }
+                    }
+                }
+                return null;
+            })();
+        """.trimIndent()
+        val json = nav.evaluateJavascript(script)
+            ?.let { runCatching { org.json.JSONObject(it) }.getOrNull() }
+            ?: return null
+        return current.copy(
+            locations = current.locations.copy(otherLocations = emptyMap()),
+            text = Locator.Text(
+                before = json.optString("before").ifEmpty { null },
+                highlight = json.optString("highlight"),
+            ),
+        )
+    }
+
+    fun noteReadiumUserInteraction() {
+        if (navigator != null && engineNavigator == null) readiumUserInteractionPending = true
+    }
+
     fun pageForward() {
         engineNavigator?.let {
             it.goForward()
@@ -2440,44 +2553,6 @@ class ReaderViewModel @Inject constructor(
                 }
             }
         }
-    }
-
-    fun seekToPosition(position: Int) {
-        pageMarkers.getOrNull(position - 1)?.let {
-            seekToProgress(it.progression.toFloat())
-            return
-        }
-        val totalPositions = _state.value.totalPages
-        if (totalPositions > 0) {
-            seekToProgress((position.toFloat() / totalPositions).coerceIn(0f, 1f))
-        }
-    }
-
-    fun handleSelectionAction(itemId: Int) {
-        viewModelScope.launch {
-            val alternate = engineNavigator
-            val locator = alternate?.currentSelection
-                ?: navigator
-                    ?.let { it as? org.readium.r2.navigator.SelectableNavigator }
-                    ?.currentSelection()
-                    ?.locator
-                ?: return@launch
-            val text = locator.text.highlight ?: ""
-            when (itemId) {
-                1 -> { addAnnotation(locator, AnnotationStyle.HIGHLIGHT, "#FFF59D", "", text); clearSelection() }
-                2 -> { addAnnotation(locator, AnnotationStyle.UNDERLINE, "#FFF59D", "", text); clearSelection() }
-                3 -> { addAnnotation(locator, AnnotationStyle.STRIKETHROUGH, "#FFF59D", "", text); clearSelection() }
-                4 -> { addAnnotation(locator, AnnotationStyle.SQUIGGLY, "#FFF59D", "", text); clearSelection() }
-                5 -> {
-                    setSelection(locator, text)
-                    _state.update { it.copy(showAnnotationDialog = true) }
-                }
-            }
-        }
-    }
-
-    fun setSelection(locator: Locator?, text: String) {
-        _state.update { it.copy(pendingSelection = locator, selectionText = text) }
     }
 
     fun clearSelection() {
@@ -2587,16 +2662,6 @@ class ReaderViewModel @Inject constructor(
         _state.update { it.copy(undoableDelete = a) }
     }
 
-    fun consumeUndoableDelete(): ReaderAnnotation? {
-        val a = _state.value.undoableDelete
-        _state.update { it.copy(undoableDelete = null) }
-        return a
-    }
-
-    fun restoreAnnotation(id: String) {
-        viewModelScope.launch { annotationRepo.restore(id) }
-    }
-
     fun showDecorationPopover(annotationId: String) {
         val a = _state.value.annotations.firstOrNull { it.id == annotationId }
             ?: _state.value.bookmarks.firstOrNull { it.id == annotationId }
@@ -2650,15 +2715,6 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
-    fun hasBookmarkAtCurrentLocation(): Boolean {
-        val section = state.value.currentSection
-        return state.value.bookmarks.any { it.chapterId == section || it.selectedText == section }
-    }
-
-    suspend fun cachedProgressAndLocator(): Pair<Float, String?>? {
-        return cachedReaderProgress()?.let { it.progress to it.locator }
-    }
-
     suspend fun cachedReaderProgress(): CachedReaderProgress? {
         val dao = db?.bookCacheDao() ?: return null
         val cached = dao.getByIdAndConnection(bookId, bookConnectionId) ?: return null
@@ -2676,22 +2732,6 @@ class ReaderViewModel @Inject constructor(
             ?: navigator?.currentLocator?.value?.locations?.totalProgression
         return locatorProgress
             ?: (_state.value.progressPct.toDouble() / 100.0)
-    }
-
-    fun seekToLocator(locatorJson: String?) {
-        if (locatorJson.isNullOrBlank()) return
-        viewModelScope.launch {
-            val locator = runCatching { Locator.fromJSON(org.json.JSONObject(locatorJson)) }
-                .getOrNull()
-                ?: EpubBridgeCheckpointCodec.decode(locatorJson)
-                    ?.let(EpubBridgeCheckpointCodec::toReadiumLocatorJson)
-                    ?.let { runCatching { Locator.fromJSON(org.json.JSONObject(it)) }.getOrNull() }
-                ?: return@launch
-            engineNavigator?.goToLocator(locator) ?: navigator?.let {
-                readiumUserInteractionPending = true
-                if (!it.go(locator)) readiumUserInteractionPending = false
-            }
-        }
     }
 
     fun seekToAnnotation(a: ReaderAnnotation) {
@@ -2801,7 +2841,7 @@ class ReaderViewModel @Inject constructor(
             if (AnnotationKind.parse(a.kind) != AnnotationKind.HIGHLIGHT) return@mapNotNull null
             val locator = try { Locator.fromJSON(org.json.JSONObject(locJson)) }
                           catch (_: Exception) { null } ?: return@mapNotNull null
-            val tint = parseColor(annotationRenderColorHex(a.colorHex, einkActive, theme))
+            val tint = parseHexColor(annotationRenderColorHex(a.colorHex, einkActive, theme))?.toArgb() ?: Color.YELLOW
             val style: Decoration.Style = when (AnnotationStyle.parse(a.style)) {
                 AnnotationStyle.HIGHLIGHT     -> Decoration.Style.Highlight(tint = tint, isActive = false)
                 AnnotationStyle.UNDERLINE     -> Decoration.Style.Underline(tint = tint, isActive = false)
@@ -2814,12 +2854,6 @@ class ReaderViewModel @Inject constructor(
         viewModelScope.launch {
             nav.applyDecorations(decorations, "annotations")
         }
-    }
-
-    @ColorInt private fun parseColor(hex: String): Int = try {
-        Color.parseColor(if (hex.startsWith("#")) hex else "#$hex")
-    } catch (_: Exception) {
-        Color.YELLOW
     }
 
     private var pendingConflictResolver: kotlinx.coroutines.CompletableDeferred<ProgressConflictChoice>? = null
@@ -2840,65 +2874,74 @@ class ReaderViewModel @Inject constructor(
         pendingConflictResolver?.complete(choice)
     }
 
-    private fun scheduleSync(locator: Locator) {
+    private val progressPushMutex = Mutex()
+
+    private suspend fun runProgressPush(push: suspend () -> Unit) {
+        progressPushMutex.withLock { withContext(NonCancellable) { push() } }
+    }
+
+    private val progressPushWindow = ProgressPushWindow(PROGRESS_PUSH_DEBOUNCE_MS, PROGRESS_PUSH_MAX_WAIT_MS)
+
+    private fun scheduleProgressPush(push: suspend () -> Unit) {
+        val waitMs = progressPushWindow.delayMs(android.os.SystemClock.elapsedRealtime())
         syncJob?.cancel()
         syncJob = viewModelScope.launch {
-            delay(5_000)
-            pushProgress(locator)
+            delay(waitMs)
+            progressPushWindow.reset()
+            runProgressPush(push)
         }
     }
 
-    private fun scheduleFoliateSync() {
+    private fun cancelScheduledProgressPush() {
         syncJob?.cancel()
-        syncJob = viewModelScope.launch {
-            delay(5_000)
-            persistFoliateCheckpoint()
-        }
+        progressPushWindow.reset()
     }
 
-    private fun scheduleReadiumCheckpointSync(nav: EpubNavigatorFragment) {
-        syncJob?.cancel()
-        syncJob = viewModelScope.launch {
-            delay(5_000)
-            persistCurrentReadiumCheckpoint(nav)
-        }
-    }
+    private fun scheduleSync(locator: Locator) = scheduleProgressPush { pushProgress(locator) }
+
+    private fun scheduleFoliateSync() = scheduleProgressPush { persistFoliateCheckpoint() }
+
+    private fun scheduleReadiumCheckpointSync(nav: EpubNavigatorFragment) =
+        scheduleProgressPush { persistCurrentReadiumCheckpoint(nav) }
 
     fun flushProgress() {
         if (_state.value.readAlongActive) {
             submitCurrentReadAloudCheckpoint()
             val locator = latestReadAloudLocator ?: return
-            viewModelScope.launch {
+            applicationScope.launch(Dispatchers.Main.immediate) {
                 readAloudCheckpoints.flush(bookId, bookSource, bookConnectionId)
-                pushProgress(locator)
+                runProgressPush { pushProgress(locator) }
             }
             return
         }
         if (engineNavigator != null) {
             if (foliateRestoreConfirmed && foliateCheckpointSync.hasPending) {
-                syncJob?.cancel()
+                cancelScheduledProgressPush()
                 syncJob = viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
-                    persistFoliateCheckpoint()
+                    runProgressPush { persistFoliateCheckpoint() }
                 }
             }
             return
         }
         val nav = navigator ?: return
-        syncJob?.cancel()
-        viewModelScope.launch {
-            if (
-                readiumRestoreConfirmed &&
-                readiumCheckpointDirty &&
-                epubCheckpointLease != null
-            ) {
-                persistCurrentReadiumCheckpoint(nav)
-            } else if (epubCheckpointLease == null) {
-                pushProgress(nav.currentLocator.value)
+        cancelScheduledProgressPush()
+        applicationScope.launch(Dispatchers.Main.immediate) {
+            runProgressPush {
+                if (
+                    readiumRestoreConfirmed &&
+                    readiumCheckpointDirty &&
+                    epubCheckpointLease != null
+                ) {
+                    persistCurrentReadiumCheckpoint(nav)
+                } else if (epubCheckpointLease == null) {
+                    pushProgress(nav.currentLocator.value)
+                }
             }
         }
     }
 
     private var lastPushedPct: Float = -1f
+    private var lastPushedLocatorJson: String? = null
 
     private suspend fun persistFoliateCheckpoint() {
         if (!foliateRestoreConfirmed || !foliateCheckpointSync.hasPending) return
@@ -2939,21 +2982,26 @@ class ReaderViewModel @Inject constructor(
         persistReadiumCheckpoint(capture.locator, capture.checkpoint)
     }
 
+    private var progressPushesHeld = false
+
+    fun holdProgressPushes() {
+        progressPushesHeld = true
+    }
+
     private suspend fun pushCanonicalProgress(checkpoint: EpubBridgeCheckpoint): Result<Unit> {
         val pct = checkpoint.totalProgression?.toFloat()?.coerceIn(0f, 1f)
             ?: return Result.failure(IllegalArgumentException("Missing reading progress"))
+        if (progressPushesHeld) return Result.success(Unit)
         val encoded = EpubBridgeCheckpointCodec.encode(checkpoint)
-        viewModelScope.launch {
-            runCatching {
-                val book = Book(
-                    id = bookId,
-                    title = bookTitle.ifBlank { bookId },
-                    source = bookSource,
-                    mediaType = com.enve.core.data.model.AppMediaType.EBOOK,
-                    connectionId = bookConnectionId,
-                )
-                koreaderHub.pushIfConfigured(book, pct, encoded)
-            }
+        val book = Book(
+            id = bookId,
+            title = bookTitle.ifBlank { bookId },
+            source = bookSource,
+            mediaType = com.enve.core.data.model.AppMediaType.EBOOK,
+            connectionId = bookConnectionId,
+        )
+        applicationScope.launch {
+            runSuspendCatching { koreaderHub.pushIfConfigured(book, pct, encoded) }
         }
         return aggregatorRepository.syncEbookProgress(
             bookId = bookId,
@@ -2963,7 +3011,14 @@ class ReaderViewModel @Inject constructor(
             page = _state.value.currentPage.takeIf { it > 0 },
             pageCount = _state.value.totalPages.takeIf { it > 0 },
             connectionId = bookConnectionId,
-        )
+        ).onSuccess {
+            rewindTracker.recordOutboundWrite(
+                key = RemoteProgressWriteKey.of(book),
+                percentage = pct,
+                positionMs = null,
+                locatorJson = encoded,
+            )
+        }
     }
 
     private suspend fun pushProgress(
@@ -2973,12 +3028,13 @@ class ReaderViewModel @Inject constructor(
         val readAlongActive = _state.value.readAlongActive
         val effectiveLocator = if (readAlongActive) latestReadAloudLocator ?: return else locator
         val pct = if (readAlongActive) {
-            latestReadAloudProgress ?: effectiveLocator.locations.totalProgression?.toFloat() ?: return
+            effectiveLocator.locations.totalProgression?.toFloat() ?: return
         } else {
             effectiveLocator.locations.totalProgression?.toFloat() ?: 0f
         }
-        val json = locatorJsonOverride
-            ?: try { effectiveLocator.toJSON().toString() } catch (_: Exception) { null }
+        val json = locatorJsonOverride ?: effectiveLocator.toJSONOrNull()
+        val tracksUnleasedPosition = !readAlongActive && epubCheckpointLease == null
+        if (tracksUnleasedPosition && unleasedReadiumPosition.isUnchanged(json)) return
 
         val isLikelyInitialEmit = pct < 0.005f && lastPushedPct < 0f
         if (readAlongActive) {
@@ -2994,13 +3050,16 @@ class ReaderViewModel @Inject constructor(
                     nowMs = System.currentTimeMillis(),
                 )
             }
+            if (tracksUnleasedPosition) unleasedReadiumPosition.confirm(json)
         }
 
-        if (pct < 0.005f) return
-        if (kotlin.math.abs(pct - lastPushedPct) < 0.001f) return
+        if (pct < 0.005f || progressPushesHeld) return
+        val narratedSentenceMoved = readAlongActive && json != lastPushedLocatorJson
+        if (kotlin.math.abs(pct - lastPushedPct) < 0.001f && !narratedSentenceMoved) return
         lastPushedPct = pct
+        lastPushedLocatorJson = json
 
-        viewModelScope.launch {
+        applicationScope.launch {
             try {
                 val book = com.enve.core.data.model.Book(
                     id = bookId,
@@ -3025,7 +3084,20 @@ class ReaderViewModel @Inject constructor(
                 page = _state.value.currentPage.takeIf { it > 0 },
                 pageCount = _state.value.totalPages.takeIf { it > 0 },
                 connectionId = bookConnectionId,
-            )
+            ).onSuccess {
+                rewindTracker.recordOutboundWrite(
+                    key = RemoteProgressWriteKey.of(Book(
+                        id = bookId,
+                        title = bookTitle.ifBlank { bookId },
+                        source = bookSource,
+                        mediaType = com.enve.core.data.model.AppMediaType.EBOOK,
+                        connectionId = bookConnectionId,
+                    )),
+                    percentage = pct,
+                    positionMs = null,
+                    locatorJson = json,
+                )
+            }
             return
         }
 
@@ -3050,57 +3122,9 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
-    fun saveCurrentAsPreset(name: String) {
-        val p = _state.value.prefs
-        viewModelScope.launch {
-            val preset = LayoutPreset(
-                id = UUID.randomUUID().toString(),
-                name = name,
-                theme = p.theme.name,
-                fontFamily = p.font.name,
-                fontSize = p.fontSize,
-                lineHeight = p.lineHeight,
-                pageMargins = p.pageMargins,
-                wordSpacing = p.wordSpacing,
-                letterSpacing = p.letterSpacing,
-                fontWeight = p.fontWeight,
-                paragraphSpacing = p.paragraphSpacing,
-                paragraphIndent = p.paragraphIndent,
-                scroll = p.scroll,
-                publisherStyles = p.publisherStyles,
-                justified = p.justified,
-                columnCount = p.columns.name,
-            )
-            db?.layoutPresetDao()?.insert(preset)
-        }
-    }
-
-    fun applyPreset(preset: LayoutPreset) {
-        val newPrefs = ReaderPreferences(
-            theme = try { ReaderTheme.valueOf(preset.theme) } catch (_: Exception) { ReaderTheme.DARK },
-            font = try { ReaderFont.valueOf(preset.fontFamily) } catch (_: Exception) { ReaderFont.SERIF },
-            fontSize = preset.fontSize,
-            lineHeight = preset.lineHeight,
-            pageMargins = preset.pageMargins,
-            wordSpacing = preset.wordSpacing,
-            letterSpacing = preset.letterSpacing,
-            fontWeight = preset.fontWeight,
-            paragraphSpacing = preset.paragraphSpacing,
-            paragraphIndent = preset.paragraphIndent,
-            scroll = preset.scroll,
-            publisherStyles = preset.publisherStyles,
-            justified = preset.justified,
-            columns = try { ReaderColumns.valueOf(preset.columnCount) } catch (_: Exception) { ReaderColumns.AUTO },
-        )
-        updatePreferences(newPrefs)
-    }
-
-    fun deletePreset(preset: LayoutPreset) {
-        viewModelScope.launch { db?.layoutPresetDao()?.delete(preset) }
-    }
-
     override fun onCleared() {
         submitCurrentReadAloudCheckpoint()
+        narrationStore.clearNarration(bookId)
         super.onCleared()
         savePrefsJob?.cancel()
         syncJob?.cancel()
@@ -3118,8 +3142,7 @@ class ReaderViewModel @Inject constructor(
         val pubToClose = publication
         publication = null
         if (pubToClose != null) {
-            @OptIn(kotlinx.coroutines.DelicateCoroutinesApi::class)
-            kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+            applicationScope.launch(Dispatchers.IO) {
                 runCatching { pubToClose.close() }
             }
         }
@@ -3178,7 +3201,7 @@ class ReaderViewModel @Inject constructor(
             }
         }
         sessionStartProgress = null
-        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO).launch {
+        applicationScope.launch(Dispatchers.IO) {
             val historySession = HistorySession(
                 id = UUID.randomUUID().toString(),
                 bookId = capturedBookId,

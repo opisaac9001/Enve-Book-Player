@@ -65,12 +65,28 @@ nonisolated public struct Book: Identifiable, Codable, Equatable, Sendable {
     var providerId: UUID
     var libraryId: String
 
-    nonisolated static func normalizedFractionProgress(_ rawProgress: Double?) -> Double? {
-        guard let rawProgress else { return nil }
-        if rawProgress.isNaN || !rawProgress.isFinite { return nil }
+    nonisolated static let finishedProgressThreshold = 0.99
 
-        let normalized = rawProgress > 1.0 ? (rawProgress / 100.0) : rawProgress
-        return min(max(normalized, 0.0), 1.0)
+    nonisolated static func normalizedFractionProgress(_ rawProgress: Double?) -> Double? {
+        guard let rawProgress, rawProgress.isFinite else { return nil }
+        return min(max(rawProgress, 0.0), 1.0)
+    }
+
+    nonisolated static func audioProgressFraction(currentTime: TimeInterval, duration: TimeInterval?) -> Double {
+        guard let duration, duration > 0 else { return 0 }
+        return min(max(currentTime / duration, 0), 1)
+    }
+
+    nonisolated static func storedProgressFraction(
+        isEbook: Bool,
+        currentTime: TimeInterval,
+        duration: TimeInterval?,
+        ebookProgress: Double?
+    ) -> Double {
+        if isEbook {
+            return normalizedFractionProgress(ebookProgress) ?? 0
+        }
+        return audioProgressFraction(currentTime: currentTime, duration: duration)
     }
 
     nonisolated static func progressFromEbookLocator(_ locator: String?) -> Double? {
@@ -129,6 +145,7 @@ nonisolated public struct Book: Identifiable, Codable, Equatable, Sendable {
         case storyteller
         case bookOrbit = "bookorbit"
         case silo
+        case oneDrive = "onedrive"
 
         init(from decoder: Decoder) throws {
             let container = try decoder.singleValueContainer()
@@ -149,6 +166,8 @@ nonisolated public struct Book: Identifiable, Codable, Equatable, Sendable {
                 self = .bookOrbit
             case "silo":
                 self = .silo
+            case "onedrive", "one-drive":
+                self = .oneDrive
             case "torbox":
                 self = .torbox
             default:
@@ -495,7 +514,7 @@ nonisolated public struct Book: Identifiable, Codable, Equatable, Sendable {
         currentTime = try c.decodeIfPresent(TimeInterval.self, forKey: .currentTime) ?? 0
         isFinished = try c.decodeIfPresent(Bool.self, forKey: .isFinished) ?? false
         lastUpdate = try c.decodeIfPresent(Date.self, forKey: .lastUpdate) ?? Date()
-        providerId = try c.decodeIfPresent(UUID.self, forKey: .providerId) ?? UUID()
+        providerId = try c.decode(UUID.self, forKey: .providerId)
         libraryId = try c.decodeIfPresent(String.self, forKey: .libraryId) ?? ""
 
         mediaType = try c.decodeIfPresent(AppMediaType.self, forKey: .mediaType) ?? .audiobook
@@ -531,11 +550,21 @@ nonisolated public struct Book: Identifiable, Codable, Equatable, Sendable {
 
         if source == .local || source == .smb {
             if let url = URL(string: thumb), url.scheme != nil {
+                if url.isFileURL {
+                    let rebasedURL = BookRecord.rebaseSandboxPath(url.path)
+                    return FileManager.default.fileExists(atPath: rebasedURL.path)
+                        ? rebasedURL
+                        : fallbackCachedCoverURL()
+                }
                 return url
             }
             let fileURL = URL(fileURLWithPath: thumb)
             if FileManager.default.fileExists(atPath: fileURL.path) {
                 return fileURL
+            }
+            let rebasedURL = BookRecord.rebaseSandboxPath(thumb)
+            if FileManager.default.fileExists(atPath: rebasedURL.path) {
+                return rebasedURL
             }
             return fallbackCachedCoverURL()
         }
@@ -544,6 +573,10 @@ nonisolated public struct Book: Identifiable, Codable, Equatable, Sendable {
             let fileURL = URL(fileURLWithPath: thumb)
             if FileManager.default.fileExists(atPath: fileURL.path) {
                 return fileURL
+            }
+            let rebasedURL = BookRecord.rebaseSandboxPath(thumb)
+            if FileManager.default.fileExists(atPath: rebasedURL.path) {
+                return rebasedURL
             }
             return fallbackCachedCoverURL()
         }
@@ -589,13 +622,19 @@ nonisolated public struct Book: Identifiable, Codable, Equatable, Sendable {
     }
 
     nonisolated var progressPercentage: Double {
+        Self.storedProgressFraction(
+            isEbook: mediaType == .ebook,
+            currentTime: currentTime,
+            duration: duration,
+            ebookProgress: ebookProgress
+        )
+    }
+
+    nonisolated var canonicalProgress: Double {
         if mediaType == .ebook {
-            return Self.normalizedFractionProgress(ebookProgress) ?? 0.0
+            return canonicalEbookProgress
         }
-        guard let duration = duration, duration > 0 else {
-            return 0.0
-        }
-        return min(currentTime / duration, 1.0)
+        return Self.audioProgressFraction(currentTime: currentTime, duration: duration)
     }
 
     var isStarted: Bool {
@@ -608,10 +647,10 @@ nonisolated public struct Book: Identifiable, Codable, Equatable, Sendable {
     nonisolated var isCompleted: Bool {
         if isFinished { return true }
         if mediaType == .ebook {
-            return (Self.normalizedFractionProgress(ebookProgress) ?? 0) >= 0.99
+            return (Self.normalizedFractionProgress(ebookProgress) ?? 0) >= Book.finishedProgressThreshold
         }
         guard let duration = duration else { return false }
-        return currentTime >= duration * 0.99
+        return currentTime >= duration * Book.finishedProgressThreshold
     }
 
     nonisolated var isReadAloudBook: Bool { readAloudSourceStableId != nil }
@@ -671,6 +710,8 @@ nonisolated public struct Book: Identifiable, Codable, Equatable, Sendable {
             return "bookorbit:\(backendId ?? providerId.uuidString):\(id)"
         case .silo:
             return "silo:\(backendId ?? providerId.uuidString):\(id)"
+        case .oneDrive:
+            return "onedrive:\(backendId ?? providerId.uuidString):\(id)"
         }
     }
 

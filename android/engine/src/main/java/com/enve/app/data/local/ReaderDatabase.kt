@@ -652,6 +652,82 @@ val MIGRATION_23_24 = object : Migration(23, 24) {
     }
 }
 
+val MIGRATION_24_25 = object : Migration(24, 25) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        if (!db.hasColumn("book_cache", "opdsAcquisitionUrl")) {
+            db.execSQL("ALTER TABLE book_cache ADD COLUMN opdsAcquisitionUrl TEXT")
+            db.execSQL(
+                """
+                UPDATE book_cache
+                SET opdsAcquisitionUrl = id
+                WHERE source = 'OPDS'
+                  AND (id LIKE 'http://%' OR id LIKE 'https://%')
+                """.trimIndent(),
+            )
+        }
+        if (!db.hasColumn("book_cache", "opdsProgressionUrl")) {
+            db.execSQL("ALTER TABLE book_cache ADD COLUMN opdsProgressionUrl TEXT")
+        }
+        db.ensureTableAdditive(
+            tableName = "opds_progression_state",
+            createSql = """
+                CREATE TABLE IF NOT EXISTS opds_progression_state (
+                    bookKey TEXT NOT NULL PRIMARY KEY,
+                    unhandledReferences TEXT NOT NULL,
+                    updatedAt INTEGER NOT NULL
+                )
+            """.trimIndent(),
+            addColumnSql = mapOf(
+                "unhandledReferences" to "ALTER TABLE opds_progression_state ADD COLUMN unhandledReferences TEXT NOT NULL DEFAULT '[]'",
+                "updatedAt" to "ALTER TABLE opds_progression_state ADD COLUMN updatedAt INTEGER NOT NULL DEFAULT 0",
+            ),
+        )
+    }
+}
+
+val MIGRATION_25_26 = object : Migration(25, 26) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        if (!db.hasColumn("opds_progression_state", "authenticateUrl")) {
+            db.execSQL("ALTER TABLE opds_progression_state ADD COLUMN authenticateUrl TEXT")
+        }
+        if (!db.hasColumn("opds_progression_state", "additionalMembers")) {
+            db.execSQL("ALTER TABLE opds_progression_state ADD COLUMN additionalMembers TEXT")
+        }
+        db.ensureTableAdditive(
+            tableName = "opds_acquisition",
+            addColumnSql = OPDS_ACQUISITION_COLUMNS,
+            createSql = """
+                CREATE TABLE IF NOT EXISTS opds_acquisition (
+                    rowKey TEXT NOT NULL PRIMARY KEY,
+                    bookKey TEXT NOT NULL,
+                    position INTEGER NOT NULL,
+                    kind TEXT NOT NULL,
+                    href TEXT NOT NULL,
+                    mediaType TEXT NOT NULL,
+                    format TEXT NOT NULL,
+                    drm TEXT NOT NULL,
+                    title TEXT,
+                    requiresIndirectFetch INTEGER NOT NULL,
+                    indirectJson TEXT NOT NULL,
+                    priceCurrency TEXT,
+                    priceValue REAL,
+                    availabilityState TEXT,
+                    availabilitySince TEXT,
+                    availabilityUntil TEXT,
+                    copiesTotal INTEGER,
+                    copiesAvailable INTEGER,
+                    holdsTotal INTEGER,
+                    holdsPosition INTEGER,
+                    updatedAt INTEGER NOT NULL
+                )
+            """.trimIndent(),
+            indexSql = listOf(
+                "CREATE INDEX IF NOT EXISTS index_opds_acquisition_bookKey ON opds_acquisition (bookKey)",
+            ),
+        )
+    }
+}
+
 private fun SupportSQLiteDatabase.hasColumn(tableName: String, columnName: String): Boolean {
     query("PRAGMA table_info(`$tableName`)").use { cursor ->
         val nameIndex = cursor.getColumnIndex("name")
@@ -685,6 +761,53 @@ private fun SupportSQLiteDatabase.ensureTable(
     indexSql.forEach(::execSQL)
 }
 
+private fun SupportSQLiteDatabase.ensureTableAdditive(
+    tableName: String,
+    createSql: String,
+    addColumnSql: Map<String, String> = emptyMap(),
+    indexSql: List<String> = emptyList(),
+) {
+    execSQL(createSql)
+    val existing = columnsOf(tableName)
+    addColumnSql.forEach { (column, sql) -> if (column !in existing) execSQL(sql) }
+    indexSql.forEach(::execSQL)
+}
+
+private fun SupportSQLiteDatabase.columnsOf(tableName: String): Set<String> {
+    val found = mutableSetOf<String>()
+    query("PRAGMA table_info(`$tableName`)").use { cursor ->
+        val nameIndex = cursor.getColumnIndex("name")
+        while (cursor.moveToNext()) {
+            found += cursor.getString(nameIndex)
+        }
+    }
+    return found
+}
+
+private val OPDS_ACQUISITION_COLUMNS = mapOf(
+    "bookKey" to "ALTER TABLE opds_acquisition ADD COLUMN bookKey TEXT NOT NULL DEFAULT ''",
+    "position" to "ALTER TABLE opds_acquisition ADD COLUMN position INTEGER NOT NULL DEFAULT 0",
+    "kind" to "ALTER TABLE opds_acquisition ADD COLUMN kind TEXT NOT NULL DEFAULT 'GENERIC'",
+    "href" to "ALTER TABLE opds_acquisition ADD COLUMN href TEXT NOT NULL DEFAULT ''",
+    "mediaType" to "ALTER TABLE opds_acquisition ADD COLUMN mediaType TEXT NOT NULL DEFAULT ''",
+    "format" to "ALTER TABLE opds_acquisition ADD COLUMN format TEXT NOT NULL DEFAULT 'UNKNOWN'",
+    "drm" to "ALTER TABLE opds_acquisition ADD COLUMN drm TEXT NOT NULL DEFAULT 'NONE'",
+    "title" to "ALTER TABLE opds_acquisition ADD COLUMN title TEXT",
+    "requiresIndirectFetch" to
+        "ALTER TABLE opds_acquisition ADD COLUMN requiresIndirectFetch INTEGER NOT NULL DEFAULT 0",
+    "indirectJson" to "ALTER TABLE opds_acquisition ADD COLUMN indirectJson TEXT NOT NULL DEFAULT '[]'",
+    "priceCurrency" to "ALTER TABLE opds_acquisition ADD COLUMN priceCurrency TEXT",
+    "priceValue" to "ALTER TABLE opds_acquisition ADD COLUMN priceValue REAL",
+    "availabilityState" to "ALTER TABLE opds_acquisition ADD COLUMN availabilityState TEXT",
+    "availabilitySince" to "ALTER TABLE opds_acquisition ADD COLUMN availabilitySince TEXT",
+    "availabilityUntil" to "ALTER TABLE opds_acquisition ADD COLUMN availabilityUntil TEXT",
+    "copiesTotal" to "ALTER TABLE opds_acquisition ADD COLUMN copiesTotal INTEGER",
+    "copiesAvailable" to "ALTER TABLE opds_acquisition ADD COLUMN copiesAvailable INTEGER",
+    "holdsTotal" to "ALTER TABLE opds_acquisition ADD COLUMN holdsTotal INTEGER",
+    "holdsPosition" to "ALTER TABLE opds_acquisition ADD COLUMN holdsPosition INTEGER",
+    "updatedAt" to "ALTER TABLE opds_acquisition ADD COLUMN updatedAt INTEGER NOT NULL DEFAULT 0",
+)
+
 @Database(
     entities = [
         ReaderAnnotation::class,
@@ -704,8 +827,10 @@ private fun SupportSQLiteDatabase.ensureTable(
         com.enve.app.storyalign.StoryAlignJobEntity::class,
         PlaybackQueueEntry::class,
         EpubBridgeCheckpointEntity::class,
+        com.enve.app.data.opds.OpdsProgressionStateEntity::class,
+        com.enve.app.data.opds.OpdsAcquisitionEntity::class,
     ],
-    version  = 24,
+    version  = 26,
     exportSchema = false,
 )
 abstract class ReaderDatabase : RoomDatabase() {
@@ -725,6 +850,9 @@ abstract class ReaderDatabase : RoomDatabase() {
     abstract fun storyAlignJobDao(): com.enve.app.storyalign.StoryAlignJobDao
     abstract fun playbackQueueDao(): PlaybackQueueDao
     abstract fun epubBridgeCheckpointDao(): EpubBridgeCheckpointDao
+    abstract fun opdsProgressionStateDao(): com.enve.app.data.opds.OpdsProgressionStateDao
+
+    abstract fun opdsAcquisitionDao(): com.enve.app.data.opds.OpdsAcquisitionDao
 
     companion object {
         @Volatile private var INSTANCE: ReaderDatabase? = null
@@ -736,7 +864,7 @@ abstract class ReaderDatabase : RoomDatabase() {
                     ReaderDatabase::class.java,
                     "reader.db",
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26)
 
                     .fallbackToDestructiveMigrationOnDowngrade(dropAllTables = true)
                     .build()

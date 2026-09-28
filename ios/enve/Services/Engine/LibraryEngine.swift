@@ -838,7 +838,7 @@ final class LibraryEngine {
             guard !book.isFinished, !book.hideFromContinue,
                 let progress = BookProgressStore.shared.loadProgress(for: book),
                 progress.progress > 0,
-                book.duration.map({ progress.progress < $0 * 0.99 }) ?? true
+                book.duration.map({ progress.progress < $0 * Book.finishedProgressThreshold }) ?? true
             else {
                 return nil
             }
@@ -1397,10 +1397,16 @@ final class LibraryEngine {
         WorkOverrideStore.shared.dismissSuggestion(id: suggestion.id)
     }
 
-    func seriesAggregates(mediaScope: [String]) async -> [BrowseSeriesAggregate] {
+    func seriesAggregates(mediaScope: [String], providerId: UUID? = nil, libraryId: String? = nil) async -> [BrowseSeriesAggregate] {
         var bucket: [String: (count: Int, completedCount: Int, thumb: String?, matchingNames: Set<String>)] = [:]
         for raw in mediaScope {
-            for aggregate in await appState.bookStore.browseSeriesAggregates(mediaType: raw) {
+            let aggregates =
+                if let providerId {
+                    await appState.bookStore.browseSeriesAggregates(mediaType: raw, providerId: providerId, libraryId: libraryId)
+                } else {
+                    await appState.bookStore.browseSeriesAggregates(mediaType: raw)
+                }
+            for aggregate in aggregates {
                 var entry = bucket[aggregate.name] ?? (0, 0, nil, [])
                 entry.count += aggregate.bookCount
                 entry.completedCount += aggregate.completedBookCount

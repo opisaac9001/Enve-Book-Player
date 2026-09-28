@@ -11,6 +11,18 @@ enum StorytellerReadaloudOfflinePrep {
         let chapters: [Chapter]
     }
 
+    static func validate(epubURL: URL) async throws {
+        let archive = try await Archive(url: epubURL, accessMode: .read)
+        let entries = try await archive.entries().filter { $0.type == .file }
+        let hasSMIL = entries.contains { $0.path.lowercased().hasSuffix(".smil") }
+        let hasAudio = entries.contains {
+            AudiobookFormat.from(fileExtension: ($0.path.lowercased() as NSString).pathExtension) != nil
+        }
+        guard hasSMIL && hasAudio else {
+            throw ProviderError.serverError("The read-aloud EPUB is missing its synchronized text or embedded audio. Download the aligned read-aloud edition from Storyteller.")
+        }
+    }
+
     static func prepare(epubURL: URL, book: Book) async -> Result {
         let bookId = book.downloadKey
         let destinationDir = LocalStorageManager.shared.bookAudioDirectory(for: bookId)

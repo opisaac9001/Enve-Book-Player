@@ -113,6 +113,29 @@ struct ReaderTOCIndexTests {
         #expect(index.entry(for: try locator(href: "OPS/absent.xhtml")) == nil)
     }
 
+    @Test func aSingleFileBookResolvesTheEntryFromItsAnchors() throws {
+        let index = ReaderTOCIndex()
+        index.entries = [
+            entry(id: "a", title: "One", href: "book.html#ch1"),
+            entry(id: "b", title: "Two", href: "book.html#ch2"),
+            entry(id: "c", title: "Three", href: "book.html#ch3"),
+        ]
+        index.loadAnchorFractions(["a": 0.01, "b": 0.4, "c": 0.8])
+
+        #expect(index.entry(for: try locator(href: "book.html", progression: 0))?.id == "a")
+        #expect(index.entry(for: try locator(href: "book.html", progression: 0.55))?.id == "b")
+        #expect(index.entry(for: try locator(href: "book.html", progression: 0.9))?.id == "c")
+        #expect(index.entry(for: try locator(href: "book.html", fragments: ["ch3"], progression: 0.1))?.id == "c")
+
+        let built = try #require(
+            index.buildProgressions(
+                readingOrder: [Link(href: "book.html")],
+                readingOrderPositions: [[try locator(totalProgression: 0), try locator(totalProgression: 1)]]
+            )
+        )
+        #expect(built.map(\.progression) == [0.01, 0.4, 0.8])
+    }
+
     @Test func fallbackSectionTitleUsesTheProgressionTableThenTheLocatorTitle() throws {
         let index = try indexed()
 
@@ -242,10 +265,14 @@ struct ReaderTOCIndexTests {
 
     private func locator(
         href: String = "OPS/ch1.xhtml",
+        fragments: [String]? = nil,
+        progression: Double? = nil,
         totalProgression: Double? = nil,
         title: String? = nil
     ) throws -> Locator {
         var locations: [String: Any] = [:]
+        if let fragments { locations["fragments"] = fragments }
+        if let progression { locations["progression"] = progression }
         if let totalProgression { locations["totalProgression"] = totalProgression }
         var json: [String: Any] = ["href": href, "type": "application/xhtml+xml", "locations": locations]
         if let title { json["title"] = title }

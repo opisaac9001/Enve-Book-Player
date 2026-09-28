@@ -40,8 +40,7 @@ public final class PlayerChapterService: ObservableObject {
             return
         }
 
-        if let cached = ReaderArtifactsStore.shared.loadCachedChapters(bookId: book.stableId)
-            ?? ReaderArtifactsStore.shared.loadCachedChapters(bookId: book.id),
+        if let cached = ReaderArtifactsStore.shared.loadCachedAudioChapters(for: book),
             !cached.isEmpty
         {
             AppLogger.player.debug(

@@ -1,6 +1,7 @@
 package com.enve.app.hearth
 
 import com.enve.bookorbit.BookOrbitAnnotationHubFilter
+import com.enve.core.reader.highlightColorHex
 import com.enve.bookorbit.BookOrbitAnnotationHubRepository
 import com.enve.bookorbit.BookOrbitDashboard
 import com.enve.bookorbit.BookOrbitDiscoveryRepository
@@ -352,26 +353,9 @@ class BookOrbitFacadeImpl @Inject constructor(
     )
 }
 
-private fun String.normalizedHighlightColor(): String {
-    val trimmed = trim()
-    if (trimmed.startsWith("#") && (trimmed.length == 7 || trimmed.length == 4)) return trimmed
-    return NAMED_HIGHLIGHT_COLORS[trimmed.lowercase()] ?: DEFAULT_HIGHLIGHT_COLOR
-}
+private fun String.normalizedHighlightColor(): String = highlightColorHex(this) ?: DEFAULT_HIGHLIGHT_COLOR
 
 private const val DEFAULT_HIGHLIGHT_COLOR = "#FACC15"
-
-private val NAMED_HIGHLIGHT_COLORS = mapOf(
-    "yellow" to "#FACC15",
-    "green" to "#4ADE80",
-    "blue" to "#38BDF8",
-    "pink" to "#F472B6",
-    "orange" to "#FB923C",
-    "red" to "#F87171",
-    "olive" to "#84CC16",
-    "cyan" to "#22D3EE",
-    "purple" to "#C084FC",
-    "gray" to "#9CA3AF",
-)
 
 private fun String.sourceLabel(): String = when (lowercase()) {
     "bookorbit" -> "BookOrbit"

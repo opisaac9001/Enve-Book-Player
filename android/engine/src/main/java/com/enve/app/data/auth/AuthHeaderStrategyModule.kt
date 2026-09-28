@@ -30,7 +30,9 @@ abstract class AuthHeaderStrategyModule {
     @Binds
     @IntoMap
     @AuthHeaderStrategyKey(BookSource.OPDS)
-    abstract fun bindOpdsAuthHeaderStrategy(impl: BasicAuthHeaderStrategy): AuthHeaderStrategy
+    abstract fun bindOpdsAuthHeaderStrategy(
+        impl: com.enve.app.data.opds.OpdsAuthHeaderStrategy,
+    ): AuthHeaderStrategy
 
     @Binds
     @IntoMap
@@ -44,6 +46,18 @@ abstract class AuthHeaderStrategyModule {
 
     @Binds
     @IntoMap
+    @AuthHeaderStrategyKey(BookSource.KAVITA)
+    abstract fun bindKavitaAuthHeaderStrategy(impl: KavitaAuthHeaderStrategy): AuthHeaderStrategy
+
+    @Binds
+    @IntoMap
     @TokenRefreshStrategyKey(BookSource.GRIMMORY)
     abstract fun bindGrimmoryTokenRefreshStrategy(impl: GrimmoryTokenRefreshStrategy): TokenRefreshStrategy
+
+    @Binds
+    @IntoMap
+    @TokenRefreshStrategyKey(BookSource.OPDS)
+    abstract fun bindOpdsTokenRefreshStrategy(
+        impl: com.enve.app.data.opds.OpdsTokenRefreshStrategy,
+    ): TokenRefreshStrategy
 }

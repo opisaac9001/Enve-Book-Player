@@ -35,10 +35,7 @@ public struct JellyfinAdminUser: Identifiable, Codable {
     public var isDisabled: Bool { Policy?.IsDisabled ?? false }
 
     public var lastActivityDate: Date? {
-        guard let dateStr = LastActivityDate else { return nil }
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.date(from: dateStr) ?? ISO8601DateFormatter().date(from: dateStr)
+        ISO8601Timestamp.parse(LastActivityDate)
     }
 }
 

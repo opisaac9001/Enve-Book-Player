@@ -4,6 +4,7 @@ import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.Chapter
 import com.enve.core.data.model.Library
+import com.enve.core.data.model.PodcastShow
 import com.enve.core.data.model.ReaderAnnotation
 import com.enve.core.data.sync.AnnotationsPushResult
 import com.enve.core.data.sync.SyncCapability
@@ -141,6 +142,9 @@ interface ProviderAdapter {
     ): Result<Unit> = Result.success(Unit)
 
     suspend fun fetchAudiobookNarrator(book: Book): Result<String?> = Result.success(null)
+
+    suspend fun getPodcastShow(show: Book): Result<PodcastShow> =
+        Result.failure(UnsupportedOperationException("${source.displayName} podcasts are not supported"))
 
     suspend fun updateBookMetadata(
         book: Book,

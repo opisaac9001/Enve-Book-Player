@@ -44,16 +44,6 @@ final class BookloreKoreaderSink {
         persistCredentials(creds, for: providerId)
     }
 
-    func clearCredentials(for providerId: UUID) {
-        credentialsCache.removeValue(forKey: providerId)
-        let usernameKey = keychainKey("username", providerId: providerId)
-        let passwordKey = keychainKey("passwordMD5", providerId: providerId)
-        let enabledKey = udKey("enabled", providerId: providerId)
-        KeychainHelper.shared.delete(usernameKey)
-        KeychainHelper.shared.delete(passwordKey)
-        UserDefaults.standard.removeObject(forKey: enabledKey)
-    }
-
     func testAuth(providerId: UUID, baseURL: URL) async throws -> Bool {
         guard let creds = credentialsCache[providerId], !creds.username.isEmpty else { return false }
         var req = URLRequest(url: baseURL.appendingPathComponent("api/koreader/users/auth"))
@@ -61,7 +51,7 @@ final class BookloreKoreaderSink {
         addKoreaderHeaders(&req, creds: creds)
         let (_, response) = try await session.data(for: req)
         guard let http = response as? HTTPURLResponse else { return false }
-        return http.statusCode == 200
+        return KOReaderResponseClass(statusCode: http.statusCode) == .success
     }
 
     func push(
@@ -111,7 +101,7 @@ final class BookloreKoreaderSink {
         do {
             let (_, response) = try await session.data(for: req)
             let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-            if status == 200 || status == 201 {
+            if KOReaderResponseClass(statusCode: status) == .success {
                 AppLogger.sync.debug("[BookloreKOReader] Pushed xpointer bookDiagnosticID=\(diagnosticID)")
             } else {
                 AppLogger.sync.error("[BookloreKOReader] Push returned HTTP \(status) bookDiagnosticID=\(diagnosticID)")
@@ -141,21 +131,19 @@ final class BookloreKoreaderSink {
             return nil
         }
         guard let http = response as? HTTPURLResponse else { return nil }
-        switch http.statusCode {
-        case 200:
+        switch KOReaderResponseClass(statusCode: http.statusCode) {
+        case .success:
             break
-        case 401, 403:
+        case .unauthorized:
             AppLogger.sync.error("[KOReader] auth failed (\(http.statusCode)) - check credentials")
             return nil
-        case 404:
-            return nil
-        case 500...599:
-            AppLogger.sync.warning("[KOReader] server error \(http.statusCode) bookDiagnosticID=\(diagnosticID)")
-            return nil
-        default:
+        case .failure:
+            guard http.statusCode != 404 else { return nil }
             AppLogger.sync.warning("[KOReader] unexpected status \(http.statusCode) bookDiagnosticID=\(diagnosticID)")
             return nil
         }
+        // A 204 or an empty 200 body means the server has no stored progress for this document.
+        guard http.statusCode != 204, !data.isEmpty else { return nil }
 
         struct KOReaderResponse: Decodable {
             let document: String?

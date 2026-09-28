@@ -328,6 +328,9 @@ struct ClassicReaderAppearance: Codable, Equatable {
     var tapEdgesTurnPages = true
     var showNextSeriesPrompt = true
     var nextSeriesPromptPlacement: ReaderNextSeriesPromptPlacement = .bottom
+    var restReminderEnabled = true
+    var restReminderMinutes = 60
+    var restReminderIntroShown = false
 
     var bionicReading: Bool = false
 
@@ -375,6 +378,9 @@ struct ClassicReaderAppearance: Codable, Equatable {
         case tapEdgesTurnPages
         case showNextSeriesPrompt
         case nextSeriesPromptPlacement
+        case restReminderEnabled
+        case restReminderMinutes
+        case restReminderIntroShown
         case bionicReading
         case readAloudSyncOffset
         case readAloudHighlightColor
@@ -477,6 +483,9 @@ struct ClassicReaderAppearance: Codable, Equatable {
         nextSeriesPromptPlacement =
             (try? c.decode(ReaderNextSeriesPromptPlacement.self, forKey: .nextSeriesPromptPlacement))
             ?? nextSeriesPromptPlacement
+        restReminderEnabled = (try? c.decode(Bool.self, forKey: .restReminderEnabled)) ?? restReminderEnabled
+        restReminderMinutes = (try? c.decode(Int.self, forKey: .restReminderMinutes)) ?? restReminderMinutes
+        restReminderIntroShown = (try? c.decode(Bool.self, forKey: .restReminderIntroShown)) ?? restReminderIntroShown
         bionicReading = (try? c.decode(Bool.self, forKey: .bionicReading)) ?? bionicReading
 
         readAloudSyncOffset = (try? c.decode(Double.self, forKey: .readAloudSyncOffset)) ?? readAloudSyncOffset
@@ -674,6 +683,15 @@ struct ClassicReaderAppearance: Codable, Equatable {
         )
     }
 
+    var shellTextColor: UIColor {
+        UIColor(
+            red: CGFloat((pageTextHex >> 16) & 0xFF) / 255,
+            green: CGFloat((pageTextHex >> 8) & 0xFF) / 255,
+            blue: CGFloat(pageTextHex & 0xFF) / 255,
+            alpha: 1
+        )
+    }
+
     var accentColor: SwiftUI.Color {
         switch theme {
         case .paper: SwiftUI.Color(hex: 0x2E5AAC)
@@ -725,23 +743,6 @@ struct ClassicReaderAppearance: Codable, Equatable {
             return customFontFamilyName
         }
         return fontFamily.label
-    }
-
-    func previewFont(size: CGFloat) -> Font {
-        if usesCustomFont, let customFontFamilyName, !customFontFamilyName.isEmpty {
-            return .custom(customFontFamilyName, size: size)
-        }
-
-        switch fontFamily {
-        case .serif:
-            return .system(size: size, weight: .semibold, design: .serif)
-        case .sansSerif:
-            return .system(size: size, weight: .semibold, design: .default)
-        case .openDyslexic:
-            return .system(size: size, weight: .semibold, design: .rounded)
-        case .duospace:
-            return .system(size: size, weight: .semibold, design: .monospaced)
-        }
     }
 }
 

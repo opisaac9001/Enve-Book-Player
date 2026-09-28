@@ -70,11 +70,6 @@ final class RemoteImportService: NSObject, ObservableObject {
         persistWebDAVServers()
     }
 
-    func removeWebDAVServer(id: String) {
-        webDAVServers.removeAll { $0.id == id }
-        persistWebDAVServers()
-    }
-
     private func loadWebDAVServers() {
         let url = serversConfigURL
         guard fileManager.fileExists(atPath: url.path) else { return }
@@ -509,15 +504,6 @@ final class RemoteImportService: NSObject, ObservableObject {
 
         return importedBooks
         #endif
-    }
-
-    func importFromWebDAV(server: WebDAVServerConfig, remotePath: String) async throws -> LocalBookFile? {
-        isImporting = true
-        lastError = nil
-
-        defer { isImporting = false }
-
-        return try await importFromWebDAVInternal(server: server, remotePath: remotePath, isTopLevel: true)
     }
 
     private func importFromWebDAVInternal(

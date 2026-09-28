@@ -39,27 +39,40 @@ class PlaybackStarter @Inject constructor(
     private val lastOpenedBookStore: LastOpenedBookStore,
     private val readAloudCheckpoints: ReadAloudCheckpointRepository,
     private val readAloudPlayback: ReadAloudPlaybackCoordinator,
+    private val openProgress: PlaybackOpenProgressResolver,
+    private val embeddedChapterExtractor: EmbeddedChapterExtractor,
 ) {
 
-    suspend fun start(book: Book): Boolean {
+    suspend fun start(book: Book, resolveOpenProgress: Boolean = true): Boolean {
         val scoped = book.connectionId?.let { ConnectionScope.asContextElement(it) } ?: EmptyCoroutineContext
         return withContext(scoped) {
             readAloudPlayback.stopActiveAndAwait()
             readAloudCheckpoints.flushPending()
             val cached = withContext(Dispatchers.IO) { bookCache.getByCacheKey(book.uniqueKey)?.toBook() }
-            val base = withCachedChapters(cached ?: book)
+            val base = withCachedChapters(
+                (cached ?: book).copy(hasEbook = book.hasEbook || cached?.hasEbook == true).forAudioPlayback(),
+            )
 
             offline.ensureCoverCached(base)
             val offlineCover = offline.localCoverUri(base.id) ?: offline.getManifest(base.id)?.coverUrl
             val resolved = if (offlineCover != null) base.copy(coverUrl = offlineCover) else base
 
             val mediaId = AutoMediaBrowserHelper.mediaIdForCacheKey(resolved.uniqueKey)
-            val startSec = localStartSeconds(resolved)
+            val feedEnclosureUrl = resolved.podcastEnclosureUrl
+            val startSec = if (resolveOpenProgress && feedEnclosureUrl == null) {
+                openProgress.resolveStartSeconds(resolved)
+            } else {
+                localStartSeconds(resolved)
+            }
 
             val localTracks = offline.localTracks(resolved.id)
             val started = when {
                 !localTracks.isNullOrEmpty() -> {
                     startOffline(resolved, localTracks, startSec, mediaId)
+                    true
+                }
+                feedEnclosureUrl != null -> {
+                    startFeedEpisode(resolved, feedEnclosureUrl, startSec, mediaId)
                     true
                 }
                 resolved.source != BookSource.GRIMMORY -> startProvider(resolved, startSec, mediaId)
@@ -163,10 +176,11 @@ class PlaybackStarter @Inject constructor(
             else -> 0L
         }
         val effectiveStart = if (startSec > 0L) startSec else (session?.serverCurrentTimeSec ?: 0L)
-        val embedded = if (tracks.size == 1) embeddedChapters(book) else null
         val chapters = session?.chapters?.takeIf { it.isNotEmpty() }
             ?: book.chapters.takeIf { it.isNotEmpty() }
-            ?: embedded
+            ?: tracks.takeIf { it.size == 1 }
+                ?.let { embeddedChapterExtractor.fetchEmbeddedChapters(it, durationSec) }
+                ?.takeIf { it.isNotEmpty() }
             ?: synthesize(tracks.map { it.title ?: it.fileName }, tracks.map { it.durationMs })
         storeChapters(book, chapters)
 
@@ -189,8 +203,14 @@ class PlaybackStarter @Inject constructor(
         return true
     }
 
-    private suspend fun embeddedChapters(book: Book): List<Chapter>? =
-        aggregator.fetchEmbeddedChapters(book).getOrNull()?.takeIf { it.isNotEmpty() }
+    private suspend fun startFeedEpisode(book: Book, enclosureUrl: String, startSec: Long, mediaId: String) {
+        storeChapters(book, emptyList())
+        audioManager.play(
+            streamUrl = publicStreamUrl(enclosureUrl), bookId = book.id, title = book.title, author = book.author,
+            coverUrl = book.coverUrl, startPositionMs = startSec * 1000, mediaId = mediaId,
+        )
+        sessionService.start(book, startSec, book.duration)
+    }
 
     private suspend fun storeChapters(book: Book, chapters: List<Chapter>) {
         chapterStore.set(book.uniqueKey, book.id, chapters, book.title, book.author, book.coverUrl)

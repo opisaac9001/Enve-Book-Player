@@ -70,7 +70,7 @@ actor HardcoverSyncService {
                     return
                 }
                 let currentPage = max(1, min(pc, Int(Double(pc) * progress)))
-                let isFinished = progress >= 0.99
+                let isFinished = progress >= Book.finishedProgressThreshold
                 let edId = await resolveEditionId(for: bookId)
                 _ = try await HardcoverService.shared.upsertReadingProgress(
                     userBookId: userBookId,
@@ -84,7 +84,7 @@ actor HardcoverSyncService {
             }
 
             let currentPage = max(1, min(pageCount, Int(Double(pageCount) * progress)))
-            let isFinished = progress >= 0.99
+            let isFinished = progress >= Book.finishedProgressThreshold
             let edId = await resolveEditionId(for: bookId)
 
             let resultReadId = try await HardcoverService.shared.upsertReadingProgress(

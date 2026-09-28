@@ -78,6 +78,23 @@ fun SettingsCard(
 }
 
 @Composable
+fun SettingsMessageCard(text: String, tint: Color, onDismiss: () -> Unit) {
+    val colors = EnveTheme.colors
+    val metrics = rememberAdaptiveMetrics()
+    SettingsCard(modifier = Modifier.padding(horizontal = DS.Spacing.LG.scaled(metrics))) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(DS.Spacing.LG.scaled(metrics)),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(text, color = tint, fontSize = DS.FontSize.Body.scaled(metrics), modifier = Modifier.weight(1f))
+            TextButton(onClick = onDismiss) { Text("Dismiss", color = colors.accent, fontSize = DS.FontSize.Caption.scaled(metrics)) }
+        }
+    }
+}
+
+@Composable
 fun SettingsNavigationRow(
     icon: ImageVector,
     iconTint: androidx.compose.ui.graphics.Color = EnveTheme.colors.accent,

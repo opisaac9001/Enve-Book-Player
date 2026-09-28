@@ -20,12 +20,21 @@ class DeviceIdentity @Inject constructor(
             return newId
         }
 
+    val deviceUri: String
+        get() {
+            prefs.getString(KEY_DEVICE_URI, null)?.let { return it }
+            val uri = "urn:uuid:${UUID.randomUUID()}"
+            prefs.edit().putString(KEY_DEVICE_URI, uri).apply()
+            return uri
+        }
+
     var deviceName: String
-        get() = prefs.getString(KEY_DEVICE_NAME, DEFAULT_NAME) ?: DEFAULT_NAME
+        get() = prefs.getString(KEY_DEVICE_NAME, DEFAULT_NAME)?.takeIf { it.isNotBlank() } ?: DEFAULT_NAME
         set(value) { prefs.edit().putString(KEY_DEVICE_NAME, value).apply() }
 
     private companion object {
         const val KEY_DEVICE_ID = "device_id"
+        const val KEY_DEVICE_URI = "device_uri"
         const val KEY_DEVICE_NAME = "device_name"
         const val DEFAULT_NAME = "Enve"
     }

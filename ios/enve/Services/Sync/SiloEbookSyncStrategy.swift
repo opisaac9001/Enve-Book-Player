@@ -104,7 +104,7 @@ final class SiloEbookSyncStrategy: ProviderSyncStrategy {
 
                     switch direction {
                     case .pull:
-                        let isFinished = serverResult.isAbandoned || serverProgress >= 0.99
+                        let isFinished = serverResult.isFinished || serverProgress >= Book.finishedProgressThreshold
                         let mutated = AppState.shared.mutateBook(stableId: book.stableId) {
                             $0.hideFromContinue = false
                             $0.ebookProgress = serverProgress
@@ -148,7 +148,8 @@ final class SiloEbookSyncStrategy: ProviderSyncStrategy {
                                 localProgress: localProgress,
                                 serverProgress: serverProgress,
                                 serverLocator: serverResult.locator,
-                                serverDate: serverDate
+                                serverDate: serverDate,
+                                remoteSource: connection.name
                             )
                         )
                         AppLogger.sync.info(

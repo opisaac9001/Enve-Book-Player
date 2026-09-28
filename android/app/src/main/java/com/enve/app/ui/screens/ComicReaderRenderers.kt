@@ -86,9 +86,8 @@ internal fun ComicHorizontalPager(
     settings: ComicReaderSettings,
     bgColor: Color,
     onPageChange: (Int) -> Unit,
-    onPrevious: () -> Unit,
-    onNext: () -> Unit,
     onToggleChrome: () -> Unit,
+    tapZoneWidth: Float,
     onPagesNeeded: (List<Int>) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -149,10 +148,11 @@ internal fun ComicHorizontalPager(
                 pageDescription = pageLabel(pageIndices, pages.size),
                 settings = settings,
                 bgColor = bgColor,
-                onPrevious = onPrevious,
-                onNext = onNext,
+                onPrevious = { entries.getOrNull(pagerState.currentPage - 1)?.let { onPageChange(it.first()) } },
+                onNext = { entries.getOrNull(pagerState.currentPage + 1)?.let { onPageChange(it.first()) } },
                 isRtl = isRtl,
                 onToggleChrome = onToggleChrome,
+                tapZoneWidth = tapZoneWidth,
                 modifier = Modifier.fillMaxSize(),
             )
         }
@@ -186,6 +186,7 @@ private fun ZoomableComicSpread(
     onNext: () -> Unit,
     isRtl: Boolean,
     onToggleChrome: () -> Unit,
+    tapZoneWidth: Float,
     modifier: Modifier = Modifier,
 ) {
     var scale by remember(pageFiles) { mutableFloatStateOf(1f) }
@@ -197,7 +198,7 @@ private fun ZoomableComicSpread(
     Box(
         modifier = modifier
             .background(bgColor)
-            .pointerInput(pageFiles, settings.zoomEnabled, scale) {
+            .pointerInput(pageFiles, settings.zoomEnabled, scale, isRtl, tapZoneWidth) {
                 detectTapGestures(
                     onDoubleTap = {
                         if (!settings.zoomEnabled) return@detectTapGestures
@@ -207,7 +208,13 @@ private fun ZoomableComicSpread(
                             scale = 2.5f; offset = Offset.Zero
                         }
                     },
-                    onTap = { onToggleChrome() },
+                    onTap = { position ->
+                        when (ReaderTapZones.zoneAt(position.x, size.width.toFloat(), tapZoneWidth)) {
+                            ReaderTapZone.LEFT_EDGE -> if (isRtl) onNext() else onPrevious()
+                            ReaderTapZone.RIGHT_EDGE -> if (isRtl) onPrevious() else onNext()
+                            ReaderTapZone.CENTER -> onToggleChrome()
+                        }
+                    },
                 )
             }
             .pointerInput(pageFiles) {

@@ -65,7 +65,7 @@ final class NativeProgressSyncStrategy: ProviderSyncStrategy {
                         } else if abs(progress.progress - (book.ebookProgress ?? 0)) > 0.005 {
                             updated.epubLocator = nil
                         }
-                        updated.isFinished = progress.readState.isFinished || progress.readState.isAbandoned || progress.progress >= 0.99
+                        updated.isFinished = progress.readState.isFinished || progress.progress >= Book.finishedProgressThreshold
                         updated.serverReadStatus = updated.isFinished ? "READ" : progress.readState.persistedStatus
                         updated.hideFromContinue = progress.readState == .notReading
                         serverDate = progress.updatedAt
@@ -74,7 +74,7 @@ final class NativeProgressSyncStrategy: ProviderSyncStrategy {
                             let progress = try await pulling.fetchAudiobookProgressState(for: book)
                         else { continue }
                         updated.currentTime = progress.positionSeconds
-                        updated.isFinished = progress.readState.isFinished || progress.readState.isAbandoned || progress.percentage >= 0.99
+                        updated.isFinished = progress.readState.isFinished || progress.percentage >= Book.finishedProgressThreshold
                         updated.serverReadStatus = updated.isFinished ? "READ" : progress.readState.persistedStatus
                         updated.hideFromContinue = progress.readState == .notReading
                         serverDate = progress.updatedAt

@@ -2,6 +2,8 @@ package com.enve.bookorbit
 
 import com.enve.bookorbit.dto.BookOrbitAchievementCatalogueDto
 import com.enve.bookorbit.dto.BookOrbitAnnotationHubPageDto
+import com.enve.bookorbit.dto.BookOrbitAudiobookManifestDto
+import com.enve.bookorbit.dto.BookOrbitAudiobookPlaybackStateRequest
 import com.enve.bookorbit.dto.BookOrbitBookDetailDto
 import com.enve.bookorbit.dto.BookOrbitBooksPageDto
 import com.enve.bookorbit.dto.BookOrbitProgressFunnelComparisonDto
@@ -9,6 +11,7 @@ import com.enve.bookorbit.dto.BookOrbitReadingSessionsPageDto
 import com.enve.bookorbit.dto.BookOrbitRecommendationDto
 import com.enve.bookorbit.dto.BookOrbitSourceDistributionDto
 import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -17,6 +20,34 @@ import org.junit.Test
 
 class BookOrbitServerFeatureDtoTest {
     private val json = Json { ignoreUnknownKeys = true }
+
+    @Test
+    fun decodesAudiobookManifestAndEncodesPlaybackState() {
+        val manifest = json.decodeFromString<BookOrbitAudiobookManifestDto>(
+            """{"revision":"rev-1","assets":[
+              {"assetId":"second","sequence":1,"format":"mp3","durationMs":2000,"sizeBytes":20,"etag":"b"},
+              {"assetId":"first","sequence":0,"format":"mp3","durationMs":1000,"sizeBytes":10,"etag":"a"}
+            ],"chapters":[{"title":"Intro","startMs":0}],"totalDurationMs":3000,"futureField":true}""",
+        )
+
+        assertEquals("rev-1", manifest.revision)
+        assertEquals(listOf("first", "second"), manifest.assets.sortedBy { it.sequence }.map { it.assetId })
+        assertEquals(3000L, manifest.totalDurationMs)
+
+        val encoded = json.encodeToString(
+            BookOrbitAudiobookPlaybackStateRequest(
+                assetId = "second",
+                positionMs = 1500,
+                capturedAt = "2026-09-20T12:00:00Z",
+                operationId = "operation-1",
+                baseRevision = 4,
+                manifestRevision = "rev-1",
+            ),
+        )
+        assertTrue(encoded.contains("\"assetId\":\"second\""))
+        assertTrue(encoded.contains("\"positionMs\":1500"))
+        assertTrue(encoded.contains("\"manifestRevision\":\"rev-1\""))
+    }
 
     @Test
     fun readingSessionsCarryFormatAndSource() {

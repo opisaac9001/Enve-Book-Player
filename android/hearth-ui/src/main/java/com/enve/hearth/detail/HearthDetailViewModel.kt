@@ -123,14 +123,14 @@ class HearthDetailViewModel @Inject constructor(
         watchJob?.cancel()
         watchJob = viewModelScope.launch {
             library.bookByKeyFlow(initial.uniqueKey).filterNotNull().collect { cached ->
-                _book.value = mergeDetail(cached, _detail.value)
+                _book.value = mergeBookDetail(cached, _detail.value)
             }
         }
 
         viewModelScope.launch {
             val detail = runCatching { library.bookDetail(initial) }.getOrNull() ?: return@launch
             _detail.value = detail
-            _book.value = _book.value?.let { mergeDetail(it, detail) }
+            _book.value = _book.value?.let { mergeBookDetail(it, detail) }
         }
         refreshLinkedEditions(initial)
         downloadJob?.cancel()
@@ -517,22 +517,6 @@ class HearthDetailViewModel @Inject constructor(
         }
     }
 
-    private fun mergeDetail(base: Book, detail: Book?): Book {
-        if (detail == null) return base
-        return base.copy(
-            description = base.description?.takeIf { it.isNotBlank() } ?: detail.description,
-            categories = base.categories.ifEmpty { detail.categories },
-            publisher = base.publisher ?: detail.publisher,
-            publishedDate = base.publishedDate ?: detail.publishedDate,
-            narrator = base.narrator?.takeIf { it.isNotBlank() } ?: detail.narrator,
-            seriesName = base.seriesName ?: detail.seriesName,
-            seriesNumber = base.seriesNumber ?: detail.seriesNumber,
-            pageCount = base.pageCount ?: detail.pageCount,
-            language = base.language ?: detail.language,
-            personalRating = base.personalRating ?: detail.personalRating,
-        )
-    }
-
     private fun refreshLinkedEditions(book: Book) {
         viewModelScope.launch {
             val linkedAudiobook = library.linkedAudiobook(book)
@@ -570,4 +554,22 @@ class HearthDetailViewModel @Inject constructor(
     private companion object {
         const val RELATED_BOOK_LIMIT = 12
     }
+}
+
+internal fun mergeBookDetail(base: Book, detail: Book?): Book {
+    if (detail == null) return base
+    return base.copy(
+        description = base.description?.takeIf { it.isNotBlank() } ?: detail.description,
+        categories = base.categories.ifEmpty { detail.categories },
+        publisher = base.publisher ?: detail.publisher,
+        publishedDate = base.publishedDate ?: detail.publishedDate,
+        narrator = base.narrator?.takeIf { it.isNotBlank() } ?: detail.narrator,
+        seriesName = base.seriesName ?: detail.seriesName,
+        seriesNumber = base.seriesNumber ?: detail.seriesNumber,
+        pageCount = base.pageCount ?: detail.pageCount,
+        language = base.language ?: detail.language,
+        personalRating = base.personalRating ?: detail.personalRating,
+        hasAudio = base.hasAudio || detail.hasAudio,
+        hasEbook = base.hasEbook || detail.hasEbook,
+    )
 }

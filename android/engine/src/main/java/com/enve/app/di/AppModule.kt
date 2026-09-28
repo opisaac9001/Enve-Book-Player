@@ -16,12 +16,16 @@ import com.enve.app.data.remote.GrimmoryApi
 import com.enve.core.data.remote.JsonSafetyInterceptor
 import com.enve.core.data.remote.security.PrivateNetworkTrust
 import com.enve.core.data.remote.auth.TokenRefreshAuthenticator
+import com.enve.core.di.ApplicationScope
 import com.enve.core.di.RefreshClient
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.serialization.json.Json
 import okhttp3.Cache
 import okhttp3.MediaType.Companion.toMediaType
@@ -46,6 +50,11 @@ object AppModule {
         coerceInputValues = true
         encodeDefaults = true
     }
+
+    @Provides
+    @Singleton
+    @ApplicationScope
+    fun provideApplicationScope(): CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     @Provides
     @Singleton
@@ -182,6 +191,43 @@ object AppModule {
 
     @Provides
     @Singleton
+    fun provideOpdsCatalogApi(retrofit: Retrofit): com.enve.app.data.opds.OpdsCatalogApi {
+        return retrofit.create(com.enve.app.data.opds.OpdsCatalogApi::class.java)
+    }
+
+    @Provides
+    @Singleton
+    fun provideOpdsProgressionApi(retrofit: Retrofit): com.enve.app.data.opds.OpdsProgressionApi {
+        return retrofit.create(com.enve.app.data.opds.OpdsProgressionApi::class.java)
+    }
+
+    @Provides
+    @Singleton
+    @com.enve.app.data.opds.PrivateNetworkProgressionApi
+    fun providePrivateNetworkOpdsProgressionApi(
+        retrofit: Retrofit,
+        okHttpClient: OkHttpClient,
+    ): com.enve.app.data.opds.OpdsProgressionApi {
+        return retrofit.newBuilder()
+            .client(com.enve.app.data.opds.privateNetworkProgressionClient(okHttpClient))
+            .build()
+            .create(com.enve.app.data.opds.OpdsProgressionApi::class.java)
+    }
+
+    @Provides
+    @Singleton
+    @com.enve.app.data.opds.PublicNetworkProgressionApi
+    fun providePublicNetworkOpdsProgressionApi(
+        retrofit: Retrofit,
+    ): com.enve.app.data.opds.OpdsProgressionApi {
+        return retrofit.newBuilder()
+            .client(com.enve.app.data.opds.publicNetworkProgressionClient())
+            .build()
+            .create(com.enve.app.data.opds.OpdsProgressionApi::class.java)
+    }
+
+    @Provides
+    @Singleton
     fun provideImageLoader(
         @ApplicationContext context: Context,
         okHttpClient: OkHttpClient,
@@ -204,6 +250,7 @@ object AppModule {
                     .build()
             }
             .crossfade(if (einkDetected) 0 else 200)
+            .components { add(MissingImageInterceptor()) }
             .build()
     }
 
@@ -241,6 +288,18 @@ object AppModule {
     @Singleton
     fun providePendingProgressPushDao(db: com.enve.app.data.local.ReaderDatabase): com.enve.core.data.local.PendingProgressPushDao {
         return db.pendingProgressPushDao()
+    }
+
+    @Provides
+    @Singleton
+    fun provideOpdsAcquisitionDao(db: com.enve.app.data.local.ReaderDatabase): com.enve.app.data.opds.OpdsAcquisitionDao {
+        return db.opdsAcquisitionDao()
+    }
+
+    @Provides
+    @Singleton
+    fun provideOpdsProgressionStateDao(db: com.enve.app.data.local.ReaderDatabase): com.enve.app.data.opds.OpdsProgressionStateDao {
+        return db.opdsProgressionStateDao()
     }
 
     @Provides

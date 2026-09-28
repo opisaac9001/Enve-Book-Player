@@ -1,6 +1,7 @@
 package com.enve.hearth.bookorbit
 
 import android.content.Intent
+import com.enve.core.reader.highlightColorHex
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -57,6 +58,7 @@ import com.enve.engine.bookorbit.BookOrbitHighlightBookFacet
 import com.enve.hearth.design.Hearth
 import com.enve.hearth.design.HearthChip
 import com.enve.hearth.design.HearthText
+import com.enve.hearth.design.parseHexColor
 import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.util.Date
@@ -371,7 +373,7 @@ private fun HighlightCard(
                     .width(4.dp)
                     .height(44.dp)
                     .clip(RoundedCornerShape(2.dp))
-                    .background(if (eink.active) palette.text else parseColor(highlight.colorHex, palette.ember)),
+                    .background(if (eink.active) palette.text else (highlightColorHex(highlight.colorHex)?.let(::parseHexColor) ?: palette.ember)),
             )
             Text(
                 highlight.text,
@@ -436,12 +438,4 @@ private fun String.originLabel(): String = when (lowercase()) {
     "kobo" -> "Kobo"
     "web" -> "BookOrbit"
     else -> replaceFirstChar { it.uppercase() }
-}
-
-private fun parseColor(hex: String, fallback: Color): Color {
-    val cleaned = hex.trim().removePrefix("#")
-    val expanded = if (cleaned.length == 3) cleaned.map { "$it$it" }.joinToString("") else cleaned
-    if (expanded.length != 6) return fallback
-    val value = expanded.toLongOrNull(16) ?: return fallback
-    return Color(0xFF000000 or value)
 }

@@ -12,6 +12,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.enve.app.playback.PlaybackService
+import com.enve.core.data.util.runSuspendCatching
 import com.google.common.util.concurrent.MoreExecutors
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
@@ -105,7 +106,7 @@ class ReadAloudPlaybackCoordinator @Inject constructor(
     }
 
     fun connect() {
-        scope.launch { runCatching { awaitController() } }
+        scope.launch { runSuspendCatching { awaitController() } }
     }
 
     internal fun beginCommand(sessionId: String): ReadAloudPlaybackCommand =

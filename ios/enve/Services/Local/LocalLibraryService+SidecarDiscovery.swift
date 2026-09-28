@@ -81,15 +81,6 @@ extension LocalLibraryService {
         let data = try Data(contentsOf: URL(fileURLWithPath: sidecarPath))
         AppLogger.network.debug("Loaded \(data.count) bytes from sidecar: \(URL(fileURLWithPath: sidecarPath).lastPathComponent)")
 
-        AppLogger.network.debug("Trying Audible metadata format...")
-        do {
-            let audible = try await decodeAudibleMetadata(from: data)
-            AppLogger.network.debug("Decoded as Audible metadata")
-            return audible
-        } catch {
-            AppLogger.network.error("Not Audible format: \(error.localizedDescription)")
-        }
-
         if let native = try? decodeSidecar(from: data) {
             AppLogger.network.info("Decoded as Native Narrator sidecar")
             return native.metadata
@@ -98,6 +89,15 @@ extension LocalLibraryService {
         if let direct = try? decodeLocalBookMetadata(from: data) {
             AppLogger.network.info("Decoded as raw LocalBookMetadata")
             return direct
+        }
+
+        AppLogger.network.debug("Trying Audible metadata format...")
+        do {
+            let audible = try await decodeAudibleMetadata(from: data)
+            AppLogger.network.debug("Decoded as Audible metadata")
+            return audible
+        } catch {
+            AppLogger.network.error("Not Audible format: \(error.localizedDescription)")
         }
 
         AppLogger.network.info("Trying Generic format...")

@@ -61,7 +61,7 @@ final class ReaderLocationPipeline {
         let shouldRecord =
             lastStatsRecordedProgression.map { abs(progression - $0) >= 0.0025 } ?? true
             || now.timeIntervalSince(lastStatsRecordedAt) >= 2.5
-            || progression >= 0.99
+            || progression >= Book.finishedProgressThreshold
         if shouldRecord {
             lastStatsRecordedProgression = progression
             lastStatsRecordedAt = now

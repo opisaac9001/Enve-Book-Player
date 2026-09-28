@@ -1,8 +1,41 @@
 import Foundation
 
+/// Credentials are scoped by scheme, host, and effective port; incomplete URLs match no origin.
+nonisolated struct HTTPOrigin: Hashable {
+    let scheme: String
+    let host: String
+    let port: Int
+
+    init(url: URL) {
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        scheme = components?.scheme?.lowercased() ?? ""
+        host = components?.host?.lowercased() ?? ""
+        port = components?.port ?? (components?.scheme?.lowercased() == "https" ? 443 : 80)
+    }
+
+    var isResolvable: Bool { !scheme.isEmpty && !host.isEmpty }
+
+    func matches(_ url: URL) -> Bool {
+        isResolvable && HTTPOrigin(url: url) == self
+    }
+
+    /// Older protection spaces may omit the scheme; accept them when the remaining origin fields match.
+    func matches(_ space: URLProtectionSpace) -> Bool {
+        guard isResolvable,
+            space.host.caseInsensitiveCompare(host) == .orderedSame,
+            space.port == port
+        else { return false }
+        guard let challengeScheme = space.protocol else { return true }
+        return challengeScheme.caseInsensitiveCompare(scheme) == .orderedSame
+    }
+}
+
 final class URLSessionDownloadProgressDelegate: NSObject, URLSessionDownloadDelegate, URLSessionTaskDelegate, @unchecked Sendable {
     private let progressHandler: @Sendable (Double) -> Void
     private let credential: URLCredential?
+    /// Default to the original request origin when the caller provides none.
+    private let allowedOrigin: HTTPOrigin?
+    private let sensitiveHeaderNames: Set<String>
     private let lock = NSLock()
     private var lastReportedProgress: Double = 0
     private var lastReportTime: CFAbsoluteTime = 0
@@ -13,9 +46,16 @@ final class URLSessionDownloadProgressDelegate: NSObject, URLSessionDownloadDele
     private var continuation: CheckedContinuation<(URL, HTTPURLResponse), Error>?
     private weak var activeTask: URLSessionDownloadTask?
 
-    init(progressHandler: @escaping @Sendable (Double) -> Void, credential: URLCredential? = nil) {
+    init(
+        progressHandler: @escaping @Sendable (Double) -> Void,
+        credential: URLCredential? = nil,
+        allowedOrigin: URL? = nil,
+        sensitiveHeaderNames: Set<String> = []
+    ) {
         self.progressHandler = progressHandler
         self.credential = credential
+        self.allowedOrigin = allowedOrigin.map(HTTPOrigin.init(url:))
+        self.sensitiveHeaderNames = sensitiveHeaderNames.union(HTTPRedirectPolicy.alwaysSensitiveHeaderNames)
         super.init()
     }
 
@@ -164,12 +204,34 @@ final class URLSessionDownloadProgressDelegate: NSObject, URLSessionDownloadDele
         }
 
         if let credential,
-            method == NSURLAuthenticationMethodHTTPBasic || method == NSURLAuthenticationMethodHTTPDigest
+            method == NSURLAuthenticationMethodHTTPBasic || method == NSURLAuthenticationMethodHTTPDigest,
+            allowedOrigin?.matches(challenge.protectionSpace) != false
         {
             completionHandler(.useCredential, credential)
             return
         }
 
         completionHandler(.performDefaultHandling, nil)
+    }
+
+    /// Keep credentials on the scoped origin and reject unsafe redirect destinations.
+    nonisolated func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping @Sendable (URLRequest?) -> Void
+    ) {
+        guard let url = request.url, HTTPRedirectPolicy.isFollowable(url, from: response.url) else {
+            completionHandler(nil)
+            return
+        }
+        completionHandler(
+            HTTPRedirectPolicy.sanitized(
+                request,
+                keepingCredentialsFor: allowedOrigin ?? HTTPRedirectPolicy.origin(ofOriginalRequestIn: task),
+                alsoStripping: sensitiveHeaderNames
+            )
+        )
     }
 }

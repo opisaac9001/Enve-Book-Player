@@ -18,7 +18,7 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
     private var mirrorSnapshotCache:
         (
             books: [Book],
-            collectionMembership: [String: [String]],
+            membership: MirrorMembership,
             cachedAt: Date
         )?
     private static let mirrorSnapshotCacheTTL: TimeInterval = 15
@@ -324,21 +324,20 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
             rejectedItems: rejectedItems,
             fallbackScope: "snapshot"
         )
-        var isComplete = rejectedItems.isEmpty
-        var collectionMembership: [String: [String]] = [:]
+        let isComplete = rejectedItems.isEmpty
+        var membership = MirrorMembership()
         let importedBookIds = Set(books.map(\.id))
         for stBook in stBooks where importedBookIds.contains(stBook.uuid) {
-            for collection in stBook.collections ?? [] {
-                guard let collectionId = collection.uuid, !collectionId.isEmpty else {
-                    isComplete = false
-                    continue
-                }
-                collectionMembership[collectionId, default: []].append(stBook.uuid)
+            for collection in stBook.collections {
+                membership.collections[collection.uuid, default: []].append(stBook.uuid)
+            }
+            for series in stBook.series {
+                membership.series[series.uuid, default: []].append((stBook.uuid, series.position))
             }
         }
 
         if isComplete {
-            cacheMirrorSnapshot(books, collectionMembership: collectionMembership)
+            cacheMirrorSnapshot(books, membership: membership)
         }
         AppLogger.network.info("Fetched \(books.count) Storyteller books from \(stBooks.count) decoded record(s)")
         return (books, isComplete)
@@ -355,21 +354,15 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
             throw ProviderError.serverError("HTTP \(http.statusCode)")
         }
 
-        let decoded = try JSONDecoder().decode(LenientArrayWrapper<StorytellerCollection>.self, from: data)
-        guard decoded.skippedCount == 0 else {
-            throw ProviderError.decodingFailed
-        }
+        let collections = try JSONDecoder().decode([StorytellerCollection].self, from: data)
         _ = try await fetchMirrorSnapshot(forceRefresh: false)
-        guard let collectionMembership = cachedCollectionMembership() else {
+        guard let membership = cachedMembership() else {
             throw ProviderError.invalidResponse
         }
-        return try decoded.values.map { col in
-            guard let id = col.uuid, !id.isEmpty else {
-                throw ProviderError.decodingFailed
-            }
-            let bookIds = collectionMembership[id] ?? []
+        return collections.map { col in
+            let bookIds = membership.collections[col.uuid] ?? []
             return Collection(
-                id: id,
+                id: col.uuid,
                 name: col.name,
                 description: col.description,
                 books: bookIds,
@@ -388,27 +381,22 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
             throw ProviderError.serverError("HTTP \(http.statusCode)")
         }
 
-        let decoded = try JSONDecoder().decode(LenientArrayWrapper<StorytellerSeries>.self, from: data)
-        guard decoded.skippedCount == 0 else {
-            throw ProviderError.decodingFailed
+        let series = try JSONDecoder().decode([StorytellerSeries].self, from: data)
+        _ = try await fetchMirrorSnapshot(forceRefresh: false)
+        guard let membership = cachedMembership() else {
+            throw ProviderError.invalidResponse
         }
-        return try decoded.values.map { s in
-            guard let id = s.uuid, !id.isEmpty,
-                s.books?.contains(where: { $0.uuid.isEmpty }) != true
-            else {
-                throw ProviderError.decodingFailed
-            }
+        return series.map { s in
             var bookIds: [String] = []
             var seqs: [String: String] = [:]
-            for rel in s.books ?? [] {
-                guard !rel.uuid.isEmpty else { continue }
-                bookIds.append(rel.uuid)
+            for rel in membership.series[s.uuid] ?? [] {
+                bookIds.append(rel.bookId)
                 if let pos = rel.position {
-                    seqs[rel.uuid] = String(pos)
+                    seqs[rel.bookId] = String(pos)
                 }
             }
             return Series(
-                id: id,
+                id: s.uuid,
                 name: s.name,
                 description: s.description,
                 books: bookIds,
@@ -537,7 +525,12 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
         return snapshot.books
     }
 
-    private func cachedCollectionMembership() -> [String: [String]]? {
+    private struct MirrorMembership {
+        var collections: [String: [String]] = [:]
+        var series: [String: [(bookId: String, position: Double?)]] = [:]
+    }
+
+    private func cachedMembership() -> MirrorMembership? {
         mirrorSnapshotCacheLock.lock()
         defer { mirrorSnapshotCacheLock.unlock() }
         guard let snapshot = mirrorSnapshotCache,
@@ -546,15 +539,15 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
             mirrorSnapshotCache = nil
             return nil
         }
-        return snapshot.collectionMembership
+        return snapshot.membership
     }
 
     private func cacheMirrorSnapshot(
         _ books: [Book],
-        collectionMembership: [String: [String]]
+        membership: MirrorMembership
     ) {
         mirrorSnapshotCacheLock.lock()
-        mirrorSnapshotCache = (books, collectionMembership, Date())
+        mirrorSnapshotCache = (books, membership, Date())
         mirrorSnapshotCacheLock.unlock()
     }
 
@@ -643,7 +636,7 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
             cumulativeOffset += duration
         }
 
-        func flattenedTOC(_ items: [StorytellerTocItem]) -> [StorytellerTocItem] {
+        func flattenedTOC(_ items: [StorytellerLink]) -> [StorytellerLink] {
             items.flatMap { item in
                 [item] + flattenedTOC(item.children ?? [])
             }
@@ -715,8 +708,8 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
 
         let titlesByHref = Dictionary(
             (manifest.toc ?? []).compactMap { item -> (String, String)? in
-                guard let href = item.href, let title = item.title else { return nil }
-                return (normalizedAudioResourceHref(href), title)
+                guard let title = item.title else { return nil }
+                return (normalizedAudioResourceHref(item.href), title)
             },
             uniquingKeysWith: { first, _ in first }
         )
@@ -962,37 +955,6 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
         )
     }
 
-    func prewarmFirstTrack(for book: Book) async {
-        let serverId = serverBookId(for: book)
-        guard let url = URL(string: "\(baseURL())/api/v2/books/\(serverId)/listen/manifest.json") else { return }
-        do {
-            var req = URLRequest(url: url)
-            req.httpMethod = "GET"
-            if let token = connection.token, !token.isEmpty {
-                req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            }
-            let (data, _) = try await session.data(for: req)
-            if let manifest = try? JSONDecoder().decode(StorytellerAudioManifest.self, from: data),
-                let first = manifest.readingOrder.first
-            {
-                let href = first.href.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? first.href
-                let trackUrl = "\(baseURL())/api/v2/books/\(serverId)/listen/\(href)"
-                if let trackURL = URL(string: trackUrl) {
-                    var trackReq = URLRequest(url: trackURL)
-                    trackReq.httpMethod = "GET"
-                    trackReq.setValue("bytes=0-1", forHTTPHeaderField: "Range")
-                    if let token = connection.token, !token.isEmpty {
-                        trackReq.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-                    }
-                    let _ = try await session.data(for: trackReq)
-                    AppLogger.network.info("Pre-warmed first track: \(first.href)")
-                }
-            }
-        } catch {
-            AppLogger.network.error("Pre-warm failed (non-fatal): \(error.localizedDescription)")
-        }
-    }
-
     func updatePlaybackProgress(
         book: Book,
         sessionId: String?,
@@ -1084,6 +1046,14 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
             throw ProviderError.serverError("Read Aloud download failed HTTP \(code)")
         }
 
+        #if !os(tvOS)
+            do {
+                try await StorytellerReadaloudOfflinePrep.validate(epubURL: tempURL)
+            } catch {
+                try? FileManager.default.removeItem(at: tempURL)
+                throw error
+            }
+        #endif
         let cachedURL = try LocalEbookImporter.shared.cacheReadaloudEpub(
             tempURL: tempURL,
             bookId: book.id
@@ -1135,7 +1105,7 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
         )
     }
 
-    func fetchEbookProgress(for book: Book) async throws -> (progress: Double, locator: String?, updatedAt: Date?, isAbandoned: Bool)? {
+    func fetchEbookProgress(for book: Book) async throws -> (progress: Double, locator: String?, updatedAt: Date?, isFinished: Bool)? {
         guard
             let authoritative = await StorytellerPositionSyncService.shared.authoritativePosition(
                 for: book,
@@ -1146,13 +1116,13 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
             progress: authoritative.position.progression,
             locator: authoritative.position.locatorJSON,
             updatedAt: authoritative.position.observedAt,
-            isAbandoned: false
+            isFinished: false
         )
     }
 
     func fetchAudiobookProgress(
         for book: Book
-    ) async throws -> (positionSeconds: TimeInterval, percentage: Double, trackIndex: Int?, updatedAt: Date?, isAbandoned: Bool)? {
+    ) async throws -> (positionSeconds: TimeInterval, percentage: Double, trackIndex: Int?, updatedAt: Date?, isFinished: Bool)? {
         guard
             let authoritative = await StorytellerPositionSyncService.shared.authoritativePosition(
                 for: book,
@@ -1165,7 +1135,7 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
     func pipelineAudiobookProgress(
         from position: StorytellerSyncedPosition,
         for book: Book
-    ) async throws -> (positionSeconds: TimeInterval, percentage: Double, trackIndex: Int?, updatedAt: Date?, isAbandoned: Bool) {
+    ) async throws -> (positionSeconds: TimeInterval, percentage: Double, trackIndex: Int?, updatedAt: Date?, isFinished: Bool) {
         let assets = try await loadPlaybackAssets(for: book)
         let resolved = resolvedAudioPosition(from: position.storytellerPosition, assets: assets)
         let progression =
@@ -1177,7 +1147,7 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
             percentage: progression,
             trackIndex: resolved?.trackIndex,
             updatedAt: position.observedAt,
-            isAbandoned: false
+            isFinished: false
         )
     }
 
@@ -1252,22 +1222,13 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
     func fetchManagementPermissions() async throws -> StorytellerPermissions {
         let request = try makeRequest(path: "/api/v2/user")
         let (data, http) = try await authorizedSend(request, refreshOnForbidden: false)
-        guard http.statusCode == 200,
-            let root = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else {
+        guard http.statusCode == 200 else {
             throw managementError(data: data, response: http, action: "load account permissions")
         }
-        let values = root["permissions"] as? [String: Any] ?? [:]
-
-        func permission(_ name: String) -> Bool? {
-            if let value = values[name] as? Bool { return value }
-            if let value = values[name] as? NSNumber { return value.intValue != 0 }
-            return nil
-        }
-
+        let permissions = try JSONDecoder().decode(StorytellerUser.self, from: data).permissions
         return StorytellerPermissions(
-            canListBooks: permission("bookList") ?? true,
-            canProcessBooks: permission("bookProcess") ?? true
+            canListBooks: permissions.bookList,
+            canProcessBooks: permissions.bookProcess
         )
     }
 
@@ -1326,12 +1287,11 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
         }
         let decoded = try JSONDecoder().decode(LenientArrayWrapper<StorytellerBook>.self, from: data)
         return decoded.values
-            .filter { !$0.uuid.isEmpty }
             .map {
                 StorytellerManagementBook(
                     id: $0.uuid,
                     title: resolveBookTitle($0),
-                    author: $0.authors?.first?.name
+                    author: $0.authors.first?.name
                 )
             }
             .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
@@ -1382,23 +1342,22 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
         }
         let decoded = try JSONDecoder().decode(LenientArrayWrapper<StorytellerBook>.self, from: data)
         return decoded.values.compactMap { book in
-            guard !book.uuid.isEmpty,
-                let ebook = book.ebook,
-                ebook.missing == 0,
+            guard let ebook = book.ebook,
+                !ebook.missing,
                 let audiobook = book.audiobook,
-                audiobook.missing == 0
+                !audiobook.missing
             else {
                 return nil
             }
             return StorytellerProcessingBook(
                 id: book.uuid,
                 title: resolveBookTitle(book),
-                author: book.authors?.first?.name,
+                author: book.authors.first?.name,
                 readaloudStatus: book.readaloud?.status,
                 currentStage: book.readaloud?.currentStage,
                 stageProgress: book.readaloud?.stageProgress,
                 queuePosition: book.readaloud?.queuePosition,
-                restartPending: book.readaloud?.restartPending == true
+                restartPending: book.readaloud?.restartPending != nil
             )
         }
         .sorted {
@@ -1440,7 +1399,8 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
     ) -> StorytellerManagementError {
         if response.statusCode == 403 { return .forbidden }
         if response.statusCode == 404 { return .unavailable }
-        let message = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["message"] as? String
+        struct ErrorBody: Decodable { let message: String }
+        let message = (try? JSONDecoder().decode(ErrorBody.self, from: data))?.message
         return .rejected(message ?? "Storyteller could not \(action) (HTTP \(response.statusCode)).")
     }
 
@@ -1448,7 +1408,7 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
         let request = try makeRequest(path: "/api/v2/statuses")
         let (data, http) = try await authorizedSend(request)
         guard http.statusCode == 200 else { return [] }
-        return (try? JSONDecoder().decode(LenientArrayWrapper<StorytellerStatus>.self, from: data).values) ?? []
+        return (try? JSONDecoder().decode([StorytellerStatus].self, from: data)) ?? []
     }
 
     func updateBookStatus(bookId: String, statusUUID: String) async throws {
@@ -1486,9 +1446,7 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
         do {
             let statuses = try await fetchStatuses()
             let targetName = book.isFinished ? "Read" : "Reading"
-            guard let statusUUID = statuses.first(where: { $0.name == targetName })?.uuid,
-                !statusUUID.isEmpty
-            else { return }
+            guard let statusUUID = statuses.first(where: { $0.name == targetName })?.uuid else { return }
             try await updateBookStatus(bookId: serverBookId(for: book), statusUUID: statusUUID)
         } catch {
             AppLogger.network.info("Failed to sync status: \(error)")
@@ -1499,20 +1457,16 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
         let request = try makeRequest(path: "/api/v2/books/\(bookId)/positions")
         let (data, http) = try await authorizedSend(request)
         guard http.statusCode == 200 else { return nil }
-        let bodyStr = String(data: data, encoding: .utf8) ?? ""
-        if bodyStr.isEmpty || bodyStr == "null" { return nil }
-        return StorytellerPosition(data: data)
+        return try JSONDecoder().decode(StorytellerPosition.self, from: data)
     }
 
     func fetchPipelinePosition(for book: Book) async throws -> StorytellerSyncedPosition? {
-        guard let position = try await fetchPosition(bookId: serverBookId(for: book)),
-            let locator = position.locatorJSONString
-        else {
+        guard let position = try await fetchPosition(bookId: serverBookId(for: book)) else {
             return nil
         }
         return StorytellerSyncedPosition(
             key: StorytellerPositionKey(book: book),
-            locatorJSON: locator,
+            locatorJSON: position.locatorJSONString,
             timestampMilliseconds: position.timestamp
         )
     }
@@ -1581,13 +1535,13 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
             return nil
         }
 
-        let authorName = stBook.authors?.first?.name
-        let narratorName = stBook.narrators?.first?.name
+        let authorName = stBook.authors.first?.name
+        let narratorName = stBook.narrators.first?.name
 
         let resolvedTitle = resolveBookTitle(stBook)
 
         var seriesInfo: SeriesInfo?
-        if let first = stBook.series?.first {
+        if let first = stBook.series.first {
             seriesInfo = SeriesInfo(name: first.name, sequence: first.position.map { String(format: "%.0f", $0) })
         } else {
             let parentFolder = parentFolderName(from: stBook)
@@ -1612,7 +1566,7 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
         let positionUpdate = stBook.position.map { Self.date(fromServerTimestamp: $0.timestamp) }
         let isFinished = serverReadStatus == "READ"
 
-        let genres = stBook.tags?.map { $0.name }
+        let genres = stBook.tags.map(\.name)
 
         var publishedYear: Int?
         if let pubDate = stBook.publicationDate, !pubDate.isEmpty {
@@ -1668,7 +1622,7 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
             epubLocator: epubLocator,
             ebookProgress: ebookProgress,
             hideFromContinue: hideFromContinue,
-            dateAdded: parseDate(stBook.createdAt),
+            dateAdded: Self.sqliteDateTimeFormatter.date(from: stBook.createdAt),
             description: stBook.description,
             genres: genres,
             chapters: manifestAssets?.chapters ?? readaloudChapters(from: stBook.readaloud?.manifest),
@@ -1723,25 +1677,17 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
     private func folderNameTitle(from stBook: StorytellerBook) -> String? {
         let filepath = stBook.audiobook?.filepath ?? stBook.ebook?.filepath
         guard let filepath, !filepath.isEmpty else { return nil }
-        var name = (filepath as NSString).lastPathComponent
-        if name.isEmpty { return nil }
-        if let suffix = stBook.suffix, !suffix.isEmpty {
-            let trimmedSuffix = suffix.trimmingCharacters(in: .whitespaces)
-            if name.hasSuffix(trimmedSuffix) {
-                name = String(name.dropLast(trimmedSuffix.count))
-                    .trimmingCharacters(in: .whitespaces)
-            }
-        }
+        let name = (filepath as NSString).lastPathComponent
         return name.isEmpty ? nil : name
     }
 
-    private func parseDate(_ dateStr: String?) -> Date? {
-        guard let dateStr else { return nil }
-        let fmt = DateFormatter()
-        fmt.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        fmt.locale = Locale(identifier: "en_US_POSIX")
-        return fmt.date(from: dateStr)
-    }
+    private static let sqliteDateTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        return formatter
+    }()
 }
 
 struct StorytellerTokenResponse: Codable {
@@ -1750,159 +1696,75 @@ struct StorytellerTokenResponse: Codable {
     let token_type: String?
 }
 
-struct StorytellerBook: Codable {
+struct StorytellerBook: Decodable {
     let uuid: String
     let title: String
-    let subtitle: String?
     let description: String?
     let language: String?
     let rating: Double?
-    let createdAt: String?
-    let updatedAt: String?
+    let createdAt: String
     let publicationDate: String?
-    let suffix: String?
-    let authors: [StorytellerCreator]?
-    let narrators: [StorytellerCreator]?
-    let series: [StorytellerSeriesRelation]?
-    let tags: [StorytellerTag]?
-    let collections: [StorytellerCollectionRef]?
+    let authors: [StorytellerCreator]
+    let narrators: [StorytellerCreator]
+    let series: [StorytellerSeriesRelation]
+    let tags: [StorytellerTag]
+    let collections: [StorytellerCollectionRef]
     let status: StorytellerStatus?
     let position: StorytellerPosition?
     let ebook: StorytellerFormat?
     let audiobook: StorytellerFormat?
     let readaloud: StorytellerReadaloud?
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        uuid = container.decodeLenient(String.self, forKey: .uuid) ?? ""
-        title = container.decodeLenient(String.self, forKey: .title) ?? ""
-        subtitle = container.decodeLenient(String.self, forKey: .subtitle)
-        description = container.decodeLenient(String.self, forKey: .description)
-        language = container.decodeLenient(String.self, forKey: .language)
-        rating = container.decodeLenient(Double.self, forKey: .rating)
-        createdAt = container.decodeLenient(String.self, forKey: .createdAt)
-        updatedAt = container.decodeLenient(String.self, forKey: .updatedAt)
-        publicationDate = container.decodeLenient(String.self, forKey: .publicationDate)
-        suffix = container.decodeLenient(String.self, forKey: .suffix)
-        authors = container.decodeLenient([StorytellerCreator].self, forKey: .authors)
-        narrators = container.decodeLenient([StorytellerCreator].self, forKey: .narrators)
-        series = container.decodeLenient([StorytellerSeriesRelation].self, forKey: .series)
-        tags = container.decodeLenient([StorytellerTag].self, forKey: .tags)
-        collections = container.decodeLenient([StorytellerCollectionRef].self, forKey: .collections)
-        status = container.decodeLenient(StorytellerStatus.self, forKey: .status)
-        position = container.decodeLenient(StorytellerPosition.self, forKey: .position)
-        ebook = container.decodeLenient(StorytellerFormat.self, forKey: .ebook)
-        audiobook = container.decodeLenient(StorytellerFormat.self, forKey: .audiobook)
-        readaloud = container.decodeLenient(StorytellerReadaloud.self, forKey: .readaloud)
-    }
 }
 
-struct StorytellerCreator: Codable {
-    let uuid: String?
+struct StorytellerCreator: Decodable {
+    let uuid: String
     let name: String
-    let fileAs: String?
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        uuid = container.decodeLenient(String.self, forKey: .uuid)
-        name = container.decodeLenient(String.self, forKey: .name) ?? ""
-        fileAs = container.decodeLenient(String.self, forKey: .fileAs)
-    }
 }
 
-struct StorytellerSeriesRelation: Codable {
-    let uuid: String?
+struct StorytellerSeriesRelation: Decodable {
+    let uuid: String
     let name: String
     let position: Double?
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        uuid = container.decodeLenient(String.self, forKey: .uuid)
-        name = container.decodeLenient(String.self, forKey: .name) ?? ""
-        position = container.decodeLenient(Double.self, forKey: .position)
-    }
 }
 
-struct StorytellerTag: Codable {
-    let uuid: String?
+struct StorytellerTag: Decodable {
+    let uuid: String
     let name: String
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        uuid = container.decodeLenient(String.self, forKey: .uuid)
-        name = container.decodeLenient(String.self, forKey: .name) ?? ""
-    }
 }
 
-struct StorytellerCollectionRef: Codable {
-    let uuid: String?
-    let name: String?
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        uuid = container.decodeLenient(String.self, forKey: .uuid)
-        name = container.decodeLenient(String.self, forKey: .name)
-    }
-}
-
-struct StorytellerStatus: Codable {
-    let uuid: String?
+struct StorytellerCollectionRef: Decodable {
+    let uuid: String
     let name: String
-    let isDefault: Bool?
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        uuid = container.decodeLenient(String.self, forKey: .uuid)
-        name = container.decodeLenient(String.self, forKey: .name) ?? ""
-        isDefault = container.decodeLenientIntAsBool(forKey: .isDefault)
-    }
 }
 
-struct StorytellerFormat: Codable {
-    let uuid: String?
-    let filepath: String?
-    let missing: Int
+struct StorytellerStatus: Decodable {
+    let uuid: String
+    let name: String
+}
+
+struct StorytellerFormat: Decodable {
+    let uuid: String
+    let filepath: String
+    let missing: Bool
     let duration: Double?
     let manifest: StorytellerAudioManifest?
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        uuid = container.decodeLenient(String.self, forKey: .uuid)
-        filepath = container.decodeLenient(String.self, forKey: .filepath)
-        missing = container.decodeLenientBoolAsInt(forKey: .missing)
-        duration = container.decodeLenient(Double.self, forKey: .duration)
-        manifest = container.decodeLenient(StorytellerAudioManifest.self, forKey: .manifest)
-    }
 }
 
-struct StorytellerReadaloud: Codable {
-    let uuid: String?
+struct StorytellerReadaloud: Decodable {
+    let uuid: String
     let filepath: String?
-    let status: String?
-    let missing: Int
-    let currentStage: String?
-    let stageProgress: Double?
+    let status: String
+    let missing: Bool
+    let currentStage: String
+    let stageProgress: Double
     let queuePosition: Int?
-    let restartPending: Bool?
+    // Storyteller's RestartMode: "full", "transcription" or "sync" while a restart is queued.
+    let restartPending: String?
     let duration: Double?
     let manifest: StorytellerAudioManifest?
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        uuid = container.decodeLenient(String.self, forKey: .uuid)
-        filepath = container.decodeLenient(String.self, forKey: .filepath)
-        status = container.decodeLenient(String.self, forKey: .status)
-        missing = container.decodeLenientBoolAsInt(forKey: .missing)
-        currentStage = container.decodeLenient(String.self, forKey: .currentStage)
-        stageProgress = container.decodeLenient(Double.self, forKey: .stageProgress)
-        queuePosition = container.decodeLenient(Int.self, forKey: .queuePosition)
-        restartPending = container.decodeLenientIntAsBool(forKey: .restartPending)
-        duration = container.decodeLenient(Double.self, forKey: .duration)
-        manifest = container.decodeLenient(StorytellerAudioManifest.self, forKey: .manifest)
-    }
 
     var isReady: Bool {
-        status == "ALIGNED" && filepath != nil && missing == 0
+        status == "ALIGNED" && filepath != nil && !missing
     }
 
     var isProcessing: Bool {
@@ -1910,7 +1772,42 @@ struct StorytellerReadaloud: Codable {
     }
 }
 
-struct StorytellerPosition: Codable {
+struct StorytellerLocator: Codable, Equatable {
+    struct Locations: Codable, Equatable {
+        struct DOMRange: Codable, Equatable {
+            struct Point: Codable, Equatable {
+                let cssSelector: String
+                let textNodeIndex: Int
+                let charOffset: Int?
+            }
+
+            let start: Point
+            let end: Point?
+        }
+
+        let fragments: [String]?
+        let progression: Double?
+        let position: Int?
+        let totalProgression: Double?
+        let cssSelector: String?
+        let partialCfi: String?
+        let domRange: DOMRange?
+    }
+
+    struct Text: Codable, Equatable {
+        let after: String?
+        let before: String?
+        let highlight: String?
+    }
+
+    let href: String
+    let type: String
+    let title: String?
+    let locations: Locations?
+    let text: Text?
+}
+
+struct StorytellerPosition: Decodable {
     struct LocatorComponents {
         let href: String
         let progression: Double?
@@ -1918,85 +1815,40 @@ struct StorytellerPosition: Codable {
         let audioFragmentTime: TimeInterval?
     }
 
-    let uuid: String?
     let timestamp: Int
-    private let _locatorJSON: String?
+    let locatorJSONString: String
 
     enum CodingKeys: String, CodingKey {
-        case uuid, timestamp, locator
+        case timestamp, locator
     }
 
     init(locatorJSONString: String, timestamp: Int) {
-        uuid = nil
         self.timestamp = timestamp
-        _locatorJSON = locatorJSONString
+        self.locatorJSONString = locatorJSONString
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.uuid = try container.decodeIfPresent(String.self, forKey: .uuid)
-        self.timestamp = (try? container.decode(Int.self, forKey: .timestamp)) ?? 0
-
-        if let locStr = try? container.decode(String.self, forKey: .locator) {
-            self._locatorJSON = locStr
-        } else {
-            if let fragment = try? container.decode(JSONFragment.self, forKey: .locator) {
-                self._locatorJSON = fragment.jsonString
-            } else {
-                self._locatorJSON = nil
-            }
-        }
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encodeIfPresent(uuid, forKey: .uuid)
-        try container.encode(timestamp, forKey: .timestamp)
-        try container.encodeIfPresent(_locatorJSON, forKey: .locator)
-    }
-
-    init?(data: Data) {
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-        self.uuid = json["uuid"] as? String
-        self.timestamp = (json["timestamp"] as? Int) ?? 0
-
-        if let locDict = json["locator"] as? [String: Any],
-            let locData = try? JSONSerialization.data(withJSONObject: locDict),
-            let locStr = String(data: locData, encoding: .utf8)
-        {
-            self._locatorJSON = locStr
-        } else if let locStr = json["locator"] as? String {
-            self._locatorJSON = locStr
-        } else {
-            self._locatorJSON = nil
-        }
+        timestamp = try container.decode(Int.self, forKey: .timestamp)
+        let locator = try container.decode(StorytellerLocator.self, forKey: .locator)
+        locatorJSONString = String(decoding: try JSONEncoder().encode(locator), as: UTF8.self)
     }
 
     var locatorComponents: LocatorComponents? {
-        guard let data = _locatorJSON?.data(using: .utf8),
-            let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let locations = dict["locations"] as? [String: Any]
+        guard let locator = try? JSONDecoder().decode(StorytellerLocator.self, from: Data(locatorJSONString.utf8)),
+            let locations = locator.locations
         else { return nil }
 
-        let fragments: [String]
-        if let strings = locations["fragments"] as? [String] {
-            fragments = strings
-        } else if let values = locations["fragments"] as? [Any] {
-            fragments = values.compactMap { $0 as? String }
-        } else {
-            fragments = []
-        }
-
-        let audioFragmentTime = fragments.lazy.compactMap { fragment -> TimeInterval? in
+        let audioFragmentTime = (locations.fragments ?? []).lazy.compactMap { fragment -> TimeInterval? in
             guard fragment.hasPrefix("t=") else { return nil }
             let value = fragment.dropFirst(2).split { $0 == "," || $0 == "&" }.first.map(String.init)
             return value.flatMap(Double.init)
         }.first
 
         return LocatorComponents(
-            href: dict["href"] as? String ?? "",
-            progression: locations["progression"] as? Double,
-            totalProgression: locations["totalProgression"] as? Double,
+            href: locator.href,
+            progression: locations.progression,
+            totalProgression: locations.totalProgression,
             audioFragmentTime: audioFragmentTime
         )
     }
@@ -2004,222 +1856,54 @@ struct StorytellerPosition: Codable {
     var totalProgression: Double? {
         locatorComponents?.totalProgression
     }
-
-    var locatorJSONString: String? {
-        return _locatorJSON
-    }
-}
-
-private struct JSONFragment: Decodable {
-    let jsonString: String?
-
-    private struct AnyCodingKey: CodingKey {
-        var stringValue: String
-        var intValue: Int?
-        init?(stringValue: String) { self.stringValue = stringValue; self.intValue = nil }
-        init?(intValue: Int) { self.stringValue = "\(intValue)"; self.intValue = intValue }
-    }
-
-    init(from decoder: Decoder) throws {
-        if let container = try? decoder.container(keyedBy: AnyCodingKey.self) {
-            var dict = [String: Any]()
-            for key in container.allKeys {
-                if let v = try? container.decode(Bool.self, forKey: key) {
-                    dict[key.stringValue] = v
-                } else if let v = try? container.decode(Int.self, forKey: key) {
-                    dict[key.stringValue] = v
-                } else if let v = try? container.decode(Double.self, forKey: key) {
-                    dict[key.stringValue] = v
-                } else if let v = try? container.decode(String.self, forKey: key) {
-                    dict[key.stringValue] = v
-                } else if let v = try? container.decode(JSONFragment.self, forKey: key) {
-                    if let s = v.jsonString, let d = s.data(using: .utf8), let parsed = try? JSONSerialization.jsonObject(with: d) {
-                        dict[key.stringValue] = parsed
-                    }
-                } else if let v = try? container.decode([JSONFragment].self, forKey: key) {
-                    dict[key.stringValue] = v.compactMap { frag -> Any? in
-                        guard let s = frag.jsonString, let d = s.data(using: .utf8) else { return nil }
-                        return try? JSONSerialization.jsonObject(with: d)
-                    }
-                }
-            }
-            if let data = try? JSONSerialization.data(withJSONObject: dict) {
-                self.jsonString = String(data: data, encoding: .utf8)
-            } else {
-                self.jsonString = nil
-            }
-        } else if var arr = try? decoder.unkeyedContainer() {
-            var items = [Any]()
-            while !arr.isAtEnd {
-                if let v = try? arr.decode(String.self) {
-                    items.append(v)
-                } else if let v = try? arr.decode(Double.self) {
-                    items.append(v)
-                } else if let v = try? arr.decode(Bool.self) {
-                    items.append(v)
-                } else if let v = try? arr.decode(JSONFragment.self), let s = v.jsonString, let d = s.data(using: .utf8),
-                    let parsed = try? JSONSerialization.jsonObject(with: d)
-                {
-                    items.append(parsed)
-                } else {
-                    break
-                }
-            }
-            if let data = try? JSONSerialization.data(withJSONObject: items) {
-                self.jsonString = String(data: data, encoding: .utf8)
-            } else {
-                self.jsonString = nil
-            }
-        } else {
-            let container = try decoder.singleValueContainer()
-            if let v = try? container.decode(String.self) {
-                self.jsonString = "\"\(v)\""
-            } else if let v = try? container.decode(Double.self) {
-                self.jsonString = "\(v)"
-            } else if let v = try? container.decode(Bool.self) {
-                self.jsonString = v ? "true" : "false"
-            } else {
-                self.jsonString = nil
-            }
-        }
-    }
-}
-
-private extension KeyedDecodingContainer {
-    func decodeLenient<T: Decodable>(_ type: T.Type, forKey key: Key) -> T? {
-        (try? decode(T.self, forKey: key)) ?? (try? decodeIfPresent(T.self, forKey: key))
-    }
-
-    func decodeLenientBoolAsInt(forKey key: Key, defaultValue: Int = 0) -> Int {
-        if let boolValue = try? decode(Bool.self, forKey: key) {
-            return boolValue ? 1 : 0
-        }
-        if let intValue = try? decode(Int.self, forKey: key) {
-            return intValue
-        }
-        return defaultValue
-    }
-
-    func decodeLenientIntAsBool(forKey key: Key) -> Bool? {
-        if let boolValue = try? decodeIfPresent(Bool.self, forKey: key) {
-            return boolValue
-        }
-        if let intValue = try? decodeIfPresent(Int.self, forKey: key) {
-            return intValue != 0
-        }
-        return nil
-    }
 }
 
 private struct LenientArrayWrapper<T: Decodable>: Decodable {
     let values: [T]
-    let skippedCount: Int
     let rejectedItems: [RejectedContentCandidate]
 
     init(from decoder: Decoder) throws {
         let decoded = try LossyDecodableArray<T>(from: decoder)
         values = decoded.values
         rejectedItems = decoded.rejectedItems
-        skippedCount = decoded.rejectedItems.count
     }
 }
 
-struct StorytellerUser: Codable {
+struct StorytellerUser: Decodable {
+    struct Permissions: Decodable {
+        let bookList: Bool
+        let bookProcess: Bool
+    }
+
     let id: String
     let name: String
     let username: String
     let email: String?
+    let permissions: Permissions
 }
 
-struct StorytellerCollection: Codable {
-    let uuid: String?
+struct StorytellerCollection: Decodable {
+    let uuid: String
     let name: String
     let description: String?
-    let books: [StorytellerBookRef]?
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        uuid = container.decodeLenient(String.self, forKey: .uuid)
-        name = container.decodeLenient(String.self, forKey: .name) ?? ""
-        description = container.decodeLenient(String.self, forKey: .description)
-        books = container.decodeLenient([StorytellerBookRef].self, forKey: .books)
-    }
 }
 
-struct StorytellerBookRef: Codable {
+struct StorytellerSeries: Decodable {
     let uuid: String
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        uuid = container.decodeLenient(String.self, forKey: .uuid) ?? ""
-    }
-}
-
-struct StorytellerSeries: Codable {
-    let uuid: String?
     let name: String
     let description: String?
-    let books: [StorytellerSeriesBookRef]?
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        uuid = container.decodeLenient(String.self, forKey: .uuid)
-        name = container.decodeLenient(String.self, forKey: .name) ?? ""
-        description = container.decodeLenient(String.self, forKey: .description)
-        books = container.decodeLenient([StorytellerSeriesBookRef].self, forKey: .books)
-    }
 }
 
-struct StorytellerSeriesBookRef: Codable {
-    let uuid: String
-    let position: Double?
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        uuid = container.decodeLenient(String.self, forKey: .uuid) ?? ""
-        position = container.decodeLenient(Double.self, forKey: .position)
-    }
+struct StorytellerAudioManifest: Decodable {
+    let readingOrder: [StorytellerLink]
+    let resources: [StorytellerLink]?
+    let toc: [StorytellerLink]?
 }
 
-struct StorytellerAudioManifest: Codable {
-    let readingOrder: [StorytellerAudioItem]
-    let resources: [StorytellerAudioItem]?
-    let toc: [StorytellerTocItem]?
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        readingOrder = container.decodeLenient([StorytellerAudioItem].self, forKey: .readingOrder) ?? []
-        resources = container.decodeLenient([StorytellerAudioItem].self, forKey: .resources)
-        toc = container.decodeLenient([StorytellerTocItem].self, forKey: .toc)
-    }
-}
-
-struct StorytellerAudioItem: Codable {
+struct StorytellerLink: Decodable {
     let href: String
     let type: String?
     let title: String?
     let duration: Double?
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        href = container.decodeLenient(String.self, forKey: .href) ?? ""
-        type = container.decodeLenient(String.self, forKey: .type)
-        title = container.decodeLenient(String.self, forKey: .title)
-        duration = container.decodeLenient(Double.self, forKey: .duration)
-    }
-}
-
-struct StorytellerTocItem: Codable {
-    let href: String?
-    let title: String?
-    let duration: Double?
-    let children: [StorytellerTocItem]?
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        href = container.decodeLenient(String.self, forKey: .href)
-        title = container.decodeLenient(String.self, forKey: .title)
-        duration = container.decodeLenient(Double.self, forKey: .duration)
-        children = container.decodeLenient([StorytellerTocItem].self, forKey: .children)
-    }
+    let children: [StorytellerLink]?
 }

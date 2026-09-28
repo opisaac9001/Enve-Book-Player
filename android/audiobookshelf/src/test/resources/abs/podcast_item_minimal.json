@@ -1,0 +1,80 @@
+{
+  "id": "8aeea38a-8dde-4c85-907f-31fefb255b40",
+  "libraryId": "c37bb17d-2d06-4e6d-b763-66c6c0ff9c25",
+  "mediaType": "podcast",
+  "addedAt": 1786508087450,
+  "media": {
+    "id": "a8ef90dc-23e6-40ba-b1dc-bf558d5749a4",
+    "metadata": {
+      "title": "Enve Test Podcast",
+      "author": "Enve Test Podcast",
+      "description": null,
+      "genres": [],
+      "feedUrl": null,
+      "language": null,
+      "explicit": false
+    },
+    "episodes": [
+      {
+        "libraryItemId": "8aeea38a-8dde-4c85-907f-31fefb255b40",
+        "podcastId": "a8ef90dc-23e6-40ba-b1dc-bf558d5749a4",
+        "id": "48745f0f-cdb4-4e02-a472-0e4f97e228a0",
+        "index": null,
+        "season": null,
+        "episode": null,
+        "episodeType": null,
+        "title": "Episode 1 - Connection Check",
+        "subtitle": null,
+        "description": null,
+        "pubDate": null,
+        "publishedAt": null,
+        "addedAt": 1786508087473,
+        "updatedAt": 1788223215671,
+        "audioFile": {
+          "index": null,
+          "ino": "14155813",
+          "metadata": {
+            "filename": "Episode 01.opus",
+            "ext": ".opus",
+            "size": 317134
+          },
+          "duration": 30.0065,
+          "mimeType": "audio/ogg",
+          "codec": "opus",
+          "bitRate": 112000,
+          "channels": 1
+        }
+      },
+      {
+        "libraryItemId": "8aeea38a-8dde-4c85-907f-31fefb255b40",
+        "podcastId": "a8ef90dc-23e6-40ba-b1dc-bf558d5749a4",
+        "id": "3a2b28ce-e6c1-493f-aa6f-f829554c4810",
+        "index": null,
+        "season": null,
+        "episode": null,
+        "episodeType": null,
+        "title": "Episode 2 - Unicode 日本語 العربية",
+        "subtitle": null,
+        "description": null,
+        "pubDate": null,
+        "publishedAt": null,
+        "addedAt": 1788223215769,
+        "updatedAt": 1788223215769,
+        "audioFile": {
+          "index": 1,
+          "ino": "14172358",
+          "metadata": {
+            "filename": "Episode 02 - Unicode 日本語 العربية.m4a",
+            "ext": ".m4a",
+            "size": 379677
+          },
+          "duration": 31,
+          "mimeType": "audio/mp4",
+          "codec": "aac",
+          "bitRate": 96176,
+          "channels": 1
+        }
+      }
+    ]
+  }
+}

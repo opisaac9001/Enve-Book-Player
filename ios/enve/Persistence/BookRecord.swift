@@ -250,6 +250,7 @@ final class BookRecord {
     }
 
     func update(from book: Book) {
+        self.mediaType = book.mediaType.rawValue
         self.title = book.title
         self.author = book.author
         self.authors = book.authors
@@ -277,6 +278,7 @@ final class BookRecord {
         self.bookDescription = book.description
         self.language = book.language
 
+        // A media-type correction never lets stale progress rewind the record.
         if book.lastUpdate >= self.lastUpdate {
             self.currentTime = book.currentTime
             self.ebookProgress = book.ebookProgress
@@ -325,8 +327,8 @@ final class BookRecord {
         seriesSortKey = BookSortKeys.text(series)
         seriesNumberSortValue = BookSortKeys.seriesNumber(seriesSequence)
 
-        progressSortValue = BookSortKeys.progress(
-            mediaType: mediaType,
+        progressSortValue = Book.storedProgressFraction(
+            isEbook: mediaType == AppMediaType.ebook.rawValue,
             currentTime: currentTime,
             duration: duration,
             ebookProgress: ebookProgress
@@ -388,19 +390,6 @@ enum BookSortKeys {
 
     nonisolated static func seriesNumber(_ sequence: String?) -> Double {
         sequence.flatMap(Double.init) ?? .greatestFiniteMagnitude
-    }
-
-    nonisolated static func progress(
-        mediaType: String,
-        currentTime: TimeInterval,
-        duration: TimeInterval?,
-        ebookProgress: Double?
-    ) -> Double {
-        if mediaType == AppMediaType.ebook.rawValue {
-            return Book.normalizedFractionProgress(ebookProgress) ?? 0
-        }
-        guard let duration, duration > 0 else { return 0 }
-        return min(max(currentTime / duration, 0), 1)
     }
 
     private nonisolated static func naturalKey(_ value: String) -> String {

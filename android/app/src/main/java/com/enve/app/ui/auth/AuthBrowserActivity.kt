@@ -34,7 +34,6 @@ import com.enve.app.MainActivity
 class AuthBrowserActivity : ComponentActivity() {
     private lateinit var webView: WebView
     private lateinit var progressBar: ProgressBar
-    // Preserve the origin across ViewModel resets during the Storyteller callback.
     private var originServerUrl: String = ""
     private var requiredCookieName: String? = null
     private var requireOriginReturnBeforeCookie: Boolean = false
@@ -78,7 +77,6 @@ class AuthBrowserActivity : ComponentActivity() {
         requireOriginReturnBeforeCookie = intent.getBooleanExtra(EXTRA_REQUIRE_ORIGIN_RETURN_BEFORE_COOKIE, false)
 
         setupContent(startUrl)
-        // Clear stale identity-provider state before starting an ephemeral session.
         CookieManager.getInstance().removeAllCookies(null)
         CookieManager.getInstance().flush()
         android.webkit.WebStorage.getInstance().deleteAllData()
@@ -131,7 +129,6 @@ class AuthBrowserActivity : ComponentActivity() {
                 0,
                 1f,
             )
-            // Avoid an opaque black surface before the identity provider's first paint.
             setBackgroundColor(Color.WHITE)
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
@@ -139,7 +136,6 @@ class AuthBrowserActivity : ComponentActivity() {
             settings.javaScriptCanOpenWindowsAutomatically = true
             settings.setSupportMultipleWindows(false)
             settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-            // Google rejects the WebView marker in the user agent during federated sign-in.
             settings.userAgentString = sanitizeWebViewUserAgent(settings.userAgentString)
             if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_AUTHENTICATION)) {
                 WebSettingsCompat.setWebAuthenticationSupport(
@@ -208,7 +204,6 @@ class AuthBrowserActivity : ComponentActivity() {
             addView(webView)
         }
 
-        // Keep the toolbar below the status bar in the edge-to-edge app theme.
         androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(toolbar) { v, insets ->
             val top = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.statusBars()).top
             v.setPadding(v.paddingLeft, dp(10) + top, v.paddingRight, v.paddingBottom)
@@ -221,7 +216,6 @@ class AuthBrowserActivity : ComponentActivity() {
     private fun handleUrl(uri: Uri): Boolean {
         markCookieAuthNavigation(uri)
         if (isAuthCallback(uri)) {
-            // Carry the origin through the callback in case ViewModel state was reset.
             val enrichedUri = if (originServerUrl.isNotBlank() && uri.getQueryParameter("server").isNullOrBlank()) {
                 uri.buildUpon().appendQueryParameter("server", originServerUrl).build()
             } else {
@@ -289,6 +283,7 @@ class AuthBrowserActivity : ComponentActivity() {
         if (scheme == "storyteller") return true
         if (scheme == "audiobookshelf" && host == "oauth") return true
         if (scheme == "grimmory" || scheme == "booklore") return true
+        if (requiredCookieName != null && (scheme == "http" || scheme == "https")) return false
         if (path.contains("oauth2-callback")) return true
         return host == "auth-callback" || path.contains("auth-callback")
     }
@@ -296,7 +291,6 @@ class AuthBrowserActivity : ComponentActivity() {
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     private fun sanitizeWebViewUserAgent(default: String): String {
-        // Remove WebView markers rejected by Google's embedded-browser check.
         return default
             .replace("; wv)", ")")
             .replace(" wv ", " ")
@@ -314,14 +308,12 @@ class AuthBrowserActivity : ComponentActivity() {
         }
 
         override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
-            // Some JavaScript-driven redirects bypass shouldOverrideUrlLoading.
             if (url != null && handleUrl(Uri.parse(url))) {
                 view?.stopLoading()
             }
         }
 
         override fun onPageFinished(view: WebView?, url: String?) {
-            // Complete Cloudflare Access authentication as soon as its cookie arrives.
             checkRequiredCookie(url)
         }
 
@@ -341,7 +333,6 @@ class AuthBrowserActivity : ComponentActivity() {
             request: WebResourceRequest?,
             errorResponse: WebResourceResponse?,
         ) {
-            // Replace only main-frame authentication failures with the fallback page.
             if (request?.isForMainFrame == true) {
                 val code = errorResponse?.statusCode ?: 0
                 if (code in 400..599) {
@@ -362,7 +353,6 @@ class AuthBrowserActivity : ComponentActivity() {
     companion object {
         private const val EXTRA_URL = "com.enve.app.extra.AUTH_BROWSER_URL"
         private const val EXTRA_ACCENT = "com.enve.app.extra.AUTH_BROWSER_ACCENT"
-        // Finish successfully once the expected host cookie appears.
         private const val EXTRA_REQUIRED_COOKIE = "com.enve.app.extra.AUTH_REQUIRED_COOKIE"
         private const val EXTRA_REQUIRE_ORIGIN_RETURN_BEFORE_COOKIE = "com.enve.app.extra.AUTH_REQUIRE_ORIGIN_RETURN_BEFORE_COOKIE"
         const val EXTRA_RESULT_COOKIE = "com.enve.app.extra.AUTH_RESULT_COOKIE"

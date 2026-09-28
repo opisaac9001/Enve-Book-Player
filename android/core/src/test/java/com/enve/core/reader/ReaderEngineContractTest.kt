@@ -8,10 +8,24 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 class ReaderEngineContractTest {
+    @Test
+    fun bridgedReadiumLocatorKeepsTheNarratedSentenceId() {
+        val narrated = """{"href":"OEBPS/text/ch1.xhtml","type":"application/xhtml+xml","locations":{"fragments":["ch1-sentence320"],"cssSelector":"#ch1-sentence320","progression":0.9,"totalProgression":0.12}}"""
+        val checkpoint = requireNotNull(
+            EpubBridgeCheckpointCodec.fromReadiumLocator(narrated, "abc", null, writerEpoch = 1, revision = 0, observedAt = 1),
+        )
+        val bridged = Json.parseToJsonElement(requireNotNull(EpubBridgeCheckpointCodec.toReadiumLocatorJson(checkpoint))).jsonObject
+        val locations = bridged.getValue("locations").jsonObject
+
+        assertEquals("ch1-sentence320", locations.getValue("fragments").jsonArray.single().jsonPrimitive.content)
+        assertEquals("#ch1-sentence320", locations.getValue("cssSelector").jsonPrimitive.content)
+    }
+
     @Test
     fun ordinaryReflowableCfiBackedEpubsUseFoliate() {
         assertEquals(

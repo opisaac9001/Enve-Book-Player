@@ -1,4 +1,5 @@
 import Foundation
+import Logging
 
 @MainActor
 @Observable
@@ -14,6 +15,7 @@ final class ReaderOpenCoordinator {
     struct Activity: Identifiable, Equatable {
         let id: UUID
         let book: Book
+        let locator: String?
         var phase: Phase
         var directProgress: Double?
     }
@@ -23,26 +25,37 @@ final class ReaderOpenCoordinator {
     @ObservationIgnored private let appState: AppState
     @ObservationIgnored private let downloads: UnifiedDownloadService
     @ObservationIgnored private let linkedProgress: LinkedBookProgressCoordinator
+    @ObservationIgnored private let present: (Book) -> Void
     @ObservationIgnored private var requestTask: Task<Void, Never>?
     @ObservationIgnored private var requestedBookID: String?
 
-    private init(
+    init(
         appState: AppState = .shared,
         downloads: UnifiedDownloadService = .shared,
-        linkedProgress: LinkedBookProgressCoordinator = .shared
+        linkedProgress: LinkedBookProgressCoordinator = .shared,
+        present: ((Book) -> Void)? = nil
     ) {
         self.appState = appState
         self.downloads = downloads
         self.linkedProgress = linkedProgress
+        self.present =
+            present ?? { book in
+                LastOpenedBookStore.shared.record(book)
+                appState.presentation.selectedEbookForDetail = book
+            }
     }
 
-    func open(_ book: Book) {
+    // Only pass a locator for an explicit jump. A stale book copy could overwrite newer server progress.
+    func open(_ book: Book, at locator: String? = nil) {
+        let requestedLocator = locator?.isEmpty == false ? locator : nil
         if requestedBookID == book.uniqueId, requestTask != nil {
             return
         }
+        if requestedLocator != nil {
+            AppLogger.general.info("[ReaderOpen] opening at an explicit locator bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId))")
+        }
 
         cancelCurrentRequest(removeActivity: true)
-        let requestedLocator = explicitLocatorOverride(in: book)
 
         guard requiresPreparation(book) else {
             requestedBookID = book.uniqueId
@@ -65,6 +78,7 @@ final class ReaderOpenCoordinator {
         activity = Activity(
             id: requestID,
             book: book,
+            locator: requestedLocator,
             phase: .downloading,
             directProgress: nil
         )
@@ -82,9 +96,9 @@ final class ReaderOpenCoordinator {
     }
 
     func retry() {
-        guard let book = activity?.book else { return }
+        guard let activity else { return }
         cancelCurrentRequest(removeActivity: true)
-        open(book)
+        open(activity.book, at: activity.locator)
     }
 
     func dismissFailure() {
@@ -152,12 +166,6 @@ final class ReaderOpenCoordinator {
             || book.epub3Features?.hasMediaOverlay == true
     }
 
-    private func explicitLocatorOverride(in book: Book) -> String? {
-        guard let locator = book.epubLocator, !locator.isEmpty else { return nil }
-        let storedLocator = appState.bookInMemory(uniqueId: book.uniqueId)?.epubLocator
-        return locator == storedLocator ? nil : locator
-    }
-
     private func resolveLinkedProgress(
         for book: Book,
         requestedLocator: String?
@@ -173,7 +181,7 @@ final class ReaderOpenCoordinator {
 
             let observedAt = Date()
             requested.ebookProgress = progression
-            requested.isFinished = progression >= 0.99
+            requested.isFinished = progression >= Book.finishedProgressThreshold
             requested.serverReadStatus = requested.isFinished ? "READ" : nil
             requested.lastUpdate = observedAt
             if appState.mutateBook(
@@ -181,8 +189,8 @@ final class ReaderOpenCoordinator {
                 {
                     $0.epubLocator = requestedLocator
                     $0.ebookProgress = progression
-                    $0.isFinished = progression >= 0.99
-                    $0.serverReadStatus = progression >= 0.99 ? "READ" : nil
+                    $0.isFinished = progression >= Book.finishedProgressThreshold
+                    $0.serverReadStatus = progression >= Book.finishedProgressThreshold ? "READ" : nil
                     $0.lastUpdate = observedAt
                 }
             ) == nil {
@@ -209,15 +217,12 @@ final class ReaderOpenCoordinator {
         if let current = appState.bookInMemory(uniqueId: book.uniqueId) {
             return current
         }
+        // Outside the in-memory window the reader's saves and conflict choices would have nothing to mutate.
         if let stored = await appState.bookStore.book(uniqueId: book.uniqueId) {
+            appState.hotCache.insert(stored)
             return stored
         }
         return book
-    }
-
-    private func present(_ book: Book) {
-        LastOpenedBookStore.shared.record(book)
-        appState.presentation.selectedEbookForDetail = book
     }
 
     private func cancelCurrentRequest(removeActivity: Bool) {

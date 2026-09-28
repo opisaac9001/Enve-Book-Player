@@ -17,6 +17,7 @@ enum ProviderType: String, Codable, CaseIterable {
     case storyteller
     case bookOrbit = "bookorbit"
     case silo
+    case oneDrive = "onedrive"
 
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
@@ -37,6 +38,8 @@ enum ProviderType: String, Codable, CaseIterable {
             self = .bookOrbit
         case "silo":
             self = .silo
+        case "onedrive", "one-drive":
+            self = .oneDrive
         default:
             guard let value = ProviderType(rawValue: rawValue) else {
                 throw DecodingError.dataCorruptedError(
@@ -71,6 +74,7 @@ enum ProviderType: String, Codable, CaseIterable {
         case .storyteller: return "text.book.closed.fill"
         case .bookOrbit: return "circle.hexagongrid.fill"
         case .silo: return "server.rack"
+        case .oneDrive: return "cloud.fill"
         }
     }
 
@@ -91,6 +95,7 @@ enum ProviderType: String, Codable, CaseIterable {
         case .realdebrid: return "RealDebridLogo"
         case .bookOrbit: return "BookOrbitLogo"
         case .silo: return "SiloLogo"
+        case .oneDrive: return nil
         case .local: return nil
         }
     }
@@ -387,7 +392,7 @@ struct ServerConnection: Identifiable, Codable, Hashable {
         }
     }
 
-    static func normalizedHeaderName(_ headerName: String) -> String {
+    nonisolated static func normalizedHeaderName(_ headerName: String) -> String {
         headerName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
@@ -400,7 +405,9 @@ struct ServerConnection: Identifiable, Codable, Hashable {
         )
     }
 
-    private static func isSecretHeaderName(_ headerName: String) -> Bool {
+    /// Whether a header name is one that carries a credential, wherever the header came from. Used by
+    /// the redirect policy as well as by persistence, so it stays free of actor isolation.
+    nonisolated static func isSecretHeaderName(_ headerName: String) -> Bool {
         let normalized = normalizedHeaderName(headerName)
         guard !normalized.isEmpty else { return false }
 
@@ -422,7 +429,7 @@ struct ServerConnection: Identifiable, Codable, Hashable {
         return secretFragments.contains { normalized.contains($0) }
     }
 
-    private static func headerValueLooksSecret(_ value: String) -> Bool {
+    nonisolated private static func headerValueLooksSecret(_ value: String) -> Bool {
         let lowercased = value.lowercased()
         return lowercased.contains("cf-access-client-secret") || lowercased.contains("cf_authorization=")
     }
@@ -708,6 +715,11 @@ public struct Chapter: Identifiable, Codable, Hashable {
         self.title = title
         self.index = 0
     }
+}
+
+extension [Chapter] {
+    /// An ebook's contents cached as chapters carry no times, so they cannot chapter an audiobook.
+    var hasAudioTimeline: Bool { contains { $0.start > 0 || $0.end > 0 } }
 }
 
 struct SeriesInfo: Codable, Hashable {

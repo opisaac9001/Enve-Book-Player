@@ -19,6 +19,7 @@ internal object BookOrbitProgressResolver {
     ): BookOrbitProgressDecision {
         val localCfi = EpubBridgeCheckpointCodec.foliateCfi(localLocator)
         val remoteCfi = EpubBridgeCheckpointCodec.foliateCfi(remoteLocator)
+        if (localCfi != null && remoteCfi == null && localUpdatedAt != null) return BookOrbitProgressDecision.PUSH
         if (localCfi != remoteCfi && localUpdatedAt != null && remoteUpdatedAt != null) {
             if (remoteCfi != null && remoteUpdatedAt > localUpdatedAt) return BookOrbitProgressDecision.PULL
             if (localCfi != null && localUpdatedAt > remoteUpdatedAt) return BookOrbitProgressDecision.PUSH
@@ -31,6 +32,7 @@ internal object BookOrbitProgressResolver {
         if (remote <= ZERO_EPSILON) return BookOrbitProgressDecision.PUSH
         if (kotlin.math.abs(remote - local) < EQUAL_TOLERANCE) return BookOrbitProgressDecision.NONE
 
+        if (remoteUpdatedAt == null && localUpdatedAt != null) return BookOrbitProgressDecision.PUSH
         if (localUpdatedAt == null || remoteUpdatedAt == null) {
             return if (remote > local) BookOrbitProgressDecision.PULL else BookOrbitProgressDecision.PUSH
         }

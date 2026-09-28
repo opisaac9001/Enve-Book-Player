@@ -83,7 +83,7 @@ public final class AudiobookshelfService: @unchecked Sendable {
             @unknown default:
                 detail = error.localizedDescription
             }
-            AppLogger.player.error("[ABS] Decode \(context) failed: \(detail)")
+            AppLogger.network.error("[ABS] Decode \(context) failed: \(detail)")
             throw error
         }
     }
@@ -152,7 +152,7 @@ public final class AudiobookshelfService: @unchecked Sendable {
             }
 
         } else {
-            AppLogger.player.warning(
+            AppLogger.network.warning(
                 "No token found for endpointDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: url.path))"
             )
         }
@@ -189,10 +189,10 @@ public final class AudiobookshelfService: @unchecked Sendable {
         }
 
         if httpResponse.statusCode != 200 {
-            AppLogger.player.debug(
+            AppLogger.network.debug(
                 "HTTP status=\(httpResponse.statusCode) endpointDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: httpResponse.url?.path ?? "unknown"))"
             )
-            AppLogger.player.info("Response body size: \(data.count) bytes")
+            AppLogger.network.info("Response body size: \(data.count) bytes")
         }
 
         switch httpResponse.statusCode {
@@ -374,7 +374,7 @@ public final class AudiobookshelfService: @unchecked Sendable {
                 withResponseHeaderFields: http.allHeaderFields as? [String: String] ?? [:],
                 for: url
             )
-            AppLogger.player.info("Pre-flight captured \(cookies.count) cookies, redirect -> \(redirectURL.host ?? "")")
+            AppLogger.network.info("Pre-flight captured \(cookies.count) cookies, redirect -> \(redirectURL.host ?? "")")
             return OIDCPreflightResult(authorizationURL: redirectURL, cookies: cookies)
         }
 
@@ -430,7 +430,7 @@ public final class AudiobookshelfService: @unchecked Sendable {
             request.setValue(value, forHTTPHeaderField: key)
         }
 
-        AppLogger.player.info("Exchanging code at: \(url.redacted)")
+        AppLogger.network.info("Exchanging code at: \(url.redacted)")
 
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
@@ -469,7 +469,7 @@ public final class AudiobookshelfService: @unchecked Sendable {
         let foundUsername = userDict?["username"] as? String ?? ""
         let userType = userDict?["type"] as? String ?? "user"
 
-        AppLogger.player.debug(
+        AppLogger.network.debug(
             "Token exchange successful - userId=\(DiagnosticLogSanitizer.identifier(for: foundUsername))"
         )
 
@@ -586,7 +586,7 @@ public final class AudiobookshelfService: @unchecked Sendable {
             if httpResponse.statusCode == 200 || httpResponse.statusCode == 204 {
                 return true
             } else if httpResponse.statusCode == 401 {
-                AppLogger.player.error("Token validation returned 401 - token is expired or invalid")
+                AppLogger.network.error("Token validation returned 401 - token is expired or invalid")
                 return false
             } else {
                 return false
@@ -607,23 +607,13 @@ public final class AudiobookshelfService: @unchecked Sendable {
             let librariesResponse = try decoder.decode(ABSLibrariesResponse.self, from: data)
             return librariesResponse.libraries
         } catch let error as DecodingError {
-            AppLogger.player.error("Decoding error: \(error)")
+            AppLogger.network.error("Decoding error: \(error)")
             throw AudiobookshelfError.decodingError(error)
         } catch let error as AudiobookshelfError {
             throw error
         } catch {
             throw AudiobookshelfError.networkError(error)
         }
-    }
-
-    func getLibrary(id: String, backend: BackendConfig) async throws -> ABSLibrary {
-        let url = try buildURL(backend: backend, path: "/api/libraries/\(id)")
-        let request = createRequest(url: url, backend: backend)
-
-        let (data, response) = try await session.data(for: request)
-        try handleResponse(response, data: data)
-
-        return try decoder.decode(ABSLibrary.self, from: data)
     }
 
     func getLibraryItems(
@@ -668,7 +658,7 @@ public final class AudiobookshelfService: @unchecked Sendable {
         struct ItemsURLLogOnce { static var didLog = false }
         if !ItemsURLLogOnce.didLog {
             ItemsURLLogOnce.didLog = true
-            AppLogger.player.info("ABS library items URL: \(url.redacted)")
+            AppLogger.network.info("ABS library items URL: \(url.redacted)")
         }
 
         let request = createRequest(url: url, backend: backend)
@@ -757,7 +747,7 @@ public final class AudiobookshelfService: @unchecked Sendable {
             DebugCounter.count += 1
             let authorsArray = metadata?.authors ?? []
 
-            AppLogger.player.debug(
+            AppLogger.network.debug(
                 "Book \(DebugCounter.count): id=\(DiagnosticLogSanitizer.identifier(for: item.id)), authors=\(authorsArray.count), hasComputedAuthor=\(metadata?.authorName != nil), hasSeries=\(metadata?.series?.isEmpty == false), hasRelativePath=\(item.relPath != nil)"
             )
         }
@@ -913,67 +903,6 @@ public final class AudiobookshelfService: @unchecked Sendable {
         return items.flatMap { convertToBooks(item: $0, backend: backend, libraryId: libraryId) }
     }
 
-    func updateMetadata(libraryItemId: String, metadata: ABSMetadataPayload, backend: BackendConfig) async throws -> ABSLibraryItem {
-        let url = try buildURL(backend: backend, path: "/api/items/\(libraryItemId)/media")
-        var request = createRequest(url: url, method: "PATCH", backend: backend)
-
-        let updateRequest = ABSMetadataUpdateRequest(metadata: metadata)
-        request.httpBody = try encoder.encode(updateRequest)
-
-        let (data, response) = try await session.data(for: request)
-        try handleResponse(response, data: data)
-
-        return try decoder.decode(ABSLibraryItem.self, from: data)
-    }
-
-    func batchUpdateMetadata(libraryItemIds: [String], updates: ABSMetadataPayload, backend: BackendConfig) async throws {
-        let url = try buildURL(backend: backend, path: "/api/items/batch/update")
-        var request = createRequest(url: url, method: "POST", backend: backend)
-
-        let batchRequest = ABSBatchUpdateRequest(libraryItemIds: libraryItemIds, updates: updates)
-        request.httpBody = try encoder.encode(batchRequest)
-
-        let (data, response) = try await session.data(for: request)
-        try handleResponse(response, data: data)
-    }
-
-    func updateCoverFromURL(libraryItemId: String, coverURL: String, backend: BackendConfig) async throws {
-        let url = try buildURL(backend: backend, path: "/api/items/\(libraryItemId)/cover")
-        var request = createRequest(url: url, method: "POST", backend: backend)
-
-        let body = ["url": coverURL]
-        request.httpBody = try encoder.encode(body)
-
-        let (data, response) = try await session.data(for: request)
-        try handleResponse(response, data: data)
-    }
-
-    func uploadCover(libraryItemId: String, imageData: Data, backend: BackendConfig) async throws {
-        let url = try buildURL(backend: backend, path: "/api/items/\(libraryItemId)/cover")
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-
-        if let token = backend.token {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
-
-        let boundary = UUID().uuidString
-        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-
-        var body = Data()
-        body.append(Data("--\(boundary)\r\n".utf8))
-        body.append(Data("Content-Disposition: form-data; name=\"cover\"; filename=\"cover.jpg\"\r\n".utf8))
-        body.append(Data("Content-Type: image/jpeg\r\n\r\n".utf8))
-        body.append(imageData)
-        body.append(Data("\r\n--\(boundary)--\r\n".utf8))
-
-        request.httpBody = body
-
-        let (data, response) = try await session.data(for: request)
-        try handleResponse(response, data: data)
-    }
-
     func getCollections(libraryId: String, backend: BackendConfig) async throws -> [ABSCollection] {
         let url = try buildURL(backend: backend, path: "/api/libraries/\(libraryId)/collections")
         let request = createRequest(url: url, backend: backend)
@@ -1038,29 +967,6 @@ public final class AudiobookshelfService: @unchecked Sendable {
 
         let (data, response) = try await session.data(for: request)
         try handleResponse(response, data: data)
-    }
-
-    func addBookToCollection(collectionId: String, bookId: String, backend: BackendConfig) async throws -> ABSCollection {
-        let url = try buildURL(backend: backend, path: "/api/collections/\(collectionId)/book")
-        var request = createRequest(url: url, method: "POST", backend: backend)
-
-        let body = ["id": bookId]
-        request.httpBody = try encoder.encode(body)
-
-        let (data, response) = try await session.data(for: request)
-        try handleResponse(response, data: data)
-
-        return try decoder.decode(ABSCollection.self, from: data)
-    }
-
-    func removeBookFromCollection(collectionId: String, bookId: String, backend: BackendConfig) async throws -> ABSCollection {
-        let url = try buildURL(backend: backend, path: "/api/collections/\(collectionId)/book/\(bookId)")
-        let request = createRequest(url: url, method: "DELETE", backend: backend)
-
-        let (data, response) = try await session.data(for: request)
-        try handleResponse(response, data: data)
-
-        return try decoder.decode(ABSCollection.self, from: data)
     }
 
     func startPlaySession(libraryItemId: String, backend: BackendConfig, forceDirectPlay: Bool = true) async throws -> ABSPlaySession {
@@ -1208,7 +1114,7 @@ public final class AudiobookshelfService: @unchecked Sendable {
         let url = try buildURL(backend: backend, path: "/api/me/progress/\(libraryItemId)")
         var request = createRequest(url: url, method: "PATCH", backend: backend)
 
-        let progress = duration > 0 ? currentTime / duration : 0
+        let progress = Book.audioProgressFraction(currentTime: currentTime, duration: duration)
         let progressRequest = ABSProgressUpdateRequest(
             currentTime: currentTime,
             duration: duration,
@@ -1221,14 +1127,16 @@ public final class AudiobookshelfService: @unchecked Sendable {
         try handleResponse(response, data: data)
     }
 
-    func updateEbookProgress(libraryItemId: String, ebookProgress: Double, isFinished: Bool = false, backend: BackendConfig) async throws {
+    func updateEbookProgress(libraryItemId: String, ebookProgress: Double, itemHasAudio: Bool, backend: BackendConfig) async throws {
         let url = try buildURL(backend: backend, path: "/api/me/progress/\(libraryItemId)")
         var request = createRequest(url: url, method: "PATCH", backend: backend)
 
-        let body: [String: Any] = [
-            "ebookProgress": ebookProgress,
-            "isFinished": isFinished,
-        ]
+        let body = AudiobookshelfProvider.ebookProgressBody(
+            progress: ebookProgress,
+            ebookLocation: nil,
+            itemHasAudio: itemHasAudio,
+            audioPosition: nil
+        )
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await session.data(for: request)
@@ -1386,7 +1294,7 @@ public final class AudiobookshelfService: @unchecked Sendable {
         }
 
         let url = try buildURL(backend: backend, path: "/api/search/books", queryItems: queryItems)
-        AppLogger.player.debug(
+        AppLogger.network.debug(
             "server-side query - titleId=\(DiagnosticLogSanitizer.identifier(for: title)), hasAuthor=\(author?.isEmpty == false)"
         )
 
@@ -1441,36 +1349,6 @@ public final class AudiobookshelfService: @unchecked Sendable {
         }
     }
 
-    func getAuthors(libraryId: String, backend: BackendConfig) async throws -> [ABSAuthor] {
-        let url = try buildURL(backend: backend, path: "/api/libraries/\(libraryId)/authors")
-        let request = createRequest(url: url, backend: backend)
-
-        let (data, response) = try await session.data(for: request)
-        try handleResponse(response, data: data)
-
-        struct AuthorsResponse: Codable {
-            let authors: [ABSAuthor]
-        }
-
-        let authorsResponse = try decoder.decode(AuthorsResponse.self, from: data)
-        return authorsResponse.authors
-    }
-
-    func getSeries(libraryId: String, backend: BackendConfig) async throws -> [ABSSeries] {
-        let url = try buildURL(backend: backend, path: "/api/libraries/\(libraryId)/series")
-        let request = createRequest(url: url, backend: backend)
-
-        let (data, response) = try await session.data(for: request)
-        try handleResponse(response, data: data)
-
-        struct SeriesResponse: Codable {
-            let results: [ABSSeries]
-        }
-
-        let seriesResponse = try decoder.decode(SeriesResponse.self, from: data)
-        return seriesResponse.results
-    }
-
     func scanLibrary(libraryId: String, backend: BackendConfig, force: Bool = false) async throws {
         var queryItems: [URLQueryItem] = []
         if force {
@@ -1486,37 +1364,6 @@ public final class AudiobookshelfService: @unchecked Sendable {
 
         let (data, response) = try await session.data(for: request)
         try handleResponse(response, data: data)
-    }
-
-    func matchLibraryItem(libraryItemId: String, provider: String = "audible", backend: BackendConfig) async throws {
-        let queryItems = [URLQueryItem(name: "provider", value: provider)]
-        let url = try buildURL(backend: backend, path: "/api/items/\(libraryItemId)/match", queryItems: queryItems)
-        let request = createRequest(url: url, method: "POST", backend: backend)
-
-        let (data, response) = try await session.data(for: request)
-        try handleResponse(response, data: data)
-    }
-
-    func getCoverURL(libraryItemId: String, backend: BackendConfig) -> URL? {
-        guard let baseURL = backend.baseURL else { return nil }
-
-        var urlString = "\(baseURL.absoluteString)/api/items/\(libraryItemId)/cover"
-        if let token = backend.token {
-            urlString += "?token=\(token)"
-        }
-
-        return URL(string: urlString)
-    }
-
-    func getAuthorImageURL(authorId: String, backend: BackendConfig) -> URL? {
-        guard let baseURL = backend.baseURL else { return nil }
-
-        var urlString = "\(baseURL.absoluteString)/api/authors/\(authorId)/image"
-        if let token = backend.token {
-            urlString += "?token=\(token)"
-        }
-
-        return URL(string: urlString)
     }
 
     private func chapters(from media: ABSBookMedia?) -> [Chapter] {
@@ -1644,7 +1491,7 @@ public final class AudiobookshelfService: @unchecked Sendable {
                 let directories = try decoder.decode([ABSFilesystemItem].self, from: data)
                 return directories
             } catch {
-                AppLogger.player.error("Failed to decode filesystem response (\(data.count) bytes)")
+                AppLogger.network.error("Failed to decode filesystem response (\(data.count) bytes)")
                 throw error
             }
         }
@@ -1798,45 +1645,6 @@ public final class AudiobookshelfService: @unchecked Sendable {
         try handleResponse(response, data: data)
     }
 
-    func getServerSettings(backend: BackendConfig) async throws -> ABSServerSettings {
-        let url = try buildURL(backend: backend, path: "/api/settings")
-        let request = createRequest(url: url, backend: backend)
-
-        let (data, response) = try await session.data(for: request)
-        try handleResponse(response, data: data)
-
-        struct SettingsWrapper: Codable {
-            let settings: ABSServerSettings?
-            let serverSettings: ABSServerSettings?
-        }
-        if let wrapper = try? decoder.decode(SettingsWrapper.self, from: data) {
-            if let settings = wrapper.settings ?? wrapper.serverSettings {
-                return settings
-            }
-        }
-        return try decoder.decode(ABSServerSettings.self, from: data)
-    }
-
-    func updateServerSettings(_ update: ABSServerSettingsUpdate, backend: BackendConfig) async throws -> ABSServerSettings {
-        let url = try buildURL(backend: backend, path: "/api/settings")
-        var urlRequest = createRequest(url: url, method: "PATCH", backend: backend)
-        urlRequest.httpBody = try encoder.encode(update)
-
-        let (data, response) = try await session.data(for: urlRequest)
-        try handleResponse(response, data: data)
-
-        struct UpdateResponse: Codable {
-            let success: Bool?
-            let serverSettings: ABSServerSettings?
-        }
-        if let updateResp = try? decoder.decode(UpdateResponse.self, from: data),
-            let settings = updateResp.serverSettings
-        {
-            return settings
-        }
-        return try decoder.decode(ABSServerSettings.self, from: data)
-    }
-
     func startPlaySession(
         libraryItemId: String,
         episodeId: String?,
@@ -1900,7 +1708,7 @@ public final class AudiobookshelfService: @unchecked Sendable {
         let url = try buildURL(backend: backend, path: "/api/me/progress/\(libraryItemId)/\(episodeId)")
         var request = createRequest(url: url, method: "PATCH", backend: backend)
 
-        let progress = duration > 0 ? currentTime / duration : 0
+        let progress = Book.audioProgressFraction(currentTime: currentTime, duration: duration)
         let progressRequest = ABSProgressUpdateRequest(
             currentTime: currentTime,
             duration: duration,
@@ -1912,55 +1720,9 @@ public final class AudiobookshelfService: @unchecked Sendable {
         let (data, response) = try await session.data(for: request)
         try handleResponse(response, data: data)
     }
-
-    func syncLocalSession(
-        sessionId: String,
-        libraryItemId: String,
-        episodeId: String?,
-        currentTime: TimeInterval,
-        timeListened: TimeInterval,
-        duration: TimeInterval,
-        started: Date,
-        updated: Date,
-        backend: BackendConfig
-    ) async throws {
-        let url = try buildURL(backend: backend, path: "/api/session/local")
-        var request = createRequest(url: url, method: "POST", backend: backend)
-
-        var body: [String: Any] = [
-            "id": sessionId,
-            "libraryItemId": libraryItemId,
-            "currentTime": currentTime,
-            "timeListened": timeListened,
-            "duration": duration,
-            "startedAt": Int(started.timeIntervalSince1970 * 1000),
-            "updatedAt": Int(updated.timeIntervalSince1970 * 1000),
-        ]
-
-        if let episodeId = episodeId {
-            body["episodeId"] = episodeId
-        }
-
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-        let (data, response) = try await session.data(for: request)
-        try handleResponse(response, data: data)
-    }
 }
 
 extension AudiobookshelfService {
-    struct AudiobookshelfLibrary: Codable {
-        let id: String
-        let name: String
-        let type: String
-    }
-
-    func getLibrariesLegacy(backend: BackendConfig) async throws -> [AudiobookshelfLibrary] {
-        let libraries = try await getLibraries(backend: backend)
-        return libraries.map { lib in
-            AudiobookshelfLibrary(id: lib.id, name: lib.name, type: lib.mediaType ?? "book")
-        }
-    }
 
     private func mapBackendTypeToSource(_ type: BackendConfig.BackendType) -> Book.BookSource {
         switch type {

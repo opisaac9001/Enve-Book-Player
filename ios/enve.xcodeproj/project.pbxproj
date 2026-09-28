@@ -194,6 +194,7 @@
 				Reader/Engine/ReaderPublicationSession.swift,
 				Reader/Engine/ReaderReadAloudAdapter.swift,
 				Reader/Engine/ReaderReadAloudController.swift,
+				Reader/Engine/ReaderRestReminder.swift,
 				Reader/Engine/ReaderSearchModel.swift,
 				Reader/Engine/ReaderSectionTitleResolver.swift,
 				Reader/Engine/ReaderTOCIndex.swift,
@@ -315,6 +316,7 @@
 				Screens/Player/PlayerClipSheets.swift,
 				Screens/Player/PlayerListSheets.swift,
 				Screens/Player/PlayerPassageSheet.swift,
+				Screens/Player/PlayerReadAloudLyricsView.swift,
 				Screens/Player/PlayerQueueSheet.swift,
 				Screens/Player/PlayerScreen.swift,
 				Screens/Player/PlayerSheets.swift,
@@ -357,7 +359,9 @@
 				Screens/Settings/ObsidianScreen.swift,
 				Screens/Settings/PlaybackScreen.swift,
 				Screens/Settings/RecentlyDeletedScreen.swift,
+				Screens/Settings/RejectedContentScreen.swift,
 				Screens/Settings/ReportIssueScreen.swift,
+				Screens/Settings/RestReminderSettingsScreen.swift,
 				Screens/Settings/SettingsComponents.swift,
 				Screens/Settings/SettingsScreen.swift,
 				Screens/Settings/StorageScreen.swift,
@@ -371,12 +375,14 @@
 				Screens/Sources/KomgaLoginDelegate.swift,
 				Screens/Sources/KomgaOAuthLoginView.swift,
 				Screens/Sources/LoginDelegates.swift,
+				Screens/Sources/OPDSSignInSheet.swift,
 				Screens/Sources/SourceDetailScreen.swift,
 				Screens/Sources/SourcesBrowsers.swift,
 				Screens/Sources/SourcesCloudScreen.swift,
 				Screens/Sources/SourcesComponents.swift,
 				Screens/Sources/SourcesFilesScreen.swift,
-				Screens/Sources/SourcesOPDSBulkScreen.swift,
+				Screens/Sources/SourcesOneDriveScreen.swift,
+				Screens/Sources/SourcesOPDSBrowseScreen.swift,
 				Screens/Sources/SourcesPlexScreen.swift,
 				Screens/Sources/SourcesProviderFormScreen.swift,
 				Screens/Sources/SourcesQuickConnectScreen.swift,
@@ -411,6 +417,7 @@
 				Services/Reader/MediaOverlayPlaybackService.swift,
 				Services/Reader/MediaOverlayPlayer.swift,
 				Services/Reader/NeuralTTSSupport.swift,
+				Services/Reader/ReadAloudLyrics.swift,
 				Services/Reader/ReaderFontLibrary.swift,
 				Services/Reader/ReaderNotebookMerge.swift,
 				Services/Reader/ReaderNotebookSync.swift,
@@ -1201,7 +1208,7 @@
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 26.1;
-				MARKETING_VERSION = 1.2.3;
+				MARKETING_VERSION = 1.2.5;
 				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enve;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -1259,7 +1266,7 @@
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 26.1;
-				MARKETING_VERSION = 1.2.3;
+				MARKETING_VERSION = 1.2.5;
 				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enve;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -1287,7 +1294,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MACOSX_DEPLOYMENT_TARGET = 26.1;
-				MARKETING_VERSION = 1.2.3;
+				MARKETING_VERSION = 1.2.5;
 				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enveTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
@@ -1315,7 +1322,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MACOSX_DEPLOYMENT_TARGET = 26.1;
-				MARKETING_VERSION = 1.2.3;
+				MARKETING_VERSION = 1.2.5;
 				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enveTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
@@ -1342,7 +1349,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MACOSX_DEPLOYMENT_TARGET = 26.1;
-				MARKETING_VERSION = 1.2.3;
+				MARKETING_VERSION = 1.2.5;
 				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enveUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
@@ -1367,7 +1374,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MACOSX_DEPLOYMENT_TARGET = 26.1;
-				MARKETING_VERSION = 1.2.3;
+				MARKETING_VERSION = 1.2.5;
 				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enveUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
@@ -1404,7 +1411,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.2.3;
+				MARKETING_VERSION = 1.2.5;
 				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enve;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = appletvos;
@@ -1439,7 +1446,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.2.3;
+				MARKETING_VERSION = 1.2.5;
 				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enve;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = appletvos;
@@ -1474,7 +1481,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.2.3;
+				MARKETING_VERSION = 1.2.5;
 				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enve.watchkitapp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;
@@ -1509,7 +1516,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.2.3;
+				MARKETING_VERSION = 1.2.5;
 				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enve.watchkitapp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;
@@ -1542,7 +1549,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.2.3;
+				MARKETING_VERSION = 1.2.5;
 				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enve.widgets;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -1571,7 +1578,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.2.3;
+				MARKETING_VERSION = 1.2.5;
 				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enve.widgets;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;

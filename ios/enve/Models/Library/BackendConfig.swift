@@ -52,7 +52,7 @@ extension BackendConfig {
         case .jellyfin: backendType = .jellyfin
         case .emby: backendType = .emby
         case .storyteller: backendType = .storyteller
-        case .webdav, .torbox, .premiumize, .realdebrid, .local, .booklore, .komga, .kavita, .opds, .bookOrbit, .silo:
+        case .webdav, .torbox, .premiumize, .realdebrid, .local, .booklore, .komga, .kavita, .opds, .bookOrbit, .silo, .oneDrive:
             return nil
         }
         self.id = connection.id.uuidString

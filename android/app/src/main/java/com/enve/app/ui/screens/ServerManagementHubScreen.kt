@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.enve.core.data.model.BookSource
+import com.enve.hearth.design.EmberAccent
 import com.enve.hearth.design.hearthDisplay
 import com.enve.core.data.model.ProviderConnection
 import com.enve.engine.servertools.ServerFeature
@@ -47,7 +48,6 @@ import com.enve.app.ui.theme.rememberAdaptiveMetrics
 import com.enve.app.ui.theme.scaled
 import com.enve.app.viewmodel.ServerManagementViewModel
 
-private val HearthEmber = Color(0xFFF5921A)
 private val HearthSage = Color(0xFF6F8F6A)
 private val HearthSlate = Color(0xFF64748B)
 private val HearthRed = Color(0xFFB3453E)
@@ -146,7 +146,7 @@ fun ServerManagementHubScreen(
                 subtitle = "${state.forSource(BookSource.PLEX).size} server(s)",
                 source = BookSource.PLEX,
                 icon = Icons.Default.PlayCircle,
-                iconTint = HearthEmber,
+                iconTint = EmberAccent,
                 state = state,
                 dividerColor = dividerColor,
                 onRefreshConnection = viewModel::refreshConnection,
@@ -262,7 +262,7 @@ fun ServerManagementHubScreen(
                 subtitle = "${state.forSource(BookSource.OPDS).size} feed(s)",
                 source = BookSource.OPDS,
                 icon = Icons.Default.Language,
-                iconTint = HearthEmber,
+                iconTint = EmberAccent,
                 state = state,
                 dividerColor = dividerColor,
                 onRefreshConnection = viewModel::refreshConnection,

@@ -165,12 +165,13 @@ struct MantelBar: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(PressableStyle())
+            .accessibilityLabel(item.title)
             .accessibilityIdentifier("tab_\(item.rawValue)")
         }
     }
 
     private var compactTabs: some View {
-        HStack(spacing: 2) {
+        HStack(spacing: 0) {
             ForEach(HearthTab.allCases, id: \.self) { item in
                 Button {
                     onSelect(item)
@@ -179,14 +180,15 @@ struct MantelBar: View {
                     Image(systemName: item.glyph)
                         .font(.hearthUI(17, weight: .medium))
                         .foregroundStyle(tab == item ? hearth.ember : hearth.textSecondary)
-                        .frame(width: 40, height: 44)
+                        .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(PressableStyle())
+                .accessibilityLabel(item.title)
                 .accessibilityIdentifier("tab_\(item.rawValue)")
             }
         }
-        .padding(.trailing, 10)
+        .padding(.trailing, 6)
     }
 
     private func liquidTabs(hasBook: Bool) -> some View {
@@ -212,6 +214,7 @@ struct MantelBar: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(PressableStyle())
+                .accessibilityLabel(item.title)
                 .accessibilityIdentifier("tab_\(item.rawValue)")
             }
         }

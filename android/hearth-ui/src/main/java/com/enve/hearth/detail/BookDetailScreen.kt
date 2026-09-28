@@ -1,6 +1,7 @@
 package com.enve.hearth.detail
 
 import android.content.ClipData
+import com.enve.core.reader.highlightColorHex
 import android.graphics.Bitmap
 import android.graphics.Color as AndroidColor
 import android.text.format.DateUtils
@@ -108,6 +109,7 @@ import com.enve.hearth.design.Ribbon
 import com.enve.engine.bookorbit.BookOrbitRelatedBook
 import com.enve.hearth.design.ShelfHeader
 import com.enve.hearth.design.hearthDisplay
+import com.enve.hearth.design.parseHexColor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -1112,8 +1114,7 @@ private fun fmtMillis(ms: Long): String {
 private fun relativeTime(ms: Long): String =
     DateUtils.getRelativeTimeSpanString(ms, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS).toString()
 
-private fun annotationColor(hex: String): Color =
-    runCatching { Color(android.graphics.Color.parseColor(hex)) }.getOrDefault(Color(0xFFFFF59D))
+private fun annotationColor(hex: String): Color = highlightColorHex(hex)?.let(::parseHexColor) ?: Color(0xFFFFF59D)
 
 @Composable
 private fun MetadataEditDialog(
@@ -1472,10 +1473,14 @@ private fun ChaptersSection(
     }
 }
 
-private fun fmtChapter(sec: Long): String {
+internal fun fmtChapter(sec: Long): String {
     val h = sec / 3600
     val m = (sec % 3600) / 60
-    return if (h > 0) "${h}h ${m}m" else "${m}m"
+    return when {
+        h > 0 -> "${h}h ${m}m"
+        m > 0 -> "${m}m"
+        else -> "${sec}s"
+    }
 }
 
 @Composable

@@ -90,7 +90,16 @@ final class DownloadPlanRegistry {
 
     private func registerDefaults() {
         register(PlexDownloadPlanProvider(), for: .plex)
-        register(audioProvider(id: "audiobookshelf") { try await $0.downloadFromAudiobookshelf(task: $1, book: $2) }, for: .audiobookshelf)
+        register(
+            mediaAwareProvider(id: "audiobookshelf") { service, task, book in
+                if book.mediaType == .ebook {
+                    try await service.downloadEbookViaProvider(task: task, book: book)
+                } else {
+                    try await service.downloadFromAudiobookshelf(task: task, book: book)
+                }
+            },
+            for: .audiobookshelf
+        )
         register(JellyfinDownloadPlanProvider(), for: .jellyfin)
         register(EmbyDownloadPlanProvider(), for: .emby)
         register(WebDAVDownloadPlanProvider(id: "webdav"), for: .webdav)
@@ -108,9 +117,19 @@ final class DownloadPlanRegistry {
             },
             for: .booklore
         )
-        for source in [Book.BookSource.komga, .kavita, .opds] {
+        for source in [Book.BookSource.komga, .kavita] {
             register(ebookOnlyProvider(id: source.rawValue), for: source)
         }
+        register(
+            mediaAwareProvider(id: "opds") { service, task, book in
+                if book.mediaType == .ebook {
+                    try await service.downloadEbookViaProvider(task: task, book: book)
+                } else {
+                    try await service.downloadAudiobookViaProvider(task: task, book: book)
+                }
+            },
+            for: .opds
+        )
         register(
             mediaAwareProvider(id: "storyteller") { service, task, book in
                 if book.mediaType == .ebook, !book.isStorytellerReadAloud {

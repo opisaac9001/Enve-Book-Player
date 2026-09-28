@@ -91,7 +91,9 @@ final class ValidatedConnectionLoginDelegate: UnifiedLoginDelegate {
 
     private func normalizedURL(_ input: String) -> String {
         var value = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        while value.hasSuffix("/") { value.removeLast() }
+        if providerType != .opds {
+            while value.hasSuffix("/") { value.removeLast() }
+        }
         if value.isEmpty { return value }
         if !value.lowercased().hasPrefix("http://") && !value.lowercased().hasPrefix("https://") {
             value = "https://" + value

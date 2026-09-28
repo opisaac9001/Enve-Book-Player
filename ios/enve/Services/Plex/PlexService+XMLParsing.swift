@@ -18,32 +18,6 @@ extension PlexService {
 
         return delegate.books
     }
-
-    func parsePlexSectionsXML(data: Data) throws -> [LibrarySection] {
-        let parser = XMLParser(data: data)
-        let delegate = PlexSectionsXMLParser()
-        parser.delegate = delegate
-
-        guard parser.parse() else {
-            if let error = delegate.parseError {
-                throw PlexError.decodingError(error)
-            }
-            throw PlexError.decodingError(
-                NSError(domain: "XMLParser", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to parse XML"])
-            )
-        }
-
-        return delegate.sections.map { section in
-            LibrarySection(
-                id: section.key,
-                key: section.key,
-                title: section.title,
-                type: section.type,
-                serverId: nil,
-                backendId: nil
-            )
-        }
-    }
 }
 
 func parsePlexResourcesXML(data: Data) throws -> [PlexResourceParsed] {
@@ -243,50 +217,6 @@ private class PlexSharedServersXMLParser: NSObject, XMLParserDelegate {
                 accessToken: accessToken
             )
         )
-    }
-
-    func parser(_ parser: XMLParser, parseErrorOccurred parseError: Error) {
-        self.parseError = parseError
-    }
-}
-
-private class PlexSectionsXMLParser: NSObject, XMLParserDelegate {
-    var sections: [PlexSection] = []
-    var currentSection: PlexSection?
-    var currentElement: String = ""
-    var currentText: String = ""
-    var parseError: Error?
-
-    func parser(
-        _ parser: XMLParser,
-        didStartElement elementName: String,
-        namespaceURI: String?,
-        qualifiedName qName: String?,
-        attributes attributeDict: [String: String] = [:]
-    ) {
-        currentElement = elementName
-        currentText = ""
-
-        if elementName == "Directory" {
-            currentSection = PlexSection(
-                key: attributeDict["key"] ?? "",
-                title: attributeDict["title"] ?? "",
-                type: attributeDict["type"] ?? ""
-            )
-        }
-    }
-
-    func parser(_ parser: XMLParser, foundCharacters string: String) {
-        currentText += string.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
-        if elementName == "Directory", let section = currentSection {
-            sections.append(section)
-            currentSection = nil
-        }
-        currentElement = ""
-        currentText = ""
     }
 
     func parser(_ parser: XMLParser, parseErrorOccurred parseError: Error) {

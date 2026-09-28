@@ -411,6 +411,11 @@ struct PodcastShowScreen: View {
                     .font(.hearthUI(11, weight: .medium))
                     .foregroundStyle(hearth.statusOK)
             }
+            if let liveShow, let source = PodcastsFormat.feedOnlyRowLabel(for: episode, in: liveShow) {
+                Label(source.text, systemImage: source.icon)
+                    .font(.hearthUI(11, weight: .medium))
+                    .foregroundStyle(hearth.textTertiary)
+            }
         }
     }
 

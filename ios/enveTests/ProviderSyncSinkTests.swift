@@ -76,14 +76,14 @@ final class ProgressProviderStub: @MainActor LibraryProvider, @MainActor Audiobo
 
     func fetchAudiobookProgress(
         for book: Book
-    ) async throws -> (positionSeconds: TimeInterval, percentage: Double, trackIndex: Int?, updatedAt: Date?, isAbandoned: Bool)? {
+    ) async throws -> (positionSeconds: TimeInterval, percentage: Double, trackIndex: Int?, updatedAt: Date?, isFinished: Bool)? {
         guard let audiobookProgress else { return nil }
         return (
             audiobookProgress.positionSeconds,
             audiobookProgress.percentage,
             audiobookProgress.trackIndex,
             audiobookProgress.updatedAt,
-            audiobookProgress.readState.isAbandoned
+            audiobookProgress.readState.isFinished
         )
     }
 }

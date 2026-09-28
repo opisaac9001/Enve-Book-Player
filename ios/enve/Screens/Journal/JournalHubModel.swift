@@ -284,7 +284,7 @@ final class JournalHubModel {
             } else {
                 readSeconds += duration
             }
-            if let date = Self.journalParseISO8601(session.startTime) {
+            if let date = ISO8601Timestamp.parse(session.startTime) {
                 daily[JournalStats.dayKey(for: date), default: 0] += duration
             }
         }
@@ -470,7 +470,7 @@ final class JournalHubModel {
             }
             let books = Dictionary(grouping: sessions, by: \.bookId)
             let finished = books.values.filter { sessions in
-                sessions.compactMap(\.endProgress).max().map { $0 >= 0.99 } ?? false
+                sessions.compactMap(\.endProgress).max().map { $0 >= Book.finishedProgressThreshold } ?? false
             }.count
             let totalSeconds = TimeInterval(sessions.reduce(0) { $0 + $1.durationSeconds })
 
@@ -693,14 +693,6 @@ final class JournalHubModel {
             previous = date
         }
         return longest
-    }
-
-    private static func journalParseISO8601(_ string: String) -> Date? {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: string) { return date }
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: string)
     }
 
     private static func journalGrimmoryFinished(_ book: GrimmoryRecentBook) -> Bool {

@@ -15,6 +15,7 @@ data class SmilClip(
     val resourceProgression: Double? = null,
 
     val skippable: Boolean = false,
+    val textProgression: Double? = null,
 )
 
 data class SmilDocument(

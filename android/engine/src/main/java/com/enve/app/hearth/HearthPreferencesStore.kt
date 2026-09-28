@@ -24,6 +24,9 @@ private val KEY_UI_TEXT_SCALE = floatPreferencesKey("hearth.uiTextScale")
 private val KEY_SCRUB_CHAPTER = booleanPreferencesKey("hearth.player.scrubChapter")
 private val KEY_READ_NEXT_ENABLED = booleanPreferencesKey("hearth.reader.readNextEnabled")
 private val KEY_READ_NEXT_POSITION = stringPreferencesKey("hearth.reader.readNextPosition")
+private val KEY_REST_REMINDER_ENABLED = booleanPreferencesKey("hearth.reader.restReminderEnabled")
+private val KEY_REST_REMINDER_MINUTES = intPreferencesKey("hearth.reader.restReminderMinutes")
+private val KEY_REST_REMINDER_INTRO_SHOWN = booleanPreferencesKey("hearth.reader.restReminderIntroShown")
 private val KEY_LIBRARY_COLUMNS = intPreferencesKey("hearth.library.columns")
 private val KEY_LIBRARY_SORT_STACK = stringPreferencesKey("hearth.library.sortStack")
 private val KEY_LIBRARY_ADVANCED_FILTERS = stringPreferencesKey("hearth.library.advancedFilters")
@@ -51,6 +54,12 @@ class HearthPreferencesStore @Inject constructor(
         prefs[KEY_READ_NEXT_POSITION]?.let { runCatching { ReadNextPosition.valueOf(it) }.getOrNull() }
             ?: ReadNextPosition.BOTTOM
     }
+
+    val restReminderEnabled: Flow<Boolean> = context.hearthDataStore.data.map { it[KEY_REST_REMINDER_ENABLED] ?: true }
+    val restReminderMinutes: Flow<Int> =
+        context.hearthDataStore.data.map { (it[KEY_REST_REMINDER_MINUTES] ?: 60).coerceIn(5, 240) }
+    val restReminderIntroShown: Flow<Boolean> =
+        context.hearthDataStore.data.map { it[KEY_REST_REMINDER_INTRO_SHOWN] ?: false }
 
     val libraryColumns: Flow<Int> = context.hearthDataStore.data.map { (it[KEY_LIBRARY_COLUMNS] ?: 3).coerceIn(1, 4) }
 
@@ -91,6 +100,18 @@ class HearthPreferencesStore @Inject constructor(
 
     suspend fun setReadNextPosition(position: ReadNextPosition) {
         context.hearthDataStore.edit { it[KEY_READ_NEXT_POSITION] = position.name }
+    }
+
+    suspend fun setRestReminderEnabled(enabled: Boolean) {
+        context.hearthDataStore.edit { it[KEY_REST_REMINDER_ENABLED] = enabled }
+    }
+
+    suspend fun setRestReminderMinutes(minutes: Int) {
+        context.hearthDataStore.edit { it[KEY_REST_REMINDER_MINUTES] = minutes.coerceIn(5, 240) }
+    }
+
+    suspend fun setRestReminderIntroShown(shown: Boolean) {
+        context.hearthDataStore.edit { it[KEY_REST_REMINDER_INTRO_SHOWN] = shown }
     }
 
     suspend fun setLibraryColumns(columns: Int) {

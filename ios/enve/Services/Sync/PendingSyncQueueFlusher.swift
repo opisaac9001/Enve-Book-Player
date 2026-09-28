@@ -40,7 +40,7 @@ final class ProviderPendingSyncTransport: PendingSyncTransporting {
         } else {
             book.currentTime = entry.position
         }
-        book.isFinished = entry.isFinished ?? (entry.duration > 0 && entry.position >= entry.duration * 0.99)
+        book.isFinished = entry.isFinished ?? (entry.duration > 0 && entry.position >= entry.duration * Book.finishedProgressThreshold)
         book.lastUpdate = Date(timeIntervalSince1970: entry.updatedAt)
         try await providerSink.push(
             ProgressUpdate(

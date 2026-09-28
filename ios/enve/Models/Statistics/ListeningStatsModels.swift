@@ -215,53 +215,6 @@ public struct ServerBookProgress: Codable, Equatable, Sendable {
             backendId: backendId
         )
     }
-
-    public static func fromPlex(
-        ratingKey: String,
-        viewOffsetMs: Int,
-        durationMs: Int,
-        lastViewedAt: TimeInterval?,
-        backendId: String?
-    ) -> ServerBookProgress {
-        let currentPosition = TimeInterval(viewOffsetMs) / 1000.0
-        let duration = TimeInterval(durationMs) / 1000.0
-        let progress = duration > 0 ? currentPosition / duration : 0
-        let lastPlayed = lastViewedAt.map { Date(timeIntervalSince1970: $0) }
-        return ServerBookProgress(
-            serverItemId: ratingKey,
-            currentPosition: currentPosition,
-            duration: duration,
-            progress: progress,
-            isFinished: progress >= 0.99,
-            lastPlayedAt: lastPlayed,
-            serverType: .plex,
-            backendId: backendId
-        )
-    }
-
-    public static func fromJellyfinEmby(
-        itemId: String,
-        positionTicks: Int64,
-        durationTicks: Int64,
-        played: Bool,
-        lastPlayedDate: Date?,
-        serverType: ListeningSourceType,
-        backendId: String?
-    ) -> ServerBookProgress {
-        let currentPosition = TimeInterval(positionTicks) / 10_000_000.0
-        let duration = TimeInterval(durationTicks) / 10_000_000.0
-        let progress = duration > 0 ? currentPosition / duration : 0
-        return ServerBookProgress(
-            serverItemId: itemId,
-            currentPosition: currentPosition,
-            duration: duration,
-            progress: progress,
-            isFinished: played || progress >= 0.99,
-            lastPlayedAt: lastPlayedDate,
-            serverType: serverType,
-            backendId: backendId
-        )
-    }
 }
 
 public struct AudiobookshelfListeningStats: Codable, Sendable {
@@ -289,24 +242,5 @@ public struct AudiobookshelfListeningStats: Codable, Sendable {
         public let currentTime: TimeInterval?
         public let startedAt: TimeInterval?
         public let updatedAt: TimeInterval?
-    }
-}
-
-public struct ServerSyncState: Codable, Equatable, Sendable {
-    public var lastSyncTime: Date?
-    public var lastSyncStatus: ServerConnectionStatus
-    public var lastError: String?
-    public var itemsSynced: Int
-
-    public init(
-        lastSyncTime: Date? = nil,
-        lastSyncStatus: ServerConnectionStatus = .disconnected,
-        lastError: String? = nil,
-        itemsSynced: Int = 0
-    ) {
-        self.lastSyncTime = lastSyncTime
-        self.lastSyncStatus = lastSyncStatus
-        self.lastError = lastError
-        self.itemsSynced = itemsSynced
     }
 }

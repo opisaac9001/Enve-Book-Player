@@ -363,15 +363,20 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
             }
             return
         }
-        let totalPages = try await fetchPageCount(for: book)
-        guard totalPages > 0 else {
-            throw ProviderError.serverError("Komga returned zero pages for book \(book.id)")
+        let isFinished = progress >= Book.finishedProgressThreshold
+        // Komga lists no pages for a reflowable EPUB and rejects page progress for it.
+        if !isFinished, try await fetchKomgaBook(book.id).media?.usesReadiumProgression == true {
+            try await updateReadiumProgression(for: book, progress: progress, epubLocator: epubLocator)
+            return
         }
-        let currentPage = max(1, Int(progress * Double(totalPages)))
-        let body: [String: Any] = [
-            "page": currentPage,
-            "completed": progress >= 0.99,
-        ]
+        var body: [String: Any] = ["completed": isFinished]
+        if !isFinished {
+            let totalPages = try await fetchPageCount(for: book)
+            guard totalPages > 0 else {
+                throw ProviderError.serverError("Komga returned zero pages for book \(book.id)")
+            }
+            body["page"] = max(1, Int(progress * Double(totalPages)))
+        }
         var request = try makeRequest(path: "/api/v1/books/\(book.id)/read-progress")
         request.httpMethod = "PATCH"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -382,20 +387,62 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
         }
     }
 
-    func fetchEbookProgress(for book: Book) async throws -> (progress: Double, locator: String?, updatedAt: Date?, isAbandoned: Bool)? {
-        let request = try makeRequest(path: "/api/v1/books/\(book.id)")
-        let (data, response) = try await send(request)
-        guard response.statusCode == 200 else {
-            throw ProviderError.serverError("Failed to fetch Komga progress (HTTP \(response.statusCode))")
+    private func updateReadiumProgression(for book: Book, progress: Double, epubLocator: String?) async throws {
+        var locator = epubLocator.flatMap { Self.komgaLocator(fromReadiumLocator: $0, totalProgression: progress) }
+        if locator == nil {
+            let (data, response) = try await send(try makeRequest(path: "/api/v1/books/\(book.id)/positions"))
+            guard response.statusCode == 200 else {
+                throw ProviderError.serverError("Failed to fetch Komga positions (HTTP \(response.statusCode))")
+            }
+            locator = Self.komgaLocator(fromPositions: data, totalProgression: progress)
         }
-        let komgaBook = try JSONDecoder().decode(KomgaBook.self, from: data)
-        guard let snapshot = progressSnapshot(from: komgaBook) else { return nil }
-        return (
-            progress: snapshot.ebookProgress ?? snapshot.progress,
-            locator: nil,
-            updatedAt: snapshot.lastUpdate,
-            isAbandoned: false
+        guard let locator else {
+            throw ProviderError.serverError("Komga book \(book.id) has no position for this progress")
+        }
+        let body = Self.readiumProgressionBody(
+            locator: locator,
+            modified: book.lastUpdate,
+            device: OPDSProgressionDeviceIdentity.current
         )
+        var request = try makeRequest(path: "/api/v1/books/\(book.id)/progression")
+        request.httpMethod = "PUT"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (_, response) = try await send(request)
+        if response.statusCode == 409 {
+            AppLogger.sync.info("[Komga] Server progression is newer than this push; leaving it in place")
+            return
+        }
+        guard (200...299).contains(response.statusCode) else {
+            throw ProviderError.serverError("Failed to update Komga progression (HTTP \(response.statusCode))")
+        }
+    }
+
+    func fetchEbookProgress(for book: Book) async throws -> (progress: Double, locator: String?, updatedAt: Date?, isFinished: Bool)? {
+        let komgaBook = try await fetchKomgaBook(book.id)
+        guard let snapshot = progressSnapshot(from: komgaBook) else { return nil }
+        var result = (
+            progress: snapshot.ebookProgress ?? snapshot.progress,
+            locator: String?.none,
+            updatedAt: Date?.some(snapshot.lastUpdate),
+            isFinished: false
+        )
+        if komgaBook.media?.usesReadiumProgression == true, !(komgaBook.readProgress?.completed ?? false) {
+            let (data, response) = try await send(try makeRequest(path: "/api/v1/books/\(book.id)/progression"))
+            if response.statusCode == 200, let progression = Self.readiumProgression(from: data) {
+                result.locator = progression.locator
+                result.progress = progression.totalProgression ?? result.progress
+            }
+        }
+        return result
+    }
+
+    private func fetchKomgaBook(_ id: String) async throws -> KomgaBook {
+        let (data, response) = try await send(try makeRequest(path: "/api/v1/books/\(id)"))
+        guard response.statusCode == 200 else {
+            throw ProviderError.serverError("Failed to fetch Komga book (HTTP \(response.statusCode))")
+        }
+        return try JSONDecoder().decode(KomgaBook.self, from: data)
     }
 
     func fetchRecentProgress(limit: Int, launchOptimized: Bool) async throws -> [UserMediaProgress] {
@@ -688,6 +735,79 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
         )
     }
 
+    /// Komga's R2 locator keeps only these members; its `fragment` is singular, unlike Readium's `fragments`.
+    static func komgaLocator(fromReadiumLocator locatorJSON: String, totalProgression: Double) -> [String: Any]? {
+        guard let data = locatorJSON.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let rawHref = json["href"] as? String,
+            let href = rawHref.split(separator: "#", maxSplits: 1).first.map(String.init),
+            !href.isEmpty
+        else { return nil }
+        let source = json["locations"] as? [String: Any] ?? [:]
+        var locations: [String: Any] = ["totalProgression": min(max(totalProgression, 0), 1)]
+        if let progression = (source["progression"] as? NSNumber)?.doubleValue {
+            locations["progression"] = min(max(progression, 0), 1)
+        }
+        if let position = source["position"] as? Int {
+            locations["position"] = position
+        }
+        let fragments = (source["fragments"] as? [String] ?? []).filter { !$0.hasPrefix("epubcfi(") && !$0.contains("=") }
+        if !fragments.isEmpty {
+            locations["fragment"] = fragments
+        }
+        var locator: [String: Any] = [
+            "href": href,
+            "type": json["type"] as? String ?? "application/xhtml+xml",
+            "locations": locations,
+        ]
+        if let text = json["text"] as? [String: Any] {
+            let quote = text.filter { ["highlight", "before", "after"].contains($0.key) && $0.value is String }
+            if quote["highlight"] != nil { locator["text"] = quote }
+        }
+        return locator
+    }
+
+    static func komgaLocator(fromPositions data: Data, totalProgression: Double) -> [String: Any]? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let positions = json["positions"] as? [[String: Any]]
+        else { return nil }
+        func total(_ position: [String: Any]) -> Double {
+            ((position["locations"] as? [String: Any])?["totalProgression"] as? NSNumber)?.doubleValue ?? 0
+        }
+        guard var locator = positions.last(where: { total($0) <= totalProgression + 0.000_001 }) ?? positions.first else {
+            return nil
+        }
+        locator.removeValue(forKey: "koboSpan")
+        return locator
+    }
+
+    static func readiumProgressionBody(locator: [String: Any], modified: Date, device: OPDSProgressionDevice) -> [String: Any] {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return [
+            "modified": formatter.string(from: modified),
+            "device": ["id": device.id, "name": device.name],
+            "locator": locator,
+        ]
+    }
+
+    static func readiumProgression(from data: Data) -> (locator: String, totalProgression: Double?)? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            var locator = json["locator"] as? [String: Any],
+            locator["href"] is String
+        else { return nil }
+        var locations = locator["locations"] as? [String: Any] ?? [:]
+        if let fragment = locations.removeValue(forKey: "fragment") {
+            locations["fragments"] = fragment
+        }
+        locator["locations"] = locations
+        locator.removeValue(forKey: "koboSpan")
+        guard let encoded = try? JSONSerialization.data(withJSONObject: locator),
+            let string = String(data: encoded, encoding: .utf8)
+        else { return nil }
+        return (string, (locations["totalProgression"] as? NSNumber)?.doubleValue)
+    }
+
     private struct KomgaLibrary: Decodable {
         let id: String
         let name: String
@@ -747,12 +867,12 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
             metadata = try? container.decodeIfPresent(KomgaMetadata.self, forKey: .metadata)
             readProgress = try? container.decodeIfPresent(KomgaReadProgress.self, forKey: .readProgress)
             if let epoch = try? container.decode(String.self, forKey: .created) {
-                created = Self.parseDate(epoch)
+                created = ISO8601Timestamp.parse(epoch)
             } else {
                 created = nil
             }
             if let value = try? container.decode(String.self, forKey: .lastModified) {
-                lastModified = Self.parseDate(value)
+                lastModified = ISO8601Timestamp.parse(value)
             } else {
                 lastModified = nil
             }
@@ -762,13 +882,6 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
             if let s = try? container.decode(String.self, forKey: key) { return s }
             if let i = try? container.decode(Int.self, forKey: key) { return String(i) }
             return nil
-        }
-
-        private static func parseDate(_ value: String) -> Date? {
-            if let date = ISO8601DateFormatter.enveKomgaFractional.date(from: value) {
-                return date
-            }
-            return ISO8601DateFormatter.enveKomga.date(from: value)
         }
     }
 
@@ -786,6 +899,12 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
     private struct KomgaMedia: Decodable {
         let pagesCount: Int?
         let mediaType: String?
+        let mediaProfile: String?
+        let epubDivinaCompatible: Bool?
+
+        var usesReadiumProgression: Bool {
+            mediaProfile == "EPUB" && epubDivinaCompatible != true
+        }
     }
 
     private struct KomgaReadProgress: Decodable {
@@ -812,9 +931,7 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
             _ container: KeyedDecodingContainer<CodingKeys>,
             key: CodingKeys
         ) -> Date? {
-            guard let rawDate = try? container.decodeIfPresent(String.self, forKey: key) else { return nil }
-            return ISO8601DateFormatter.enveKomgaFractional.date(from: rawDate)
-                ?? ISO8601DateFormatter.enveKomga.date(from: rawDate)
+            ISO8601Timestamp.parse(try? container.decodeIfPresent(String.self, forKey: key))
         }
     }
 
@@ -852,18 +969,4 @@ private extension String {
     var nonEmpty: String? {
         isEmpty ? nil : self
     }
-}
-
-private extension ISO8601DateFormatter {
-    static let enveKomga: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter
-    }()
-
-    static let enveKomgaFractional: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }()
 }

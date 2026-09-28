@@ -7,6 +7,20 @@ import Testing
 
 @MainActor
 struct ReaderAnnotationControllerTests {
+    @Test func unresolvedAnchorDoesNotDeleteOrPushSavedAnnotation() {
+        let harness = Harness()
+        let annotation = ReaderAnnotation(bookId: "book-1", text: "Saved passage", remoteID: 4)
+        harness.store.persistedAnnotations = [annotation]
+        harness.controller.loadAnnotations()
+        harness.controller.updateAnchorResolution([annotation.id: false])
+        #expect(harness.controller.annotations == [annotation])
+        #expect(harness.controller.anchorResolution[annotation.id] == false)
+        #expect(harness.sync.calls.isEmpty)
+        harness.controller.updateAnchorResolution([annotation.id: true])
+        #expect(harness.controller.anchorResolution[annotation.id] == true)
+        #expect(harness.controller.annotations == [annotation])
+    }
+
     @Test func addingBookmarkPersistsReaderLocationAndPushesToProvider() async {
         let harness = Harness()
         harness.location = ReaderArtifactLocation(position: 0.4, locator: #"{"href":"c1.xhtml"}"#, chapterTitle: "Chapter 1")
@@ -183,6 +197,27 @@ struct ReaderAnnotationControllerTests {
         #expect(harness.controller.editingAnnotation == annotation)
     }
 
+    @Test func readiumDecorationsTranslateFoliateAnchorsToThePortableLocator() throws {
+        let harness = Harness()
+        let locator = """
+            {"href":"c1.xhtml","type":"application/xhtml+xml","locations":{"progression":0.2,"cfi":"epubcfi(/6/4!/4/2)","cssSelector":"#sentence","enveSourceEngine":"foliate"},"text":{"highlight":"Portable selection","before":"Before","after":"After"}}
+            """
+        harness.store.persistedAnnotations = [ReaderAnnotation(
+            bookId: "book-1",
+            locator: locator,
+            position: 0.2,
+            text: "Portable selection"
+        )]
+        harness.controller.loadAnnotations()
+
+        let decoration = try #require(harness.controller.readiumDecorations.annotations.first)
+        let json = try decoration.locator.jsonString()
+
+        #expect(EpubLocationBridge.epubCFI(from: json) == nil)
+        #expect(json.contains("Portable selection"))
+        #expect(json.contains("#sentence"))
+    }
+
     @Test func pullMergesLocalArtifactsThatArriveWhileTheRemoteFetchIsInFlight() async {
         let store = InMemoryReaderArtifactsStore()
         let sync = GatedReaderNotebookSync(book: makeReaderTestBook())
@@ -212,6 +247,31 @@ struct ReaderAnnotationControllerTests {
 
         #expect(store.bookmarks.map(\.title) == ["Persisted", "Mid-fetch", "Remote"])
         #expect(store.annotations.map(\.text) == ["Persisted", "Mid-fetch", "Remote"])
+    }
+
+    @Test func fastNotebookPullLoadsPersistedArtifactsBeforeReplacingTheStore() async {
+        let store = InMemoryReaderArtifactsStore()
+        let sync = ImmediateReaderNotebookSync()
+        let controller = ReaderAnnotationController(
+            book: makeReaderTestBook(),
+            store: store,
+            sync: sync,
+            persistVocab: { _ in }
+        )
+        let bookmark = Bookmark(bookId: "stable-1", position: 0.25, title: "Local", mediaType: .ebook)
+        let annotation = ReaderAnnotation(
+            bookId: "book-1",
+            locator: locatorJSON,
+            position: 0.25,
+            text: "Persisted local highlight"
+        )
+        store.persistedBookmarks = [bookmark]
+        store.persistedAnnotations = [annotation]
+
+        await controller.syncNotebookEntriesIfNeeded()
+
+        #expect(store.bookmarks == [bookmark])
+        #expect(store.annotations == [annotation])
     }
 
     private var locatorJSON: String {
@@ -386,6 +446,20 @@ private final class GatedReaderNotebookSync: ReaderNotebookSyncing {
             bookStableID: book.stableId
         )
         return .replace(bookmarks: merged.bookmarks, annotations: merged.annotations)
+    }
+
+    func bookmarkAdded(_ bookmark: Bookmark) async -> ReaderNotebookSyncOutcome { .unchanged }
+    func bookmarkUpdated(_ bookmark: Bookmark) async -> ReaderNotebookSyncOutcome { .unchanged }
+    func bookmarkRemoved(_ bookmark: Bookmark) async -> ReaderNotebookSyncOutcome { .unchanged }
+    func annotationUpserted(_ annotation: ReaderAnnotation) async -> ReaderNotebookSyncOutcome { .unchanged }
+    func annotationRemoved(_ annotation: ReaderAnnotation) async -> ReaderNotebookSyncOutcome { .unchanged }
+}
+
+@MainActor
+private final class ImmediateReaderNotebookSync: ReaderNotebookSyncing {
+    func pull(localArtifacts: () -> ReaderNotebookMerge.Snapshot) async -> ReaderNotebookSyncOutcome {
+        let local = localArtifacts()
+        return .replace(bookmarks: local.bookmarks, annotations: local.annotations)
     }
 
     func bookmarkAdded(_ bookmark: Bookmark) async -> ReaderNotebookSyncOutcome { .unchanged }

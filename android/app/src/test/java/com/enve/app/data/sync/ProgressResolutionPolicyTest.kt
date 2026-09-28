@@ -88,4 +88,31 @@ class ProgressResolutionPolicyTest {
 
         assertEquals(freshLower, ProgressResolutionPolicy.bestSnapshot(listOf(staleFarther, freshLower)))
     }
+
+    private fun fragmentLocator(id: String) =
+        """{"href":"OEBPS/text/ch1.xhtml","type":"application/xhtml+xml","locations":{"fragments":["$id"]}}"""
+
+    private fun checkpointLocator(id: String) =
+        """{"schemaVersion":1,"href":"OEBPS/text/ch1.xhtml","domRange":{"start":{"cssSelector":"#$id","textNodeIndex":0,"charOffset":0}},"totalProgression":0.09}"""
+
+    @Test
+    fun newerRemoteSentenceWinsInsideTheTolerance() {
+        val remote = SyncSnapshot(percentage = 0.093f, locatorJson = fragmentLocator("s141"), source = "Audiobookshelf", updatedAt = 10_000L)
+        val decision = ProgressResolutionPolicy.resolve(0.090f, 1_000L, remote, checkpointLocator("s116"))
+        assertEquals(ProgressResolutionPolicy.Decision.PULL, decision)
+    }
+
+    @Test
+    fun newerLocalSentenceIsPushedInsideTheTolerance() {
+        val remote = SyncSnapshot(percentage = 0.090f, locatorJson = fragmentLocator("s116"), source = "Audiobookshelf", updatedAt = 1_000L)
+        val decision = ProgressResolutionPolicy.resolve(0.093f, 10_000L, remote, checkpointLocator("s141"))
+        assertEquals(ProgressResolutionPolicy.Decision.PUSH, decision)
+    }
+
+    @Test
+    fun sameSentenceInEitherFormatStaysPut() {
+        val remote = SyncSnapshot(percentage = 0.093f, locatorJson = fragmentLocator("s141"), source = "Audiobookshelf", updatedAt = 10_000L)
+        val decision = ProgressResolutionPolicy.resolve(0.090f, 1_000L, remote, checkpointLocator("s141"))
+        assertEquals(ProgressResolutionPolicy.Decision.NONE, decision)
+    }
 }

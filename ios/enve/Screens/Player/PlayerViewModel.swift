@@ -157,6 +157,8 @@ public class PlayerViewModel {
     @ObservationIgnored private var lifecycleObservers: [AnyCancellable] = []
 
     @ObservationIgnored private var lastAllBooksPublishTime: Date = .distantPast
+    // A restored or prewarmed book holds a stored position that may be older than the server's.
+    @ObservationIgnored private var userDrivenBookId: String?
     @ObservationIgnored private var remoteSyncTask: Task<Void, Never>?
 
     private func diagnosticBookID(_ book: Book) -> String {
@@ -308,6 +310,7 @@ public class PlayerViewModel {
                 guard let self = self else { return }
                 AppLogger.player.info("isPlaying changed to: \(isPlaying)")
                 if isPlaying {
+                    self.noteUserDrivenPlayback()
                     self.startProgressSync()
                     self.startABSSessionSyncTimer()
                     self.startHardcoverSyncTimer()
@@ -467,6 +470,7 @@ public class PlayerViewModel {
 
     func seek(to time: TimeInterval) {
         playbackController.seek(to: time)
+        noteUserDrivenPlayback()
         saveProgress()
     }
 
@@ -476,10 +480,16 @@ public class PlayerViewModel {
 
     func skipForward() {
         playbackController.skipForward(seconds: preferences.skipForwardAmount)
+        noteUserDrivenPlayback()
     }
 
     func skipBackward() {
         playbackController.skipBackward(seconds: preferences.skipBackwardAmount)
+        noteUserDrivenPlayback()
+    }
+
+    private func noteUserDrivenPlayback() {
+        userDrivenBookId = playbackSnapshot.currentBook?.stableId
     }
 
     func setPlaybackSpeed(_ speed: Double) {
@@ -679,7 +689,7 @@ public class PlayerViewModel {
             Task {
                 do {
                     let synced = try await AudiobookshelfService.shared.createBookmark(
-                        libraryItemId: book.id,
+                        libraryItemId: AudiobookshelfProvider.itemId(forBookId: book.id),
                         time: newBookmark.position,
                         title: newBookmark.title,
                         backend: backend
@@ -740,7 +750,7 @@ public class PlayerViewModel {
             Task {
                 do {
                     try await AudiobookshelfService.shared.deleteBookmark(
-                        libraryItemId: book.id,
+                        libraryItemId: AudiobookshelfProvider.itemId(forBookId: book.id),
                         time: bookmark.position,
                         backend: backend
                     )
@@ -788,7 +798,7 @@ public class PlayerViewModel {
             Task {
                 do {
                     _ = try await AudiobookshelfService.shared.updateBookmark(
-                        libraryItemId: book.id,
+                        libraryItemId: AudiobookshelfProvider.itemId(forBookId: book.id),
                         time: bookmark.position,
                         title: newTitle,
                         backend: backend
@@ -1132,7 +1142,9 @@ public class PlayerViewModel {
 
     private func saveProgress() {
         guard !activePlaybackOwnsProgressPersistence else { return }
-        guard let book = currentBook, progress > 0, duration > 0 else { return }
+        guard let book = playbackSnapshot.currentBook, book.stableId == userDrivenBookId,
+            progress > 0, duration > 0
+        else { return }
 
         progressService.saveProgress(book: book, position: progress, duration: duration)
         BookProgressStore.shared.saveRecentlyPlayed(book)
@@ -1145,7 +1157,7 @@ public class PlayerViewModel {
         }
 
         let now = Date()
-        let isFinishing = book.duration.map { progress >= $0 * 0.99 } ?? false
+        let isFinishing = book.duration.map { progress >= $0 * Book.finishedProgressThreshold } ?? false
         let shouldPublish = now.timeIntervalSince(lastAllBooksPublishTime) >= AppConstants.Sync.progressSyncInterval || isFinishing
 
         if shouldPublish, libraryCache.indexInMemory(stableId: book.stableId) != nil {

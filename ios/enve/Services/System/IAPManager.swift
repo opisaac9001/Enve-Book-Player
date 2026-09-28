@@ -134,14 +134,6 @@ final class IAPManager {
 
     }
 
-    func restorePurchases() async throws {
-        isLoading = true
-        defer { isLoading = false }
-
-        try? await AppStore.sync()
-        await updatePurchasedProducts()
-    }
-
     private func updatePurchaseStatus() async {
         await updatePurchasedProducts()
     }

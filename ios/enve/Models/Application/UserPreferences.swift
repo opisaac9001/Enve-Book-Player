@@ -105,6 +105,7 @@ public struct UserPreferences: Codable, Equatable {
     public var autoDeleteFailedDownloads: Bool = true
     public var keepNextItemsOfflineEnabled: Bool = false
     public var keepNextItemsOfflineCount: Int = 1
+    var includeAudiobookshelfPodcasts: Bool = true
     var podcastAutoQueueSettings: [String: PodcastAutoQueueSetting] = [:]
     public var storageLimitEnabled: Bool = false
     public var storageLimitGB: Int = 10
@@ -551,6 +552,7 @@ public struct UserPreferences: Codable, Equatable {
         case autoClearCacheEnabled, expireOldMetadataEnabled, compressCoversEnabled
         case autoDeleteFinishedBooks, autoDeleteFailedDownloads
         case keepNextItemsOfflineEnabled, keepNextItemsOfflineCount
+        case includeAudiobookshelfPodcasts
         case podcastAutoQueueSettings
         case storageLimitEnabled, storageLimitGB, preferBookCoverAspectRatio
         case obsidianSyncEnabled, obsidianAutoExportEnabled, obsidianVaultBookmarkData
@@ -663,6 +665,7 @@ public struct UserPreferences: Codable, Equatable {
         if let v = decode(Bool.self, .autoDeleteFailedDownloads) { autoDeleteFailedDownloads = v }
         if let v = decode(Bool.self, .keepNextItemsOfflineEnabled) { keepNextItemsOfflineEnabled = v }
         if let v = decode(Int.self, .keepNextItemsOfflineCount) { keepNextItemsOfflineCount = v }
+        if let v = decode(Bool.self, .includeAudiobookshelfPodcasts) { includeAudiobookshelfPodcasts = v }
         if let v = decode([String: PodcastAutoQueueSetting].self, .podcastAutoQueueSettings) { podcastAutoQueueSettings = v }
         if let v = decode(Bool.self, .storageLimitEnabled) { storageLimitEnabled = v }
         if let v = decode(Int.self, .storageLimitGB) { storageLimitGB = v }

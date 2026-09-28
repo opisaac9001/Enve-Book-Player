@@ -533,8 +533,8 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         }
         let boundedProgress = min(max(progress, 0), 1)
         // Silo latches completion until the watched state is explicitly cleared.
-        if boundedProgress < 0.99,
-            let previous = try await siloEbookProgress(for: book.id), (previous.progress ?? 0) >= 0.99
+        if boundedProgress < Book.finishedProgressThreshold,
+            let previous = try await siloEbookProgress(for: book.id), (previous.progress ?? 0) >= Book.finishedProgressThreshold
         {
             try await sendEmpty(makeRequest(path: "/watched/\(book.id)", method: "DELETE"))
             detailCache.removeValue(forKey: book.id)
@@ -556,7 +556,7 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         try await sendEmpty(request)
     }
 
-    func fetchEbookProgress(for book: Book) async throws -> (progress: Double, locator: String?, updatedAt: Date?, isAbandoned: Bool)? {
+    func fetchEbookProgress(for book: Book) async throws -> (progress: Double, locator: String?, updatedAt: Date?, isFinished: Bool)? {
         try await ensureAuthenticated()
         _ = try await ensureProfile()
         guard let progress = try await siloEbookProgress(for: book.id) else {
@@ -584,12 +584,12 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
             fromSiloLocation: progress.location,
             progress: value
         )
-        return (value, locator, progress.updatedAt, value >= 0.99)
+        return (value, locator, progress.updatedAt, value >= Book.finishedProgressThreshold)
     }
 
     func fetchAudiobookProgress(
         for book: Book
-    ) async throws -> (positionSeconds: TimeInterval, percentage: Double, trackIndex: Int?, updatedAt: Date?, isAbandoned: Bool)? {
+    ) async throws -> (positionSeconds: TimeInterval, percentage: Double, trackIndex: Int?, updatedAt: Date?, isFinished: Bool)? {
         detailCache.removeValue(forKey: book.id)
         let detail = try await itemDetail(book.id)
         guard let userData = detail.userData,
@@ -599,7 +599,7 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         else { return nil }
         let percentage = min(max(position / duration, 0), 1)
 
-        return (position, percentage, nil, nil, userData.played ?? (percentage >= 0.99))
+        return (position, percentage, nil, nil, userData.played ?? (percentage >= Book.finishedProgressThreshold))
     }
 
     func fetchPageCount(for book: Book) async throws -> Int { throw ProviderError.notImplemented }
@@ -1759,13 +1759,7 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
     nonisolated private static func decodeDate(_ decoder: Decoder) throws -> Date {
         let container = try decoder.singleValueContainer()
         let raw = try container.decode(String.self)
-        let iso = ISO8601DateFormatter()
-        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = iso.date(from: raw) {
-            return date
-        }
-        iso.formatOptions = [.withInternetDateTime]
-        if let date = iso.date(from: raw) {
+        if let date = ISO8601Timestamp.parse(raw) {
             return date
         }
         throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid date: \(raw)")

@@ -19,6 +19,7 @@ private enum OAuthCredentials {
 
     static var googleDriveClientID: String { value(for: "GoogleDriveClientID") }
     static var dropboxAppKey: String { value(for: "DropboxAppKey") }
+    static var oneDriveClientID: String { value(for: "OneDriveClientID") }
     static var redirectScheme: String {
         let configured = value(for: "OAuthRedirectScheme")
         return configured.isEmpty ? "com.enve.enve" : configured
@@ -82,6 +83,18 @@ struct OAuthConfig: Sendable {
             authorizationEndpoint: URL(string: "https://www.dropbox.com/oauth2/authorize")!,
             tokenEndpoint: URL(string: "https://api.dropboxapi.com/oauth2/token")!,
             scopes: ["files.content.read", "files.metadata.read"],
+            usePKCE: true
+        )
+    }
+
+    static func oneDrive() -> OAuthConfig {
+        OAuthConfig(
+            clientId: OAuthCredentials.oneDriveClientID,
+            clientSecret: nil,
+            redirectUri: "msauth.com.enve.enve://auth",
+            authorizationEndpoint: URL(string: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize")!,
+            tokenEndpoint: URL(string: "https://login.microsoftonline.com/common/oauth2/v2.0/token")!,
+            scopes: ["openid", "profile", "offline_access", "Files.Read"],
             usePKCE: true
         )
     }
@@ -211,9 +224,12 @@ final class OAuthManager: NSObject, ObservableObject {
             URLQueryItem(name: "redirect_uri", value: config.redirectUri),
             URLQueryItem(name: "response_type", value: "code"),
             URLQueryItem(name: "scope", value: config.scopes.joined(separator: " ")),
-            URLQueryItem(name: "access_type", value: "offline"),
             URLQueryItem(name: "state", value: state),
         ]
+
+        if !config.scopes.contains("offline_access") {
+            queryItems.append(URLQueryItem(name: "access_type", value: "offline"))
+        }
 
         if let pkce = pkce {
             queryItems.append(URLQueryItem(name: "code_challenge", value: pkce.challenge))

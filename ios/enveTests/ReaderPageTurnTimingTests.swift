@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 
 @testable import enve
@@ -46,5 +47,19 @@ struct ReaderPageTurnTimingTests {
                 lead: 1
             ) == 1
         )
+    }
+}
+
+struct ReaderScrubGeometryTests {
+    @Test func progressClampsToTheTrack() {
+        #expect(ReaderScrubGeometry.progress(at: -10, width: 100) == 0)
+        #expect(ReaderScrubGeometry.progress(at: 25, width: 100) == 0.25)
+        #expect(ReaderScrubGeometry.progress(at: 110, width: 100) == 1)
+    }
+
+    @Test func timeUsesTheMediaDuration() {
+        #expect(ReaderScrubGeometry.time(at: 50, width: 100, duration: 600) == 300)
+        #expect(ReaderScrubGeometry.time(at: 50, width: 0, duration: 600) == 0)
+        #expect(ReaderScrubGeometry.time(at: 50, width: 100, duration: 0) == 0)
     }
 }

@@ -122,7 +122,7 @@ class BookOrbitSyncStrategy @Inject constructor(
                                         .takeIf { remote.mediaType != AppMediaType.EBOOK }
                                         ?: -1L,
                                     locatorJson = remote.epubLocator,
-                                    nowMs = remote.lastReadTime.takeIf { it > 0L } ?: 0L,
+                                    nowMs = remote.lastReadTime.takeIf { it > 0L } ?: existing.lastReadTime,
                                 )
                                 pulled += 1
                             }

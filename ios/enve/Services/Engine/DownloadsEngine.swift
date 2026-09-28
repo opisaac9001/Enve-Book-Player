@@ -259,11 +259,6 @@ final class DownloadsEngine {
         return (removed: max(items.count - remaining, 0), remaining: remaining)
     }
 
-    func deleteAudiobookDownload(id: String) {
-        _ = LocalStorageManager.shared.deleteAudiobook(id)
-        revision &+= 1
-    }
-
     func download(_ book: Book, overrideCellular: Bool = false) async {
         await service.download(book: book, overrideCellular: overrideCellular)
     }

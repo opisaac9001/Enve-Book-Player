@@ -24,10 +24,10 @@ struct CollectionsEditorSheet: View {
     private let isSmart: Bool
 
     private static let colors = ["blue", "red", "green", "orange", "purple", "pink", "teal", "gray"]
-    private static let icons = [
-        "folder.fill", "books.vertical.fill", "star.fill", "heart.fill",
-        "bookmark.fill", "tag.fill", "headphones", "book.fill",
-        "flame.fill", "moon.fill", "sparkles", "tray.fill",
+    private static let icons: [(symbol: String, label: String)] = [
+        ("folder.fill", "Folder"), ("books.vertical.fill", "Books"), ("star.fill", "Star"), ("heart.fill", "Heart"),
+        ("bookmark.fill", "Bookmark"), ("tag.fill", "Tag"), ("headphones", "Headphones"), ("book.fill", "Book"),
+        ("flame.fill", "Flame"), ("moon.fill", "Moon"), ("sparkles", "Sparkles"), ("tray.fill", "Tray"),
     ]
 
     init(collection: Collection? = nil, smartCollection: SmartCollection? = nil, isSmart: Bool = false) {
@@ -156,17 +156,17 @@ struct CollectionsEditorSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             Overline("Mark")
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 48), spacing: 10)], spacing: 10) {
-                ForEach(Self.icons, id: \.self) { icon in
+                ForEach(Self.icons, id: \.symbol) { icon in
                     Button {
-                        iconName = icon
+                        iconName = icon.symbol
                     } label: {
-                        Image(systemName: icon)
+                        Image(systemName: icon.symbol)
                             .font(.hearthUI(17))
-                            .foregroundStyle(iconName == icon ? hearth.onEmber : hearth.textSecondary)
+                            .foregroundStyle(iconName == icon.symbol ? hearth.onEmber : hearth.textSecondary)
                             .frame(width: 48, height: 44)
                             .background {
                                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .fill(iconName == icon ? hearth.ember : hearth.bg)
+                                    .fill(iconName == icon.symbol ? hearth.ember : hearth.bg)
                                     .overlay {
                                         RoundedRectangle(cornerRadius: 12, style: .continuous)
                                             .strokeBorder(hearth.hairline, lineWidth: 1)
@@ -174,7 +174,7 @@ struct CollectionsEditorSheet: View {
                             }
                     }
                     .buttonStyle(PressableStyle())
-                    .accessibilityLabel(icon)
+                    .accessibilityLabel(icon.label)
                 }
             }
         }

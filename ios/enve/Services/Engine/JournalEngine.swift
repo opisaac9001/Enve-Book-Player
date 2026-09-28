@@ -111,7 +111,7 @@ final class JournalEngine {
                 return book.mediaType != .podcast
                     && !book.isFinished
                     && progress >= 0.75
-                    && progress < 0.99
+                    && progress < Book.finishedProgressThreshold
                     && seen.insert(book.stableId).inserted
             }
             .sorted { left, right in
@@ -170,14 +170,14 @@ final class JournalEngine {
             let sessions = try? await provider.fetchReadingSessions(limit: 200)
         {
             remote += sessions.map { entry in
-                let start = Self.parseISO8601(entry.startTime) ?? Date()
+                let start = ISO8601Timestamp.parse(entry.startTime) ?? Date()
                 let fallbackEnd = start.addingTimeInterval(TimeInterval(entry.durationSeconds ?? 0))
                 return HistorySession(
                     id: entry.id,
                     bookId: String(entry.bookId),
                     mediaType: entry.bookType?.lowercased() == "audiobook" ? "audiobook" : "ebook",
                     startTime: start,
-                    endTime: entry.endTime.flatMap(Self.parseISO8601) ?? fallbackEnd,
+                    endTime: ISO8601Timestamp.parse(entry.endTime) ?? fallbackEnd,
                     durationSeconds: entry.durationSeconds ?? 0,
                     startProgress: entry.startProgress,
                     endProgress: entry.endProgress,
@@ -252,13 +252,5 @@ final class JournalEngine {
             output = "# No notes yet\n\nMake some highlights or bookmarks while reading, then come back to export them."
         }
         return output
-    }
-
-    private static func parseISO8601(_ string: String) -> Date? {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: string) { return date }
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: string)
     }
 }

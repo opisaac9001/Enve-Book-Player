@@ -8,36 +8,6 @@ extension WebDAVProvider {
         "ts", "vob", "mpg", "mpeg", "3gp", "ogv", "divx", "rmvb",
     ]
 
-    func isVideoOnlyFolder(entries: [RemoteFileEntry]) -> Bool {
-        let files = entries.filter { !$0.isDirectory }
-        guard !files.isEmpty else { return false }
-
-        var hasVideo = false
-        for file in files {
-            if file.isAudioFile || file.isEbookFile { return false }
-            let ext = (file.name as NSString).pathExtension.lowercased()
-            if Self.videoExtensions.contains(ext) { hasVideo = true }
-        }
-        return hasVideo
-    }
-
-    func isLikelyVideoFolderName(_ name: String) -> Bool {
-        let lower = name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if lower.range(of: #"^s(eason)?\s*\d+"#, options: .regularExpression) != nil { return true }
-
-        let videoFolderNames: Set<String> = [
-            "subs", "subtitles", "extras", "featurettes", "behind the scenes",
-            "deleted scenes", "bonus", "sample", "trailers", "bdmv", "video_ts",
-            "certificate", "interviews",
-        ]
-        if videoFolderNames.contains(lower) { return true }
-
-        if lower.hasPrefix("subs") { return true }
-
-        return false
-    }
-
     static let selfContainedExtensions: Set<String> = ["m4b", "mp4"]
 
     func isSelfContainedFormat(_ entry: RemoteFileEntry) -> Bool {

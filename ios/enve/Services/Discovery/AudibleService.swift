@@ -137,12 +137,6 @@ class AudibleService {
         return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func encodeForURL(_ value: String) -> String {
-        var allowed = CharacterSet.alphanumerics
-        allowed.insert(charactersIn: "-._~")
-        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
-    }
-
     func simpleSearch(
         query: String,
         numResults: Int = 50,
@@ -223,129 +217,6 @@ class AudibleService {
                 description: product.htmlDescription ?? product.summary
             )
         }
-    }
-
-    func simpleSearchPaged(
-        query: String,
-        numResultsPerPage: Int = 50,
-        maxPages: Int = 3,
-        countryCode: String? = nil
-    ) async throws -> [AudibleSearchResult] {
-        let cleanedQuery = cleanSearchQuery(query)
-
-        guard !cleanedQuery.isEmpty else {
-            AppLogger.network.info("Paged search: query is empty after cleaning")
-            return []
-        }
-
-        AppLogger.network.info("paged search starting")
-        AppLogger.network.info("query: '\(cleanedQuery)'")
-        AppLogger.network.info("region: \(countryCode ?? "default")")
-
-        var allResults: [AudibleSearchResult] = []
-        let perPage = min(50, max(1, numResultsPerPage))
-
-        for page in 0..<maxPages {
-            var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: true)!
-
-            var queryItems = [
-                URLQueryItem(
-                    name: "response_groups",
-                    value: "contributors,product_attrs,product_desc,media,product_extended_attrs,series,category_ladders"
-                ),
-                URLQueryItem(name: "num_results", value: String(perPage)),
-                URLQueryItem(name: "products_sort_by", value: "Relevance"),
-                URLQueryItem(name: "image_sizes", value: "500,1024"),
-                URLQueryItem(name: "keywords", value: cleanedQuery),
-            ]
-
-            if page > 0 {
-                queryItems.append(URLQueryItem(name: "page", value: String(page)))
-            }
-
-            components.queryItems = queryItems
-
-            if let cc = countryCode, !cc.isEmpty {
-                components.queryItems?.append(URLQueryItem(name: "country_code", value: cc))
-            }
-
-            guard var urlString = components.url?.absoluteString else {
-                AppLogger.network.error("Failed to create URL from components")
-                continue
-            }
-
-            urlString = urlString.replacingOccurrences(of: "+", with: "%20")
-
-            guard let url = URL(string: urlString) else {
-                AppLogger.network.error("Failed to create URL from: \(urlString)")
-                continue
-            }
-
-            if page == 1 {
-                AppLogger.network.info("paged search running…")
-            }
-
-            let (data, urlResponse) = try await URLSession.shared.data(from: url)
-
-            if let http = urlResponse as? HTTPURLResponse {
-                if !(200...299).contains(http.statusCode) {
-                    AppLogger.network.error("error: \(http.statusCode)")
-                    break
-                }
-            }
-
-            if page == 1 {
-            }
-
-            let decoder = JSONDecoder()
-            decoder.keyDecodingStrategy = .convertFromSnakeCase
-
-            do {
-                let decoded = try decoder.decode(AudibleAPIResponse.self, from: data)
-
-                if page == 1 {
-                    AppLogger.network.info("page 1: \(decoded.products.count) results")
-                }
-
-                if decoded.products.isEmpty {
-                    AppLogger.network.info("page \(page) empty, stopping")
-                    break
-                }
-
-                let pageResults = decoded.products.map { product -> AudibleSearchResult in
-                    var coverUrl: String?
-                    if let images = product.productImages {
-                        coverUrl = images["500"] ?? images["1024"] ?? images.values.first
-                    }
-
-                    return AudibleSearchResult(
-                        asin: product.asin,
-                        title: product.title,
-                        authors: product.authors?.map { $0.name } ?? [],
-                        narrators: product.narrators?.map { $0.name } ?? [],
-                        duration: (product.runtimeLengthMin ?? 0) * 60,
-                        releaseDate: product.releaseDate,
-                        coverUrl: coverUrl,
-                        rating: product.rating?.overallDistribution?.averageRating,
-                        description: product.htmlDescription ?? product.summary
-                    )
-                }
-
-                allResults.append(contentsOf: pageResults)
-
-                if pageResults.count < perPage {
-                    break
-                }
-            } catch {
-                AppLogger.network.error("decode error on page \(page)")
-                break
-            }
-        }
-
-        AppLogger.network.info("paged search complete: \(allResults.count) total results")
-
-        var seen = Set<String>()
-        return allResults.filter { seen.insert($0.asin).inserted }
     }
 
     enum SearchField {
@@ -440,60 +311,6 @@ class AudibleService {
                 seriesPosition: product.series?.first?.sequence
             )
         }
-    }
-
-    func searchAll(
-        query: String,
-        numResultsPerPage: Int = 50,
-        maxPages: Int = 5,
-        field: SearchField = .title,
-        author: String? = nil,
-        countryCode: String? = nil
-    ) async throws -> [AudibleSearchResult] {
-        let perPage = max(1, min(50, numResultsPerPage))
-        let pages = max(1, maxPages)
-
-        var all: [AudibleSearchResult] = []
-
-        for page in 0..<pages {
-            let results = try await search(
-                query: query,
-                numResults: perPage,
-                page: page,
-                field: field,
-                author: author,
-                countryCode: countryCode
-            )
-            if results.isEmpty { break }
-            all.append(contentsOf: results)
-            if results.count < perPage { break }
-        }
-
-        var seen = Set<String>()
-        return all.filter { seen.insert($0.asin).inserted }
-    }
-
-    func searchAllBestEffort(
-        query: String,
-        author: String? = nil,
-        countryCode: String? = nil,
-        numResultsPerPage: Int = 50,
-        maxPages: Int = 5
-    ) async throws -> [AudibleSearchResult] {
-        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if looksLikeASIN(trimmedQuery) {
-            if let hit = try? await getSearchResultByASIN(asin: trimmedQuery, countryCode: countryCode) {
-                return [hit]
-            }
-        }
-
-        return try await simpleSearchPaged(
-            query: trimmedQuery,
-            numResultsPerPage: numResultsPerPage,
-            maxPages: maxPages,
-            countryCode: countryCode
-        )
     }
 
     func getSearchResultByASIN(asin: String, countryCode: String? = nil) async throws -> AudibleSearchResult {

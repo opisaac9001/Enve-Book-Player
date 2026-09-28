@@ -1,4 +1,3 @@
-import AVFoundation
 import Foundation
 import Logging
 
@@ -131,8 +130,8 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         return base.appendingPathComponent("api/v1")
     }
 
-    private func serveURL(fileId: Int) -> URL? {
-        apiBase?.appendingPathComponent("books/files/\(fileId)/serve")
+    private func audiobookAssetURL(bookId: Int, assetId: String) -> URL? {
+        apiBase?.appendingPathComponent("audiobooks/\(bookId)/assets/\(assetId)/content")
     }
 
     private func coverURLString(bookId: Int) -> String? {
@@ -144,7 +143,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         d.dateDecodingStrategy = .custom { decoder in
             let container = try decoder.singleValueContainer()
             if let raw = try? container.decode(String.self),
-                let parsed = parseDate(raw)
+                let parsed = ISO8601Timestamp.parse(raw)
             {
                 return parsed
             }
@@ -162,16 +161,6 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         }
         return d
     }()
-
-    nonisolated private static func parseDate(_ raw: String) -> Date? {
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = fractional.date(from: raw) { return date }
-
-        let basic = ISO8601DateFormatter()
-        basic.formatOptions = [.withInternetDateTime]
-        return basic.date(from: raw)
-    }
 
     private func login() async throws {
         guard let apiBase,
@@ -575,11 +564,33 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         let readStatus: ReadStatusDTO?
     }
 
-    private struct AudioProgressDTO: Decodable, Sendable {
+    private struct AudiobookManifestDTO: Decodable, Sendable {
+        struct Asset: Decodable, Sendable {
+            let assetId: String
+            let sequence: Int
+            let format: String
+            let durationMs: Double?
+            let sizeBytes: Int64?
+            let etag: String?
+        }
+
+        struct ManifestChapter: Decodable, Sendable {
+            let title: String
+            let startMs: Double
+        }
+
+        let revision: String
+        let assets: [Asset]
+        let chapters: [ManifestChapter]
+        let totalDurationMs: Double
+    }
+
+    private struct AudiobookPlaybackStateDTO: Decodable, Sendable {
+        let assetId: String
+        let positionMs: Double
         let percentage: Double?
-        let currentFileId: Int?
-        let positionSeconds: Double?
-        let updatedAt: Date?
+        let revision: Int
+        let manifestRevision: String
     }
 
     private struct FileProgressDTO: Decodable, Sendable {
@@ -988,13 +999,13 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         isAudiobook: Bool
     ) async -> (percentage: Double?, updatedAt: Date?, cfi: String?)? {
         if isAudiobook {
-            guard let (data, http) = try? await perform("books/\(item.bookId)/audio-progress"),
+            guard let (data, http) = try? await perform("audiobooks/\(item.bookId)/playback-state"),
                 http.statusCode == 200,
-                let progress = try? Self.decoder.decode(AudioProgressDTO.self, from: data)
+                let progress = try? Self.decoder.decode(AudiobookPlaybackStateDTO.self, from: data)
             else {
                 return nil
             }
-            return (progress.percentage, progress.updatedAt, nil)
+            return (progress.percentage, nil, nil)
         }
 
         guard let fileId = item.fileId,
@@ -1102,7 +1113,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
 
         return try await mapConcurrently(candidates) { candidate in
             let exact = try await self.fetchActivityProgress(for: candidate)
-            let fallback = Book.normalizedFractionProgress(candidate.card.readingProgress) ?? 0
+            let fallback = Book.normalizedFractionProgress(candidate.card.readingProgress.map { $0 / 100 }) ?? 0
             let progress = exact?.progress ?? fallback
             return ActivityRecord(
                 bookId: String(candidate.card.id),
@@ -1127,18 +1138,18 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
 
         let files = candidate.card.files ?? []
         if files.contains(where: { isAudio($0.format) }) {
-            let (data, http) = try await perform("books/\(candidate.card.id)/audio-progress")
+            let (data, http) = try await perform("audiobooks/\(candidate.card.id)/playback-state")
             guard http.statusCode == 200 else {
                 throw ProviderError.serverError(
                     "BookOrbit returned HTTP \(http.statusCode) for audiobook activity"
                 )
             }
-            let progress = try Self.decoder.decode(AudioProgressDTO?.self, from: data)
+            let progress = try Self.decoder.decode(AudiobookPlaybackStateDTO?.self, from: data)
             guard let progress else { return nil }
             return (
-                Book.normalizedFractionProgress(progress.percentage) ?? 0,
+                Book.normalizedFractionProgress(progress.percentage.map { $0 / 100 }) ?? 0,
                 nil,
-                progress.updatedAt
+                nil
             )
         }
 
@@ -1153,7 +1164,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         }
         let progress = try Self.decoder.decode(FileProgressDTO.self, from: data)
         return (
-            Book.normalizedFractionProgress(progress.percentage) ?? 0,
+            Book.normalizedFractionProgress(progress.percentage.map { $0 / 100 }) ?? 0,
             progress.cfi,
             progress.updatedAt
         )
@@ -1240,7 +1251,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         if let rawStatus = dto.readStatus?.status,
             let status = BookOrbitReadStatus(rawValue: rawStatus)
         {
-            let progress = Book.normalizedFractionProgress(dto.readingProgress) ?? 0
+            let progress = Book.normalizedFractionProgress(dto.readingProgress.map { $0 / 100 }) ?? 0
             book.serverReadStatus = status.rawValue.uppercased()
             book.isFinished = status == .read || status == .skimmed
             book.hideFromContinue = ![.unread, .reading, .rereading].contains(status)
@@ -1322,7 +1333,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
                     index: index,
                     title: file.filename,
                     filePath: String(file.id),
-                    contentUrl: serveURL(fileId: file.id)?.absoluteString,
+                    contentUrl: nil,
                     duration: dur,
                     startOffset: offset,
                     format: file.format,
@@ -1348,9 +1359,6 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         if let contentUrl = book.audioTracks?.first?.contentUrl, let url = URL(string: contentUrl) {
             return url
         }
-        if let ino = book.audioFileIno, let fileId = Int(ino) {
-            return serveURL(fileId: fileId)
-        }
         return nil
     }
 
@@ -1364,35 +1372,43 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
     func startPlaybackSession(for book: Book) async throws -> PlaybackSessionInfo {
         try await ensureValidToken()
         let detailed = (try? await fetchFullBookDetails(bookId: book.id, libraryId: book.libraryId)) ?? book
-        let tracks = detailed.audioTracks ?? []
-        guard !tracks.isEmpty else { throw ProviderError.invalidResponse }
+        guard let bookId = Int(book.id) else { throw ProviderError.invalidResponse }
+        let manifest = try await fetchAudiobookManifest(bookId: bookId)
+        let assets = manifest.assets.sorted { $0.sequence < $1.sequence }
+        let sourceTracks = detailed.audioTracks ?? []
+        guard !assets.isEmpty else { throw ProviderError.invalidResponse }
 
-        let headers = getStreamingHeaders()
         var infos: [AudioTrackInfo] = []
         var offset: Double = 0
-        for (index, track) in tracks.enumerated() {
-            guard let contentUrl = track.contentUrl else { continue }
-            var duration = track.duration
-            if duration <= 0, let url = URL(string: contentUrl) {
-                duration = await resolveDuration(url: url, headers: headers)
-            }
+        for (index, asset) in assets.enumerated() {
+            guard let contentUrl = audiobookAssetURL(bookId: bookId, assetId: asset.assetId)?.absoluteString else { continue }
+            let sourceTrack = sourceTracks.indices.contains(index) ? sourceTracks[index] : nil
+            let duration = max(0, (asset.durationMs ?? 0) / 1000)
             infos.append(
                 AudioTrackInfo(
-                    id: track.filePath ?? track.id,
+                    id: asset.assetId,
                     index: index,
                     startOffset: offset,
                     duration: duration,
                     contentUrl: contentUrl,
-                    mimeType: Self.mimeType(forFormat: track.format),
-                    title: track.title
+                    mimeType: Self.mimeType(forFormat: asset.format),
+                    title: sourceTrack?.title ?? "Track \(index + 1)"
                 )
             )
             offset += duration
         }
 
-        let chapters =
-            detailed.chapters
-            ?? infos.map {
+        let chapters: [Chapter]
+        if !manifest.chapters.isEmpty {
+            let ordered = manifest.chapters.sorted { $0.startMs < $1.startMs }
+            let totalDuration = max(offset, manifest.totalDurationMs / 1000)
+            chapters = ordered.enumerated().map { index, chapter in
+                let start = chapter.startMs / 1000
+                let end = index + 1 < ordered.count ? ordered[index + 1].startMs / 1000 : totalDuration
+                return Chapter(id: String(index), start: start, end: max(start, end), title: chapter.title, index: index)
+            }
+        } else {
+            chapters = infos.map {
                 Chapter(
                     id: String($0.index),
                     start: $0.startOffset,
@@ -1401,13 +1417,16 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
                     index: $0.index
                 )
             }
+        }
         return PlaybackSessionInfo(sessionId: "bookorbit:\(book.id)", audioTracks: infos, chapters: chapters)
     }
 
-    private func resolveDuration(url: URL, headers: [String: String]) async -> Double {
-        let asset = AVURLAsset(url: url, options: headers.isEmpty ? nil : ["AVURLAssetHTTPHeaderFieldsKey": headers])
-        let seconds = (try? await asset.load(.duration).seconds) ?? 0
-        return seconds.isFinite ? seconds : 0
+    private func fetchAudiobookManifest(bookId: Int) async throws -> AudiobookManifestDTO {
+        let (data, http) = try await perform("audiobooks/\(bookId)/manifest")
+        guard http.statusCode == 200 else {
+            throw ProviderError.serverError("BookOrbit returned HTTP \(http.statusCode) for audiobook manifest")
+        }
+        return try Self.decoder.decode(AudiobookManifestDTO.self, from: data)
     }
 
     private static func mimeType(forFormat format: String?) -> String {
@@ -1429,26 +1448,48 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
     ) async throws {
         guard let bookId = Int(book.id) else { throw ProviderError.invalidResponse }
 
-        let (fileId, localPosition) = currentFileAndOffset(book: book, globalPosition: currentTime)
-        guard let fileId else {
-            throw ProviderError.invalidResponse
-        }
-
-        let duration = book.duration ?? 0
-        var percentage = duration > 0 ? (currentTime / duration) * 100 : (isFinished ? 100 : 0)
-        if isFinished { percentage = 100 }
-        percentage = min(max(percentage, 0), 100)
+        let manifest = try await fetchAudiobookManifest(bookId: bookId)
+        let assets = manifest.assets.sorted { $0.sequence < $1.sequence }
+        let (asset, localPosition) = assetAndOffset(in: assets, globalPosition: currentTime)
+        guard let asset else { throw ProviderError.invalidResponse }
+        let currentState = try await fetchAudiobookPlaybackState(bookId: bookId)
 
         let body = try JSONSerialization.data(withJSONObject: [
-            "percentage": percentage,
-            "currentFileId": fileId,
-            "positionSeconds": max(0, localPosition),
+            "assetId": asset.assetId,
+            "positionMs": Int64(max(0, localPosition) * 1000),
+            "capturedAt": ISO8601DateFormatter().string(from: Date()),
+            "operationId": UUID().uuidString,
+            "baseRevision": currentState?.revision ?? 0,
+            "manifestRevision": manifest.revision,
         ])
-        let (_, http) = try await perform("books/\(bookId)/audio-progress", method: "PATCH", body: body)
+        let (_, http) = try await perform("audiobooks/\(bookId)/playback-state", method: "PUT", body: body)
         guard (200...299).contains(http.statusCode) else {
             throw ProviderError.serverError("Failed to sync audio progress (HTTP \(http.statusCode))")
         }
         invalidateContinueCache()
+    }
+
+    private func fetchAudiobookPlaybackState(bookId: Int) async throws -> AudiobookPlaybackStateDTO? {
+        let (data, http) = try await perform("audiobooks/\(bookId)/playback-state")
+        if http.statusCode == 404 || http.statusCode == 204 { return nil }
+        guard http.statusCode == 200 else { throw ProviderError.invalidResponse }
+        return try Self.decoder.decode(AudiobookPlaybackStateDTO?.self, from: data)
+    }
+
+    private func assetAndOffset(
+        in assets: [AudiobookManifestDTO.Asset],
+        globalPosition: TimeInterval
+    ) -> (asset: AudiobookManifestDTO.Asset?, offset: TimeInterval) {
+        guard !assets.isEmpty else { return (nil, globalPosition) }
+        var elapsed: TimeInterval = 0
+        for asset in assets {
+            let duration = max(0, (asset.durationMs ?? 0) / 1000)
+            if globalPosition < elapsed + duration || asset.assetId == assets.last?.assetId {
+                return (asset, min(max(0, globalPosition - elapsed), duration > 0 ? duration : .greatestFiniteMagnitude))
+            }
+            elapsed += duration
+        }
+        return (assets.last, max(0, globalPosition - elapsed))
     }
 
     func uploadHistorySession(_ session: HistorySession, for book: Book) async throws {
@@ -1656,24 +1697,10 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         )
     }
 
+    // The pull side only trusts canonical full CFIs, so uploading a partial one would come back as a
+    // percentage-only position and quietly lose the exact anchor.
     private static func extractCFI(from locator: String?) -> String? {
-        guard let locator, !locator.isEmpty else { return nil }
-        if locator.hasPrefix("epubcfi(") { return locator }
-        guard let data = locator.data(using: .utf8),
-            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let locations = json["locations"] as? [String: Any]
-        else {
-            return nil
-        }
-        if let fragments = locations["fragments"] as? [String],
-            let cfi = fragments.first(where: { $0.hasPrefix("epubcfi(") })
-        {
-            return cfi
-        }
-        if let cfi = locations["cfi"] as? String, cfi.hasPrefix("epubcfi(") {
-            return cfi
-        }
-        return nil
+        EpubLocationBridge.canonicalFullEPUBCFI(EpubLocationBridge.epubCFI(from: locator))
     }
 
     func updateReadStatus(for book: Book, status: BookOrbitReadStatus) async throws {
@@ -1709,22 +1736,18 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
 
     func fetchAudiobookProgress(
         for book: Book
-    ) async throws -> (positionSeconds: TimeInterval, percentage: Double, trackIndex: Int?, updatedAt: Date?, isAbandoned: Bool)? {
+    ) async throws -> (positionSeconds: TimeInterval, percentage: Double, trackIndex: Int?, updatedAt: Date?, isFinished: Bool)? {
         guard let bookId = Int(book.id) else { throw ProviderError.invalidResponse }
-        let (data, http) = try await perform("books/\(bookId)/audio-progress")
-        if http.statusCode == 404 || http.statusCode == 204 { return nil }
-        guard http.statusCode == 200 else { throw ProviderError.invalidResponse }
-        guard let dto = try Self.decoder.decode(AudioProgressDTO?.self, from: data) else { return nil }
-        guard let fileId = dto.currentFileId else { return nil }
-
-        let local = dto.positionSeconds ?? 0
-        let tracks = await tracksForOffsetMapping(book: book)
-        let track = tracks.first { Int($0.filePath ?? $0.id) == fileId }
-        let global = (track?.startOffset ?? 0) + local
+        guard let dto = try await fetchAudiobookPlaybackState(bookId: bookId) else { return nil }
+        let manifest = try await fetchAudiobookManifest(bookId: bookId)
+        let assets = manifest.assets.sorted { $0.sequence < $1.sequence }
+        guard let trackIndex = assets.firstIndex(where: { $0.assetId == dto.assetId }) else { return nil }
+        let priorDuration = assets.prefix(trackIndex).reduce(0.0) { $0 + max(0, ($1.durationMs ?? 0) / 1000) }
+        let global = priorDuration + max(0, dto.positionMs / 1000)
         let percentage = (dto.percentage ?? 0) / 100.0
         return (
-            positionSeconds: global, percentage: percentage, trackIndex: track?.index,
-            updatedAt: dto.updatedAt, isAbandoned: percentage >= 0.99
+            positionSeconds: global, percentage: percentage, trackIndex: trackIndex,
+            updatedAt: nil, isFinished: percentage >= Book.finishedProgressThreshold
         )
     }
 
@@ -1739,12 +1762,6 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
             return (fileId, globalPosition)
         }
         return (nil, globalPosition)
-    }
-
-    private func tracksForOffsetMapping(book: Book) async -> [AudioTrack] {
-        if let tracks = book.audioTracks, !tracks.isEmpty { return tracks }
-        let detailed = try? await fetchFullBookDetails(bookId: book.id, libraryId: book.libraryId)
-        return detailed?.audioTracks ?? []
     }
 
     func downloadEbook(for book: Book, onProgress: (@Sendable (Double) -> Void)? = nil) async throws -> URL {
@@ -1808,7 +1825,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
     func updateEbookProgress(for book: Book, progress: Double, epubLocator: String?) async throws {
         guard let ino = book.audioFileIno, let fileId = Int(ino) else { throw ProviderError.unauthorized }
         var payload: [String: Any] = ["percentage": min(max(progress * 100, 0), 100)]
-        if let cfi = EpubLocationBridge.epubCFI(from: epubLocator) { payload["cfi"] = cfi }
+        if let cfi = Self.extractCFI(from: epubLocator) { payload["cfi"] = cfi }
         let body = try JSONSerialization.data(withJSONObject: payload)
         let (_, http) = try await perform("books/files/\(fileId)/progress", method: "POST", body: body)
         guard (200...299).contains(http.statusCode) else {
@@ -1817,7 +1834,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         invalidateContinueCache()
     }
 
-    func fetchEbookProgress(for book: Book) async throws -> (progress: Double, locator: String?, updatedAt: Date?, isAbandoned: Bool)? {
+    func fetchEbookProgress(for book: Book) async throws -> (progress: Double, locator: String?, updatedAt: Date?, isFinished: Bool)? {
         guard let ino = book.audioFileIno, let fileId = Int(ino) else { throw ProviderError.invalidResponse }
         let (data, http) = try await perform("books/files/\(fileId)/progress")
         if http.statusCode == 404 || http.statusCode == 204 { return nil }
@@ -1830,7 +1847,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
             fraction: progress,
             sourceEngine: .foliate
         )
-        return (progress: progress, locator: locator, updatedAt: dto.updatedAt, isAbandoned: progress >= 0.99)
+        return (progress: progress, locator: locator, updatedAt: dto.updatedAt, isFinished: progress >= Book.finishedProgressThreshold)
     }
 
     private static let sessionDateFormatter: ISO8601DateFormatter = {

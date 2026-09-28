@@ -51,37 +51,17 @@ final class LibraryCatalogCoordinator {
         self.metadataFileURL = metadataFileURL ?? Self.defaultMetadataFileURL()
     }
 
-    private func performInitialCloudSyncIfNeeded() {
+    func performInitialCloudSyncIfNeeded() {
         guard PlatformRuntime.cloudKitEnabled else { return }
         guard !hasPerformedInitialCloudSync else { return }
-        guard !library.books.isEmpty else { return }
+        let launchSyncBooks = library.books.filter(CloudProgressEligibility.includes)
+        guard !launchSyncBooks.isEmpty else { return }
 
         hasPerformedInitialCloudSync = true
-        let launchSyncDelayNanoseconds: UInt64 = 5_000_000_000
-        let launchSyncBookLimit = 1200
-        let launchSyncBooks = prioritizedBooksForInitialCloudSync(from: library.books, limit: launchSyncBookLimit)
 
         Task(priority: .utility) {
-            try? await Task.sleep(nanoseconds: launchSyncDelayNanoseconds)
             await SyncCoordinator.shared.syncOnAppLaunch(books: launchSyncBooks)
         }
-    }
-
-    private func prioritizedBooksForInitialCloudSync(from books: [Book], limit: Int) -> [Book] {
-        guard books.count > limit else { return books }
-
-        let sorted = books.sorted { lhs, rhs in
-            let lhsScore = (lhs.currentTime > 0 ? 2 : 0) + (lhs.lastUpdate == .distantPast ? 0 : 1)
-            let rhsScore = (rhs.currentTime > 0 ? 2 : 0) + (rhs.lastUpdate == .distantPast ? 0 : 1)
-
-            if lhsScore != rhsScore {
-                return lhsScore > rhsScore
-            }
-
-            return lhs.lastUpdate > rhs.lastUpdate
-        }
-
-        return Array(sorted.prefix(limit))
     }
 
     func refreshLibrary(forceFullReconciliation: Bool = false) async {
@@ -261,6 +241,9 @@ final class LibraryCatalogCoordinator {
         let removedLocalUniqueIds = Set(existingLocalBooks.map(\.uniqueId)).subtracting(rebuiltUniqueIds)
 
         let existingLocalStableIds = Set(existingLocalBooks.map(\.stableId))
+        let addedLocalBooks = allLocalBooks.filter {
+            !existingLocalStableIds.contains($0.stableId) && CloudProgressEligibility.includes($0)
+        }
         let rebuiltStableIdsForCompare = Set(allLocalBooks.map(\.stableId))
         let existingLocalMediaTypes = Dictionary(
             existingLocalBooks.map { ($0.stableId, $0.mediaType) },
@@ -292,7 +275,12 @@ final class LibraryCatalogCoordinator {
             )
         }
 
-        flushLocalBooksToCache()
+        if let cacheWrite = flushLocalBooksToCache() {
+            await cacheWrite.value
+        }
+        if !addedLocalBooks.isEmpty {
+            await SyncCoordinator.shared.syncNewBooksFromCloud(addedLocalBooks)
+        }
         LibraryRecoveryCoordinator.shared.flushPendingBookStoreDeletions()
 
         await EbookLinkStore.shared.reapplyLinks()
@@ -518,7 +506,13 @@ final class LibraryCatalogCoordinator {
                     libraryId: library.id
                 )
             else { return true }
-            if now.timeIntervalSince(cursor.lastFullReconciledAt) >= Self.fullCatalogReconciliationInterval {
+            if now.timeIntervalSince(cursor.lastFullReconciledAt) >= Self.fullCatalogReconciliationInterval
+                || CatalogMappingRevisionStore.shared.isStale(
+                    providerId: connection.id,
+                    libraryId: library.id,
+                    revision: provider.catalogMappingRevision
+                )
+            {
                 return true
             }
         }
@@ -537,7 +531,7 @@ final class LibraryCatalogCoordinator {
         return FileManager.default.fileExists(atPath: path)
     }
 
-    private func normalizeCachedBookMediaType(_ book: Book) -> Book {
+    func normalizeCachedBookMediaType(_ book: Book) -> Book {
         var normalized = book
 
         if normalized.source == .local, normalized.readAloudSourceStableId == nil {
@@ -572,6 +566,13 @@ final class LibraryCatalogCoordinator {
             return EbookFormat.from(fileExtension: URL(fileURLWithPath: partKey).pathExtension.lowercased())
         }()
 
+        let isOPDSAudiobook =
+            normalized.source == .opds
+            && normalized.mediaType == .audiobook
+            && filePathFormat == nil
+            && ebookURLFormat == nil
+            && partKeyFormat == nil
+
         let shouldForceEbook =
             normalized.source == .local && filePathFormat != nil
             || ebookURLFormat != nil
@@ -579,7 +580,7 @@ final class LibraryCatalogCoordinator {
             || normalized.source == .opds
             || normalized.source == .kavita
 
-        guard shouldForceEbook, normalized.source != .storyteller else { return normalized }
+        guard shouldForceEbook, !isOPDSAudiobook, normalized.source != .storyteller else { return normalized }
 
         normalized.mediaType = .ebook
         normalized.currentTime = 0
@@ -793,6 +794,12 @@ final class LibraryCatalogCoordinator {
         }
         defer { CatalogRefreshGate.shared.end(providerId: providerId) }
 
+        let existingCloudEligibleIds = Set(
+            library.books.lazy
+                .filter { $0.providerId == providerId && CloudProgressEligibility.includes($0) }
+                .map(\.stableId)
+        )
+
         AppLogger.general.info("Starting: \(name)")
 
         await MainActor.run {
@@ -846,6 +853,14 @@ final class LibraryCatalogCoordinator {
             providerId: providerId,
             libraries: selectedLibraries(from: libs, for: provider)
         )
+        let addedCloudEligibleBooks = library.books.filter {
+            $0.providerId == providerId
+                && CloudProgressEligibility.includes($0)
+                && !existingCloudEligibleIds.contains($0.stableId)
+        }
+        if !addedCloudEligibleBooks.isEmpty {
+            await SyncCoordinator.shared.syncNewBooksFromCloud(addedCloudEligibleBooks)
+        }
         AppLogger.general.info("Finished: \(name)")
     }
 
@@ -928,6 +943,15 @@ final class LibraryCatalogCoordinator {
         return changed
     }
 
+    private func markFullReconciled(_ lib: Library, providerId: UUID, provider: any LibraryProvider) async {
+        await bookStore.markFullReconciled(providerId: providerId, libraryId: lib.id, at: Date())
+        CatalogMappingRevisionStore.shared.recordReconciled(
+            providerId: providerId,
+            libraryId: lib.id,
+            revision: provider.catalogMappingRevision
+        )
+    }
+
     private func refreshSingleLibrary(
         _ lib: Library,
         provider: LibraryProvider,
@@ -953,7 +977,7 @@ final class LibraryCatalogCoordinator {
                     provider: bookloreProvider,
                     existingLibraryBooks: existingLibraryBooks
                 )
-                await bookStore.markFullReconciled(providerId: providerId, libraryId: lib.id, at: Date())
+                await markFullReconciled(lib, providerId: providerId, provider: bookloreProvider)
                 bookloreProvider.completeCatalogSync(libraryId: lib.id)
                 AppLogger.general.info(
                     "\(lib.name): \(remoteCount) books on server - skipping catalog reconciliation and browsing Grimmory remotely"
@@ -995,6 +1019,11 @@ final class LibraryCatalogCoordinator {
         let needsFullReconciliation =
             forceFullReconciliation || cursorSnapshot == nil
             || Date().timeIntervalSince(cursorSnapshot!.lastFullReconciledAt) > Self.fullCatalogReconciliationInterval
+            || CatalogMappingRevisionStore.shared.isStale(
+                providerId: providerId,
+                libraryId: lib.id,
+                revision: provider.catalogMappingRevision
+            )
 
         if !needsFullReconciliation, let cursor = cursorSnapshot {
             var deltaResult: (books: [Book], cursor: Date)? = nil
@@ -1201,7 +1230,7 @@ final class LibraryCatalogCoordinator {
             allowSparseResult: forceFullReconciliation
         )
 
-        await bookStore.markFullReconciled(providerId: providerId, libraryId: lib.id, at: Date())
+        await markFullReconciled(lib, providerId: providerId, provider: provider)
 
         if let bookloreProvider = provider as? BookloreProvider {
             bookloreProvider.completeCatalogSync(libraryId: lib.id)
@@ -1328,7 +1357,7 @@ final class LibraryCatalogCoordinator {
                 existingLibraryBooks: existingLibraryBooks
             )
             if session.completedSnapshot {
-                await bookStore.markFullReconciled(providerId: providerId, libraryId: lib.id, at: Date())
+                await markFullReconciled(lib, providerId: providerId, provider: provider)
             } else {
                 AppLogger.general.error("\(lib.name): remote catalog page contained rejected items; refresh remains pending")
             }
@@ -1344,8 +1373,8 @@ final class LibraryCatalogCoordinator {
         if let resumed = session.reconciliation {
             reconciliation = resumed
         } else {
-            reconciliation = await bookStore.beginReconciliation(libraryId: lib.id, providerId: providerId)
             do {
+                reconciliation = try await bookStore.beginReconciliation(libraryId: lib.id, providerId: providerId)
                 try provider.bindCatalogImport(session, to: reconciliation)
             } catch {
                 AppLogger.general.error("\(lib.name): could not persist Grimmory reconciliation: \(error.localizedDescription)")
@@ -1426,7 +1455,7 @@ final class LibraryCatalogCoordinator {
                 await MainActor.run { presentation.libraryImportProgress = nil }
                 return true
             }
-            await bookStore.markFullReconciled(providerId: providerId, libraryId: lib.id, at: Date())
+            await markFullReconciled(lib, providerId: providerId, provider: provider)
             provider.completeCatalogSync(libraryId: lib.id)
             AppLogger.general.info("\(lib.name): Grimmory reconciliation committed - \(kept) kept, \(deleted) removed")
         } catch {
@@ -1525,8 +1554,8 @@ final class LibraryCatalogCoordinator {
                 "\(lib.name): resuming incremental import after \(storedCheckpoint.committedBookCount) committed books"
             )
         } else {
-            let reconciliation = await bookStore.beginReconciliation(libraryId: lib.id, providerId: providerId)
             do {
+                let reconciliation = try await bookStore.beginReconciliation(libraryId: lib.id, providerId: providerId)
                 checkpoint = try CatalogImportCheckpointStore.start(
                     connection: provider.connection,
                     libraryId: lib.id,
@@ -1617,7 +1646,7 @@ final class LibraryCatalogCoordinator {
                 await MainActor.run { presentation.libraryImportProgress = nil }
                 return true
             }
-            await bookStore.markFullReconciled(providerId: providerId, libraryId: lib.id, at: Date())
+            await markFullReconciled(lib, providerId: providerId, provider: provider)
             CatalogImportCheckpointStore.clear(connectionId: providerId, libraryId: lib.id)
             AppLogger.general.info("\(lib.name): incremental reconciliation committed - \(kept) kept, \(deleted) removed")
         } catch {
@@ -1699,7 +1728,14 @@ final class LibraryCatalogCoordinator {
             )
         }
 
-        let reconciliation = await bookStore.beginReconciliation(libraryId: lib.id, providerId: providerId)
+        let reconciliation: ReconciliationStart
+        do {
+            reconciliation = try await bookStore.beginReconciliation(libraryId: lib.id, providerId: providerId)
+        } catch {
+            AppLogger.general.error("\(lib.name): could not start catalog reconciliation: \(error.localizedDescription)")
+            await MainActor.run { presentation.libraryImportProgress = nil }
+            return
+        }
 
         var loadedSoFar = 0
         var firstBatchTotalCount: Int? = nil
@@ -1779,7 +1815,7 @@ final class LibraryCatalogCoordinator {
         }
 
         if reconciliationCompleted {
-            await bookStore.markFullReconciled(providerId: providerId, libraryId: lib.id, at: Date())
+            await markFullReconciled(lib, providerId: providerId, provider: provider)
         }
 
         let mirrorLimit = 2000
@@ -2180,7 +2216,7 @@ final class LibraryCatalogCoordinator {
                                 ReaderArtifactsStore.shared.saveCachedChapters(bookId: fetchedBook.id, chapters: resolvedChapters)
                             }
                             AppLogger.general.info(
-                                "[Grimmory] Synthesized \(resolvedChapters.count) chapters bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: fetchedBook.stableId))"
+                                "[Booklore] Synthesized \(resolvedChapters.count) chapters bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: fetchedBook.stableId))"
                             )
                         }
                     }
@@ -2191,8 +2227,7 @@ final class LibraryCatalogCoordinator {
             var preservedBook = applyLocalRelationshipOverrides([enrichedBook], existingBooks: [book]).first ?? enrichedBook
 
             if hasLinkedEbook {
-                if let renamed = ReaderArtifactsStore.shared.loadCachedChapters(bookId: preservedBook.stableId)
-                    ?? ReaderArtifactsStore.shared.loadCachedChapters(bookId: preservedBook.id),
+                if let renamed = ReaderArtifactsStore.shared.loadCachedAudioChapters(for: preservedBook),
                     !renamed.isEmpty
                 {
                     preservedBook.chapters = renamed
@@ -2336,7 +2371,7 @@ final class LibraryCatalogCoordinator {
         let books = library.books
         let progressMap: [String: (progress: TimeInterval, duration: TimeInterval, lastUpdated: TimeInterval)]
         if books.count > 12000 {
-            AppLogger.general.info("📊 [Startup] Skipping full local progress preload for large library (\(books.count) books)")
+            AppLogger.general.info("[Startup] Skipping full local progress preload for large library (\(books.count) books)")
             progressMap = [:]
         } else {
             progressMap = await preloadStoredProgressMap(for: books)

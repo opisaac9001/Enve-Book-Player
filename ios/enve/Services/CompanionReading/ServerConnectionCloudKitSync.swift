@@ -17,7 +17,16 @@ final class ServerConnectionCloudKitSync {
     }
 
     var isEnabled: Bool {
-        get { UserDefaults.standard.bool(forKey: enabledKey) }
+        get {
+            if let stored = UserDefaults.standard.object(forKey: enabledKey) as? Bool {
+                return stored
+            }
+#if os(tvOS)
+            return true
+#else
+            return false
+#endif
+        }
         set {
             UserDefaults.standard.set(newValue, forKey: enabledKey)
             if newValue {

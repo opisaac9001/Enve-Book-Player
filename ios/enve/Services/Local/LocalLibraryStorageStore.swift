@@ -92,16 +92,6 @@ final class LocalLibraryStorageStore {
         UserDefaults.standard.removeObject(forKey: Self.bookmarkPrefix + libraryId)
     }
 
-    func saveMergeCache(bookStableIds: Set<String>) {
-        let cache = MergeLibraryCache(
-            lastDedupDate: Date(),
-            bookStableIds: bookStableIds,
-            bookCount: bookStableIds.count
-        )
-        encode(cache, forKey: Self.mergeCacheKey)
-        AppLogger.network.info("Saved merge library cache: \(cache.bookCount) books")
-    }
-
     func loadMergeCache() -> MergeLibraryCache? {
         decode(MergeLibraryCache.self, forKey: Self.mergeCacheKey)
     }

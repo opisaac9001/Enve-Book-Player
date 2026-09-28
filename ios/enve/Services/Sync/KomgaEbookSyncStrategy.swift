@@ -72,7 +72,7 @@ final class KomgaEbookSyncStrategy: ProviderSyncStrategy {
                     )
                     guard direction == .pull else { continue }
 
-                    let isFinished = progress.isFinished || serverProgress >= 0.99
+                    let isFinished = progress.isFinished || serverProgress >= Book.finishedProgressThreshold
                     var persistedBook = book
                     persistedBook.ebookProgress = serverProgress
                     persistedBook.isFinished = isFinished
@@ -100,10 +100,10 @@ final class KomgaEbookSyncStrategy: ProviderSyncStrategy {
                     && (force || book.canonicalEbookProgress > 0.001) && progressByBookId[book.id] == nil
                 {
                     if let remote = try await provider.fetchEbookProgress(for: book) {
-                        guard force, remote.progress != book.ebookProgress || (remote.progress >= 0.99) != book.isFinished else { continue }
+                        guard force, remote.progress != book.ebookProgress || (remote.progress >= Book.finishedProgressThreshold) != book.isFinished else { continue }
                         var updated = book
                         updated.ebookProgress = remote.progress
-                        updated.isFinished = remote.progress >= 0.99
+                        updated.isFinished = remote.progress >= Book.finishedProgressThreshold
                         updated.serverReadStatus = updated.isFinished ? "READ" : "IN_PROGRESS"
                         updated.hideFromContinue = false
                         updated.lastUpdate = remote.updatedAt ?? book.lastUpdate

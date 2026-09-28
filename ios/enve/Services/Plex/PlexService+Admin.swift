@@ -125,25 +125,6 @@ extension PlexService {
         }
     }
 
-    func cleanBundles(serverUrl: String, token: String) async throws {
-        guard let baseURL = URL(string: serverUrl),
-            let url = URL(string: "/library/clean/bundles", relativeTo: baseURL)
-        else {
-            throw PlexError.invalidURL
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "PUT"
-        applyPlexHeaders(&request, token: token)
-
-        let (_, response) = try await session.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse,
-            (200...299).contains(httpResponse.statusCode)
-        else {
-            throw PlexError.serverUnreachable
-        }
-    }
-
     func getServerIdentity(serverUrl: String, token: String) async throws -> PlexServerInfo {
         guard let baseURL = URL(string: serverUrl),
             let url = URL(string: "/identity", relativeTo: baseURL)

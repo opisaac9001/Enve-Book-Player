@@ -6,6 +6,7 @@ import com.enve.core.data.local.BookMetadataOverride
 import com.enve.core.data.local.CachedBook
 import com.enve.core.data.local.PendingProgressPush
 import com.enve.core.data.model.DuplicateBookCluster
+import com.enve.core.data.util.FINISHED_PROGRESS_THRESHOLD
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -163,11 +164,11 @@ class DuplicateMergeRepository @Inject constructor(
         val readProgress = rows.maxOf { progressFraction(it) }.coerceIn(0f, 1f)
         val epubProgress = rows.mapNotNull { it.epubProgress }.maxOrNull()
         val currentTime = rows.maxOf { it.currentTime }
-        val finished = rows.any { it.isFinished || it.readProgress >= 0.99f || (it.epubProgress ?: 0f) >= 0.99f }
+        val finished = rows.any { it.isFinished || it.readProgress >= FINISHED_PROGRESS_THRESHOLD || (it.epubProgress ?: 0f) >= FINISHED_PROGRESS_THRESHOLD }
         val hideFromContinue = rows.all { it.hideFromContinue }
         val inProgress = !finished && !hideFromContinue && (
-            readProgress in 0.01f..0.99f ||
-                (epubProgress ?: 0f) in 0.01f..0.99f ||
+            readProgress in 0.01f..FINISHED_PROGRESS_THRESHOLD ||
+                (epubProgress ?: 0f) in 0.01f..FINISHED_PROGRESS_THRESHOLD ||
                 currentTime > 0L
             )
 

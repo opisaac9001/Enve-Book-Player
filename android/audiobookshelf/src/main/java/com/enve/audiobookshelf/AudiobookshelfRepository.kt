@@ -1,6 +1,8 @@
 package com.enve.audiobookshelf
 
+import android.util.Log
 import com.enve.core.data.local.PreferencesManager
+import com.enve.core.data.provider.LibraryAccessRevocations
 import com.enve.core.data.provider.ProviderMetadataUpdate
 import com.enve.core.data.provider.ProviderPlaybackSession
 import com.enve.core.data.model.Book
@@ -9,15 +11,17 @@ import com.enve.core.data.model.Library
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Chapter
 import com.enve.core.data.model.AudioTrack
+import com.enve.core.data.model.PodcastShow
 import com.enve.core.data.local.ConnectionRegistry
 import com.enve.core.auth.CredentialVault
 import com.enve.audiobookshelf.api.AudiobookshelfApi
+import com.enve.core.data.util.FINISHED_PROGRESS_THRESHOLD
+import com.enve.core.data.util.runSuspendCatching
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import com.enve.audiobookshelf.dto.*
 import com.enve.core.data.remote.dto.AbsLoginRequest
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -28,6 +32,9 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
 import javax.inject.Singleton
+
+private const val TAG = "AudiobookshelfRepo"
+private const val HTTP_FORBIDDEN = 403
 
 internal fun mergeAbsMediaProgress(
     items: List<AbsLibraryItemDto>,
@@ -49,6 +56,8 @@ class AudiobookshelfRepository @Inject constructor(
     private val vault: CredentialVault,
     private val httpClient: okhttp3.OkHttpClient,
     @ApplicationContext private val context: android.content.Context,
+    private val ebookPositions: AbsEbookPositionResolver,
+    private val libraryRevocations: LibraryAccessRevocations,
 ) {
 
     private fun scopedServerUrlAndToken(): Pair<String, String?> {
@@ -122,6 +131,22 @@ class AudiobookshelfRepository @Inject constructor(
         }
     }
 
+    private suspend fun forgetForbiddenLibrary(serverUrl: String, libraryId: String) {
+        Log.i(TAG, "ABS library $libraryId is no longer accessible; dropping it until the library list refreshes")
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val file = cacheFileForLibraries(serverUrl)
+                if (file.exists()) {
+                    val payload = jsonSerializer.decodeFromString<AbsLibraryCachePayload>(file.readText())
+                    val remaining = payload.copy(libraries = payload.libraries.filterNot { it.id == libraryId })
+                    file.writeText(jsonSerializer.encodeToString(remaining))
+                }
+            }
+            cacheFileForLane(serverUrl, "recently-added").delete()
+        }
+        connectionRegistry.getScopedConnectionSync()?.let { libraryRevocations.revoke(it.id, libraryId) }
+    }
+
     private suspend fun loadLaneFromDisk(serverUrl: String, lane: String): List<Book>? = withContext(Dispatchers.IO) {
         runCatching {
             val normalizedUrl = serverUrl.trimEnd('/')
@@ -168,29 +193,18 @@ class AudiobookshelfRepository @Inject constructor(
         return if (trimmed.startsWith('/')) "$base$trimmed" else "$base/$trimmed"
     }
 
-    suspend fun login(serverUrl: String, username: String, password: String): Result<Unit> {
-        return try {
-            prefs.setActiveBookSource(BookSource.AUDIOBOOKSHELF)
-            prefs.saveServerInfo(serverUrl.trimEnd('/'), username)
-            invalidateListCaches()
+    suspend fun login(serverUrl: String, username: String, password: String): Result<Unit> = runSuspendCatching {
+        prefs.setActiveBookSource(BookSource.AUDIOBOOKSHELF)
+        prefs.saveServerInfo(serverUrl.trimEnd('/'), username)
+        invalidateListCaches()
 
-            val response = api.login(AbsLoginRequest(username, password))
-            if (!response.isSuccessful) {
-                return Result.failure(Exception("Audiobookshelf login failed: HTTP ${response.code()}"))
-            }
-            val body = response.body() ?: return Result.failure(Exception("Audiobookshelf login returned an empty response"))
-            val accessToken = body.user?.accessToken ?: body.user?.token ?: body.accessToken
-            val refreshToken = body.user?.refreshToken ?: body.refreshToken
-            if (accessToken.isNullOrBlank()) {
-                return Result.failure(Exception("Audiobookshelf login succeeded but no token was returned"))
-            }
-            prefs.saveAuth(accessToken, refreshToken)
-            Result.success(Unit)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
+        val response = api.login(AbsLoginRequest(username, password))
+        if (!response.isSuccessful) error("Audiobookshelf login failed: HTTP ${response.code()}")
+        val body = response.body() ?: error("Audiobookshelf login returned an empty response")
+        val accessToken = body.user?.accessToken ?: body.user?.token ?: body.accessToken
+        val refreshToken = body.user?.refreshToken ?: body.refreshToken
+        if (accessToken.isNullOrBlank()) error("Audiobookshelf login succeeded but no token was returned")
+        prefs.saveAuth(accessToken, refreshToken)
     }
 
     private val absOauthRedirectUri = com.enve.core.auth.OAuthRedirectUris.AUDIOBOOKSHELF
@@ -209,7 +223,7 @@ class AudiobookshelfRepository @Inject constructor(
     data class OauthPreflightResult(val authUrl: String, val cookieHeader: String?)
 
     suspend fun oauthPreflight(serverUrl: String, challenge: String, state: String): Result<OauthPreflightResult> = withContext(Dispatchers.IO) {
-        runCatching {
+        runSuspendCatching {
             val base = serverUrl.trimEnd('/')
             val url = "$base/auth/openid".toHttpUrlOrNull()
                 ?: error("Invalid server URL")
@@ -249,7 +263,7 @@ class AudiobookshelfRepository @Inject constructor(
         username: String?,
         cookieHeader: String?,
     ): Result<String> = withContext(Dispatchers.IO) {
-        runCatching {
+        runSuspendCatching {
             val base = serverUrl.trimEnd('/')
             val url = "$base/auth/openid/callback".toHttpUrlOrNull()
                 ?: error("Invalid server URL")
@@ -293,40 +307,28 @@ class AudiobookshelfRepository @Inject constructor(
         }
     }
 
-    suspend fun getLibraries(): Result<List<Library>> {
-        return try {
-            val serverUrl = scopedServerUrlAndToken().first
-            val normalizedUrl = serverUrl.trimEnd('/')
+    suspend fun getLibraries(): Result<List<Library>> = runSuspendCatching {
+        val normalizedUrl = scopedServerUrlAndToken().first.trimEnd('/')
 
-            val cached = loadLibrariesFromDisk(normalizedUrl)
-            if (!cached.isNullOrEmpty()) {
-                return Result.success(cached)
-            }
+        val cached = loadLibrariesFromDisk(normalizedUrl)
+        if (!cached.isNullOrEmpty()) return@runSuspendCatching cached
 
-            val response = api.getLibraries()
-            if (!response.isSuccessful) {
-                return Result.failure(Exception("Failed to fetch ABS libraries: HTTP ${response.code()}"))
-            }
-            val body = response.body()
-                ?: return Result.failure(IllegalStateException("ABS libraries returned an empty body"))
+        val response = api.getLibraries()
+        if (!response.isSuccessful) error("Failed to fetch ABS libraries: HTTP ${response.code()}")
+        val body = response.body() ?: error("ABS libraries returned an empty body")
 
-            val libs = body.libraries.filter {
-                it.mediaType == "book" || it.mediaType == "audiobook" || it.mediaType == "podcast"
-            }.map { dto ->
-                Library(
-                    id = dto.id,
-                    name = dto.name,
-                    bookCount = 0
-                )
-            }
-
-            saveLibrariesToDisk(normalizedUrl, libs)
-            Result.success(libs)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
+        val libs = body.libraries.filter {
+            it.mediaType == "book" || it.mediaType == "audiobook" || it.mediaType == "podcast"
+        }.map { dto ->
+            Library(
+                id = dto.id,
+                name = dto.name,
+                bookCount = 0
+            )
         }
+
+        saveLibrariesToDisk(normalizedUrl, libs)
+        libs
     }
 
     suspend fun getBooks(
@@ -335,38 +337,27 @@ class AudiobookshelfRepository @Inject constructor(
         size: Int = 50,
         sort: String = "addedOn",
         dir: String = "desc",
-    ): Result<List<Book>> {
-        return try {
-            val normalizedUrl = scopedServerUrlAndToken().first.trimEnd('/')
+    ): Result<List<Book>> = runSuspendCatching {
+        val normalizedUrl = scopedServerUrlAndToken().first.trimEnd('/')
 
-            val targetLibraryIds = if (libraryId != null) {
-                listOf(libraryId)
-            } else {
-                getLibraries().getOrElse { return Result.failure(it) }.map { it.id }
-            }
+        val targetLibraryIds = libraryId?.let { listOf(it) } ?: getLibraries().getOrThrow().map { it.id }
+        if (targetLibraryIds.isEmpty()) return@runSuspendCatching emptyList()
 
-            if (targetLibraryIds.isEmpty()) return Result.success(emptyList())
-
-            val pages = coroutineScope {
-                targetLibraryIds.map { targetLibraryId ->
-                    async {
-                        fetchAbsBooksPage(
-                            libraryId = targetLibraryId,
-                            serverUrl = normalizedUrl,
-                            page = page,
-                            size = size,
-                            sort = sort,
-                            dir = dir,
-                        )
-                    }
-                }.awaitAll()
-            }
-            Result.success(sortAbsBooks(pages.flatten().distinctBy { it.id }, sort, dir))
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
+        val pages = coroutineScope {
+            targetLibraryIds.map { targetLibraryId ->
+                async {
+                    fetchAbsBooksPage(
+                        libraryId = targetLibraryId,
+                        serverUrl = normalizedUrl,
+                        page = page,
+                        size = size,
+                        sort = sort,
+                        dir = dir,
+                    )
+                }
+            }.awaitAll()
         }
+        sortAbsBooks(pages.flatten().distinctBy { it.id }, sort, dir)
     }
 
     private suspend fun fetchAbsBooksPage(
@@ -384,6 +375,10 @@ class AudiobookshelfRepository @Inject constructor(
             sort = absSortField(sort),
             desc = if (dir.equals("desc", ignoreCase = true)) 1 else 0,
         )
+        if (response.code() == HTTP_FORBIDDEN) {
+            forgetForbiddenLibrary(serverUrl, libraryId)
+            return emptyList()
+        }
         if (!response.isSuccessful) {
             throw IllegalStateException("ABS library page failed: HTTP ${response.code()}")
         }
@@ -400,69 +395,43 @@ class AudiobookshelfRepository @Inject constructor(
         size: Int = 50,
         sort: String = "media.metadata.title",
         dir: String = "asc",
-    ): Result<com.enve.core.data.model.BookSummaryPage> {
-        return try {
-            val serverUrl = scopedServerUrlAndToken().first.trimEnd('/')
-            val response = api.getLibraryItems(
-                libraryId = libraryId,
-                limit = size,
-                page = page,
-                minified = 1,
-                sort = sort,
-                desc = if (dir == "desc") 1 else 0,
-            )
-            if (!response.isSuccessful) return Result.failure(Exception("HTTP ${response.code()}"))
-            val body = response.body() ?: return Result.failure(Exception("Empty body"))
-            val items = body.items.map { dto -> mapAbsItemToBookSummary(dto, libraryId, connectionId, serverUrl) }
-            val total = body.total ?: items.size
-            val pageSize = body.limit?.takeIf { it > 0 } ?: size
-            val totalPages = if (pageSize > 0) ((total + pageSize - 1) / pageSize) else 1
-            val hasNext = (page + 1) < totalPages
-            Result.success(com.enve.core.data.model.BookSummaryPage(
-                items = items,
-                page = page,
-                totalPages = totalPages,
-                totalElements = total.toLong(),
-                hasNext = hasNext,
-            ))
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
+    ): Result<com.enve.core.data.model.BookSummaryPage> = runSuspendCatching {
+        val serverUrl = scopedServerUrlAndToken().first.trimEnd('/')
+        val response = api.getLibraryItems(
+            libraryId = libraryId,
+            limit = size,
+            page = page,
+            minified = 1,
+            sort = sort,
+            desc = if (dir == "desc") 1 else 0,
+        )
+        if (response.code() == HTTP_FORBIDDEN) forgetForbiddenLibrary(serverUrl, libraryId)
+        if (!response.isSuccessful) error("HTTP ${response.code()}")
+        val body = response.body() ?: error("Empty body")
+        val items = body.items.map { dto -> mapAbsItemToBookSummary(dto, libraryId, connectionId, serverUrl) }
+        val total = body.total ?: items.size
+        val pageSize = body.limit?.takeIf { it > 0 } ?: size
+        val totalPages = if (pageSize > 0) ((total + pageSize - 1) / pageSize) else 1
+        com.enve.core.data.model.BookSummaryPage(
+            items = items,
+            page = page,
+            totalPages = totalPages,
+            totalElements = total.toLong(),
+            hasNext = (page + 1) < totalPages,
+        )
     }
 
-    suspend fun updateBookMetadata(book: Book, metadata: ProviderMetadataUpdate): Result<Unit> {
-        return try {
-            val response = api.updateMetadata(
-                itemId = book.id,
-                request = AbsMetadataUpdateRequest(metadata = metadata.toAbsMetadataUpdatePayload()),
-            )
-            if (!response.isSuccessful) {
-                Result.failure(Exception("ABS metadata update failed: HTTP ${response.code()}"))
-            } else {
-                Result.success(Unit)
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
+    suspend fun updateBookMetadata(book: Book, metadata: ProviderMetadataUpdate): Result<Unit> = runSuspendCatching {
+        val response = api.updateMetadata(
+            itemId = book.id,
+            request = AbsMetadataUpdateRequest(metadata = metadata.toAbsMetadataUpdatePayload()),
+        )
+        if (!response.isSuccessful) error("ABS metadata update failed: HTTP ${response.code()}")
     }
 
-    suspend fun matchAllLibraryMetadata(libraryId: String): Result<Unit> {
-        return try {
-            val response = api.matchAllLibraryItems(libraryId)
-            if (!response.isSuccessful) {
-                Result.failure(Exception("ABS metadata refresh failed: HTTP ${response.code()}"))
-            } else {
-                Result.success(Unit)
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
+    suspend fun matchAllLibraryMetadata(libraryId: String): Result<Unit> = runSuspendCatching {
+        val response = api.matchAllLibraryItems(libraryId)
+        if (!response.isSuccessful) error("ABS metadata refresh failed: HTTP ${response.code()}")
     }
 
     private fun mapAbsItemToBookSummary(
@@ -485,6 +454,7 @@ class AudiobookshelfRepository @Inject constructor(
             progressFraction > 0f -> com.enve.core.data.model.ReadStatus.IN_PROGRESS
             else -> com.enve.core.data.model.ReadStatus.UNREAD
         }
+        val series = absSeriesEntries(meta?.seriesName).firstOrNull()
         return com.enve.core.data.model.BookSummary(
             id = dto.id,
             connectionId = connectionId,
@@ -492,8 +462,8 @@ class AudiobookshelfRepository @Inject constructor(
             title = title,
             authors = authors,
             thumbnailUrl = "$serverUrl/api/items/${dto.id}/cover",
-            seriesName = meta?.seriesName,
-            seriesNumber = meta?.seriesNumber,
+            seriesName = series?.name,
+            seriesNumber = series?.sequence,
             readProgress = progressFraction,
             readStatus = readStatus,
             mediaType = mediaType,
@@ -520,13 +490,7 @@ class AudiobookshelfRepository @Inject constructor(
         val initialMediaType = resolveAbsMediaType(dto)
         val initialDurationSec = resolveAbsDurationSeconds(dto.media, dto.mediaProgress)
         val detail = if (fetchDetail && shouldFetchAbsItemDetail(dto, initialMediaType, initialDurationSec)) {
-            try {
-                api.getItemDetail(id).body()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                null
-            }
+            runSuspendCatching { api.getItemDetail(id).body() }.getOrNull()
         } else {
             null
         }
@@ -539,8 +503,7 @@ class AudiobookshelfRepository @Inject constructor(
         val author = media?.metadata?.authorName
             ?: media?.metadata?.authors?.firstOrNull()?.name
 
-        val seriesName = media?.metadata?.seriesName
-            ?: media?.metadata?.title?.let { t -> if (t.contains(":")) t.split(":").first().trim() else null }
+        val series = absSeriesEntries(media?.metadata?.seriesName).firstOrNull()
 
         val durationSec = resolveAbsDurationSeconds(media, progress)
 
@@ -551,10 +514,7 @@ class AudiobookshelfRepository @Inject constructor(
             progressFraction = progressFraction,
             fallbackSec = null,
         )
-        val lastReadTime = progress?.lastUpdate
-            ?.takeIf { it > 0L }
-            ?.let { if (it < 100_000_000_000L) it * 1000L else it }
-            ?: 0L
+        val lastReadTime = progress?.lastUpdate?.takeIf { it > 0L } ?: 0L
 
         val chapters = if (fetchDetail && mediaType == AppMediaType.AUDIOBOOK) {
             media?.chapters
@@ -598,8 +558,8 @@ class AudiobookshelfRepository @Inject constructor(
             source = BookSource.AUDIOBOOKSHELF,
             mediaType = mediaType,
             libraryId = libraryId,
-            seriesName = seriesName,
-            seriesNumber = media?.metadata?.seriesNumber,
+            seriesName = series?.name,
+            seriesNumber = series?.sequence,
             addedOn = dto.addedAt ?: 0L,
             lastReadTime = lastReadTime,
             chapters = chapters,
@@ -634,12 +594,8 @@ class AudiobookshelfRepository @Inject constructor(
             .takeIf { it > 0.0 }
             ?.toLong()
 
-        progress?.duration?.takeIf { it > 0.0 }?.let {
-            return normalizeAbsDurationSeconds(it, audioFileDurationSec)
-        }
-        media?.duration?.takeIf { it > 0.0 }?.let {
-            return normalizeAbsDurationSeconds(it, audioFileDurationSec)
-        }
+        progress?.duration?.takeIf { it > 0.0 }?.let { return it.toLong() }
+        media?.duration?.takeIf { it > 0.0 }?.let { return it.toLong() }
         return audioFileDurationSec ?: 0L
     }
 
@@ -691,48 +647,39 @@ class AudiobookshelfRepository @Inject constructor(
         return "${serverUrl.trimEnd('/')}/api/items/$bookId/ebook"
     }
 
-    suspend fun startPlaybackSession(book: Book): Result<ProviderPlaybackSession> {
-        return try {
-            val serverUrl = scopedServerUrlAndToken().first.trimEnd('/')
+    suspend fun startPlaybackSession(book: Book): Result<ProviderPlaybackSession> = runSuspendCatching {
+        val serverUrl = scopedServerUrlAndToken().first.trimEnd('/')
 
-            val sessionResponse = api.startPlaybackSession(book.id, AbsPlaybackStartRequest())
-            if (!sessionResponse.isSuccessful) {
-                return Result.failure(Exception("Failed to start Audiobookshelf playback: HTTP ${sessionResponse.code()}"))
-            }
-            val session = sessionResponse.body()
-                ?: return Result.failure(Exception("Audiobookshelf playback session returned an empty response"))
-            val sessionTracks = session.audioTracks
-                .mapNotNull { mapPlaybackTrackToTrack(it, serverUrl) }
-                .sortedBy { it.index }
-            val chapters = session.chapters.mapIndexed { index, chapter ->
-                Chapter(
-                    index = index,
-                    title = chapter.title ?: "Chapter ${index + 1}",
-                    startTime = (chapter.start ?: chapter.startOffset ?: 0.0).toLong(),
-                    endTime = (chapter.end ?: chapter.start ?: 0.0).toLong(),
-                )
-            }.filter { it.endTime > it.startTime }
-            Result.success(
-                ProviderPlaybackSession(
-                    sessionId = session.id,
-                    audioTracks = sessionTracks,
-                    chapters = chapters,
-                    serverCurrentTimeSec = normalizeAbsCurrentTimeSeconds(
-                        rawCurrentTime = session.currentTime,
-                        durationSec = session.duration
-                            ?.takeIf { it > 0.0 }
-                            ?.let { normalizeAbsDurationSeconds(it, null) }
-                            ?: 0L,
-                        progressFraction = null,
-                        fallbackSec = null,
-                    ),
-                )
-            )
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
+        val episodeId = book.episodeId
+        val sessionResponse = if (episodeId != null) {
+            api.startEpisodePlaybackSession(book.absItemId, episodeId, AbsPlaybackStartRequest())
+        } else {
+            api.startPlaybackSession(book.id, AbsPlaybackStartRequest())
         }
+        if (!sessionResponse.isSuccessful) error("Failed to start Audiobookshelf playback: HTTP ${sessionResponse.code()}")
+        val session = sessionResponse.body() ?: error("Audiobookshelf playback session returned an empty response")
+        val sessionTracks = session.audioTracks
+            .mapNotNull { mapPlaybackTrackToTrack(it, serverUrl) }
+            .sortedBy { it.index }
+        val chapters = session.chapters.mapIndexed { index, chapter ->
+            Chapter(
+                index = index,
+                title = chapter.title ?: "Chapter ${index + 1}",
+                startTime = (chapter.start ?: chapter.startOffset ?: 0.0).toLong(),
+                endTime = (chapter.end ?: chapter.start ?: 0.0).toLong(),
+            )
+        }.filter { it.endTime > it.startTime }
+        ProviderPlaybackSession(
+            sessionId = session.id,
+            audioTracks = sessionTracks,
+            chapters = chapters,
+            serverCurrentTimeSec = normalizeAbsCurrentTimeSeconds(
+                rawCurrentTime = session.currentTime,
+                durationSec = session.duration?.takeIf { it > 0.0 }?.toLong() ?: 0L,
+                progressFraction = null,
+                fallbackSec = null,
+            ),
+        )
     }
 
     suspend fun syncPlaybackSession(
@@ -771,28 +718,20 @@ class AudiobookshelfRepository @Inject constructor(
         timeListenedMs: Long,
         durationSec: Long,
         close: Boolean,
-    ): Result<Unit> {
-        return try {
-            val request = AbsPlaybackSessionUpdateRequest(
-                currentTime = currentTimeSec.coerceAtLeast(0).toDouble(),
-                timeListened = (timeListenedMs.coerceAtLeast(0) / 1000.0),
-                duration = durationSec.coerceAtLeast(0).toDouble(),
-            )
-            val response = if (close) {
-                api.closePlaybackSession(sessionId, request)
-            } else {
-                api.syncPlaybackSession(sessionId, request)
-            }
-            if (response.isSuccessful) {
-                Result.success(Unit)
-            } else {
-                val action = if (close) "close" else "sync"
-                Result.failure(Exception("Audiobookshelf playback session $action failed: HTTP ${response.code()}"))
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
+    ): Result<Unit> = runSuspendCatching {
+        val request = AbsPlaybackSessionUpdateRequest(
+            currentTime = currentTimeSec.coerceAtLeast(0).toDouble(),
+            timeListened = (timeListenedMs.coerceAtLeast(0) / 1000.0),
+            duration = durationSec.coerceAtLeast(0).toDouble(),
+        )
+        val response = if (close) {
+            api.closePlaybackSession(sessionId, request)
+        } else {
+            api.syncPlaybackSession(sessionId, request)
+        }
+        if (!response.isSuccessful) {
+            val action = if (close) "close" else "sync"
+            error("Audiobookshelf playback session $action failed: HTTP ${response.code()}")
         }
     }
 
@@ -807,87 +746,59 @@ class AudiobookshelfRepository @Inject constructor(
         }
     }
 
-    suspend fun fetchChapters(book: Book): Result<List<Chapter>> = try {
-        Result.success(startPlaybackSession(book).getOrThrow().chapters)
-    } catch (e: CancellationException) {
-        throw e
-    } catch (e: Exception) {
-        Result.failure(e)
+    suspend fun fetchChapters(book: Book): Result<List<Chapter>> = startPlaybackSession(book).map { it.chapters }
+
+    suspend fun syncAudiobookProgress(book: Book, currentTimeSec: Long, progressFraction: Float): Result<Unit> = runSuspendCatching {
+        val finished = progressFraction >= FINISHED_PROGRESS_THRESHOLD
+        val request = AbsProgressUpdateRequest(
+            currentTime = currentTimeSec.toDouble().coerceAtLeast(0.0),
+            duration = book.duration.takeIf { it > 0 }?.toDouble(),
+            progress = progressFraction.coerceIn(0f, 1f),
+            isFinished = finished.takeIf { it || currentTimeSec <= 0 },
+        )
+        val episodeId = book.episodeId
+        val response = if (episodeId != null) {
+            api.updateEpisodeProgress(book.absItemId, episodeId, request)
+        } else {
+            api.updateProgress(book.id, request)
+        }
+        if (!response.isSuccessful) error("Audiobookshelf progress sync failed: HTTP ${response.code()}")
     }
 
-    suspend fun syncAudiobookProgress(book: Book, currentTimeSec: Long, progressFraction: Float): Result<Unit> {
-        return try {
-            val response = api.updateProgress(
-                libraryItemId = book.id,
-                request = AbsProgressUpdateRequest(
-                    currentTime = currentTimeSec.toDouble().coerceAtLeast(0.0),
-                    duration = book.duration.takeIf { it > 0 }?.toDouble(),
-                    progress = progressFraction.coerceIn(0f, 1f),
-                    isFinished = progressFraction >= 0.99f,
-                ),
-            )
-            if (response.isSuccessful) Result.success(Unit)
-            else Result.failure(Exception("Audiobookshelf progress sync failed: HTTP ${response.code()}"))
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
+    suspend fun fetchAudiobookProgress(book: Book): Result<com.enve.core.data.sync.SyncSnapshot?> = runSuspendCatching {
+        val episodeId = book.episodeId
+        val response = if (episodeId != null) api.getEpisodeProgress(book.absItemId, episodeId) else api.getProgress(book.id)
+        val progress = response.body()
+        if (!response.isSuccessful || progress == null) return@runSuspendCatching null
+        val pct = progress.progress?.coerceIn(0f, 1f)?.takeIf { it > 0f } ?: return@runSuspendCatching null
+        com.enve.core.data.sync.SyncSnapshot(
+            percentage = pct,
+            positionMs = progress.currentTime?.let { (it * 1000).toLong() },
+            source = "Audiobookshelf",
+        )
+    }
+
+    suspend fun fetchEbookProgress(book: Book): Result<com.enve.core.data.sync.SyncSnapshot?> = runSuspendCatching {
+        val response = api.getProgress(book.id)
+        val progress = response.body()
+        if (!response.isSuccessful || progress == null) null else ebookPositions.ebookSnapshot(book, progress)
+    }
+
+    suspend fun getPodcastShow(show: Book): Result<PodcastShow> = runSuspendCatching {
+        val serverUrl = scopedServerUrlAndToken().first.trimEnd('/')
+        coroutineScope {
+            val me = async { getMe().getOrThrow() }
+            val response = api.getExpandedItem(show.id)
+            if (!response.isSuccessful) error("Audiobookshelf podcast fetch failed: HTTP ${response.code()}")
+            val item = response.body() ?: error("Audiobookshelf podcast returned an empty body")
+            mapAbsPodcastShow(item, me.await().mediaProgress, serverUrl)
         }
     }
 
-    suspend fun fetchAudiobookProgress(book: Book): Result<com.enve.core.data.sync.SyncSnapshot?> {
-        return try {
-            val response = api.getProgress(book.id)
-            val progress = response.body()
-            if (!response.isSuccessful || progress == null) {
-                return Result.success(null)
-            }
-            val pct = progress.progress?.coerceIn(0f, 1f) ?: return Result.success(null)
-            if (pct <= 0f) return Result.success(null)
-            val positionMs = progress.currentTime?.let { (it * 1000).toLong() }
-            Result.success(
-                com.enve.core.data.sync.SyncSnapshot(
-                    percentage = pct,
-                    positionMs = positionMs,
-                    source = "Audiobookshelf",
-                )
-            )
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
-    }
-
-    suspend fun fetchEbookProgress(book: Book): Result<com.enve.core.data.sync.SyncSnapshot?> {
-        return try {
-            val response = api.getProgress(book.id)
-            val progress = response.body()
-            if (!response.isSuccessful || progress == null) {
-                return Result.success(null)
-            }
-            val pct = progress.progress?.coerceIn(0f, 1f) ?: return Result.success(null)
-            if (pct <= 0f) return Result.success(null)
-            Result.success(
-                com.enve.core.data.sync.SyncSnapshot(
-                    percentage = pct,
-                    source = "Audiobookshelf",
-                )
-            )
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
-    }
-
-    suspend fun getMe(): Result<com.enve.audiobookshelf.dto.AbsMeResponse> = try {
+    suspend fun getMe(): Result<com.enve.audiobookshelf.dto.AbsMeResponse> = runSuspendCatching {
         val resp = api.getMe()
-        if (resp.isSuccessful) Result.success(resp.body() ?: com.enve.audiobookshelf.dto.AbsMeResponse())
-        else Result.failure(Exception("Audiobookshelf /api/me failed: HTTP ${resp.code()}"))
-    } catch (e: Exception) {
-        if (e is kotlinx.coroutines.CancellationException) throw e
-        Result.failure(e)
+        if (!resp.isSuccessful) error("Audiobookshelf /api/me failed: HTTP ${resp.code()}")
+        resp.body() ?: com.enve.audiobookshelf.dto.AbsMeResponse()
     }
 
     suspend fun getProgressForBooks(books: List<Book>): List<Book> {
@@ -920,50 +831,28 @@ class AudiobookshelfRepository @Inject constructor(
 
     suspend fun deleteBookmark(itemId: String, timeSec: Double) {
         val resp = api.deleteBookmark(itemId, timeSec)
-        if (!resp.isSuccessful) error("ABS deleteBookmark failed: HTTP ${resp.code()}")
+        if (!resp.isSuccessful && resp.code() != 404) error("ABS deleteBookmark failed: HTTP ${resp.code()}")
     }
 
-    suspend fun syncEbookProgress(bookId: String, percentage: Float, locator: String?): Result<Unit> {
-        return try {
-            val normalized = percentage.coerceIn(0f, 1f)
-            val response = api.updateProgress(
-                libraryItemId = bookId,
-                request = AbsProgressUpdateRequest(
-                    progress = normalized,
-                    ebookProgress = normalized,
-                    ebookLocation = locator,
-                    isFinished = normalized >= 0.99f,
-                ),
-            )
-            if (response.isSuccessful) Result.success(Unit)
-            else Result.failure(Exception("Audiobookshelf ebook progress sync failed: HTTP ${response.code()}"))
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
+    suspend fun syncEbookProgress(bookId: String, percentage: Float, locator: String?): Result<Unit> = runSuspendCatching {
+        ebookPositions.pushEbookProgress(bookId, percentage, locator)
     }
 
     suspend fun getBooksInProgress(allowCachedFallback: Boolean = true): Result<List<Book>> {
-        return try {
-            val serverUrl = scopedServerUrlAndToken().first
-            val normalizedUrl = serverUrl.trimEnd('/')
+        val result = runSuspendCatching {
+            val normalizedUrl = scopedServerUrlAndToken().first.trimEnd('/')
 
             val itemsResponse = api.getItemsInProgress()
-            if (!itemsResponse.isSuccessful) {
-                throw IllegalStateException("ABS in-progress items failed: HTTP ${itemsResponse.code()}")
-            }
-            val items = itemsResponse.body()?.items
-                ?: throw IllegalStateException("ABS in-progress items returned an empty body")
+            check(itemsResponse.isSuccessful) { "ABS in-progress items failed: HTTP ${itemsResponse.code()}" }
+            val items = checkNotNull(itemsResponse.body()?.items) { "ABS in-progress items returned an empty body" }
 
             val meResponse = api.getMe()
-            if (!meResponse.isSuccessful) {
-                throw IllegalStateException("ABS user progress failed: HTTP ${meResponse.code()}")
-            }
-            val progressEntries = meResponse.body()?.mediaProgress
-                ?: throw IllegalStateException("ABS user progress returned an empty body")
+            check(meResponse.isSuccessful) { "ABS user progress failed: HTTP ${meResponse.code()}" }
+            val progressEntries = checkNotNull(meResponse.body()?.mediaProgress) { "ABS user progress returned an empty body" }
 
+            val accessibleLibraryIds = getLibraries().getOrNull()?.mapTo(HashSet()) { it.id }
             val books = mergeAbsMediaProgress(items, progressEntries)
+                .filter { item -> accessibleLibraryIds == null || item.libraryId == null || item.libraryId in accessibleLibraryIds }
                 .mapNotNull { item ->
                     mapAbsItemWithProgress(item, item.libraryId ?: "", normalizedUrl, fetchDetail = false)
                 }
@@ -975,17 +864,13 @@ class AudiobookshelfRepository @Inject constructor(
                 .filter { !it.isFinished && !it.hideFromContinue }
 
             saveLaneToDisk(normalizedUrl, "in-progress", books)
-            Result.success(books)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            if (!allowCachedFallback) return Result.failure(e)
-            val cached = runCatching {
-                val serverUrl = scopedServerUrlAndToken().first.trimEnd('/')
-                loadLaneFromDisk(serverUrl, "in-progress")
-            }.getOrNull()
-            if (cached != null) Result.success(cached) else Result.failure(e)
+            books
         }
+        if (result.isSuccess || !allowCachedFallback) return result
+        val cached = runSuspendCatching {
+            loadLaneFromDisk(scopedServerUrlAndToken().first.trimEnd('/'), "in-progress")
+        }.getOrNull()
+        return cached?.let { Result.success(it) } ?: result
     }
 
     suspend fun getContinueListening(): Result<List<Book>> =
@@ -1003,42 +888,37 @@ class AudiobookshelfRepository @Inject constructor(
         }
     }
 
-    suspend fun getRecentlyAdded(): Result<List<Book>> {
-        return try {
-            val normalizedUrl = scopedServerUrlAndToken().first.trimEnd('/')
-            loadLaneFromDisk(normalizedUrl, "recently-added")?.let { return Result.success(it) }
+    suspend fun getRecentlyAdded(): Result<List<Book>> = runSuspendCatching {
+        val normalizedUrl = scopedServerUrlAndToken().first.trimEnd('/')
+        loadLaneFromDisk(normalizedUrl, "recently-added")?.let { return@runSuspendCatching it }
 
-            val libraries = getLibraries().getOrElse { return Result.failure(it) }
-            val pages = coroutineScope {
-                libraries.map { library ->
-                    async {
-                        val response = api.getLibraryItems(
-                            libraryId = library.id,
-                            limit = 20,
-                            sort = "addedAt",
-                            desc = 1,
-                            page = 0,
-                        )
-                        if (!response.isSuccessful) {
-                            throw IllegalStateException("ABS recently added failed: HTTP ${response.code()}")
-                        }
-                        val body = response.body()
-                            ?: throw IllegalStateException("ABS recently added returned an empty body")
-                        body.items.mapNotNull {
-                            mapAbsItemToBook(it, library.id, normalizedUrl, fetchDetail = false)
-                        }
+        val libraries = getLibraries().getOrThrow()
+        val pages = coroutineScope {
+            libraries.map { library ->
+                async {
+                    val response = api.getLibraryItems(
+                        libraryId = library.id,
+                        limit = 20,
+                        sort = "addedAt",
+                        desc = 1,
+                        page = 0,
+                    )
+                    if (response.code() == HTTP_FORBIDDEN) {
+                        forgetForbiddenLibrary(normalizedUrl, library.id)
+                        return@async emptyList()
                     }
-                }.awaitAll()
-            }
-            val unique = pages.flatten().distinctBy { it.id }.sortedByDescending { it.addedOn }.take(20)
-
-            saveLaneToDisk(normalizedUrl, "recently-added", unique)
-            Result.success(unique)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
+                    check(response.isSuccessful) { "ABS recently added failed: HTTP ${response.code()}" }
+                    val body = checkNotNull(response.body()) { "ABS recently added returned an empty body" }
+                    body.items.mapNotNull {
+                        mapAbsItemToBook(it, library.id, normalizedUrl, fetchDetail = false)
+                    }
+                }
+            }.awaitAll()
         }
+        val unique = pages.flatten().distinctBy { it.id }.sortedByDescending { it.addedOn }.take(20)
+
+        saveLaneToDisk(normalizedUrl, "recently-added", unique)
+        unique
     }
 
     fun invalidateListCaches() {
@@ -1052,77 +932,55 @@ class AudiobookshelfRepository @Inject constructor(
         }
     }
 
-    suspend fun getSeries(): Result<List<com.enve.core.data.remote.dto.SeriesSummaryDto>> {
-        return try {
-            val serverUrl = scopedServerUrlAndToken().first.trimEnd('/')
-            val librariesResp = api.getLibraries()
-            val libraries = librariesResp.body()?.libraries.orEmpty()
-                .filter { it.mediaType == "book" || it.mediaType == "audiobook" }
-            val merged = mutableMapOf<String, com.enve.core.data.remote.dto.SeriesSummaryDto>()
-            for (library in libraries) {
-                val resp = try {
-                    api.getSeriesInLibrary(library.id)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                    continue
-                }
-                if (!resp.isSuccessful) continue
-                resp.body()?.series.orEmpty().forEach { s ->
-                    val key = s.name.lowercase()
-                    val existing = merged[key]
-                    val incomingIds = s.books?.map { it.id }.orEmpty()
-                    val combinedIds = ((existing?.bookIds.orEmpty()) + incomingIds).distinct()
-                    val coverBookId = combinedIds.firstOrNull()
-                    merged[key] = com.enve.core.data.remote.dto.SeriesSummaryDto(
-                        name = s.name,
-                        bookCount = (existing?.bookCount ?: 0) + incomingIds.size,
-                        bookIds = combinedIds,
-                        coverUrl = coverBookId?.let { "$serverUrl/api/items/$it/cover" },
-                    )
-                }
+    suspend fun getSeries(): Result<List<com.enve.core.data.remote.dto.SeriesSummaryDto>> = runSuspendCatching {
+        val serverUrl = scopedServerUrlAndToken().first.trimEnd('/')
+        val librariesResp = api.getLibraries()
+        val libraries = librariesResp.body()?.libraries.orEmpty()
+            .filter { it.mediaType == "book" || it.mediaType == "audiobook" }
+        val merged = mutableMapOf<String, com.enve.core.data.remote.dto.SeriesSummaryDto>()
+        for (library in libraries) {
+            val resp = runSuspendCatching { api.getSeriesInLibrary(library.id) }.getOrNull() ?: continue
+            if (!resp.isSuccessful) continue
+            resp.body()?.series.orEmpty().forEach { s ->
+                val key = s.name.lowercase()
+                val existing = merged[key]
+                val incomingIds = s.books?.map { it.id }.orEmpty()
+                val combinedIds = ((existing?.bookIds.orEmpty()) + incomingIds).distinct()
+                val coverBookId = combinedIds.firstOrNull()
+                merged[key] = com.enve.core.data.remote.dto.SeriesSummaryDto(
+                    name = s.name,
+                    bookCount = (existing?.bookCount ?: 0) + incomingIds.size,
+                    bookIds = combinedIds,
+                    coverUrl = coverBookId?.let { "$serverUrl/api/items/$it/cover" },
+                )
             }
-            Result.success(merged.values.toList())
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
         }
+        merged.values.toList()
     }
 
-    suspend fun getAuthors(): Result<List<com.enve.core.data.remote.dto.AuthorSummaryDto>> {
-        return try {
-            val librariesResp = api.getLibraries()
-            val libraries = librariesResp.body()?.libraries.orEmpty()
-                .filter { it.mediaType == "book" || it.mediaType == "audiobook" }
-            val merged = mutableMapOf<String, com.enve.core.data.remote.dto.AuthorSummaryDto>()
-            for (library in libraries) {
-                val resp = try {
-                    api.getAuthorsInLibrary(library.id)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                    continue
-                }
-                if (!resp.isSuccessful) continue
-                resp.body()?.authors.orEmpty().forEach { a ->
-
-                    val existing = merged[a.id]
-                    merged[a.id] = com.enve.core.data.remote.dto.AuthorSummaryDto(
-                        id = a.id,
-                        name = a.name,
-                        bookCount = (existing?.bookCount ?: 0) + (a.numBooks ?: 0),
-                    )
-                }
+    suspend fun getAuthors(): Result<List<com.enve.core.data.remote.dto.AuthorSummaryDto>> = runSuspendCatching {
+        val librariesResp = api.getLibraries()
+        val libraries = librariesResp.body()?.libraries.orEmpty()
+            .filter { it.mediaType == "book" || it.mediaType == "audiobook" }
+        val merged = mutableMapOf<String, com.enve.core.data.remote.dto.AuthorSummaryDto>()
+        for (library in libraries) {
+            val resp = runSuspendCatching { api.getAuthorsInLibrary(library.id) }.getOrNull() ?: continue
+            if (!resp.isSuccessful) continue
+            resp.body()?.authors.orEmpty().forEach { a ->
+                val existing = merged[a.id]
+                merged[a.id] = com.enve.core.data.remote.dto.AuthorSummaryDto(
+                    id = a.id,
+                    name = a.name,
+                    bookCount = (existing?.bookCount ?: 0) + (a.numBooks ?: 0),
+                )
             }
-            Result.success(merged.values.toList())
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
         }
+        merged.values.toList()
     }
 }
+
+private val Book.absItemId: String
+    get() = podcastLibraryItemId ?: id
 
 private fun absSortField(sort: String): String = when (sort.lowercase()) {
     "addedon", "addedat" -> "addedAt"

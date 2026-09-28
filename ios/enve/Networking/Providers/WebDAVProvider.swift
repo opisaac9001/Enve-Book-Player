@@ -35,6 +35,47 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
         let rank: Int
     }
 
+    /// `/{torrents,usenet,webdl}/mylist` response, as modelled by TorBox's official SDK.
+    struct TorBoxListResponse: Decodable {
+        let data: LossyDecodableArray<TorBoxDownload>?
+    }
+
+    struct TorBoxDownload: Decodable {
+        let id: Int64
+        let hash: String?
+        let name: String?
+        let size: Int64?
+        let cached: Bool?
+        let downloadPresent: Bool?
+        let downloadFinished: Bool?
+        let files: LossyDecodableArray<TorBoxDownloadFile>?
+
+        var isAvailable: Bool {
+            let flags = [cached, downloadPresent, downloadFinished].compactMap { $0 }
+            return flags.isEmpty || flags.contains(true)
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case id, hash, name, size, cached, files
+            case downloadPresent = "download_present"
+            case downloadFinished = "download_finished"
+        }
+    }
+
+    struct TorBoxDownloadFile: Decodable {
+        let id: Int64
+        let name: String?
+        let shortName: String?
+        let size: Int64?
+        let s3Path: String?
+
+        private enum CodingKeys: String, CodingKey {
+            case id, name, size
+            case shortName = "short_name"
+            case s3Path = "s3_path"
+        }
+    }
+
     private var bookSource: Book.BookSource {
         isTorBoxConnection ? .torbox : .webdav
     }
@@ -915,27 +956,6 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
         return try? await loadSidecarMetadata(server: server, entry: sidecarEntry)
     }
 
-    private func resolveRemoteMetadata(server: WebDAVServerConfig, folder: WebDAVBookFolder) async -> LocalBookMetadata? {
-        if let sidecarEntry = folder.entries.first(where: { $0.isMetadataFile }) {
-            if let metadata = try? await loadSidecarMetadata(server: server, entry: sidecarEntry) {
-                return metadata
-            }
-        }
-
-        guard let firstAudio = folder.audioFiles.first else { return nil }
-        let audioURL = server.url(for: firstAudio.path)
-        do {
-            let embedded = try await FileMetadataExtractor.shared.extractMetadataFromRemoteStream(
-                streamURL: audioURL,
-                headers: streamingHeaders(for: server),
-                timeout: 10.0
-            )
-            return localBookMetadata(from: embedded, fallbackTitle: folderName(from: folder.path))
-        } catch {
-            return nil
-        }
-    }
-
     private func loadSidecarMetadata(server: WebDAVServerConfig, entry: RemoteFileEntry) async throws -> LocalBookMetadata? {
         let url = server.url(for: entry.path)
         var request = URLRequest(url: url)
@@ -1205,32 +1225,21 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
                 )
             else { return attachTorBoxCovers(files, covers: covers) }
 
-            let items = await fetchTorBoxJSONArray(url: url, token: token, key: "data")
-            if items.isEmpty { break }
+            guard let page = await fetchTorBoxDownloads(url: url, token: token) else { break }
+            let rawItemCount = page.values.count + page.rejectedItems.count
+            if rawItemCount == 0 { break }
 
             var newItemCount = 0
-            for item in items {
-                guard let itemId = stringValue(item["id"]) ?? stringValue(item["id_"]),
-                    seenItemIds.insert(itemId).inserted
-                else { continue }
+            for item in page.values {
+                let itemId = String(item.id)
+                guard seenItemIds.insert(itemId).inserted else { continue }
                 newItemCount += 1
+                guard item.isAvailable else { continue }
 
-                let hasAvailabilityFlag = item["cached"] != nil || item["download_present"] != nil || item["download_finished"] != nil
-                if hasAvailabilityFlag,
-                    boolValue(item["cached"]) != true,
-                    boolValue(item["download_present"]) != true,
-                    boolValue(item["download_finished"]) != true
-                {
-                    continue
-                }
-
-                let itemName = decodeTorBoxPath(
-                    stringValue(item["name"]) ?? stringValue(item["filename"]) ?? stringValue(item["hash"]) ?? itemId
-                )
-                let fileItems = (item["files"] as? [[String: Any]]) ?? []
-                for file in fileItems {
-                    guard let fileId = stringValue(file["id"]) ?? stringValue(file["id_"]),
-                        let fullPath = torBoxDisplayPath(file: file, itemName: itemName),
+                let itemName = decodeTorBoxPath([item.name, item.hash].compactMap { $0 }.first { !$0.isEmpty } ?? itemId)
+                for file in item.files?.values ?? [] {
+                    let fileId = String(file.id)
+                    guard let fullPath = torBoxDisplayPath(file: file, itemName: itemName),
                         let link = torBoxRequestDownloadURL(
                             token: token,
                             typePath: typePath,
@@ -1240,7 +1249,9 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
                         )?.absoluteString
                     else { continue }
 
-                    let name = decodeTorBoxPathSegment(stringValue(file["short_name"]) ?? (fullPath as NSString).lastPathComponent)
+                    let name = decodeTorBoxPathSegment(
+                        file.shortName.flatMap { $0.isEmpty ? nil : $0 } ?? (fullPath as NSString).lastPathComponent
+                    )
                     let parent = torBoxParentPath(for: fullPath, fallback: itemName)
 
                     if isTorBoxCoverFile(name) {
@@ -1256,7 +1267,7 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
                             path: fullPath,
                             parentFolder: parent,
                             link: link,
-                            size: int64Value(file["size"]),
+                            size: file.size,
                             cover: nil
                         )
                     )
@@ -1264,7 +1275,7 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
             }
 
             if newItemCount == 0 { break }
-            offset += items.count
+            offset += rawItemCount
         }
 
         AppLogger.network.info("TorBox \(typePath) API scan: items=\(seenItemIds.count), audio=\(files.count), covers=\(covers.count)")
@@ -1399,21 +1410,20 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
         }
     }
 
-    private func fetchTorBoxJSONArray(url: URL, token: String, key: String) async -> [[String: Any]] {
+    private func fetchTorBoxDownloads(url: URL, token: String) async -> LossyDecodableArray<TorBoxDownload>? {
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else { return [] }
-            guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
-            return object[key] as? [[String: Any]] ?? []
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else { return nil }
+            return try JSONDecoder().decode(TorBoxListResponse.self, from: data).data
         } catch {
             AppLogger.network.error(
                 "TorBox API scan failed endpointDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: url.path)): \(error.localizedDescription)"
             )
-            return []
+            return nil
         }
     }
 
@@ -1444,14 +1454,11 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
         )
     }
 
-    private func torBoxDisplayPath(file: [String: Any], itemName: String) -> String? {
-        let name = stringValue(file["name"])
-        let shortName = stringValue(file["short_name"])
-        let explicitPath = stringValue(file["path"])
-        let s3Path = stringValue(file["s3_path"])
+    private func torBoxDisplayPath(file: TorBoxDownloadFile, itemName: String) -> String? {
+        let name = file.name.flatMap { $0.isEmpty ? nil : $0 }
+        let shortName = file.shortName.flatMap { $0.isEmpty ? nil : $0 }
 
         return [
-            explicitPath,
             name?.contains("/") == true ? name : nil,
             shortName.flatMap { leaf in
                 name.flatMap { fullName in
@@ -1460,7 +1467,7 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
             },
             shortName.map { "\(itemName)/\($0)" },
             name,
-            s3Path,
+            file.s3Path,
         ]
         .compactMap { $0?.trimmingCharacters(in: CharacterSet(charactersIn: "/")) }
         .first { !$0.isEmpty }
@@ -1511,25 +1518,6 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
         let parts = path.split(separator: "/").map(String.init).filter { !$0.isEmpty }
         guard !parts.isEmpty else { return [] }
         return parts.indices.reversed().map { parts.prefix($0 + 1).joined(separator: "/") }
-    }
-
-    private func stringValue(_ value: Any?) -> String? {
-        if let string = value as? String, !string.isEmpty { return string }
-        if let number = value as? NSNumber { return number.stringValue }
-        return nil
-    }
-
-    private func boolValue(_ value: Any?) -> Bool? {
-        if let bool = value as? Bool { return bool }
-        if let number = value as? NSNumber { return number.boolValue }
-        if let string = value as? String { return ["true", "1", "yes"].contains(string.lowercased()) }
-        return nil
-    }
-
-    private func int64Value(_ value: Any?) -> Int64? {
-        if let number = value as? NSNumber { return number.int64Value }
-        if let string = value as? String { return Int64(string) }
-        return nil
     }
 
     private func scanEbookFiles(server: WebDAVServerConfig, rootPath: String) async throws -> [WebDAVEbookFile] {
@@ -1798,15 +1786,7 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
     }
 
     private func mimeType(for urlString: String) -> String {
-        let ext = (urlString as NSString).pathExtension.lowercased()
-        switch ext {
-        case "m4b", "m4a", "mp4": return "audio/mp4"
-        case "mp3": return "audio/mpeg"
-        case "aac": return "audio/aac"
-        case "flac": return "audio/flac"
-        case "ogg": return "audio/ogg"
-        default: return "audio/mpeg"
-        }
+        AudioFileSupport.mimeType(forExtension: (urlString as NSString).pathExtension) ?? "audio/mpeg"
     }
 
     private func extractChaptersFromAudioFile(streamURL: URL, bookDuration: Double) async throws -> [Chapter] {
@@ -1837,53 +1817,7 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
         }
 
         let options = headers.isEmpty ? nil : ["AVURLAssetHTTPHeaderFieldsKey": headers]
-        let asset = AVURLAsset(url: streamURL, options: options)
-
-        let startTime = Date()
-        let chapterLocales = try await asset.load(.availableChapterLocales)
-
-        guard Date().timeIntervalSince(startTime) < 10 else {
-            throw NSError(
-                domain: "ChapterExtraction",
-                code: -1,
-                userInfo: [NSLocalizedDescriptionKey: "Timeout loading chapter locales"]
-            )
-        }
-
-        var extractedChapters: [Chapter] = []
-
-        for locale in chapterLocales {
-            let chapterGroups = try await asset.loadChapterMetadataGroups(
-                withTitleLocale: locale,
-                containingItemsWithCommonKeys: [.commonKeyArtwork]
-            )
-
-            for (index, group) in chapterGroups.enumerated() {
-                let chapterStartTime = CMTimeGetSeconds(group.timeRange.start)
-                let duration = CMTimeGetSeconds(group.timeRange.duration)
-                let chapterEndTime = chapterStartTime + duration
-
-                var title = "Chapter \(index + 1)"
-                if let titleItem = group.items.first(where: { $0.commonKey == .commonKeyTitle }),
-                    let titleValue = try? await titleItem.load(.value) as? String
-                {
-                    title = titleValue
-                }
-
-                let chapter = Chapter(
-                    id: String(index),
-                    start: chapterStartTime,
-                    end: chapterEndTime,
-                    title: title,
-                    index: index
-                )
-                extractedChapters.append(chapter)
-            }
-
-            if !extractedChapters.isEmpty {
-                break
-            }
-        }
+        let extractedChapters = try await AudioFileSupport.embeddedChapters(in: AVURLAsset(url: streamURL, options: options))
 
         if !extractedChapters.isEmpty,
             let encoded = try? JSONEncoder().encode(extractedChapters)
@@ -2038,233 +1972,6 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
         return host.contains("premiumize")
     }
 
-    private func enrichBooksWithMetadata(books: [Book], server: WebDAVServerConfig, libraryId: String, libraryName: String) async {
-        let booksNeedingEnrichment = books.filter { book in
-            let needsCover = book.thumb == nil
-            let needsMetadata = book.author == nil || book.duration == nil || book.duration == 0
-            return needsCover || needsMetadata
-        }
-
-        let totalBooks = booksNeedingEnrichment.count
-
-        if totalBooks == 0 {
-            AppLogger.network.warning("All books already have complete metadata, skipping enrichment")
-            return
-        }
-
-        AppLogger.network.info("Starting metadata enrichment for \(totalBooks) books (out of \(books.count) total)")
-
-        await MainActor.run {
-            AppState.shared.presentation.libraryImportProgress = LibraryImportProgress(
-                libraryId: libraryId,
-                libraryName: libraryName,
-                loadedCount: 0,
-                totalCount: totalBooks,
-                isComplete: false,
-                phase: .enrichingMetadata
-            )
-        }
-
-        var processedCount = 0
-
-        for book in booksNeedingEnrichment {
-            try? await Task.sleep(nanoseconds: 300_000_000)
-
-            var updatedBook = book
-            var needsUpdate = false
-
-            if book.thumb == nil,
-                let firstTrack = book.audioTracks?.first,
-                let contentUrl = firstTrack.contentUrl,
-                let audioURL = URL(string: contentUrl)
-            {
-
-                do {
-                    let coverData = try await extractCoverArt(from: audioURL, server: server)
-                    if let cachedURL = saveCoverToCache(data: coverData, bookId: book.id) {
-                        updatedBook.thumb = cachedURL.absoluteString
-                        await persistExtractedCover(cachedURL, for: updatedBook)
-                        needsUpdate = true
-                        AppLogger.network.debug(
-                            "Extracted cover bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId))"
-                        )
-                    }
-                } catch {
-                    AppLogger.network.debug(
-                        "WebDAV cover extraction failed bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId)): \(error.localizedDescription)"
-                    )
-                }
-            }
-
-            if book.author == nil || book.duration == nil || book.duration == 0 {
-                if let firstTrack = book.audioTracks?.first,
-                    let contentUrl = firstTrack.contentUrl,
-                    let audioURL = URL(string: contentUrl)
-                {
-
-                    if let embedded = try? await FileMetadataExtractor.shared.extractMetadataFromRemoteStream(
-                        streamURL: audioURL,
-                        headers: streamingHeaders(for: server),
-                        timeout: 10.0
-                    ) {
-                        let meta = localBookMetadata(from: embedded, fallbackTitle: book.title)
-
-                        let isMultiTrack = (updatedBook.audioTracks?.count ?? 0) > 1
-                        let resolvedDuration: TimeInterval?
-                        if isMultiTrack {
-                            resolvedDuration = updatedBook.duration
-                        } else {
-                            resolvedDuration = meta.duration ?? updatedBook.duration
-                        }
-
-                        updatedBook = Book(
-                            id: updatedBook.id,
-                            ratingKey: updatedBook.ratingKey,
-                            title: meta.title,
-                            author: meta.author ?? updatedBook.author,
-                            narrator: meta.narrator ?? updatedBook.narrator,
-                            thumb: updatedBook.thumb,
-                            partKey: updatedBook.partKey,
-                            duration: resolvedDuration,
-                            chapters: updatedBook.chapters,
-                            currentChapterIndex: updatedBook.currentChapterIndex,
-                            source: updatedBook.source,
-                            backendId: updatedBook.backendId,
-                            trackIndex: updatedBook.trackIndex,
-                            filePath: updatedBook.filePath,
-                            audioFileIno: updatedBook.audioFileIno,
-                            audioFileInos: updatedBook.audioFileInos,
-                            audioTracks: updatedBook.audioTracks,
-                            description: meta.description ?? updatedBook.description,
-                            series: meta.series ?? updatedBook.series,
-                            seriesNumber: meta.seriesNumber ?? updatedBook.seriesNumber,
-                            publishedYear: meta.publishedYear ?? updatedBook.publishedYear,
-                            genres: meta.genres ?? updatedBook.genres,
-                            publisher: updatedBook.publisher,
-                            isbn: meta.isbn ?? updatedBook.isbn,
-                            asin: meta.asin ?? updatedBook.asin,
-                            addedAt: updatedBook.addedAt,
-                            libraryName: updatedBook.libraryName,
-                            backendName: updatedBook.backendName,
-                            currentTime: updatedBook.currentTime,
-                            isFinished: updatedBook.isFinished,
-                            lastUpdate: updatedBook.lastUpdate,
-                            providerId: updatedBook.providerId,
-                            libraryId: updatedBook.libraryId
-                        )
-                        needsUpdate = true
-                        AppLogger.network.debug(
-                            "Extracted metadata bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId))"
-                        )
-                    }
-                }
-            }
-
-            if needsUpdate {
-                await MainActor.run { () -> Void in
-                    _ = AppState.shared.mutateBook(uniqueId: book.uniqueId) { $0 = updatedBook }
-                }
-            }
-
-            processedCount += 1
-
-            await MainActor.run {
-                AppState.shared.presentation.libraryImportProgress = LibraryImportProgress(
-                    libraryId: libraryId,
-                    libraryName: libraryName,
-                    loadedCount: processedCount,
-                    totalCount: totalBooks,
-                    isComplete: false,
-                    phase: .enrichingMetadata
-                )
-            }
-        }
-
-        await MainActor.run {
-            AppState.shared.presentation.libraryImportProgress = LibraryImportProgress(
-                libraryId: libraryId,
-                libraryName: libraryName,
-                loadedCount: processedCount,
-                totalCount: totalBooks,
-                isComplete: true,
-                phase: .enrichingMetadata
-            )
-        }
-
-        AppLogger.network.info("Metadata enrichment complete: \(processedCount)/\(totalBooks) books")
-
-        try? await Task.sleep(nanoseconds: 3_000_000_000)
-        await MainActor.run {
-            AppState.shared.presentation.libraryImportProgress = nil
-        }
-    }
-
-    private func extractMissingCovers(for books: [Book], server: WebDAVServerConfig, libraryId: String) async {
-        AppLogger.network.info(
-            "[WebDAV] Starting background cover extraction for \(books.filter { $0.thumb == nil }.count) books without covers"
-        )
-
-        for book in books where book.thumb == nil {
-            try? await Task.sleep(nanoseconds: 500_000_000)
-
-            guard let firstTrack = book.audioTracks?.first,
-                let contentUrl = firstTrack.contentUrl,
-                let audioURL = URL(string: contentUrl)
-            else {
-                continue
-            }
-
-            do {
-                let coverData = try await extractCoverArt(from: audioURL, server: server)
-                var shouldPersistBooksCache = false
-
-                await MainActor.run {
-                    if let cachedURL = saveCoverToCache(data: coverData, bookId: book.id) {
-                        let mutated = AppState.shared.mutateBook(uniqueId: book.uniqueId) {
-                            $0.thumb = cachedURL.absoluteString
-                        }
-                        if mutated != nil {
-                            shouldPersistBooksCache = true
-                            AppLogger.network.debug(
-                                "Cached extracted cover bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId))"
-                            )
-                        }
-                    }
-                }
-
-                if let updatedBook = await MainActor.run(body: {
-                    AppState.shared.bookInMemory(uniqueId: book.uniqueId)
-                }), let cachedURL = updatedBook.coverURL {
-                    await persistExtractedCover(cachedURL, for: updatedBook)
-                }
-
-                _ = shouldPersistBooksCache
-            } catch {
-                AppLogger.network.error(
-                    "Cover extraction failed bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId)): \(error.localizedDescription)"
-                )
-            }
-        }
-
-        AppLogger.network.info("[WebDAV] Background cover extraction complete")
-    }
-
-    private func extractCoverArt(from url: URL, server: WebDAVServerConfig) async throws -> Data {
-        let headers = streamingHeaders(for: server)
-        let options = headers.isEmpty ? nil : ["AVURLAssetHTTPHeaderFieldsKey": headers]
-        let asset = AVURLAsset(url: url, options: options)
-
-        let artworkItems = try await asset.load(.commonMetadata).filter { $0.commonKey == .commonKeyArtwork }
-
-        guard let artworkItem = artworkItems.first,
-            let imageData = try await artworkItem.load(.value) as? Data
-        else {
-            throw NSError(domain: "CoverExtraction", code: -1, userInfo: [NSLocalizedDescriptionKey: "No artwork found"])
-        }
-
-        return imageData
-    }
-
     private func saveCoverToCache(data: Data, bookId: String) -> URL? {
         let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
             .appendingPathComponent("Covers", isDirectory: true)
@@ -2283,13 +1990,6 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
             AppLogger.network.error("Failed to save cover to cache: \(error)")
             return nil
         }
-    }
-
-    private func persistExtractedCover(_ cachedURL: URL, for book: Book) async {
-        try? await MetadataStorage.shared.updateLayer(bookId: book.id, layer: .file) { metadata in
-            metadata.file.coverPath = cachedURL.path
-        }
-        NotificationCenter.default.post(name: .metadataUpdated, object: book.id)
     }
 
     private func shouldUseAggregatedDuration(

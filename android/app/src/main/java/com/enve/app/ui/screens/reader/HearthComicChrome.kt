@@ -8,14 +8,17 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -26,6 +29,7 @@ import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -39,10 +43,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.unit.dp
 import com.enve.app.data.reader.ReaderTheme
-import com.enve.app.ui.screens.ThinSlider
 import com.enve.app.ui.screens.pageLabel
 import com.enve.app.viewmodel.ComicBackgroundTheme
 import com.enve.app.viewmodel.ComicPageFit
@@ -74,6 +78,7 @@ fun HearthComicChrome(
     onCloseSettings: () -> Unit,
     onSettingsChange: (ComicReaderSettings) -> Unit,
     onPageChange: (Int) -> Unit,
+    restReminder: ReaderRestReminderSpec,
 ) {
     val palette = comicChromePalette(state.settings.backgroundTheme, einkActive)
     CompositionLocalProvider(
@@ -98,6 +103,12 @@ fun HearthComicChrome(
                     onOpenSettings = onOpenSettings,
                 )
             }
+            ReaderRestReminder(
+                spec = restReminder,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(horizontal = Hearth.Spacing.XL),
+            )
             if (state.showSettingsSheet) {
                 HearthComicSettingsSheet(
                     settings = baseSettings,
@@ -292,4 +303,47 @@ private fun HearthToggleRow(title: String, note: String, checked: Boolean, onChe
             colors = SwitchDefaults.colors(checkedTrackColor = palette.ember, checkedThumbColor = palette.readableOnEmber),
         )
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ThinSlider(
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    valueRange: ClosedFloatingPointRange<Float>,
+    accent: Color,
+    modifier: Modifier = Modifier,
+) {
+    Slider(
+        value = value,
+        onValueChange = onValueChange,
+        valueRange = valueRange,
+        modifier = modifier,
+        thumb = {
+            Box(
+                Modifier
+                    .size(14.dp)
+                    .clip(CircleShape)
+                    .background(accent),
+            )
+        },
+        track = { state ->
+            val r = state.valueRange.endInclusive - state.valueRange.start
+            val f = if (r == 0f) 0f else ((state.value - state.valueRange.start) / r).coerceIn(0f, 1f)
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(3.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(accent.copy(alpha = 0.16f)),
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxHeight()
+                        .fillMaxWidth(f)
+                        .background(accent.copy(alpha = 0.88f)),
+                )
+            }
+        },
+    )
 }

@@ -21,6 +21,8 @@ import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.Library
+import com.enve.core.data.provider.LibraryAccessRevocations
+import com.enve.core.data.util.FINISHED_PROGRESS_THRESHOLD
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -49,6 +51,7 @@ class LibraryCacheRepository @Inject constructor(
     private val aggregator: AggregatorRepository,
     private val matchedMetadataStore: MatchedBookMetadataStore,
     private val bookLinkRepository: BookLinkRepository,
+    private val libraryRevocations: LibraryAccessRevocations,
 ) {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val refreshMutex = Mutex()
@@ -61,6 +64,14 @@ class LibraryCacheRepository @Inject constructor(
 
     init {
         scope.launch { pruneRemovedConnections() }
+        scope.launch {
+            libraryRevocations.revoked.collect { revoked ->
+                val libraryId = compositeLibraryId(revoked.connectionId, revoked.libraryId)
+                dao.deleteForConnectionLibrary(revoked.connectionId, libraryId)
+                libraryDao.delete(libraryId)
+                aggregator.clearHomeSnapshotCache()
+            }
+        }
     }
 
     private fun List<Book>.dedupAcrossConnections(): List<Book> =
@@ -233,7 +244,6 @@ class LibraryCacheRepository @Inject constructor(
                 fetchAndUpsert(libraryId = null, connectionId = null)
             }
             rebuildAutomaticLinks()
-            Log.d(TAG, "ingestConnections complete for ${connectionIds.size} connection(s). Total cached: ${dao.count()}")
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -251,7 +261,6 @@ class LibraryCacheRepository @Inject constructor(
             dao.getInProgressOnce(limit = 2000).associateBy { it.cacheKey }
         }.getOrDefault(emptyMap())
         if (connectionIds.isNullOrEmpty()) {
-            Log.i(TAG, "invalidateAndRefresh: clearing entire cache (was ${dao.count()} rows)")
             dao.clearAll()
             libraryDao.clearAll()
         } else {
@@ -265,9 +274,20 @@ class LibraryCacheRepository @Inject constructor(
     }
 
     suspend fun clearForConnection(connectionId: String) {
-        Log.i(TAG, "clearForConnection: clearing $connectionId (had ${dao.countForConnection(connectionId)} books)")
         dao.deleteByConnection(connectionId)
         libraryDao.deleteByConnection(connectionId)
+    }
+
+    private suspend fun pruneUnlistedLibraries(listed: List<Library>) {
+        val listedIds = listed.mapTo(mutableSetOf()) { it.id }
+        val reportingConnections = listed.mapNotNullTo(mutableSetOf()) { it.connectionId }
+        val unlisted = libraryDao.getAll().filter { it.connectionId in reportingConnections && it.id !in listedIds }
+        if (unlisted.isEmpty()) return
+        unlisted.forEach { library ->
+            dao.deleteForConnectionLibrary(requireNotNull(library.connectionId), library.id)
+            libraryDao.delete(library.id)
+        }
+        aggregator.clearHomeSnapshotCache()
     }
 
     private suspend fun pruneRemovedConnections() {
@@ -332,7 +352,6 @@ class LibraryCacheRepository @Inject constructor(
         _isRefreshing.value = true
         _refreshError.value = null
         try {
-            Log.i(TAG, "doRefresh: starting full refresh; current cache count=${dao.count()}")
             val libraries: List<Library> = aggregator.getLibraries().getOrElse {
                 Log.w(TAG, "doRefresh: aggregator.getLibraries failed: ${it.message}")
                 emptyList()
@@ -342,6 +361,7 @@ class LibraryCacheRepository @Inject constructor(
             if (libraries.isNotEmpty()) {
                 val nowMs = System.currentTimeMillis()
                 libraryDao.upsert(libraries.map { it.toCached(nowMs) })
+                pruneUnlistedLibraries(libraries)
             }
 
             if (libraries.isEmpty()) {
@@ -349,14 +369,10 @@ class LibraryCacheRepository @Inject constructor(
                 fetchAndUpsert(libraryId = null, connectionId = null)
             } else {
                 for (library in libraries) {
-                    val before = dao.count()
                     fetchAndUpsert(libraryId = library.id, connectionId = library.connectionId)
-                    val after = dao.count()
-                    Log.i(TAG, "doRefresh: library '${library.name}' (id=${library.id}) added ${after - before} new rows; total=${after}")
                 }
             }
             rebuildAutomaticLinks()
-            Log.i(TAG, "doRefresh: complete. Total cached=${dao.count()}")
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -470,8 +486,23 @@ class LibraryCacheRepository @Inject constructor(
                 val mapped = matchedMetadataStore.applyStoredMetadata(chunk)
                     .map { it.withMetadataOverride(overrides[it.uniqueKey]).toCachedBook(nowMs) }
 
-                val existingByKey = dao.getByCacheKeys(mapped.map { it.cacheKey }).associateBy { it.cacheKey }
-                dao.upsert(mapped.map { it.preservingLocalProgress(existingByKey[it.cacheKey] ?: progressCarryover?.get(it.cacheKey)) })
+                val batchKeys = mapped.mapTo(mutableSetOf()) { it.cacheKey }
+                val existingByKey = dao.getByCacheKeys(batchKeys.toList()).associateBy { it.cacheKey }
+                val supersededKeys = mapped.mapNotNull { it.supersededCacheKey() }.filterNot(batchKeys::contains)
+                val supersededByKey: Map<String, CachedBook> =
+                    if (supersededKeys.isEmpty()) emptyMap()
+                    else dao.getByCacheKeys(supersededKeys).associateBy { it.cacheKey }
+
+                dao.upsert(
+                    mapped.map { book ->
+                        book.preservingLocalProgress(
+                            existingByKey[book.cacheKey]
+                                ?: book.supersededCacheKey()?.let(supersededByKey::get)
+                                ?: progressCarryover?.get(book.cacheKey),
+                        )
+                    }
+                )
+                if (supersededByKey.isNotEmpty()) dao.deleteByCacheKeys(supersededByKey.keys.toList())
             }
             Log.i(TAG, "fetchAndUpsert: lib=$libraryId page=$page upserted ${newBooks.size} new rows")
 
@@ -485,36 +516,6 @@ class LibraryCacheRepository @Inject constructor(
 
     @Volatile private var progressCarryover: Map<String, CachedBook>? = null
 
-    private fun CachedBook.preservingLocalProgress(existing: CachedBook?): CachedBook {
-        if (existing == null) return this
-        if (source == BookSource.KOMGA.name && mediaType == AppMediaType.EBOOK.name) {
-            return this
-        }
-        val mergedCurrentTime = if (currentTime > 0L) currentTime else existing.currentTime
-        val mergedReadProgress = if (readProgress > 0.001f) readProgress else existing.readProgress
-        val mergedEpubProgress = epubProgress?.takeIf { it > 0.001f } ?: existing.epubProgress
-        val mergedServerReadStatus = serverReadStatus ?: existing.serverReadStatus
-        val statusFinished = mergedServerReadStatus in setOf("READ", "COMPLETED", "FINISHED")
-        val statusAllowsContinue = source != BookSource.GRIMMORY.name || mergedServerReadStatus == null ||
-            mergedServerReadStatus in setOf("READING", "RE_READING", "IN_PROGRESS")
-        val audioProgress =
-            if (duration > 0 && mergedCurrentTime > 0) mergedCurrentTime.toFloat() / duration else mergedReadProgress
-        return copy(
-            currentTime = mergedCurrentTime,
-            readProgress = mergedReadProgress,
-            epubProgress = mergedEpubProgress,
-            epubLocator = epubLocator ?: existing.epubLocator,
-            serverReadStatus = mergedServerReadStatus,
-            isFinished = isFinished || statusFinished,
-            lastReadTime = maxOf(lastReadTime, existing.lastReadTime),
-            inProgress = !isFinished && !statusFinished && !hideFromContinue && statusAllowsContinue && (
-                audioProgress in 0.01f..0.99f ||
-                (mergedEpubProgress ?: 0f) in 0.01f..0.99f ||
-                mergedCurrentTime > 0L
-            ),
-        )
-    }
-
     companion object {
         private const val TAG = "LibraryCacheRepository"
         private const val PAGE_SIZE = 500
@@ -522,4 +523,38 @@ class LibraryCacheRepository @Inject constructor(
         private const val NARRATOR_ENRICH_CONCURRENCY = 4
         private val tagJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
     }
+}
+
+internal fun CachedBook.supersededCacheKey(): String? = opdsAcquisitionUrl
+    ?.takeIf { it != id }
+    ?.let { "${connectionId ?: source}:$it" }
+
+internal fun CachedBook.preservingLocalProgress(existing: CachedBook?): CachedBook {
+    if (existing == null) return this
+    if (source == BookSource.KOMGA.name && mediaType == AppMediaType.EBOOK.name) {
+        return this
+    }
+    val mergedCurrentTime = if (currentTime > 0L) currentTime else existing.currentTime
+    val mergedReadProgress = if (readProgress > 0.001f) readProgress else existing.readProgress
+    val mergedEpubProgress = epubProgress?.takeIf { it > 0.001f } ?: existing.epubProgress
+    val mergedServerReadStatus = serverReadStatus ?: existing.serverReadStatus
+    val statusFinished = mergedServerReadStatus in setOf("READ", "COMPLETED", "FINISHED")
+    val statusAllowsContinue = source != BookSource.GRIMMORY.name || mergedServerReadStatus == null ||
+        mergedServerReadStatus in setOf("READING", "RE_READING", "IN_PROGRESS")
+    val audioProgress =
+        if (duration > 0 && mergedCurrentTime > 0) mergedCurrentTime.toFloat() / duration else mergedReadProgress
+    return copy(
+        currentTime = mergedCurrentTime,
+        readProgress = mergedReadProgress,
+        epubProgress = mergedEpubProgress,
+        epubLocator = epubLocator ?: existing.epubLocator,
+        serverReadStatus = mergedServerReadStatus,
+        isFinished = isFinished || statusFinished,
+        lastReadTime = maxOf(lastReadTime, existing.lastReadTime),
+        inProgress = !isFinished && !statusFinished && !hideFromContinue && statusAllowsContinue && (
+            audioProgress in 0.01f..FINISHED_PROGRESS_THRESHOLD ||
+            (mergedEpubProgress ?: 0f) in 0.01f..FINISHED_PROGRESS_THRESHOLD ||
+            mergedCurrentTime > 0L
+        ),
+    )
 }

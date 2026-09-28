@@ -204,7 +204,7 @@ class BookPlayerWidget : GlanceAppWidget() {
             state.readerBook?.let { reader ->
                 Text(if (reader.readAlongAvailable) "Read along" else "Read",
                     modifier = GlanceModifier.padding(horizontal = 8.dp, vertical = 12.dp)
-                        .clickable(actionStartActivity(context.readerIntentFor(reader))),
+                        .clickable(actionStartActivity(context.widgetReaderIntentFor(reader))),
                     style = TextStyle(ember, 12.sp, FontWeight.Bold))
             }
         }
@@ -223,7 +223,7 @@ class BookPlayerWidget : GlanceAppWidget() {
     }
 
     private fun openAction(context: Context, state: BookWidgetSnapshot): Action =
-        state.readerBook?.let { actionStartActivity(context.readerIntentFor(it)) }
+        state.readerBook?.let { actionStartActivity(context.widgetReaderIntentFor(it)) }
             ?: actionStartActivity<MainActivity>(
                 actionParametersOf(ActionParameters.Key<Boolean>(MainActivity.EXTRA_OPEN_PLAYER) to true),
             )

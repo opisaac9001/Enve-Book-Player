@@ -146,11 +146,6 @@ class DiskImageCache {
         return FileManager.default.fileExists(atPath: fileURL.path)
     }
 
-    func clearMemoryCache() {
-        memoryCache.removeAllObjects()
-        AppLogger.library.info("Memory cache cleared")
-    }
-
     func shouldSkipRemoteFetch(for url: URL) -> Bool {
         let key = cacheKey(for: url) as NSString
         guard let expiry = failedRemoteURLs.object(forKey: key) as Date? else {
@@ -386,6 +381,37 @@ struct CachedAsyncCoverImage: View {
             }
         }
 
+        if let identityBook, identityBook.source == .kavita {
+            let provider = await MainActor.run { AppState.shared.getProvider(identityBook.providerId) as? KavitaProvider }
+            if let provider {
+                do {
+                    let data = try await provider.fetchCoverImage(url: url)
+                    if let img = await Self.decodeOffMain(data) {
+                        DiskImageCache.shared.save(img, for: url)
+                        DiskImageCache.shared.clearRemoteFetchFailure(for: url)
+                        await AppCache.shared.setCoverData(data, for: identityBook)
+                        _ = try? LocalStorageManager.shared.saveCoverOverride(for: identityBook.downloadKey, imageData: data)
+                        await MainActor.run {
+                            self.image = img
+                            self.isLoading = false
+                        }
+                    } else {
+                        DiskImageCache.shared.markRemoteFetchFailure(for: url)
+                        await MainActor.run { isLoading = false }
+                    }
+                } catch {
+                    if Self.isCancellationError(error) {
+                        await MainActor.run { isLoading = false }
+                        return
+                    }
+                    AppLogger.library.error("[CoverImage] Kavita cover fetch failed for \(identityBook.id): \(error.localizedDescription)")
+                    DiskImageCache.shared.markRemoteFetchFailure(for: url)
+                    await MainActor.run { isLoading = false }
+                }
+                return
+            }
+        }
+
         if DiskImageCache.shared.shouldSkipRemoteFetch(for: url) {
             await MainActor.run { isLoading = false }
             return
@@ -575,11 +601,6 @@ struct CachedAsyncCoverImage: View {
         queryItems.append(URLQueryItem(name: "audio", value: "true"))
         components.queryItems = queryItems
         return components.url
-    }
-
-    @MainActor
-    static func webDAVHeaders(for book: Book) -> [String: String] {
-        return authHeaders(for: book)
     }
 
     @MainActor

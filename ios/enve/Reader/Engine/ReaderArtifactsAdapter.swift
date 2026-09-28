@@ -272,13 +272,13 @@ final class ReaderArtifactsAdapter: ReaderArtifactsStoring {
     }
 
     private func setBookmarks(_ newBookmarks: [Bookmark]) {
-        onChange?()
         bookmarks = newBookmarks
+        onChange?()
     }
 
     private func setAnnotations(_ newAnnotations: [ReaderAnnotation]) {
-        onChange?()
         annotations = newAnnotations
+        onChange?()
     }
 
     private func persistBookmarks(replaceStoreRecords: Bool = false) {
@@ -312,17 +312,6 @@ final class ReaderArtifactsAdapter: ReaderArtifactsStoring {
         if let chapterTitle, !chapterTitle.isEmpty {
             return "Bookmark - \(chapterTitle)"
         }
-        return "Bookmark at \(formatTime(position))"
-    }
-
-    private func formatTime(_ seconds: TimeInterval) -> String {
-        let hours = Int(seconds) / 3600
-        let minutes = (Int(seconds) % 3600) / 60
-        let remainingSeconds = Int(seconds) % 60
-
-        if hours > 0 {
-            return String(format: "%d:%02d:%02d", hours, minutes, remainingSeconds)
-        }
-        return String(format: "%d:%02d", minutes, remainingSeconds)
+        return "Bookmark at \(PlaybackTime.clock(position))"
     }
 }

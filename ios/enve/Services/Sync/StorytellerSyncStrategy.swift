@@ -238,14 +238,14 @@ final class StorytellerSyncStrategy: ProviderSyncStrategy {
         var status = remoteBook.serverReadStatus
 
         if reconciliation.pushedPendingPosition {
-            status = fraction >= 0.99 ? "READ" : (fraction > 0 ? "READING" : status)
+            status = fraction >= Book.finishedProgressThreshold ? "READ" : (fraction > 0 ? "READING" : status)
         }
         if status == "READ" {
             fraction = 1
         }
         fraction = min(max(fraction, 0), 1)
 
-        let isFinished = status == "READ" || fraction >= 0.99
+        let isFinished = status == "READ" || fraction >= Book.finishedProgressThreshold
         let hideFromContinue = status == "TO_READ" || isFinished
         let duration = remoteBook.duration ?? localBook.duration ?? 0
         let currentTime: TimeInterval

@@ -63,20 +63,5 @@ enum ServerURLNormalizer {
 
 #if DEBUG
 extension ServerURLNormalizer {
-
-    static func compareAgainstFixture(
-        rawURL: String,
-        providerType: ProviderType,
-        expected: String,
-        site: String,
-        file: StaticString = #fileID,
-        line: UInt = #line
-    ) {
-        let normalized = normalize(rawURL: rawURL, providerType: providerType)?.absoluteString ?? ""
-        guard normalized != expected else { return }
-        AppLogger.network.warning(
-            "[ServerURLNormalizer] divergence at \(site): raw=\(rawURL) provider=\(providerType.rawValue) normalised=\(normalized) expected=\(expected) (\(file):\(line))"
-        )
-    }
 }
 #endif

@@ -13,12 +13,13 @@ class BookOrbitTrackResolver @Inject constructor(
         val tracks = repository.getAudioTracks(book).getOrThrow()
         if (tracks.isEmpty()) error("BookOrbit returned no tracks for ${book.title}")
         tracks.map { track ->
-            val fileId = track.fileId?.toIntOrNull() ?: error("BookOrbit track ${track.index} has no file id")
+            val url = track.contentUrl?.takeIf { it.isNotBlank() }
+                ?: error("BookOrbit track ${track.index} has no content URL")
             ResolvedTrack(
                 index = track.index,
                 title = track.title ?: track.fileName,
                 durationMs = track.durationMs,
-                url = repository.getDownloadUrl(fileId),
+                url = url,
             )
         }
     }

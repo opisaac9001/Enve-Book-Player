@@ -62,13 +62,6 @@ final class EbookAudiobookLinker {
         cacheGeneration += 1
     }
 
-    func hasLinkedAudiobook(for ebook: Book) -> Bool {
-        guard ebook.mediaType == .ebook else { return false }
-        if ebook.linkedAudiobookStableId != nil { return true }
-        if ebookToAudiobookCache[ebook.stableId] != nil { return true }
-        return linkedAudiobook(for: ebook) != nil
-    }
-
     func hasLinkedEbook(for audiobook: Book) -> Bool {
         guard audiobook.mediaType == .audiobook else { return false }
         if audiobookToEbookCache[audiobook.stableId] != nil { return true }
@@ -124,17 +117,6 @@ final class EbookAudiobookLinker {
         return linked
     }
 
-    func currentAudiobookChapterIndex(for audiobook: Book) -> Int? {
-        guard let chapters = audiobook.chapters, !chapters.isEmpty else { return nil }
-        let currentTime = audiobook.currentTime
-        for (i, chapter) in chapters.enumerated().reversed() {
-            if currentTime >= chapter.start {
-                return i
-            }
-        }
-        return 0
-    }
-
     func ebookChapterIndex(forAudiobookChapter abIndex: Int, ebook: Book) -> Int? {
         let offset = ebook.linkedAudiobookChapterOffset
         let ebookIndex = abIndex - offset
@@ -142,48 +124,49 @@ final class EbookAudiobookLinker {
         return ebookIndex
     }
 
-    func audiobookChapterIndex(forEbookChapter ebIndex: Int, ebook: Book) -> Int? {
-        guard let audiobook = linkedAudiobook(for: ebook) else { return nil }
-        let offset = ebook.linkedAudiobookChapterOffset
-        let abIndex = ebIndex + offset
-        guard let chapters = audiobook.chapters, abIndex >= 0, abIndex < chapters.count else { return nil }
-        return abIndex
-    }
-
     func audiobookTimeForEbookChapter(_ ebookChapterIndex: Int, ebook: Book) -> TimeInterval? {
-        guard let audiobook = linkedAudiobook(for: ebook),
-            let abIndex = audiobookChapterIndex(forEbookChapter: ebookChapterIndex, ebook: ebook),
-            let chapters = audiobook.chapters,
-            abIndex < chapters.count
-        else { return nil }
+        guard let audiobook = linkedAudiobook(for: ebook) else { return nil }
+        // Stored library books carry no chapters; the player caches them separately.
+        let chapters =
+            audiobook.chapters.flatMap { $0.isEmpty ? nil : $0 }
+            ?? ReaderArtifactsStore.shared.loadCachedChapters(bookId: audiobook.stableId)
+            ?? ReaderArtifactsStore.shared.loadCachedChapters(bookId: audiobook.id)
+            ?? []
+        let abIndex = ebookChapterIndex + ebook.linkedAudiobookChapterOffset
+        guard chapters.indices.contains(abIndex) else { return nil }
         return chapters[abIndex].start
     }
 
-    func persistResolvedLink(ebookStableId: String, audiobookStableId: String, offset: Int) {
-        guard let current = self.libraryCache.bookInMemory(stableId: ebookStableId),
-            current.mediaType == .ebook
-        else {
-            return
+    #if os(iOS)
+    /// The linked recording's time for a reading position: the sentence's own time when the EPUB narration is
+    /// that same recording, otherwise the start of the mapped chapter.
+    func audiobookTime(
+        forReadingLocator locatorJSON: String?,
+        chapterIndex: Int?,
+        ebook: Book,
+        audiobook: Book
+    ) async -> TimeInterval? {
+        if let locatorJSON, let audioDuration = audiobook.duration,
+            let timeline = await MediaOverlayPlaybackService.shared.overlayTimeline(forLocalBook: ebook),
+            let narrated = Self.narratedAudioTime(locatorJSON: locatorJSON, timeline: timeline, audioDuration: audioDuration)
+        {
+            return narrated
         }
-
-        let needsUpdate =
-            current.linkedAudiobookStableId != audiobookStableId
-            || current.linkedAudiobookChapterOffset != offset
-        if needsUpdate {
-            self.libraryCache.mutateBook(stableId: ebookStableId) {
-                $0.linkedAudiobookStableId = audiobookStableId
-                $0.linkedAudiobookChapterOffset = offset
-            }
-            EbookLinkStore.shared.saveLinks()
-        }
-        invalidateCache()
-
-        Task(priority: .utility) {
-            await self.bookRepository.upsertLink(
-                ebookStableId: ebookStableId,
-                audiobookStableId: audiobookStableId,
-                chapterOffset: offset
-            )
-        }
+        return chapterIndex.flatMap { audiobookTimeForEbookChapter($0, ebook: ebook) }
     }
+
+    static func narratedAudioTime(
+        locatorJSON: String,
+        timeline: MediaOverlayTimeline,
+        audioDuration: TimeInterval
+    ) -> TimeInterval? {
+        guard LinkedBookProgressCoordinator.narrationMatchesAudio(
+            narrationDuration: timeline.totalAudioDuration,
+            audioDuration: audioDuration
+        ),
+            let resolved = timeline.resolveEPUB3Locator(locatorJSON: locatorJSON)
+        else { return nil }
+        return resolved.audioTime * audioDuration / timeline.totalAudioDuration
+    }
+    #endif
 }

@@ -11,6 +11,7 @@ import com.enve.app.eink.EinkManager
 import com.enve.app.ui.theme.AppTheme
 import com.enve.app.ui.theme.EinkProfile
 import com.enve.app.ui.theme.EnveColors
+import com.enve.hearth.design.parseHexColor
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -56,7 +57,7 @@ class ThemeViewModel @Inject constructor(
             ) { values: Array<Any?> ->
                 ThemePrefsState(
                     appTheme = AppTheme.fromString(values[0] as String),
-                    themeColor = parseHexColor(values[1] as String),
+                    themeColor = parseHexColor(values[1] as String) ?: EnveColors.DefaultAccent,
                     dynamicBackgroundEnabled = values[2] as Boolean,
                     playerBackgroundStyle = values[3] as String,
                     showSplashLogo = values[4] as Boolean,
@@ -141,13 +142,5 @@ class ThemeViewModel @Inject constructor(
 
     fun setEinkFullRefreshEveryN(n: Int) {
         viewModelScope.launch { einkManager.setFullRefreshEveryN(n) }
-    }
-
-    private fun parseHexColor(hex: String): Color {
-        return try {
-            Color(android.graphics.Color.parseColor(hex))
-        } catch (e: Exception) {
-            EnveColors.DefaultAccent
-        }
     }
 }

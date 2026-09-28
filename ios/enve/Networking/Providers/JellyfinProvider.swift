@@ -3,10 +3,6 @@ import Combine
 import Foundation
 import Logging
 
-#if canImport(UIKit)
-import UIKit
-#endif
-
 class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, AudiobookProgressProvider,
     EbookDownloadProvider, ObservableObject, @unchecked Sendable
 {
@@ -21,26 +17,11 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
         ]
     }
 
-    var jellyfinClientName: String { "Enve" }
-    var jellyfinClientVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
-    }
-    var jellyfinDeviceId: String {
-        #if canImport(UIKit)
-        return UIDevice.current.identifierForVendor?.uuidString ?? StorageService.shared.loadDeviceUUID()
-        #else
-        return StorageService.shared.loadDeviceUUID()
-        #endif
-    }
-    var jellyfinDeviceName: String {
-        #if canImport(UIKit)
-        return UIDevice.current.name.replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "'", with: "")
-        #elseif os(macOS)
-        return (Host.current().localizedName ?? "Mac").replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "'", with: "")
-        #else
-        return "Enve Client"
-        #endif
-    }
+    // JellyfinProvider+Auth.swift may depend on these members.
+    var jellyfinClientName: String { MediaBrowserClient.clientName }
+    var jellyfinClientVersion: String { MediaBrowserClient.clientVersion }
+    var jellyfinDeviceId: String { MediaBrowserClient.deviceId }
+    var jellyfinDeviceName: String { MediaBrowserClient.deviceName }
 
     init(connection: ServerConnection = ServerConnection(name: "Jellyfin", url: "", type: .jellyfin)) {
         self.connection = connection
@@ -52,7 +33,7 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
     }
 
     private func addAuthHeaders(_ request: inout URLRequest) {
-        let auth = buildAuthHeaderValue()
+        let auth = MediaBrowserClient.authorizationHeader(token: connection.token)
         request.setValue(auth, forHTTPHeaderField: "X-Emby-Authorization")
         request.setValue(auth, forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -62,34 +43,11 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
         }
     }
 
-    private func buildAuthHeaderValue() -> String {
-        var header =
-            "MediaBrowser Client=\"\(jellyfinClientName)\", Device=\"\(jellyfinDeviceName)\", DeviceId=\"\(jellyfinDeviceId)\", Version=\"\(jellyfinClientVersion)\""
-        if let token = connection.token {
-            header += ", Token=\"\(token)\""
-        }
-        return header
-    }
-
     func normalizeServerURL(_ url: String) -> String {
-        var trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-
-        if trimmed.isEmpty { return url }
-
-        if !trimmed.lowercased().hasPrefix("http") {
-            if trimmed.contains("8920") {
-                trimmed = "https://\(trimmed)"
-            } else {
-                trimmed = "http://\(trimmed)"
-            }
-        }
-
-        return trimmed
+        MediaBrowserClient.normalizeServerURL(url)
     }
 
     func validateConnection() async throws -> Bool {
-        AppLogger.network.info("[JellyfinProvider] ===== VALIDATE CONNECTION STARTED =====")
         AppLogger.network.info("[JellyfinProvider] URL: \(URL(string: connection.url)?.redacted.absoluteString ?? "<invalid>")")
         AppLogger.network.info("[JellyfinProvider] Has username: \(connection.username != nil ? "YES" : "NO")")
         AppLogger.network.info("[JellyfinProvider] Has userId: \(connection.userId != nil ? "YES" : "NO")")
@@ -171,7 +129,6 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
     }
 
     private func authenticate(username: String, password: String) async throws {
-        AppLogger.network.info("[JellyfinProvider] ===== AUTHENTICATION STARTED =====")
 
         let base = normalizeServerURL(connection.url)
         AppLogger.network.info("[JellyfinProvider] Server URL: \(URL(string: base)?.redacted.absoluteString ?? "<invalid>")")
@@ -187,8 +144,7 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
-        let authHeader =
-            "MediaBrowser Client=\"\(jellyfinClientName)\", Device=\"\(jellyfinDeviceName)\", DeviceId=\"\(jellyfinDeviceId)\", Version=\"\(jellyfinClientVersion)\""
+        let authHeader = MediaBrowserClient.authorizationHeader(token: nil)
         request.setValue(authHeader, forHTTPHeaderField: "Authorization")
         request.setValue(authHeader, forHTTPHeaderField: "X-Emby-Authorization")
 
@@ -300,7 +256,7 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
             URLQueryItem(name: "Recursive", value: "true"),
             URLQueryItem(
                 name: "Fields",
-                value: "Overview,Chapters,MediaSources,RunTimeTicks,ParentId,ChildCount,ProductionYear,AlbumArtist,AlbumArtists,ArtistItems,SeriesName,IndexNumber,Studios,Genres,UserData,Path"
+                value: "Overview,Chapters,MediaSources,RunTimeTicks,ParentId,ChildCount,ProductionYear,AlbumArtist,AlbumArtists,ArtistItems,People,SeriesName,IndexNumber,Studios,Genres,UserData,Path"
             ),
             URLQueryItem(name: "SortBy", value: "SortName"),
             URLQueryItem(name: "SortOrder", value: "Ascending"),
@@ -428,7 +384,7 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
 
                 let streamURLString = "\(base)/Audio/\(streamId)/stream?static=true&api_key=\(token)"
                 if let streamURL = URL(string: streamURLString) {
-                    let extracted = await extractChaptersFromStream(url: streamURL)
+                    let extracted = await MediaBrowserClient.extractChapters(fromStream: streamURL)
                     if !extracted.isEmpty {
                         AppLogger.network.info("Successfully extracted \(extracted.count) chapters from stream")
                         chapters = extracted
@@ -476,7 +432,7 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
 
     func getStreamingHeaders() -> [String: String] {
         return [
-            "Authorization": buildAuthHeaderValue(),
+            "Authorization": MediaBrowserClient.authorizationHeader(token: connection.token),
             "X-Emby-Token": connection.token ?? "",
         ]
     }
@@ -550,31 +506,7 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
     }
 
     func performDataTask(for request: URLRequest, retryCount: Int = 3) async throws -> (Data, URLResponse) {
-        var currentRetry = 0
-        while true {
-            do {
-                if currentRetry > 0 {
-                    AppLogger.network.warning(
-                        "Executing request: \(request.url?.redacted.absoluteString ?? "unknown") (Attempt \(currentRetry + 1))"
-                    )
-                }
-                return try await session.data(for: request)
-            } catch {
-                let nsError = error as NSError
-                let retryableCodes = [-1001, -1003, -1005, -1009]
-
-                if currentRetry < retryCount && retryableCodes.contains(nsError.code) {
-                    currentRetry += 1
-                    let delay = pow(2.0, Double(currentRetry))
-                    AppLogger.network.error(
-                        "Request failed with error \(nsError.code). Retrying in \(delay)s... (Attempt \(currentRetry + 1)/\(retryCount + 1))"
-                    )
-                    try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-                    continue
-                }
-                throw error
-            }
-        }
+        try await session.retryingData(for: request, retryCount: retryCount)
     }
 
     private func fetchChildAudioItems(parentId: String) async throws -> [JellyfinItem] {
@@ -616,47 +548,6 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
         return result.Items
     }
 
-    private func extractChaptersFromStream(url: URL) async -> [Chapter] {
-        let asset = AVURLAsset(url: url)
-        var chapters: [Chapter] = []
-
-        do {
-            let locales = try await asset.load(.availableChapterLocales)
-            for locale in locales {
-                let metadataGroups = try await asset.loadChapterMetadataGroups(bestMatchingPreferredLanguages: [locale.identifier])
-                for (index, group) in metadataGroups.enumerated() {
-                    let timeRange = group.timeRange
-                    let start = CMTimeGetSeconds(timeRange.start)
-                    let duration = CMTimeGetSeconds(timeRange.duration)
-
-                    var title = "Chapter \(index + 1)"
-                    for item in group.items {
-                        if item.commonKey == .commonKeyTitle {
-                            if let val = try? await item.load(.stringValue) {
-                                title = val
-                                break
-                            }
-                        }
-                    }
-
-                    chapters.append(
-                        Chapter(
-                            id: "extracted_\(index)",
-                            start: start,
-                            end: start + duration,
-                            title: title
-                        )
-                    )
-                }
-                if !chapters.isEmpty { break }
-            }
-        } catch {
-            AppLogger.network.error("Chapter extraction failed: \(error)")
-        }
-
-        return chapters.sorted { $0.start < $1.start }
-    }
-
     private func mapJellyfinItemToBook(_ item: JellyfinItem, libraryId: String, base: String) -> Book {
         let isEbook = item.itemType == "Book"
         let duration = isEbook ? 0 : Double(item.RunTimeTicks ?? 0) / 10_000_000.0
@@ -670,7 +561,8 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
         }
 
         let author = item.AlbumArtist ?? item.AlbumArtists?.first?.Name ?? item.ArtistItems?.first?.Name ?? "Unknown Author"
-        let narrator = isEbook ? nil : item.ArtistItems?.first(where: { $0.Name != author })?.Name
+        // Jellyfin maps the audiobook narrator (composer tag) to a Composer person; it has no Narrator type.
+        let narrator = isEbook ? nil : item.People?.first(where: { $0.personType == "Composer" && !$0.Name.isEmpty })?.Name
 
         var releaseDate: Date? = nil
         if let year = item.ProductionYear {
@@ -768,7 +660,7 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
 
     func fetchAudiobookProgress(
         for book: Book
-    ) async throws -> (positionSeconds: TimeInterval, percentage: Double, trackIndex: Int?, updatedAt: Date?, isAbandoned: Bool)? {
+    ) async throws -> (positionSeconds: TimeInterval, percentage: Double, trackIndex: Int?, updatedAt: Date?, isFinished: Bool)? {
         guard let userId = connection.userId else { throw ProviderError.unauthorized }
         let base = normalizeServerURL(connection.url)
 
@@ -785,7 +677,7 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
         let positionSeconds = Double(item.UserData?.PlaybackPositionTicks ?? 0) / 10_000_000.0
         let percentage = (item.UserData?.PlayedPercentage ?? 0) / 100.0
         let played = item.UserData?.Played ?? false
-        return (positionSeconds: positionSeconds, percentage: percentage, trackIndex: nil, updatedAt: ProviderProgressDate.parse(item.UserData?.LastPlayedDate), isAbandoned: played)
+        return (positionSeconds: positionSeconds, percentage: percentage, trackIndex: nil, updatedAt: ISO8601Timestamp.parse(item.UserData?.LastPlayedDate), isFinished: played)
     }
 }
 
@@ -821,6 +713,7 @@ private struct JellyfinItem: Decodable {
     let AlbumArtist: String?
     let AlbumArtists: [JellyfinNameIdPair]?
     let ArtistItems: [JellyfinNameIdPair]?
+    let People: [JellyfinPerson]?
     let ImageTags: [String: String]?
     let Chapters: [JellyfinChapter]?
     let UserData: JellyfinUserData?
@@ -834,7 +727,7 @@ private struct JellyfinItem: Decodable {
 
     enum CodingKeys: String, CodingKey {
         case Id, ParentId, Name, MediaType, CollectionType, RunTimeTicks, ProductionYear, Overview
-        case AlbumArtist, AlbumArtists, ArtistItems, ImageTags, Chapters, UserData
+        case AlbumArtist, AlbumArtists, ArtistItems, People, ImageTags, Chapters, UserData
         case SeriesName, IndexNumber, Studios, Genres, ChildCount, IsFolder, MediaSources
         case itemType = "Type"
     }
@@ -862,4 +755,14 @@ private struct JellyfinUserData: Decodable {
 private struct JellyfinNameIdPair: Decodable {
     let Name: String
     let Id: String
+}
+
+private struct JellyfinPerson: Decodable {
+    let Name: String
+    let personType: String?
+
+    enum CodingKeys: String, CodingKey {
+        case Name
+        case personType = "Type"
+    }
 }

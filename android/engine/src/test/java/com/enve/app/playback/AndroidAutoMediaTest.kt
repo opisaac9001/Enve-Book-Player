@@ -44,6 +44,20 @@ class AndroidAutoMediaTest {
     }
 
     @Test
+    fun `browse children paginate without overlap and tolerate the legacy full-page request`() {
+        val items = (0 until 5).map { "item$it" }
+
+        assertEquals(listOf("item0", "item1"), AutoMediaBrowserHelper.paginate(items, 0, 2))
+        assertEquals(listOf("item2", "item3"), AutoMediaBrowserHelper.paginate(items, 1, 2))
+        assertEquals(listOf("item4"), AutoMediaBrowserHelper.paginate(items, 2, 2))
+        assertEquals(emptyList<String>(), AutoMediaBrowserHelper.paginate(items, 3, 2))
+        assertEquals(items, AutoMediaBrowserHelper.paginate(items, 0, Int.MAX_VALUE))
+        assertEquals(emptyList<String>(), AutoMediaBrowserHelper.paginate(items, 1, Int.MAX_VALUE))
+        assertEquals(emptyList<String>(), AutoMediaBrowserHelper.paginate(items, -1, 2))
+        assertEquals(emptyList<String>(), AutoMediaBrowserHelper.paginate(items, 0, 0))
+    }
+
+    @Test
     fun `Storyteller audiobook file fallback uses the M4B media type`() {
         assertEquals(
             MimeTypes.AUDIO_MP4,

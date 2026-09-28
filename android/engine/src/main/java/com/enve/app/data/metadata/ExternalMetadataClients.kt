@@ -1,5 +1,6 @@
 package com.enve.app.data.metadata
 
+import com.enve.core.data.util.stringOrNull
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
@@ -445,7 +446,7 @@ class OpenLibraryMetadataClient @Inject constructor(
         val description = element["description"] ?: return null
         return when (description) {
             is JsonPrimitive -> description.contentOrNull
-            is JsonObject -> description["value"]?.let { (it as? JsonPrimitive)?.contentOrNull }
+            is JsonObject -> description["value"].stringOrNull()
             else -> null
         }
     }

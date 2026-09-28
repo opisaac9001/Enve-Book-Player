@@ -71,6 +71,13 @@ private final class RecoveryFixture {
     let store: SwiftDataBookStore
     let catalog: LibraryCatalogCoordinator
     let progress: UserProgressStore
+    let progressCache: BookProgressStore
+    let readerArtifacts: ReaderArtifactsStore
+
+    var activeDownloadIds = Set<String>()
+    var downloadMigrationSucceeds = true
+    private(set) var downloadMigrations: [(from: String, to: String)] = []
+    private(set) var reassignedDownloadTasks: [(from: String, to: String)] = []
 
     private let defaultsSuiteName: String
     let defaults: UserDefaults
@@ -100,13 +107,15 @@ private final class RecoveryFixture {
         progressFileURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("LibraryRecoveryCoordinatorTests-progress-\(UUID().uuidString).json")
 
+        progressCache = BookProgressStore(defaults: defaults)
+        readerArtifacts = ReaderArtifactsStore(defaults: defaults)
         progress = UserProgressStore(
             library: library,
             session: session,
             bookStore: store,
             providerConnections: connections,
             progressFileURL: progressFileURL,
-            progressCache: BookProgressStore(defaults: defaults),
+            progressCache: progressCache,
             defaults: defaults
         )
         catalog = LibraryCatalogCoordinator(
@@ -134,12 +143,24 @@ private final class RecoveryFixture {
             providerConnections: connections,
             stores: LibraryRecoveryStores(
                 mirrorCheckpoints: ServerMirrorCheckpointStore(defaults: defaults),
+                opdsProgressionEndpoints: OPDSProgressionEndpointStore(defaults: defaults),
+                opdsAuthentication: OPDSAuthenticationStore(defaults: defaults, tokens: InMemoryOPDSTokenStore()),
                 userCollections: UserCollectionStore(defaults: defaults),
                 smartCollections: SmartCollectionStore(defaults: defaults),
                 pendingSync: PendingSyncQueueStore(defaults: defaults),
+                progressCache: progressCache,
+                readerArtifacts: readerArtifacts,
                 purgeCachedArtifacts: { recorder.recordBook($0) },
                 purgeDownloadArtifacts: { recorder.recordDisk($0) },
-                cleanupAlignmentCaches: { _ in recorder.recordAlignmentCleanup() }
+                cleanupAlignmentCaches: { _ in recorder.recordAlignmentCleanup() },
+                isAudiobookDownloadActive: { [self] bookId in activeDownloadIds.contains(bookId) },
+                migrateDownloadedAudiobook: { [self] from, to in
+                    downloadMigrations.append((from: from, to: to))
+                    return downloadMigrationSucceeds
+                },
+                reassignDownloadTasks: { [self] from, to in
+                    reassignedDownloadTasks.append((from: from, to: to))
+                }
             ),
             defaults: defaults
         )
@@ -290,6 +311,133 @@ struct LibraryRecoveryCoordinatorTests {
         fixture.cleanUp()
     }
 
+    @Test func grimmoryDualFormatPairMigratesAudioArtifactsOnce() async throws {
+        let fixture = try RecoveryFixture()
+        let recovery = fixture.makeCoordinator()
+        let original = makeGrimmoryBook(id: "42", mediaType: .ebook, linkedAudiobookStableId: "grimmory:grim:grimmory-ab-42")
+        let companion = makeGrimmoryBook(id: "grimmory-ab-42", mediaType: .audiobook)
+        await fixture.store.upsertBooks([original, companion])
+
+        let playedAt = Date(timeIntervalSince1970: 1_000)
+        fixture.progressCache.saveProgress(for: original, progress: 120, duration: 600, at: playedAt)
+        fixture.progressCache.saveServerStamp(for: original, playedAt)
+        let snapshot = RecentlyPlayedSnapshot(
+            stableId: original.stableId,
+            book: original,
+            lastUpdated: playedAt.timeIntervalSince1970
+        )
+        fixture.defaults.set(try JSONEncoder().encode([snapshot]), forKey: "recentlyPlayedBooks")
+
+        let audioBookmark = Bookmark(id: "audio-mark", bookId: original.stableId, position: 90, title: "Audio", mediaType: .audiobook)
+        let ebookBookmark = Bookmark(id: "ebook-mark", bookId: original.stableId, position: 0.4, title: "Ebook", mediaType: .ebook)
+        await fixture.store.upsertBookmark(audioBookmark, bookStableId: original.stableId)
+        await fixture.store.upsertBookmark(ebookBookmark, bookStableId: original.stableId)
+        fixture.readerArtifacts.saveBookmarks(bookId: original.stableId, bookmarks: [audioBookmark])
+        let chapters = [Chapter(id: "c1", start: 0, end: 60, title: "One", index: 0)]
+        await fixture.store.cacheChapters(chapters, forBookStableId: original.stableId)
+        fixture.readerArtifacts.saveCachedChapters(bookId: original.stableId, chapters: chapters)
+
+        await recovery.runStartupMigrations()
+
+        #expect(fixture.progressCache.loadProgress(bookId: original.stableId) == nil)
+        let migrated = fixture.progressCache.loadProgress(bookId: companion.stableId)
+        #expect(migrated?.progress == 120)
+        #expect(migrated?.lastUpdated == playedAt.timeIntervalSince1970)
+        #expect(fixture.progressCache.loadServerStamp(for: companion) == playedAt)
+        #expect(fixture.progressCache.loadServerStamp(for: original) == nil)
+        let snapshots = fixture.progressCache.loadSnapshots()
+        #expect(snapshots.map(\.stableId) == [companion.stableId])
+        #expect(snapshots.first?.book.id == companion.id)
+
+        #expect(await fixture.store.bookmarks(forBookStableId: companion.stableId).map(\.id) == ["audio-mark"])
+        #expect(await fixture.store.bookmarks(forBookStableId: original.stableId).map(\.id) == ["ebook-mark"])
+        #expect(fixture.readerArtifacts.loadBookmarks(bookId: companion.stableId).map(\.id) == ["audio-mark"])
+        #expect(fixture.readerArtifacts.loadBookmarks(bookId: original.stableId).isEmpty)
+        #expect(await fixture.store.cachedChapters(forBookStableId: companion.stableId)?.map(\.id) == ["c1"])
+        #expect(await fixture.store.cachedChapters(forBookStableId: original.stableId) == nil)
+        #expect(fixture.readerArtifacts.loadCachedChapters(bookId: companion.stableId)?.map(\.id) == ["c1"])
+        #expect(fixture.readerArtifacts.loadCachedChapters(bookId: original.stableId) == nil)
+        #expect(fixture.downloadMigrations.map { $0.from } == [original.stableId])
+        #expect(fixture.reassignedDownloadTasks.map { $0.to } == [companion.stableId])
+
+        await recovery.runStartupMigrations()
+
+        #expect(fixture.downloadMigrations.count == 1)
+        fixture.cleanUp()
+    }
+
+    @Test func laterEbookDataStaysUnderTheOriginalAfterPairCompletion() async throws {
+        let fixture = try RecoveryFixture()
+        let recovery = fixture.makeCoordinator()
+        let original = makeGrimmoryBook(id: "42", mediaType: .ebook, linkedAudiobookStableId: "grimmory:grim:grimmory-ab-42")
+        let companion = makeGrimmoryBook(id: "grimmory-ab-42", mediaType: .audiobook)
+        await fixture.store.upsertBooks([original, companion])
+
+        await recovery.runStartupMigrations()
+
+        fixture.progressCache.saveProgress(for: original, progress: 45, duration: 600, at: Date(timeIntervalSince1970: 2_000))
+        let newEbookBookmark = Bookmark(id: "new-ebook-mark", bookId: original.stableId, position: 0.2, title: "New", mediaType: .ebook)
+        await fixture.store.upsertBookmark(newEbookBookmark, bookStableId: original.stableId)
+        fixture.readerArtifacts.saveBookmarks(bookId: original.stableId, bookmarks: [newEbookBookmark])
+
+        await recovery.runStartupMigrations()
+
+        #expect(fixture.progressCache.loadProgress(bookId: original.stableId)?.progress == 45)
+        #expect(fixture.progressCache.loadProgress(bookId: companion.stableId) == nil)
+        #expect(await fixture.store.bookmarks(forBookStableId: original.stableId).map(\.id) == ["new-ebook-mark"])
+        #expect(await fixture.store.bookmarks(forBookStableId: companion.stableId).isEmpty)
+        #expect(fixture.readerArtifacts.loadBookmarks(bookId: original.stableId).map(\.id) == ["new-ebook-mark"])
+        fixture.cleanUp()
+    }
+
+    @Test func activeDownloadDefersTheGrimmoryPairMigration() async throws {
+        let fixture = try RecoveryFixture()
+        let recovery = fixture.makeCoordinator()
+        let original = makeGrimmoryBook(id: "42", mediaType: .ebook, linkedAudiobookStableId: "grimmory:grim:grimmory-ab-42")
+        let companion = makeGrimmoryBook(id: "grimmory-ab-42", mediaType: .audiobook)
+        await fixture.store.upsertBooks([original, companion])
+        fixture.progressCache.saveProgress(for: original, progress: 120, duration: 600, at: Date(timeIntervalSince1970: 1_000))
+        fixture.activeDownloadIds = [original.stableId]
+
+        await recovery.runStartupMigrations()
+
+        #expect(fixture.progressCache.loadProgress(bookId: original.stableId)?.progress == 120)
+        #expect(fixture.downloadMigrations.isEmpty)
+        #expect(fixture.defaults.stringArray(forKey: LibraryRecoveryCoordinator.grimmoryDualFormatMigratedPairsKey) == nil)
+
+        fixture.activeDownloadIds = []
+        await recovery.runStartupMigrations()
+
+        #expect(fixture.progressCache.loadProgress(bookId: companion.stableId)?.progress == 120)
+        #expect(fixture.downloadMigrations.count == 1)
+        fixture.cleanUp()
+    }
+
+    @Test func failedDownloadMigrationKeepsTheGrimmoryPairRetryable() async throws {
+        let fixture = try RecoveryFixture()
+        let recovery = fixture.makeCoordinator()
+        let original = makeGrimmoryBook(id: "42", mediaType: .ebook, linkedAudiobookStableId: "grimmory:grim:grimmory-ab-42")
+        let companion = makeGrimmoryBook(id: "grimmory-ab-42", mediaType: .audiobook)
+        await fixture.store.upsertBooks([original, companion])
+        fixture.downloadMigrationSucceeds = false
+
+        await recovery.runStartupMigrations()
+
+        #expect(fixture.defaults.stringArray(forKey: LibraryRecoveryCoordinator.grimmoryDualFormatMigratedPairsKey) == nil)
+        #expect(fixture.reassignedDownloadTasks.isEmpty)
+
+        fixture.downloadMigrationSucceeds = true
+        await recovery.runStartupMigrations()
+
+        #expect(fixture.downloadMigrations.count == 2)
+        #expect(fixture.reassignedDownloadTasks.count == 1)
+        #expect(
+            fixture.defaults.stringArray(forKey: LibraryRecoveryCoordinator.grimmoryDualFormatMigratedPairsKey)
+                == ["\(original.stableId)>\(companion.stableId)"]
+        )
+        fixture.cleanUp()
+    }
+
     @Test func resettingBookDataClearsTheMirrorAndCatalog() async throws {
         let fixture = try RecoveryFixture()
         let recovery = fixture.makeCoordinator()
@@ -323,6 +471,19 @@ private func makeBook(
         mediaType: .audiobook,
         providerId: providerId,
         libraryId: libraryId
+    )
+}
+
+private func makeGrimmoryBook(id: String, mediaType: AppMediaType, linkedAudiobookStableId: String? = nil) -> Book {
+    Book(
+        id: id,
+        title: "Grimmory \(id)",
+        source: .booklore,
+        backendId: "grim",
+        mediaType: mediaType,
+        linkedAudiobookStableId: linkedAudiobookStableId,
+        providerId: UUID(uuidString: "2C1F5F1E-6C5B-4E3E-9C2A-9F52A0F6A222")!,
+        libraryId: "library"
     )
 }
 

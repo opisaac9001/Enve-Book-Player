@@ -27,6 +27,15 @@ struct DownloadPlanTests {
         #expect(plan.postProcessing == [.validateEbook, .persistReaderAsset, .cacheOfflineAssets])
     }
 
+    @Test func audiobookshelfEbookPlanDownloadsTheEbookNotTheAudio() throws {
+        let ebook = try DownloadPlanRegistry.shared.plan(for: makeBook(source: .audiobookshelf, mediaType: .ebook))
+        #expect(ebook.destination == .readerAsset)
+        #expect(ebook.postProcessing == [.validateEbook, .persistReaderAsset, .cacheOfflineAssets])
+
+        let audiobook = try DownloadPlanRegistry.shared.plan(for: makeBook(source: .audiobookshelf, mediaType: .audiobook))
+        #expect(audiobook.destination == .audiobookDirectory)
+    }
+
     @Test func serverPageOnlyProviderRejectsAudiobookPlan() {
         #expect(throws: (any Error).self) {
             try DownloadPlanRegistry.shared.plan(for: makeBook(source: .komga, mediaType: .audiobook))

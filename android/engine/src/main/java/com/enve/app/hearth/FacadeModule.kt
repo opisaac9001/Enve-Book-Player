@@ -5,8 +5,10 @@ import com.enve.engine.eink.EinkFacade
 import com.enve.engine.annotations.AnnotationsFacade
 import com.enve.engine.bookorbit.BookOrbitFacade
 import com.enve.engine.library.LibraryFacade
+import com.enve.engine.opds.OpdsCatalogFacade
 import com.enve.engine.playback.PlaybackFacade
 import com.enve.engine.playback.PlayerSessionFacade
+import com.enve.engine.podcasts.PodcastsFacade
 import com.enve.engine.prefs.PreferencesFacade
 import com.enve.engine.servertools.ServerToolsFacade
 import com.enve.engine.sleep.SleepDataFacade
@@ -53,4 +55,10 @@ abstract class FacadeModule {
 
     @Binds @Singleton
     abstract fun bindSleepDataFacade(impl: HealthConnectSleepDataFacade): SleepDataFacade
+
+    @Binds @Singleton
+    abstract fun bindOpdsCatalogFacade(impl: OpdsCatalogFacadeImpl): OpdsCatalogFacade
+
+    @Binds @Singleton
+    abstract fun bindPodcastsFacade(impl: PodcastsFacadeImpl): PodcastsFacade
 }

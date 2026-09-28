@@ -140,7 +140,8 @@ final class BookOrbitSyncStrategy: ProviderSyncStrategy {
                 book.providerId == providerId,
                 book.id == remote.libraryItemId,
                 book.source == .bookOrbit,
-                !isActivelyReading(book)
+                !isActivelyReading(book),
+                !Self.serverProgressIsStale(book: book, serverProgress: remote, serverLocator: remote.epubLocator)
             else {
                 continue
             }
@@ -186,7 +187,15 @@ final class BookOrbitSyncStrategy: ProviderSyncStrategy {
             {
                 ratingSnapshots.append(updated)
             }
-            updates.append(activityUpdate(record: record, book: book))
+            let update = activityUpdate(record: record, book: book)
+            guard !Self.serverProgressIsStale(
+                book: book,
+                serverProgress: update.progress,
+                serverLocator: update.epubLocator
+            ) else {
+                continue
+            }
+            updates.append(update)
         }
 
         if reconcileMissing {
@@ -290,12 +299,7 @@ final class BookOrbitSyncStrategy: ProviderSyncStrategy {
             : 0
         let epubLocator =
             book.mediaType == .ebook
-            ? EpubLocationBridge.readiumLocator(
-                href: nil,
-                epubCFI: EpubLocationBridge.canonicalFullEPUBCFI(record.epubCFI),
-                fraction: fraction,
-                sourceEngine: .foliate
-            )
+            ? Self.ebookLocator(serverCFI: record.epubCFI, fraction: fraction, book: book)
             : nil
         return (
             UserMediaProgress(
@@ -315,6 +319,38 @@ final class BookOrbitSyncStrategy: ProviderSyncStrategy {
             epubLocator,
             record.status.rawValue.uppercased()
         )
+    }
+
+    static func ebookLocator(serverCFI: String?, fraction: Double, book: Book) -> String? {
+        if let cfi = EpubLocationBridge.canonicalFullEPUBCFI(serverCFI) {
+            return EpubLocationBridge.readiumLocator(
+                href: nil,
+                epubCFI: cfi,
+                fraction: fraction,
+                sourceEngine: .foliate
+            )
+        }
+        if let localLocator = book.epubLocator { return localLocator }
+        return EpubLocationBridge.readiumLocator(href: nil, fraction: fraction, sourceEngine: .foliate)
+    }
+
+    static func serverProgressIsStale(book: Book, serverProgress: UserMediaProgress, serverLocator: String?) -> Bool {
+        if book.mediaType == .ebook,
+            EpubLocationBridge.canonicalFullEPUBCFI(EpubLocationBridge.epubCFI(from: book.epubLocator)) != nil,
+            EpubLocationBridge.canonicalFullEPUBCFI(EpubLocationBridge.epubCFI(from: serverLocator)) == nil
+        {
+            return true
+        }
+        guard serverProgress.lastUpdate < book.lastUpdate else { return false }
+        let usesSeconds = book.mediaType == .audiobook && serverProgress.duration > 0
+        return ProgressConflictResolver.resolve(
+            localPosition: usesSeconds ? book.currentTime : (book.ebookProgress ?? 0),
+            localDate: book.lastUpdate,
+            serverPosition: usesSeconds ? serverProgress.currentTime : serverProgress.progress,
+            serverDate: serverProgress.lastUpdate,
+            localLocator: book.epubLocator,
+            serverLocator: serverLocator
+        ) == .push
     }
 
     private func pendingBookIds(providerId: UUID) -> (uniqueIds: Set<String>, stableIds: Set<String>) {

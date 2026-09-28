@@ -26,10 +26,12 @@ struct ProviderLiveSyncTests {
             rows[cells[1]] = cells[2]
             if let url = values(cells[2]).first, url.hasPrefix("http") { endpoints[cells[1]] = url }
         }
-        let endpoint = try #require(endpoints[service])
-        let host = try #require(URL(string: endpoint)?.host)
+        let configuredEndpoint = try #require(endpoints[service])
         let permittedHosts = ["LAN address", "Tailscale address"].flatMap { values(rows[$0] ?? "") }
-        guard permittedHosts.contains(host) else { throw LabError.nonLabEndpoint }
+        let endpoint = try await reachableEndpoint(
+            configuredEndpoint: configuredEndpoint,
+            permittedHosts: permittedHosts
+        )
         var username = try #require(values(rows["Username"] ?? "").first)
         var password = try #require(values(rows["Password"] ?? "").first)
         if service == "Komga" { username = try #require(values(rows["Email"] ?? "").first) }
@@ -85,6 +87,7 @@ struct ProviderLiveSyncTests {
             }
             record("LAB \(service) catalog libraries=\(libraries.count) books=\(books.count) ebooks=\(books.filter { $0.mediaType == .ebook }.count)")
             guard !books.isEmpty else { throw LabError.emptyCatalog }
+            var audiobookshelfReadAloudTimeline: MediaOverlayTimeline?
             if let provider = provider as? BookOrbitProvider,
                let rawChecks = ProcessInfo.processInfo.environment["ENVE_LAB_BOOKORBIT_CFI_CHECKS"] {
                 struct Checks: Decodable {
@@ -129,16 +132,44 @@ struct ProviderLiveSyncTests {
                let index = books.firstIndex(where: { $0.stableId == candidate.stableId }) {
                 books[index] = try await provider.fetchFullBookDetails(bookId: candidate.id, libraryId: candidate.libraryId)
             }
+            let genericEbook = if service == "Grimmory" {
+                books.first(where: { $0.title == "Enve Namespace Prefix Regression" })
+            } else {
+                books.first(where: { $0.mediaType == .ebook && $0.ebookFormat?.lowercased() == "epub" })
+                    ?? books.first(where: { $0.mediaType == .ebook })
+            }
             if let download = provider as? any EbookDownloadProvider,
-               let book = books.first(where: { $0.mediaType == .ebook && $0.ebookFormat?.lowercased() == "epub" }) ?? books.first(where: { $0.mediaType == .ebook }) {
+               let book = genericEbook {
                 stage = "ebook download"
                 let url = try await download.downloadEbook(for: book, onProgress: nil)
                 let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
                 guard size > 0 else { throw LabError.rejected }
                 record("LAB \(service) ebook downloaded bytes=\(size)")
+                if service == "Audiobookshelf" {
+                    stage = "EPUB3 read-aloud"
+                    let features = try #require(await EPUB3SMILParser.detectFeatures(epubFileURL: url))
+                    guard features.hasMediaOverlay else { throw LabError.rejected }
+
+                    var readAloudBook = book
+                    readAloudBook.epub3Features = features
+                    readAloudBook.ebookFileURL = url
+                    let overlay = try await MediaOverlayPlaybackService.shared.prepareAudioTracks(for: readAloudBook)
+                    guard !overlay.timeline.clips.isEmpty,
+                        !overlay.tracks.isEmpty,
+                        overlay.totalDuration > 0,
+                        overlay.tracks.allSatisfy({ track in
+                            guard let trackURL = URL(string: track.contentUrl) else { return false }
+                            return FileManager.default.fileExists(atPath: trackURL.path)
+                        })
+                    else { throw LabError.rejected }
+                    audiobookshelfReadAloudTimeline = overlay.timeline
+                    record(
+                        "LAB Audiobookshelf EPUB3 read-aloud smil=\(features.smilFileCount) clips=\(overlay.timeline.clips.count) tracks=\(overlay.tracks.count) duration=\(overlay.totalDuration)"
+                    )
+                }
             }
             if let sync = provider as? any EbookProgressProvider,
-               let book = books.first(where: { $0.mediaType == .ebook && $0.ebookFormat?.lowercased() == "epub" }) ?? books.first(where: { $0.mediaType == .ebook }) {
+               let book = genericEbook {
                 stage = "ebook round trip"
                 record("LAB \(service) ebook fixture=\(book.title)")
                 let tolerance: Double
@@ -153,7 +184,73 @@ struct ProviderLiveSyncTests {
                     tolerance = 1 / Double(pages) + 0.001
                 } else { tolerance = 0.06 }
                 let original = try await sync.fetchEbookProgress(for: book)
+                let linkedAudiobook = service == "Audiobookshelf"
+                    ? books.first(where: {
+                        $0.mediaType == .audiobook
+                            && AudiobookshelfProvider.itemId(forBookId: $0.id)
+                                == AudiobookshelfProvider.itemId(forBookId: book.id)
+                    })
+                    : nil
+                let audioSync = provider as? any AudiobookProgressProvider
+                let originalAudio: (
+                    positionSeconds: TimeInterval,
+                    percentage: Double,
+                    trackIndex: Int?,
+                    updatedAt: Date?,
+                    isFinished: Bool
+                )? = if let audioSync, let linkedAudiobook {
+                    try await audioSync.fetchAudiobookProgress(for: linkedAudiobook)
+                } else {
+                    nil
+                }
+                func restoreOriginalAudio() async throws {
+                    guard let audioSync, let linkedAudiobook, let originalAudio else { return }
+                    try await audioSync.updatePlaybackProgress(
+                        book: linkedAudiobook,
+                        sessionId: nil,
+                        currentTime: originalAudio.positionSeconds,
+                        isFinished: originalAudio.isFinished,
+                        timeListened: 0
+                    )
+                }
+                record(
+                    "LAB \(service) ebook original=\(original?.progress ?? -1) locator=\(original?.locator == nil ? "none" : "present")"
+                )
+                if let originalAudio {
+                    record("LAB \(service) dual audio before ebook round trip=\(originalAudio.positionSeconds)")
+                }
                 do {
+                    if service == "Audiobookshelf", let timeline = audiobookshelfReadAloudTimeline {
+                        stage = "EPUB3 read-aloud position round trip"
+                        let clipIndex = timeline.clips.count / 2
+                        let timing = timeline.clipTimings[clipIndex]
+                        let audioTime = (timing.audioStart + timing.audioEnd) / 2
+                        let progression = timeline.readingProgression(
+                            atAudioTime: audioTime,
+                            clipIndex: clipIndex
+                        )
+                        let locator = try #require(
+                            timeline.textLocatorJSONString(
+                                clipIndex: clipIndex,
+                                audioTime: audioTime,
+                                totalProgression: progression
+                            )
+                        )
+                        try await sync.updateEbookProgress(
+                            for: book,
+                            progress: progression,
+                            epubLocator: locator
+                        )
+                        let remote = try #require(await sync.fetchEbookProgress(for: book))
+                        let resolved = try #require(
+                            remote.locator.flatMap { timeline.resolveEPUB3Locator(locatorJSON: $0) }
+                        )
+                        guard resolved.clipIndex == clipIndex else { throw LabError.progressMismatch }
+                        record(
+                            "LAB Audiobookshelf EPUB3 position clip=\(clipIndex) audio=\(resolved.audioTime) round trip passed"
+                        )
+                    }
+                    stage = "ebook round trip"
                     for fraction in [0.42, 1.0, 0.0] {
                         try await sync.updateEbookProgress(for: book, progress: fraction, epubLocator: nil)
                         let remote = try await sync.fetchEbookProgress(for: book)
@@ -162,15 +259,18 @@ struct ProviderLiveSyncTests {
                     }
                 } catch {
                     try await sync.updateEbookProgress(for: book, progress: original?.progress ?? 0, epubLocator: original?.locator)
+                    try await restoreOriginalAudio()
                     throw error
                 }
                 try await sync.updateEbookProgress(for: book, progress: original?.progress ?? 0, epubLocator: original?.locator)
+                try await restoreOriginalAudio()
             }
             if let sync = provider as? any AudiobookProgressProvider,
                let book = books.first(where: { $0.mediaType == .audiobook && ($0.duration ?? 0) > 30 }) {
                 stage = "audiobook round trip"
                 record("LAB \(service) audio fixture=\(book.title) duration=\(book.duration ?? 0) podcast=\(book.isPodcastEpisode)")
                 let original = try await sync.fetchAudiobookProgress(for: book)
+                record("LAB \(service) audiobook original=\(original?.positionSeconds ?? -1)")
                 var activeSession: PlaybackSessionInfo?
                 do {
                     if let playback = provider as? any PlaybackSessionProvider {
@@ -244,10 +344,12 @@ struct ProviderLiveSyncTests {
                 endpoints[cells[1]] = url
             }
         }
-        let endpoint = try #require(endpoints["Grimmory"])
-        let host = try #require(URL(string: endpoint)?.host)
+        let configuredEndpoint = try #require(endpoints["Grimmory"])
         let permittedHosts = ["LAN address", "Tailscale address"].flatMap { values(rows[$0] ?? "") }
-        guard permittedHosts.contains(host) else { throw LabError.nonLabEndpoint }
+        let endpoint = try await reachableEndpoint(
+            configuredEndpoint: configuredEndpoint,
+            permittedHosts: permittedHosts
+        )
         guard
             let username = values(rows["Username"] ?? "").first,
             let password = values(rows["Password"] ?? "").first
@@ -316,6 +418,122 @@ struct ProviderLiveSyncTests {
                 epubLocator: original?.locator
             )
         }
+
+        let readAloudBook = try await grimmoryFixture(
+            provider: provider,
+            serverType: "EPUB",
+            search: "Midnight",
+            fileName: "Midnight narrated.epub"
+        )
+        let downloadedURL = try await provider.downloadEbook(for: readAloudBook, onProgress: nil)
+        let features = try #require(await EPUB3SMILParser.detectFeatures(epubFileURL: downloadedURL))
+        guard features.hasMediaOverlay else { throw LabError.rejected }
+
+        var preparedBook = readAloudBook
+        preparedBook.epub3Features = features
+        preparedBook.ebookFileURL = downloadedURL
+        let overlay = try await MediaOverlayPlaybackService.shared.prepareAudioTracks(for: preparedBook)
+        guard !overlay.timeline.clips.isEmpty, !overlay.tracks.isEmpty else { throw LabError.rejected }
+
+        let original = try await provider.fetchEbookProgress(for: readAloudBook)
+        let clipIndex = overlay.timeline.clips.count / 2
+        let timing = overlay.timeline.clipTimings[clipIndex]
+        let audioTime = (timing.audioStart + timing.audioEnd) / 2
+        let progression = overlay.timeline.readingProgression(atAudioTime: audioTime, clipIndex: clipIndex)
+        let locator = try #require(
+            overlay.timeline.textLocatorJSONString(
+                clipIndex: clipIndex,
+                audioTime: audioTime,
+                totalProgression: progression
+            )
+        )
+        do {
+            try await provider.updateEbookProgress(
+                for: readAloudBook,
+                progress: progression,
+                epubLocator: locator
+            )
+
+            let reopenedProvider = BookloreProvider(connection: connection)
+            guard try await reopenedProvider.validateConnection() else { throw LabError.rejected }
+            let reopenedBook = try await reopenedProvider.fetchFullBookDetails(
+                bookId: readAloudBook.id,
+                libraryId: readAloudBook.libraryId
+            )
+            let pulled = try #require(await reopenedProvider.fetchEbookProgress(for: reopenedBook))
+            record("LAB Grimmory EPUB3 locator sent=\(locator) pulled=\(pulled.locator ?? "nil")")
+            let resolved = try #require(
+                pulled.locator.flatMap { overlay.timeline.resolveEPUB3Locator(locatorJSON: $0) }
+            )
+            #expect(abs(pulled.progress - progression) < 0.001)
+            #expect(resolved.clipIndex == clipIndex)
+            #expect(abs(resolved.audioTime - audioTime) < 0.001)
+            record(
+                "LAB Grimmory EPUB3 read-aloud smil=\(features.smilFileCount) clips=\(overlay.timeline.clips.count) tracks=\(overlay.tracks.count) mid-chapter clip=\(clipIndex) round trip and reopen passed"
+            )
+        } catch {
+            try await provider.updateEbookProgress(
+                for: readAloudBook,
+                progress: original?.progress ?? 0,
+                epubLocator: original?.locator
+            )
+            throw error
+        }
+        try await provider.updateEbookProgress(
+            for: readAloudBook,
+            progress: original?.progress ?? 0,
+            epubLocator: original?.locator
+        )
+
+        let annotationCFI = try #require(
+            await EpubCFI.providerCFI(forLocatorJSON: locator, epubFileURL: downloadedURL)
+        )
+        let portableLocator = try #require(
+            EpubLocationBridge.markingEPUBCFI(
+                annotationCFI,
+                in: EpubLocationBridge.markingSourceEngine(.readium, in: locator)
+            )
+        )
+        let annotation = ReaderAnnotation(
+            bookId: readAloudBook.id,
+            locator: portableLocator,
+            position: progression,
+            text: "Enve narrated highlight \(UUID().uuidString)",
+            note: "Grimmory round trip",
+            colorHex: "#F5921A",
+            style: .underline,
+            chapterTitle: "Narrated fixture"
+        )
+        var remoteAnnotationID: Int?
+        do {
+            let created = try await provider.createRemoteAnnotation(for: readAloudBook, annotation: annotation)
+            remoteAnnotationID = created.id
+            let fetched = try #require(
+                try await provider.fetchRemoteAnnotations(for: readAloudBook).first { $0.id == created.id }
+            )
+            let fetchedCFI = try #require(fetched.cfi)
+            #expect(fetchedCFI == annotationCFI)
+            #expect(fetched.text == annotation.text)
+            #expect(fetched.note == annotation.note)
+
+            let readiumLocator = try #require(
+                await EpubCFI.readiumLocatorJSON(
+                    forCFI: fetchedCFI,
+                    totalProgression: progression,
+                    epubFileURL: downloadedURL
+                )
+            )
+            #expect(EpubLocationBridge.canRestoreDirectly(readiumLocator))
+            #expect(EpubLocationBridge.href(from: readiumLocator) == overlay.timeline.clips[clipIndex].textHref)
+            record("LAB Grimmory EPUB3 read-aloud annotation create, fetch, CFI conversion, and delete passed")
+            try await provider.deleteRemoteAnnotation(id: created.id)
+            remoteAnnotationID = nil
+        } catch {
+            if let remoteAnnotationID {
+                try? await provider.deleteRemoteAnnotation(id: remoteAnnotationID)
+            }
+            throw error
+        }
     }
 
     private func grimmoryFixture(
@@ -376,6 +594,70 @@ struct ProviderLiveSyncTests {
         }
         let (_, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else { throw LabError.rejected }
+    }
+
+    @Test func labEndpointCandidatesPreserveTheServiceURLAndUseOnlyPermittedHosts() throws {
+        let candidates = try endpointCandidates(
+            configuredEndpoint: "http://192.0.2.10:13378/api",
+            permittedHosts: ["192.0.2.10", "192.0.2.20"]
+        )
+
+        #expect(candidates == [
+            "http://192.0.2.10:13378/api",
+            "http://192.0.2.20:13378/api",
+        ])
+        #expect(throws: LabError.self) {
+            try endpointCandidates(
+                configuredEndpoint: "https://example.com:13378/api",
+                permittedHosts: ["192.0.2.10", "192.0.2.20"]
+            )
+        }
+    }
+
+    private func reachableEndpoint(
+        configuredEndpoint: String,
+        permittedHosts: [String]
+    ) async throws -> String {
+        let candidates = try endpointCandidates(
+            configuredEndpoint: configuredEndpoint,
+            permittedHosts: permittedHosts
+        )
+        for candidate in candidates {
+            guard let url = URL(string: candidate) else { continue }
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 3
+            do {
+                let (_, response) = try await URLSession.shared.data(for: request)
+                if response is HTTPURLResponse {
+                    return candidate
+                }
+            } catch {
+                continue
+            }
+        }
+        throw URLError(.cannotConnectToHost)
+    }
+
+    private func endpointCandidates(
+        configuredEndpoint: String,
+        permittedHosts: [String]
+    ) throws -> [String] {
+        guard var components = URLComponents(string: configuredEndpoint),
+            let configuredHost = components.host,
+            permittedHosts.contains(configuredHost)
+        else {
+            throw LabError.nonLabEndpoint
+        }
+
+        var candidates: [String] = []
+        for host in [configuredHost] + permittedHosts where !candidates.contains(where: {
+            URL(string: $0)?.host == host
+        }) {
+            components.host = host
+            guard let candidate = components.url?.absoluteString else { continue }
+            candidates.append(candidate)
+        }
+        return candidates
     }
 
     private func record(_ message: String) {

@@ -37,6 +37,7 @@ final class LinkedBookQuickSyncService {
         var isComplete: Bool
         var error: String?
         var method: Method?
+        var keptPreviousReason: String?
     }
 
     private(set) var state: State?
@@ -72,7 +73,8 @@ final class LinkedBookQuickSyncService {
             sampleCount: sampleFractions.count,
             isComplete: false,
             error: nil,
-            method: nil
+            method: nil,
+            keptPreviousReason: nil
         )
         beginExecutionProtection()
 
@@ -154,7 +156,7 @@ final class LinkedBookQuickSyncService {
                     index: index,
                     duration: duration
                 )
-                if anchors.count >= 4 {
+                if LinkedBookAlignmentEvaluator.assess(anchors).quality.unitCount >= 4 {
                     finish(
                         ebook: ebook,
                         audiobook: audiobook,
@@ -189,11 +191,11 @@ final class LinkedBookQuickSyncService {
             state?.matchedSamples = matches
         }
 
-        let anchors = monotonicAnchors(fallback.anchors)
+        let usableAnchors = LinkedBookAlignmentEvaluator.assess(fallback.anchors).quality.unitCount
         let method: Method
-        if anchors.count >= 2, fallback.acousticMatchCount > 0 {
+        if usableAnchors >= 2, fallback.acousticMatchCount > 0 {
             method = .acousticFingerprint
-        } else if anchors.count >= 2 {
+        } else if usableAnchors >= 2 {
             method = .chapterLandmarks
         } else {
             method = .proportional
@@ -201,7 +203,7 @@ final class LinkedBookQuickSyncService {
         finish(
             ebook: ebook,
             audiobook: audiobook,
-            anchors: anchors,
+            anchors: fallback.anchors,
             method: method
         )
     }
@@ -253,10 +255,10 @@ final class LinkedBookQuickSyncService {
                         confidence: match.confidence
                     )
                 )
-                state?.matchedSamples = monotonicAnchors(anchors).count
+                state?.matchedSamples = LinkedBookAlignmentEvaluator.assess(anchors).quality.unitCount
             }
         }
-        return monotonicAnchors(anchors)
+        return anchors
     }
 
     private func finish(
@@ -265,21 +267,26 @@ final class LinkedBookQuickSyncService {
         anchors: [LinkedBookCalibrationAnchor],
         method: Method
     ) {
-        if anchors.count >= 2 {
-            LinkedBookProgressCoordinator.shared.installCalibration(
+        let decision = LinkedBookProgressCoordinator.shared.installCalibration(
+            ebookStableId: ebook.stableId,
+            audiobookStableId: audiobook.stableId,
+            anchors: anchors
+        )
+        let keptPrevious =
+            !decision.isAccepted
+            && LinkedBookProgressCoordinator.shared.calibrationSummary(
                 ebookStableId: ebook.stableId,
-                audiobookStableId: audiobook.stableId,
-                anchors: anchors
-            )
-        }
+                audiobookStableId: audiobook.stableId
+            ) != nil
 
-        state?.stage = "Quick Sync ready"
+        state?.stage = keptPrevious ? "Kept the existing calibration" : "Quick Sync ready"
         state?.progress = 1
-        state?.matchedSamples = anchors.count
+        state?.matchedSamples = decision.quality.unitCount
         state?.isComplete = true
         state?.method = method
+        state?.keptPreviousReason = keptPrevious ? decision.explanation : nil
         AppLogger.general.info(
-            "Quick Sync completed with \(method.displayName) and \(anchors.count) anchors"
+            "Quick Sync completed with \(method.displayName): \(decision.explanation)"
         )
     }
 
@@ -302,46 +309,6 @@ final class LinkedBookQuickSyncService {
         throw LinkedBookQuickSyncError.downloadTimeout
     }
 
-    private func monotonicAnchors(
-        _ anchors: [LinkedBookCalibrationAnchor]
-    ) -> [LinkedBookCalibrationAnchor] {
-        let ordered = anchors.sorted { $0.audioProgress < $1.audioProgress }
-        guard !ordered.isEmpty else { return [] }
-
-        var scores = ordered.map(\.confidence)
-        var lengths = Array(repeating: 1, count: ordered.count)
-        var predecessors = [Int?](repeating: nil, count: ordered.count)
-        for upper in ordered.indices {
-            for lower in ordered.indices where lower < upper {
-                guard ordered[upper].ebookProgress > ordered[lower].ebookProgress + 0.002 else {
-                    continue
-                }
-                let candidateScore = scores[lower] + ordered[upper].confidence
-                let candidateLength = lengths[lower] + 1
-                if candidateScore > scores[upper]
-                    || (abs(candidateScore - scores[upper]) < 0.0001
-                        && candidateLength > lengths[upper])
-                {
-                    scores[upper] = candidateScore
-                    lengths[upper] = candidateLength
-                    predecessors[upper] = lower
-                }
-            }
-        }
-
-        var cursor = ordered.indices.max {
-            if abs(scores[$0] - scores[$1]) > 0.0001 {
-                return scores[$0] < scores[$1]
-            }
-            return lengths[$0] < lengths[$1]
-        }
-        var result: [LinkedBookCalibrationAnchor] = []
-        while let index = cursor {
-            result.append(ordered[index])
-            cursor = predecessors[index]
-        }
-        return result.reversed()
-    }
 }
 
 struct LinkedBookTextIndex {

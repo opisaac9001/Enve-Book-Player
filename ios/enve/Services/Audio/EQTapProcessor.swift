@@ -124,10 +124,6 @@ private func tapPrepare(
     )
 }
 
-private func tapUnprepare(tap: MTAudioProcessingTap) {
-    AppLogger.network.info("Tap unprepared")
-}
-
 private func tapProcess(
     tap: MTAudioProcessingTap,
     numberFrames: CMItemCount,

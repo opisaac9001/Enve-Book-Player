@@ -6,6 +6,7 @@ import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.Library
 import com.enve.core.data.provider.ProviderAdapter
 import com.enve.core.data.sync.SyncCapability
+import com.enve.core.data.sync.SyncSnapshot
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -36,7 +37,19 @@ class KavitaProviderAdapter @Inject constructor(
     override suspend fun getRecentlyAdded(): Result<List<Book>> =
         repository.getRecentlyAddedForSource(source)
 
-    override suspend fun getEbookDownloadUrl(bookId: String): String? = null
+    override suspend fun getEbookDownloadUrl(bookId: String): String? =
+        repository.getKavitaEbookDownloadUrl(bookId)
+
+    override suspend fun syncEbookProgress(
+        bookId: String,
+        percentage: Float,
+        locator: String?,
+        page: Int?,
+        pageCount: Int?,
+    ): Result<Unit> = repository.syncKavitaEbookProgress(bookId, percentage)
+
+    override suspend fun fetchEbookProgress(book: Book): Result<SyncSnapshot?> =
+        repository.fetchKavitaEbookProgress(book.id)
 
     override fun invalidateCaches() {
         repository.invalidateListCaches()

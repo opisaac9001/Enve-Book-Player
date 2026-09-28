@@ -4,7 +4,7 @@ Date: 2026-08-26
 
 ## Scope
 
-Simulator verification of remote, non-downloaded EPUBs from the test providers documented in `CLAUDE.local.md`. Credentials, tokens, and private endpoints are intentionally omitted.
+Simulator verification of remote, non-downloaded EPUBs from a disposable test server. Credentials, tokens, and private endpoints are intentionally omitted.
 
 ## Environment
 

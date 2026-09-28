@@ -184,8 +184,8 @@ struct AdminGrimmoryStatsScreen: View {
                     Spacer()
                     if let progress = book.readProgress {
                         AdminTag(
-                            text: "\(Int(progress))%",
-                            color: progress >= 99 ? hearth.statusOK : hearth.ember
+                            text: "\(Int(progress * 100))%",
+                            color: progress >= Book.finishedProgressThreshold ? hearth.statusOK : hearth.ember
                         )
                     }
                 }

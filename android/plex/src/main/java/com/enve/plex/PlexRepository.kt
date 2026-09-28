@@ -12,6 +12,7 @@ import com.enve.core.data.model.Library
 import com.enve.core.data.provider.ProviderPlaybackSession
 import com.enve.core.data.provider.synthesizeChaptersFromTracks
 import com.enve.core.data.sync.SyncSnapshot
+import com.enve.core.data.util.FINISHED_PROGRESS_THRESHOLD
 import com.enve.core.data.util.runSuspendCatching
 import com.enve.plex.api.PlexApi
 import com.enve.plex.dto.PlexChapter
@@ -124,7 +125,7 @@ class PlexRepository @Inject constructor(
         progressFraction: Float,
     ): Result<Unit> = withContext(Dispatchers.IO) {
         runSuspendCatching {
-            if (progressFraction >= 0.99f) {
+            if (progressFraction >= FINISHED_PROGRESS_THRESHOLD) {
 
                 val resp = api.scrobble(ratingKey = book.id)
                 if (!resp.isSuccessful) error("Plex scrobble HTTP ${resp.code()}")
@@ -148,7 +149,7 @@ class PlexRepository @Inject constructor(
             val durationSec = (metadata.duration ?: 0L) / 1000L
             val currentSec = (metadata.viewOffset ?: 0L) / 1000L
             val fraction = if (durationSec > 0) currentSec.toFloat() / durationSec else 0f
-            val finished = (metadata.viewCount ?: 0) > 0 || fraction >= 0.99f
+            val finished = (metadata.viewCount ?: 0) > 0 || fraction >= FINISHED_PROGRESS_THRESHOLD
             SyncSnapshot(
                 percentage = if (finished) 1f else fraction.coerceIn(0f, 1f),
                 positionMs = currentSec * 1000L,
@@ -363,7 +364,7 @@ class PlexRepository @Inject constructor(
         val durationSec = (duration ?: 0L) / 1000L
         val currentTimeSec = (viewOffset ?: 0L) / 1000L
         val readProgress = if (durationSec > 0) currentTimeSec.toFloat() / durationSec else 0f
-        val finished = (viewCount ?: 0) > 0 || readProgress >= 0.99f
+        val finished = (viewCount ?: 0) > 0 || readProgress >= FINISHED_PROGRESS_THRESHOLD
         val coverPath = thumb ?: parentThumb ?: grandparentThumb
         val bookAuthor = grandparentTitle ?: parentTitle
         val series = extractSeries(bookAuthor)

@@ -98,15 +98,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
             ?? track.media?.first?.part?.first?.file.map { URL(fileURLWithPath: $0).pathExtension }
             ?? ""
 
-        switch format.lowercased() {
-        case "mp3": return "audio/mpeg"
-        case "aac": return "audio/aac"
-        case "m4a", "m4b", "mp4": return "audio/mp4"
-        case "ogg", "oga", "vorbis": return "audio/ogg"
-        case "flac": return "audio/flac"
-        case "wav", "wave": return "audio/wav"
-        default: return "application/octet-stream"
-        }
+        return AudioFileSupport.mimeType(forExtension: format) ?? "application/octet-stream"
     }
 
     private func trackTimeline(from tracks: [PlexMetadata], preserveOrder: Bool = false) -> PlexTrackTimeline {
@@ -1180,10 +1172,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
                 AppLogger.network.info("Inadequate chapters from Plex (\(chapters.count)), attempting extraction from audio file")
 
                 do {
-                    let extractedChapters = try await extractChaptersFromAudioFile(
-                        streamURL: streamURL,
-                        bookDuration: bookDuration
-                    )
+                    let extractedChapters = try await AudioFileSupport.embeddedChapters(in: AVURLAsset(url: streamURL))
 
                     if !extractedChapters.isEmpty {
                         chapters = extractedChapters
@@ -1245,10 +1234,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
             )
 
             do {
-                let extractedChapters = try await extractChaptersFromAudioFile(
-                    streamURL: streamURL,
-                    bookDuration: finalDuration
-                )
+                let extractedChapters = try await AudioFileSupport.embeddedChapters(in: AVURLAsset(url: streamURL))
 
                 if !extractedChapters.isEmpty {
                     normalizedChapters = extractedChapters
@@ -1362,57 +1348,6 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         components?.queryItems = queryItems
 
         return components?.url
-    }
-
-    private func extractChaptersFromAudioFile(streamURL: URL, bookDuration: Double) async throws -> [Chapter] {
-        let asset = AVURLAsset(url: streamURL)
-
-        let startTime = Date()
-        let chapterLocales = try await asset.load(.availableChapterLocales)
-
-        guard Date().timeIntervalSince(startTime) < 10 else {
-            throw NSError(
-                domain: "ChapterExtraction",
-                code: -1,
-                userInfo: [NSLocalizedDescriptionKey: "Timeout loading chapter locales"]
-            )
-        }
-
-        var extractedChapters: [Chapter] = []
-
-        for locale in chapterLocales {
-            let chapterGroups = try await asset.loadChapterMetadataGroups(
-                withTitleLocale: locale,
-                containingItemsWithCommonKeys: [.commonKeyArtwork]
-            )
-
-            for (index, group) in chapterGroups.enumerated() {
-                let chapterStartTime = CMTimeGetSeconds(group.timeRange.start)
-                let duration = CMTimeGetSeconds(group.timeRange.duration)
-                let chapterEndTime = chapterStartTime + duration
-
-                var title = "Chapter \(index + 1)"
-                if let titleItem = group.items.first(where: { $0.commonKey == .commonKeyTitle }),
-                    let titleValue = try? await titleItem.load(.value) as? String
-                {
-                    title = titleValue
-                }
-
-                let chapter = Chapter(
-                    id: String(index),
-                    start: chapterStartTime,
-                    end: chapterEndTime,
-                    title: title
-                )
-                extractedChapters.append(chapter)
-            }
-
-            if !extractedChapters.isEmpty {
-                break
-            }
-        }
-
-        return extractedChapters
     }
 
     private func mapTrackBookToFullBook(_ track: PlexMetadata, libraryId: String) -> Book {
@@ -1704,7 +1639,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
 
     func fetchAudiobookProgress(
         for book: Book
-    ) async throws -> (positionSeconds: TimeInterval, percentage: Double, trackIndex: Int?, updatedAt: Date?, isAbandoned: Bool)? {
+    ) async throws -> (positionSeconds: TimeInterval, percentage: Double, trackIndex: Int?, updatedAt: Date?, isFinished: Bool)? {
         let tracks = (book.audioTracks ?? []).sorted { $0.startOffset < $1.startOffset }
         let ids = tracks.isEmpty ? [book.id] : tracks.map(\.id)
         var latest: (position: TimeInterval, date: Date)?
@@ -1732,7 +1667,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         }
         let position = allFinished ? duration : (latest?.position ?? 0)
         return (positionSeconds: position, percentage: duration > 0 ? position / duration : 0,
-                trackIndex: nil, updatedAt: latest?.date, isAbandoned: allFinished)
+                trackIndex: nil, updatedAt: latest?.date, isFinished: allFinished)
     }
 
     func updatePlaybackProgress(
@@ -1767,31 +1702,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
     }
 
     func performDataTask(for request: URLRequest, retryCount: Int = 3) async throws -> (Data, URLResponse) {
-        var currentRetry = 0
-        while true {
-            do {
-                if currentRetry > 0 {
-                    AppLogger.network.warning(
-                        "Executing request: \(request.url?.redacted.absoluteString ?? "unknown") (Attempt \(currentRetry + 1))"
-                    )
-                }
-                return try await InsecureURLSession.shared.data(for: request)
-            } catch {
-                let nsError = error as NSError
-                let retryableCodes = [-1001, -1003, -1005, -1009]
-
-                if currentRetry < retryCount && retryableCodes.contains(nsError.code) {
-                    currentRetry += 1
-                    let delay = pow(2.0, Double(currentRetry))
-                    AppLogger.network.error(
-                        "Request failed with error \(nsError.code). Retrying in \(delay)s... (Attempt \(currentRetry + 1)/\(retryCount + 1))"
-                    )
-                    try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-                    continue
-                }
-                throw error
-            }
-        }
+        try await InsecureURLSession.shared.retryingData(for: request, retryCount: retryCount)
     }
 
     private func mapPlexMetadataToBook(

@@ -22,12 +22,7 @@ public final class HardcoverService: Sendable {
     public typealias Author = HardcoverAuthor
     public typealias ReadingState = HardcoverReadingStatus
     public typealias UserBook = HardcoverUserBookLegacy
-    public typealias UserBookRead = HardcoverUserBookReadLegacy
     public typealias UserInfo = HardcoverUserInfo
-    public typealias UserList = HardcoverUserList
-    public typealias UserActivity = HardcoverUserActivity
-    public typealias ReadingGoal = HardcoverReadingGoalLegacy
-    public typealias TrendingPeriod = HardcoverTrendingPeriod
 
     public func getCurrentUser() async throws -> HardcoverUserInfo {
         let query = """
@@ -68,37 +63,6 @@ public final class HardcoverService: Sendable {
             booksCount: me.userBooksAggregate?.aggregate?.count,
             followingCount: me.followingAggregate?.aggregate?.count,
             followersCount: me.followersAggregate?.aggregate?.count
-        )
-    }
-
-    public func getUserProfileByUsername(_ username: String) async throws -> HardcoverUserProfile {
-        let query = """
-            query {
-                users(where: {username: {_eq: "\(username.graphQLEscaped)"}}, limit: 1) {
-                    id
-                    username
-                    bio
-                    flair
-                    image { url }
-                    user_books_aggregate { aggregate { count } }
-                    following_aggregate { aggregate { count } }
-                    followers_aggregate { aggregate { count } }
-                }
-            }
-            """
-        let response: UsersResponse = try await performQuery(query)
-        guard let user = response.users?.first else {
-            throw HardcoverError.invalidResponse
-        }
-        return HardcoverUserProfile(
-            id: user.id,
-            username: user.username,
-            bio: user.bio,
-            image: user.image,
-            flair: user.flair,
-            booksCount: user.userBooksAggregate?.aggregate?.count,
-            followingCount: user.followingAggregate?.aggregate?.count,
-            followersCount: user.followersAggregate?.aggregate?.count
         )
     }
 
@@ -545,19 +509,6 @@ public final class HardcoverService: Sendable {
         }
     }
 
-    public func updateEditionForRead(readId: Int, editionId: Int) async throws {
-        let mutation = """
-            mutation {
-                update_user_book_read(id: \(readId), object: {edition_id: \(editionId)}) {
-                    error
-                    user_book_read { id edition_id }
-                }
-            }
-            """
-        let response: UpdateReadProgressResponse = try await performQuery(mutation)
-        try response.validate()
-    }
-
     public func rateBook(userBookId: Int, rating: Double) async throws {
         guard rating >= 0.5 && rating <= 5.0 else {
             throw HardcoverError.invalidRating
@@ -678,29 +629,6 @@ public final class HardcoverService: Sendable {
         }
     }
 
-    public func followUser(userId: Int) async throws {
-        let mutation = """
-            mutation {
-                insert_followed_user(user_id: \(userId)) {
-                    error
-                    followed_users { user_id followed_user_id }
-                }
-            }
-            """
-        let _: GenericMutResponse = try await performQuery(mutation)
-    }
-
-    public func unfollowUser(userId: Int) async throws {
-        let mutation = """
-            mutation {
-                delete_followed_user(user_id: \(userId)) {
-                    id user_id followed_user_id
-                }
-            }
-            """
-        let _: GenericMutResponse = try await performQuery(mutation)
-    }
-
     public func getFollowing() async throws -> [HardcoverFriend] {
         let profile = try await getUserProfile()
         _ = profile.username
@@ -801,17 +729,6 @@ public final class HardcoverService: Sendable {
                 coverUrl: lb.book?.image?.url
             )
         }
-    }
-
-    public func addBookToList(bookId: Int, listId: Int) async throws {
-        let mutation = """
-            mutation {
-                insert_list_books(objects: {list_id: \(listId), book_id: \(bookId)}) {
-                    returning { id }
-                }
-            }
-            """
-        let _: GenericMutResponse = try await performQuery(mutation)
     }
 
     public func getReadingGoal() async throws -> HardcoverReadingGoalLegacy? {
@@ -952,70 +869,6 @@ public final class HardcoverService: Sendable {
                 coverImageUrl: book.image?.url
             )
         }
-    }
-
-    public func syncProgressForMatchedBook(localBookId: String, progress: Double) async throws {
-        guard let match = SettingsManager.shared.getHardcoverMatch(forLocalBookId: localBookId) else {
-            throw HardcoverError.noMatchFound
-        }
-
-        let userBooks = try await getUserBooks(limit: 100)
-        guard let userBook = userBooks.first(where: { $0.book.id == match.hardcoverBookId }) else {
-            return
-        }
-
-        guard let currentRead = userBook.currentReadSession else { return }
-
-        var pageCount = match.editionPageCount
-        let editionId = match.hardcoverEditionId ?? userBook.editionId
-
-        if pageCount == nil, let fetchEditionId = editionId {
-            let details = try await getEditionDetails(editionId: fetchEditionId)
-            pageCount = details.pages
-            if let pages = pageCount {
-                let updatedMatch = HardcoverBookMatch(
-                    id: match.id,
-                    localBookId: match.localBookId,
-                    hardcoverBookId: match.hardcoverBookId,
-                    hardcoverUserBookId: userBook.id,
-                    hardcoverEditionId: editionId,
-                    editionPageCount: pages,
-                    matchedAt: match.matchedAt,
-                    matchType: match.matchType,
-                    localBookTitle: match.localBookTitle,
-                    hardcoverBookTitle: match.hardcoverBookTitle
-                )
-                SettingsManager.shared.addHardcoverMatch(updatedMatch)
-            }
-        }
-
-        guard let pages = pageCount, pages > 0 else { return }
-        let currentPage = max(1, Int(Double(pages) * progress))
-        try await updateProgressPages(userBookReadId: currentRead.id, currentPage: currentPage, editionId: editionId)
-    }
-
-    public func updateProgressPages(userBookReadId: Int, currentPage: Int, editionId: Int?) async throws {
-        guard currentPage > 0 else { throw HardcoverError.invalidProgress }
-        let editionParam = editionId.map { ", edition_id: \($0)" } ?? ""
-        let mutation = """
-            mutation {
-                update_user_book_read(id: \(userBookReadId), object: {progress_pages: \(currentPage)\(editionParam)}) {
-                    error
-                    user_book_read { id progress_pages }
-                }
-            }
-            """
-        let response: UpdateReadProgressResponse = try await performQuery(mutation)
-        try response.validate()
-    }
-
-    public func markMatchedBookAsFinished(localBookId: String) async throws {
-        guard let match = SettingsManager.shared.getHardcoverMatch(forLocalBookId: localBookId),
-            let userBookId = match.hardcoverUserBookId
-        else {
-            throw HardcoverError.noMatchFound
-        }
-        try await markBookAsFinished(userBookId: userBookId)
     }
 
     private func performQuery<T: Decodable>(

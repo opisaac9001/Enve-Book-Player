@@ -43,15 +43,13 @@ enum LinkedBookPassageService {
         return match
     }
 
-    static func bookForOpening(_ ebook: Book, match: LinkedBookSparseMatcher.Match) throws -> Book {
+    static func locatorForOpening(_ match: LinkedBookSparseMatcher.Match) throws -> String {
         let data = try JSONSerialization.data(withJSONObject: [
             "href": match.href ?? "",
             "type": "application/xhtml+xml",
             "locations": ["totalProgression": match.ebookProgress],
             "text": ["highlight": match.quote],
         ])
-        var target = ebook
-        target.epubLocator = String(decoding: data, as: UTF8.self)
-        return target
+        return String(decoding: data, as: UTF8.self)
     }
 }

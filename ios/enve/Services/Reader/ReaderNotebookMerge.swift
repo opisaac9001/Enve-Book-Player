@@ -219,13 +219,7 @@ enum ReaderNotebookMerge {
 
     static func providerDate(_ rawValue: String?) -> Date? {
         guard let rawValue, !rawValue.isEmpty else { return nil }
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let precise = formatter.date(from: rawValue) {
-            return precise
-        }
-        return ISO8601DateFormatter().date(from: rawValue)
-            ?? DateFormatter.bookloreFallback.date(from: rawValue)
+        return ISO8601Timestamp.parse(rawValue) ?? DateFormatter.bookloreFallback.date(from: rawValue)
     }
 
     static func locatorJSON(fromCFI cfi: String?, existingLocator: String?) -> String? {
@@ -237,7 +231,9 @@ enum ReaderNotebookMerge {
         {
             var locations = json["locations"] as? [String: Any] ?? [:]
             locations["cfi"] = cfi
-            locations[EpubLocationBridge.sourceEngineLocationKey] = ReaderEngineKind.foliate.rawValue
+            if locations[EpubLocationBridge.sourceEngineLocationKey] == nil {
+                locations[EpubLocationBridge.sourceEngineLocationKey] = ReaderEngineKind.foliate.rawValue
+            }
             json["locations"] = locations
             if let newData = try? JSONSerialization.data(withJSONObject: json),
                 let newStr = String(data: newData, encoding: .utf8)

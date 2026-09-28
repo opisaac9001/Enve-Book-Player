@@ -189,8 +189,8 @@ fun ObsidianSyncScreen(
 
             val transient = state.error ?: state.message
             transient?.let { text ->
-                val mono = EnveTheme.eink.monochrome
-                val errorTint = if (mono) colors.primaryText else ErrorRed
+                val eink = EnveTheme.eink
+                val errorTint = if (eink.monochrome) colors.primaryText else ErrorRed
                 SettingsCard(modifier = Modifier.padding(horizontal = DS.Spacing.LG.scaled(metrics))) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
@@ -199,7 +199,7 @@ fun ObsidianSyncScreen(
                             tint = if (state.error == null) colors.accent else errorTint,
                         )
                         Text(
-                            text = if (mono && state.error != null) "⚠ $text" else text,
+                            text = if (state.error != null) eink.errorMessage(text) else text,
                             color = if (state.error == null) colors.secondaryText else errorTint,
                             fontSize = DS.FontSize.Body.scaled(metrics),
                             modifier = Modifier

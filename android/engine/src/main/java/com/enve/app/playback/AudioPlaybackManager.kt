@@ -107,6 +107,14 @@ internal fun resolveRelativeQueueSeek(
     )
 }
 
+data class NowPlayingMetadata(
+    val bookId: String,
+    val mediaId: String,
+    val title: String,
+    val author: String?,
+    val coverUrl: String?,
+)
+
 data class PlaybackState(
     val isPlaying: Boolean = false,
     val isBuffering: Boolean = false,
@@ -142,6 +150,8 @@ class AudioPlaybackManager @Inject constructor(
 
     private val _currentBookId = MutableStateFlow<String?>(null)
     val currentBookIdFlow: StateFlow<String?> = _currentBookId.asStateFlow()
+    private val _nowPlayingMetadata = MutableStateFlow<NowPlayingMetadata?>(null)
+    val nowPlayingMetadata: StateFlow<NowPlayingMetadata?> = _nowPlayingMetadata.asStateFlow()
     var currentBookId: String?
         get() = _currentBookId.value
         private set(value) { _currentBookId.value = value }
@@ -212,6 +222,7 @@ class AudioPlaybackManager @Inject constructor(
     ) {
         resetTransientStateForNewBook(bookId)
         currentBookId = bookId
+        _nowPlayingMetadata.value = NowPlayingMetadata(bookId, mediaId, title, author, coverUrl)
         val pending = PendingPlayback.Single(
             streamUrl = streamUrl,
             bookId = bookId,
@@ -286,6 +297,7 @@ class AudioPlaybackManager @Inject constructor(
     ) {
         resetTransientStateForNewBook(bookId)
         currentBookId = bookId
+        _nowPlayingMetadata.value = NowPlayingMetadata(bookId, mediaId, title, author, coverUrl)
         val pending = PendingPlayback.Multi(
             tracks = tracks,
             bookId = bookId,
@@ -442,6 +454,7 @@ class AudioPlaybackManager @Inject constructor(
 
     fun stop() {
         currentBookId = null
+        _nowPlayingMetadata.value = null
         pendingPlayback = null
         activeTrackDurationsMs = emptyList()
         activeTrackOffsetsMs = emptyList()
@@ -456,6 +469,7 @@ class AudioPlaybackManager @Inject constructor(
 
     fun release() {
         currentBookId = null
+        _nowPlayingMetadata.value = null
         pendingPlayback = null
         activeTrackDurationsMs = emptyList()
         activeTrackOffsetsMs = emptyList()

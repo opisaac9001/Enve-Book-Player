@@ -159,18 +159,6 @@ actor SMBService {
         throw SMBError.unavailable
         #endif
     }
-    func enumerateRecursively(from rootPath: String, maxDepth: Int = 8) -> AsyncThrowingStream<FileEntry, Error> {
-        AsyncThrowingStream { continuation in
-            Task {
-                do {
-                    try await self._enumerate(from: rootPath, depth: 0, maxDepth: maxDepth, continuation: continuation)
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-        }
-    }
 
     private func _enumerate(
         from path: String,

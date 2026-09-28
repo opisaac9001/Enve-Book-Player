@@ -8,6 +8,7 @@ import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.BookSource
 import com.enve.core.data.remote.ConnectionScope
 import com.enve.storyteller.StorytellerProviderAdapter
+import com.enve.core.data.sync.AudioLocatorPosition
 import com.enve.core.data.sync.ProviderSyncStrategy
 import com.enve.core.data.sync.ProviderSyncResult
 import javax.inject.Inject
@@ -70,7 +71,7 @@ class StorytellerSyncStrategy @Inject constructor(
                     connectionId = book.connectionId,
                     progress = snapshot.percentage,
                     currentTimeSec = snapshot.positionMs?.let { it / 1000 } ?: -1L,
-                    locatorJson = snapshot.locatorJson,
+                    locatorJson = snapshot.locatorJson?.takeUnless(AudioLocatorPosition::isAudioLocator),
                     nowMs = System.currentTimeMillis(),
                 )
                 pulled += 1

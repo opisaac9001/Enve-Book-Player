@@ -8,6 +8,7 @@ import com.enve.core.data.local.toBook
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
 import com.enve.core.data.sync.KOReaderBookLink
+import com.enve.app.data.sync.KOReaderDocumentId
 import com.enve.app.data.sync.KOReaderHubService
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
@@ -34,6 +35,14 @@ data class KOReaderHubState(
 
     val ebooks: List<Book> = emptyList(),
     val links: Map<String, KOReaderBookLink> = emptyMap(),
+    val linkEditor: KOReaderLinkEditorState? = null,
+)
+
+data class KOReaderLinkEditorState(
+    val book: Book,
+    val existingHash: String,
+    val suggestedFilename: String,
+    val hasLocalFile: Boolean,
 )
 
 @HiltViewModel
@@ -163,27 +172,45 @@ class KOReaderHubViewModel @Inject constructor(
         }
     }
 
-    fun saveLink(book: Book, hash: String) {
-        service.link(book, hash, isAutomatic = false)
-        _state.update {
-            it.copy(
-                links = service.links.associateBy { l -> l.bookStableId },
-                linkedCount = service.links.size,
-            )
+    fun openLinkEditor(book: Book) {
+        viewModelScope.launch {
+            val editor = withContext(Dispatchers.IO) {
+                KOReaderLinkEditorState(
+                    book = book,
+                    existingHash = service.link(book.uniqueKey)?.documentHash.orEmpty(),
+                    suggestedFilename = service.suggestedFilename(book).orEmpty(),
+                    hasLocalFile = service.resolveEbookFile(book) != null,
+                )
+            }
+            _state.update { it.copy(linkEditor = editor) }
         }
+    }
+
+    fun closeLinkEditor() = _state.update { it.copy(linkEditor = null) }
+
+    fun saveLink(book: Book, hash: String, filename: String?) {
+        if (hash.isNotBlank()) service.link(book, hash, isAutomatic = false)
+        service.linkFilename(book, filename)
+        refreshLinks()
     }
 
     fun removeLink(book: Book) {
         service.unlink(book.uniqueKey)
+        refreshLinks()
+    }
+
+    private fun refreshLinks() {
+        val links = service.links
         _state.update {
             it.copy(
-                links = service.links.associateBy { l -> l.bookStableId },
-                linkedCount = service.links.size,
+                links = links.associateBy { l -> l.bookStableId },
+                linkedCount = links.size,
+                linkEditor = null,
             )
         }
     }
 
-    fun hasLocalFile(book: Book): Boolean = service.resolveEbookFile(book) != null
+    fun documentIdForFilename(filename: String): String? = KOReaderDocumentId.fromFilename(filename)
 
     fun computeHashFromFile(book: Book, onResult: (String?) -> Unit) {
         viewModelScope.launch {

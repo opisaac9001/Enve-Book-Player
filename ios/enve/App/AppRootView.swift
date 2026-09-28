@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import Logging
 import SwiftUI
 
 #if targetEnvironment(macCatalyst)
@@ -132,9 +133,7 @@ struct AppRootView: View {
             )
         }
         .onChange(of: appState.isBootstrapComplete) { _, complete in
-            if complete, !UserDefaults.standard.bool(forKey: "imagine.hasSeenTour"),
-                Self.launchArgumentValue("imagineScreen") == nil
-            {
+            if complete, !UserDefaults.standard.bool(forKey: "imagine.hasSeenTour"), !Self.isDebugRouteLaunch {
                 tourPresented = true
             }
         }
@@ -171,13 +170,16 @@ struct AppRootView: View {
     }
 
     private func openEnveBookLink(_ url: URL) {
+        // An OPDS implicit sign-in can come back by relaunching the app rather than through the in-app
+        // browser sheet, so the waiting flow gets first refusal on the callback.
+        if OPDSAuthenticationService.isCallback(url) {
+            OPDSAuthenticationService.shared.handleCallback(url)
+            return
+        }
         if let request = EnveBookLink.readerRequest(from: url),
-            var book = appState.bookInMemory(stableId: request.bookID)
+            let book = appState.bookInMemory(stableId: request.bookID)
         {
-            if let locator = request.locator, !locator.isEmpty {
-                book.epubLocator = locator
-            }
-            engine.playback.openEbook(book)
+            engine.playback.openEbook(book, at: request.locator)
         } else if let request = EnveBookLink.playerRequest(from: url),
             let book = appState.bookInMemory(stableId: request.bookID)
         {
@@ -270,8 +272,14 @@ struct AppRootView: View {
         case "reader", "readerchrome", "ttsvoices", "ttsdownload", "ttsplayback", "kokorodownload", "kokoroplayback":
             var ebook: Book?
             if let needle = openBook, !needle.isEmpty {
-                ebook = await engine.library.firstBooks(mediaType: "ebook", limit: 500)
-                    .first { $0.title.localizedCaseInsensitiveContains(needle) }
+                ebook = appState.bookInMemory(stableId: needle)
+                if ebook == nil {
+                    ebook = await appState.bookStore.book(stableId: needle)
+                }
+                if ebook == nil {
+                    ebook = await engine.library.firstBooks(mediaType: "ebook", limit: 500)
+                        .first { $0.title.localizedCaseInsensitiveContains(needle) }
+                }
             }
             if ebook == nil, openBook?.isEmpty ?? true {
                 ebook = await engine.library.continueReadingBooks(limit: 1).first
@@ -282,6 +290,7 @@ struct AppRootView: View {
             if ebook == nil, openBook?.isEmpty ?? true {
                 ebook = await engine.library.firstBooks(mediaType: "ebook", limit: 1).first
             }
+            AppLogger.general.info("[DebugRoute] \(route ?? "") needle=\(openBook ?? "") resolved=\(ebook?.stableId ?? "nil")")
             if let ebook {
                 engine.playback.presentReader(for: ebook)
             } else if route == "reader", let smokeBook = Self.makeReaderSmokeBook() {
@@ -1036,7 +1045,6 @@ struct AppRootView: View {
             encoding: .utf8
         )
     }
-    #endif
 
     private func runChapterExtractionTest() async {
         func write(_ s: String) {
@@ -1511,7 +1519,7 @@ struct AppRootView: View {
         for w in works {
             let positions = Set(w.editions.flatMap { $0.sources }.compactMap(position))
             if positions.count > 1 {
-                violations.append("⚠️ \(w.title): merged positions \(positions.sorted().prefix(8).joined(separator: ","))")
+                violations.append("\(w.title): merged positions \(positions.sorted().prefix(8).joined(separator: ","))")
             }
         }
 
@@ -1535,6 +1543,8 @@ struct AppRootView: View {
         write(lines.joined(separator: "\n"))
     }
 
+
+    #endif
     @ViewBuilder
     private func debugRoutedScreen(_ route: String) -> some View {
         switch route {
@@ -1632,6 +1642,9 @@ struct AppRootView: View {
         tab = item
     }
 
+    #if DEBUG
+    private static var isDebugRouteLaunch: Bool { launchArgumentValue("imagineScreen") != nil }
+
     private static func launchArgumentValue(_ key: String) -> String? {
         let args = ProcessInfo.processInfo.arguments
         guard let index = args.firstIndex(of: "-\(key)"),
@@ -1668,6 +1681,9 @@ struct AppRootView: View {
         }
         UserDefaults.standard.synchronize()
     }
+    #else
+    private static let isDebugRouteLaunch = false
+    #endif
 
     #if DEBUG
     private static func makePlayerSmokeBook() -> Book {

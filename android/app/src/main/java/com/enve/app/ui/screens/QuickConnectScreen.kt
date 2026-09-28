@@ -163,7 +163,7 @@ fun QuickConnectScreen(
 
             quickConnect.error?.let {
                 Spacer(Modifier.height(12.dp))
-                Text(if (mono) "⚠ $it" else it, color = if (mono) primary else Color(0xFFFF453A), fontSize = 12.sp)
+                Text(EnveTheme.eink.errorMessage(it), color = if (mono) primary else Color(0xFFFF453A), fontSize = 12.sp)
             }
 
             Spacer(Modifier.height(28.dp))

@@ -16,6 +16,14 @@ final class ReaderAnnotationController {
     static let annotationDecorationGroup = "reader-annotations"
     static let noteIndicatorDecorationGroup = "reader-note-indicators"
 
+    private(set) var anchorResolution: [String: Bool] = [:]
+
+    func updateAnchorResolution(_ resolution: [String: Bool]) {
+        guard anchorResolution != resolution else { return }
+        onChange?()
+        anchorResolution = resolution
+    }
+
     var onChange: (() -> Void)?
     var onDecorationRefresh: (() -> Void)?
     var locationProvider: (() -> ReaderArtifactLocation?)?
@@ -98,11 +106,12 @@ final class ReaderAnnotationController {
             selection.locator.locations.totalProgression
             ?? selection.locator.locations.progression
             ?? context.progress ?? 0
-        let locator =
+        let engineLocator =
             EpubLocationBridge.markingSourceEngine(
                 context.engineKind,
                 in: selection.locatorJSON
             ) ?? selection.locatorJSON
+        let locator = EpubLocationBridge.markingEPUBCFI(selection.epubCFI, in: engineLocator) ?? engineLocator
 
         let annotation = store.addAnnotation(
             text: text,
@@ -187,6 +196,8 @@ final class ReaderAnnotationController {
     }
 
     func syncNotebookEntriesIfNeeded() async {
+        store.loadBookmarks()
+        store.loadAnnotations()
         let outcome = await sync.pull(localArtifacts: {
             ReaderNotebookMerge.Snapshot(bookmarks: self.bookmarks, annotations: self.annotations)
         })
@@ -198,7 +209,8 @@ final class ReaderAnnotationController {
         var noteIndicators: [Decoration] = []
         for annotation in annotations {
             guard let locatorJSON = annotation.locator,
-                let locator = try? Locator(jsonString: locatorJSON)
+                let readiumLocatorJSON = EpubLocationBridge.locatorForReadiumRestore(locatorJSON),
+                let locator = try? Locator(jsonString: readiumLocatorJSON)
             else {
                 continue
             }

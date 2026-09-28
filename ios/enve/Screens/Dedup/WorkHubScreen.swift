@@ -181,7 +181,12 @@ struct WorkHubScreen: View {
             if let edition = selectedEdition {
                 EmberButton(title: primaryTitle(edition), systemImage: edition.format == .ebook ? "book.fill" : "play.fill") {
                     PlatformHaptics.impact(.light)
-                    engine.playback.play(playbackSource(for: edition))
+                    let source = playbackSource(for: edition)
+                    if edition.format == .ebook {
+                        engine.playback.openEbook(source)
+                    } else {
+                        engine.playback.play(source)
+                    }
                 }
             }
             if let other = crossFormatEdition {
@@ -190,7 +195,11 @@ struct WorkHubScreen: View {
                     systemImage: other.format == .ebook ? "book" : "headphones"
                 ) {
                     PlatformHaptics.impact(.light)
-                    engine.playback.play(other.resumeSource)
+                    if other.format == .ebook {
+                        engine.playback.openEbook(other.resumeSource)
+                    } else {
+                        engine.playback.play(other.resumeSource)
+                    }
                 }
             }
         }

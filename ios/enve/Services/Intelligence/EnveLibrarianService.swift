@@ -111,21 +111,10 @@ final class EnveLibrarianService {
         return trimmed.isEmpty ? suffix : trimmed
     }
 
-    private func formatTime(_ time: TimeInterval) -> String {
-        let total = Int(max(0, time))
-        let hours = total / 3600
-        let minutes = (total % 3600) / 60
-        let seconds = total % 60
-        if hours > 0 {
-            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
-        }
-        return String(format: "%d:%02d", minutes, seconds)
-    }
-
     private func rangeDescription(_ context: BookContextResult) -> String {
         switch context.source {
         case .audiobookTranscript:
-            return "Allowed time range: \(formatTime(context.range.lowerBound)) to \(formatTime(context.range.upperBound))"
+            return "Allowed time range: \(PlaybackTime.clock(context.range.lowerBound)) to \(PlaybackTime.clock(context.range.upperBound))"
         case .ebookText:
             return "Allowed reading range: \(formatProgress(context.range.lowerBound)) to \(formatProgress(context.range.upperBound))"
         }

@@ -87,24 +87,6 @@ final class BookDownloadManager: NSObject, ObservableObject {
         completedBookIds.remove(bookId)
     }
 
-    func pauseDownload(bookId: String) {
-        var taskToPause: URLSessionDownloadTask?
-        stateQueue.sync {
-            taskToPause = bookIdToTask[bookId]
-        }
-        taskToPause?.suspend()
-        AppLogger.network.info("Paused download for: \(bookId)")
-    }
-
-    func resumeDownload(bookId: String) {
-        var taskToResume: URLSessionDownloadTask?
-        stateQueue.sync {
-            taskToResume = bookIdToTask[bookId]
-        }
-        taskToResume?.resume()
-        AppLogger.network.info("Resumed download for: \(bookId)")
-    }
-
     private lazy var session: URLSession = {
         let config = URLSessionConfiguration.default
         config.waitsForConnectivity = true
@@ -665,6 +647,7 @@ extension BookDownloadManager: URLSessionDownloadDelegate {
         completionHandler(.performDefaultHandling, nil)
     }
 
+    /// Restore credentials only on the original request origin; strip them elsewhere and reject unsafe redirects.
     nonisolated func urlSession(
         _ session: URLSession,
         task: URLSessionTask,
@@ -672,12 +655,23 @@ extension BookDownloadManager: URLSessionDownloadDelegate {
         newRequest request: URLRequest,
         completionHandler: @escaping @Sendable (URLRequest?) -> Void
     ) {
+        guard let url = request.url, HTTPRedirectPolicy.isFollowable(url, from: response.url) else {
+            AppLogger.network.warning("Refused an unsafe download redirect")
+            completionHandler(nil)
+            return
+        }
+
+        let origin = HTTPRedirectPolicy.origin(ofOriginalRequestIn: task)
+        guard origin?.matches(url) == true else {
+            completionHandler(HTTPRedirectPolicy.sanitized(request, keepingCredentialsFor: origin))
+            return
+        }
+
         var redirected = request
         if let originalAuth = task.originalRequest?.value(forHTTPHeaderField: "Authorization"),
             redirected.value(forHTTPHeaderField: "Authorization") == nil
         {
             redirected.setValue(originalAuth, forHTTPHeaderField: "Authorization")
-            AppLogger.network.info("Re-applied auth header through redirect to \(redirected.url?.host ?? "?")")
         }
         completionHandler(redirected)
     }

@@ -127,12 +127,14 @@ object ReadiumPortableAnchorScript {
                 };
             }
 
-            const startElement = range.startContainer.nodeType === Node.ELEMENT_NODE
-                ? range.startContainer
-                : range.startContainer.parentElement;
-            const scope = startElement?.closest?.('p,li,blockquote,dd,dt,figcaption,pre,div')
-                ?? startElement
-                ?? document.body;
+            function blockOf(node) {
+                const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+                return element?.closest?.('p,li,blockquote,dd,dt,figcaption,pre,div') ?? element;
+            }
+            const startScope = blockOf(range.startContainer) ?? document.body;
+            const scope = compact(startScope.textContent).includes(exact)
+                ? startScope
+                : blockOf(range.commonAncestorContainer) ?? document.body;
             const context = compact(scope.textContent);
             const index = context.indexOf(exact);
             const cfi = cfiRangeParts(range);
@@ -511,7 +513,8 @@ object ReadiumPortableAnchorScript {
                 insertion.collapse(true);
                 insertion.insertNode(marker);
                 const parent = marker.parentNode;
-                marker.scrollIntoView({ block: 'center', inline: 'center' });
+                marker.id = 'enve-restore-anchor';
+                readium.scrollToId(marker.id);
                 marker.remove();
                 parent?.normalize();
                 return 'true';
@@ -520,8 +523,7 @@ object ReadiumPortableAnchorScript {
                 ? document.querySelector(locations.cssSelector)
                 : null;
             if (!element) return 'false';
-            element.scrollIntoView({ block: 'center', inline: 'center' });
-            return 'true';
+            return String(readium.scrollToLocator({ locations: { cssSelector: locations.cssSelector } }));
         })();
     """.trimIndent()
 }

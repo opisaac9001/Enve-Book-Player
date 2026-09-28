@@ -14,6 +14,22 @@ val foliateSource = rootProject.layout.projectDirectory.dir("ThirdParty/foliate-
 val foliateMetadata = rootProject.layout.projectDirectory.dir("BuildSupport/FoliateRuntime")
 val generatedFoliateAssets = layout.buildDirectory.dir("generated/foliateRuntime/assets")
 val generatedLegalAssets = layout.buildDirectory.dir("generated/legal/assets")
+val releaseKeystoreFile = providers.environmentVariable("ENVE_RELEASE_KEYSTORE_FILE").orNull
+val releaseStorePassword = providers.environmentVariable("ENVE_RELEASE_STORE_PASSWORD").orNull
+val releaseKeyAlias = providers.environmentVariable("ENVE_RELEASE_KEY_ALIAS").orNull
+val releaseKeyPassword = providers.environmentVariable("ENVE_RELEASE_KEY_PASSWORD").orNull
+val releaseSigningValues = listOf(
+    releaseKeystoreFile,
+    releaseStorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword,
+)
+val releaseSigningConfigured = releaseSigningValues.all { !it.isNullOrBlank() }
+
+check(releaseSigningValues.none { !it.isNullOrBlank() } || releaseSigningConfigured) {
+    "Release signing requires ENVE_RELEASE_KEYSTORE_FILE, ENVE_RELEASE_STORE_PASSWORD, " +
+        "ENVE_RELEASE_KEY_ALIAS, and ENVE_RELEASE_KEY_PASSWORD."
+}
 val foliateRuntimeFiles = listOf(
     "view.js",
     "epub.js",
@@ -130,8 +146,8 @@ android {
         applicationId = "com.enve.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 51
-        versionName = "1.2 build 51"
+        versionCode = 52
+        versionName = "1.2 build 52"
         buildConfigField(
             "String",
             "SOURCE_PROVENANCE",
@@ -141,8 +157,22 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        if (releaseSigningConfigured) {
+            create("release") {
+                storeFile = file(requireNotNull(releaseKeystoreFile))
+                storePassword = requireNotNull(releaseStorePassword)
+                keyAlias = requireNotNull(releaseKeyAlias)
+                keyPassword = requireNotNull(releaseKeyPassword)
+            }
+        }
+    }
+
     buildTypes {
         release {
+            if (releaseSigningConfigured) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
@@ -293,8 +323,8 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 
     testImplementation("junit:junit:4.13.2")
-    androidTestImplementation("androidx.test.ext:junit:1.2.1")
-    androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
+    androidTestImplementation("androidx.test.ext:junit:1.3.0")
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
 }
 

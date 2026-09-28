@@ -47,8 +47,12 @@ class StoryAlignWorker @AssistedInject constructor(
                 setForeground(foregroundInfo(job.ebookTitle, overall))
             }
             val result = generator.generate(job, settings, sink)
-            val reportJson = """{"alignedSentences":${result.alignedSentences},"totalSentences":${result.totalSentences}}"""
-            repo.markDone(jobId, outputPath = result.outputPath, outputBookId = result.outputBookId, reportJson = reportJson)
+            repo.markDone(
+                jobId,
+                outputPath = result.outputPath,
+                outputBookId = result.outputBookId,
+                reportJson = StoryAlignReport.encode(result.report),
+            )
             Result.success()
         } catch (e: CancellationException) {
 

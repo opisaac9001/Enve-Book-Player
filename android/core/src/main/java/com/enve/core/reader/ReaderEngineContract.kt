@@ -1,14 +1,18 @@
 package com.enve.core.reader
 
 import com.enve.core.data.model.BookSource
+import com.enve.core.data.util.optArray
+import com.enve.core.data.util.optDouble
+import com.enve.core.data.util.optNonBlankString
+import com.enve.core.data.util.stringOrNull
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -184,13 +188,13 @@ object EpubBridgeCheckpointCodec {
     ): EpubBridgeCheckpoint? {
         val root = runCatching { json.parseToJsonElement(locatorJson).jsonObject }.getOrNull()
             ?: return null
-        val href = root.string("href")
+        val href = root.optNonBlankString("href")
         val locations = root["locations"] as? JsonObject ?: JsonObject(emptyMap())
         val domRange = (locations["domRange"] as? JsonObject)?.let {
             runCatching { json.decodeFromJsonElement(ReaderDomRange.serializer(), it) }.getOrNull()
         }
         val text = root["text"] as? JsonObject
-        val exact = text?.string("highlight")?.compactAnchorText()
+        val exact = text?.optNonBlankString("highlight")?.compactAnchorText()
         val foliateCfi = foliateCfi(locatorJson)
         return EpubBridgeCheckpoint(
             publicationSha256 = publicationSha256,
@@ -201,15 +205,15 @@ object EpubBridgeCheckpointCodec {
             sourceEngine = if (foliateCfi != null) ReaderEngineKind.FOLIATE else ReaderEngineKind.READIUM,
             href = href,
             epubCfi = foliateCfi,
-            cssSelector = locations.string("cssSelector"),
+            cssSelector = locations.optNonBlankString("cssSelector"),
             domRange = domRange,
-            resourceProgression = locations.double("progression")?.boundedProgress(),
-            totalProgression = locations.double("totalProgression")?.boundedProgress(),
+            resourceProgression = locations.optDouble("progression")?.boundedProgress(),
+            totalProgression = locations.optDouble("totalProgression")?.boundedProgress(),
             textQuote = exact?.takeIf { it.isNotBlank() }?.let {
                 ReaderTextQuote(
                     exact = it,
-                    prefix = text.string("before")?.compactAnchorText()?.takeLast(TEXT_CONTEXT_LENGTH),
-                    suffix = text.string("after")?.compactAnchorText()?.take(TEXT_CONTEXT_LENGTH),
+                    prefix = text.optNonBlankString("before")?.compactAnchorText()?.takeLast(TEXT_CONTEXT_LENGTH),
+                    suffix = text.optNonBlankString("after")?.compactAnchorText()?.take(TEXT_CONTEXT_LENGTH),
                 )
             },
             nativeReadiumLocatorJson = locatorJson,
@@ -225,6 +229,9 @@ object EpubBridgeCheckpointCodec {
             checkpoint.domRange?.let {
                 put("domRange", json.encodeToJsonElement(ReaderDomRange.serializer(), it))
             }
+            nativeHtmlIds(checkpoint.nativeReadiumLocatorJson).takeIf { it.isNotEmpty() }?.let { ids ->
+                put("fragments", JsonArray(ids.map(::JsonPrimitive)))
+            }
         }
         return buildJsonObject {
             put("href", href)
@@ -238,6 +245,13 @@ object EpubBridgeCheckpointCodec {
                 })
             }
         }.toString()
+    }
+
+    private fun nativeHtmlIds(locatorJson: String?): List<String> {
+        val root = locatorJson?.let { runCatching { json.parseToJsonElement(it).jsonObject }.getOrNull() } ?: return emptyList()
+        return (root["locations"] as? JsonObject)?.optArray("fragments").orEmpty()
+            .mapNotNull { it.stringOrNull() }
+            .filter { it.isNotBlank() && '=' !in it && !it.startsWith("epubcfi(") }
     }
 
     fun decodeVisibleAnchor(value: String?): ReaderVisibleAnchor? {
@@ -300,7 +314,7 @@ object EpubBridgeCheckpointCodec {
                 runCatching { element.jsonPrimitive.content }.getOrNull()
                     ?.takeIf(String::isWrappedEpubCfi)
             }
-            ?: locations.string("cfi")?.takeIf(String::isWrappedEpubCfi)
+            ?: locations.optNonBlankString("cfi")?.takeIf(String::isWrappedEpubCfi)
     }
 
     fun foliateCfi(value: String?): String? {
@@ -312,8 +326,8 @@ object EpubBridgeCheckpointCodec {
         }
         val root = runCatching { json.parseToJsonElement(raw).jsonObject }.getOrNull() ?: return null
         val locations = root["locations"] as? JsonObject ?: return null
-        return locations.string("cfi")
-            ?.takeIf { locations.string("enveSourceEngine") == "foliate" }
+        return locations.optNonBlankString("cfi")
+            ?.takeIf { locations.optNonBlankString("enveSourceEngine") == "foliate" }
             ?.takeIf(::isFullEpubCfi)
     }
 
@@ -359,17 +373,10 @@ object EpubBridgeCheckpointCodec {
     fun href(value: String?): String? {
         val raw = value?.trim()?.takeIf { it.startsWith("{") } ?: return null
         decode(raw)?.href?.takeIf { it.isNotBlank() }?.let { return it }
-        return runCatching { json.parseToJsonElement(raw).jsonObject.string("href") }
+        return runCatching { json.parseToJsonElement(raw).jsonObject.optNonBlankString("href") }
             .getOrNull()
             ?.takeIf { it.isNotBlank() }
     }
-
-    private fun JsonObject.string(key: String): String? =
-        runCatching { this[key]?.jsonPrimitive?.content }.getOrNull()
-            ?.takeIf { it.isNotBlank() }
-
-    private fun JsonObject.double(key: String): Double? =
-        runCatching { this[key]?.jsonPrimitive?.doubleOrNull }.getOrNull()
 
     private fun String.compactAnchorText(): String =
         Normalizer.normalize(this, Normalizer.Form.NFC)

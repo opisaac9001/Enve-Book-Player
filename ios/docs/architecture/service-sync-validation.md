@@ -1,6 +1,6 @@
 # Service sync validation — 2026-08-30
 
-Validated against the disposable services in the ignored `CLAUDE.local.md`, using the LAN endpoints and an arm64 iPhone Air simulator on iOS 26.4.1. No production server was used. The initial checks left lab configuration unchanged; the subsequent BookOrbit update is recorded below.
+Validated against a disposable test server, using the LAN endpoints and an arm64 iPhone Air simulator on iOS 26.4.1. No production server was used. The initial checks left lab configuration unchanged; the subsequent BookOrbit update is recorded below.
 
 ## Live results
 

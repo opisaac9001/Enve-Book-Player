@@ -35,6 +35,7 @@ struct SourceDetailScreen: View {
     @State private var webdavRootPath = "/"
     @State private var webdavIndexedPaths: [String] = ["/"]
     @State private var showingRootPicker = false
+    @State private var showingOneDriveFolderPicker = false
 
     @State private var isVerifying = false
     @State private var isReauthenticating = false
@@ -73,11 +74,24 @@ struct SourceDetailScreen: View {
                     if supportsInteractiveSSO(connection) {
                         ssoCard(connection)
                     }
-                    cloudflareCard
-                    mtlsCard
+                    if connection.type != .oneDrive {
+                        cloudflareCard
+                        mtlsCard
+                    }
                     if isWebDAVLike(connection) { webdavCard }
                     if connection.type == .plex { plexCard(connection) }
                     if connection.type == .booklore { koreaderCard }
+                    if connection.type == .oneDrive {
+                        SourcesCard {
+                            Overline("Library folders")
+                            Text("Choose which OneDrive folders appear as Enve libraries.")
+                                .font(.hearthCaption)
+                                .foregroundStyle(hearth.textSecondary)
+                            QuietButton(title: "Choose folders", systemImage: "folder") {
+                                showingOneDriveFolderPicker = true
+                            }
+                        }
+                    }
                     librariesCard(connection)
                     dangerCard(connection)
                 }
@@ -122,6 +136,22 @@ struct SourceDetailScreen: View {
                     persistWebDAVServerChanges()
                     mutateConnection { $0.rootPath = webdavRootPath }
                     Task { await LibraryCatalogCoordinator.shared.refreshConnectionLibraries(providerId: connectionId) }
+                }
+                .enveEnvironment()
+            }
+        }
+        .sheet(isPresented: $showingOneDriveFolderPicker) {
+            if let connection, connection.type == .oneDrive {
+                SourcesOneDriveLibraryPicker(connection: connection) { selectedIds in
+                    mutateConnection { $0.selectedLibraryIds = selectedIds }
+                    draftSelectedLibraryIds = selectedIds
+                    Task {
+                        await LibraryCatalogCoordinator.shared.refreshConnectionLibraries(
+                            providerId: connectionId,
+                            forceFullReconciliation: true
+                        )
+                        loadLibraries()
+                    }
                 }
                 .enveEnvironment()
             }
@@ -179,12 +209,22 @@ struct SourceDetailScreen: View {
     private func connectionCard(_ connection: ServerConnection) -> some View {
         SourcesCard {
             SourcesField(label: "Name", text: $name)
-            SourcesField(label: "Address", text: $url, keyboard: .URL)
-            if !isTorBoxConnection(connection) {
-                SourcesField(label: "Username", text: $username)
-            }
-            if !isKomgaSSO(connection) {
-                SourcesField(label: secretLabel(for: connection), text: $secret, secure: true)
+            if connection.type == .oneDrive {
+                HStack(spacing: 8) {
+                    Image(systemName: "person.crop.circle.fill")
+                        .foregroundStyle(hearth.ember)
+                    Text(connection.username ?? "Microsoft account")
+                        .font(.hearthBody)
+                        .foregroundStyle(hearth.text)
+                }
+            } else {
+                SourcesField(label: "Address", text: $url, keyboard: .URL)
+                if !isTorBoxConnection(connection) {
+                    SourcesField(label: "Username", text: $username)
+                }
+                if !isKomgaSSO(connection) {
+                    SourcesField(label: secretLabel(for: connection), text: $secret, secure: true)
+                }
             }
 
             if let statusMessage {
@@ -727,7 +767,25 @@ struct SourceDetailScreen: View {
         isReauthenticating = true
         errorMessage = nil
         Task {
+            defer { isReauthenticating = false }
             do {
+                if connection.type == .oneDrive {
+                    let provider = OneDriveProvider(connection: connection)
+                    let account = try await provider.authenticate()
+                    mutateConnection {
+                        $0.username = account.displayName
+                        $0.userId = account.driveId
+                        $0.isConnected = true
+                        $0.lastVerified = Date()
+                    }
+                    AuthenticationFailureStore.shared.clear(connectionId: connection.id)
+                    appState.providerConnections.clearReauthentication(connectionId: connection.id)
+                    username = account.displayName
+                    statusMessage = "Signed in again."
+                    PlatformHaptics.notification(.success)
+                    return
+                }
+
                 let fresh: ServerConnection
                 let refreshKeyPrefix: String
                 if connection.type == .audiobookshelf {
@@ -790,7 +848,6 @@ struct SourceDetailScreen: View {
             } catch {
                 errorMessage = error.localizedDescription
             }
-            isReauthenticating = false
         }
     }
 
@@ -800,6 +857,7 @@ struct SourceDetailScreen: View {
             || connection.type == .booklore
             || connection.type == .bookOrbit
             || connection.type == .komga
+            || connection.type == .oneDrive
     }
 
     private func isKomgaSSO(_ connection: ServerConnection) -> Bool {
@@ -1070,6 +1128,9 @@ struct SourceDetailScreen: View {
         }
         if connection.mtlsEnabled {
             MTLSManager.shared.deleteCert(for: connection.id)
+        }
+        if connection.type == .oneDrive {
+            OneDriveProvider.deleteCredentials(connectionId: connection.id)
         }
         if let index = appState.providerConnections.connections.firstIndex(where: { $0.id == connectionId }) {
             appState.providerConnections.connections.remove(at: index)

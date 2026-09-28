@@ -46,6 +46,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.enve.app.ui.components.SettingsMessageCard
 import com.enve.hearth.design.hearthDisplay
 import com.enve.app.ui.components.ScreenBackButton
 import com.enve.app.ui.components.SettingsCard
@@ -164,15 +165,15 @@ fun MetadataHubScreen(
             }
 
             state.error?.let {
-                val mono = EnveTheme.eink.monochrome
-                MetadataMessageCard(
-                    text = if (mono) "⚠ $it" else it,
-                    tint = if (mono) colors.primaryText else HearthRed,
+                val eink = EnveTheme.eink
+                SettingsMessageCard(
+                    text = eink.errorMessage(it),
+                    tint = if (eink.monochrome) colors.primaryText else HearthRed,
                     onDismiss = viewModel::clearTransientMessage,
                 )
             }
             state.message?.let {
-                MetadataMessageCard(text = it, tint = colors.accent, onDismiss = viewModel::clearTransientMessage)
+                SettingsMessageCard(text = it, tint = colors.accent, onDismiss = viewModel::clearTransientMessage)
             }
 
             Spacer(Modifier.height(80.dp.scaled(metrics)))
@@ -372,21 +373,4 @@ private fun EmptyMetadataText(text: String) {
         fontSize = DS.FontSize.Caption.scaled(metrics),
         modifier = Modifier.padding(horizontal = DS.Spacing.LG.scaled(metrics), vertical = DS.Spacing.MD.scaled(metrics)),
     )
-}
-
-@Composable
-private fun MetadataMessageCard(text: String, tint: Color, onDismiss: () -> Unit) {
-    val colors = EnveTheme.colors
-    val metrics = rememberAdaptiveMetrics()
-    SettingsCard(modifier = Modifier.padding(horizontal = DS.Spacing.LG.scaled(metrics))) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(DS.Spacing.LG.scaled(metrics)),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(text, color = tint, fontSize = DS.FontSize.Body.scaled(metrics), modifier = Modifier.weight(1f))
-            TextButton(onClick = onDismiss) { Text("Dismiss", color = colors.accent, fontSize = DS.FontSize.Caption.scaled(metrics)) }
-        }
-    }
 }

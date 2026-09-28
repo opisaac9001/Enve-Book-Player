@@ -16,6 +16,7 @@ private const val PLAYBACK_PROGRESS_PERSIST_INTERVAL_MS = 5_000L
 class PlayerProgressService @Inject constructor(
     private val syncCoordinator: SyncCoordinator,
     private val bookCache: BookCacheDao,
+    private val openProgress: PlaybackOpenProgressResolver,
 ) {
     private val lastPersistAtMs = ConcurrentHashMap<String, Long>()
 
@@ -26,10 +27,12 @@ class PlayerProgressService @Inject constructor(
     )
 
     fun sync(book: Book, currentTimeSec: Long, progressFraction: Float) {
+        if (openProgress.shouldHoldPush(book)) return
         syncCoordinator.pushProgress(book, currentTimeSec, progressFraction)
     }
 
     fun syncImmediate(book: Book, currentTimeSec: Long, progressFraction: Float) {
+        if (openProgress.shouldHoldPush(book)) return
         syncCoordinator.pushProgress(book, currentTimeSec, progressFraction, forceImmediate = true)
     }
 
@@ -84,7 +87,7 @@ class PlayerProgressService @Inject constructor(
         lastPersistAtMs[progressKey] = nowMs
         persisted?.let {
             PersistedPlaybackProgress(
-                book = it.copy(
+                book = it.forAudioPlayback().copy(
                     currentTime = positionSec,
                     duration = durationSec.takeIf { sec -> sec > 0L } ?: it.duration,
                 ),

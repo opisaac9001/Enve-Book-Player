@@ -9,50 +9,6 @@ struct SelectedLibraryPreference: Codable, Equatable {
     let backendId: String?
 }
 
-enum GridLayout: String, Codable {
-    case list
-    case twoColumn
-    case threeColumn
-    case fourColumn
-    case fiveColumn
-    case sixColumn
-    case grid
-
-    var columns: [GridItem] {
-        switch self {
-        case .list:
-            return [GridItem(.flexible())]
-        case .twoColumn:
-            return Array(repeating: GridItem(.flexible(), spacing: 16), count: 2)
-        case .threeColumn:
-            return Array(repeating: GridItem(.flexible(), spacing: 12), count: 3)
-        case .fourColumn:
-            return Array(repeating: GridItem(.flexible(), spacing: 12), count: 4)
-        case .fiveColumn:
-            return Array(repeating: GridItem(.flexible(), spacing: 12), count: 5)
-        case .sixColumn:
-            return Array(repeating: GridItem(.flexible(), spacing: 12), count: 6)
-        case .grid:
-            return Array(repeating: GridItem(.flexible(), spacing: 16), count: 2)
-        }
-    }
-
-    var iconName: String {
-        switch self {
-        case .list:
-            return "list.bullet"
-        case .twoColumn, .grid:
-            return "square.grid.2x2"
-        case .threeColumn:
-            return "square.grid.3x3"
-        case .fourColumn:
-            return "square.grid.4x3.fill"
-        case .fiveColumn, .sixColumn:
-            return "square.grid.3x3.fill"
-        }
-    }
-}
-
 enum BookCardStyle: String, Codable, CaseIterable, Identifiable {
     case standard
     case compact
@@ -85,22 +41,10 @@ enum BookCardStyle: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-enum BrowseSegment: String, Codable {
-    case authors
-    case narrators
-    case series
-    case collections
-}
-
 enum SeriesSortOption: String, Codable {
     case name
     case bookCount
     case recentlyAdded
-}
-
-enum SortDirection: String, Codable {
-    case ascending
-    case descending
 }
 
 @MainActor
@@ -134,9 +78,6 @@ final class LibraryDisplayPreferencesStore {
 
     private init() {}
 
-    func saveDownloadedOnly(_ value: Bool) { userDefaults.set(value, forKey: Self.downloadedOnlyKey) }
-    func loadDownloadedOnly() -> Bool { userDefaults.bool(forKey: Self.downloadedOnlyKey) }
-
     private enum CacheScopeRaw: String {
         case local
         case iCloudIfAvailable
@@ -163,38 +104,6 @@ final class LibraryDisplayPreferencesStore {
         }
     }
 
-    func saveSelectedLibraryPreference(from library: LibrarySection) {
-        let preference = SelectedLibraryPreference(
-            type: library.type,
-            id: library.id,
-            key: library.key,
-            backendId: library.backendId
-        )
-        encode(preference, forKey: Self.selectedLibraryKey)
-    }
-
-    func loadSelectedLibraryPreference() -> SelectedLibraryPreference? {
-        decode(SelectedLibraryPreference.self, forKey: Self.selectedLibraryKey)
-    }
-
-    func clearSelectedLibraryPreference() {
-        userDefaults.removeObject(forKey: Self.selectedLibraryKey)
-    }
-
-    func saveGridLayout(_ layout: GridLayout) {
-        userDefaults.set(layout.rawValue, forKey: Self.gridLayoutKey)
-    }
-
-    func loadGridLayout() -> GridLayout {
-        if let rawValue = userDefaults.string(forKey: Self.gridLayoutKey) {
-            if let layout = GridLayout(rawValue: rawValue) { return layout }
-
-            if rawValue == "grid2x" { return .twoColumn }
-            if rawValue == "grid3x" { return .threeColumn }
-        }
-        return .threeColumn
-    }
-
     func saveBookCardStyle(_ style: BookCardStyle) {
         userDefaults.set(style.rawValue, forKey: Self.bookCardStyleKey)
     }
@@ -206,136 +115,6 @@ final class LibraryDisplayPreferencesStore {
             return .standard
         }
         return style
-    }
-
-    func saveInProgressOnly(_ value: Bool) { userDefaults.set(value, forKey: Self.inProgressOnlyKey) }
-    func loadInProgressOnly() -> Bool { userDefaults.bool(forKey: Self.inProgressOnlyKey) }
-
-    func saveCompletedOnly(_ value: Bool) { userDefaults.set(value, forKey: Self.completedOnlyKey) }
-    func loadCompletedOnly() -> Bool { userDefaults.bool(forKey: Self.completedOnlyKey) }
-
-    func saveSourceFilter(_ rawSource: String?) {
-        if let raw = rawSource, !raw.isEmpty {
-            userDefaults.set(raw, forKey: Self.sourceFilterKey)
-        } else {
-            userDefaults.removeObject(forKey: Self.sourceFilterKey)
-        }
-    }
-
-    func loadSourceFilter() -> String? { userDefaults.string(forKey: Self.sourceFilterKey) }
-
-    func saveSourceFilters(_ rawSources: [String]) {
-        if rawSources.isEmpty {
-            userDefaults.removeObject(forKey: Self.sourceFiltersKey)
-        } else {
-            userDefaults.set(rawSources, forKey: Self.sourceFiltersKey)
-        }
-    }
-
-    func loadSourceFilters() -> [String]? { userDefaults.stringArray(forKey: Self.sourceFiltersKey) }
-
-    func saveNotStartedOnly(_ value: Bool) { userDefaults.set(value, forKey: Self.notStartedOnlyKey) }
-    func loadNotStartedOnly() -> Bool { userDefaults.bool(forKey: Self.notStartedOnlyKey) }
-
-    func saveHasBookmarksOnly(_ value: Bool) { userDefaults.set(value, forKey: Self.hasBookmarksOnlyKey) }
-    func loadHasBookmarksOnly() -> Bool { userDefaults.bool(forKey: Self.hasBookmarksOnlyKey) }
-
-    func saveHasCoverArtOnly(_ value: Bool) { userDefaults.set(value, forKey: Self.hasCoverArtOnlyKey) }
-    func loadHasCoverArtOnly() -> Bool { userDefaults.bool(forKey: Self.hasCoverArtOnlyKey) }
-
-    func saveMultiFileOnly(_ value: Bool) { userDefaults.set(value, forKey: Self.multiFileOnlyKey) }
-    func loadMultiFileOnly() -> Bool { userDefaults.bool(forKey: Self.multiFileOnlyKey) }
-
-    func saveDurationFilters(_ buckets: [String]) {
-        if buckets.isEmpty {
-            userDefaults.removeObject(forKey: Self.durationFiltersKey)
-        } else {
-            userDefaults.set(buckets, forKey: Self.durationFiltersKey)
-        }
-    }
-
-    func loadDurationFilters() -> [String]? { userDefaults.stringArray(forKey: Self.durationFiltersKey) }
-
-    func saveAuthorFilters(_ authors: [String]) {
-        if authors.isEmpty {
-            userDefaults.removeObject(forKey: Self.authorFiltersKey)
-        } else {
-            userDefaults.set(authors, forKey: Self.authorFiltersKey)
-        }
-    }
-
-    func loadAuthorFilters() -> [String]? { userDefaults.stringArray(forKey: Self.authorFiltersKey) }
-
-    func saveGenreFilters(_ genres: [String]) {
-        if genres.isEmpty {
-            userDefaults.removeObject(forKey: Self.genreFiltersKey)
-        } else {
-            userDefaults.set(genres, forKey: Self.genreFiltersKey)
-        }
-    }
-
-    func loadGenreFilters() -> [String]? { userDefaults.stringArray(forKey: Self.genreFiltersKey) }
-
-    func saveSeriesFilters(_ series: [String]) {
-        if series.isEmpty {
-            userDefaults.removeObject(forKey: Self.seriesFiltersKey)
-        } else {
-            userDefaults.set(series, forKey: Self.seriesFiltersKey)
-        }
-    }
-
-    func loadSeriesFilters() -> [String]? { userDefaults.stringArray(forKey: Self.seriesFiltersKey) }
-
-    func saveRecentlyAddedDays(_ days: Int?) {
-        if let days, days > 0 {
-            userDefaults.set(days, forKey: Self.recentlyAddedDaysKey)
-        } else {
-            userDefaults.removeObject(forKey: Self.recentlyAddedDaysKey)
-        }
-    }
-
-    func loadRecentlyAddedDays() -> Int? {
-        let value = userDefaults.integer(forKey: Self.recentlyAddedDaysKey)
-        return value > 0 ? value : nil
-    }
-
-    func saveBrowseSegment(_ segment: BrowseSegment) {
-        userDefaults.set(segment.rawValue, forKey: Self.browseSegmentKey)
-    }
-
-    func loadBrowseSegment() -> BrowseSegment {
-        if let rawValue = userDefaults.string(forKey: Self.browseSegmentKey),
-            let segment = BrowseSegment(rawValue: rawValue)
-        {
-            return segment
-        }
-        return .authors
-    }
-
-    func saveSeriesSortOption(_ option: SeriesSortOption) {
-        userDefaults.set(option.rawValue, forKey: Self.seriesSortOptionKey)
-    }
-
-    func loadSeriesSortOption() -> SeriesSortOption {
-        if let rawValue = userDefaults.string(forKey: Self.seriesSortOptionKey),
-            let option = SeriesSortOption(rawValue: rawValue)
-        {
-            return option
-        }
-        return .name
-    }
-
-    func saveSeriesSortDirection(_ direction: SortDirection) {
-        userDefaults.set(direction.rawValue, forKey: Self.seriesSortDirectionKey)
-    }
-
-    func loadSeriesSortDirection() -> SortDirection {
-        if let rawValue = userDefaults.string(forKey: Self.seriesSortDirectionKey),
-            let direction = SortDirection(rawValue: rawValue)
-        {
-            return direction
-        }
-        return .ascending
     }
 
     func savePreferences(_ preferences: UserPreferences) {

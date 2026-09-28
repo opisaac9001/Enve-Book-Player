@@ -7,6 +7,9 @@ The root [architecture guide](../../ARCHITECTURE.md) defines source ownership an
 | [Deduplication](deduplication.md) | Work grouping, edition selection, and merge behavior |
 | [Download ownership](download-ownership.md) | Queue persistence, destination filesystem, and archive staging owners |
 | [Identity contract](identity-contract.md) | Stable IDs and identity across providers, formats, and persistence |
+| [OPDS Authentication](opds-authentication.md) | Discovery, flows, token storage and retry for OPDS Authentication 1.0 |
+| [OPDS catalog](opds-catalog.md) | Feed parsing, the browsable surface, search, acquisitions and fulfilment |
+| [OPDS Progression](opds-progression.md) | Discovery, transport, references and conflict rules for the OPDS Progression 1.0 draft |
 | [Provider capability matrix](provider-capability-matrix.md) | Supported backend capabilities and import behavior |
 | [Server mirror contract](server-mirror-contract.md) | Catalog, activity, collection, deletion, and checkpoint semantics |
 

@@ -38,6 +38,34 @@ internal fun selectCheckpointCandidate(candidates: List<CheckpointCandidate>): E
     }
 }
 
+internal class ProgressPushWindow(private val debounceMs: Long, private val maxWaitMs: Long) {
+    private var dueAtMs: Long? = null
+
+    fun delayMs(nowMs: Long): Long {
+        val dueAt = dueAtMs ?: (nowMs + maxWaitMs).also { dueAtMs = it }
+        return minOf(debounceMs, dueAt - nowMs).coerceAtLeast(0L)
+    }
+
+    fun reset() {
+        dueAtMs = null
+    }
+}
+
+internal class ReaderPositionBaseline {
+    private var confirmedLocatorJson: String? = null
+
+    fun confirm(locatorJson: String?) {
+        if (locatorJson != null) confirmedLocatorJson = locatorJson
+    }
+
+    fun isUnchanged(locatorJson: String?): Boolean =
+        locatorJson != null && locatorJson == confirmedLocatorJson
+
+    fun reset() {
+        confirmedLocatorJson = null
+    }
+}
+
 internal class FoliateCheckpointSync {
     private val mutex = Mutex()
     private var pending: EpubBridgeCheckpoint? = null

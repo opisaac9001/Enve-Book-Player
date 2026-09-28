@@ -69,20 +69,6 @@ struct DownloadItem: Identifiable, Codable, Sendable {
             destinationPath: destinationPath
         )
     }
-
-    static func newMetadataBatch(
-        title: String,
-        destinationPath: String
-    ) -> DownloadItem {
-        return DownloadItem(
-            id: UUID().uuidString,
-            bookId: "metadata-batch",
-            title: title,
-            type: .bookMetadata,
-            remoteURL: URL(string: "about:blank")!,
-            destinationPath: destinationPath
-        )
-    }
 }
 
 struct DownloadQueue: Codable {

@@ -7,6 +7,8 @@ import android.net.Uri
 import com.enve.app.data.offline.OfflineDownloadManager
 import com.enve.app.data.offline.OfflineDownloadStatus
 import com.enve.app.data.repository.AggregatorRepository
+import com.enve.app.storyalign.align.AlignedChapter
+import com.enve.app.storyalign.align.AlignmentQualityEvaluator
 import com.enve.app.storyalign.align.AudioFile
 import com.enve.app.storyalign.align.SentenceAligner
 import com.enve.app.storyalign.align.Transcription
@@ -57,12 +59,13 @@ class StoryAlignGenerator @Inject constructor(
     private val offlineDownloads: OfflineDownloadManager,
     private val bookCacheDao: BookCacheDao,
     private val modelManager: WhisperModelManager,
+    private val outputs: StoryAlignOutputStore,
 ) {
     fun interface ProgressSink {
         suspend fun onStage(stage: StoryAlignStage, stageProgress: Float, overallProgress: Float)
     }
 
-    data class Result(val outputPath: String, val outputBookId: String, val alignedSentences: Int, val totalSentences: Int)
+    data class Result(val outputPath: String, val outputBookId: String, val report: StoryAlignReport)
 
     private class Track(val index: Int, val file: File, val durationSec: Double)
 
@@ -94,22 +97,55 @@ class StoryAlignGenerator @Inject constructor(
 
         sink.onStage(StoryAlignStage.ALIGN, 0.2f, 0.90f)
         val chapters = SentenceAligner().alignBook(doc.spineOrderedManifest, transcription)
-        val aligned = chapters.sumOf { it.alignedSentences.size }
         val total = chapters.sumOf { it.manifestItem.xhtmlSentences.size }
+        val assessment = AlignmentQualityEvaluator.assess(
+            chapters,
+            tracks.associate { it.index to it.durationSec },
+        )
+        val stored = StoryAlignReport.decode(job.reportJson) ?: StoryAlignReport.empty
+        val retained = outputs.acceptedFile(job.id)
+        val decision = AlignmentQualityEvaluator.decide(
+            assessment,
+            if (retained.exists()) stored.acceptedQuality else null,
+        )
         sink.onStage(StoryAlignStage.ALIGN, 1f, 0.94f)
+
+        if (!decision.accepted) {
+            check(retained.exists()) { decision.explanation }
+            return Result(
+                retained.absolutePath,
+                job.outputBookId ?: registerReadAloud(ebook, retained),
+                stored.retaining(decision),
+            )
+        }
 
         sink.onStage(StoryAlignStage.EXPORT, 0.2f, 0.95f)
         val clips = tracks.map { ReadAloudEpubBuilder.AudioClipRef(it.file.name, it.file) }
-        val outDir = File(context.filesDir, "storyalign/output").apply { mkdirs() }
-        val outFile = File(outDir, "${job.id}_readaloud.epub")
-        ReadAloudEpubBuilder.buildToFile(outFile, epubZip, doc, chapters, clips, isoNow())
+        val candidate = outputs.prepareCandidate(job.id)
+        val acceptedUnits = assessment.units.toSet()
+        val verifiedChapters = chapters.map { chapter ->
+            AlignedChapter(
+                manifestItem = chapter.manifestItem,
+                transcriptionStartOffset = chapter.transcriptionStartOffset,
+                transcriptionEndOffset = chapter.transcriptionEndOffset,
+                alignedSentences = chapter.alignedSentences.filter { it in acceptedUnits },
+                skippedSentences = chapter.skippedSentences,
+            )
+        }
+        try {
+            ReadAloudEpubBuilder.buildToFile(candidate, epubZip, doc, verifiedChapters, clips, isoNow())
+        } catch (error: Exception) {
+            outputs.discardCandidate(job.id)
+            throw error
+        }
+        val outFile = outputs.promoteCandidate(job.id)
         sink.onStage(StoryAlignStage.EXPORT, 1f, 0.98f)
 
         sink.onStage(StoryAlignStage.REGISTER, 0.5f, 0.99f)
         val outputBookId = registerReadAloud(ebook, outFile)
         sink.onStage(StoryAlignStage.REGISTER, 1f, 1f)
 
-        return Result(outFile.absolutePath, outputBookId, aligned, total)
+        return Result(outFile.absolutePath, outputBookId, stored.installing(decision, total))
     }
 
     private suspend fun downloadEbook(book: Book, sessionDir: File): File {

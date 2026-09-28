@@ -165,8 +165,7 @@ final class AudiobookPlaybackCoordinator: BookPlaybackStarting {
 
                     bookToPlay = await MetadataManager.shared.enrichBookWithStoredMetadata(finalBook)
                     if hasLinkedEbook,
-                        let renamed = ReaderArtifactsStore.shared.loadCachedChapters(bookId: bookToPlay.stableId)
-                            ?? ReaderArtifactsStore.shared.loadCachedChapters(bookId: bookToPlay.id),
+                        let renamed = ReaderArtifactsStore.shared.loadCachedAudioChapters(for: bookToPlay),
                         !renamed.isEmpty
                     {
                         bookToPlay.chapters = renamed
@@ -196,8 +195,7 @@ final class AudiobookPlaybackCoordinator: BookPlaybackStarting {
 
     private func restoreCachedChaptersIfNeeded(to book: inout Book) {
         guard book.chapters?.isEmpty ?? true else { return }
-        guard let cached = ReaderArtifactsStore.shared.loadCachedChapters(bookId: book.stableId)
-            ?? ReaderArtifactsStore.shared.loadCachedChapters(bookId: book.id),
+        guard let cached = ReaderArtifactsStore.shared.loadCachedAudioChapters(for: book),
             !cached.isEmpty
         else { return }
         book.chapters = cached

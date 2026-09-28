@@ -29,30 +29,17 @@ final class OPDSBulkImportService: ObservableObject {
         self.maxConcurrent = maxConcurrent
     }
 
-    func loadCatalog(connection: ServerConnection) async {
-        guard let provider = PluginRegistry.shared.makeLibraryProvider(for: connection) as? OPDSProvider else {
-            items = []
-            return
-        }
-        do {
-            let books = try await provider.fetchBooks(libraryId: "opds-root")
-            items = books.map { ImportItem(book: $0, status: .pending) }
-        } catch {
-            AppLogger.network.warning("OPDS bulk-import: catalog fetch failed - \(error.localizedDescription)")
-            items = []
-        }
-    }
-
-    func importSelected(
-        selectedIDs: Set<String>,
+    func importBooks(
+        _ books: [Book],
         from connection: ServerConnection,
-        collectionName: String,
+        collectionName: String
     ) async {
         guard let provider = PluginRegistry.shared.makeLibraryProvider(for: connection) as? OPDSProvider else {
             lastSummary = "Couldn't open OPDS connection."
             return
         }
-        let targets = items.filter { selectedIDs.contains($0.book.id) }
+        items = books.map { ImportItem(book: $0, status: .pending) }
+        let targets = items
         guard !targets.isEmpty else { return }
 
         isRunning = true

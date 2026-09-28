@@ -67,7 +67,6 @@ data class SleepTrackerUiState(
     val access: SleepDataAccess = SleepDataAccess.PERMISSION_REQUIRED,
     val loading: Boolean = false,
     val summary: SleepInsightsSummary? = null,
-    val isDemo: Boolean = false,
 )
 
 object SleepInsightsPolicy {

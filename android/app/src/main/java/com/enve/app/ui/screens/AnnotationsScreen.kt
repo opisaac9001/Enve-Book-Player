@@ -1,6 +1,7 @@
 package com.enve.app.ui.screens
 
 import android.content.ClipData
+import com.enve.core.reader.highlightColorHex
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
@@ -83,6 +84,7 @@ import com.enve.core.data.model.AnnotationKind
 import com.enve.core.data.model.AnnotationStyle
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.ReaderAnnotation
+import com.enve.hearth.design.parseHexColor
 import java.text.DateFormat
 import java.util.Date
 import kotlin.math.roundToInt
@@ -401,7 +403,7 @@ private fun HighlightRow(
                 .padding(top = 4.dp)
                 .size(10.dp)
                 .clip(CircleShape)
-                .background(colorFromHex(annotation.colorHex)),
+                .background(highlightColorHex(annotation.colorHex)?.let(::parseHexColor) ?: Color(0xFFFFF59D)),
         )
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -551,10 +553,6 @@ private fun ReaderAnnotation.progressLabel(): String? {
     val progress = totalProgression ?: progression ?: return null
     return "${(progress * 100.0).roundToInt().coerceIn(0, 100)}%"
 }
-
-private fun colorFromHex(hex: String): Color =
-    runCatching { Color(android.graphics.Color.parseColor(hex)) }
-        .getOrDefault(Color(0xFFFFF59D))
 
 private fun formatDate(timestamp: Long): String =
     DateFormat.getDateInstance(DateFormat.MEDIUM).format(Date(timestamp))

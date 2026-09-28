@@ -126,7 +126,7 @@ public class AppState {
             let startupBegin = Date()
             await loadCachedBooks()
             AppLogger.general.info(
-                "📊 [Startup] loadCachedBooks done: \(self.allBooks.count) books, elapsed=\(String(format: "%.1f", Date().timeIntervalSince(startupBegin)))s"
+                "[Startup] loadCachedBooks done: \(self.allBooks.count) books, elapsed=\(String(format: "%.1f", Date().timeIntervalSince(startupBegin)))s"
             )
 
             await progress.migrateLegacyProgressFileIfNeeded()
@@ -161,6 +161,7 @@ public class AppState {
             if !hasCache || !hasLocalBooks {
                 await catalog.refreshLocalLibraries()
             }
+            catalog.performInitialCloudSyncIfNeeded()
 
             await EbookLinkStore.shared.reapplyLinks()
             await Task.yield()
@@ -229,7 +230,7 @@ public class AppState {
             }
 
             AppLogger.general.info(
-                "📊 [Startup] Complete: \(self.allBooks.count) books in memory, elapsed=\(String(format: "%.1f", Date().timeIntervalSince(startupBegin)))s"
+                "[Startup] Complete: \(self.allBooks.count) books in memory, elapsed=\(String(format: "%.1f", Date().timeIntervalSince(startupBegin)))s"
             )
 
             let store = self.bookStore
@@ -237,13 +238,13 @@ public class AppState {
                 let counts = await store.bookCountsBySource()
                 let total = counts.reduce(0) { $0 + $1.count }
                 AppLogger.general.info(
-                    "📊 [bookStore] \(total) total cached books - by source: \(counts.map { "\($0.source)=\($0.count)" }.joined(separator: ", "))"
+                    "[bookStore] \(total) total cached books - by source: \(counts.map { "\($0.source)=\($0.count)" }.joined(separator: ", "))"
                 )
                 if let plex = counts.first(where: { $0.source == "plex" }), plex.count > 1000 {
                     let sections = await store.bookCountsBySection(source: "plex")
                     for s in sections.prefix(10) {
                         AppLogger.general.info(
-                            "📊 [bookStore] plex section provider=\(s.providerId.prefix(8)) library=\(s.libraryId): \(s.count) books"
+                            "[bookStore] plex section provider=\(s.providerId.prefix(8)) library=\(s.libraryId): \(s.count) books"
                         )
                     }
                 }
@@ -259,7 +260,7 @@ public class AppState {
             Task(priority: .background) {
                 let removed = await store.deleteBooksFromUnknownProviders(validProviderIds: validProviderIds)
                 if removed > 0 {
-                    AppLogger.general.info("📊 [BookStore] Purged \(removed) orphan books from disconnected providers")
+                    AppLogger.general.info("[BookStore] Purged \(removed) orphan books from disconnected providers")
                 }
             }
 
@@ -297,7 +298,7 @@ public class AppState {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 let mem = Self.currentMemoryMB()
-                AppLogger.general.debug("📊 [MEM] \(mem)MB | allBooks=\(self.allBooks.count) | mutations=\(self.libraryCache.mutationCount)")
+                AppLogger.general.debug("[MEM] \(mem)MB | allBooks=\(self.allBooks.count) | mutations=\(self.libraryCache.mutationCount)")
             }
         }
     }
@@ -339,7 +340,7 @@ public class AppState {
     }
 
     private func detectJellyfinEmbyType(serverURL: String) async -> ProviderType? {
-        let base = EmbyProvider.normalizeServerURL(serverURL)
+        let base = MediaBrowserClient.normalizeServerURL(serverURL)
         guard let url = URL(string: "\(base)/System/Info/Public") else { return nil }
 
         var request = URLRequest(url: url)

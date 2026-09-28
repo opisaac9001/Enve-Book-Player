@@ -48,6 +48,7 @@ This document defines identifier ownership and stability across duplicate titles
 | Local (file-sharing)  | `local:<backendId ?? "unknown">:<id>`                | `id` is the file fingerprint; moved files break this unless `backendId` is held. |
 | SMB                   | `smb:<backendId ?? "unknown">:<id>`                  | Same model as local. |
 | WebDAV                | `webdav:<backendId ?? providerId>:<id>`              |  |
+| OneDrive              | `onedrive:<driveId ?? providerId>:<id>`              |  |
 | Jellyfin              | `jellyfin:<backendId ?? providerId>:<id>`            |  |
 | Emby                  | `emby:<backendId ?? providerId>:<id>`                |  |
 | Booklore (Grimmory)   | `grimmory:<backendId ?? providerId>:<id>`            | Note: source enum is `.booklore` but stableId prefix is `grimmory:` for historical compat. **Don't normalise this without a tombstone migration** — it's referenced by sinks. |

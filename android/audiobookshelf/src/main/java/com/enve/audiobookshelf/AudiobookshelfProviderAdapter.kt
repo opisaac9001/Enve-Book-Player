@@ -7,6 +7,7 @@ import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.Chapter
 import com.enve.core.data.model.Library
+import com.enve.core.data.model.PodcastShow
 import com.enve.core.data.model.ReaderAnnotation
 import com.enve.audiobookshelf.AudiobookshelfRepository
 import com.enve.core.data.sync.AcceptedAnnotation
@@ -63,6 +64,9 @@ class AudiobookshelfProviderAdapter @Inject constructor(
 
     override suspend fun fetchChapters(book: Book): Result<List<Chapter>> =
         repository.fetchChapters(book)
+
+    override suspend fun getPodcastShow(show: Book): Result<PodcastShow> =
+        repository.getPodcastShow(show)
 
     override suspend fun syncAudiobookProgress(
         book: Book,
@@ -124,6 +128,11 @@ class AudiobookshelfProviderAdapter @Inject constructor(
                 .take(140)
             val timeSec = (a.audioPositionMs!! / 1000.0)
             try {
+                if (a.deletedAt != null) {
+                    a.serverId?.let { deleteRemoteAnnotation(book, it).getOrThrow() }
+                    accepted += AcceptedAnnotation(id = a.id, serverId = a.serverId)
+                    continue
+                }
                 val request = com.enve.audiobookshelf.dto.AbsBookmarkRequest(title = title, time = timeSec)
                 val resp = if (a.serverId == null) {
                     repository.createBookmark(book.id, request)

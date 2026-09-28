@@ -29,7 +29,7 @@ struct SettingsView_tvOS: View {
                         "iCloud / Apple TV sync",
                         value: ServerConnectionCloudKitSync.shared.isEnabled ? "On" : "Off"
                     )
-                    Text("Turn on \"Sync to Apple TV\" in enve on your iPhone to bring servers over automatically.")
+                    Text("Turn on \"Sync to Apple TV\" in enve on your iPhone (Settings › Sync) to bring servers over automatically.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

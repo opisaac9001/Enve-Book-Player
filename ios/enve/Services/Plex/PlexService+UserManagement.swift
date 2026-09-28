@@ -44,138 +44,6 @@ extension PlexService {
         }
     }
 
-    func getManagedUsers(serverUrl: String, token: String) async throws -> [PlexManagedUser] {
-        guard let baseURL = URL(string: serverUrl),
-            let url = URL(string: "/accounts", relativeTo: baseURL)
-        else {
-            throw PlexError.invalidURL
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        applyPlexHeaders(&request, token: token)
-
-        do {
-            let (data, response) = try await session.data(for: request)
-            guard let httpResponse = response as? HTTPURLResponse else {
-                throw PlexError.serverUnreachable
-            }
-
-            guard httpResponse.statusCode == 200 else {
-                if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
-                    throw PlexError.invalidToken
-                }
-                throw PlexError.unknownStatusCode(httpResponse.statusCode)
-            }
-
-            let decoder = JSONDecoder()
-            let usersResponse = try decoder.decode(PlexUsersResponseWrapper.self, from: data)
-            return usersResponse.MediaContainer?.Account ?? []
-        } catch let error as PlexError {
-            throw error
-        } catch {
-            throw PlexError.decodingError(error)
-        }
-    }
-
-    func createManagedUser(serverUrl: String, token: String, username: String, pin: String? = nil) async throws -> PlexManagedUser {
-        guard let baseURL = URL(string: serverUrl),
-            let url = URL(string: "/accounts", relativeTo: baseURL)
-        else {
-            throw PlexError.invalidURL
-        }
-
-        var components = URLComponents(url: url, resolvingAgainstBaseURL: true)
-        var queryItems = [URLQueryItem(name: "title", value: username)]
-        if let pin = pin, !pin.isEmpty {
-            queryItems.append(URLQueryItem(name: "pin", value: pin))
-        }
-        components?.queryItems = queryItems
-
-        guard let createURL = components?.url else {
-            throw PlexError.invalidURL
-        }
-
-        var request = URLRequest(url: createURL)
-        request.httpMethod = "POST"
-        applyPlexHeaders(&request, token: token)
-
-        do {
-            let (data, response) = try await session.data(for: request)
-            guard let httpResponse = response as? HTTPURLResponse,
-                (200...299).contains(httpResponse.statusCode)
-            else {
-                throw PlexError.serverUnreachable
-            }
-
-            let decoder = JSONDecoder()
-            let userResponse = try decoder.decode(PlexUserResponseWrapper.self, from: data)
-            guard let user = userResponse.Account else {
-                throw PlexError.decodingError(
-                    NSError(domain: "PlexService", code: -1, userInfo: [NSLocalizedDescriptionKey: "User not found in response"])
-                )
-            }
-            return user
-        } catch let error as PlexError {
-            throw error
-        } catch {
-            throw PlexError.decodingError(error)
-        }
-    }
-
-    func deleteManagedUser(serverUrl: String, token: String, userId: String) async throws {
-        guard let baseURL = URL(string: serverUrl),
-            let url = URL(string: "/accounts/\(userId)", relativeTo: baseURL)
-        else {
-            throw PlexError.invalidURL
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "DELETE"
-        applyPlexHeaders(&request, token: token)
-
-        let (_, response) = try await session.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse,
-            (200...299).contains(httpResponse.statusCode)
-        else {
-            throw PlexError.serverUnreachable
-        }
-    }
-
-    func updateManagedUser(serverUrl: String, token: String, userId: String, restricted: Bool? = nil, pin: String? = nil) async throws {
-        guard let baseURL = URL(string: serverUrl),
-            let url = URL(string: "/accounts/\(userId)", relativeTo: baseURL)
-        else {
-            throw PlexError.invalidURL
-        }
-
-        var components = URLComponents(url: url, resolvingAgainstBaseURL: true)
-        var queryItems: [URLQueryItem] = []
-        if let restricted = restricted {
-            queryItems.append(URLQueryItem(name: "restricted", value: restricted ? "1" : "0"))
-        }
-        if let pin = pin {
-            queryItems.append(URLQueryItem(name: "pin", value: pin))
-        }
-        components?.queryItems = queryItems.isEmpty ? nil : queryItems
-
-        guard let updateURL = components?.url else {
-            throw PlexError.invalidURL
-        }
-
-        var request = URLRequest(url: updateURL)
-        request.httpMethod = "PUT"
-        applyPlexHeaders(&request, token: token)
-
-        let (_, response) = try await session.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse,
-            (200...299).contains(httpResponse.statusCode)
-        else {
-            throw PlexError.serverUnreachable
-        }
-    }
-
     func inviteUserToServer(
         token: String,
         serverId: String,
@@ -199,66 +67,6 @@ extension PlexService {
             allowCameraUpload: allowCameraUpload,
             allowChannels: allowChannels
         )
-    }
-
-    func createHomeUser(
-        token: String,
-        serverId: String,
-        username: String,
-        pin: String?,
-        sectionIds: [String],
-        allowSync: Bool,
-        allowCameraUpload: Bool = false,
-        allowChannels: Bool = false
-    ) async throws {
-        guard let createURL = URL(string: "\(baseURL)/api/v2/home/users") else {
-            throw PlexError.invalidURL
-        }
-
-        var createRequest = URLRequest(url: createURL)
-        createRequest.httpMethod = "POST"
-        createRequest.setValue("application/json", forHTTPHeaderField: "Accept")
-        createRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        applyPlexHeaders(&createRequest, token: token)
-
-        var createBody: [String: Any] = ["title": username]
-        if let pin, !pin.isEmpty { createBody["pin"] = pin }
-        createRequest.httpBody = try JSONSerialization.data(withJSONObject: createBody)
-
-        let (createData, createResponse) = try await session.data(for: createRequest)
-        let createStatus = (createResponse as? HTTPURLResponse)?.statusCode ?? 0
-        guard (200...299).contains(createStatus) else {
-            let body = String(data: createData, encoding: .utf8)
-            AppLogger.network.error("Plex create home user failed (\(createStatus)) url=\(createURL.redacted)")
-            throw PlexError.httpError(code: createStatus, body: body)
-        }
-
-        guard let json = try? JSONSerialization.jsonObject(with: createData) as? [String: Any],
-            let numericId = json["id"]
-        else {
-            AppLogger.network.error("Plex home user created but could not parse user ID")
-            return
-        }
-        let userId = "\(numericId)"
-        AppLogger.network.info("Plex home user created: id=\(userId)")
-
-        guard !sectionIds.isEmpty, let invitedId = Int(userId) else { return }
-
-        let plexSectionIds = try await translateToPlexSectionIds(
-            token: token,
-            machineId: serverId,
-            localSectionKeys: sectionIds
-        )
-        try await postSharedServer(
-            token: token,
-            serverId: serverId,
-            recipient: .invitedId(invitedId),
-            plexSectionIds: plexSectionIds,
-            allowSync: allowSync,
-            allowCameraUpload: allowCameraUpload,
-            allowChannels: allowChannels
-        )
-        AppLogger.network.info("Libraries shared with home user \(userId)")
     }
 
     private enum InviteRecipient {
@@ -390,16 +198,8 @@ private final class PlexServerSectionsXMLParser: NSObject, XMLParserDelegate {
     }
 }
 
-private struct PlexUsersResponseWrapper: Codable {
-    let MediaContainer: PlexUsersContainer?
-}
-
 private struct PlexUsersContainer: Codable {
     let Account: [PlexManagedUser]?
-}
-
-private struct PlexUserResponseWrapper: Codable {
-    let Account: PlexManagedUser?
 }
 
 private func parseSharedUsersXML(data: Data) throws -> [PlexManagedUser] {

@@ -6,6 +6,10 @@ import android.appwidget.AppWidgetManager
 import android.net.Uri
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
+import androidx.test.runner.lifecycle.Stage
+import com.enve.app.MainActivity
 import com.enve.app.ui.screens.ComicReaderActivity
 import com.enve.app.ui.screens.EbookReaderActivity
 import com.enve.app.ui.screens.PdfReaderActivity
@@ -38,6 +42,50 @@ class WidgetRoutingTest {
         connectionId = "test-library", epubLocator = "saved-locator", epubProgress = 0.42f,
         lastReadTime = 1234L,
     )
+
+    @Test
+    fun widgetReaderBackReturnsToHearth() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        context.startActivity(context.widgetReaderIntentFor(book.copy(primaryFileType = "PDF"))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        val deadline = android.os.SystemClock.uptimeMillis() + 15_000
+        var readerResumed = false
+        while (!readerResumed && android.os.SystemClock.uptimeMillis() < deadline) {
+            instrumentation.runOnMainSync {
+                readerResumed = ActivityLifecycleMonitorRegistry.getInstance()
+                    .getActivitiesInStage(Stage.RESUMED).any { it is PdfReaderActivity }
+            }
+            if (!readerResumed) android.os.SystemClock.sleep(100)
+        }
+        assertTrue("Widget must open the reader", readerResumed)
+        instrumentation.sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
+        val backDeadline = android.os.SystemClock.uptimeMillis() + 15_000
+        var hearthResumed = false
+        while (!hearthResumed && android.os.SystemClock.uptimeMillis() < backDeadline) {
+            instrumentation.runOnMainSync {
+                hearthResumed = ActivityLifecycleMonitorRegistry.getInstance()
+                    .getActivitiesInStage(Stage.RESUMED).any { it is MainActivity }
+            }
+            if (!hearthResumed) android.os.SystemClock.sleep(100)
+        }
+        assertTrue("Back must return to Hearth", hearthResumed)
+    }
+
+    @Test
+    fun widgetLaunchPreservesReaderDestinationAndPosition() {
+        for (format in listOf("EPUB", "PDF", "CBZ", "CBR", "CBX")) {
+            val selected = book.copy(primaryFileType = format)
+            val reader = context.readerIntentFor(selected)
+            val widget = context.widgetReaderIntentFor(selected)
+            assertEquals(WidgetReaderActivity::class.java.name, widget.component?.className)
+            assertEquals(reader.component?.className,
+                widget.getStringExtra(WidgetReaderActivity.EXTRA_READER_CLASS))
+            for (key in requireNotNull(reader.extras).keySet()) {
+                @Suppress("DEPRECATION")
+                assertEquals(reader.extras?.get(key), widget.extras?.get(key))
+            }
+        }
+    }
 
     @Test
     fun onlyOneWidgetIsRegistered() {
@@ -84,7 +132,6 @@ class WidgetRoutingTest {
         assertEquals(book.epubLocator, intent.getStringExtra("epubLocator"))
         assertEquals(0.42f, intent.getFloatExtra("epubProgress", 0f))
         assertEquals(1234L, intent.getLongExtra("lastReadTime", 0L))
-        assertTrue(intent.getBooleanExtra(EbookReaderActivity.EXTRA_HEARTH_CHROME, false))
     }
 
     @Test

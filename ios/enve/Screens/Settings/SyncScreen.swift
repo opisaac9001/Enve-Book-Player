@@ -9,15 +9,24 @@ struct SyncScreen: View {
         SettingsScaffold(
             overline: "Downloads & storage",
             title: "Sync",
-            subtitle: "Keep progress, bookmarks, and collections in step across your devices."
+            subtitle: "Keep reading and listening progress in step across your Apple devices."
         ) {
             SourcesCard {
                 SourcesToggleRow(
-                    title: "Sync across devices",
+                    title: "Sync progress with iCloud",
                     subtitle: coordinator.isCloudKitAvailable ? nil : "iCloud isn't available right now.",
                     isOn: Binding(
                         get: { coordinator.syncEnabled },
                         set: { coordinator.setSyncEnabled($0) }
+                    )
+                )
+
+                SourcesToggleRow(
+                    title: "Sync to Apple TV",
+                    subtitle: "Share your server connections with Enve on Apple TV.",
+                    isOn: Binding(
+                        get: { ServerConnectionCloudKitSync.shared.isEnabled },
+                        set: { ServerConnectionCloudKitSync.shared.isEnabled = $0 }
                     )
                 )
 

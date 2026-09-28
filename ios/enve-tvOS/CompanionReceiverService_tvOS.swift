@@ -86,22 +86,6 @@ final class CompanionReceiverService_tvOS {
         self.browser = browser
     }
 
-    func stopDiscovering() {
-        browser?.cancel()
-        browser = nil
-        reconnectTask?.cancel()
-        reconnectTask = nil
-        connectTimeoutTask?.cancel()
-        connectTimeoutTask = nil
-        keepaliveTask?.cancel()
-        keepaliveTask = nil
-        connection?.cancel()
-        connection = nil
-        session = nil
-        resetParserBuffers()
-        state = .idle
-    }
-
     func sendPageCommand(_ direction: PageCommandPayload.Direction) {
         sendControlMessage(type: .pageCommand, payload: PageCommandPayload(direction: direction))
     }

@@ -1,17 +1,22 @@
 package com.enve.app.data.hardcover
 
 import com.enve.core.auth.CredentialVault
+import com.enve.core.data.util.optArray
+import com.enve.core.data.util.optDouble
+import com.enve.core.data.util.optInt
+import com.enve.core.data.util.optObject
+import com.enve.core.data.util.optString
 import com.enve.core.di.RefreshClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.doubleOrNull
-import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.MediaType.Companion.toMediaType
@@ -85,6 +90,38 @@ data class HardcoverHubData(
 
 class HardcoverException(message: String) : Exception(message)
 
+@Serializable
+private data class HardcoverSearchResultsDto(val hits: List<HardcoverSearchHitDto>)
+
+@Serializable
+private data class HardcoverSearchHitDto(val document: HardcoverBookDocumentDto)
+
+@Serializable
+private data class HardcoverBookDocumentDto(
+    val id: String,
+    val title: String,
+    @SerialName("author_names") val authorNames: List<String> = emptyList(),
+    val image: HardcoverImageDto? = null,
+    @SerialName("release_year") val releaseYear: Int? = null,
+)
+
+@Serializable
+private data class HardcoverImageDto(val url: String? = null)
+
+private val hardcoverSearchJson = Json { ignoreUnknownKeys = true }
+
+internal fun hardcoverBookSearchResults(results: JsonElement): List<HardcoverBookResult> =
+    hardcoverSearchJson.decodeFromJsonElement<HardcoverSearchResultsDto>(results).hits.map { hit ->
+        val document = hit.document
+        HardcoverBookResult(
+            id = document.id.toInt(),
+            title = document.title,
+            author = document.authorNames.takeIf { it.isNotEmpty() }?.joinToString(", "),
+            coverUrl = document.image?.url,
+            releaseYear = document.releaseYear,
+        )
+    }
+
 @Singleton
 class HardcoverService @Inject constructor(
     @RefreshClient private val client: OkHttpClient,
@@ -134,22 +171,8 @@ class HardcoverService @Inject constructor(
             }
             """.trimIndent()
         )
-        val hits = data.obj("search")
-            ?.get("results")
-            ?.let(::normalizeJsonObject)
-            ?.array("hits")
-            .orEmpty()
-
-        return hits.mapNotNull { hit ->
-            val doc = hit.jsonObject.obj("document") ?: return@mapNotNull null
-            HardcoverBookResult(
-                id = doc.string("id")?.toIntOrNull() ?: doc.int("id") ?: return@mapNotNull null,
-                title = doc.string("title") ?: return@mapNotNull null,
-                author = doc.array("author_names")?.mapNotNull { it.jsonPrimitive.contentOrNull }?.joinToString(", "),
-                coverUrl = doc.obj("image")?.string("url"),
-                releaseYear = doc.int("release_year"),
-            )
-        }
+        val results = data.optObject("search")?.get("results") ?: return emptyList()
+        return hardcoverBookSearchResults(results)
     }
 
     suspend fun addBookToLibrary(bookId: Int, startReading: Boolean = false): Int {
@@ -165,8 +188,8 @@ class HardcoverService @Inject constructor(
             }
             """.trimIndent()
         )
-        data.obj("insert_user_book")?.obj("user_book")?.int("id")?.let { return it }
-        data.obj("insert_user_book")?.string("error")?.let { throw HardcoverException(it) }
+        data.optObject("insert_user_book")?.optObject("user_book")?.optInt("id")?.let { return it }
+        data.optObject("insert_user_book")?.optString("error")?.let { throw HardcoverException(it) }
         throw HardcoverException("Hardcover did not return a library row.")
     }
 
@@ -189,11 +212,11 @@ class HardcoverService @Inject constructor(
 
     private suspend fun getCurrentUser(): HardcoverProfile {
         val data = performQuery("""query { me { id username } }""")
-        val user = data.array("me")?.firstOrNull()?.jsonObject
+        val user = data.optArray("me")?.firstOrNull()?.jsonObject
             ?: throw HardcoverException("Hardcover account not found.")
         return HardcoverProfile(
-            id = user.int("id") ?: throw HardcoverException("Hardcover account id missing."),
-            username = user.string("username").orEmpty(),
+            id = user.optInt("id") ?: throw HardcoverException("Hardcover account id missing."),
+            username = user.optString("username").orEmpty(),
         )
     }
 
@@ -221,21 +244,21 @@ class HardcoverService @Inject constructor(
             }
             """.trimIndent()
         )
-        val rows = data.array("me")?.firstOrNull()?.jsonObject?.array("user_books").orEmpty()
+        val rows = data.optArray("me")?.firstOrNull()?.jsonObject?.optArray("user_books").orEmpty()
         return rows.mapNotNull { element ->
             val row = element.jsonObject
-            val book = row.obj("book") ?: return@mapNotNull null
-            val edition = row.obj("edition")
-            val read = row.array("user_book_reads")?.firstOrNull()?.jsonObject
-            val pageProgress = progressFraction(read?.int("progress_pages"), edition?.int("pages"))
+            val book = row.optObject("book") ?: return@mapNotNull null
+            val edition = row.optObject("edition")
+            val read = row.optArray("user_book_reads")?.firstOrNull()?.jsonObject
+            val pageProgress = progressFraction(read?.optInt("progress_pages"), edition?.optInt("pages"))
             HardcoverLibraryBook(
-                id = row.int("id") ?: return@mapNotNull null,
-                bookId = row.int("book_id") ?: book.int("id") ?: return@mapNotNull null,
-                title = book.string("title") ?: return@mapNotNull null,
+                id = row.optInt("id") ?: return@mapNotNull null,
+                bookId = row.optInt("book_id") ?: book.optInt("id") ?: return@mapNotNull null,
+                title = book.optString("title") ?: return@mapNotNull null,
                 author = book.get("cached_contributors").contributors(),
-                coverUrl = book.obj("image")?.string("url"),
-                statusId = row.int("status_id") ?: 1,
-                rating = row.double("rating"),
+                coverUrl = book.optObject("image")?.optString("url"),
+                statusId = row.optInt("status_id") ?: 1,
+                rating = row.optDouble("rating"),
                 progress = pageProgress,
             )
         }
@@ -251,14 +274,14 @@ class HardcoverService @Inject constructor(
             }
             """.trimIndent()
         )
-        return data.array("lists").orEmpty().mapNotNull { element ->
+        return data.optArray("lists").orEmpty().mapNotNull { element ->
             val row = element.jsonObject
             HardcoverUserList(
-                id = row.int("id") ?: return@mapNotNull null,
-                name = row.string("name") ?: return@mapNotNull null,
-                description = row.string("description"),
-                booksCount = row.int("books_count") ?: 0,
-                likesCount = row.int("likes_count"),
+                id = row.optInt("id") ?: return@mapNotNull null,
+                name = row.optString("name") ?: return@mapNotNull null,
+                description = row.optString("description"),
+                booksCount = row.optInt("books_count") ?: 0,
+                likesCount = row.optInt("likes_count"),
             )
         }
     }
@@ -278,16 +301,16 @@ class HardcoverService @Inject constructor(
             }
             """.trimIndent()
         )
-        return data.array("user_books").orEmpty().mapNotNull { element ->
+        return data.optArray("user_books").orEmpty().mapNotNull { element ->
             val row = element.jsonObject
-            val book = row.obj("book")
+            val book = row.optObject("book")
             HardcoverActivity(
-                id = row.int("id") ?: return@mapNotNull null,
-                action = "${username.ifBlank { "You" }} ${hardcoverActivityText(row.int("status_id"))}",
-                createdAt = row.string("updated_at").orEmpty(),
-                bookTitle = book?.string("title"),
+                id = row.optInt("id") ?: return@mapNotNull null,
+                action = "${username.ifBlank { "You" }} ${hardcoverActivityText(row.optInt("status_id"))}",
+                createdAt = row.optString("updated_at").orEmpty(),
+                bookTitle = book?.optString("title"),
                 author = book?.get("cached_contributors").contributors(),
-                coverUrl = book?.obj("image")?.string("url"),
+                coverUrl = book?.optObject("image")?.optString("url"),
             )
         }
     }
@@ -309,12 +332,12 @@ class HardcoverService @Inject constructor(
             }
             """.trimIndent()
         )
-        val goal = data.array("me")?.firstOrNull()?.jsonObject?.array("goals")?.firstOrNull()?.jsonObject
+        val goal = data.optArray("me")?.firstOrNull()?.jsonObject?.optArray("goals")?.firstOrNull()?.jsonObject
             ?: return null
         val finished = countFinishedBooks(userId, startDate, endDate)
         return HardcoverReadingGoal(
             year = year,
-            target = goal.int("goal") ?: return null,
+            target = goal.optInt("goal") ?: return null,
             current = finished,
         )
     }
@@ -334,7 +357,7 @@ class HardcoverService @Inject constructor(
             }
             """.trimIndent()
         )
-        return data.obj("user_book_reads_aggregate")?.obj("aggregate")?.int("count") ?: 0
+        return data.optObject("user_book_reads_aggregate")?.optObject("aggregate")?.optInt("count") ?: 0
     }
 
     private suspend fun performQuery(query: String): JsonObject = withContext(Dispatchers.IO) {
@@ -356,17 +379,17 @@ class HardcoverService @Inject constructor(
                 throw HardcoverException("Hardcover returned HTTP ${response.code}.")
             }
             val root = json.parseToJsonElement(responseText).jsonObject
-            root.string("error")?.let { error ->
+            root.optString("error")?.let { error ->
                 if (error.contains("token", ignoreCase = true)) clearToken()
                 throw HardcoverException(error)
             }
-            root.array("errors")?.firstOrNull()?.jsonObject?.string("message")?.let { message ->
+            root.optArray("errors")?.firstOrNull()?.jsonObject?.optString("message")?.let { message ->
                 if (message.contains("token", ignoreCase = true) || message.contains("unauthorized", ignoreCase = true)) {
                     clearToken()
                 }
                 throw HardcoverException(message)
             }
-            root.obj("data") ?: throw HardcoverException("Hardcover response did not include data.")
+            root.optObject("data") ?: throw HardcoverException("Hardcover response did not include data.")
         }
     }
 
@@ -383,31 +406,19 @@ class HardcoverService @Inject constructor(
         return "%04d-%02d-%02d".format(year, month, day)
     }
 
-    private fun normalizeJsonObject(element: JsonElement): JsonObject? {
-        if (element is JsonObject) return element
-        val raw = element.jsonPrimitive.contentOrNull ?: return null
-        return runCatching { json.parseToJsonElement(raw).jsonObject }.getOrNull()
-    }
-
     private fun String.graphQLEscaped(): String =
         replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", " ")
-
-    private fun JsonObject.obj(key: String): JsonObject? = get(key) as? JsonObject
-    private fun JsonObject.array(key: String): JsonArray? = get(key) as? JsonArray
-    private fun JsonObject.string(key: String): String? = get(key)?.jsonPrimitive?.contentOrNull
-    private fun JsonObject.int(key: String): Int? = get(key)?.jsonPrimitive?.intOrNull
-    private fun JsonObject.double(key: String): Double? = get(key)?.jsonPrimitive?.doubleOrNull
 
     private fun JsonElement?.contributors(): String? {
         val element = this ?: return null
         return when (element) {
             is JsonArray -> element.mapNotNull { item ->
                 when (item) {
-                    is JsonObject -> item.obj("author")?.string("name") ?: item.string("name")
+                    is JsonObject -> item.optObject("author")?.optString("name") ?: item.optString("name")
                     else -> item.jsonPrimitive.contentOrNull
                 }
             }.joinToString(", ").takeIf { it.isNotBlank() }
-            is JsonObject -> element.obj("author")?.string("name") ?: element.string("name")
+            is JsonObject -> element.optObject("author")?.optString("name") ?: element.optString("name")
             else -> element.jsonPrimitive.contentOrNull
         }
     }

@@ -108,10 +108,7 @@ enum WorkGrouping {
     }
 
     static func progressFraction(_ book: Book) -> Double {
-        if book.isFinished { return 1 }
-        if book.mediaType == .ebook { return book.canonicalEbookProgress }
-        guard let duration = book.duration, duration > 0 else { return 0 }
-        return min(max(book.currentTime / duration, 0), 1)
+        book.isFinished ? 1 : book.canonicalProgress
     }
 
     private static func sourceScore(_ b: Book) -> Int {

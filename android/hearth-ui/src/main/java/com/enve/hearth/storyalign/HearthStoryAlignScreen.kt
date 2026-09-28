@@ -208,7 +208,13 @@ private fun MainView(vm: HearthStoryAlignViewModel) {
                     Spacer(Modifier.height(Hearth.Spacing.M))
                     Column(verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.L)) {
                         jobs.forEach { job ->
-                            JobRow(job, onCancel = { vm.cancel(job.id) }, onRetry = { vm.retry(job.id) }, onDelete = { vm.delete(job.id) })
+                            JobRow(
+                                job,
+                                onCancel = { vm.cancel(job.id) },
+                                onRetry = { vm.retry(job.id) },
+                                onRestore = { vm.restorePrevious(job.id) },
+                                onDelete = { vm.delete(job.id) },
+                            )
                         }
                     }
                 }
@@ -348,7 +354,13 @@ private fun SearchField(query: String, onQuery: (String) -> Unit, placeholder: S
 }
 
 @Composable
-private fun JobRow(job: StoryAlignJobUi, onCancel: () -> Unit, onRetry: () -> Unit, onDelete: () -> Unit) {
+private fun JobRow(
+    job: StoryAlignJobUi,
+    onCancel: () -> Unit,
+    onRetry: () -> Unit,
+    onRestore: () -> Unit,
+    onDelete: () -> Unit,
+) {
     val palette = Hearth.palette
     Column(verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.S)) {
         Text(job.ebookTitle, style = HearthText.Label, color = palette.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -364,8 +376,13 @@ private fun JobRow(job: StoryAlignJobUi, onCancel: () -> Unit, onRetry: () -> Un
         Row(horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S)) {
             if (job.isActive) {
                 HearthChip("Cancel", selected = false, onClick = onCancel)
+            } else if (job.status == StoryAlignStatus.DONE) {
+                HearthChip("Run again", selected = true, onClick = onRetry)
             } else if (job.status == StoryAlignStatus.FAILED || job.status == StoryAlignStatus.CANCELLED) {
                 HearthChip("Retry", selected = true, onClick = onRetry)
+            }
+            if (!job.isActive && job.hasPreviousOutput) {
+                HearthChip("Restore Previous", selected = false, onClick = onRestore)
             }
             HearthChip("Delete", selected = false, onClick = onDelete)
         }
@@ -376,7 +393,7 @@ private fun StoryAlignJobUi.statusLine(): String = when (status) {
     StoryAlignStatus.QUEUED -> "Queued"
     StoryAlignStatus.RUNNING -> "${stage.label()} · ${(overallProgress * 100).toInt()}%"
     StoryAlignStatus.PAUSED -> "Paused · ${stage.label()}"
-    StoryAlignStatus.DONE -> "Ready to read"
+    StoryAlignStatus.DONE -> keptPreviousReason?.let { "Kept the existing read-aloud book because $it" } ?: "Ready to read"
     StoryAlignStatus.CANCELLED -> "Cancelled"
     StoryAlignStatus.FAILED -> errorMessage ?: "Failed"
 }

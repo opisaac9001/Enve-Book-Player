@@ -108,7 +108,7 @@ extension KavitaProvider {
 
         var id: Int { sessionId }
 
-        var day: Date? { KavitaInsightsDate.parse(localDate) ?? KavitaInsightsDate.parse(startTimeUtc) }
+        var day: Date? { KavitaDate.parse(localDate) ?? KavitaDate.parse(startTimeUtc) }
     }
 
     struct Annotation: Decodable, Sendable, Identifiable {
@@ -123,7 +123,7 @@ extension KavitaProvider {
         let chapterId: Int
         let createdUtc: String
 
-        var createdAt: Date? { KavitaInsightsDate.parse(createdUtc) }
+        var createdAt: Date? { KavitaDate.parse(createdUtc) }
         var text: String { (selectedText?.isEmpty == false ? selectedText : commentPlainText) ?? "" }
         var note: String? {
             guard let comment = commentPlainText, !comment.isEmpty, comment != selectedText else { return nil }
@@ -234,7 +234,7 @@ extension KavitaProvider {
     private func statsFilter(days: Int, userId: Int?) -> [URLQueryItem] {
         var items = [URLQueryItem(name: "TimeZoneId", value: TimeZone.current.identifier)]
         if let start = Calendar.current.date(byAdding: .day, value: -max(1, days), to: .now) {
-            items.append(URLQueryItem(name: "StartDate", value: KavitaInsightsDate.request(start)))
+            items.append(URLQueryItem(name: "StartDate", value: KavitaDate.request(start)))
         }
         if let userId {
             items.append(URLQueryItem(name: "userId", value: String(userId)))
@@ -264,7 +264,7 @@ extension KavitaProvider {
     }
 }
 
-enum KavitaInsightsDate {
+enum KavitaDate {
     private static let formatters: [DateFormatter] = ["yyyy-MM-dd'T'HH:mm:ss.SSSSSSS", "yyyy-MM-dd'T'HH:mm:ss.SSS", "yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd"]
         .map { format in
             let formatter = DateFormatter()
@@ -284,11 +284,14 @@ enum KavitaInsightsDate {
 
     static func parse(_ raw: String) -> Date? {
         let trimmed = raw.hasSuffix("Z") ? String(raw.dropLast()) : raw
-        for formatter in formatters {
-            if let date = formatter.date(from: trimmed) { return date }
+        guard let date = formatters.lazy.compactMap({ $0.date(from: trimmed) }).first ?? ISO8601Timestamp.parse(raw) else {
+            return nil
         }
-        return ISO8601DateFormatter().date(from: raw)
+        // Kavita reports "never" as 0001-01-01T00:00:00.
+        return date > unset ? date : nil
     }
+
+    private static let unset = Date(timeIntervalSince1970: -62_135_596_800)
 
     static func request(_ date: Date) -> String {
         requestFormatter.string(from: date)

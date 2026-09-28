@@ -199,27 +199,27 @@ enum PodcastsGenre: String, CaseIterable, Identifiable {
         }
     }
 
-    var searchTerm: String {
+    var chartGenreId: Int? {
         switch self {
-        case .all: "top podcast"
-        case .comedy: "comedy podcast"
-        case .trueCrime: "true crime podcast"
-        case .news: "news podcast"
-        case .society: "society culture podcast"
-        case .business: "business podcast"
-        case .health: "health fitness podcast"
-        case .technology: "technology podcast"
-        case .science: "science podcast"
-        case .education: "education podcast"
-        case .history: "history podcast"
-        case .sports: "sports podcast"
-        case .arts: "arts podcast"
-        case .music: "music podcast"
-        case .fiction: "fiction podcast"
-        case .leisure: "leisure podcast"
-        case .government: "government podcast"
-        case .kidsFamily: "kids family podcast"
-        case .tvFilm: "tv film podcast"
+        case .all: nil
+        case .comedy: 1303
+        case .trueCrime: 1488
+        case .news: 1489
+        case .society: 1324
+        case .business: 1321
+        case .health: 1512
+        case .technology: 1318
+        case .science: 1533
+        case .education: 1304
+        case .history: 1487
+        case .sports: 1545
+        case .arts: 1301
+        case .music: 1310
+        case .fiction: 1483
+        case .leisure: 1502
+        case .government: 1511
+        case .kidsFamily: 1305
+        case .tvFilm: 1309
         }
     }
 }

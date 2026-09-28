@@ -16,7 +16,8 @@ struct LibraryScreen: View {
     @FocusState private var searchFocused: Bool
     @State private var showFilesImport = false
     @State private var showAddSource = false
-    @State private var showOPDSImport = false
+    @State private var showOPDSCatalog = false
+    @State private var opdsCatalogConnectionId: UUID?
     @State private var showLibraryControls = false
     @State private var collectionSelection: LibraryCollectionSelection?
     @State private var visibleScopeRefreshInProgress = false
@@ -82,8 +83,8 @@ struct LibraryScreen: View {
         .navigationDestination(isPresented: $showAddSource) {
             SourcesQuickConnectScreen()
         }
-        .navigationDestination(isPresented: $showOPDSImport) {
-            SourcesOPDSBulkScreen()
+        .navigationDestination(isPresented: $showOPDSCatalog) {
+            SourcesOPDSBrowseScreen(connectionId: opdsCatalogConnectionId)
         }
         .sheet(isPresented: $showFilesImport) {
             SourcesFilesScreen(onAdded: { showFilesImport = false })
@@ -356,9 +357,9 @@ struct LibraryScreen: View {
                 Label("Import from Files", systemImage: "folder")
             }
             Button {
-                showOPDSImport = true
+                openOPDSCatalog()
             } label: {
-                Label("Import from an OPDS catalog", systemImage: "books.vertical")
+                Label("Browse an OPDS catalogue", systemImage: "books.vertical")
             }
             Button {
                 showAddSource = true
@@ -449,10 +450,19 @@ struct LibraryScreen: View {
                     Divider()
                 }
                 ForEach(activeConnections, id: \.id) { connection in
-                    Button {
-                        selectSource(.connection(connection.id))
-                    } label: {
-                        sourceMenuLabel(connection.name, isSelected: model.sourceFilter == .connection(connection.id))
+                    if connection.type == .opds {
+                        Button {
+                            openOPDSCatalog(connection.id)
+                        } label: {
+                            Label(connection.name, systemImage: "books.vertical")
+                        }
+                        .accessibilityIdentifier("library-opds-catalog-\(connection.id.uuidString)")
+                    } else {
+                        Button {
+                            selectSource(.connection(connection.id))
+                        } label: {
+                            sourceMenuLabel(connection.name, isSelected: model.sourceFilter == .connection(connection.id))
+                        }
                     }
                 }
             } label: {
@@ -463,6 +473,7 @@ struct LibraryScreen: View {
                     isActive: model.sourceFilter != .all
                 )
             }
+            .accessibilityIdentifier("library-source-menu")
             libraryMenu
         }
         .padding(.horizontal, 24)
@@ -591,6 +602,12 @@ struct LibraryScreen: View {
         model.select(source)
     }
 
+    private func openOPDSCatalog(_ connectionId: UUID? = nil) {
+        PlatformHaptics.selection()
+        opdsCatalogConnectionId = connectionId
+        showOPDSCatalog = true
+    }
+
     private func focusShelf(
         status: LibraryStatusFilter,
         media: LibraryMediaFilter,
@@ -678,7 +695,9 @@ struct LibraryScreen: View {
                     bookResults(width: width)
                 }
             case .series:
-                if model.seriesAggregates.isEmpty {
+                if !model.loadedAggregateFacets.contains(.series) {
+                    loadingStacks
+                } else if model.seriesAggregates.isEmpty {
                     quietNote("No series shelved yet.")
                 } else if model.layout == .grid {
                     let spec = browseGridSpec(width: width)
@@ -697,7 +716,9 @@ struct LibraryScreen: View {
                     .padding(.horizontal, 24)
                 }
             case .authors:
-                if model.authorAggregates.isEmpty {
+                if !model.loadedAggregateFacets.contains(.authors) {
+                    loadingStacks
+                } else if model.authorAggregates.isEmpty {
                     quietNote("No authors on the shelves yet.")
                 } else if model.layout == .grid {
                     let spec = browseGridSpec(width: width)
@@ -716,7 +737,9 @@ struct LibraryScreen: View {
                     .padding(.horizontal, 24)
                 }
             case .narrators:
-                if model.narratorAggregates.isEmpty {
+                if !model.loadedAggregateFacets.contains(.narrators) {
+                    loadingStacks
+                } else if model.narratorAggregates.isEmpty {
                     quietNote("No narrators on record yet.")
                 } else if model.layout == .grid {
                     let spec = browseGridSpec(width: width)
@@ -735,7 +758,9 @@ struct LibraryScreen: View {
                     .padding(.horizontal, 24)
                 }
             case .genres:
-                if model.genreAggregates.isEmpty {
+                if !model.loadedAggregateFacets.contains(.genres) {
+                    loadingStacks
+                } else if model.genreAggregates.isEmpty {
                     quietNote("No genres on record yet.")
                 } else if model.layout == .grid {
                     let spec = browseGridSpec(width: width)
@@ -1427,9 +1452,9 @@ private struct LibrarySortPriorityRow: View {
 
                 Spacer(minLength: 8)
 
-                sortIconButton("chevron.up", isEnabled: canMoveUp, action: onMoveUp)
-                sortIconButton("chevron.down", isEnabled: canMoveDown, action: onMoveDown)
-                sortIconButton("xmark", isEnabled: canRemove, action: onRemove)
+                sortIconButton("chevron.up", label: "Move \(descriptor.title) up", isEnabled: canMoveUp, action: onMoveUp)
+                sortIconButton("chevron.down", label: "Move \(descriptor.title) down", isEnabled: canMoveDown, action: onMoveDown)
+                sortIconButton("xmark", label: "Remove \(descriptor.title)", isEnabled: canRemove, action: onRemove)
             }
 
             HStack(spacing: 8) {
@@ -1467,6 +1492,7 @@ private struct LibrarySortPriorityRow: View {
 
     private func sortIconButton(
         _ systemImage: String,
+        label: String,
         isEnabled: Bool,
         action: @escaping () -> Void
     ) -> some View {
@@ -1486,7 +1512,7 @@ private struct LibrarySortPriorityRow: View {
         }
         .disabled(!isEnabled)
         .buttonStyle(PressableStyle())
-        .accessibilityLabel(systemImage)
+        .accessibilityLabel(label)
     }
 }
 

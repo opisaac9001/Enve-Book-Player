@@ -256,10 +256,10 @@ final class BookloreEbookSyncStrategy: ProviderSyncStrategy {
                         let mutated = AppState.shared.mutateBook(stableId: book.stableId) {
                             $0.hideFromContinue = false
                             $0.ebookProgress = serverProgress
-                            $0.isFinished = serverResult.readState.isFinished || serverProgress >= 0.99
+                            $0.isFinished = serverResult.readState.isFinished || serverProgress >= Book.finishedProgressThreshold
                             $0.serverReadStatus =
                                 serverResult.readState.persistedStatus
-                                ?? (serverProgress >= 0.99 ? "READ" : "READING")
+                                ?? (serverProgress >= Book.finishedProgressThreshold ? "READ" : "READING")
                             if let loc = resolvedLocator, !loc.isEmpty { $0.epubLocator = loc }
                             $0.lastUpdate = serverDate
                         }
@@ -271,7 +271,7 @@ final class BookloreEbookSyncStrategy: ProviderSyncStrategy {
                                 uniqueId: book.uniqueId,
                                 ebookProgress: serverProgress,
                                 epubLocator: serverResult.locator,
-                                isFinished: serverResult.readState.isFinished || serverProgress >= 0.99,
+                                isFinished: serverResult.readState.isFinished || serverProgress >= Book.finishedProgressThreshold,
                                 lastUpdate: serverDate
                             )
                         }
@@ -294,7 +294,8 @@ final class BookloreEbookSyncStrategy: ProviderSyncStrategy {
                                 localProgress: localProgress,
                                 serverProgress: serverProgress,
                                 serverLocator: serverResult.locator,
-                                serverDate: serverDate
+                                serverDate: serverDate,
+                                remoteSource: provider.connection.name
                             )
                         )
                         AppLogger.sync.info(

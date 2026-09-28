@@ -125,25 +125,6 @@ final class GoogleBooksService: @unchecked Sendable {
         return Array(results.prefix(resolvedLimit))
     }
 
-    func getVolume(id: String) async throws -> GoogleBooksMetadataLayer {
-        if let cached = withState({ volumeCache[id] }) {
-            return cached
-        }
-
-        if let task = withState({ inFlightVolumes[id] }) {
-            return try await task.value
-        }
-
-        let task = Task<GoogleBooksMetadataLayer, Error> {
-            try await self.performGetVolume(id: id)
-        }
-        withState { inFlightVolumes[id] = task }
-
-        defer { withState { inFlightVolumes[id] = nil } }
-
-        return try await task.value
-    }
-
     private var hasAPIKey: Bool {
         if let apiKey = SettingsManager.shared.googleBooksApiKey?.trimmingCharacters(in: .whitespacesAndNewlines) {
             return !apiKey.isEmpty
@@ -212,46 +193,6 @@ final class GoogleBooksService: @unchecked Sendable {
 
         let decoded = try JSONDecoder().decode(GoogleBooksSearchResponse.self, from: data)
         return (decoded.items ?? []).map(Self.toMetadataLayer)
-    }
-
-    private func performGetVolume(id: String) async throws -> GoogleBooksMetadataLayer {
-        let maxAttempts = hasAPIKey ? 2 : 3
-        var lastError: Error?
-
-        for attempt in 0..<maxAttempts {
-            do {
-                let result = try await performGetVolumeAttempt(id: id)
-                withState { volumeCache[id] = result }
-                return result
-            } catch {
-                lastError = error
-                guard shouldRetry(error: error, attempt: attempt, maxAttempts: maxAttempts) else {
-                    throw error
-                }
-
-                let backoff = min(pow(2.0, Double(attempt)) * 0.75, 3.0)
-                try await Task.sleep(nanoseconds: UInt64(backoff * 1_000_000_000))
-            }
-        }
-
-        throw lastError ?? SearchError.httpStatus(503)
-    }
-
-    private func performGetVolumeAttempt(id: String) async throws -> GoogleBooksMetadataLayer {
-        var components = URLComponents(url: baseURL.appendingPathComponent(id), resolvingAgainstBaseURL: true)!
-        components.queryItems = [URLQueryItem(name: "projection", value: "full")]
-
-        guard let url = components.url else { throw URLError(.badURL) }
-
-        let (data, response) = try await sendRequest(to: url)
-        guard let http = response as? HTTPURLResponse else {
-            throw URLError(.badServerResponse)
-        }
-
-        try handleStatus(http.statusCode, data: data)
-
-        let volume = try JSONDecoder().decode(GoogleBooksVolume.self, from: data)
-        return Self.toMetadataLayer(volume)
     }
 
     private func sendRequest(to url: URL) async throws -> (Data, URLResponse) {

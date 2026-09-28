@@ -278,48 +278,6 @@ final class ABSPlaybackSessionManager {
         clearLocalSession()
     }
 
-    func updateMediaProgress(
-        libraryItemId: String,
-        episodeId: String? = nil,
-        currentTime: TimeInterval,
-        duration: TimeInterval,
-        isFinished: Bool = false,
-        backend: BackendConfig
-    ) async {
-        do {
-            if let episodeId = episodeId {
-                try await service.updateProgress(
-                    libraryItemId: libraryItemId,
-                    episodeId: episodeId,
-                    currentTime: currentTime,
-                    duration: duration,
-                    isFinished: isFinished,
-                    backend: backend
-                )
-            } else {
-                try await service.updateProgress(
-                    libraryItemId: libraryItemId,
-                    currentTime: currentTime,
-                    duration: duration,
-                    isFinished: isFinished,
-                    backend: backend
-                )
-            }
-            AppLogger.player.info("Media progress updated: \(Int(currentTime))s / \(Int(duration))s (finished: \(isFinished))")
-        } catch {
-            AppLogger.player.error("Failed to update media progress: \(error.localizedDescription)")
-        }
-    }
-
-    func getMediaProgress(libraryItemId: String, backend: BackendConfig) async -> ABSMediaProgress? {
-        do {
-            return try await service.getProgress(libraryItemId: libraryItemId, backend: backend)
-        } catch {
-            AppLogger.player.error("Failed to get media progress: \(error.localizedDescription)")
-            return nil
-        }
-    }
-
     private func startSyncTimer() {
         stopSyncTimer()
 

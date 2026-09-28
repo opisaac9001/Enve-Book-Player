@@ -70,6 +70,7 @@ class KomgaProviderAdapter @Inject constructor(
     ): Result<Unit> = repository.syncEbookProgress(
         bookId = bookId,
         percentage = percentage,
+        locator = locator,
         page = page,
         pageCount = pageCount,
     )

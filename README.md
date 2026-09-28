@@ -26,6 +26,8 @@ This repository contains both editions: the Swift app under [`ios/`](ios/) and t
 
 The public repository follows stable releases. Day-to-day development happens privately, so `main` is updated in reviewed, release-sized snapshots rather than carrying unfinished work.
 
+[Latest source changelog](CHANGELOG.md) — iOS 1.2.5 and Android 1.2 build 52.
+
 ## What it does
 
 | | |

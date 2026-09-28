@@ -34,6 +34,9 @@ interface LibraryCacheDao {
     @Query("DELETE FROM library_cache WHERE connectionId = :connectionId")
     suspend fun deleteByConnection(connectionId: String)
 
+    @Query("DELETE FROM library_cache WHERE id = :libraryId")
+    suspend fun delete(libraryId: String)
+
     @Query("DELETE FROM library_cache")
     suspend fun clearAll()
 }

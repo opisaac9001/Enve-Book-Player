@@ -21,6 +21,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import com.enve.hearth.design.parseHexColor
 
 object AnnotationPalette {
     data class Swatch(val hex: String, val name: String)
@@ -56,8 +57,7 @@ fun ColorSwatchRow(
     ) {
         colors.forEach { sw ->
             val isSelected = sw.hex.equals(selectedHex, ignoreCase = true)
-            val swatchColor = runCatching { Color(android.graphics.Color.parseColor(sw.hex)) }
-                .getOrDefault(Color.Yellow)
+            val swatchColor = parseHexColor(sw.hex) ?: Color.Yellow
             val borderColor = if (isSelected) contrast else swatchColor.copy(alpha = 0.5f)
             androidx.compose.foundation.layout.Box(
                 modifier = Modifier

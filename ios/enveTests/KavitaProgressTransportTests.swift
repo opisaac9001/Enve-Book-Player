@@ -13,6 +13,12 @@ private final class KavitaProgressTransportStub: KavitaProvider, @unchecked Send
         let data: Data
         let status: Int
         switch url.path {
+        case "/api/Account/login":
+            data = Data(#"{"token":"header.payload.signature"}"#.utf8)
+            status = 200
+        case "/api/image/series-cover":
+            data = Data([0x89, 0x50, 0x4E, 0x47])
+            status = 200
         case "/api/Series/v2", "/api/Series/recently-added-v2":
             data = Data(#"[{"id":3,"name":"Fixture","libraryId":5}]"#.utf8)
             status = 200
@@ -78,7 +84,7 @@ struct KavitaProgressTransportTests {
         let book = Book(id: "3", title: "Fixture", source: .kavita, providerId: provider.connection.id, libraryId: "5")
         let progress = try await provider.fetchEbookProgress(for: book)
         #expect(progress?.progress == 0.42)
-        #expect(progress?.updatedAt == ProviderProgressDate.parse("2026-08-30T18:30:00.123Z"))
+        #expect(progress?.updatedAt == ISO8601Timestamp.parse("2026-08-30T18:30:00.123Z"))
         #expect(provider.requests.last?.url?.query == "chapterId=11")
     }
 
@@ -89,6 +95,31 @@ struct KavitaProgressTransportTests {
         await #expect(throws: (any Error).self) {
             try await provider.updateEbookProgress(for: book, progress: 0.5, epubLocator: nil)
         }
+    }
+
+    @Test func coverFetchUsesBearerAfterPasswordLogin() async throws {
+        let provider = KavitaProgressTransportStub(connection: ServerConnection(
+            name: "Fixture", url: "https://kavita.example.invalid", type: .kavita,
+            username: "reader", password: "secret"
+        ))
+        let url = try #require(URL(string: "https://kavita.example.invalid/api/image/series-cover?seriesId=3"))
+
+        _ = try await provider.fetchCoverImage(url: url)
+
+        let request = try #require(provider.requests.last)
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer header.payload.signature")
+        #expect(request.value(forHTTPHeaderField: "X-API-Key") == nil)
+    }
+
+    @Test func apiKeyCoverFetchUsesAPIKeyHeader() async throws {
+        let provider = makeProvider()
+        let url = try #require(URL(string: "https://kavita.example.invalid/api/image/series-cover?seriesId=3"))
+
+        _ = try await provider.fetchCoverImage(url: url)
+
+        let request = try #require(provider.requests.last)
+        #expect(request.value(forHTTPHeaderField: "X-API-Key") == "fixture")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
     }
 
     private func makeProvider() -> KavitaProgressTransportStub {

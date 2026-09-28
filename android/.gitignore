@@ -13,6 +13,7 @@ local.properties
 *.class
 app/release/
 store-assets/
+BuildSupport/Private/ReadiumLCP/
 
 # IDE
 .idea/

@@ -1,8 +1,6 @@
 package com.enve.app.ui.screens
 
 import android.annotation.SuppressLint
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.drawable.ColorDrawable
@@ -19,46 +17,26 @@ import android.webkit.WebView
 import android.widget.FrameLayout
 import android.widget.ProgressBar
 import android.widget.TextView
-import android.widget.Toast
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
-import androidx.activity.compose.BackHandler
 import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.animation.*
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.ComposeView
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import kotlin.math.roundToInt
-import androidx.annotation.ColorInt
 import androidx.core.graphics.Insets
-import androidx.core.graphics.toColorInt
 import androidx.core.text.HtmlCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
@@ -82,17 +60,22 @@ import com.enve.app.document.NativeKindleEpubConverter
 import com.enve.app.document.OnDeviceEbookNormalizer
 import com.enve.app.eink.EpdRefreshManager
 import com.enve.app.readium.MediaOverlayEngine
+import com.enve.app.readium.MediaOverlayTextProgression
 import com.enve.app.readium.SmilClip
-import com.enve.app.ui.theme.AppTheme
 import com.enve.app.ui.theme.EnveTheme
 import com.enve.app.ui.theme.eink
 import com.enve.app.ui.screens.reader.BUNDLED_READER_FONTS
 import com.enve.app.ui.screens.reader.FoliateReaderEngine
 import com.enve.app.viewmodel.ReaderViewModel
 import com.enve.app.viewmodel.ThemeViewModel
-import com.enve.app.viewmodel.TocEntry
+import com.enve.app.viewmodel.CachedReaderProgress
 import com.enve.app.viewmodel.FoliateOpenPlan
+import com.enve.app.viewmodel.OpenProgressAuthority
+import com.enve.app.viewmodel.OpenRemoteProgress
 import com.enve.core.data.provider.ProviderEbookResource
+import com.enve.core.data.sync.AudioLocatorPosition
+import com.enve.core.data.sync.ProgressConflictPassage
+import com.enve.core.data.sync.SyncSnapshot
 import com.enve.core.reader.EpubBridgeCheckpointCodec
 import com.enve.core.reader.ReaderEngineKind
 import com.enve.core.reader.ReaderEnginePolicy
@@ -136,11 +119,56 @@ import java.util.zip.ZipFile
 import kotlin.math.roundToLong
 import javax.inject.Inject
 
-private data class OpenProgressResolution(
+internal data class OpenProgressResolution(
     val locatorJson: String?,
     val progress: Float,
     val mayUseCachedAudioPosition: Boolean,
 )
+
+internal data class OpenProgressPlan(
+    val resolution: OpenProgressResolution,
+    val remote: OpenRemoteProgress,
+)
+
+private sealed interface RemoteProgressOutcome {
+    data class Resolved(val plan: OpenProgressPlan) : RemoteProgressOutcome
+    data class NeedsChoice(
+        val conflict: com.enve.app.data.sync.SyncCoordinator.OpenSyncResult.Conflict,
+        val snapshot: SyncSnapshot?,
+        val localLocatorJson: String?,
+        val localProgress: Float,
+    ) : RemoteProgressOutcome
+}
+
+internal fun openProgressResolutionFor(
+    authority: OpenProgressAuthority,
+    localLocatorJson: String?,
+    localProgress: Float,
+    remoteLocatorJson: String?,
+    remoteProgress: Float,
+): OpenProgressResolution = when (authority) {
+    OpenProgressAuthority.REMOTE ->
+        OpenProgressResolution(remoteLocatorJson, remoteProgress, mayUseCachedAudioPosition = false)
+    OpenProgressAuthority.AUTOMATIC, OpenProgressAuthority.LOCAL ->
+        OpenProgressResolution(localLocatorJson, localProgress, mayUseCachedAudioPosition = true)
+}
+
+internal suspend fun awaitWithinActiveBudget(
+    budgetMs: Long,
+    pausedMs: () -> Long,
+    await: suspend (Long) -> Boolean,
+): Boolean {
+    var remaining = budgetMs
+    var credited = 0L
+    while (true) {
+        if (await(remaining)) return true
+        val paused = pausedMs()
+        val uncredited = paused - credited
+        if (uncredited <= 0L) return false
+        credited = paused
+        remaining = uncredited
+    }
+}
 
 internal fun selectAudioResumeSeconds(
     locatorAudioSeconds: Long?,
@@ -162,6 +190,7 @@ class EbookReaderActivity : FragmentActivity() {
     @Inject lateinit var okHttpClient: OkHttpClient
     @Inject lateinit var repository: GrimmoryRepository
     @Inject lateinit var syncCoordinator: com.enve.app.data.sync.SyncCoordinator
+    @Inject lateinit var progressConflictPassages: com.enve.app.data.sync.ProgressConflictPassageService
     @Inject lateinit var epdRefreshManager: EpdRefreshManager
     @Inject lateinit var einkManager: com.enve.app.eink.EinkManager
     @Inject lateinit var audioPlaybackManager: com.enve.app.playback.AudioPlaybackManager
@@ -195,6 +224,9 @@ class EbookReaderActivity : FragmentActivity() {
     private var foliateEngine: FoliateReaderEngine? = null
     private var foliateReady = false
     private var foliateFallbackStarted = false
+    private var openProgressPlan: OpenProgressPlan? = null
+    private var userDecisionStartedAtMs = 0L
+    private var userDecisionTotalMs = 0L
 
     private var ttsEngine: TextToSpeech? = null
 
@@ -262,13 +294,13 @@ class EbookReaderActivity : FragmentActivity() {
 
                 val w = window.decorView.width.toFloat()
                 val h = window.decorView.height.toFloat()
-                val tapZone = st.prefs.tapZoneWidth.coerceIn(0.15f, 0.35f)
                 if (st.showChrome && (e.y < h * 0.12f || e.y > h * 0.88f)) return false
-                when {
-                    e.x < w * tapZone -> { turnPageBackward(); return true }
-                    e.x > w * (1f - tapZone) -> { turnPageForward(); return true }
-                    else -> { vm.toggleChrome(); return true }
+                when (ReaderTapZones.zoneAt(e.x, w, st.prefs.tapZoneWidth)) {
+                    ReaderTapZone.LEFT_EDGE -> turnPageBackward()
+                    ReaderTapZone.RIGHT_EDGE -> turnPageForward()
+                    ReaderTapZone.CENTER -> vm.toggleChrome()
                 }
+                return true
             }
         })
     }
@@ -290,6 +322,9 @@ class EbookReaderActivity : FragmentActivity() {
         val sequenceEnded = ev.actionMasked == MotionEvent.ACTION_UP || ev.actionMasked == MotionEvent.ACTION_CANCEL
         if (sequenceEnded) {
             selectionCallback?.notifyFingerUp()
+            if (!documentGestureSequenceBlocked && ev.actionMasked == MotionEvent.ACTION_UP) {
+                vm.noteReadiumUserInteraction()
+            }
         }
         val consumed = edgeBrightnessConsumed
         if (sequenceEnded) {
@@ -423,13 +458,15 @@ class EbookReaderActivity : FragmentActivity() {
         private const val EXTRA_TITLE         = "title"
         private const val EXTRA_AUTHOR        = "author"
         private const val EXTRA_BOOK_FORMAT   = "bookFormat"
-        const val EXTRA_HEARTH_CHROME = "hearthChrome"
         private const val EXTRA_EPUB_LOCATOR  = "epubLocator"
         private const val EXTRA_EPUB_PROGRESS = "epubProgress"
         private const val EXTRA_LAST_READ_TIME = "lastReadTime"
         private const val EXTRA_READER_ENGINE = "readerEngine"
         private const val FOLIATE_STARTUP_ATTEMPTS = 2
         private const val FOLIATE_RETRY_DELAY_MS = 500L
+        private const val OPEN_WATCHDOG_MS = 300_000L
+        private const val REMOTE_PROGRESS_TIMEOUT_MS = 15_000L
+        private const val AUDIO_SEEDED_PROGRESS_TOLERANCE = 0.005f
         private const val ZIP_END_RECORD_BYTES = 22L
         private const val MAX_ZIP_END_RECORD_SEARCH_BYTES = 65_557L
 
@@ -565,9 +602,9 @@ class EbookReaderActivity : FragmentActivity() {
             val readNextPosition by hearthPreferences.readNextPosition.collectAsStateWithLifecycle(
                 initialValue = ReadNextPosition.BOTTOM,
             )
-            val useHearthChrome = androidx.compose.runtime.remember { intent?.getBooleanExtra(EXTRA_HEARTH_CHROME, false) == true }
+            val restReminder = com.enve.app.ui.screens.reader.rememberReaderRestReminderSpec(hearthPreferences)
             val onReadNext: (Book) -> Unit = { next ->
-                startActivity(readerIntentForBook(next, hearthChrome = useHearthChrome))
+                startActivity(readerIntentForBook(next))
                 finish()
             }
             val onAskLibrarian: () -> Unit = {
@@ -585,38 +622,38 @@ class EbookReaderActivity : FragmentActivity() {
                 )
             }
             com.enve.hearth.design.HearthUiTextScale(uiTextScale) {
-                if (useHearthChrome) {
-                    com.enve.app.ui.screens.reader.HearthReaderChrome(
-                        vm = vm,
-                        bookTitle = bookTitle,
-                        bookAuthor = bookAuthor,
-                        accentColor = com.enve.hearth.design.EmberAccent,
-                        onBack = { finish() },
-                        onAskLibrarian = onAskLibrarian,
-                        onVerticalMarginsChanged = { margin -> applyVerticalReadingPadding(margin) },
-                        einkActive = themeState.einkProfile.active,
-                        readNextEnabled = readNextEnabled,
-                        readNextPosition = readNextPosition,
-                        onReadNext = onReadNext,
-                    )
-                } else {
+                com.enve.app.ui.screens.reader.HearthReaderChrome(
+                    vm = vm,
+                    bookTitle = bookTitle,
+                    bookAuthor = bookAuthor,
+                    accentColor = com.enve.hearth.design.EmberAccent,
+                    onBack = { finish() },
+                    onAskLibrarian = onAskLibrarian,
+                    onVerticalMarginsChanged = { margin -> applyVerticalReadingPadding(margin) },
+                    einkActive = themeState.einkProfile.active,
+                    readNextEnabled = readNextEnabled,
+                    readNextPosition = readNextPosition,
+                    onReadNext = onReadNext,
+                    restReminder = restReminder,
+                )
+                readerState.pendingProgressConflict?.let { prompt ->
                     EnveTheme(
                         appTheme = themeState.effectiveAppTheme,
                         themeColor = themeState.themeColor,
                         dynamicBackgroundEnabled = themeState.dynamicBackgroundEnabled,
                         einkProfile = themeState.einkProfile,
                     ) {
-                        ReaderOverlay(
-                            vm        = vm,
-                            bookTitle = bookTitle,
-                            bookAuthor= bookAuthor,
-                            accentColor = EnveTheme.colors.accent,
-                            onBack    = { finish() },
-                            onAskLibrarian = onAskLibrarian,
-                            onVerticalMarginsChanged = { margin -> applyVerticalReadingPadding(margin) },
-                            readNextEnabled = readNextEnabled,
-                            readNextPosition = readNextPosition,
-                            onReadNext = onReadNext,
+                        ProgressConflictDialog(
+                            prompt = prompt,
+                            onChooseLocal = {
+                                vm.resolveProgressConflict(com.enve.app.viewmodel.ProgressConflictChoice.LOCAL)
+                            },
+                            onChooseRemote = {
+                                vm.resolveProgressConflict(com.enve.app.viewmodel.ProgressConflictChoice.REMOTE)
+                            },
+                            onDecideLater = {
+                                vm.resolveProgressConflict(com.enve.app.viewmodel.ProgressConflictChoice.LATER)
+                            },
                         )
                     }
                 }
@@ -624,12 +661,14 @@ class EbookReaderActivity : FragmentActivity() {
         }
 
         lifecycleScope.launch {
-
-            val completed = withTimeoutOrNull(300_000L) {
-                loadBook(bookId, locatorJson, epubProgress, bookFormat)
-                true
-            }
-            if (completed == null) {
+            val load = launch { loadBook(bookId, locatorJson, epubProgress, bookFormat) }
+            val completed = awaitWithinActiveBudget(
+                budgetMs = OPEN_WATCHDOG_MS,
+                pausedMs = ::userDecisionElapsedMs,
+                await = { budget -> withTimeoutOrNull(budget) { load.join() } != null },
+            )
+            if (!completed) {
+                load.cancel()
                 android.util.Log.w("EbookReader", "loadBook exceeded 5m watchdog")
                 showError(
                     "Opening this book is taking longer than expected.\n\n" +
@@ -658,9 +697,10 @@ class EbookReaderActivity : FragmentActivity() {
         val hasOfflineSource = comicOfflineStorage.getDownloadedFile(bookId)
             ?.let { it.exists() && it.length() > 0L }
             ?: false
+        val networkAvailable = hasNetworkConnection()
         val useReaderNetwork = shouldUseReaderNetwork(
             hasOfflineSource = hasOfflineSource,
-            networkAvailable = hasNetworkConnection(),
+            networkAvailable = networkAvailable,
         )
         val ebookResource = if (sourceFormat == EbookSourceFormat.EPUB && useReaderNetwork) {
             runCatching { vm.getEbookResource() }.getOrNull()
@@ -717,13 +757,23 @@ class EbookReaderActivity : FragmentActivity() {
                 runCatching { syncCoordinator.pullAnnotations(syncBook) }
                 syncCoordinator.flushAnnotations(syncBook.id)
             }
+            val openProgress = resolveOpenProgress(
+                locatorJson = locatorJson,
+                epubProgress = epubProgress,
+                networkAvailable = networkAvailable,
+                pullAnnotations = false,
+                cached = vm.cachedReaderProgress(),
+                epubFile = epubFile,
+                publication = null,
+            )
             val plan = vm.prepareEpubEngineOpen(
                 engine = ReaderEngineKind.FOLIATE,
                 resource = requireNotNull(ebookResource),
                 publicationSha256 = publicationSha256,
-                launcherLocator = locatorJson,
-                launcherProgress = epubProgress,
+                launcherLocator = openProgress.resolution.locatorJson,
+                launcherProgress = openProgress.resolution.progress,
                 launcherUpdatedAt = bookLastReadTime,
+                remote = openProgress.remote,
             )
             openFoliate(
                 epubFile = epubFile,
@@ -760,25 +810,16 @@ class EbookReaderActivity : FragmentActivity() {
 
         val syncStartMs = android.os.SystemClock.elapsedRealtime()
         val cachedReaderProgress = vm.cachedReaderProgress()
-        val progressResolution = if (!useReaderNetwork) {
-            OpenProgressResolution(
-                cachedReaderProgress?.locator ?: locatorJson,
-                cachedReaderProgress?.progress?.takeIf { it > epubProgress } ?: epubProgress,
-                mayUseCachedAudioPosition = true,
-            )
-        } else {
-            withTimeoutOrNull(15_000L) { pullRemoteProgress(locatorJson, epubProgress) }
-                ?: run {
-
-                    android.util.Log.w(
-                        "EbookReader",
-                        "pullRemoteProgress timed out after ${android.os.SystemClock.elapsedRealtime() - syncStartMs}ms; opening with local fallback (intentProgress=$epubProgress, cachedProgress=${cachedReaderProgress?.progress}, cachedLocator=${cachedReaderProgress?.locator != null})",
-                    )
-                    val fallbackProgress = (cachedReaderProgress?.progress?.takeIf { it > epubProgress }) ?: epubProgress
-                    val fallbackLocator = cachedReaderProgress?.locator ?: locatorJson
-                    OpenProgressResolution(fallbackLocator, fallbackProgress, mayUseCachedAudioPosition = true)
-                }
-        }
+        val openProgress = resolveOpenProgress(
+            locatorJson = locatorJson,
+            epubProgress = epubProgress,
+            networkAvailable = networkAvailable,
+            pullAnnotations = true,
+            cached = cachedReaderProgress,
+            epubFile = epubFile,
+            publication = publication,
+        )
+        val progressResolution = openProgress.resolution
         val readiumBridgePlan = ebookResource?.let { resource ->
             vm.prepareEpubEngineOpen(
                 engine = ReaderEngineKind.READIUM,
@@ -787,6 +828,7 @@ class EbookReaderActivity : FragmentActivity() {
                 launcherLocator = progressResolution.locatorJson,
                 launcherProgress = progressResolution.progress,
                 launcherUpdatedAt = bookLastReadTime,
+                remote = openProgress.remote,
             )
         }
         val bridgedCheckpoint = readiumBridgePlan?.initialCheckpoint
@@ -835,7 +877,7 @@ class EbookReaderActivity : FragmentActivity() {
             buildReadAloudInitialLocatorFromAudio(
                 publication = publication,
                 epubFile = epubFile,
-                audioPositionSec = audioResumeSec,
+                position = AudioLocatorPosition(timeMs = audioResumeSec * 1000L, progression = 0.0),
                 audioTracks = readAloudTracks,
             ) ?: progressLocator
         } else {
@@ -1128,14 +1170,23 @@ class EbookReaderActivity : FragmentActivity() {
     private suspend fun buildReadAloudInitialLocatorFromAudio(
         publication: org.readium.r2.shared.publication.Publication,
         epubFile: File,
-        audioPositionSec: Long,
+        position: AudioLocatorPosition,
         audioTracks: List<AudioTrack>,
     ): Locator? {
         val engine = MediaOverlayEngine(applicationContext, publication, lifecycleScope, sourceFile = epubFile)
         return try {
             engine.setAudioTimeline(audioTracks)
-            val clip = engine.clipForAbsoluteAudioPosition(audioPositionSec * 1000L) ?: return null
-            readAloudLocatorFromClip(publication, clip)
+            val clip = engine.clipForAudioPosition(position) ?: return null
+            readAloudLocatorFromClip(
+                publication = publication,
+                clip = clip,
+                totalProgression = MediaOverlayTextProgression.readingProgression(
+                    textProgression = clip.textProgression,
+                    narrationCompleted = position.progression >= 1.0,
+                ),
+            )
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             android.util.Log.w("EbookReader", "Could not map read-aloud audio time to EPUB locator", e)
             null
@@ -1177,6 +1228,7 @@ class EbookReaderActivity : FragmentActivity() {
     private fun readAloudLocatorFromClip(
         publication: org.readium.r2.shared.publication.Publication,
         clip: SmilClip,
+        totalProgression: Double?,
     ): Locator? {
         val href = parsePublicationHref(clip.textHref) ?: return null
         val manifestLink = publication.linkWithHref(href)
@@ -1190,7 +1242,7 @@ class EbookReaderActivity : FragmentActivity() {
         return baseLocator.copyWithLocations(
             fragments = clip.textFragmentId?.let(::listOf).orEmpty(),
             progression = clip.resourceProgression ?: baseLocator.locations.progression,
-            totalProgression = baseLocator.locations.totalProgression,
+            totalProgression = totalProgression ?: baseLocator.locations.totalProgression,
         )
     }
 
@@ -1310,50 +1362,222 @@ class EbookReaderActivity : FragmentActivity() {
         }
     }
 
+    private suspend fun resolveOpenProgress(
+        locatorJson: String?,
+        epubProgress: Float,
+        networkAvailable: Boolean,
+        pullAnnotations: Boolean,
+        cached: CachedReaderProgress?,
+        epubFile: File,
+        publication: org.readium.r2.shared.publication.Publication?,
+    ): OpenProgressPlan {
+        openProgressPlan?.let { return it }
+
+        val fallbackLocator = cached?.locator ?: locatorJson
+        val fallbackProgress = cached?.progress?.takeIf { it > epubProgress } ?: epubProgress
+        val localPlan = OpenProgressPlan(
+            resolution = OpenProgressResolution(fallbackLocator, fallbackProgress, mayUseCachedAudioPosition = true),
+            remote = OpenRemoteProgress(snapshot = null, authority = OpenProgressAuthority.AUTOMATIC),
+        )
+
+        val plan = if (!networkAvailable) {
+            localPlan
+        } else {
+            val startedAt = android.os.SystemClock.elapsedRealtime()
+            val outcome = withTimeoutOrNull(REMOTE_PROGRESS_TIMEOUT_MS) {
+                pullRemoteProgress(fallbackLocator, fallbackProgress, pullAnnotations, epubFile, publication)
+            } ?: run {
+                android.util.Log.w(
+                    "EbookReader",
+                    "pullRemoteProgress timed out after ${android.os.SystemClock.elapsedRealtime() - startedAt}ms; opening with local fallback (intentProgress=$epubProgress, cachedProgress=${cached?.progress}, cachedLocator=${cached?.locator != null})",
+                )
+                RemoteProgressOutcome.Resolved(localPlan)
+            }
+            when (outcome) {
+                is RemoteProgressOutcome.Resolved -> outcome.plan
+                is RemoteProgressOutcome.NeedsChoice -> awaitProgressChoice(outcome, epubFile, publication)
+            }
+        }
+        openProgressPlan = plan
+        return plan
+    }
+
     private suspend fun pullRemoteProgress(
-        localLocatorJson: String?,
-        localProgress: Float,
-    ): OpenProgressResolution {
-        val book = currentSyncBook(localLocatorJson, localProgress)
-        val result = runCatching {
-            syncCoordinator.pullOnOpenResolved(
-                book = book,
-                localPercentage = localProgress,
-                localUpdatedAt = bookLastReadTime.takeIf { it > 0L },
-                localLocatorJson = localLocatorJson,
-            )
-        }.getOrNull() ?: return OpenProgressResolution(
-            localLocatorJson,
-            localProgress,
-            mayUseCachedAudioPosition = true,
+        cachedLocatorJson: String?,
+        cachedProgress: Float,
+        pullAnnotations: Boolean,
+        epubFile: File,
+        publication: org.readium.r2.shared.publication.Publication?,
+    ): RemoteProgressOutcome {
+        val book = currentSyncBook(cachedLocatorJson, cachedProgress)
+        val fetched = try {
+            if (pullAnnotations) syncCoordinator.pullOnOpen(book) else syncCoordinator.fetchSnapshot(book)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+        val audioPosition = AudioLocatorPosition.parse(fetched?.locatorJson)
+        val snapshot = fetched?.let { remote ->
+            audioPosition?.let { readAloudSnapshotFromAudio(remote, it, epubFile, publication) } ?: remote
+        }
+        val seededLocal = snapshot?.takeIf {
+            audioPosition != null && it.locatorJson != null &&
+                kotlin.math.abs(cachedProgress - fetched.percentage) < AUDIO_SEEDED_PROGRESS_TOLERANCE
+        }
+        val localLocatorJson = seededLocal?.locatorJson ?: cachedLocatorJson
+        val localProgress = seededLocal?.percentage ?: cachedProgress
+        val result = syncCoordinator.resolveFetchedSnapshot(
+            book = book,
+            snapshot = snapshot,
+            localPercentage = localProgress,
+            localUpdatedAt = bookLastReadTime.takeIf { it > 0L },
+            localLocatorJson = localLocatorJson,
         )
 
         return when (result) {
             is com.enve.app.data.sync.SyncCoordinator.OpenSyncResult.Apply -> {
-                val snap = result.snapshot
-                if (!result.useRemote || snap == null) {
-                    OpenProgressResolution(localLocatorJson, localProgress, mayUseCachedAudioPosition = true)
+                val authority = if (result.useRemote && result.snapshot != null) {
+                    OpenProgressAuthority.REMOTE
+                } else if (!result.allowRemoteCheckpoint) {
+                    OpenProgressAuthority.LOCAL
                 } else {
-
-                    OpenProgressResolution(null, snap.percentage, mayUseCachedAudioPosition = false)
+                    OpenProgressAuthority.AUTOMATIC
                 }
-            }
-            is com.enve.app.data.sync.SyncCoordinator.OpenSyncResult.Conflict -> {
-                val prompt = com.enve.app.viewmodel.ProgressConflictPrompt(
-                    localPercentage = result.local.percentage,
-                    localUpdatedAt = result.local.updatedAt,
-                    remotePercentage = result.remote.percentage,
-                    remoteUpdatedAt = result.remote.updatedAt,
-                    remoteSource = bookSource.displayName,
+                RemoteProgressOutcome.Resolved(
+                    OpenProgressPlan(
+                        resolution = openProgressResolutionFor(
+                            authority = authority,
+                            localLocatorJson = localLocatorJson,
+                            localProgress = localProgress,
+                            remoteLocatorJson = result.snapshot?.locatorJson,
+                            remoteProgress = result.snapshot?.percentage ?: localProgress,
+                        ),
+                        remote = OpenRemoteProgress(result.snapshot, authority),
+                    ),
                 )
-                val choice = vm.awaitProgressConflictChoice(prompt)
-                when (choice) {
-                    com.enve.app.viewmodel.ProgressConflictChoice.LOCAL ->
-                        OpenProgressResolution(localLocatorJson, localProgress, mayUseCachedAudioPosition = true)
-                    com.enve.app.viewmodel.ProgressConflictChoice.REMOTE ->
-                        OpenProgressResolution(null, result.remote.percentage, mayUseCachedAudioPosition = false)
-                }
             }
+            is com.enve.app.data.sync.SyncCoordinator.OpenSyncResult.Conflict ->
+                RemoteProgressOutcome.NeedsChoice(result, snapshot, localLocatorJson, localProgress)
+        }
+    }
+
+    private suspend fun readAloudSnapshotFromAudio(
+        snapshot: SyncSnapshot,
+        position: AudioLocatorPosition,
+        epubFile: File,
+        publication: org.readium.r2.shared.publication.Publication?,
+    ): SyncSnapshot {
+        val locator = publication?.let {
+            buildReadAloudInitialLocatorFromAudio(
+                publication = it,
+                epubFile = epubFile,
+                position = position,
+                audioTracks = vm.loadStorytellerReadAloudAudioTracks(),
+            )
+        } ?: return snapshot.copy(locatorJson = null)
+        return snapshot.copy(
+            percentage = locator.locations.totalProgression?.toFloat() ?: snapshot.percentage,
+            locatorJson = locator.toJSON().toString(),
+        )
+    }
+
+    private suspend fun awaitProgressChoice(
+        pending: RemoteProgressOutcome.NeedsChoice,
+        epubFile: File,
+        publication: org.readium.r2.shared.publication.Publication?,
+    ): OpenProgressPlan {
+        val conflict = pending.conflict
+        val passages = conflictPassages(conflict, epubFile, publication)
+
+        val choice = awaitingUserDecision {
+            vm.awaitProgressConflictChoice(
+                com.enve.app.viewmodel.ProgressConflictPrompt(
+                    localPercentage = conflict.local.percentage,
+                    localUpdatedAt = conflict.local.updatedAt,
+                    remotePercentage = conflict.remote.percentage,
+                    remoteUpdatedAt = conflict.remote.updatedAt,
+                    remoteSource = conflict.remoteSource,
+                    localPassage = passages?.first,
+                    remotePassage = passages?.second,
+                ),
+            )
+        }
+        val acceptedRemote = choice == com.enve.app.viewmodel.ProgressConflictChoice.REMOTE
+        if (choice == com.enve.app.viewmodel.ProgressConflictChoice.LATER) {
+            vm.holdProgressPushes()
+        } else {
+            syncCoordinator.recordConflictResolution(
+                book = currentSyncBook(pending.localLocatorJson, pending.localProgress),
+                remoteSource = conflict.remoteSource,
+                acceptedRemote = acceptedRemote,
+            )
+        }
+
+        val authority = if (acceptedRemote) OpenProgressAuthority.REMOTE else OpenProgressAuthority.LOCAL
+        return OpenProgressPlan(
+            resolution = openProgressResolutionFor(
+                authority = authority,
+                localLocatorJson = pending.localLocatorJson,
+                localProgress = pending.localProgress,
+                remoteLocatorJson = conflict.remote.locatorJson,
+                remoteProgress = conflict.remote.percentage,
+            ),
+            remote = OpenRemoteProgress(pending.snapshot, authority),
+        )
+    }
+
+    private suspend fun conflictPassages(
+        conflict: com.enve.app.data.sync.SyncCoordinator.OpenSyncResult.Conflict,
+        epubFile: File,
+        publication: org.readium.r2.shared.publication.Publication?,
+    ): Pair<ProgressConflictPassage?, ProgressConflictPassage?>? {
+        suspend fun passages(
+            target: org.readium.r2.shared.publication.Publication,
+        ): Pair<ProgressConflictPassage?, ProgressConflictPassage?>? = try {
+            progressConflictPassages.passages(
+                publication = target,
+                localLocatorJson = conflict.local.locatorJson,
+                localPercentage = conflict.local.percentage,
+                remoteLocatorJson = conflict.remote.locatorJson,
+                remotePercentage = conflict.remote.percentage,
+            )
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+
+        if (publication != null) return passages(publication)
+
+        val readium = (application as EnveApplication).readiumManager
+        val asset = readium.assetRetriever.retrieve(epubFile).getOrElse { return null }
+        val preview = readium.publicationOpener.open(asset, allowUserInteraction = false).getOrElse {
+            withContext(Dispatchers.IO) { runCatching { asset.close() } }
+            return null
+        }
+        return try {
+            passages(preview)
+        } finally {
+            withContext(Dispatchers.IO) { runCatching { preview.close() } }
+        }
+    }
+
+    private fun userDecisionElapsedMs(): Long {
+        val pending = userDecisionStartedAtMs
+            .takeIf { it > 0L }
+            ?.let { android.os.SystemClock.elapsedRealtime() - it }
+            ?: 0L
+        return userDecisionTotalMs + pending
+    }
+
+    private suspend fun <T> awaitingUserDecision(block: suspend () -> T): T {
+        userDecisionStartedAtMs = android.os.SystemClock.elapsedRealtime()
+        return try {
+            block()
+        } finally {
+            userDecisionTotalMs += android.os.SystemClock.elapsedRealtime() - userDecisionStartedAtMs
+            userDecisionStartedAtMs = 0L
         }
     }
 
@@ -1616,12 +1840,17 @@ class EbookReaderActivity : FragmentActivity() {
     }
 
     private fun applyEpubContainerPadding() {
-        epubContainer.setPadding(
-            epubContainerSafeInsets.left,
-            epubContainerSafeInsets.top + verticalReadingPaddingPx,
-            epubContainerSafeInsets.right,
-            epubContainerSafeInsets.bottom + verticalReadingPaddingPx,
-        )
+        val left = epubContainerSafeInsets.left
+        val top = epubContainerSafeInsets.top + verticalReadingPaddingPx
+        val right = epubContainerSafeInsets.right
+        val bottom = epubContainerSafeInsets.bottom + verticalReadingPaddingPx
+        if (
+            left == epubContainer.paddingLeft && top == epubContainer.paddingTop &&
+            right == epubContainer.paddingRight && bottom == epubContainer.paddingBottom
+        ) {
+            return
+        }
+        vm.preserveReadiumPositionAcross { epubContainer.setPadding(left, top, right, bottom) }
     }
 
     private fun initTts() {
@@ -1668,10 +1897,6 @@ class EbookReaderActivity : FragmentActivity() {
     }
 }
 
-fun ReaderViewModel.addAnnotationFromSelectionQuick(
-    locator: Locator, text: String, style: AnnotationStyle,
-) = addAnnotation(locator, style, "#FFF59D", "", text)
-
 private fun ReadiumError.describe(): String =
     generateSequence(this) { it.cause }
         .take(MAX_READIUM_ERROR_CAUSES)
@@ -1712,6 +1937,10 @@ private class ReaderSelectionCallback(
 
     override fun onPrepareActionMode(mode: android.view.ActionMode, menu: android.view.Menu): Boolean {
         menu.clear()
+        if (active) {
+            handler.removeCallbacks(showPopup)
+            handler.postDelayed(showPopup, POPUP_DELAY_MS)
+        }
         return true
     }
 
@@ -1729,569 +1958,4 @@ private class ReaderSelectionCallback(
         const val POPUP_DELAY_MS = 120L
         const val ACTION_MODE_REBUILD_GRACE_MS = 150L
     }
-}
-
-internal data class ChromeColors(
-    val background: Color,
-    val surface: Color,
-    val primaryText: Color,
-    val secondaryText: Color,
-    val iconTint: Color,
-    val accentText: Color,
-    val ghostButtonBg: Color,
-    val divider: Color,
-    val progressTrack: Color,
-)
-
-private fun chromeColorsForTheme(theme: ReaderTheme, accent: Color, einkActive: Boolean = false): ChromeColors {
-
-    if (einkActive) {
-        return ChromeColors(
-            background = Color(0xFFFFFFFF),
-            surface = Color(0xFFFFFFFF),
-            primaryText = Color(0xFF000000),
-            secondaryText = Color(0xFF333333),
-            iconTint = Color(0xFF000000),
-            accentText = Color(0xFF000000),
-            ghostButtonBg = Color(0x00000000),
-            divider = Color(0xFF000000),
-            progressTrack = Color(0xFF999999),
-        )
-    }
-    return when (theme) {
-        ReaderTheme.OLED, ReaderTheme.DARK -> ChromeColors(
-            background = Color(0xF00A0A0A),
-            surface = Color(0xF21C1C1E),
-            primaryText = Color(0xFFFFFFFF),
-            secondaryText = Color(0xFF8E8E93),
-            iconTint = Color(0xFFFFFFFF),
-            accentText = accent,
-            ghostButtonBg = Color(0x1AFFFFFF),
-            divider = Color(0xFF2C2C2E),
-            progressTrack = Color(0xFF3A3A3C),
-        )
-        ReaderTheme.SEPIA -> ChromeColors(
-            background = Color(0xF7F0E8D8),
-            surface = Color(0xFFF8E9CF),
-            primaryText = Color(0xFF2D1B00),
-            secondaryText = Color(0xFF7A5C35),
-            iconTint = Color(0xFF2D1B00),
-            accentText = accent,
-            ghostButtonBg = Color(0x1A2D1B00),
-            divider = Color(0xFFD4C4A8),
-            progressTrack = Color(0xFFD4C4A8),
-        )
-        ReaderTheme.LIGHT -> ChromeColors(
-            background = Color(0xF7F2F2F7),
-            surface = Color(0xFFFFFFFF),
-            primaryText = Color(0xFF000000),
-            secondaryText = Color(0xFF3C3C43).copy(alpha = 0.6f),
-            iconTint = Color(0xFF000000),
-            accentText = accent,
-            ghostButtonBg = Color(0x0F000000),
-            divider = Color(0xFFD1D1D6),
-            progressTrack = Color(0xFFD1D1D6),
-        )
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun ReaderOverlay(
-    vm: ReaderViewModel,
-    bookTitle: String,
-    bookAuthor: String,
-    accentColor: Color,
-    onBack: () -> Unit,
-    onAskLibrarian: () -> Unit,
-    onVerticalMarginsChanged: (Float) -> Unit,
-    readNextEnabled: Boolean,
-    readNextPosition: ReadNextPosition,
-    onReadNext: (Book) -> Unit,
-) {
-    val uiState by vm.state.collectAsStateWithLifecycle()
-    val chromeInteraction by vm.chromeInteraction.collectAsStateWithLifecycle()
-    val einkChromeActive = EnveTheme.eink.active
-    val colors = chromeColorsForTheme(uiState.prefs.theme, accentColor, einkChromeActive)
-
-    val context = LocalContext.current
-
-    LaunchedEffect(uiState.prefs.verticalMargins) {
-        onVerticalMarginsChanged(uiState.prefs.verticalMargins)
-    }
-
-    val einkActive = EnveTheme.eink.active
-    LaunchedEffect(uiState.showChrome, chromeInteraction, uiState.showAppearanceSheet, uiState.showTocSheet, uiState.showAnnotationDialog, uiState.showAutoScrollPanel, uiState.showToolbarCustomizer, uiState.showMoreMenu, uiState.readAlongPlaying, uiState.readAlongPreparing) {
-        if (uiState.showChrome &&
-            !uiState.showAppearanceSheet &&
-            !uiState.showTocSheet &&
-            !uiState.showAnnotationDialog &&
-            !uiState.showAutoScrollPanel &&
-            !uiState.showToolbarCustomizer &&
-            !uiState.showMoreMenu &&
-
-            !uiState.readAlongPreparing
-        ) {
-            kotlinx.coroutines.delay(if (einkActive) 15_000L else 5_000L)
-            vm.hideChrome()
-        }
-    }
-
-    Box(modifier = Modifier.fillMaxSize()) {
-            val dimmer = readerDimmerAlpha(uiState.prefs.screenBrightness)
-            if (dimmer > 0f) {
-                Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = dimmer)))
-            }
-
-            val readerIsEink = EnveTheme.isEink
-
-            val chromeState = ReaderChromeState(
-                title = bookTitle,
-                author = bookAuthor,
-                currentPage = uiState.currentPage,
-                totalPages = uiState.totalPages,
-                hasPageList = uiState.hasPageList,
-                currentPageLabel = uiState.currentPageLabel,
-                lastPageLabel = uiState.lastPageLabel,
-                progressPct = uiState.progressPct,
-                sectionTitle = uiState.currentSection,
-                chromeVisible = uiState.showChrome,
-                sliderDragging = uiState.sliderDragging,
-                sliderPreviewPage = uiState.sliderPreviewPage,
-                sliderPreviewPageLabel = uiState.sliderPreviewPageLabel,
-                canNavigateBack = uiState.currentPage > 1,
-                canNavigateForward = uiState.totalPages <= 0 || uiState.currentPage < uiState.totalPages,
-                readAlongSupported = uiState.readAlongSupported,
-                readAlongActive = uiState.readAlongActive,
-                readAlongPlaying = uiState.readAlongPlaying,
-                ttsEnabled = uiState.prefs.ttsEnabled,
-                ttsSpeaking = uiState.ttsSpeaking,
-                moreMenuExpanded = uiState.showMoreMenu,
-                toolbarButtons = uiState.prefs.toolbarButtons,
-            )
-            val chromeActions = ReaderChromeActions(
-                onMoreMenuExpandedChange = { expanded ->
-                    vm.keepChromeAlive()
-                    vm.showMoreMenu(expanded)
-                },
-                onBack = onBack,
-                onSearch = { vm.keepChromeAlive(); vm.showSearch(true) },
-                onToc = { vm.keepChromeAlive(); vm.showToc(true) },
-                onAppearance = { vm.keepChromeAlive(); vm.showAppearance(true) },
-                onBookmark = { vm.keepChromeAlive(); vm.addBookmark() },
-                onAnnotations = { vm.keepChromeAlive(); vm.showAnnotationsSheet(true) },
-                onAddNote = { vm.keepChromeAlive(); vm.addStandaloneNote() },
-                onAskLibrarian = {
-                    vm.keepChromeAlive()
-                    onAskLibrarian()
-                },
-                onReadAlong = { vm.keepChromeAlive(); vm.toggleReadAlongMode() },
-                onTts = {
-                    vm.keepChromeAlive()
-                    if (uiState.ttsSpeaking) {
-                        vm.stopTts()
-                    } else if (uiState.selectionText.isNotBlank()) {
-                        vm.speakSelection(uiState.selectionText)
-                    } else {
-                        vm.postTransientMessage("Select text to speak.")
-                    }
-                },
-                onHistoryBack = { vm.keepChromeAlive(); vm.pageBackward() },
-                onHistoryForward = { vm.keepChromeAlive(); vm.pageForward() },
-                onAutoScroll = { vm.keepChromeAlive(); vm.showAutoScrollPanel(true) },
-                onToolbarCustomize = { vm.keepChromeAlive(); vm.showToolbarCustomizer(true) },
-                onSliderChange = { p -> vm.setSliderDragging(true, p.toInt()) },
-                onSliderDragStart = { vm.setSliderDragging(true, uiState.currentPage) },
-                onSliderDragEnd = { p ->
-                    vm.keepChromeAlive()
-                    val position = p.roundToInt()
-                    vm.setSliderDragging(false, position)
-                    if (uiState.totalPages > 0) {
-                        vm.seekToPosition(position)
-                    }
-                },
-                onSeekProgress = { progress ->
-                    if (uiState.hasPageList && uiState.totalPages > 0) {
-                        vm.seekToPosition(
-                            (progress * uiState.totalPages).roundToInt().coerceAtLeast(1),
-                        )
-                    } else {
-                        vm.seekToProgress(progress)
-                    }
-                },
-                onSliderDrag = { dragging, page -> vm.setSliderDragging(dragging, page) },
-                onPagePrev = { vm.keepChromeAlive(); vm.pageBackward() },
-                onPageNext = { vm.keepChromeAlive(); vm.pageForward() },
-                onChromeInteraction = { vm.keepChromeAlive() },
-            )
-            if (readerIsEink) {
-                NewReaderChrome(
-                    state = chromeState,
-                    actions = chromeActions,
-                    colors = colors,
-                    einkActive = readerIsEink,
-                )
-            } else {
-                LegacyReaderChrome(
-                    state = chromeState,
-                    actions = chromeActions,
-                    colors = colors,
-                )
-            }
-
-            if (uiState.prefs.showClock || uiState.prefs.showBattery ||
-                uiState.prefs.progressDisplay != com.enve.app.data.reader.ReaderProgressDisplay.NONE) {
-                ReaderStatusStrip(
-                    showClock = uiState.prefs.showClock,
-                    showBattery = uiState.prefs.showBattery,
-                    progressDisplay = uiState.prefs.progressDisplay,
-                    currentPage = uiState.currentPage,
-                    totalPages = uiState.totalPages,
-                    hasPageList = uiState.hasPageList,
-                    currentPageLabel = uiState.currentPageLabel,
-                    lastPageLabel = uiState.lastPageLabel,
-                    progressPct = uiState.progressPct,
-                    chapter = uiState.currentSection,
-                    chromeVisible = uiState.showChrome,
-                    textColor = colors.secondaryText,
-                    modifier = Modifier.align(Alignment.TopCenter),
-                )
-            }
-
-            val nextBook = uiState.nextInSeries
-            val atEnd = uiState.totalPages > 0 && uiState.currentPage >= uiState.totalPages ||
-                uiState.progressPct >= 98
-            if (readNextEnabled && nextBook != null && atEnd) {
-                NextInSeriesButton(
-                    book = nextBook,
-                    onClick = { onReadNext(nextBook) },
-                    modifier = Modifier
-                        .align(
-                            if (readNextPosition == ReadNextPosition.TOP) {
-                                Alignment.TopCenter
-                            } else {
-                                Alignment.BottomCenter
-                            },
-                        )
-                        .padding(
-                            top = if (readNextPosition == ReadNextPosition.TOP) 108.dp else 0.dp,
-                            bottom = if (readNextPosition == ReadNextPosition.BOTTOM) 108.dp else 0.dp,
-                            start = 24.dp,
-                            end = 24.dp,
-                        ),
-                )
-            }
-
-            AnimatedVisibility(
-                visible = uiState.showChrome && uiState.readAlongActive,
-                enter = fadeIn(tween(180)) + slideInVertically(tween(180)) { it / 2 },
-                exit = fadeOut(tween(140)) + slideOutVertically(tween(140)) { it / 2 },
-                modifier = Modifier.align(Alignment.BottomCenter),
-            ) {
-                ReadAlongControlsBar(
-                    isPlaying = uiState.readAlongPlaying,
-                    isPreparing = uiState.readAlongPreparing,
-                    speed = uiState.prefs.ttsSpeed,
-                    clipIndex = uiState.readAlongClipIndex,
-                    clipCount = uiState.readAlongClipCount,
-                    colors = colors,
-                    onTogglePlayback = { vm.keepChromeAlive(); vm.toggleReadAlongPlayback() },
-                    onSkipBackward = { vm.keepChromeAlive(); vm.skipReadAlongBackward() },
-                    onSkipForward = { vm.keepChromeAlive(); vm.skipReadAlongForward() },
-                    onSpeedChange = { vm.keepChromeAlive(); vm.setReadAlongSpeed(it) },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .navigationBarsPadding()
-                        .padding(
-                            start = 16.dp,
-                            end = 16.dp,
-                            bottom = 20.dp,
-                        ),
-                )
-            }
-
-            if (uiState.showSelectionPopup) {
-                BackHandler { vm.hideSelectionPopup(); vm.clearSelection() }
-            }
-
-            AnimatedVisibility(
-                visible = uiState.showSelectionPopup && uiState.pendingSelection != null,
-                enter   = fadeIn(tween(150)) + slideInVertically(tween(180)) { it / 2 },
-                exit    = fadeOut(tween(150)) + slideOutVertically(tween(140)) { it / 2 },
-                modifier= Modifier
-                    .align(Alignment.BottomCenter)
-                    .navigationBarsPadding()
-                    .padding(bottom = 8.dp),
-            ) {
-                SelectionPopup(
-                    colors = colors,
-                    selectedText = uiState.selectionText,
-                    onHighlight = { color ->
-                        uiState.pendingSelection?.let { loc ->
-                            vm.addAnnotation(loc, AnnotationStyle.HIGHLIGHT, color, "", uiState.selectionText)
-                        }
-                        vm.hideSelectionPopup(); vm.clearSelection()
-                    },
-                    onUnderline = { color ->
-                        uiState.pendingSelection?.let { loc ->
-                            vm.addAnnotation(loc, AnnotationStyle.UNDERLINE, color, "", uiState.selectionText)
-                        }
-                        vm.hideSelectionPopup(); vm.clearSelection()
-                    },
-                    onStrikethrough = { color ->
-                        uiState.pendingSelection?.let { loc ->
-                            vm.addAnnotation(loc, AnnotationStyle.STRIKETHROUGH, color, "", uiState.selectionText)
-                        }
-                        vm.hideSelectionPopup(); vm.clearSelection()
-                    },
-                    onSquiggly = { color ->
-                        uiState.pendingSelection?.let { loc ->
-                            vm.addAnnotation(loc, AnnotationStyle.SQUIGGLY, color, "", uiState.selectionText)
-                        }
-                        vm.hideSelectionPopup(); vm.clearSelection()
-                    },
-                    onAddNote = {
-                        vm.hideSelectionPopup()
-                        vm.showAnnotationDialog(true)
-                    },
-                    onShare = {
-                        val shareText = uiState.selectionText
-                        if (shareText.isNotBlank()) {
-                            val intent = Intent(Intent.ACTION_SEND).apply {
-                                type = "text/plain"
-                                putExtra(Intent.EXTRA_TEXT, "\"$shareText\"\n\u2014 from $bookTitle")
-                            }
-                            context.startActivity(Intent.createChooser(intent, "Share quote"))
-                        }
-                        vm.hideSelectionPopup(); vm.clearSelection()
-                    },
-                    onCopy = {
-                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        clipboard.setPrimaryClip(ClipData.newPlainText("Quote", uiState.selectionText))
-                        vm.hideSelectionPopup(); vm.clearSelection()
-                    },
-                    onSpeak = {
-                        vm.speakSelection(uiState.selectionText)
-                        vm.hideSelectionPopup(); vm.clearSelection()
-                    },
-                    onDefine = {
-                        val w = uiState.selectionText.trim()
-                        vm.saveToVocab()
-                        vm.hideSelectionPopup()
-                        if (w.isNotBlank()) {
-                            Toast.makeText(context, "Saved “$w” to Vocabulary", Toast.LENGTH_SHORT).show()
-                        }
-                    },
-                    onDismiss = { vm.hideSelectionPopup(); vm.clearSelection() },
-                )
-            }
-
-            AnimatedVisibility(
-                visible = uiState.pendingSelection != null && !uiState.showSelectionPopup,
-                enter   = fadeIn(tween(200)) + slideInVertically(tween(200)) { it },
-                exit    = fadeOut(tween(200)) + slideOutVertically(tween(200)) { it },
-                modifier= Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 80.dp, start = 12.dp, end = 12.dp),
-            ) {
-                QuickAnnotateBar(
-                    colors = colors,
-                    onHighlight     = { uiState.pendingSelection?.let { loc -> vm.addAnnotationFromSelectionQuick(loc, uiState.selectionText, AnnotationStyle.HIGHLIGHT) } },
-                    onUnderline     = { uiState.pendingSelection?.let { loc -> vm.addAnnotationFromSelectionQuick(loc, uiState.selectionText, AnnotationStyle.UNDERLINE) } },
-                    onStrikethrough = { uiState.pendingSelection?.let { loc -> vm.addAnnotationFromSelectionQuick(loc, uiState.selectionText, AnnotationStyle.STRIKETHROUGH) } },
-                    onSquiggly      = { uiState.pendingSelection?.let { loc -> vm.addAnnotationFromSelectionQuick(loc, uiState.selectionText, AnnotationStyle.SQUIGGLY) } },
-                    onAddNote       = { vm.showAnnotationDialog(true) },
-                    onDismiss       = { vm.clearSelection() },
-                )
-            }
-
-            AnimatedVisibility(
-                visible = uiState.showAutoScrollPanel,
-                enter   = fadeIn(tween(200)) + slideInVertically(tween(200)) { it },
-                exit    = fadeOut(tween(200)) + slideOutVertically(tween(200)) { it },
-                modifier= Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 120.dp, start = 24.dp, end = 24.dp),
-            ) {
-                AutoScrollPanel(
-                    isActive = uiState.autoScrollActive,
-                    speed = uiState.prefs.autoScrollSpeed,
-                    colors = colors,
-                    onSpeedChange = { vm.setAutoScrollSpeed(it) },
-                    onToggle = {
-                        if (uiState.autoScrollActive) vm.stopAutoScroll()
-                        else vm.startAutoScroll(uiState.prefs.autoScrollSpeed.coerceAtLeast(1f))
-                    },
-                    onClose = { vm.showAutoScrollPanel(false) },
-                )
-            }
-
-            AnimatedVisibility(
-                visible = uiState.showToolbarCustomizer,
-                enter   = fadeIn(tween(200)) + slideInVertically(tween(200)) { -it },
-                exit    = fadeOut(tween(200)) + slideOutVertically(tween(200)) { -it },
-                modifier= Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 80.dp, start = 16.dp, end = 16.dp),
-            ) {
-                ToolbarCustomizerPanel(
-                    currentButtons = uiState.prefs.toolbarButtons,
-                    colors = colors,
-                    onToggle = { vm.toggleToolbarButton(it) },
-                    onClose = { vm.showToolbarCustomizer(false) },
-                )
-            }
-
-            if (uiState.showAppearanceSheet) {
-                ModalBottomSheet(
-                    onDismissRequest = { vm.showAppearance(false) },
-                    containerColor   = colors.background,
-                    shape            = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
-                ) {
-                    val customFonts by vm.customFonts.collectAsStateWithLifecycle()
-                    AppearanceSheet(
-                        prefs    = uiState.prefs,
-                        colors   = colors,
-                        onUpdate = { vm.updatePreferences(it) },
-                        onClose  = { vm.showAppearance(false) },
-                        customFonts = customFonts,
-                    )
-                }
-            }
-
-            if (uiState.showTocSheet) {
-                ModalBottomSheet(
-                    onDismissRequest = { vm.showToc(false) },
-                    containerColor   = colors.background,
-                    shape            = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
-                ) {
-                    TocSheet(
-                        tocEntries  = uiState.tocEntries,
-                        bookmarks   = uiState.bookmarks,
-                        annotations = uiState.annotations,
-                        colors      = colors,
-                        onTocSelect = { vm.navigateTo(it); vm.showToc(false) },
-                        onSeek      = { vm.seekToLocator(it); vm.showToc(false) },
-                        onDeleteAnnotation = { vm.deleteAnnotation(it) },
-                        onClose     = { vm.showToc(false) },
-                    )
-                }
-            }
-
-            if (uiState.showSearchSheet) {
-                ModalBottomSheet(
-                    onDismissRequest = { vm.showSearch(false) },
-                    containerColor = colors.background,
-                    shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
-                ) {
-                    ReaderSearchSheet(
-                        query = uiState.searchQuery,
-                        results = uiState.searchResults,
-                        loading = uiState.searchLoading,
-                        error = uiState.searchError,
-                        status = uiState.searchStatus,
-                        wholeWords = uiState.searchWholeWords,
-                        optionsAvailable = uiState.searchOptionsAvailable,
-                        hasMore = uiState.searchHasMore,
-                        colors = colors,
-                        onQueryChange = vm::updateSearchQuery,
-                        onSearch = { vm.runSearch() },
-                        onWholeWordsChange = vm::updateSearchWholeWords,
-                        onCancel = vm::cancelSearch,
-                        onLoadMore = vm::loadMoreSearchResults,
-                        onResultClick = { vm.seekToSearchResult(it) },
-                        onClose = { vm.showSearch(false) },
-                    )
-                }
-            }
-
-            if (uiState.showAnnotationDialog) {
-                AddAnnotationDialog(
-                    initialText  = uiState.selectionText,
-                    chromeColors = colors,
-                    onSave       = { style, color, note ->
-                        uiState.pendingSelection?.let {
-                            vm.addAnnotation(it, style, color, note, uiState.selectionText)
-                        }
-                        vm.showAnnotationDialog(false)
-                    },
-                    onDismiss = { vm.showAnnotationDialog(false); vm.clearSelection() },
-                )
-            }
-
-            if (uiState.showAnnotationsSheet) {
-                PerBookAnnotationsSheet(
-                    bookTitle = bookTitle,
-                    bookAuthor = null,
-                    annotations = uiState.annotations + uiState.bookmarks,
-                    onDismiss = { vm.showAnnotationsSheet(false) },
-                    onJumpTo = { ann -> vm.seekToAnnotation(ann); vm.showAnnotationsSheet(false) },
-                    onEdit = { ann -> vm.showDecorationPopover(ann.id); vm.showAnnotationsSheet(false) },
-                    onDelete = { ann -> vm.deleteAnnotation(ann) },
-                )
-            }
-
-            uiState.activeDecorationAnnotation?.let { ann ->
-                val tags = remember(ann.id, ann.tagsJson) {
-                    runCatching {
-                        val arr = org.json.JSONArray(ann.tagsJson)
-                        buildList { for (i in 0 until arr.length()) arr.optString(i).takeIf { it.isNotBlank() }?.let(::add) }
-                    }.getOrDefault(emptyList())
-                }
-                val knownTags by vm.knownTags.collectAsStateWithLifecycle()
-                com.enve.app.ui.components.AnnotationEditSheet(
-                    annotation = ann,
-                    initialTags = tags,
-                    onDismiss = { vm.hideDecorationPopover() },
-                    onSave = { style, color, note, newTags ->
-                        vm.updateAnnotation(ann, style, color, note, newTags)
-                        vm.hideDecorationPopover()
-                    },
-                    onDelete = { vm.deleteAnnotation(ann); vm.hideDecorationPopover() },
-                    onJumpTo = {
-                        vm.seekToAnnotation(ann)
-                        vm.hideDecorationPopover()
-                    },
-                    knownTags = knownTags,
-                )
-            }
-
-            uiState.pendingProgressConflict?.let { prompt ->
-                ProgressConflictDialog(
-                    prompt = prompt,
-                    onChooseLocal = { vm.resolveProgressConflict(com.enve.app.viewmodel.ProgressConflictChoice.LOCAL) },
-                    onChooseRemote = { vm.resolveProgressConflict(com.enve.app.viewmodel.ProgressConflictChoice.REMOTE) },
-                )
-            }
-
-            val snackbarHostState = remember { SnackbarHostState() }
-            LaunchedEffect(uiState.transientMessage) {
-                val message = uiState.transientMessage ?: return@LaunchedEffect
-                snackbarHostState.showSnackbar(message = message, duration = SnackbarDuration.Short)
-                vm.consumeTransientMessage()
-            }
-            SnackbarHost(
-                hostState = snackbarHostState,
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .navigationBarsPadding()
-                    .padding(bottom = 96.dp, start = 16.dp, end = 16.dp),
-            ) { data ->
-                Snackbar(
-                    snackbarData = data,
-                    containerColor = colors.surface,
-                    contentColor = colors.primaryText,
-                    actionColor = colors.accentText,
-                )
-            }
-        }
-}
-
-@ColorInt internal fun parseHexColor(hex: String): Int = try {
-    (if (hex.startsWith("#")) hex else "#$hex").toColorInt()
-} catch (_: Exception) { android.graphics.Color.YELLOW }
-
-private fun readerDimmerAlpha(screenBrightness: Float): Float {
-    if (screenBrightness < 0f) return 0f
-    return (1f - screenBrightness.coerceIn(0.05f, 1f)).coerceIn(0f, 0.82f)
 }

@@ -12,52 +12,12 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.core.view.WindowCompat
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.ChevronLeft
-import androidx.compose.material.icons.filled.ChevronRight
-import androidx.compose.material.icons.filled.PictureAsPdf
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.enve.core.data.local.BookCacheDao
@@ -69,7 +29,6 @@ import com.enve.engine.prefs.ReadNextPosition
 import com.enve.app.data.reader.nextBookInSeries
 import com.enve.app.data.repository.GrimmoryRepository
 import com.enve.app.ui.screens.reader.HearthPdfChrome
-import com.enve.app.ui.theme.EnveTheme
 import com.enve.app.viewmodel.ThemeViewModel
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
@@ -121,7 +80,6 @@ class PdfReaderActivity : ComponentActivity() {
         private const val EXTRA_TITLE = "title"
         private const val EXTRA_AUTHOR = "author"
         private const val EXTRA_LOCATOR = "locator"
-        const val EXTRA_HEARTH_CHROME = "hearthChrome"
 
         fun createIntent(
             context: Context,
@@ -165,7 +123,8 @@ class PdfReaderActivity : ComponentActivity() {
 
         uiState = uiState.copy(title = title, author = author)
         lifecycleScope.launch {
-            uiState = uiState.copy(nextInSeries = bookCacheDao.nextBookInSeries(bookId, bookConnectionId))
+            val nextInSeries = bookCacheDao.nextBookInSeries(bookId, bookConnectionId)
+            uiState = uiState.copy(nextInSeries = nextInSeries)
         }
 
         setContent {
@@ -175,42 +134,24 @@ class PdfReaderActivity : ComponentActivity() {
             val readNextPosition by hearthPreferences.readNextPosition.collectAsStateWithLifecycle(
                 initialValue = ReadNextPosition.BOTTOM,
             )
-            val useHearthChrome = remember { intent.getBooleanExtra(EXTRA_HEARTH_CHROME, false) }
+            val restReminder = com.enve.app.ui.screens.reader.rememberReaderRestReminderSpec(hearthPreferences)
             val openNext: (Book) -> Unit = { next ->
-                startActivity(readerIntentForBook(next, hearthChrome = useHearthChrome))
+                startActivity(readerIntentForBook(next))
                 finish()
             }
             com.enve.hearth.design.HearthUiTextScale(uiTextScale) {
-                if (useHearthChrome) {
-                    HearthPdfChrome(
-                        state = uiState,
-                        einkActive = themeState.einkProfile.active,
-                        onBack = { finish() },
-                        onPrevious = { showPage(uiState.currentPage - 1) },
-                        onNext = { showPage(uiState.currentPage + 1) },
-                        onSeekPage = { showPage(it) },
-                        readNextEnabled = readNextEnabled,
-                        readNextPosition = readNextPosition,
-                        onReadNext = openNext,
-                    )
-                } else {
-                    EnveTheme(
-                        appTheme = themeState.effectiveAppTheme,
-                        themeColor = themeState.themeColor,
-                        dynamicBackgroundEnabled = themeState.dynamicBackgroundEnabled,
-                        einkProfile = themeState.einkProfile,
-                    ) {
-                        PdfReaderScreen(
-                            state = uiState,
-                            onBack = { finish() },
-                            onPrevious = { showPage(uiState.currentPage - 1) },
-                            onNext = { showPage(uiState.currentPage + 1) },
-                            readNextEnabled = readNextEnabled,
-                            readNextPosition = readNextPosition,
-                            onReadNext = openNext,
-                        )
-                    }
-                }
+                HearthPdfChrome(
+                    state = uiState,
+                    einkActive = themeState.einkProfile.active,
+                    onBack = { finish() },
+                    onPrevious = { showPage(uiState.currentPage - 1) },
+                    onNext = { showPage(uiState.currentPage + 1) },
+                    onSeekPage = { showPage(it) },
+                    readNextEnabled = readNextEnabled,
+                    readNextPosition = readNextPosition,
+                    onReadNext = openNext,
+                    restReminder = restReminder,
+                )
             }
         }
 
@@ -383,190 +324,5 @@ class PdfReaderActivity : ComponentActivity() {
         renderer?.close()
         descriptor?.close()
         uiState.currentBitmap?.recycle()
-    }
-}
-
-@Composable
-private fun PdfReaderScreen(
-    state: PdfReaderUiState,
-    onBack: () -> Unit,
-    onPrevious: () -> Unit,
-    onNext: () -> Unit,
-    readNextEnabled: Boolean,
-    readNextPosition: ReadNextPosition,
-    onReadNext: (Book) -> Unit,
-) {
-    val isEink = EnveTheme.isEink
-    val canvasBg = if (isEink) Color.White else Color(0xFF111111)
-    val chromeBg = if (isEink) Color.White else Color.Black.copy(alpha = 0.64f)
-    val chromeBgFooter = if (isEink) Color.White else Color.Black.copy(alpha = 0.66f)
-    val chromeBorder = if (isEink) Color.Black.copy(alpha = 0.18f) else Color.White.copy(alpha = 0.08f)
-    val pillBg = if (isEink) Color.Black.copy(alpha = 0.06f) else Color.White.copy(alpha = 0.08f)
-    val titleColor = if (isEink) Color.Black else Color.White
-    val subtitleColor = if (isEink) Color.Black.copy(alpha = 0.6f) else Color.White.copy(alpha = 0.7f)
-    val mutedColor = if (isEink) Color.Black.copy(alpha = 0.55f) else Color.White.copy(alpha = 0.7f)
-    val accentColor = if (isEink) Color.Black else MaterialTheme.colorScheme.primary
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(canvasBg),
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding(),
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp)
-                    .clip(RoundedCornerShape(20.dp))
-                    .background(chromeBg)
-                    .border(1.dp, chromeBorder, RoundedCornerShape(20.dp))
-                    .padding(horizontal = 6.dp, vertical = 5.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = titleColor)
-                }
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = state.title,
-                        color = titleColor,
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    if (state.author.isNotBlank()) {
-                        Text(
-                            text = state.author,
-                            color = subtitleColor,
-                            fontSize = 14.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-                Surface(shape = RoundedCornerShape(999.dp), color = pillBg) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        Icon(Icons.Default.PictureAsPdf, contentDescription = null, tint = accentColor, modifier = Modifier.size(16.dp))
-                        Text("PDF", color = titleColor, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                    }
-                }
-            }
-
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                val error = state.error
-                when {
-                    error != null -> {
-                        Text(
-                            text = error,
-                            color = titleColor,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.padding(24.dp),
-                        )
-                    }
-                    state.currentBitmap != null -> {
-                        Image(
-                            bitmap = state.currentBitmap.asImageBitmap(),
-                            contentDescription = "PDF page ${state.currentPage + 1}",
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Fit,
-                        )
-                    }
-                    else -> {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            if (!isEink) {
-                                CircularProgressIndicator(color = accentColor)
-                                Spacer(Modifier.height(16.dp))
-                            }
-                            Text(state.loadingText, color = titleColor.copy(alpha = 0.9f))
-                        }
-                    }
-                }
-            }
-
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp)
-                    .clip(RoundedCornerShape(22.dp))
-                    .background(chromeBgFooter)
-                    .border(1.dp, chromeBorder, RoundedCornerShape(22.dp))
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
-            ) {
-                if (state.pageCount > 0) {
-                    LinearProgressIndicator(
-                        progress = { (state.currentPage + 1).toFloat() / state.pageCount.toFloat() },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(4.dp),
-                        color = accentColor,
-                        trackColor = if (isEink) Color.Black.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.14f),
-                    )
-                    Spacer(Modifier.height(8.dp))
-                }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Surface(shape = RoundedCornerShape(999.dp), color = pillBg) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            IconButton(onClick = onPrevious, enabled = state.currentPage > 0) {
-                                Icon(Icons.Default.ChevronLeft, contentDescription = "Previous page", tint = titleColor)
-                            }
-                            Text(
-                                text = if (state.pageCount > 0) "Page ${state.currentPage + 1} of ${state.pageCount}" else "Preparing…",
-                                color = titleColor,
-                                fontSize = 14.sp,
-                                modifier = Modifier.padding(end = 8.dp),
-                            )
-                            IconButton(onClick = onNext, enabled = state.currentPage < state.pageCount - 1) {
-                                Icon(Icons.Default.ChevronRight, contentDescription = "Next page", tint = titleColor)
-                            }
-                        }
-                    }
-
-                    if (state.loadingProgress != null && state.isLoading) {
-                        Text("${state.loadingProgress}%", color = mutedColor, fontSize = 12.sp)
-                    }
-                }
-            }
-        }
-        val nextBook = state.nextInSeries
-        if (readNextEnabled && nextBook != null && state.pageCount > 0 && state.currentPage >= state.pageCount - 1) {
-            NextInSeriesButton(
-                book = nextBook,
-                onClick = { onReadNext(nextBook) },
-                modifier = Modifier
-                    .align(
-                        if (readNextPosition == ReadNextPosition.TOP) {
-                            Alignment.TopCenter
-                        } else {
-                            Alignment.BottomCenter
-                        },
-                    )
-                    .padding(
-                        top = if (readNextPosition == ReadNextPosition.TOP) 96.dp else 0.dp,
-                        bottom = if (readNextPosition == ReadNextPosition.BOTTOM) 96.dp else 0.dp,
-                        start = 24.dp,
-                        end = 24.dp,
-                    ),
-            )
-        }
     }
 }

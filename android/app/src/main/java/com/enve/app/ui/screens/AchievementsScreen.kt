@@ -56,10 +56,10 @@ import com.enve.app.ui.theme.rememberAdaptiveMetrics
 import com.enve.app.ui.theme.scaled
 import com.enve.app.viewmodel.Achievement
 import com.enve.app.viewmodel.StatsState
+import com.enve.hearth.design.EmberAccent
 import com.enve.hearth.design.hearthDisplay
 import java.util.Locale
 
-private val AchieveEmber = Color(0xFFF5921A)
 private val AchieveSage = Color(0xFF6F8F6A)
 
 @Composable
@@ -125,7 +125,7 @@ fun AchievementsScreen(
                     StreakCard(
                         title = "Current",
                         days = state.currentStreak,
-                        color = AchieveEmber,
+                        color = EmberAccent,
                         modifier = Modifier.weight(1f),
                     )
                     StreakCard(
