@@ -4,7 +4,9 @@ import SwiftUI
 @Observable
 final class PodcastsModel {
     static let shared = PodcastsModel()
-    private init() {}
+    private unowned let profileSession: ProfileSession?
+
+    init(profileSession: ProfileSession? = nil) { self.profileSession = profileSession }
 
     private(set) var serverShows: [AudiobookshelfProvider.PodcastShow] = []
     private(set) var rssShows: [AudiobookshelfProvider.PodcastShow] = []
@@ -19,7 +21,7 @@ final class PodcastsModel {
     }
 
     var hasAnySubscription: Bool {
-        EnveEngine.shared.podcasts.hasSubscriptions || !serverShows.isEmpty
+        (profileSession?.engine ?? EnveEngine.shared).podcasts.hasSubscriptions || !serverShows.isEmpty
     }
 
     private var hasFreshCache: Bool {
@@ -44,12 +46,12 @@ final class PodcastsModel {
         loadFailed = serverResult.failed && allShows.isEmpty && hasAnySubscription
         lastLoadDate = Date()
         isLoading = false
-        EnveEngine.shared.podcastAutoQueue.reconcile(allShows)
+        (profileSession?.engine ?? EnveEngine.shared).podcastAutoQueue.reconcile(allShows)
     }
 
     func reloadSubscriptions() async {
         rssShows = await podcastsFetchRSSShows()
-        EnveEngine.shared.podcastAutoQueue.reconcile(allShows)
+        (profileSession?.engine ?? EnveEngine.shared).podcastAutoQueue.reconcile(allShows)
     }
 
     func showBook(for show: AudiobookshelfProvider.PodcastShow) -> Book {
@@ -144,11 +146,11 @@ final class PodcastsModel {
     #endif
 
     private func podcastsFetchServerShows() async -> (shows: [AudiobookshelfProvider.PodcastShow], failed: Bool) {
-        await EnveEngine.shared.podcasts.fetchServerShows()
+        await (profileSession?.engine ?? EnveEngine.shared).podcasts.fetchServerShows()
     }
 
     private func podcastsFetchRSSShows() async -> [AudiobookshelfProvider.PodcastShow] {
-        await EnveEngine.shared.podcasts.fetchRSSShows()
+        await (profileSession?.engine ?? EnveEngine.shared).podcasts.fetchRSSShows()
     }
 }
 

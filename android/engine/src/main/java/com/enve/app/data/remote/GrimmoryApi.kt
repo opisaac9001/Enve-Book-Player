@@ -102,7 +102,11 @@ interface GrimmoryApi {
     suspend fun kavitaAccount(): Response<KavitaAccountDto>
 
     @GET("api/Stats/user-stats")
-    suspend fun kavitaUserStatBar(@Query("userId") userId: Int): Response<KavitaProfileStatBarDto>
+    suspend fun kavitaUserStatBar(
+        @Query("userId") userId: Int,
+        @Query("libraries") libraries: List<Int>,
+        @Query("TimeZoneId") timeZoneId: String,
+    ): Response<KavitaProfileStatBarDto>
 
     @GET("api/Stats/user-read")
     suspend fun kavitaUserReadStatistics(@Query("userId") userId: Int): Response<KavitaUserReadStatisticsDto>
@@ -144,6 +148,27 @@ interface GrimmoryApi {
         @retrofit2.http.Query("page") page: Int = 0,
         @retrofit2.http.Query("size") size: Int = 500,
     ): Response<List<LegacyBookloreBookDto>>
+
+    @GET("api/v1/books/batch")
+    suspend fun getBooksBatch(
+        @Query("ids") ids: String,
+    ): Response<List<LegacyBookloreBookDto>>
+
+    @POST("Users/{userId}/Items/{itemId}/UserData")
+    suspend fun mediaBrowserUpdateUserData(
+        @Path("userId") userId: String,
+        @Path("itemId") itemId: String,
+        @Body body: MediaBrowserUserDataUpdate,
+    ): Response<Unit>
+
+    @POST("Sessions/Playing")
+    suspend fun mediaBrowserPlaybackStarted(@Body report: MediaBrowserPlaybackReport): Response<Unit>
+
+    @POST("Sessions/Playing/Progress")
+    suspend fun mediaBrowserPlaybackProgress(@Body report: MediaBrowserPlaybackReport): Response<Unit>
+
+    @POST("Sessions/Playing/Stopped")
+    suspend fun mediaBrowserPlaybackStopped(@Body report: MediaBrowserPlaybackReport): Response<Unit>
 
     @GET("Users/Me")
     suspend fun jellyfinMe(): Response<JellyfinUserDto>
@@ -245,6 +270,12 @@ interface GrimmoryApi {
 
     @GET("api/v1/shelves")
     suspend fun getLegacyShelves(): Response<List<ShelfDto>>
+
+    @POST("api/v1/shelves")
+    suspend fun createShelf(@Body request: GrimmoryCreateShelfRequest): Response<ShelfDto>
+
+    @POST("api/v1/books/shelves")
+    suspend fun assignShelf(@Body request: GrimmoryShelfAssignmentRequest): Response<Unit>
 
     @GET("api/v1/shelves/{shelfId}/books")
     suspend fun getShelfBooks(

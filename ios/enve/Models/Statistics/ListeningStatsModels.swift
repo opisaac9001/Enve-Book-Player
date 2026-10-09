@@ -238,9 +238,16 @@ public struct AudiobookshelfListeningStats: Codable, Sendable {
 
     public struct AudiobookshelfSession: Codable, Sendable {
         public let id: String
+        public let libraryItemId: String?
         public let timeListening: TimeInterval
         public let currentTime: TimeInterval?
         public let startedAt: TimeInterval?
         public let updatedAt: TimeInterval?
+        public let date: String?
+        public let deviceInfo: DeviceInfo?
+
+        public struct DeviceInfo: Codable, Sendable {
+            public let deviceId: String?
+        }
     }
 }

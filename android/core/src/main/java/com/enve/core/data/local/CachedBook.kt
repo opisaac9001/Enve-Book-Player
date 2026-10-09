@@ -73,8 +73,21 @@ data class CachedBook(
 @Dao
 interface BookCacheDao {
 
+    @Query("UPDATE book_cache SET readAlongAvailable = 1, hasAudio = 1, hasEbook = 1 WHERE cacheKey = :cacheKey")
+    suspend fun markReadAlongAvailable(cacheKey: String)
+
+    @Transaction
+    suspend fun upsert(books: List<CachedBook>) {
+        val narratedKeys = getByCacheKeys(books.map { it.cacheKey })
+            .filter { it.readAlongAvailable }.mapTo(mutableSetOf()) { it.cacheKey }
+        replaceRows(books.map { book ->
+            if (book.cacheKey in narratedKeys) book.copy(readAlongAvailable = true, hasAudio = true, hasEbook = true)
+            else book
+        })
+    }
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsert(books: List<CachedBook>)
+    suspend fun replaceRows(books: List<CachedBook>)
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertIfAbsent(book: CachedBook): Long
@@ -123,6 +136,90 @@ interface BookCacheDao {
         LIMIT 1
     """)
     suspend fun getByIdAndConnection(bookId: String, connectionId: String?): CachedBook?
+
+    @Transaction
+    suspend fun commitAudiobookCommandIfUnchanged(
+        expected: CachedBook, progress: Float, positionSec: Long, finished: Boolean, hidden: Boolean,
+        status: String?, nowMs: Long, pendingCreatedAt: Long?, pendingPercentage: Float,
+    ): Int {
+        if (!expected.matchesAudiobookCheckpoint(getByCacheKey(expected.cacheKey))) return 0
+        val dirty = getPendingAudiobookProgress(expected.id, expected.source, expected.connectionId.orEmpty())
+        if (dirty?.createdAt != pendingCreatedAt || (dirty != null && dirty.percentage != pendingPercentage)) return 0
+        val updated = updateAudiobookCommand(expected.cacheKey, progress, positionSec, finished, hidden, status, nowMs)
+        if (updated > 0 && pendingCreatedAt != null) {
+            deleteAcknowledgedAudiobookProgress(expected.id, expected.source, expected.connectionId.orEmpty(), pendingCreatedAt, pendingPercentage)
+        }
+        return updated
+    }
+
+    @Query("""
+        UPDATE book_cache SET readProgress = :progress, epubProgress = :progress,
+            currentTime = :positionSec, isFinished = :finished, hideFromContinue = :hidden,
+            serverReadStatus = :status, lastReadTime = :nowMs,
+            inProgress = CASE WHEN :finished = 0 AND :hidden = 0 AND (:progress > 0.001 OR :positionSec > 0) THEN 1 ELSE 0 END
+        WHERE cacheKey = :cacheKey
+    """)
+    suspend fun updateAudiobookCommand(cacheKey: String, progress: Float, positionSec: Long, finished: Boolean, hidden: Boolean, status: String?, nowMs: Long): Int
+
+    @Query("SELECT * FROM pending_progress_push WHERE bookId = :bookId AND source = :source AND connectionKey = :connectionKey AND mediaType = 'AUDIOBOOK' LIMIT 1")
+    suspend fun getPendingAudiobookProgress(bookId: String, source: String, connectionKey: String): PendingProgressPush?
+
+    @Query("""
+        DELETE FROM book_cache WHERE NOT ((mediaType = 'AUDIOBOOK' OR hasAudio = 1 OR currentTime > 0)
+            AND (lastReadTime > 0 OR EXISTS (SELECT 1 FROM pending_progress_push p WHERE p.bookId = book_cache.id AND p.source = book_cache.source AND p.connectionKey = COALESCE(book_cache.connectionId, '') AND p.mediaType = 'AUDIOBOOK')))
+    """)
+    suspend fun clearCatalogPreservingAudioCheckpoints()
+
+    @Query("""
+        DELETE FROM book_cache WHERE connectionId = :connectionId
+            AND NOT ((mediaType = 'AUDIOBOOK' OR hasAudio = 1 OR currentTime > 0)
+            AND (lastReadTime > 0 OR EXISTS (SELECT 1 FROM pending_progress_push p WHERE p.bookId = book_cache.id AND p.source = book_cache.source AND p.connectionKey = COALESCE(book_cache.connectionId, '') AND p.mediaType = 'AUDIOBOOK')))
+    """)
+    suspend fun deleteCatalogForConnectionPreservingAudioCheckpoints(connectionId: String)
+
+    @Transaction
+    suspend fun acknowledgeAudiobookProgress(expected: CachedBook, createdAt: Long, percentage: Float): Int {
+        if (!expected.matchesAudiobookCheckpoint(getByCacheKey(expected.cacheKey))) return 0
+        return deleteAcknowledgedAudiobookProgress(expected.id, expected.source, expected.connectionId.orEmpty(), createdAt, percentage)
+    }
+
+    @Query("""
+        DELETE FROM pending_progress_push
+        WHERE bookId = :bookId AND source = :source AND connectionKey = :connectionKey
+            AND mediaType = 'AUDIOBOOK' AND createdAt = :createdAt AND percentage = :percentage
+    """)
+    suspend fun deleteAcknowledgedAudiobookProgress(bookId: String, source: String, connectionKey: String, createdAt: Long, percentage: Float): Int
+
+    @Transaction
+    suspend fun updateAudiobookProgressIfUnchanged(
+        expected: CachedBook,
+        progress: Float,
+        currentTimeSec: Long,
+        nowMs: Long,
+    ): Int {
+        if (!expected.matchesAudiobookCheckpoint(getByCacheKey(expected.cacheKey))) return 0
+        return updateAudiobookProgress(expected.cacheKey, progress, currentTimeSec, nowMs)
+    }
+
+    @Query("""
+        UPDATE book_cache
+        SET readProgress = :progress,
+            epubProgress = :progress,
+            currentTime = :currentTimeSec,
+            lastReadTime = :nowMs,
+            isFinished = CASE
+                WHEN serverReadStatus IN ('READ', 'COMPLETED', 'FINISHED') OR :progress >= 0.99 THEN 1
+                ELSE 0
+            END,
+            inProgress = CASE
+                WHEN hideFromContinue = 0
+                    AND (source != 'GRIMMORY' OR serverReadStatus IS NULL OR serverReadStatus IN ('READING', 'RE_READING'))
+                    AND :progress < 0.99 AND (:progress > 0.001 OR :currentTimeSec > 0)
+                THEN 1 ELSE 0
+            END
+        WHERE cacheKey = :cacheKey
+    """)
+    suspend fun updateAudiobookProgress(cacheKey: String, progress: Float, currentTimeSec: Long, nowMs: Long): Int
 
     @Query("SELECT * FROM book_cache WHERE id = :bookId LIMIT 1")
     suspend fun getById(bookId: String): CachedBook?
@@ -207,22 +304,6 @@ interface BookCacheDao {
         WHERE id = :bookId AND (connectionId = :connectionId OR (:connectionId IS NULL AND connectionId IS NULL))
     """)
     suspend fun updateFinishedStatus(bookId: String, connectionId: String?, finished: Boolean, nowMs: Long)
-
-    @Query("""
-        UPDATE book_cache
-        SET isFinished = :finished,
-            serverReadStatus = CASE
-                WHEN :finished THEN 'READ'
-                WHEN serverReadStatus IN ('READ', 'COMPLETED', 'FINISHED') THEN NULL
-                ELSE serverReadStatus
-            END,
-            readProgress = CASE WHEN :finished THEN 1.0 ELSE readProgress END,
-            epubProgress = CASE WHEN :finished AND epubProgress IS NOT NULL THEN 1.0 ELSE epubProgress END,
-            inProgress = CASE WHEN :finished THEN 0 ELSE inProgress END,
-            lastReadTime = :nowMs
-        WHERE id = :bookId
-    """)
-    suspend fun updateFinishedStatusById(bookId: String, finished: Boolean, nowMs: Long)
 
     @Query("""
         UPDATE book_cache
@@ -337,39 +418,6 @@ interface BookCacheDao {
         locatorJson: String?,
         nowMs: Long,
     ): Int
-
-    @Query("""
-        UPDATE book_cache
-        SET readProgress = :progress,
-            epubProgress = :progress,
-            isFinished = CASE
-                WHEN serverReadStatus IN ('READ', 'COMPLETED', 'FINISHED') THEN 1
-                WHEN :progress >= 0.99 THEN 1
-                ELSE 0
-            END,
-            currentTime = CASE
-                WHEN :currentTimeSec >= 0 THEN :currentTimeSec
-                ELSE currentTime
-            END,
-            epubLocator = COALESCE(:locatorJson, epubLocator),
-            lastReadTime = :nowMs,
-            inProgress = CASE
-                WHEN hideFromContinue = 0
-                    AND (source != 'GRIMMORY' OR serverReadStatus IS NULL OR serverReadStatus IN ('READING', 'RE_READING'))
-                    AND :progress < 0.99
-                    AND (:progress > 0.001 OR :currentTimeSec > 0)
-                THEN 1
-                ELSE 0
-            END
-        WHERE id = :bookId
-    """)
-    suspend fun updateUnifiedProgressById(
-        bookId: String,
-        progress: Float,
-        currentTimeSec: Long,
-        locatorJson: String?,
-        nowMs: Long,
-    )
 
     @Query("""
         UPDATE book_cache
@@ -980,3 +1028,9 @@ fun Book.toCachedBook(nowMs: Long = System.currentTimeMillis()): CachedBook {
 
 private val activeServerReadStatuses = setOf("READING", "RE_READING")
 private val terminalServerReadStatuses = setOf("READ", "COMPLETED", "FINISHED")
+
+private fun CachedBook.matchesAudiobookCheckpoint(other: CachedBook?): Boolean =
+    other != null && cacheKey == other.cacheKey && source == other.source && connectionId == other.connectionId &&
+        currentTime == other.currentTime && readProgress == other.readProgress &&
+        lastReadTime == other.lastReadTime && isFinished == other.isFinished &&
+        hideFromContinue == other.hideFromContinue && serverReadStatus == other.serverReadStatus

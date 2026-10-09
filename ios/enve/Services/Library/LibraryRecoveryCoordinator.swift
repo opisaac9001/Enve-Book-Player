@@ -20,6 +20,44 @@ struct LibraryRecoveryStores {
     var migrateDownloadedAudiobook: (String, String) -> Bool
     var reassignDownloadTasks: (String, String) -> Void
 
+    static func live(profileSession: ProfileSession) -> LibraryRecoveryStores {
+        LibraryRecoveryStores(
+            mirrorCheckpoints: profileSession.mirrorCheckpoints,
+            opdsProgressionEndpoints: profileSession.opdsProgressionEndpoints,
+            opdsAuthentication: profileSession.opdsAuthentication,
+            userCollections: profileSession.userCollections,
+            smartCollections: profileSession.smartCollections,
+            pendingSync: profileSession.pendingSync,
+            progressCache: profileSession.bookProgress,
+            readerArtifacts: profileSession.readerArtifacts,
+            purgeCachedArtifacts: { [unowned profileSession] book in
+                let artifacts = profileSession.readerArtifacts
+                artifacts.clearCachedChapters(bookId: book.stableId)
+                artifacts.clearCachedChapters(bookId: book.id)
+                artifacts.clearBookmarks(bookId: book.id)
+                profileSession.bookProgress.clearProgress(for: book.stableId)
+                profileSession.bookProgress.clearProgress(for: book.id)
+                profileSession.bookProgress.remove(stableId: book.stableId)
+                profileSession.removeCachedArtwork(for: book)
+                if book.epub3Features?.hasMediaOverlay == true || book.source == .storyteller {
+                    profileSession.ebooks.removeReadaloudCache(forBookId: book.id, stableId: book.stableId)
+                }
+            },
+            purgeDownloadArtifacts: { [unowned profileSession] diskId in
+                try? profileSession.localStorage.deleteDownloadedAudiobook(diskId)
+                try? profileSession.localStorage.deleteMetadataOverride(for: diskId)
+            },
+            cleanupAlignmentCaches: { [unowned profileSession] books in
+                if profileSession.isOwner, #available(iOS 26.0, *) {
+                    profileSession.storyAlignService.cleanupOrphanedCaches(allBooks: books)
+                }
+            },
+            isAudiobookDownloadActive: { [unowned profileSession] in profileSession.downloadActivity.isActive($0) },
+            migrateDownloadedAudiobook: { [unowned profileSession] in profileSession.localStorage.migrateDownloadedAudiobook(from: $0, to: $1) },
+            reassignDownloadTasks: { [unowned profileSession] in profileSession.downloads.reassignInactiveDownloadTasks(fromBookId: $0, toBookId: $1) }
+        )
+    }
+
     static func live() -> LibraryRecoveryStores {
         LibraryRecoveryStores(
             mirrorCheckpoints: .shared,
@@ -70,6 +108,9 @@ final class LibraryRecoveryCoordinator {
 
     var pendingBookStoreDeletions = Set<String>()
 
+    private var operations: [UUID: Task<Void, Never>] = [:]
+    private var isRetired = false
+    private unowned let profileSession: ProfileSession?
     private let library: LibraryBookCache
     private let session: any CurrentBookSession
     private let presentation: AppPresentationState
@@ -96,8 +137,10 @@ final class LibraryRecoveryCoordinator {
         bookStore: BookStoreRepository = AppState.shared.bookStore,
         providerConnections: any ProviderConnectionEditing = AppState.shared.providerConnections,
         stores: LibraryRecoveryStores = .live(),
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        profileSession: ProfileSession? = nil
     ) {
+        self.profileSession = profileSession
         self.library = library
         self.session = session
         self.presentation = presentation
@@ -108,6 +151,22 @@ final class LibraryRecoveryCoordinator {
         self.providerConnections = providerConnections
         self.stores = stores
         self.defaults = defaults
+    }
+
+    private func retainOperation(priority: TaskPriority? = nil, operation: @escaping @MainActor () async -> Void) {
+        guard !isRetired else { return }
+        let id = UUID()
+        operations[id] = Task(priority: priority) {
+            await operation()
+            self.operations[id] = nil
+        }
+    }
+
+    func retire() async {
+        isRetired = true
+        let pending = Array(operations.values)
+        pending.forEach { $0.cancel() }
+        for task in pending { await task.value }
     }
 
     func runStartupMigrations() async {
@@ -214,7 +273,7 @@ final class LibraryRecoveryCoordinator {
         if !migratedBooks.isEmpty {
             await bookStore.upsertBooks(migratedBooks)
             for pair in migratedPairs {
-                BookProgressStore.shared.migrateProgress(from: pair.old, to: pair.new)
+                (profileSession?.bookProgress ?? BookProgressStore.shared).migrateProgress(from: pair.old, to: pair.new)
             }
             if !oldUniqueIdsToRemove.isEmpty {
                 await bookStore.deleteBooks(uniqueIds: oldUniqueIdsToRemove)
@@ -393,7 +452,7 @@ final class LibraryRecoveryCoordinator {
     }
 
     func rescueOrphanedDownloads() async {
-        let storage = LocalStorageManager.shared
+        let storage = profileSession?.localStorage ?? LocalStorageManager.shared
 
         reconcileRescuedDownloads()
 
@@ -545,7 +604,7 @@ final class LibraryRecoveryCoordinator {
                 library.hot.insertMany(newBooks)
                 AppLogger.general.info("[Recovery] Added \(newBooks.count) rescued book(s) to library. Total: \(library.books.count)")
 
-                Task { @MainActor in
+                retainOperation { [self] in
                     try? await Task.sleep(nanoseconds: 1_500_000_000)
                     presentation.showOrphanedBooksSheet = true
                 }
@@ -558,7 +617,7 @@ final class LibraryRecoveryCoordinator {
     }
 
     func reconcileRescuedDownloads() {
-        let storage = LocalStorageManager.shared
+        let storage = profileSession?.localStorage ?? LocalStorageManager.shared
         let rescuedBooks = library.books.filter { $0.libraryId == "rescued-downloads" }
 
         for rescuedBook in rescuedBooks {
@@ -631,7 +690,7 @@ final class LibraryRecoveryCoordinator {
         let rescuedKey = rescuedBook.downloadKey
         let serverKey = serverBook.downloadKey
         let diskId = rescuedBook.partKey ?? rescuedKey
-        let preservedMetadata = try? LocalStorageManager.shared.loadMetadataOverride(
+        let preservedMetadata = try? (profileSession?.localStorage ?? LocalStorageManager.shared).loadMetadataOverride(
             OfflineBookMetadata.self,
             for: diskId
         )
@@ -658,8 +717,8 @@ final class LibraryRecoveryCoordinator {
             updatedServerBook = updated
         }
 
-        if let savedProgress = BookProgressStore.shared.loadProgress(for: rescuedBook) {
-            BookProgressStore.shared.saveProgress(
+        if let savedProgress = (profileSession?.bookProgress ?? BookProgressStore.shared).loadProgress(for: rescuedBook) {
+            (profileSession?.bookProgress ?? BookProgressStore.shared).saveProgress(
                 for: serverBook,
                 progress: savedProgress.progress,
                 duration: savedProgress.duration
@@ -675,7 +734,7 @@ final class LibraryRecoveryCoordinator {
             queuedBook.currentTime = serverProgress.currentTime
             queuedBook.isFinished = serverProgress.isFinished
             queuedBook.lastUpdate = serverProgress.lastUpdate
-            SyncCoordinator.shared.enqueuePendingSync(
+            (profileSession?.sync ?? SyncCoordinator.shared).enqueuePendingSync(
                 book: queuedBook,
                 position: serverProgress.currentTime,
                 duration: serverProgress.duration,
@@ -691,14 +750,14 @@ final class LibraryRecoveryCoordinator {
         let rescuedId = rescuedUniqueId
         let updated = updatedServerBook
         let store = bookStore
-        Task.detached(priority: .utility) {
+        retainOperation(priority: .utility) {
             await store.deleteBooks(uniqueIds: [rescuedId])
             if let updated {
                 await store.upsertBooks([updated])
             }
         }
 
-        let storage = LocalStorageManager.shared
+        let storage = profileSession?.localStorage ?? LocalStorageManager.shared
         let moved = storage.reassociateDownload(from: diskId, to: serverKey)
         if !moved {
             if !storage.reassociateDownload(from: rescuedKey, to: serverKey) {
@@ -743,7 +802,7 @@ final class LibraryRecoveryCoordinator {
         catalog.saveMetadata()
 
         let store = bookStore
-        Task.detached(priority: .utility) {
+        retainOperation(priority: .utility) {
             await store.deleteBooks(uniqueIds: [removedId])
         }
 
@@ -868,9 +927,9 @@ final class LibraryRecoveryCoordinator {
             guard !remainingBookIds.contains(orphan.id),
                 !localTitles.contains(orphan.title.lowercased())
             else { continue }
-            if let cachedURL = orphan.ebookFileURL ?? LocalEbookImporter.shared.cachedEbook(forBookId: orphan.id),
+            if let cachedURL = orphan.ebookFileURL ?? (profileSession?.ebooks ?? LocalEbookImporter.shared).cachedEbook(forBookId: orphan.id),
                 FileManager.default.fileExists(atPath: cachedURL.path),
-                let localURL = LocalEbookImporter.shared.migrateToLocal(cachedURL: cachedURL)
+                let localURL = (profileSession?.ebooks ?? LocalEbookImporter.shared).migrateToLocal(cachedURL: cachedURL)
             {
                 if let localBook = persistMigratedLocalEbook(orphan, localURL: localURL) {
                     library.books.append(localBook)
@@ -916,7 +975,7 @@ final class LibraryRecoveryCoordinator {
             }
         )
         let store = bookStore
-        Task(priority: .utility) { [weak self] in
+        retainOperation(priority: .utility) { [weak self] in
             let removed = await store.deleteBooksFromInactiveLibraries(
                 validProviderIds: activeProviderIdStrings,
                 restrictedLibraryIds: restrictedLibraryIds
@@ -933,7 +992,7 @@ final class LibraryRecoveryCoordinator {
         let metadata = mergedLocalMetadata(for: orphan, localURL: localURL)
         let fileHash = hashFile(at: localURL) ?? orphan.stableId.replacingOccurrences(of: ":", with: "-")
         let sidecarPath = saveMigratedEbookSidecar(metadata: metadata, fileHash: fileHash, localURL: localURL)
-        let relativePath = localURL.path.replacingOccurrences(of: LocalEbookImporter.shared.localEbooksRoot.path + "/", with: "")
+        let relativePath = localURL.path.replacingOccurrences(of: (profileSession?.ebooks ?? LocalEbookImporter.shared).localEbooksRoot.path + "/", with: "")
         let fileSize = (try? localURL.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
 
         let localBookFile = LocalBookFile(
@@ -949,13 +1008,13 @@ final class LibraryRecoveryCoordinator {
             extractedAt: orphan.addedAt ?? Date()
         )
 
-        var cachedBooks = LocalLibraryStorageStore.shared.loadBooks(libraryId: LocalLibraryService.fileSharingLibraryId)
+        var cachedBooks = (profileSession?.localLibrary ?? LocalLibraryStorageStore.shared).loadBooks(libraryId: LocalLibraryService.fileSharingLibraryId)
         cachedBooks.removeAll {
             $0.id == localBookFile.id || $0.filePath == localBookFile.filePath || $0.id == orphan.id
         }
         cachedBooks.append(localBookFile)
 
-        LocalLibraryStorageStore.shared.saveScanResult(
+        (profileSession?.localLibrary ?? LocalLibraryStorageStore.shared).saveScanResult(
             LocalLibraryScanResult(
                 localLibraryId: LocalLibraryService.fileSharingLibraryId,
                 booksFound: cachedBooks,
@@ -977,15 +1036,15 @@ final class LibraryRecoveryCoordinator {
     }
 
     private func ensureFileSharingLibraryExists() {
-        if LocalLibraryStorageStore.shared.loadLibraries().contains(where: { $0.id == LocalLibraryService.fileSharingLibraryId }) {
+        if (profileSession?.localLibrary ?? LocalLibraryStorageStore.shared).loadLibraries().contains(where: { $0.id == LocalLibraryService.fileSharingLibraryId }) {
             return
         }
 
-        LocalLibraryStorageStore.shared.saveLibrary(
+        (profileSession?.localLibrary ?? LocalLibraryStorageStore.shared).saveLibrary(
             LocalLibrary(
                 id: LocalLibraryService.fileSharingLibraryId,
                 name: "Drag & Drop Books",
-                folderPath: LocalLibraryService.fileSharingRootURL.path,
+                folderPath: (profileSession?.storage.documentsDirectory ?? LocalLibraryService.fileSharingRootURL).path,
                 createdAt: Date(),
                 isEnabled: true,
                 type: .fileSharing
@@ -1057,7 +1116,7 @@ final class LibraryRecoveryCoordinator {
     func prepareForFullDataClear() {
         pendingBookStoreDeletions.removeAll()
 
-        DeletedBooksTombstoneStore.shared.clearAll()
+        (profileSession?.deletedBooks ?? DeletedBooksTombstoneStore.shared).clearAll()
         stores.mirrorCheckpoints.clearAll()
         stores.opdsProgressionEndpoints.clearAll()
         stores.opdsAuthentication.clearAll()
@@ -1123,7 +1182,7 @@ final class LibraryRecoveryCoordinator {
         pendingBookStoreDeletions.removeAll()
         guard !ids.isEmpty else { return }
         let store = bookStore
-        Task.detached(priority: .utility) {
+        retainOperation(priority: .utility) {
             if delaySeconds > 0 {
                 try? await Task.sleep(nanoseconds: delaySeconds * 1_000_000_000)
             }
@@ -1208,7 +1267,7 @@ final class LibraryRecoveryCoordinator {
 
         let capturedIds = idsToRemove
         let store = bookStore
-        Task(priority: .utility) {
+        retainOperation(priority: .utility) {
             await store.deleteBooks(uniqueIds: capturedIds)
         }
 
@@ -1216,38 +1275,38 @@ final class LibraryRecoveryCoordinator {
     }
 
     func permanentlyDeleteBook(_ book: Book) {
-        DeletedBooksTombstoneStore.shared.markDeleted(book.stableId, title: book.title)
+        (profileSession?.deletedBooks ?? DeletedBooksTombstoneStore.shared).markDeleted(book.stableId, title: book.title)
 
-        _ = LocalStorageManager.shared.deleteAudiobook(book)
-        try? LocalEbookImporter.shared.deleteRemoteEbookArtifacts(forBookId: book.id)
-        if #available(iOS 26.0, *) {
-            StoryAlignService.shared.deleteConversions(involving: book)
+        _ = (profileSession?.localStorage ?? LocalStorageManager.shared).deleteAudiobook(book)
+        try? (profileSession?.ebooks ?? LocalEbookImporter.shared).deleteRemoteEbookArtifacts(forBookId: book.id)
+        if profileSession?.isOwner ?? true, #available(iOS 26.0, *) {
+            (profileSession?.storyAlignService ?? StoryAlignService.shared).deleteConversions(involving: book)
         }
 
-        try? LocalStorageManager.shared.deletePlaybackState(for: book.stableId)
-        try? LocalStorageManager.shared.deletePlaybackState(for: book.id)
-        try? LocalStorageManager.shared.deleteMetadataOverride(for: book.id)
+        try? (profileSession?.localStorage ?? LocalStorageManager.shared).deletePlaybackState(for: book.stableId)
+        try? (profileSession?.localStorage ?? LocalStorageManager.shared).deletePlaybackState(for: book.id)
+        try? (profileSession?.localStorage ?? LocalStorageManager.shared).deleteMetadataOverride(for: book.id)
 
         removeBook(book)
 
         let store = bookStore
-        Task(priority: .utility) {
+        retainOperation(priority: .utility) { [self] in
             if book.source == .local {
-                await LocalLibraryService.shared.removeBookFromScanCache(
+                await (profileSession?.localLibraryService ?? LocalLibraryService.shared).removeBookFromScanCache(
                     bookId: book.id,
                     libraryId: book.libraryId,
                     filePath: book.filePath
                 )
-                try? await LocalLibraryService.shared.deleteBookFiles(for: book)
+                try? await (profileSession?.localLibraryService ?? LocalLibraryService.shared).deleteBookFiles(for: book)
             }
             await store.setDeleted(true, stableId: book.stableId)
         }
     }
 
     func restoreDeletedBook(_ stableId: String) {
-        DeletedBooksTombstoneStore.shared.markRestored(stableId)
+        (profileSession?.deletedBooks ?? DeletedBooksTombstoneStore.shared).markRestored(stableId)
         let store = bookStore
-        Task(priority: .utility) {
+        retainOperation(priority: .utility) {
             await store.setDeleted(false, stableId: stableId)
         }
     }
@@ -1255,7 +1314,7 @@ final class LibraryRecoveryCoordinator {
     func restoreDeletedBooks(_ stableIds: [String]) async {
         guard !stableIds.isEmpty else { return }
         for stableId in stableIds {
-            DeletedBooksTombstoneStore.shared.markRestored(stableId)
+            (profileSession?.deletedBooks ?? DeletedBooksTombstoneStore.shared).markRestored(stableId)
             await bookStore.setDeleted(false, stableId: stableId)
         }
         await catalog.refreshLibrary()

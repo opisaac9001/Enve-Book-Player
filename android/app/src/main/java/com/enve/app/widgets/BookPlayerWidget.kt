@@ -215,7 +215,9 @@ class BookPlayerWidget : GlanceAppWidget() {
         Box(GlanceModifier.size(40.dp).clickable(actionSendBroadcast(
             Intent(context, BookWidgetCommandReceiver::class.java)
                 .putExtra("command", command).putExtra("book_key", state.book?.uniqueKey)
-                .putExtra("read_along_session", state.readAlongSessionId),
+                .putExtra("read_along_session", state.readAlongSessionId)
+                .putExtra(com.enve.app.profiles.ProfileActivityBinding.EXTRA_PROFILE_ID, state.profileId)
+                .putExtra(com.enve.app.profiles.ProfileActivityBinding.EXTRA_GENERATION, state.generation),
         )), contentAlignment = Alignment.Center) {
             Image(ImageProvider(icon), label, GlanceModifier.size(24.dp),
                 colorFilter = ColorFilter.tint(if (command == "toggle") ember else text))

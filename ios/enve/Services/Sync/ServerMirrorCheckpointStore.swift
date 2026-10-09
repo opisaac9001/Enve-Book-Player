@@ -33,7 +33,7 @@ struct ServerMirrorCheckpoint: Codable, Equatable, Sendable {
 @MainActor
 @Observable
 final class ServerMirrorCheckpointStore {
-    static let shared = ServerMirrorCheckpointStore()
+    static var shared: ServerMirrorCheckpointStore { ProfileSession.owner.mirrorCheckpoints }
 
     @ObservationIgnored private static let storageKey = "serverMirrorCheckpoints.v1"
 

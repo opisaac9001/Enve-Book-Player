@@ -40,6 +40,42 @@ enum MediaBrowserClient {
         return header
     }
 
+    // Jellyfin and Emby share the Sessions/Playing playstate API; a nil event is a periodic progress ping.
+    static func playstateRequest(
+        baseURL: String,
+        event: ServerPlaybackEvent?,
+        itemId: String,
+        sessionId: String,
+        position: TimeInterval
+    ) -> URLRequest? {
+        let path: String
+        switch event {
+        case .started: path = "/Sessions/Playing"
+        case .stopped: path = "/Sessions/Playing/Stopped"
+        case .paused, .resumed, nil: path = "/Sessions/Playing/Progress"
+        }
+        guard let url = URL(string: baseURL + path) else { return nil }
+        var body: [String: Any] = [
+            "ItemId": itemId,
+            "PlaySessionId": sessionId,
+            "PositionTicks": Int64(max(0, position) * 10_000_000),
+            "CanSeek": true,
+            "PlayMethod": "DirectStream",
+            "IsPaused": event == .paused,
+        ]
+        switch event {
+        case .paused: body["EventName"] = "Pause"
+        case .resumed: body["EventName"] = "Unpause"
+        case nil: body["EventName"] = "TimeUpdate"
+        case .started, .stopped: break
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        return request
+    }
+
     static func normalizeServerURL(_ input: String) -> String {
         var trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))

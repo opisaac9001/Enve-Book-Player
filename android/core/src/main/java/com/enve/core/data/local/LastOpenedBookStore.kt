@@ -1,6 +1,8 @@
 package com.enve.core.data.local
 
 import android.content.Context
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.enve.core.data.model.Book
@@ -13,10 +15,9 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
-class LastOpenedBookStore @Inject constructor(
-    @ApplicationContext context: Context,
-) {
-    private val dataStore = context.enveDataStore
+class LastOpenedBookStore(private val dataStore: DataStore<Preferences>) {
+    @Inject
+    constructor(@ApplicationContext context: Context) : this(context.enveDataStore)
 
     val lastOpenedBookKey: Flow<String?> = dataStore.data
         .map { preferences -> preferences[LAST_OPENED_BOOK_KEY]?.takeIf(String::isNotBlank) }

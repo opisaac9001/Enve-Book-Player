@@ -74,9 +74,11 @@ final class LibraryDisplayPreferencesStore {
     private static let seriesSortDirectionKey = "seriesSortDirection"
     private static let userPreferencesKey = "userPreferences"
 
-    private let userDefaults = UserDefaults.standard
+    private let userDefaults: UserDefaults
 
-    private init() {}
+    init(defaults: UserDefaults = .standard) {
+        userDefaults = defaults
+    }
 
     private enum CacheScopeRaw: String {
         case local

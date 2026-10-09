@@ -16,14 +16,20 @@ class ThemeManager: ObservableObject {
         Color(red: defaultAccentRed, green: defaultAccentGreen, blue: defaultAccentBlue)
     }
 
-    @AppStorage("visionImpairedModeEnabled") var isVisionMode: Bool = false
+    private let defaults: UserDefaults
 
-    @AppStorage("themeColorHex") private var themeColorHex: String = ThemeManager.defaultThemeHex
+    @Published var isVisionMode: Bool {
+        didSet { defaults.set(isVisionMode, forKey: "visionImpairedModeEnabled") }
+    }
+    @Published var themeColorHex: String {
+        didSet { defaults.set(themeColorHex, forKey: "themeColorHex") }
+    }
 
-    private init() {
-        if themeColorHex.uppercased() == ThemeManager.previousDefaultHex {
-            themeColorHex = ThemeManager.defaultThemeHex
-        }
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        isVisionMode = defaults.bool(forKey: "visionImpairedModeEnabled")
+        let stored = defaults.string(forKey: "themeColorHex") ?? Self.defaultThemeHex
+        themeColorHex = stored.uppercased() == Self.previousDefaultHex ? Self.defaultThemeHex : stored
     }
 
     var themeColor: Color {

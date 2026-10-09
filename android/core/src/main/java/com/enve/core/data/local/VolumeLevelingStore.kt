@@ -1,6 +1,8 @@
 package com.enve.core.data.local
 
 import android.content.Context
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.enve.core.data.model.VolumeLevelingStrength
@@ -11,10 +13,9 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
-class VolumeLevelingStore @Inject constructor(
-    @ApplicationContext context: Context,
-) {
-    private val dataStore = context.enveDataStore
+class VolumeLevelingStore(private val dataStore: DataStore<Preferences>) {
+    @Inject
+    constructor(@ApplicationContext context: Context) : this(context.enveDataStore)
 
     val strength: Flow<VolumeLevelingStrength> = dataStore.data.map { preferences ->
         VolumeLevelingStrength.fromString(preferences[STRENGTH])

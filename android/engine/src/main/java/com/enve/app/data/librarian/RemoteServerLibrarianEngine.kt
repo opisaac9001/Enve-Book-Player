@@ -1,6 +1,8 @@
 package com.enve.app.data.librarian
 
 import android.content.Context
+import com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
+import com.enve.core.data.local.ProfileStorageLocations
 import com.enve.core.auth.CredentialVault
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -30,8 +32,9 @@ data class LibrarianRemoteServerSettings(
 class LibrarianRemoteServerStore @Inject constructor(
     @ApplicationContext context: Context,
     private val vault: CredentialVault,
+    private val locations: ProfileStorageLocations = ProfileStorageLocations.forProfile(context, DEFAULT_ADULT_PROFILE_ID),
 ) {
-    private val file = File(context.filesDir, "enve-librarian/remote-server.json")
+    private val file = File(locations.filesDirectory, "enve-librarian/remote-server.json")
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
     suspend fun load(): LibrarianRemoteServerSettings = withContext(Dispatchers.IO) {

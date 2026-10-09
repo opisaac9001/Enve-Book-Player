@@ -9,22 +9,39 @@ final class BookloreEbookSyncStrategy: ProviderSyncStrategy {
     private let minimumServerSyncInterval: TimeInterval = 60
     private let largeBookloreLibraryThreshold = 20_000
     private var lastSyncTime: Date?
-    private let playbackState: any PlaybackStateProvider = ActivePlayback.controller
+    private let playbackState: any PlaybackStateProvider
     private let providerConnections: any ProviderConnectionAccessing
     private let books: any BookQuerying
     private let bookWriter: any BookWriting
     private let progressRepository: any ProgressRepository
+    private let libraryCache: any RecentlyPlayedLibraryCaching
+    private let bookProgress: BookProgressStore
+    private let pendingSync: PendingSyncQueueStore
+    private let conflicts: EbookConflictStore
+    private let ebookLinks: any EbookLinkPersisting
 
     init(
         providerConnections: any ProviderConnectionAccessing,
         books: any BookQuerying,
         bookWriter: any BookWriting,
-        progressRepository: any ProgressRepository
+        progressRepository: any ProgressRepository,
+        libraryCache: any RecentlyPlayedLibraryCaching = AppState.shared,
+        playbackState: any PlaybackStateProvider = ActivePlayback.controller,
+        bookProgress: BookProgressStore = .shared,
+        pendingSync: PendingSyncQueueStore = .shared,
+        conflicts: EbookConflictStore = .shared,
+        ebookLinks: any EbookLinkPersisting = EbookLinkStore.shared
     ) {
         self.providerConnections = providerConnections
         self.books = books
         self.bookWriter = bookWriter
         self.progressRepository = progressRepository
+        self.libraryCache = libraryCache
+        self.playbackState = playbackState
+        self.bookProgress = bookProgress
+        self.pendingSync = pendingSync
+        self.conflicts = conflicts
+        self.ebookLinks = ebookLinks
     }
 
     func sync(force: Bool, launchOptimized: Bool) async -> ProviderSyncResult {
@@ -93,7 +110,7 @@ final class BookloreEbookSyncStrategy: ProviderSyncStrategy {
 
         guard !providerBookById.isEmpty else { return .zero }
 
-        for conflict in EbookConflictStore.shared.pending {
+        for conflict in conflicts.pending {
             for (providerId, stableMap) in providerBookByStableId where stableMap[conflict.bookStableId] != nil {
                 conflictBookIdsByProvider[providerId, default: []].append(conflict.bookStableId)
                 break
@@ -181,7 +198,7 @@ final class BookloreEbookSyncStrategy: ProviderSyncStrategy {
                     AppLogger.sync.debug("Booklore ebook sync cancelled bookDiagnosticID=\(diagnosticID)")
                     return ProviderSyncResult(pulled: pullCount, pushed: pushCount, failedBackends: failedBackends, wasCancelled: true)
                 }
-                guard book.stableId != playingBookId, PendingSyncQueueStore.shared.entries[book.stableId] == nil else { continue }
+                guard book.stableId != playingBookId, pendingSync.entries[book.stableId] == nil else { continue }
 
                 do {
                     let localProgress = book.ebookProgress ?? 0
@@ -201,15 +218,15 @@ final class BookloreEbookSyncStrategy: ProviderSyncStrategy {
                         var hiddenBook = book
                         hiddenBook.hideFromContinue = true
                         hiddenBook.serverReadStatus = "ABANDONED"
-                        let mutated = AppState.shared.mutateBook(stableId: book.stableId) {
+                        let mutated = libraryCache.mutateBook(stableId: book.stableId) {
                             $0.hideFromContinue = true
                             $0.serverReadStatus = "ABANDONED"
                         }
                         if mutated == nil {
                             await bookWriter.upsertBooks([hiddenBook])
                         }
-                        BookProgressStore.shared.remove(stableId: book.stableId)
-                        EbookConflictStore.shared.remove(stableId: book.stableId)
+                        bookProgress.remove(stableId: book.stableId)
+                        conflicts.remove(stableId: book.stableId)
                         AppLogger.sync.debug("Grimmory ebook marked abandoned bookDiagnosticID=\(diagnosticID)")
                         continue
                     }
@@ -226,7 +243,7 @@ final class BookloreEbookSyncStrategy: ProviderSyncStrategy {
                         if let locator = serverResult.locator, !locator.isEmpty {
                             statusBook.epubLocator = locator
                         }
-                        let mutated = AppState.shared.mutateBook(stableId: book.stableId) {
+                        let mutated = libraryCache.mutateBook(stableId: book.stableId) {
                             $0.serverReadStatus = statusBook.serverReadStatus
                             $0.isFinished = statusBook.isFinished
                             $0.hideFromContinue = true
@@ -235,7 +252,7 @@ final class BookloreEbookSyncStrategy: ProviderSyncStrategy {
                             if let locator = serverResult.locator, !locator.isEmpty { $0.epubLocator = locator }
                         }
                         updatedInMemoryBooks.append(mutated ?? statusBook)
-                        EbookConflictStore.shared.remove(stableId: book.stableId)
+                        conflicts.remove(stableId: book.stableId)
                         pullCount += 1
                         continue
                     }
@@ -253,7 +270,7 @@ final class BookloreEbookSyncStrategy: ProviderSyncStrategy {
                     switch direction {
                     case .pull:
                         let resolvedLocator = serverResult.locator
-                        let mutated = AppState.shared.mutateBook(stableId: book.stableId) {
+                        let mutated = libraryCache.mutateBook(stableId: book.stableId) {
                             $0.hideFromContinue = false
                             $0.ebookProgress = serverProgress
                             $0.isFinished = serverResult.readState.isFinished || serverProgress >= Book.finishedProgressThreshold
@@ -275,7 +292,7 @@ final class BookloreEbookSyncStrategy: ProviderSyncStrategy {
                                 lastUpdate: serverDate
                             )
                         }
-                        EbookLinkStore.shared.saveLinks()
+                        ebookLinks.saveLinks()
                         AppLogger.sync.debug(
                             "Pulled Booklore ebook progress bookDiagnosticID=\(diagnosticID) progress=\(Int(serverProgress * 100))%"
                         )
@@ -287,7 +304,7 @@ final class BookloreEbookSyncStrategy: ProviderSyncStrategy {
                         )
                         pushCount += 1
                     case .conflict:
-                        EbookConflictStore.shared.add(
+                        conflicts.add(
                             EbookSyncConflict(
                                 bookStableId: book.stableId,
                                 bookTitle: book.title,

@@ -6,6 +6,7 @@ import com.enve.app.data.repository.AggregatorRepository
 import com.enve.app.data.repository.GrimmoryRepository
 import com.enve.app.readium.ReadAloudCheckpointRepository
 import com.enve.app.readium.ReadAloudPlaybackCoordinator
+import com.enve.app.readium.PlayerReadAloudService
 import com.enve.audiobookshelf.AudiobookshelfRepository
 import com.enve.core.data.local.BookCacheDao
 import com.enve.core.data.local.BookExtras
@@ -41,6 +42,7 @@ class PlaybackStarter @Inject constructor(
     private val readAloudPlayback: ReadAloudPlaybackCoordinator,
     private val openProgress: PlaybackOpenProgressResolver,
     private val embeddedChapterExtractor: EmbeddedChapterExtractor,
+    private val playerReadAloud: PlayerReadAloudService,
 ) {
 
     suspend fun start(book: Book, resolveOpenProgress: Boolean = true): Boolean {
@@ -49,6 +51,28 @@ class PlaybackStarter @Inject constructor(
             readAloudPlayback.stopActiveAndAwait()
             readAloudCheckpoints.flushPending()
             val cached = withContext(Dispatchers.IO) { bookCache.getByCacheKey(book.uniqueKey)?.toBook() }
+            val original = (cached ?: book).copy(
+                mediaType = book.mediaType,
+                readAlongAvailable = book.readAlongAvailable || cached?.readAlongAvailable == true,
+                hasEbook = book.hasEbook || cached?.hasEbook == true,
+                hasAudio = book.hasAudio || cached?.hasAudio == true,
+            )
+            val embedded = playerReadAloud.embeddedAudio(original)
+            if (embedded != null) {
+                val durationMs = embedded.tracks.sumOf { it.durationMs }
+                val resolved = original.forAudioPlayback().copy(duration = durationMs / 1000L)
+                val startSec = if (resolveOpenProgress) openProgress.resolveStartSeconds(resolved) else localStartSeconds(resolved)
+                val chapters = synthesize(embedded.tracks.map { it.title }, embedded.tracks.map { it.durationMs })
+                storeChapters(resolved, chapters)
+                audioManager.playMultiTrack(
+                    tracks = embedded.tracks, bookId = resolved.id, title = resolved.title,
+                    author = resolved.author, coverUrl = resolved.coverUrl, startPositionMs = startSec * 1000L,
+                    mediaId = AutoMediaBrowserHelper.mediaIdForCacheKey(resolved.uniqueKey),
+                )
+                sessionService.start(resolved, startSec, resolved.duration)
+                lastOpenedBookStore.record(resolved)
+                return@withContext true
+            }
             val base = withCachedChapters(
                 (cached ?: book).copy(hasEbook = book.hasEbook || cached?.hasEbook == true).forAudioPlayback(),
             )
@@ -175,13 +199,13 @@ class PlaybackStarter @Inject constructor(
             tracks.sumOf { it.durationMs } > 0L -> tracks.sumOf { it.durationMs } / 1000L
             else -> 0L
         }
-        val effectiveStart = if (startSec > 0L) startSec else (session?.serverCurrentTimeSec ?: 0L)
+        val effectiveStart = startSec.coerceAtLeast(0L)
         val chapters = session?.chapters?.takeIf { it.isNotEmpty() }
-            ?: book.chapters.takeIf { it.isNotEmpty() }
+            ?: book.chapters.takeIf { it.size > 1 }
             ?: tracks.takeIf { it.size == 1 }
                 ?.let { embeddedChapterExtractor.fetchEmbeddedChapters(it, durationSec) }
                 ?.takeIf { it.isNotEmpty() }
-            ?: synthesize(tracks.map { it.title ?: it.fileName }, tracks.map { it.durationMs })
+            ?: book.chapters.ifEmpty { synthesize(tracks.map { it.title ?: it.fileName }, tracks.map { it.durationMs }) }
         storeChapters(book, chapters)
 
         val castToken = if (book.source == BookSource.AUDIOBOOKSHELF) absRepository.currentAccessToken() else null

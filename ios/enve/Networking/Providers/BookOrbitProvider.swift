@@ -6,7 +6,7 @@ import UIKit
 #endif
 
 final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvider, AudiobookProgressProvider,
-    EbookProgressProvider, EbookDownloadProvider, PersonalRatingProvider, HistorySessionSyncProvider,
+    EbookProgressProvider, EbookDownloadProvider, PersonalRatingProvider, SavedBooksProvider, HistorySessionSyncProvider,
     @unchecked Sendable
 {
     var connection: ServerConnection
@@ -112,18 +112,27 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         cachedContinueProgressAt = .distantPast
     }
 
-    init(connection: ServerConnection, session: URLSession? = nil) {
+    private let keychain: KeychainHelper
+    private let appState: AppState
+    private let rejectedContent: RejectedContentStore
+    private let ebookImporter: LocalEbookImporter
+
+    init(connection: ServerConnection, session: URLSession? = nil, profileSession: ProfileSession? = nil) {
         self.connection = connection
-        self.session = session
+        self.session = session ?? profileSession?.networkSession ?? InsecureURLSession.shared
+        keychain = profileSession?.legacyKeychain ?? .shared
+        appState = profileSession?.appState ?? .shared
+        rejectedContent = profileSession?.rejectedContent ?? .shared
+        ebookImporter = profileSession?.ebooks ?? .shared
     }
 
     private var refreshTokenKey: String { "bookorbit_refresh_\(connection.id.uuidString)" }
     private var usernameKey: String { "bookorbit_username_\(connection.id.uuidString)" }
     private var passwordKey: String { "bookorbit_password_\(connection.id.uuidString)" }
 
-    private func storedRefreshToken() -> String? { KeychainHelper.shared.get(refreshTokenKey) }
-    private func storedUsername() -> String? { connection.username ?? KeychainHelper.shared.get(usernameKey) }
-    private func storedPassword() -> String? { connection.password ?? KeychainHelper.shared.get(passwordKey) }
+    private func storedRefreshToken() -> String? { keychain.get(refreshTokenKey) }
+    private func storedUsername() -> String? { connection.username ?? keychain.get(usernameKey) }
+    private func storedPassword() -> String? { connection.password ?? keychain.get(passwordKey) }
 
     private var apiBase: URL? {
         guard let base = URL(string: connection.url) else { return nil }
@@ -190,8 +199,8 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         }
 
         captureRefreshCookie(from: http, requestURL: request.url)
-        KeychainHelper.shared.set(username, key: usernameKey)
-        KeychainHelper.shared.set(password, key: passwordKey)
+        keychain.set(username, key: usernameKey)
+        keychain.set(password, key: passwordKey)
 
         connection.token = accessToken
         connection.password = nil
@@ -255,7 +264,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         else { return }
         let cookies = HTTPCookie.cookies(withResponseHeaderFields: fields, for: requestURL)
         if let refresh = cookies.first(where: { $0.name == "refresh_token" }) {
-            KeychainHelper.shared.set(refresh.value, key: refreshTokenKey)
+            keychain.set(refresh.value, key: refreshTokenKey)
         }
     }
 
@@ -769,7 +778,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         libraryId: String,
         fallbackScope: String
     ) {
-        RejectedContentStore.shared.update(
+        rejectedContent.update(
             connection: connection,
             libraryId: libraryId,
             acceptedItemIdentifiers: Set(page.items.map { String($0.id) }),
@@ -880,6 +889,74 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         try await mutateCollectionBooks(bookIds, collectionId: id, method: "DELETE")
     }
 
+    func canSyncSavedBooks() async throws -> Bool {
+        try await currentUserIsAdmin()
+    }
+
+    func fetchSavedBookIDs(libraryIds: Set<String>) async throws -> [SavedBookList: Set<String>] {
+        let collections = try await fetchCollections(libraryId: nil)
+        var snapshot: [SavedBookList: Set<String>] = [:]
+        for list in SavedBookList.allCases {
+            let name = list == .favorites ? "Enve Favorites" : "Enve For Later"
+            guard let collection = collections.first(where: {
+                $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame
+            }), let remoteId = collection.remoteId else {
+                snapshot[list] = []
+                continue
+            }
+
+            var ids = Set<String>()
+            var page = 0
+            var expectedTotal: Int?
+            repeat {
+                guard page < 500 else { throw ProviderError.invalidResponse }
+                let result = try await fetchCollectionBooks(collectionId: remoteId, page: page, size: 100)
+                guard result.page == page,
+                      result.total == (expectedTotal ?? result.total),
+                      !result.books.isEmpty || result.total == 0
+                else { throw ProviderError.invalidResponse }
+                expectedTotal = result.total
+                ids.formUnion(result.books.map(\.id))
+                page += 1
+            } while ids.count < (expectedTotal ?? 0)
+            guard ids.count == collection.bookCount else { throw ProviderError.invalidResponse }
+            snapshot[list] = ids
+        }
+        return snapshot
+    }
+
+    func setSavedBook(_ book: Book, list: SavedBookList, saved: Bool) async throws {
+        try await requireAdmin()
+        let name = list == .favorites ? "Enve Favorites" : "Enve For Later"
+        let collection = try await fetchCollections(libraryId: nil).first {
+            $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame
+        }
+        let target: Collection
+        if let collection {
+            target = collection
+        } else if saved {
+            target = try await createCollection(
+                CollectionEdit(
+                    name: name,
+                    description: nil,
+                    icon: list == .favorites ? "FolderHeart" : "Bookmark",
+                    syncToKobo: false
+                )
+            )
+        } else {
+            return
+        }
+        guard let remoteId = target.remoteId else { throw ProviderError.invalidResponse }
+        if try await collectionsContaining(bookId: book.id).first(where: { $0.collection.id == target.id })?.containsBook == saved {
+            return
+        }
+        if saved {
+            try await addBooks([book.id], toCollection: remoteId)
+        } else {
+            try await removeBooks([book.id], fromCollection: remoteId)
+        }
+    }
+
     func reorderCollections(_ ids: [String]) async throws {
         try await requireAdmin()
         let order = ids.enumerated().compactMap { index, id -> [String: Int]? in
@@ -957,7 +1034,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         entries.reserveCapacity(widget.books.count)
         for (index, item) in widget.books.enumerated() {
             let uniqueId = "\(connection.id)_\(item.bookId)"
-            let knownBook = AppState.shared.bookInMemory(uniqueId: uniqueId)
+            let knownBook = appState.bookInMemory(uniqueId: uniqueId)
             let isAudiobook = isAudio(item.fileFormat) || knownBook?.mediaType == .audiobook
             let exact = await fetchCurrentProgress(for: item, isAudiobook: isAudiobook)
             let progress = min(max((exact?.percentage ?? item.progress ?? 0) / 100.0, 0), 1)
@@ -1494,9 +1571,9 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
 
     func uploadHistorySession(_ session: HistorySession, for book: Book) async throws {
         guard session.source == .local, session.durationSeconds >= 10 else { return }
-        let detailed = (try? await fetchFullBookDetails(bookId: book.id, libraryId: book.libraryId)) ?? book
-        guard let fileId = historySessionFileId(for: session, book: detailed) else {
-            throw ProviderError.invalidResponse
+        let fetched = try? await fetchFullBookDetails(bookId: book.id, libraryId: book.libraryId)
+        guard let fileId = historySessionFileId(for: session, book: fetched ?? book) else {
+            throw fetched == nil ? ProviderError.invalidResponse : HistorySessionUploadError.noMatchingFile
         }
 
         let wallClockSeconds = max(0, Int(session.endTime.timeIntervalSince(session.startTime)))
@@ -1765,7 +1842,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
     }
 
     func downloadEbook(for book: Book, onProgress: (@Sendable (Double) -> Void)? = nil) async throws -> URL {
-        if let cached = LocalEbookImporter.shared.cachedEbook(forBookId: book.id) {
+        if let cached = ebookImporter.cachedEbook(forBookId: book.id) {
             onProgress?(1)
             return cached
         }
@@ -1796,7 +1873,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
                 session.downloadTask(with: request)
             }
         } else {
-            let (downloadURL, response) = try await URLSession.shared.download(for: request)
+            let (downloadURL, response) = try await (session ?? InsecureURLSession.shared).download(for: request)
             guard let httpResponse = response as? HTTPURLResponse else {
                 try? FileManager.default.removeItem(at: downloadURL)
                 throw ProviderError.invalidResponse
@@ -1819,7 +1896,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
             filename = String(header[start..<end])
         }
 
-        return try LocalEbookImporter.shared.cacheRemoteEbook(tempURL: tempURL, preferredFilename: filename, bookIdentifier: book.id)
+        return try ebookImporter.cacheRemoteEbook(tempURL: tempURL, preferredFilename: filename, bookIdentifier: book.id)
     }
 
     func updateEbookProgress(for book: Book, progress: Double, epubLocator: String?) async throws {

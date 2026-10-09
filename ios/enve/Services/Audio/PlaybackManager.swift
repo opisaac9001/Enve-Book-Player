@@ -142,9 +142,12 @@ enum PlaybackError: LocalizedError {
 @MainActor
 @Observable
 final class PlaybackManager {
-    static let shared = PlaybackManager()
+    static var shared: PlaybackManager { ProfileSession.owner.playback.manager }
 
-    private let audioProcessor = AudioProcessor.shared
+    let audioProcessor: AudioProcessor
+    private unowned let profileSession: ProfileSession
+    private var isRetired = false
+    private var operations: [UUID: Task<Void, Never>] = [:]
     private let bookSession: any CurrentBookSession
     private let libraryCache: LibraryBookCache
     private let connectionStore: ProviderConnectionStore
@@ -219,6 +222,7 @@ final class PlaybackManager {
     private let maxPlaybackRecoveryAttempts = 2
     private var syncTimer: Timer?
     private var timeListenedSinceLastSync: TimeInterval = 0
+    private var reportedPlaybackSessionId: String?
     private var hasClearedNowPlayingWhenIdle = false
     private var nowPlayingUpdateTask: Task<Void, Never>?
     private var shouldResumeAfterInterruption = false
@@ -274,7 +278,7 @@ final class PlaybackManager {
     @ObservationIgnored let playbackCompletionSubject = PassthroughSubject<Book, Never>()
 
     @ObservationIgnored private var cancellables = Set<AnyCancellable>()
-    private let storageService = StorageService.shared
+    private let storageService: StorageService
 
     private func debugLog(_ message: String) {
         guard verbosePlaybackLogs else { return }
@@ -408,9 +412,9 @@ final class PlaybackManager {
         currentBook = updatedBook
         self.bookSession.currentBook = updatedBook
         self.libraryCache.mutateBook(uniqueId: updatedBook.uniqueId) { $0.chapters = normalized }
-        ReaderArtifactsStore.shared.saveCachedChapters(bookId: updatedBook.stableId, chapters: normalized)
+        profileSession.readerArtifacts.saveCachedChapters(bookId: updatedBook.stableId, chapters: normalized)
         if updatedBook.id != updatedBook.stableId {
-            ReaderArtifactsStore.shared.saveCachedChapters(bookId: updatedBook.id, chapters: normalized)
+            profileSession.readerArtifacts.saveCachedChapters(bookId: updatedBook.id, chapters: normalized)
         }
     }
 
@@ -428,26 +432,60 @@ final class PlaybackManager {
             book.duration = duration
         }
         book.lastUpdate = Date()
-        BookProgressStore.shared.saveRecentlyPlayed(book)
+        profileSession.bookProgress.saveRecentlyPlayed(book)
         let snapshot = book
         Task(priority: .utility) { await self.bookRepository.upsertBooks([snapshot]) }
         NotificationCenter.default.post(name: .continueListeningNeedsRefresh, object: nil)
     }
 
-    private init(
-        bookSession: any CurrentBookSession = AppState.shared,
-        libraryCache: LibraryBookCache = AppState.shared.libraryCache,
-        connectionStore: ProviderConnectionStore = AppState.shared.providerConnections,
-        bookRepository: BookStoreRepository = AppState.shared.bookStore
-    ) {
-        self.bookSession = bookSession
-        self.libraryCache = libraryCache
-        self.connectionStore = connectionStore
-        self.bookRepository = bookRepository
+    init(profileSession: ProfileSession) {
+        self.profileSession = profileSession
+        audioProcessor = AudioProcessor(preferencesStore: profileSession.preferences)
+        storageService = profileSession.storageService
+        bookSession = profileSession.appState
+        libraryCache = profileSession.appState.libraryCache
+        connectionStore = profileSession.providerConnections
+        bookRepository = profileSession.appState.bookStore
         setupAudioSession(activate: false)
         setupObservers()
         registerEnvePlaybackHandoff()
         loadPlaybackPreferences()
+    }
+
+    private func runOperation(_ operation: @escaping @MainActor () async -> Void) {
+        guard !isRetired else { return }
+        let id = UUID()
+        operations[id] = Task { [weak self] in
+            await operation()
+            self?.operations.removeValue(forKey: id)
+        }
+    }
+
+    func retire() async {
+        guard !isRetired else { return }
+        isRetired = true
+        let jobs = Array(operations.values)
+        jobs.forEach { $0.cancel() }
+        let finalBook = currentBook
+        let finalPosition = currentTime
+        let finalDuration = duration
+        cancellables.removeAll()
+        playbackRecoveryTask?.cancel()
+        stop()
+        if let finalBook {
+            await profileSession.listeningStats.endSession(
+                bookId: finalBook.stableId, finalPosition: finalPosition,
+                duration: finalDuration, uploadToServer: false
+            )
+        }
+        for job in jobs { await job.value }
+        operations.removeAll()
+        await profileSession.listeningStats.flush()
+        #if os(iOS)
+        CFNotificationCenterRemoveEveryObserver(
+            CFNotificationCenterGetDarwinNotifyCenter(), Unmanaged.passUnretained(self).toOpaque()
+        )
+        #endif
     }
 
     private func registerEnvePlaybackHandoff() {
@@ -455,8 +493,10 @@ final class PlaybackManager {
         CFNotificationCenterAddObserver(
             CFNotificationCenterGetDarwinNotifyCenter(),
             Unmanaged.passUnretained(self).toOpaque(),
-            { _, _, _, _, _ in
-                Task { @MainActor in PlaybackManager.shared.pauseForMusicPlayback() }
+            { _, observer, _, _, _ in
+                guard let observer else { return }
+                let manager = Unmanaged<PlaybackManager>.fromOpaque(observer).takeUnretainedValue()
+                Task { @MainActor [weak manager] in manager?.pauseForMusicPlayback() }
             },
             "com.enve.music.playback.started" as CFString,
             nil,
@@ -483,18 +523,18 @@ final class PlaybackManager {
     }
 
     private func loadPlaybackPreferences() {
-        let preferences = LibraryDisplayPreferencesStore.shared.loadPreferences()
+        let preferences = profileSession.preferences.loadPreferences()
         let requestedSpeed: Double
         if currentItemIsPodcast {
-            let fallback = UserDefaults.standard.float(forKey: "podcastPlaybackSpeed")
+            let fallback = profileSession.defaults.float(forKey: "podcastPlaybackSpeed")
             requestedSpeed = fallback > 0 ? Double(fallback) : preferences.podcastPlaybackSpeed
         } else {
-            let fallbackSpeed = UserDefaults.standard.float(forKey: "playbackSpeed")
+            let fallbackSpeed = profileSession.defaults.float(forKey: "playbackSpeed")
             let global =
                 preferences.playbackSpeed != UserPreferences.default.playbackSpeed
                 ? preferences.playbackSpeed
                 : (fallbackSpeed > 0 ? Double(fallbackSpeed) : Double(UserPreferences.default.playbackSpeed))
-            let perBook = currentBook.flatMap { PlaybackSpeedMemory.shared.speed(forStableId: $0.stableId) }
+            let perBook = currentBook.flatMap { profileSession.playbackSpeed.speed(forStableId: $0.stableId) }
             requestedSpeed = perBook ?? global
         }
 
@@ -509,22 +549,22 @@ final class PlaybackManager {
     }
 
     func switchSpeedForCurrentBook() {
-        let prefs = LibraryDisplayPreferencesStore.shared.loadPreferences()
+        let prefs = profileSession.preferences.loadPreferences()
         let target: Float
         if currentItemIsPodcast {
-            let fallback = UserDefaults.standard.float(forKey: "podcastPlaybackSpeed")
+            let fallback = profileSession.defaults.float(forKey: "podcastPlaybackSpeed")
             target = clampedPlaybackSpeed(
                 Float(
                     fallback > 0 ? Double(fallback) : prefs.podcastPlaybackSpeed
                 )
             )
         } else {
-            let fallback = UserDefaults.standard.float(forKey: "playbackSpeed")
+            let fallback = profileSession.defaults.float(forKey: "playbackSpeed")
             let global =
                 prefs.playbackSpeed != UserPreferences.default.playbackSpeed
                 ? prefs.playbackSpeed
                 : (fallback > 0 ? Double(fallback) : Double(UserPreferences.default.playbackSpeed))
-            let perBook = currentBook.flatMap { PlaybackSpeedMemory.shared.speed(forStableId: $0.stableId) }
+            let perBook = currentBook.flatMap { profileSession.playbackSpeed.speed(forStableId: $0.stableId) }
             target = clampedPlaybackSpeed(Float(perBook ?? global))
         }
         if playbackSpeed != target {
@@ -539,26 +579,26 @@ final class PlaybackManager {
     private func applyPlaybackSpeed() {
         player?.rate = isPlaying ? playbackSpeed : 0
         if currentItemIsPodcast {
-            let existing = UserDefaults.standard.float(forKey: "podcastPlaybackSpeed")
+            let existing = profileSession.defaults.float(forKey: "podcastPlaybackSpeed")
             if existing != playbackSpeed {
-                UserDefaults.standard.set(playbackSpeed, forKey: "podcastPlaybackSpeed")
+                profileSession.defaults.set(playbackSpeed, forKey: "podcastPlaybackSpeed")
             }
-            var prefs = LibraryDisplayPreferencesStore.shared.loadPreferences()
+            var prefs = profileSession.preferences.loadPreferences()
             let target = Double(playbackSpeed)
             if prefs.podcastPlaybackSpeed != target {
                 prefs.podcastPlaybackSpeed = target
-                LibraryDisplayPreferencesStore.shared.savePreferences(prefs)
+                profileSession.preferences.savePreferences(prefs)
             }
         } else {
-            let existing = UserDefaults.standard.float(forKey: "playbackSpeed")
+            let existing = profileSession.defaults.float(forKey: "playbackSpeed")
             if existing != playbackSpeed {
-                UserDefaults.standard.set(playbackSpeed, forKey: "playbackSpeed")
+                profileSession.defaults.set(playbackSpeed, forKey: "playbackSpeed")
             }
-            var prefs = LibraryDisplayPreferencesStore.shared.loadPreferences()
+            var prefs = profileSession.preferences.loadPreferences()
             let target = Double(playbackSpeed)
             if prefs.playbackSpeed != target {
                 prefs.playbackSpeed = target
-                LibraryDisplayPreferencesStore.shared.savePreferences(prefs)
+                profileSession.preferences.savePreferences(prefs)
             }
         }
         updateNowPlayingInfo()
@@ -568,7 +608,7 @@ final class PlaybackManager {
         #if os(iOS)
         let audioSession = AVAudioSession.sharedInstance()
         do {
-            let voiceMode = LibraryDisplayPreferencesStore.shared.loadPreferences().basicVoiceMode.audioSessionMode
+            let voiceMode = profileSession.preferences.loadPreferences().basicVoiceMode.audioSessionMode
             let policy: AVAudioSession.RouteSharingPolicy = voiceMode == .voicePrompt ? .default : .longFormAudio
             let options: AVAudioSession.CategoryOptions = policy == .default ? [.allowAirPlay, .allowBluetoothA2DP] : []
             try audioSession.setCategory(.playback, mode: voiceMode, policy: policy, options: options)
@@ -614,7 +654,7 @@ final class PlaybackManager {
             albumTitle: book.author,
             duration: metadata.duration,
             elapsed: metadata.elapsed,
-            showsProgress: LibraryDisplayPreferencesStore.shared.loadPreferences().showLockScreenProgressBar,
+            showsProgress: profileSession.preferences.loadPreferences().showLockScreenProgressBar,
             rate: isPlaying ? Double(playbackSpeed) : 0,
             defaultRate: Double(playbackSpeed),
             mediaType: .audio,
@@ -765,6 +805,7 @@ final class PlaybackManager {
     }
 
     func playDirectURL(_ book: Book, url: URL) {
+        guard !isRetired else { return }
         AppLogger.player.debug("playDirectURL bookDiagnosticID=\(diagnosticBookID(book)) url=\(url.redacted)")
 
         if currentBook?.stableId == book.stableId && player != nil {
@@ -775,9 +816,9 @@ final class PlaybackManager {
         stop()
 
         var resumeTime: TimeInterval = 0
-        if let stored = BookProgressStore.shared.loadProgress(for: book) {
+        if let stored = profileSession.bookProgress.loadProgress(for: book) {
             resumeTime = stored.progress
-        } else if let appProgress = UserProgressStore.shared.progress(for: book) {
+        } else if let appProgress = profileSession.progress.progress(for: book) {
             resumeTime = appProgress.currentTime
         }
 
@@ -800,7 +841,7 @@ final class PlaybackManager {
         currentTrackIndex = 0
         currentTrackStartOffset = 0
 
-        Task {
+        runOperation { [self] in
             do {
                 try await loadAndPlayTrack(track, seekTime: resumeTime)
                 await MainActor.run {
@@ -879,6 +920,7 @@ final class PlaybackManager {
     }
 
     func playLocalBook(_ book: Book) {
+        guard !isRetired else { return }
         AppLogger.player.debug("playLocalBook bookDiagnosticID=\(diagnosticBookID(book)) source=\(book.source)")
 
         if currentBook?.stableId == book.stableId && player != nil {
@@ -891,11 +933,11 @@ final class PlaybackManager {
 
         var resumeTime: TimeInterval = 0
         var localUpdate = Date.distantPast
-        if let storedProgress = BookProgressStore.shared.loadProgress(for: book) {
+        if let storedProgress = profileSession.bookProgress.loadProgress(for: book) {
             resumeTime = storedProgress.progress
             localUpdate = Date(timeIntervalSince1970: storedProgress.lastUpdated)
             AppLogger.player.info("Using stored progress: \(resumeTime)s")
-        } else if let appProgress = UserProgressStore.shared.progress(for: book) {
+        } else if let appProgress = profileSession.progress.progress(for: book) {
             resumeTime = appProgress.currentTime
             localUpdate = appProgress.lastUpdate
             AppLogger.player.info("Using AppState progress: \(resumeTime)s")
@@ -909,7 +951,7 @@ final class PlaybackManager {
         isLoading = true
         playbackError = nil
 
-        Task {
+        runOperation { [self] in
             do {
                 let resolvedResumeTime = await resolveProviderOpenResumeTime(
                     for: book,
@@ -935,7 +977,7 @@ final class PlaybackManager {
     private func setupLocalPlayer(for book: Book, resumeTime: TimeInterval) async throws {
         AppLogger.player.debug("Setting up local player bookDiagnosticID=\(diagnosticBookID(book))")
 
-        if let localPlaybackIssue = LocalStorageManager.shared.unsupportedLocalPlaybackReason(for: book) {
+        if let localPlaybackIssue = profileSession.localStorage.unsupportedLocalPlaybackReason(for: book) {
             throw NSError(
                 domain: "PlaybackManager",
                 code: 5,
@@ -982,6 +1024,7 @@ final class PlaybackManager {
 
         if book.source == .smb {
             AppLogger.player.info("SMB book not downloaded, starting streaming server...")
+            guard profileSession.isOwner else { throw URLError(.unsupportedURL) }
             guard let streamURLs = try await SMBStreamingServer.shared.startStreamingAllFiles(book: book),
                 !streamURLs.isEmpty
             else {
@@ -1080,6 +1123,7 @@ final class PlaybackManager {
     }
 
     func playBook(_ book: Book, provider: any PlaybackSessionProvider) {
+        guard !isRetired else { return }
         AppLogger.player.debug("playBook bookDiagnosticID=\(diagnosticBookID(book))")
         AppLogger.player.debug("Provider: \(type(of: provider))")
         let currentBookID = currentBook.map(diagnosticBookID) ?? "none"
@@ -1099,12 +1143,12 @@ final class PlaybackManager {
         AppLogger.player.debug("Book diagnosticID: \(diagnosticBookID(book))")
         stop()
 
-        let localProgress = UserProgressStore.shared.progress(for: book)
+        let localProgress = profileSession.progress.progress(for: book)
         var localTime = localProgress?.currentTime ?? 0
         var localUpdate = localProgress?.lastUpdate ?? Date.distantPast
         AppLogger.player.info("AppState progress: \(localTime)s, lastUpdate: \(localUpdate)")
 
-        if let storedProgress = BookProgressStore.shared.loadProgress(for: book) {
+        if let storedProgress = profileSession.bookProgress.loadProgress(for: book) {
             AppLogger.player.debug("Stored playback position=\(storedProgress.progress)s")
             if storedProgress.progress > localTime {
                 localTime = storedProgress.progress
@@ -1120,7 +1164,7 @@ final class PlaybackManager {
             currentProvider = provider
             duration = book.duration ?? 0
             isLoading = true
-            Task { await reconcileGrimmoryAudiobook(book: book, provider: provider, localTime: localTime) }
+            runOperation { [self] in await reconcileGrimmoryAudiobook(book: book, provider: provider, localTime: localTime) }
             return
         }
 
@@ -1163,7 +1207,7 @@ final class PlaybackManager {
         isLoading = true
         playbackError = nil
 
-        Task {
+        runOperation { [self] in
             do {
                 let resolvedResumeTime = await resolveProviderOpenResumeTime(
                     for: book,
@@ -1191,6 +1235,7 @@ final class PlaybackManager {
         provider: any PlaybackSessionProvider,
         localTime: TimeInterval
     ) async {
+        guard profileSession.serverSyncEnabled else { return }
         let grimmory = provider as? BookloreProvider
 
         var resolvedBook = book
@@ -1218,11 +1263,12 @@ final class PlaybackManager {
             serverStamp = stamp
         }
 
+        guard profileSession.serverSyncEnabled else { return }
         let decision = decideGrimmoryOpen(
             localTime: localTime,
             serverTime: serverTime,
             serverStamp: serverStamp,
-            anchor: BookProgressStore.shared.loadServerStamp(for: resolvedBook),
+            anchor: profileSession.bookProgress.loadServerStamp(for: resolvedBook),
             isFinished: resolvedBook.isFinished || resolvedBook.serverReadStatus == "READ"
         )
 
@@ -1231,18 +1277,18 @@ final class PlaybackManager {
             startGrimmoryPlayback(book: resolvedBook, provider: provider, resumeTime: localTime)
 
         case .adoptServer(let resume):
-            BookProgressStore.shared.saveProgress(for: resolvedBook, progress: resume, duration: duration)
-            if let serverStamp { BookProgressStore.shared.saveServerStamp(for: resolvedBook, serverStamp) }
+            profileSession.bookProgress.saveProgress(for: resolvedBook, progress: resume, duration: duration)
+            if let serverStamp { profileSession.bookProgress.saveServerStamp(for: resolvedBook, serverStamp) }
             AppLogger.player.debug(
                 "[Booklore open] pulling server \(Int(resume))s over local \(Int(localTime))s for bookDiagnosticID=\(diagnosticBookID(resolvedBook))"
             )
             startGrimmoryPlayback(book: resolvedBook, provider: provider, resumeTime: resume)
 
         case .keepLocal(let resume, let push):
-            if let serverStamp { BookProgressStore.shared.saveServerStamp(for: resolvedBook, serverStamp) }
+            if let serverStamp { profileSession.bookProgress.saveServerStamp(for: resolvedBook, serverStamp) }
             startGrimmoryPlayback(book: resolvedBook, provider: provider, resumeTime: resume)
             if push {
-                await SyncCoordinator.shared.pushProgress(
+                await profileSession.sync.pushProgress(
                     book: resolvedBook,
                     forceImmediate: true,
                     domain: .audiobook
@@ -1275,7 +1321,7 @@ final class PlaybackManager {
         currentTime = resumeTime
         isLoading = true
         playbackError = nil
-        Task {
+        runOperation { [self] in
             do {
                 try await setupPlayer(for: book, provider: provider, resumeTime: resumeTime)
                 await MainActor.run {
@@ -1298,7 +1344,7 @@ final class PlaybackManager {
         initialResumeTime: TimeInterval,
         localUpdate: Date? = nil
     ) async -> TimeInterval {
-        guard NetworkPolicyService.shared.isConnected,
+        guard profileSession.serverSyncEnabled, NetworkPolicyService.shared.isConnected,
             let provider,
             book.mediaType == .audiobook,
             book.source != .local,
@@ -1310,6 +1356,7 @@ final class PlaybackManager {
             return initialResumeTime
         }
 
+        guard profileSession.serverSyncEnabled else { return initialResumeTime }
         var serverTime = result.positionSeconds
         if serverTime <= 0,
             let duration = book.duration,
@@ -1323,11 +1370,11 @@ final class PlaybackManager {
 
         let tolerance = AppConstants.Playback.syncConflictThreshold
         if book.source == .storyteller, let serverStamp = result.updatedAt {
-            let anchor = BookProgressStore.shared.loadServerStamp(for: book)
+            let anchor = profileSession.bookProgress.loadServerStamp(for: book)
             let serverChanged = anchor == nil || serverStamp > anchor!.addingTimeInterval(0.5)
             if serverChanged || initialResumeTime <= tolerance {
                 applyOpenResumeTime(serverTime, for: book, updatedAt: serverStamp, persist: true)
-                BookProgressStore.shared.saveServerStamp(for: book, serverStamp)
+                profileSession.bookProgress.saveServerStamp(for: book, serverStamp)
                 AppLogger.player.info(
                     "Using Storyteller server progress at open: \(Int(serverTime))s (local was \(Int(initialResumeTime))s)"
                 )
@@ -1374,13 +1421,13 @@ final class PlaybackManager {
         guard persist, time > 0 else { return }
 
         let duration = book.duration ?? self.duration
-        BookProgressStore.shared.saveProgress(
+        profileSession.bookProgress.saveProgress(
             for: book,
             progress: time,
             duration: duration,
             at: stamp
         )
-        UserProgressStore.shared.update(
+        profileSession.progress.update(
             UserMediaProgress(
                 id: UUID().uuidString,
                 libraryItemId: book.isPodcastEpisode ? (book.podcastLibraryItemId ?? book.id) : book.id,
@@ -1394,8 +1441,9 @@ final class PlaybackManager {
                 ebookProgress: nil
             )
         )
-        Task {
-            await LinkedBookProgressCoordinator.shared.recordAudiobookProgress(
+        guard !isRetired else { return }
+        runOperation { [self] in
+            await profileSession.playback.linkedProgress.recordAudiobookProgress(
                 book: book,
                 currentTime: time,
                 isFinished: duration > 0 && time >= duration - 5,
@@ -1409,7 +1457,7 @@ final class PlaybackManager {
         AppLogger.player.debug("Setting up player bookDiagnosticID=\(diagnosticBookID(book))")
         AppLogger.player.debug("Resume time: \(resumeTime)s")
         self.currentProvider = provider
-        let localPlaybackIssue = LocalStorageManager.shared.unsupportedLocalPlaybackReason(for: book)
+        let localPlaybackIssue = profileSession.localStorage.unsupportedLocalPlaybackReason(for: book)
 
         if localPlaybackIssue == nil,
             let localTracks = makeLocalTracks(for: book), !localTracks.isEmpty
@@ -1486,11 +1534,11 @@ final class PlaybackManager {
 
         let effectiveResumeTime = resolvePlaybackResumeTime(
             requestedTime: resumeTime,
-            sessionTime: session.serverCurrentTime,
+            sessionTime: profileSession.serverSyncEnabled ? session.serverCurrentTime : nil,
             duration: sessionDuration,
             tolerance: AppConstants.Playback.resumeTimeTolerance
         )
-        if resumeTime <= AppConstants.Playback.resumeTimeTolerance,
+        if profileSession.serverSyncEnabled, resumeTime <= AppConstants.Playback.resumeTimeTolerance,
             let serverTime = session.serverCurrentTime,
             effectiveResumeTime == serverTime
         {
@@ -1544,9 +1592,9 @@ final class PlaybackManager {
 
             let sessionChapters = session.chapters
 
-            ReaderArtifactsStore.shared.saveCachedChapters(bookId: book.stableId, chapters: sessionChapters)
+            profileSession.readerArtifacts.saveCachedChapters(bookId: book.stableId, chapters: sessionChapters)
             if book.id != book.stableId {
-                ReaderArtifactsStore.shared.saveCachedChapters(bookId: book.id, chapters: sessionChapters)
+                profileSession.readerArtifacts.saveCachedChapters(bookId: book.id, chapters: sessionChapters)
             }
 
             await MainActor.run {
@@ -1763,23 +1811,25 @@ final class PlaybackManager {
             queue: .main
         ) { [weak self] notification in
             let error = notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                if let error {
-                    self.logStreamingFailureContext(
-                        error,
+            MainActor.assumeIsolated {
+                self?.runOperation { @MainActor [weak self] in
+                    guard let self else { return }
+                    if let error {
+                        self.logStreamingFailureContext(
+                            error,
+                            track: track,
+                            url: url,
+                            playerItem: playerItem,
+                            phase: "AVPlayerItemFailedToPlayToEndTime"
+                        )
+                    }
+                    self.schedulePlaybackRecovery(
                         track: track,
-                        url: url,
                         playerItem: playerItem,
-                        phase: "AVPlayerItemFailedToPlayToEndTime"
+                        phase: "failed to play to end",
+                        delayNanoseconds: 250_000_000
                     )
                 }
-                self.schedulePlaybackRecovery(
-                    track: track,
-                    playerItem: playerItem,
-                    phase: "failed to play to end",
-                    delayNanoseconds: 250_000_000
-                )
             }
         }
         playbackStalledObserver = NotificationCenter.default.addObserver(
@@ -1787,15 +1837,17 @@ final class PlaybackManager {
             object: playerItem,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                AppLogger.player.warning("Playback stalled on track \(track.index); monitoring for recovery")
-                self.schedulePlaybackRecovery(
-                    track: track,
-                    playerItem: playerItem,
-                    phase: "playback stalled",
-                    delayNanoseconds: 3_000_000_000
-                )
+            MainActor.assumeIsolated {
+                self?.runOperation { @MainActor [weak self] in
+                    guard let self else { return }
+                    AppLogger.player.warning("Playback stalled on track \(track.index); monitoring for recovery")
+                    self.schedulePlaybackRecovery(
+                        track: track,
+                        playerItem: playerItem,
+                        phase: "playback stalled",
+                        delayNanoseconds: 3_000_000_000
+                    )
+                }
             }
         }
 
@@ -1914,13 +1966,15 @@ final class PlaybackManager {
         ) { [weak self] notification in
             guard let object = notification.object as AnyObject? else { return }
             let endedItem = ObjectIdentifier(object)
-            Task { @MainActor [weak self] in
-                guard let self,
-                    self.currentSessionId == endSessionId,
-                    let currentItem = self.player?.currentItem,
-                    ObjectIdentifier(currentItem) == endedItem
-                else { return }
-                self.advanceAfterPlaybackFinished(expectedSessionId: endSessionId)
+            MainActor.assumeIsolated {
+                self?.runOperation { @MainActor [weak self] in
+                    guard let self,
+                        self.currentSessionId == endSessionId,
+                        let currentItem = self.player?.currentItem,
+                        ObjectIdentifier(currentItem) == endedItem
+                    else { return }
+                    self.advanceAfterPlaybackFinished(expectedSessionId: endSessionId)
+                }
             }
         }
 
@@ -1931,6 +1985,7 @@ final class PlaybackManager {
     }
 
     private func validatePlaybackSession(_ expectedSessionId: String?) throws {
+        guard !isRetired else { throw CancellationError() }
         if let expectedSessionId, currentSessionId != expectedSessionId {
             throw CancellationError()
         }
@@ -1961,7 +2016,7 @@ final class PlaybackManager {
         let sessionId = expectedSessionId
         debugLog("⏭ [PlaybackManager] Advancing to track \(nextIndex)")
 
-        Task {
+        runOperation { [self] in
             do {
                 try await loadAndPlayTrack(nextTrack, expectedSessionId: sessionId)
                 guard self.currentSessionId == sessionId else { return }
@@ -2007,8 +2062,8 @@ final class PlaybackManager {
                     now.timeIntervalSince(self.lastStatsTickAt) >= self.currentStatsTickInterval
                 {
                     self.lastStatsTickAt = now
-                    Task {
-                        await ListeningStatsTracker.shared.recordTick(
+                    self.runOperation { [self] in
+                        await self.profileSession.listeningStats.recordTick(
                             bookId: book.stableId,
                             position: newTime,
                             playbackRate: Double(self.playbackSpeed),
@@ -2041,14 +2096,18 @@ final class PlaybackManager {
                     }
                 }
 
-                if self.isPlaying && abs(newTime - oldTime) < 2.0 {
-                    self.timeListenedSinceLastSync += abs(newTime - oldTime)
+                // ABS counts wall-clock listening, so undo the playback speed; larger jumps are seeks.
+                let speed = Double(max(self.playbackSpeed, 0.1))
+                let advanced = newTime - oldTime
+                if self.isPlaying && advanced > 0 && advanced < 2.0 * speed + 1 {
+                    self.timeListenedSinceLastSync += advanced / speed
                 }
             }
         }
     }
 
     func play() {
+        guard !isRetired else { return }
         AppLogger.player.info("play() called")
         guard let player else {
             isPlaying = false
@@ -2067,10 +2126,12 @@ final class PlaybackManager {
         startSyncTimer()
         updateNowPlayingInfo()
         lastStatsTickAt = .distantPast
+        reportPlayback(reportedPlaybackSessionId != nil && reportedPlaybackSessionId == currentSessionId ? .resumed : .started)
+        reportedPlaybackSessionId = currentSessionId
 
         if let book = currentBook {
-            Task {
-                await ListeningStatsTracker.shared.startSession(
+            runOperation { [self] in
+                await profileSession.listeningStats.startSession(
                     bookId: book.stableId,
                     position: currentTime,
                     playbackRate: Double(playbackSpeed),
@@ -2090,6 +2151,7 @@ final class PlaybackManager {
         isPlaying = false
         stopSyncTimer()
         lastStatsTickAt = .distantPast
+        reportPlayback(.paused)
         AppLogger.player.info("Paused")
 
         guard userInitiated else { return }
@@ -2099,7 +2161,7 @@ final class PlaybackManager {
         let pausedDuration = duration
         syncProgress(forceLocalWrite: true, includeLocalState: pausedOverlayPlayback)
 
-        Task { @MainActor [weak self] in
+        runOperation { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 450_000_000)
             guard let self,
                 !self.isPlaying,
@@ -2111,10 +2173,10 @@ final class PlaybackManager {
             self.persistRecentPlaybackSnapshot()
 
             if let book = pausedBook {
-                await ListeningStatsTracker.shared.endSession(
+                await profileSession.listeningStats.endSession(
                     bookId: book.stableId,
                     finalPosition: pausedTime,
-                    duration: pausedDuration
+                    duration: pausedDuration, uploadToServer: !self.isRetired
                 )
             }
         }
@@ -2161,8 +2223,8 @@ final class PlaybackManager {
         let finalDuration = duration
         #if os(iOS)
         if invalidatePendingOverlayPreparation {
-            MediaOverlayPlaybackService.shared.cancelPendingPlay()
-            AlignedReadAloudSessionCoordinator.shared.cancel()
+            profileSession.playback.mediaOverlay.cancelPendingPlay()
+            profileSession.playback.readAloud.cancel()
         }
         #endif
 
@@ -2182,7 +2244,8 @@ final class PlaybackManager {
 
         stopSyncTimer()
         lastStatsTickAt = .distantPast
-        syncProgress(forceLocalWrite: true)
+        syncProgress(forceLocalWrite: true, closingSession: true)
+        reportedPlaybackSessionId = nil
         if var b = self.bookSession.currentBook,
             b.uniqueId == stoppedBook?.uniqueId
         {
@@ -2192,12 +2255,12 @@ final class PlaybackManager {
         persistRecentPlaybackSnapshot()
 
         let bookForStats = stoppedBook
-        Task {
+        runOperation { [self] in
             if let book = bookForStats {
-                await ListeningStatsTracker.shared.endSession(
+                await profileSession.listeningStats.endSession(
                     bookId: book.stableId,
                     finalPosition: finalPosition,
-                    duration: finalDuration
+                    duration: finalDuration, uploadToServer: !self.isRetired
                 )
             }
         }
@@ -2213,7 +2276,7 @@ final class PlaybackManager {
         updateNowPlayingInfo()
         #if os(iOS)
         if wasOverlayPlayback {
-            MediaOverlayPlaybackService.shared.clearActiveResult()
+            profileSession.playback.mediaOverlay.clearActiveResult()
         }
         #endif
     }
@@ -2274,7 +2337,7 @@ final class PlaybackManager {
         if targetIndex != currentTrackIndex {
             AppLogger.player.info("Seeking requires track switch to index \(targetIndex)")
             let sessionId = currentSessionId
-            Task {
+            runOperation { [self] in
                 do {
                     try await loadAndPlayTrack(
                         targetTrack,
@@ -2366,7 +2429,7 @@ final class PlaybackManager {
 
         if target.index != currentTrackIndex {
             let sessionId = currentSessionId
-            Task {
+            runOperation { [self] in
                 do {
                     try await loadAndPlayTrack(
                         targetTrack,
@@ -2413,10 +2476,10 @@ final class PlaybackManager {
         syncConflict = nil
 
         if let grimmoryStamp {
-            BookProgressStore.shared.saveServerStamp(for: book, grimmoryStamp)
+            profileSession.bookProgress.saveServerStamp(for: book, grimmoryStamp)
             if !useServer {
-                Task {
-                    await SyncCoordinator.shared.pushProgress(
+                runOperation { [self] in
+                    await profileSession.sync.pushProgress(
                         book: book,
                         forceImmediate: true,
                         domain: .audiobook
@@ -2430,7 +2493,7 @@ final class PlaybackManager {
 
         isLoading = true
 
-        Task {
+        runOperation { [self] in
             do {
                 if let localTracks = makeLocalTracks(for: book), !localTracks.isEmpty, !NetworkPolicyService.shared.isConnected {
                     AppLogger.player.info("Offline conflict resolution: using \(localTracks.count) local file(s)")
@@ -2463,7 +2526,7 @@ final class PlaybackManager {
     }
 
     private func makeLocalTracks(for book: Book) -> [AudioTrackInfo]? {
-        let storage = LocalStorageManager.shared
+        let storage = profileSession.localStorage
         guard let localFiles = storage.localAudiobookFilesIfExists(for: book),
             !localFiles.isEmpty
         else {
@@ -2692,7 +2755,7 @@ final class PlaybackManager {
         playbackSpeed = clamped
 
         if let book = currentBook, !book.isPodcastEpisode {
-            PlaybackSpeedMemory.shared.remember(Double(clamped), forStableId: book.stableId)
+            profileSession.playbackSpeed.remember(Double(clamped), forStableId: book.stableId)
         }
     }
 
@@ -2724,13 +2787,26 @@ final class PlaybackManager {
         syncTimer?.tolerance = min(5.0, interval * 0.25)
     }
 
+    // Lets media servers show what's playing and record it in their own history.
+    private func reportPlayback(_ event: ServerPlaybackEvent) {
+        guard !isRetired, let book = currentBook, let sessionId = currentSessionId, let provider = currentProvider,
+            profileSession.serverSyncEnabled, profileSession.progress.syncProgressToServer
+        else { return }
+        let position = currentTime
+        runOperation { [self] in
+            guard profileSession.serverSyncEnabled else { return }
+            await provider.reportPlayback(event, book: book, sessionId: sessionId, position: position)
+        }
+    }
+
     private func stopSyncTimer() {
         syncTimer?.invalidate()
         syncTimer = nil
     }
 
-    private func syncProgress(forceLocalWrite: Bool = false, includeLocalState: Bool = true) {
+    private func syncProgress(forceLocalWrite: Bool = false, includeLocalState: Bool = true, closingSession: Bool = false) {
         guard let book = currentBook else { return }
+        let provider = currentProvider
         refreshCurrentTimeFromPlayer()
         let time = currentTime
         let finished = isFinishedLocal()
@@ -2745,14 +2821,14 @@ final class PlaybackManager {
             return
         }
 
-        guard UserProgressStore.shared.syncProgressToServer else {
+        guard !isRetired, profileSession.serverSyncEnabled, profileSession.progress.syncProgressToServer else {
             debugLog(" [PlaybackManager] Server sync disabled (syncProgressToServer=false)")
             return
         }
 
-        Task {
-            let listenedTime = timeListenedSinceLastSync
-            await SyncCoordinator.shared.pushAudiobookProgress(
+        let listenedTime = timeListenedSinceLastSync
+        runOperation { [self] in
+            await profileSession.sync.pushAudiobookProgress(
                 book: book,
                 position: time,
                 sessionId: sessionId,
@@ -2760,9 +2836,12 @@ final class PlaybackManager {
                 timeListened: listenedTime,
                 forceImmediate: true
             )
-            self.timeListenedSinceLastSync = 0
+            self.timeListenedSinceLastSync = max(0, self.timeListenedSinceLastSync - listenedTime)
+            if profileSession.serverSyncEnabled, closingSession, let sessionId, let provider {
+                await provider.reportPlayback(.stopped, book: book, sessionId: sessionId, position: time)
+            }
             if book.source == .storyteller {
-                BookProgressStore.shared.saveServerStamp(for: book, Date())
+                profileSession.bookProgress.saveServerStamp(for: book, Date())
             }
         }
     }
@@ -2773,7 +2852,7 @@ final class PlaybackManager {
         let persistedDuration = duration > 0 ? duration : (book.duration ?? 0)
 
         if time < 1 && !force {
-            if let existing = BookProgressStore.shared.loadProgress(for: book),
+            if let existing = profileSession.bookProgress.loadProgress(for: book),
                 existing.progress > 5
             {
                 return
@@ -2792,7 +2871,7 @@ final class PlaybackManager {
 
         #if os(iOS)
         if isOverlayPlaybackActive {
-            MediaOverlayPlaybackService.shared.syncEbookPositionFromAudio(
+            profileSession.playback.mediaOverlay.syncEbookPositionFromAudio(
                 audioTime: time,
                 book: book,
                 authoritative: force
@@ -2817,8 +2896,8 @@ final class PlaybackManager {
             ebookProgress: nil
         )
 
-        UserProgressStore.shared.update(progress)
-        BookProgressStore.shared.saveProgress(
+        profileSession.progress.update(progress)
+        profileSession.bookProgress.saveProgress(
             for: book,
             progress: time,
             duration: persistedDuration,
@@ -2828,8 +2907,9 @@ final class PlaybackManager {
         lastLocalPersistedAt = now
         lastLocalPersistedFinished = finished
 
-        Task {
-            await LinkedBookProgressCoordinator.shared.recordAudiobookProgress(
+        guard !isRetired else { return }
+        runOperation { [self] in
+            await profileSession.playback.linkedProgress.recordAudiobookProgress(
                 book: book,
                 currentTime: time,
                 isFinished: finished,
@@ -2840,7 +2920,7 @@ final class PlaybackManager {
 
         let fanBook = book
         let fanFraction = persistedDuration > 0 ? time / persistedDuration : 0
-        Task { await WorkProgressSync.shared.fanOut(from: fanBook, fraction: fanFraction, isFinished: finished, force: force) }
+        runOperation { [self] in await profileSession.playback.workProgress.fanOut(from: fanBook, fraction: fanFraction, isFinished: finished, force: force) }
     }
 
     private func refreshCurrentTimeFromPlayer() {

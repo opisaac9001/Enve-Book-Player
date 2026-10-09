@@ -5,9 +5,14 @@ import Security
 
 final class KeychainHelper: Sendable {
     static let shared = KeychainHelper()
-    private let service = "com.narratarr.app"
+    private let service: String
 
-    private init() {}
+    init(profileID: String = FamilyProfile.ownerID) {
+        precondition(FamilyProfile.validID(profileID))
+        service = profileID == FamilyProfile.ownerID
+            ? "com.narratarr.app"
+            : "com.narratarr.app.profile.\(profileID)"
+    }
 
     func set(_ data: Data, key: String) {
         let query: [String: Any] = [
@@ -81,15 +86,18 @@ final class KeychainHelper: Sendable {
     }
 
     func clearAll() {
+        do { try removeAll() }
+        catch { AppLogger.general.error("KeychainHelper could not clear credentials") }
+    }
+
+    func removeAll() throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
         ]
         let status = SecItemDelete(query as CFDictionary)
-        if status == errSecSuccess || status == errSecItemNotFound {
-            AppLogger.general.info("KeychainHelper: All items cleared for service \(service)")
-        } else {
-            AppLogger.general.info("KeychainHelper: clearAll returned status \(status)")
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw KeychainError.deleteFailed(status)
         }
     }
 

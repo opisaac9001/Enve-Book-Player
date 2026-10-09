@@ -10,10 +10,10 @@ nonisolated enum OPDSCredentialTransport {
             || NetworkHostUtils.isLocalNetworkHost(endpoint.host ?? "")
     }
 
-    static func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+    static func send(_ request: URLRequest, certificateTransport: InsecureURLSession = .delegateInstance) async throws -> (Data, HTTPURLResponse) {
         guard let url = request.url else { throw ProviderError.invalidURL }
 
-        let delegate = OPDSCredentialSessionDelegate(endpoint: url)
+        let delegate = OPDSCredentialSessionDelegate(endpoint: url, certificateTransport: certificateTransport)
         let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
 
@@ -25,9 +25,11 @@ nonisolated enum OPDSCredentialTransport {
 
 /// Accept supported local TLS challenges and keep credential bodies on the endpoint origin.
 final class OPDSCredentialSessionDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private let certificateTransport: InsecureURLSession
     private let origin: HTTPOrigin
 
-    init(endpoint: URL) {
+    init(endpoint: URL, certificateTransport: InsecureURLSession = .delegateInstance) {
+        self.certificateTransport = certificateTransport
         origin = HTTPOrigin(url: endpoint)
     }
 
@@ -40,13 +42,8 @@ final class OPDSCredentialSessionDelegate: NSObject, URLSessionTaskDelegate, @un
         let method = challenge.protectionSpace.authenticationMethod
         let host = challenge.protectionSpace.host
 
-        if method == NSURLAuthenticationMethodClientCertificate,
-            let identity = NetworkHostUtils.findMTLSIdentity(forHost: host)
-        {
-            completionHandler(
-                .useCredential,
-                URLCredential(identity: identity, certificates: nil, persistence: .forSession)
-            )
+        if method == NSURLAuthenticationMethodClientCertificate {
+            certificateTransport.urlSession(session, didReceive: challenge, completionHandler: completionHandler)
             return
         }
 

@@ -9,7 +9,6 @@ import com.enve.core.data.local.toBook
 import com.enve.core.data.model.*
 import com.enve.app.data.offline.OfflineDownloadManager
 import com.enve.app.data.offline.KeepNextOfflineService
-import com.enve.app.data.sync.SyncCoordinator
 import com.enve.core.data.provider.synthesizeChaptersFromTracks
 import com.enve.app.data.remote.dto.AudiobookInfoDto
 import com.enve.app.data.repository.GrimmoryRepository
@@ -21,17 +20,15 @@ import com.enve.app.playback.EqualizerState
 import com.enve.app.playback.PlayerChapterService
 import com.enve.app.playback.PlayerBookmarkService
 import com.enve.app.playback.PlayerProgressService
+import com.enve.app.playback.PlaybackOpenProgressResolver
+import com.enve.app.playback.PlaybackProgressConflictChoice
 import com.enve.app.playback.PlayerSessionService
 import com.enve.app.playback.PlayerSleepTimerService
 import com.enve.app.data.repository.AggregatorRepository
-import com.enve.core.data.sync.SyncSnapshot
-import com.enve.core.data.util.resolveAudiobookPositionSeconds
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import javax.inject.Inject
-
-private const val LOCAL_PROGRESS_PERSIST_INTERVAL_MS = 5_000L
 
 data class PlayerState(
     val currentBook: Book? = null,
@@ -94,7 +91,7 @@ class PlayerViewModel @Inject constructor(
     private val progressService: PlayerProgressService,
     private val sessionService: PlayerSessionService,
     private val sleepTimerService: PlayerSleepTimerService,
-    private val syncCoordinator: SyncCoordinator,
+    private val openProgress: PlaybackOpenProgressResolver,
     private val annotationRepo: com.enve.app.data.repository.AnnotationRepository,
     private val chapterStore: com.enve.app.playback.PlaybackChapterStore,
     private val absRepository: com.enve.audiobookshelf.AudiobookshelfRepository,
@@ -108,11 +105,25 @@ class PlayerViewModel @Inject constructor(
     private var sleepTimerJob: Job? = null
     private var pausedSessionCloseJob: Job? = null
     private var hydratedPlaybackMediaId: String? = null
-    private var pendingConflictResolver: CompletableDeferred<ProgressConflictChoice>? = null
-    private var lastLocalProgressPersistAtMs: Long = 0L
 
     init {
         audioManager.connect()
+
+        viewModelScope.launch {
+            openProgress.pendingConflict.collect { conflict ->
+                _state.update { state ->
+                    state.copy(pendingProgressConflict = conflict?.let {
+                        ProgressConflictPrompt(
+                            localPercentage = it.localPercentage,
+                            localUpdatedAt = it.localUpdatedAt,
+                            remotePercentage = it.remotePercentage,
+                            remoteUpdatedAt = it.remoteUpdatedAt,
+                            remoteSource = it.remoteSource,
+                        )
+                    })
+                }
+            }
+        }
 
         viewModelScope.launch {
             combine(
@@ -152,11 +163,7 @@ class PlayerViewModel @Inject constructor(
                         positionSec = updated.currentTime,
                         durationSec = updated.duration,
                     )
-                    if (updated.isPlaying) {
-                        persistLocalProgress(updated)
-                    }
                     if (previous.isPlaying && !updated.isPlaying && !playback.playbackCompleted) {
-                        persistLocalProgress(updated, force = true)
                         syncProgressImmediate(updated)
                         schedulePausedSessionClose()
                     }
@@ -487,11 +494,7 @@ class PlayerViewModel @Inject constructor(
             tracks.sumOf { it.durationMs } > 0L -> tracks.sumOf { it.durationMs } / 1000L
             else -> 0L
         }
-        val effectiveStartPositionSec = if (startPositionSec > 0L) {
-            startPositionSec
-        } else {
-            session?.serverCurrentTimeSec ?: 0L
-        }
+        val effectiveStartPositionSec = startPositionSec.coerceAtLeast(0L)
         val sessionChapters = session?.chapters?.takeIf { it.isNotEmpty() }.orEmpty()
         val initialChapters = sessionChapters.ifEmpty {
             book.chapters.ifEmpty { synthesizeChaptersFromTracks(tracks, durationSec) }
@@ -806,8 +809,6 @@ class PlayerViewModel @Inject constructor(
     fun syncProgress() {
         val state = _state.value
         val book = state.currentBook ?: return
-        persistLocalProgress(state, force = true)
-        if (heldProgressBookKey == book.uniqueKey) return
         progressService.sync(
             book = book,
             currentTimeSec = state.currentTime,
@@ -817,8 +818,6 @@ class PlayerViewModel @Inject constructor(
 
     private fun syncProgressImmediate(snapshot: PlayerState) {
         val book = snapshot.currentBook ?: return
-        persistLocalProgress(snapshot, force = true)
-        if (heldProgressBookKey == book.uniqueKey) return
         progressService.syncImmediate(
             book = book,
             currentTimeSec = snapshot.currentTime,
@@ -848,7 +847,7 @@ class PlayerViewModel @Inject constructor(
             _state.update {
                 it.copy(
                     currentBook = book,
-                    currentTime = if (positionSec > 0L) positionSec else book.currentTime,
+                    currentTime = positionSec,
                     duration = durationSec,
                     chapters = book.chapters,
                     bookmarks = emptyList(),
@@ -861,33 +860,6 @@ class PlayerViewModel @Inject constructor(
             if (_state.value.isPlaying) {
                 sessionService.start(book, _state.value.currentTime, _state.value.duration)
                 pausedSessionCloseJob?.cancel()
-            }
-        }
-    }
-
-    private fun persistLocalProgress(snapshot: PlayerState, force: Boolean = false) {
-        val book = snapshot.currentBook ?: return
-        if (snapshot.currentTime <= 0L || snapshot.duration <= 0L) return
-        val nowMs = System.currentTimeMillis()
-        if (!force && nowMs - lastLocalProgressPersistAtMs < LOCAL_PROGRESS_PERSIST_INTERVAL_MS) return
-        lastLocalProgressPersistAtMs = nowMs
-        viewModelScope.launch(Dispatchers.IO) {
-            val updatedRows = bookCacheDao.updateUnifiedProgress(
-                bookId = book.id,
-                connectionId = book.connectionId,
-                progress = snapshot.progress.coerceIn(0f, 1f),
-                currentTimeSec = snapshot.currentTime,
-                locatorJson = null,
-                nowMs = System.currentTimeMillis(),
-            )
-            if (updatedRows == 0) {
-                bookCacheDao.updateUnifiedProgressById(
-                    bookId = book.id,
-                    progress = snapshot.progress.coerceIn(0f, 1f),
-                    currentTimeSec = snapshot.currentTime,
-                    locatorJson = null,
-                    nowMs = System.currentTimeMillis(),
-                )
             }
         }
     }
@@ -939,152 +911,20 @@ class PlayerViewModel @Inject constructor(
         return updated.sortedBy { it.timestamp }
     }
 
-    private var heldProgressBookKey: String? = null
-
-    private suspend fun resolveStartTime(book: Book): Long {
-        if (heldProgressBookKey == book.uniqueKey) heldProgressBookKey = null
-        val localStartTime = localStartSeconds(book)
-        val result = try {
-            syncCoordinator.pullOnOpenResolved(
-                book = book,
-                localPercentage = book.progress,
-                localUpdatedAt = book.lastReadTime.takeIf { it > 0L },
-            )
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Exception) {
-            null
-        }
-
-        return when (result) {
-            null -> localStartTime
-            is SyncCoordinator.OpenSyncResult.Apply -> {
-                val snap = result.snapshot
-                if (!result.useRemote || snap == null) {
-                    localStartTime
-                } else {
-                    val remoteStartTime = startSecondsFrom(snap.positionMs, snap.percentage, book.duration)
-                        ?: localStartTime
-                    mirrorPulledProgress(book, snap, remoteStartTime)
-                    remoteStartTime
-                }
-            }
-            is SyncCoordinator.OpenSyncResult.Conflict -> {
-                val prompt = ProgressConflictPrompt(
-                    localPercentage = result.local.percentage,
-                    localUpdatedAt = result.local.updatedAt,
-                    remotePercentage = result.remote.percentage,
-                    remoteUpdatedAt = result.remote.updatedAt,
-                    remoteSource = result.remoteSource,
-                )
-                val choice = awaitProgressConflictChoice(prompt)
-                if (choice == ProgressConflictChoice.LATER) {
-                    heldProgressBookKey = book.uniqueKey
-                } else {
-                    syncCoordinator.recordConflictResolution(
-                        book = book,
-                        remoteSource = result.remoteSource,
-                        acceptedRemote = choice == ProgressConflictChoice.REMOTE,
-                    )
-                }
-                when (choice) {
-                    ProgressConflictChoice.LOCAL, ProgressConflictChoice.LATER -> localStartTime
-                    ProgressConflictChoice.REMOTE -> {
-                        val remoteStartTime = startSecondsFrom(result.remote.positionMs, result.remote.percentage, book.duration)
-                            ?: localStartTime
-                        mirrorPulledProgress(book, result.remote, remoteStartTime)
-                        remoteStartTime
-                    }
-                }
-            }
-        }
-    }
-
-    private suspend fun mirrorPulledProgress(
-        book: Book,
-        remote: SyncSnapshot,
-        startTimeSec: Long,
-    ) {
-        mirrorPulledProgress(
-            book = book,
-            percentage = remote.percentage,
-            locatorJson = remote.locatorJson,
-            startTimeSec = startTimeSec,
-        )
-    }
-
-    private suspend fun mirrorPulledProgress(
-        book: Book,
-        remote: SyncCoordinator.ProgressOption,
-        startTimeSec: Long,
-    ) {
-        mirrorPulledProgress(
-            book = book,
-            percentage = remote.percentage,
-            locatorJson = remote.locatorJson,
-            startTimeSec = startTimeSec,
-        )
-    }
-
-    private suspend fun mirrorPulledProgress(
-        book: Book,
-        percentage: Float,
-        locatorJson: String?,
-        startTimeSec: Long,
-    ) {
-        withContext(Dispatchers.IO) {
-            val updatedRows = bookCacheDao.updateUnifiedProgress(
-                bookId = book.id,
-                connectionId = book.connectionId,
-                progress = percentage.coerceIn(0f, 1f),
-                currentTimeSec = startTimeSec,
-                locatorJson = locatorJson,
-                nowMs = System.currentTimeMillis(),
-            )
-            if (updatedRows == 0) {
-                bookCacheDao.updateUnifiedProgressById(
-                    bookId = book.id,
-                    progress = percentage.coerceIn(0f, 1f),
-                    currentTimeSec = startTimeSec,
-                    locatorJson = locatorJson,
-                    nowMs = System.currentTimeMillis(),
-                )
-            }
-        }
-    }
-
-    private suspend fun awaitProgressConflictChoice(prompt: ProgressConflictPrompt): ProgressConflictChoice {
-        val deferred = CompletableDeferred<ProgressConflictChoice>()
-        pendingConflictResolver = deferred
-        _state.update { it.copy(pendingProgressConflict = prompt) }
-        return try {
-            deferred.await()
-        } finally {
-            pendingConflictResolver = null
-            _state.update { it.copy(pendingProgressConflict = null) }
-        }
-    }
+    private suspend fun resolveStartTime(book: Book): Long = openProgress.resolveStartSeconds(book)
 
     fun resolveProgressConflict(choice: ProgressConflictChoice) {
-        pendingConflictResolver?.complete(choice)
+        openProgress.resolveConflict(when (choice) {
+            ProgressConflictChoice.LOCAL -> PlaybackProgressConflictChoice.LOCAL
+            ProgressConflictChoice.REMOTE -> PlaybackProgressConflictChoice.REMOTE
+            ProgressConflictChoice.LATER -> PlaybackProgressConflictChoice.LATER
+        })
     }
 
     private fun localStartSeconds(book: Book): Long {
         if (book.currentTime > 0L) return book.currentTime
         if (book.duration <= 0L) return 0L
         return (book.duration * book.progress).toLong().coerceIn(0L, book.duration)
-    }
-
-    private fun startSecondsFrom(positionMs: Long?, percentage: Float, durationSec: Long): Long? {
-        positionMs?.let {
-            return resolveAudiobookPositionSeconds(
-                positionMs = it,
-                fraction = percentage,
-                durationSeconds = durationSec,
-            )
-        }
-        if (durationSec <= 0L) return null
-        return (durationSec * percentage.coerceIn(0f, 1f)).toLong().coerceIn(0L, durationSec)
     }
 
     override fun onCleared() {

@@ -5,6 +5,8 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDo
     @unchecked Sendable
 {
     var connection: ServerConnection
+    private let isolatesCredentials: Bool
+    private let certificateTransport: InsecureURLSession
 
     var capabilities: ProviderCapabilities {
         [
@@ -18,8 +20,19 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDo
     private let pageSize = 100
     private var jwtToken: String?
 
-    init(connection: ServerConnection) {
+    var statsLibraries: [Int]?
+
+    private let networkSession: URLSession
+    private let ebooks: LocalEbookImporter
+    private let rejectedContent: RejectedContentStore
+
+    init(connection: ServerConnection, profileSession: ProfileSession? = nil) {
+        networkSession = profileSession?.networkSession ?? .shared
+        ebooks = profileSession?.ebooks ?? .shared
+        rejectedContent = profileSession?.rejectedContent ?? .shared
         self.connection = connection
+        isolatesCredentials = profileSession?.isOwner == false
+        certificateTransport = profileSession?.transport ?? .delegateInstance
         self.jwtToken = connection.token
     }
 
@@ -96,7 +109,7 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDo
             throw ProviderError.serverError("Failed to fetch series (HTTP \(response.statusCode))")
         }
         let result = try JSONDecoder().decode(LossyDecodableArray<KavitaSeries>.self, from: data)
-        RejectedContentStore.shared.update(
+        rejectedContent.update(
             connection: connection,
             libraryId: String(libraryId),
             acceptedItemIdentifiers: Set(result.values.map { String($0.id) }),
@@ -129,7 +142,7 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDo
             throw ProviderError.serverError("Failed to fetch recent series (HTTP \(response.statusCode))")
         }
         let result = try JSONDecoder().decode(LossyDecodableArray<KavitaSeries>.self, from: data)
-        RejectedContentStore.shared.update(
+        rejectedContent.update(
             connection: connection,
             libraryId: String(libraryId),
             acceptedItemIdentifiers: Set(result.values.map { String($0.id) }),
@@ -217,7 +230,7 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDo
     }
 
     func downloadEbook(for book: Book, onProgress: (@Sendable (Double) -> Void)? = nil) async throws -> URL {
-        if let cached = LocalEbookImporter.shared.cachedEbook(forBookId: book.id) {
+        if let cached = ebooks.cachedEbook(forBookId: book.id) {
             onProgress?(1)
             return cached
         }
@@ -236,8 +249,8 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDo
         let downloadReq = try makeRequest(path: "/api/Download/chapter?chapterId=\(firstChapter.id)")
 
         let progressHandler: @Sendable (Double) -> Void = onProgress ?? { _ in }
-        let delegate = URLSessionDownloadProgressDelegate(progressHandler: progressHandler)
-        let config = URLSessionConfiguration.default
+        let delegate = URLSessionDownloadProgressDelegate(progressHandler: progressHandler, certificateTransport: certificateTransport)
+        let config: URLSessionConfiguration = isolatesCredentials ? .ephemeral : .default
         config.timeoutIntervalForRequest = 300
         config.timeoutIntervalForResource = 3600
         config.waitsForConnectivity = true
@@ -253,7 +266,7 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDo
         }
         let ext = detectEbookExtension(response: httpResponse) ?? "epub"
         let filename = "\(book.title.replacingOccurrences(of: "/", with: "-")).\(ext)"
-        return try LocalEbookImporter.shared.cacheRemoteEbook(
+        return try ebooks.cacheRemoteEbook(
             tempURL: tempURL,
             preferredFilename: filename,
             bookIdentifier: book.id
@@ -263,12 +276,15 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDo
     func updateEbookProgress(for book: Book, progress: Double, epubLocator: String?) async throws {
         let (volume, chapter) = try await readingChapter(for: book)
         guard let seriesId = Int(book.id), let libraryId = Int(book.libraryId) else { throw ProviderError.invalidResponse }
+        let clamped = max(0, min(1, progress))
+        // Kavita only counts a chapter as read once the last page is reported.
+        let pageNum = clamped >= Book.finishedProgressThreshold ? chapter.pages : Int((clamped * Double(chapter.pages)).rounded())
         let body: [String: Any] = [
             "seriesId": seriesId,
             "libraryId": libraryId,
             "volumeId": volume.id,
             "chapterId": chapter.id,
-            "pageNum": Int(max(0, min(1, progress)) * Double(chapter.pages)),
+            "pageNum": pageNum,
         ]
         var request = try makeRequest(path: "/api/Reader/progress")
         request.httpMethod = "POST"
@@ -386,7 +402,7 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDo
     }
 
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await networkSession.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ProviderError.invalidResponse
         }

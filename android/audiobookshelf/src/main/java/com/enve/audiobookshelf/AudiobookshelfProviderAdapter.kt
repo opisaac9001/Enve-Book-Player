@@ -1,5 +1,7 @@
 package com.enve.audiobookshelf
 
+import com.enve.core.data.util.runSuspendCatching
+
 import com.enve.core.data.model.AnnotationKind
 import com.enve.core.data.model.AnnotationMedia
 import com.enve.core.data.model.AppMediaType
@@ -112,7 +114,7 @@ class AudiobookshelfProviderAdapter @Inject constructor(
     override suspend fun pushAnnotations(
         book: Book,
         annotations: List<ReaderAnnotation>,
-    ): Result<AnnotationsPushResult> = runCatching {
+    ): Result<AnnotationsPushResult> = runSuspendCatching {
         val accepted = mutableListOf<AcceptedAnnotation>()
         val rejected = mutableListOf<RejectedAnnotation>()
         for (a in annotations) {
@@ -120,7 +122,6 @@ class AudiobookshelfProviderAdapter @Inject constructor(
                 AnnotationMedia.parse(a.media) == AnnotationMedia.AUDIOBOOK &&
                 a.audioPositionMs != null
             if (!isAudiobookBookmark) {
-
                 accepted += AcceptedAnnotation(id = a.id, serverId = null)
                 continue
             }
@@ -137,7 +138,6 @@ class AudiobookshelfProviderAdapter @Inject constructor(
                 val resp = if (a.serverId == null) {
                     repository.createBookmark(book.id, request)
                 } else {
-
                     repository.updateBookmark(book.id, request)
                 }
                 accepted += AcceptedAnnotation(
@@ -155,10 +155,9 @@ class AudiobookshelfProviderAdapter @Inject constructor(
     override suspend fun fetchAnnotations(
         book: Book,
         sinceUpdatedAt: Long?,
-    ): Result<List<ReaderAnnotation>> = runCatching {
-
-        if (book.mediaType != AppMediaType.AUDIOBOOK) return@runCatching emptyList()
-        val me = repository.getMe().getOrNull() ?: return@runCatching emptyList()
+    ): Result<List<ReaderAnnotation>> = runSuspendCatching {
+        if (book.mediaType != AppMediaType.AUDIOBOOK) return@runSuspendCatching emptyList()
+        val me = repository.getMe().getOrNull() ?: return@runSuspendCatching emptyList()
         me.bookmarks.asSequence()
             .filter { it.libraryItemId == book.id }
             .map { bm ->
@@ -186,10 +185,9 @@ class AudiobookshelfProviderAdapter @Inject constructor(
     override suspend fun deleteRemoteAnnotation(
         book: Book,
         serverId: String,
-    ): Result<Unit> = runCatching {
-
+    ): Result<Unit> = runSuspendCatching {
         val time = serverId.substringAfterLast('@', "").toDoubleOrNull()
-            ?: return@runCatching
+            ?: return@runSuspendCatching
         repository.deleteBookmark(book.id, time)
     }
 }

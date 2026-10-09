@@ -36,6 +36,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -45,9 +48,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.hilt.navigation.compose.hiltViewModel
+import com.enve.hearth.shell.profileViewModel
 import com.enve.app.ui.components.SettingsMessageCard
 import com.enve.hearth.design.hearthDisplay
+import com.enve.hearth.matching.MatchingScreen
 import com.enve.app.ui.components.ScreenBackButton
 import com.enve.app.ui.components.SettingsCard
 import com.enve.app.ui.components.SettingsHeroHeader
@@ -69,7 +73,12 @@ private val HearthRed = Color(0xFFB3453E)
 fun MetadataHubScreen(
     onBack: () -> Unit,
 ) {
-    val viewModel: MetadataHubViewModel = hiltViewModel()
+    var showMatching by remember { mutableStateOf(false) }
+    if (showMatching) {
+        MatchingScreen(onBack = { showMatching = false })
+        return
+    }
+    val viewModel: MetadataHubViewModel = profileViewModel()
     val state by viewModel.state.collectAsState()
     val colors = EnveTheme.colors
     val metrics = rememberAdaptiveMetrics()
@@ -107,7 +116,7 @@ fun MetadataHubScreen(
 
             SettingsHeroHeader(
                 title = "Metadata Hub",
-                subtitle = "Refresh local metadata and run single-book matching for audiobooks and ebooks.",
+                subtitle = "Refresh metadata and match books across your library.",
                 icon = Icons.Default.AutoAwesome,
                 modifier = Modifier.padding(horizontal = DS.Spacing.LG.scaled(metrics)),
             )
@@ -156,11 +165,14 @@ fun MetadataHubScreen(
 
             SettingsCard(modifier = Modifier.padding(horizontal = DS.Spacing.LG.scaled(metrics))) {
                 SettingsSectionHeader(title = "Matching")
-                MetadataInfoRow(
+                MetadataActionRow(
                     icon = Icons.Default.AutoAwesome,
                     tint = HearthSage,
-                    title = "Single Book Matching",
-                    subtitle = "Book detail screens can search and apply Enve metadata matches for audiobooks and ebooks.",
+                    title = "Match Books",
+                    subtitle = "Review missing metadata and link ebook and audiobook editions.",
+                    isRunning = false,
+                    buttonText = "Open",
+                    onClick = { showMatching = true },
                 )
             }
 

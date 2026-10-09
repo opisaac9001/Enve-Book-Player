@@ -1,23 +1,48 @@
 import Foundation
 import Logging
 
+enum HistorySessionUploadError: Error {
+    case noMatchingFile
+}
+
 @MainActor
 final class ProviderHistorySessionSync {
-    static let shared = ProviderHistorySessionSync(providerResolver: AppState.shared.providerConnections)
+    static var shared: ProviderHistorySessionSync { ProfileSession.owner.historySync }
 
     private static let storageKey = "enve.providerHistorySessions.uploaded.v1"
     private static let maximumReceiptCount = 5_000
     private var uploadedReceipts: Set<String>
     private let providerResolver: any LibraryProviderResolving
+    private let defaults: UserDefaults
+    private let bookQuerying: any BookQuerying
+    private let historyStore: HistorySessionStore
+    private let serverSyncEnabled: @MainActor () -> Bool
+    private let historyUploadAllowed: @MainActor (HistorySession) -> Bool
+    private let crossProviderSync: CrossProviderHistorySessionSync
 
-    private init(providerResolver: any LibraryProviderResolving) {
+    init(
+        defaults: UserDefaults,
+        bookQuerying: any BookQuerying,
+        providerResolver: any LibraryProviderResolving,
+        historyStore: HistorySessionStore,
+        crossProviderSync: CrossProviderHistorySessionSync,
+        serverSyncEnabled: @escaping @MainActor () -> Bool = { true },
+        historyUploadAllowed: @escaping @MainActor (HistorySession) -> Bool = { _ in true }
+    ) {
+        self.serverSyncEnabled = serverSyncEnabled
+        self.historyUploadAllowed = historyUploadAllowed
+        self.defaults = defaults
+        self.bookQuerying = bookQuerying
         self.providerResolver = providerResolver
-        uploadedReceipts = Set(UserDefaults.standard.stringArray(forKey: Self.storageKey) ?? [])
+        self.historyStore = historyStore
+        self.crossProviderSync = crossProviderSync
+        uploadedReceipts = Set(defaults.stringArray(forKey: Self.storageKey) ?? [])
     }
 
     func submit(_ session: HistorySession) async -> Bool {
+        guard serverSyncEnabled(), historyUploadAllowed(session) else { return false }
         guard session.source == .local, session.durationSeconds >= 10 else { return false }
-        let books = await AppState.shared.bookStore.booksByAnyIds([session.bookId])
+        let books = await bookQuerying.booksByAnyIds([session.bookId])
         guard let book = books[session.bookId] ?? books.values.first(where: { $0.stableId == session.bookId }) else {
             return false
         }
@@ -25,8 +50,9 @@ final class ProviderHistorySessionSync {
     }
 
     func retryPending(providerId: UUID) async -> Int {
-        async let listening = HistorySessionStore.shared.loadListeningSessions()
-        async let reading = HistorySessionStore.shared.loadReadingSessions()
+        guard serverSyncEnabled() else { return 0 }
+        async let listening = historyStore.loadListeningSessions()
+        async let reading = historyStore.loadReadingSessions()
         let (listeningSessions, readingSessions) = await (listening, reading)
         let sessions = (listeningSessions + readingSessions)
             .filter { $0.source == .local && $0.durationSeconds >= 10 }
@@ -34,7 +60,7 @@ final class ProviderHistorySessionSync {
         guard !sessions.isEmpty else { return 0 }
 
         let ids = Set(sessions.map(\.bookId))
-        let books = await AppState.shared.bookStore.booksByAnyIds(ids)
+        let books = await bookQuerying.booksByAnyIds(ids)
         var uploaded = 0
         for session in sessions {
             guard let book = books[session.bookId] ?? books.values.first(where: { $0.stableId == session.bookId }),
@@ -50,10 +76,13 @@ final class ProviderHistorySessionSync {
     }
 
     func pullBookOrbitSessions(provider: BookOrbitProvider, books: [Book]) async -> Int {
+        guard serverSyncEnabled() else { return 0 }
         var changed = 0
         for book in books {
+            guard serverSyncEnabled() else { return changed }
             do {
                 let records = try await provider.fetchReadingSessions(for: book)
+                guard serverSyncEnabled() else { return changed }
                 let sessions = records.map { record in
                     let endProgress = record.endProgress.map { min(max($0 / 100, 0), 1) }
                     let progressDelta = record.progressDelta.map { min(max($0 / 100, -1), 1) }
@@ -73,7 +102,7 @@ final class ProviderHistorySessionSync {
                         source: .bookOrbit
                     )
                 }
-                changed += await HistorySessionStore.shared.replaceBookOrbitSessions(
+                changed += await historyStore.replaceBookOrbitSessions(
                     sessions,
                     connectionId: provider.connection.id,
                     bookId: book.stableId,
@@ -95,8 +124,9 @@ final class ProviderHistorySessionSync {
     }
 
     private func submit(_ session: HistorySession, for book: Book) async -> Bool {
+        guard serverSyncEnabled(), historyUploadAllowed(session) else { return false }
         guard let provider = providerResolver.provider(for: book) as? any HistorySessionSyncProvider else {
-            return false
+            return await crossProviderSync.submit(session, for: book)
         }
         let receipt = "\(provider.connection.id.uuidString):\(session.id)"
         guard !uploadedReceipts.contains(receipt) else { return false }
@@ -108,6 +138,11 @@ final class ProviderHistorySessionSync {
             return true
         } catch is CancellationError {
             return false
+        } catch HistorySessionUploadError.noMatchingFile {
+            // The server can never accept this session, so stop retrying it on every sync.
+            uploadedReceipts.insert(receipt)
+            persistReceipts()
+            return false
         } catch {
             AppLogger.sync.error("[HistorySessionSync] \(provider.connection.type.rawValue) session upload failed: \(error.localizedDescription)")
             return false
@@ -118,6 +153,6 @@ final class ProviderHistorySessionSync {
         if uploadedReceipts.count > Self.maximumReceiptCount {
             uploadedReceipts = Set(uploadedReceipts.sorted().suffix(Self.maximumReceiptCount))
         }
-        UserDefaults.standard.set(Array(uploadedReceipts), forKey: Self.storageKey)
+        defaults.set(Array(uploadedReceipts), forKey: Self.storageKey)
     }
 }

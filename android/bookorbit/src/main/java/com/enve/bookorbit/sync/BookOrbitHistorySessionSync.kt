@@ -1,6 +1,9 @@
 package com.enve.bookorbit.sync
 
+import android.util.Log
 import android.content.Context
+import com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
+import com.enve.core.data.local.ProfileStorageLocations
 import com.enve.bookorbit.BookOrbitRepository
 import com.enve.core.data.history.HistorySessionRepository
 import com.enve.core.data.model.AppMediaType
@@ -14,15 +17,20 @@ import java.time.Instant
 import javax.inject.Inject
 import javax.inject.Singleton
 
+private const val TAG = "BookOrbitSessions"
+
 @Singleton
 class BookOrbitHistorySessionSync @Inject constructor(
     @ApplicationContext context: Context,
     private val repository: BookOrbitRepository,
     private val history: HistorySessionRepository,
+    private val locations: ProfileStorageLocations = ProfileStorageLocations.forProfile(context, DEFAULT_ADULT_PROFILE_ID),
+    private val serverSync: com.enve.core.data.local.ProfileServerSyncStore = com.enve.core.data.local.ProfileServerSyncStore(context, locations),
 ) {
-    private val receipts = context.getSharedPreferences(RECEIPTS_FILE, Context.MODE_PRIVATE)
+    private val receipts = context.getSharedPreferences(if (locations.profileId == DEFAULT_ADULT_PROFILE_ID) RECEIPTS_FILE else "${RECEIPTS_FILE}_profile_${locations.profileId}", Context.MODE_PRIVATE)
 
     suspend fun submit(book: Book, session: HistorySession): Boolean {
+        if (!serverSync.accepts(session.startTimeMs)) return false
         if (session.source != BookSource.BOOKORBIT ||
             session.origin != HistorySessionOrigin.LOCAL ||
             session.activeDurationSeconds < 10L
@@ -56,7 +64,8 @@ class BookOrbitHistorySessionSync @Inject constructor(
             ).getOrThrow()
         } catch (e: CancellationException) {
             throw e
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "BookOrbit session upload failed; will retry", e)
             return false
         }
         receipts.edit().putBoolean(receipt, true).apply()
@@ -75,6 +84,8 @@ class BookOrbitHistorySessionSync @Inject constructor(
     }
 
     suspend fun pull(connectionId: String, book: Book): Int {
+        val syncStartedAt = System.currentTimeMillis()
+        if (!serverSync.isEnabled) return 0
         val remote = repository.fetchReadingSessions(book).getOrThrow()
             .filter { it.durationSeconds > 0L }
             .map { record ->
@@ -93,6 +104,7 @@ class BookOrbitHistorySessionSync @Inject constructor(
                     origin = HistorySessionOrigin.BOOKORBIT,
                 )
             }
+        if (!serverSync.accepts(syncStartedAt)) return 0
         return history.replaceBookOrbitSessions(
             connectionId = connectionId,
             bookKey = book.uniqueKey,

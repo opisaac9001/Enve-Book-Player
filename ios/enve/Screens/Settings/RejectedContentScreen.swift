@@ -3,8 +3,12 @@ import SwiftUI
 struct RejectedContentScreen: View {
     @Environment(\.hearth) private var hearth
 
-    @State private var store = RejectedContentStore.shared
+    @State private var store: RejectedContentStore
     @State private var showingClearAll = false
+
+    init(profileSession: ProfileSession = .owner) {
+        _store = State(initialValue: profileSession.rejectedContent)
+    }
 
     var body: some View {
         SettingsScaffold(

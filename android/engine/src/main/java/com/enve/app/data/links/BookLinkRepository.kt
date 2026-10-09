@@ -6,8 +6,11 @@ import com.enve.core.data.local.LinkedBookPairDao
 import com.enve.core.data.local.toBook
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
+import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.BookLinkAnalyzer
 import com.enve.core.data.model.LinkedBookMatch
+import com.enve.app.data.repository.grimmory.grimmoryCompanionAudiobookId
+import com.enve.app.data.repository.grimmory.grimmoryServerBookId
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
@@ -88,12 +91,24 @@ class BookLinkRepository @Inject constructor(
 
     suspend fun linkedAudiobook(forBook: Book): Book? = withContext(Dispatchers.IO) {
         if (forBook.mediaType != AppMediaType.EBOOK) return@withContext null
+        if (forBook.source == BookSource.GRIMMORY && forBook.hasAudio) {
+            val companionKey = forBook.copy(id = grimmoryCompanionAudiobookId(forBook.id)).uniqueKey
+            bookCacheDao.getByCacheKey(companionKey)?.toBook()
+                ?.takeIf { it.mediaType == AppMediaType.AUDIOBOOK }
+                ?.let { return@withContext it }
+        }
         val pair = linkedBookPairDao.getForEbook(forBook.uniqueKey) ?: return@withContext null
         bookCacheDao.getByCacheKey(pair.audiobookKey)?.toBook()
     }
 
     suspend fun linkedEbook(forBook: Book): Book? = withContext(Dispatchers.IO) {
         if (forBook.mediaType != AppMediaType.AUDIOBOOK) return@withContext null
+        if (forBook.source == BookSource.GRIMMORY && forBook.hasEbook) {
+            val ebookKey = forBook.copy(id = forBook.id.grimmoryServerBookId()).uniqueKey
+            bookCacheDao.getByCacheKey(ebookKey)?.toBook()
+                ?.takeIf { it.mediaType == AppMediaType.EBOOK }
+                ?.let { return@withContext it }
+        }
         val pair = linkedBookPairDao.getForAudiobook(forBook.uniqueKey) ?: return@withContext null
         bookCacheDao.getByCacheKey(pair.ebookKey)?.toBook()
     }

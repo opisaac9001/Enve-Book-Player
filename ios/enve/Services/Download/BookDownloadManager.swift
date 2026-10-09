@@ -8,7 +8,14 @@ import UIKit
 #endif
 
 final class BookDownloadManager: NSObject, ObservableObject {
-    static let shared = BookDownloadManager()
+    static let shared = BookDownloadManager(
+        storage: .shared,
+        activity: ProfileDownloadActivity(),
+        clientCertificate: { host in
+            guard let identity = NetworkHostUtils.findMTLSIdentity(forHost: host) else { return nil }
+            return URLCredential(identity: identity, certificates: nil, persistence: .forSession)
+        }
+    )
 
     nonisolated static let downloadDidCompleteNotification = Notification.Name("BookDownloadManager.downloadDidComplete")
 
@@ -16,7 +23,7 @@ final class BookDownloadManager: NSObject, ObservableObject {
     @Published private(set) var totalBytesByBookId: [String: Int64] = [:]
     @Published private(set) var activeBookIds: Set<String> = [] {
         didSet {
-
+            activity.externalBookIDs = activeBookIds
             activeBookIdsMirrorLock.lock()
             activeBookIdsMirror = activeBookIds
             activeBookIdsMirrorLock.unlock()
@@ -58,7 +65,40 @@ final class BookDownloadManager: NSObject, ObservableObject {
     nonisolated(unsafe) private var multiTrackTaskIdToContext: [Int: (bookId: String, chapterIndex: Int)] = [:]
     nonisolated(unsafe) private var multiTrackTasksByBookId: [String: [URLSessionDownloadTask]] = [:]
 
-    private let storage = LocalStorageManager.shared
+    private let storage: LocalStorageManager
+    let activity: ProfileDownloadActivity
+    private let clientCertificate: @Sendable (String) async -> URLCredential?
+    private var isRetired = false
+    private var runningJobs: [String: Task<Void, Never>] = [:]
+    private var smbServices: [String: SMBService] = [:]
+    private var invalidationContinuation: CheckedContinuation<Void, Never>?
+
+    init(
+        storage: LocalStorageManager,
+        activity: ProfileDownloadActivity,
+        clientCertificate: @escaping @Sendable (String) async -> URLCredential?
+    ) {
+        self.storage = storage
+        self.activity = activity
+        self.clientCertificate = clientCertificate
+        super.init()
+    }
+
+    func retire() async {
+        guard !isRetired else { return }
+        isRetired = true
+        let jobs = Array(runningJobs.values)
+        jobs.forEach { $0.cancel() }
+        for service in Array(smbServices.values) { await service.disconnect() }
+        for bookID in activeBookIds { cancelDownload(bookId: bookID) }
+        await withCheckedContinuation { continuation in
+            invalidationContinuation = continuation
+            session.invalidateAndCancel()
+        }
+        for job in jobs { await job.value }
+        runningJobs.removeAll()
+        activeBookIds.removeAll()
+    }
 
     @MainActor
     private func shouldEmitProgressUpdate(bookId: String, progress: Double) -> Bool {
@@ -88,7 +128,9 @@ final class BookDownloadManager: NSObject, ObservableObject {
     }
 
     private lazy var session: URLSession = {
-        let config = URLSessionConfiguration.default
+        let config = NetworkPolicyService.shared.makeSessionConfiguration(
+            allowCellular: true, isolatesCredentials: storage.profileStorageLocations.profileID != FamilyProfile.ownerID
+        )
         config.waitsForConnectivity = true
         config.allowsConstrainedNetworkAccess = true
         config.allowsExpensiveNetworkAccess = true
@@ -112,6 +154,7 @@ final class BookDownloadManager: NSObject, ObservableObject {
     }
 
     func startDownload(bookId: String, request: URLRequest) async {
+        guard !isRetired, !Task.isCancelled else { return }
         if storage.isAudiobookDownloaded(bookId) {
             await MainActor.run {
                 completedBookIds.insert(bookId)
@@ -147,6 +190,7 @@ final class BookDownloadManager: NSObject, ObservableObject {
     }
 
     func startFileCopyDownload(bookId: String, sourceURL: URL, securityScopedRootURL: URL? = nil) async {
+        guard !isRetired, !Task.isCancelled else { return }
         if storage.isAudiobookDownloaded(bookId) {
             await MainActor.run {
                 completedBookIds.insert(bookId)
@@ -165,7 +209,7 @@ final class BookDownloadManager: NSObject, ObservableObject {
             completedBookIds.remove(bookId)
         }
 
-        Task.detached(priority: .utility) { [weak self] in
+        let job = Task.detached(priority: .utility) { [weak self] in
             guard let self else { return }
             do {
                 var isAccessing = false
@@ -206,6 +250,7 @@ final class BookDownloadManager: NSObject, ObservableObject {
                 let chunkSize = 1_048_576
 
                 while true {
+                    try Task.checkCancellation()
                     let data = try readHandle.read(upToCount: chunkSize) ?? Data()
                     if data.isEmpty { break }
                     try writeHandle.write(contentsOf: data)
@@ -246,9 +291,13 @@ final class BookDownloadManager: NSObject, ObservableObject {
                 }
             }
         }
+        runningJobs[bookId] = job
+        await job.value
+        runningJobs.removeValue(forKey: bookId)
     }
 
     func cancelDownload(bookId: String) {
+        runningJobs[bookId]?.cancel()
         var taskToCancel: URLSessionDownloadTask?
         var collectedMultiTrackTasks: [URLSessionDownloadTask] = []
         stateQueue.sync {
@@ -281,6 +330,14 @@ final class BookDownloadManager: NSObject, ObservableObject {
     }
 
     func startSMBDownload(bookId: String, smbBook: SMBBook, source: SMBLibrarySource, password: String) async {
+        guard !isRetired, !Task.isCancelled, runningJobs[bookId] == nil else { return }
+        let job = Task { await performSMBDownload(bookId: bookId, smbBook: smbBook, source: source, password: password) }
+        runningJobs[bookId] = job
+        await job.value
+        runningJobs.removeValue(forKey: bookId)
+    }
+
+    private func performSMBDownload(bookId: String, smbBook: SMBBook, source: SMBLibrarySource, password: String) async {
         AppLogger.network.info("[SMB Download] Starting for bookId: \(bookId)")
 
         let alreadyActive = await MainActor.run { activeBookIds.contains(bookId) }
@@ -298,8 +355,11 @@ final class BookDownloadManager: NSObject, ObservableObject {
 
         do {
             let smbService = SMBService()
+            smbServices[bookId] = smbService
+            defer { smbServices.removeValue(forKey: bookId) }
             let config = source.toServerConfiguration()
             try await smbService.connect(config: config, password: password)
+            try Task.checkCancellation()
 
             let fm = FileManager.default
             let bookDir = storage.bookAudioDirectory(for: bookId)
@@ -322,6 +382,7 @@ final class BookDownloadManager: NSObject, ObservableObject {
             var completedFiles = 0
 
             for (index, audioFile) in smbBook.audioFiles.enumerated() {
+                try Task.checkCancellation()
                 let ext = (audioFile.name as NSString).pathExtension.isEmpty ? "m4b" : (audioFile.name as NSString).pathExtension
                 let destFileName = totalFiles == 1 ? "chapter_0.\(ext)" : "chapter_\(index).\(ext)"
                 let destURL = bookDir.appendingPathComponent(destFileName)
@@ -346,6 +407,7 @@ final class BookDownloadManager: NSObject, ObservableObject {
                     }
                 }
 
+                try Task.checkCancellation()
                 guard let attrs = try? fm.attributesOfItem(atPath: destURL.path),
                     let size = attrs[.size] as? Int64, size > 1024
                 else {
@@ -391,6 +453,7 @@ final class BookDownloadManager: NSObject, ObservableObject {
     }
 
     func startMultiTrackHTTPDownload(bookId: String, requests: [(request: URLRequest, mimeType: String?)]) async {
+        guard !isRetired, !Task.isCancelled else { return }
         let alreadyActive = await MainActor.run { activeBookIds.contains(bookId) }
         if alreadyActive { return }
 
@@ -606,6 +669,13 @@ final class BookDownloadManager: NSObject, ObservableObject {
 }
 
 extension BookDownloadManager: URLSessionDownloadDelegate {
+    nonisolated func urlSession(_ session: URLSession, didBecomeInvalidWithError error: Error?) {
+        Task { @MainActor in
+            invalidationContinuation?.resume()
+            invalidationContinuation = nil
+        }
+    }
+
     nonisolated func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
         guard let identifier = session.configuration.identifier else { return }
         Task { @MainActor in
@@ -625,10 +695,9 @@ extension BookDownloadManager: URLSessionDownloadDelegate {
         let host = challenge.protectionSpace.host
 
         if method == NSURLAuthenticationMethodClientCertificate {
-            if let identity = NetworkHostUtils.findMTLSIdentity(forHost: host) {
-                completionHandler(.useCredential, URLCredential(identity: identity, certificates: nil, persistence: .forSession))
-            } else {
-                completionHandler(.performDefaultHandling, nil)
+            Task {
+                let credential = await clientCertificate(host)
+                completionHandler(credential == nil ? .performDefaultHandling : .useCredential, credential)
             }
             return
         }

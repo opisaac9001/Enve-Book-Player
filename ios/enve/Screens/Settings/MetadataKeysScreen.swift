@@ -3,10 +3,16 @@ import SwiftUI
 struct MetadataKeysScreen: View {
     @Environment(\.hearth) private var hearth
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.profileSession) private var profileSession
+    @Environment(ProfileSwitchCoordinator.self) private var profiles
 
     @State private var googleBooksKey = ""
     @State private var comicVineKey = ""
     @State private var saved = false
+
+    private var isAuthorized: Bool {
+        (try? profiles.authorizeChanges(in: profileSession ?? .owner)) != nil
+    }
 
     var body: some View {
         ScrollView {
@@ -37,12 +43,14 @@ struct MetadataKeysScreen: View {
 
                 HStack(spacing: 10) {
                     EmberButton(title: saved ? "Saved" : "Save keys", systemImage: saved ? "checkmark" : "key.fill") {
+                        guard isAuthorized else { return }
                         SettingsManager.shared.googleBooksApiKey = googleBooksKey
                         SettingsManager.shared.comicVineApiKey = comicVineKey
                         saved = true
                         PlatformHaptics.impact(.light)
                     }
                     QuietButton(title: "Clear", systemImage: "xmark") {
+                        guard isAuthorized else { return }
                         googleBooksKey = ""
                         comicVineKey = ""
                         SettingsManager.shared.googleBooksApiKey = nil

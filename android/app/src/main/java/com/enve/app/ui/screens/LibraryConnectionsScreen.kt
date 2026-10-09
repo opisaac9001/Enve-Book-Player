@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
@@ -19,12 +21,18 @@ import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.MonitorHeart
 import androidx.compose.material.icons.filled.Router
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.Watch
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -34,6 +42,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.enve.hearth.shell.profileViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.enve.app.R
 import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.ProviderConnection
@@ -48,6 +58,7 @@ import com.enve.app.ui.theme.rememberAdaptiveMetrics
 import com.enve.app.ui.theme.scaled
 import com.enve.app.ui.auth.AuthState
 import com.enve.app.ui.auth.AuthViewModel
+import com.enve.app.wear.WearProvisioningViewModel
 
 private data class ConnectionOption(
     val source: BookSource,
@@ -76,13 +87,24 @@ fun LibraryConnectionsScreen(
     onNavigateToKomgaHub: () -> Unit = {},
     onNavigateToSiloHub: () -> Unit = {},
     onNavigateToServerManagement: () -> Unit = {},
+    wearProvisioningViewModel: WearProvisioningViewModel = profileViewModel(),
 ) {
     val colors = EnveTheme.colors
     val eink = EnveTheme.eink
     val context = LocalContext.current
     val connections by authViewModel.listConnections().collectAsState(initial = emptyList())
+    val wearState by wearProvisioningViewModel.state.collectAsStateWithLifecycle()
     var showPlexHomeUserSheet by remember { mutableStateOf(false) }
+    var watchLinkConnection by remember { mutableStateOf<ProviderConnection?>(null) }
+    var watchLinkPassword by remember { mutableStateOf("") }
     val metrics = rememberAdaptiveMetrics()
+
+    LaunchedEffect(wearState.message) {
+        wearState.message?.let {
+            android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show()
+            wearProvisioningViewModel.clearMessage()
+        }
+    }
 
     LaunchedEffect(authState.browserAuthUrl) {
         val url = authState.browserAuthUrl
@@ -183,6 +205,8 @@ fun LibraryConnectionsScreen(
                     onSourceChange(connection.source)
                     onNavigateToServiceLogin(connection.source, connection.id)
                 },
+                onSendToWatch = { watchLinkConnection = it },
+                sendingConnectionId = wearState.sendingConnectionId,
                 modifier = Modifier.padding(horizontal = DS.Spacing.LG.scaled(metrics)),
             )
 
@@ -210,6 +234,138 @@ fun LibraryConnectionsScreen(
             onDismiss = { showPlexHomeUserSheet = false },
         )
     }
+
+    watchLinkConnection?.let { connection ->
+        val dismiss = {
+            watchLinkPassword = ""
+            watchLinkConnection = null
+        }
+        val link = {
+            val password = watchLinkPassword
+            if (password.isNotBlank()) {
+                dismiss()
+                wearProvisioningViewModel.send(connection, password)
+            }
+        }
+        WatchLinkDialog(
+            connection = connection,
+            password = watchLinkPassword,
+            onPasswordChange = { watchLinkPassword = it },
+            onLink = link,
+            onDismiss = dismiss,
+        )
+    }
+}
+
+@Composable
+private fun WatchLinkDialog(
+    connection: ProviderConnection,
+    password: String,
+    onPasswordChange: (String) -> Unit,
+    onLink: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val colors = EnveTheme.colors
+    val metrics = rememberAdaptiveMetrics()
+    val eink = EnveTheme.eink
+    val tint = if (eink.monochrome) colors.primaryText else colors.accent
+    val contextShape = if (eink.sharpCorners) RoundedCornerShape(4.dp) else RoundedCornerShape(DS.Radius.Medium)
+    val focusRequester = remember { FocusRequester() }
+
+    LaunchedEffect(Unit) { focusRequester.requestFocus() }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Default.Watch, contentDescription = null, tint = tint) },
+        title = { Text("Link watch", color = colors.primaryText) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(DS.Spacing.MD.scaled(metrics))) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .then(
+                            if (eink.suppressGradients) {
+                                Modifier.border(1.dp, colors.primaryText, contextShape)
+                            } else {
+                                Modifier.background(colors.secondaryBackground, contextShape)
+                            }
+                        )
+                        .padding(DS.Spacing.MD.scaled(metrics)),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(DS.Spacing.MD.scaled(metrics)),
+                ) {
+                    BookSourceIcon(
+                        source = connection.source,
+                        tint = if (eink.monochrome) colors.primaryText else connection.source.toTint(colors.accent),
+                        modifier = Modifier.size(20.dp.scaled(metrics)),
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "${connection.source.displayName} • ${connection.username}",
+                            color = colors.primaryText,
+                            fontSize = DS.FontSize.Subheadline.scaled(metrics),
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            text = connection.serverUrl,
+                            color = colors.secondaryText,
+                            fontSize = DS.FontSize.Caption.scaled(metrics),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+                Text(
+                    "Creates a separate watch session for this account. Your password is used once to sign in. It isn’t saved or sent to the watch.",
+                    color = colors.secondaryText,
+                    fontSize = DS.FontSize.Footnote.scaled(metrics),
+                )
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = onPasswordChange,
+                    label = { Text("Password") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { onLink() }),
+                    shape = contextShape,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = colors.primaryText,
+                        unfocusedTextColor = colors.primaryText,
+                        focusedBorderColor = tint,
+                        focusedLabelColor = tint,
+                        cursorColor = tint,
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(focusRequester),
+                )
+                Text(
+                    "Works with local Audiobookshelf or Grimmory passwords for now.",
+                    color = colors.tertiaryText,
+                    fontSize = DS.FontSize.Caption.scaled(metrics),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onLink, enabled = password.isNotBlank()) {
+                Text(
+                    "Link watch",
+                    color = if (password.isNotBlank()) tint else colors.tertiaryText,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = if (eink.monochrome) colors.primaryText else colors.secondaryText)
+            }
+        },
+        shape = if (eink.sharpCorners) RoundedCornerShape(4.dp) else AlertDialogDefaults.shape,
+        containerColor = colors.cardBackground,
+    )
 }
 
 @Composable
@@ -221,6 +377,8 @@ private fun ConnectedSourcesSection(
     onDelete: (String) -> Unit,
     onHealthCheck: () -> Unit,
     onEdit: (ProviderConnection) -> Unit,
+    onSendToWatch: (ProviderConnection) -> Unit,
+    sendingConnectionId: String?,
     modifier: Modifier = Modifier,
 ) {
     val colors = EnveTheme.colors
@@ -319,6 +477,8 @@ private fun ConnectedSourcesSection(
                         onToggle = { onToggle(conn.id, !conn.enabled) },
                         onDelete = { onDelete(conn.id) },
                         onEdit = { onEdit(conn) },
+                        onSendToWatch = { onSendToWatch(conn) },
+                        sendingConnectionId = sendingConnectionId,
                     )
                 }
             }
@@ -339,6 +499,8 @@ private fun ConnectedSourcesSection(
                             onToggle = { onToggle(conn.id, !conn.enabled) },
                             onDelete = { onDelete(conn.id) },
                             onEdit = { onEdit(conn) },
+                            onSendToWatch = { onSendToWatch(conn) },
+                            sendingConnectionId = sendingConnectionId,
                         )
                     }
                 }
@@ -354,6 +516,8 @@ private fun SourceRow(
     onToggle: () -> Unit,
     onDelete: () -> Unit,
     onEdit: () -> Unit,
+    onSendToWatch: () -> Unit,
+    sendingConnectionId: String?,
 ) {
     val colors = EnveTheme.colors
     val metrics = rememberAdaptiveMetrics()
@@ -414,6 +578,14 @@ private fun SourceRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+            if (WearProvisioningViewModel.supports(connection.source)) {
+                SendToWatchChip(
+                    sending = sendingConnectionId == connection.id,
+                    enabled = sendingConnectionId == null && connection.enabled && !connection.needsReauth,
+                    onClick = onSendToWatch,
+                    modifier = Modifier.padding(top = DS.Spacing.XS.scaled(metrics)),
+                )
+            }
         }
 
         when {
@@ -501,6 +673,55 @@ private fun StatusBadge(text: String, color: Color) {
             fontWeight = FontWeight.Bold,
             modifier = Modifier.padding(horizontal = DS.Spacing.SM.scaled(metrics), vertical = DS.Spacing.XXXS.scaled(metrics)),
         )
+    }
+}
+
+@Composable
+private fun SendToWatchChip(
+    sending: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = EnveTheme.colors
+    val metrics = rememberAdaptiveMetrics()
+    val eink = EnveTheme.eink
+    val shape = if (eink.sharpCorners) RoundedCornerShape(4.dp) else RoundedCornerShape(DS.Radius.Pill)
+    val tint = if (eink.monochrome) colors.primaryText else colors.accent
+    Surface(
+        onClick = onClick,
+        enabled = enabled,
+        shape = shape,
+        color = if (eink.suppressGradients) colors.background else colors.accent.copy(alpha = 0.14f),
+        border = if (eink.suppressGradients) androidx.compose.foundation.BorderStroke(1.dp, colors.primaryText) else null,
+        modifier = modifier,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = DS.Spacing.SM.scaled(metrics), vertical = DS.Spacing.XXS.scaled(metrics)),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(DS.Spacing.XS.scaled(metrics)),
+        ) {
+            if (sending) {
+                CircularProgressIndicator(
+                    color = tint,
+                    strokeWidth = 1.5.dp,
+                    modifier = Modifier.size(12.dp.scaled(metrics)),
+                )
+            } else {
+                Icon(
+                    Icons.Default.Watch,
+                    contentDescription = null,
+                    tint = tint.copy(alpha = if (enabled) 1f else 0.5f),
+                    modifier = Modifier.size(14.dp.scaled(metrics)),
+                )
+            }
+            Text(
+                text = if (sending) "Sending to watch…" else "Send to watch",
+                color = tint.copy(alpha = if (enabled || sending) 1f else 0.5f),
+                fontSize = DS.FontSize.Caption.scaled(metrics),
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
     }
 }
 

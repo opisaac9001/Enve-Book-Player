@@ -397,21 +397,48 @@ public final class HardcoverService: Sendable {
         )
     }
 
+    public func latestRead(userBookId: Int) async throws -> (id: Int, isFinished: Bool)? {
+        let query = """
+            query {
+                user_book_reads(where: {user_book_id: {_eq: \(userBookId)}}, order_by: {id: desc}, limit: 1) {
+                    id finished_at
+                }
+            }
+            """
+        let response: LatestReadResponse = try await performQuery(query)
+        return response.userBookReads?.first.map { ($0.id, $0.finishedAt != nil) }
+    }
+
+    public func finishRead(readId: Int) async throws {
+        let mutation = """
+            mutation {
+                update_user_book_read(id: \(readId), object: {finished_at: "\(HardcoverDateFormatter.todayString())"}) {
+                    error
+                    user_book_read { id progress_pages }
+                }
+            }
+            """
+        let response: UpdateReadProgressResponse = try await performQuery(mutation)
+        try response.validate()
+    }
+
     public func upsertReadingProgress(
         userBookId: Int,
         existingReadId: Int?,
         progressPages: Int,
+        progressSeconds: Int? = nil,
         isFinished: Bool,
         editionId: Int?
     ) async throws -> Int {
         let today = HardcoverDateFormatter.todayString()
         let editionParam = editionId.map { ", edition_id: \($0)" } ?? ""
         let finishedParam = isFinished ? ", finished_at: \"\(today)\"" : ""
+        let progressParam = progressSeconds.map { "progress_seconds: \($0)" } ?? "progress_pages: \(progressPages)"
 
         if let readId = existingReadId, readId > 0 {
             let mutation = """
                 mutation {
-                    update_user_book_read(id: \(readId), object: {progress_pages: \(progressPages)\(finishedParam)\(editionParam)}) {
+                    update_user_book_read(id: \(readId), object: {\(progressParam)\(finishedParam)\(editionParam)}) {
                         error
                         user_book_read { id progress_pages }
                     }
@@ -888,7 +915,16 @@ public final class HardcoverService: Sendable {
         let queryPrefix = String(query.prefix(80)).replacingOccurrences(of: "\n", with: " ")
         AppLogger.network.debug("[Hardcover] Query: \(queryPrefix)...")
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        var (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse,
+            let seconds = HardcoverError.retryDelay(
+                statusCode: http.statusCode,
+                retryAfter: http.value(forHTTPHeaderField: "Retry-After")
+            )
+        {
+            try await Task.sleep(for: .seconds(seconds))
+            (data, response) = try await URLSession.shared.data(for: request)
+        }
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw HardcoverError.networkError
@@ -897,8 +933,9 @@ public final class HardcoverService: Sendable {
         if !(200...299).contains(httpResponse.statusCode) {
             let msg = String(data: data, encoding: .utf8) ?? "Unknown"
             AppLogger.network.error("[Hardcover] HTTP \(httpResponse.statusCode)")
-            if HardcoverError.isAuthenticationFailure(statusCode: httpResponse.statusCode, message: msg) {
-                SettingsManager.shared.clearHardcoverAccess(reason: "authenticationFailed")
+            if HardcoverError.isAuthenticationFailure(statusCode: httpResponse.statusCode, message: msg),
+                SettingsManager.shared.hardcoverApiKey == apiKey {
+                SettingsManager.shared.hardcoverApiKey = nil
             }
             throw HardcoverError.httpError(statusCode: httpResponse.statusCode, message: msg)
         }
@@ -910,8 +947,9 @@ public final class HardcoverService: Sendable {
             let errorMsg = rawDict["error"] as? String
         {
             AppLogger.network.error("[Hardcover] API error: \(errorMsg)")
-            if HardcoverError.isAuthenticationFailure(statusCode: httpResponse.statusCode, message: errorMsg) {
-                SettingsManager.shared.clearHardcoverAccess(reason: "authenticationFailed")
+            if HardcoverError.isAuthenticationFailure(statusCode: httpResponse.statusCode, message: errorMsg),
+                SettingsManager.shared.hardcoverApiKey == apiKey {
+                SettingsManager.shared.hardcoverApiKey = nil
             }
             throw HardcoverError.graphQLError(message: errorMsg)
         }
@@ -924,8 +962,9 @@ public final class HardcoverService: Sendable {
                 if !suppressGraphQLErrorLogging {
                     AppLogger.network.error("[Hardcover] GraphQL error: \(msg)")
                 }
-                if HardcoverError.isAuthenticationFailure(statusCode: 200, message: msg) {
-                    SettingsManager.shared.clearHardcoverAccess(reason: "authenticationFailed")
+                if HardcoverError.isAuthenticationFailure(statusCode: 200, message: msg),
+                    SettingsManager.shared.hardcoverApiKey == apiKey {
+                    SettingsManager.shared.hardcoverApiKey = nil
                 }
                 throw HardcoverError.graphQLError(message: msg)
             }
@@ -1467,6 +1506,14 @@ private struct StatsUserBooksResponse: Decodable {
     }
 }
 
+private struct LatestReadResponse: Decodable {
+    let userBookReads: [Read]?
+    struct Read: Decodable {
+        let id: Int
+        let finishedAt: String?
+    }
+}
+
 private struct FinishedBooksResponse: Decodable {
     let userBookReads: [FinishedRead]?
     struct FinishedRead: Decodable {
@@ -1508,16 +1555,23 @@ enum HardcoverError: LocalizedError {
     case invalidProgress
     case noMatchFound
 
+    static func retryDelay(statusCode: Int, retryAfter: String?) -> Double? {
+        guard statusCode == 429,
+            let seconds = retryAfter.flatMap(Double.init),
+            (0...3).contains(seconds)
+        else { return nil }
+        return seconds
+    }
+
     static func isAuthenticationFailure(statusCode: Int, message: String) -> Bool {
+        if statusCode == 403 { return false }
         let lowercased = message.lowercased()
         return statusCode == 401
-            || statusCode == 403
             || lowercased.contains("jwtexpired")
             || lowercased.contains("invalid api key")
             || lowercased.contains("unauthorized")
-            || lowercased.contains("forbidden")
             || lowercased.contains("invalid-jwt")
-            || lowercased.contains("jwt")
+            || lowercased.contains("invalid_token")
             || lowercased.contains("unable to verify token")
             || lowercased.contains("verify token")
     }
@@ -1531,7 +1585,15 @@ enum HardcoverError: LocalizedError {
         case .networkError:
             return "Network error. Please check your connection."
         case .httpError(let code, let msg):
-            return code == 401 ? "Invalid API key." : "HTTP \(code): \(msg)"
+            if code == 401 { return "Invalid API key." }
+            if code == 429 { return "Hardcover is rate limiting requests. Try again shortly." }
+            if code == 403 {
+                if msg.contains("insufficient_scope") { return "This Hardcover key needs additional permissions for this section." }
+                if msg.contains("request_exceeds_capacity") { return "This Hardcover request exceeds the account's burst capacity." }
+                if msg.contains("unsupported_operation") { return "Hardcover does not allow this operation for API keys." }
+                return "Hardcover denied access to this section."
+            }
+            return "HTTP \(code): \(msg)"
         case .graphQLError(let msg):
             return msg.contains("JWT") ? "API key expired. Regenerate at hardcover.app/account/api" : msg
         case .decodingError(let error):

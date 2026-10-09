@@ -670,10 +670,13 @@ struct RecentlyPlayedSyncServiceTests {
         await fixture.store.upsertBooks(books)
         fixture.libraryCache.allBooks = books
         fixture.progressCache.stored[books[24].stableId] = .init(progress: 300, duration: 600, lastUpdated: 1_000)
-        fixture.progressAPI.progressByBackend["abs"] = .success((0..<25).map {
-            makeProgress(libraryItemId: "book-\($0)", currentTime: $0 == 24 ? 0 : 300,
-                         duration: 600, isFinished: $0 == 23, lastUpdateSeconds: 5_000 - Double($0))
-        })
+        let serverProgress: [ABSMediaProgress] = (0..<25).map { (index: Int) -> ABSMediaProgress in
+            let currentTime: Double = index == 24 ? 0 : 300
+            let lastUpdate: TimeInterval = 5_000 - Double(index)
+            return makeProgress(libraryItemId: "book-\(index)", currentTime: currentTime,
+                                duration: 600, isFinished: index == 23, lastUpdateSeconds: lastUpdate)
+        }
+        fixture.progressAPI.progressByBackend["abs"] = .success(serverProgress)
 
         let result = await fixture.makeService().sync(trigger: .homePullToRefresh)
 

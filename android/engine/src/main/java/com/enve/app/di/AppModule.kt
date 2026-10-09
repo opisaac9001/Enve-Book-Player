@@ -3,12 +3,11 @@ package com.enve.app.di
 import android.content.Context
 import com.enve.app.auth.MtlsManager
 import com.enve.core.data.local.ConnectionRegistry
+import com.enve.core.data.local.ProfileStorageLocations
 import coil.ImageLoader
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
-import com.enve.core.auth.CredentialVault
 import com.enve.engine.impl.BuildConfig
-import com.enve.core.data.local.PreferencesManager
 import com.enve.core.data.remote.auth.AuthInterceptor
 import com.enve.core.data.remote.ConnectionScope
 import com.enve.core.data.remote.DynamicUrlInterceptor
@@ -16,16 +15,12 @@ import com.enve.app.data.remote.GrimmoryApi
 import com.enve.core.data.remote.JsonSafetyInterceptor
 import com.enve.core.data.remote.security.PrivateNetworkTrust
 import com.enve.core.data.remote.auth.TokenRefreshAuthenticator
-import com.enve.core.di.ApplicationScope
 import com.enve.core.di.RefreshClient
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.serialization.json.Json
 import okhttp3.Cache
 import okhttp3.MediaType.Companion.toMediaType
@@ -53,26 +48,6 @@ object AppModule {
 
     @Provides
     @Singleton
-    @ApplicationScope
-    fun provideApplicationScope(): CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-
-    @Provides
-    @Singleton
-    fun provideCredentialVault(@ApplicationContext context: Context): CredentialVault {
-        return CredentialVault(context)
-    }
-
-    @Provides
-    @Singleton
-    fun providePreferencesManager(
-        @ApplicationContext context: Context,
-        vault: CredentialVault,
-    ): PreferencesManager {
-        return PreferencesManager(context, vault)
-    }
-
-    @Provides
-    @Singleton
     @RefreshClient
     fun provideRefreshOkHttpClient(): OkHttpClient {
 
@@ -92,7 +67,7 @@ object AppModule {
     @Provides
     @Singleton
     fun provideOkHttpClient(
-        @ApplicationContext context: Context,
+        locations: ProfileStorageLocations,
         authInterceptor: AuthInterceptor,
         dynamicUrlInterceptor: DynamicUrlInterceptor,
         jsonSafetyInterceptor: JsonSafetyInterceptor,
@@ -127,7 +102,7 @@ object AppModule {
             )
         }
 
-        val responseCache = Cache(java.io.File(context.cacheDir, "okhttp"), 10L * 1024 * 1024)
+        val responseCache = Cache(java.io.File(locations.cacheDirectory, "okhttp"), 10L * 1024 * 1024)
 
         val baseExecutor = java.util.concurrent.Executors.newCachedThreadPool { runnable ->
             Thread(runnable, "OkHttp Dispatcher").apply { isDaemon = false }
@@ -232,6 +207,7 @@ object AppModule {
         @ApplicationContext context: Context,
         okHttpClient: OkHttpClient,
         einkDetector: com.enve.app.eink.EinkDetector,
+        locations: ProfileStorageLocations,
     ): ImageLoader {
 
         val einkDetected = runCatching { einkDetector.detect().isEink }.getOrDefault(false)
@@ -245,19 +221,13 @@ object AppModule {
             }
             .diskCache {
                 DiskCache.Builder()
-                    .directory(context.cacheDir.resolve("image_cache"))
+                    .directory(locations.cacheDirectory.resolve("image_cache"))
                     .maxSizePercent(0.05)
                     .build()
             }
             .crossfade(if (einkDetected) 0 else 200)
             .components { add(MissingImageInterceptor()) }
             .build()
-    }
-
-    @Provides
-    @Singleton
-    fun provideReaderDatabase(@ApplicationContext context: Context): com.enve.app.data.local.ReaderDatabase {
-        return com.enve.app.data.local.ReaderDatabase.getInstance(context)
     }
 
     @Provides

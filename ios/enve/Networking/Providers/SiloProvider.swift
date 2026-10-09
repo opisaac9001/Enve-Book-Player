@@ -48,6 +48,9 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
     private var detailCache: [String: SiloItemDetail] = [:]
     private var activeEbookFileIDs: [String: Int] = [:]
     private var multipartSessions: [String: [MultipartPartSession]] = [:]
+    private var singleSessionFiles: [String: Int] = [:]
+    private var replacementSessionIDs: [String: String] = [:]
+    private var pausedSessionIDs: Set<String> = []
 
     private struct MultipartPartSession {
         let sessionID: String
@@ -55,16 +58,49 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         let duration: Double
     }
 
-    init(connection: ServerConnection) {
+    private let keychain: SharedKeychainStore
+    private let legacyKeychain: KeychainHelper
+    private let defaults: UserDefaults
+    private let rejectedContent: RejectedContentStore
+    private var streamTasks: [UUID: Task<Void, Never>] = [:]
+    private var isRetired = false
+    private let ownsSession: Bool
+    private let serverSyncEnabled: () -> Bool
+
+    func retire() async {
+        isRetired = true
+        onTokenUpdated = nil
+        let tasks = Array(streamTasks.values)
+        for task in tasks { task.cancel() }
+        if ownsSession { session.invalidateAndCancel() }
+        for task in tasks { await task.value }
+        streamTasks.removeAll()
+    }
+
+    init(connection: ServerConnection, session overrideSession: URLSession? = nil, profileSession: ProfileSession? = nil) {
         self.connection = connection
-        let config = URLSessionConfiguration.default
+        if let profileSession {
+            serverSyncEnabled = { [unowned profileSession] in profileSession.serverSyncEnabled }
+        } else {
+            serverSyncEnabled = { true }
+        }
+        ownsSession = profileSession != nil && overrideSession == nil
+        keychain = profileSession?.keychain ?? .shared
+        legacyKeychain = profileSession?.legacyKeychain ?? .shared
+        defaults = profileSession?.defaults ?? .standard
+        rejectedContent = profileSession?.rejectedContent ?? .shared
+        let config = profileSession?.isOwner == false ? URLSessionConfiguration.ephemeral : .default
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 600
         config.waitsForConnectivity = false
         if let customHeaders = connection.customHeaders {
             config.httpAdditionalHeaders = customHeaders
         }
-        if connection.mtlsEnabled {
+        if let overrideSession {
+            self.session = overrideSession
+        } else if let profileSession {
+            self.session = profileSession.transport.makeSession(configuration: config)
+        } else if connection.mtlsEnabled {
             self.session = MTLSManager.shared.makeSession(for: connection.id, configuration: config)
         } else {
             self.session = InsecureURLSession.shared
@@ -163,14 +199,22 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
 
     func fetchBookBatches(libraryId: String) -> AsyncThrowingStream<LibraryFetchBatchResult, Error> {
         AsyncThrowingStream { continuation in
-            Task {
+            guard !isRetired else {
+                continuation.finish(throwing: CancellationError())
+                return
+            }
+            let id = UUID()
+            let task = Task {
+                defer { self.streamTasks[id] = nil }
                 do {
+                    try Task.checkCancellation()
                     self.detailCache.removeAll()
                     var offset = 0
                     var loaded = 0
                     var total: Int?
 
                     while total == nil || offset < (total ?? 0) {
+                        try Task.checkCancellation()
                         let batch = try await self.fetchCatalogPage(libraryId: libraryId, offset: offset, limit: self.pageSize)
                         total = batch.total
                         let mapped = try await self.mapCatalogItems(
@@ -178,6 +222,7 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
                             libraryId: libraryId,
                             fallbackScope: "offset-\(offset)-detail"
                         )
+                        try Task.checkCancellation()
                         loaded += mapped.books.count
                         continuation.yield(LibraryFetchBatchResult(books: mapped.books, loadedSoFar: loaded, totalCount: batch.total))
                         if batch.rawItemCount < self.pageSize || batch.hasMore == false { break }
@@ -189,6 +234,8 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
                     continuation.finish(throwing: error)
                 }
             }
+            streamTasks[id] = task
+            continuation.onTermination = { @Sendable _ in task.cancel() }
         }
     }
 
@@ -330,6 +377,7 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         let profileID = try await ensureProfile()
         let detail = try await itemDetail(book.id)
         multipartSessions[book.id] = nil
+        singleSessionFiles[book.id] = nil
 
         if let parts = audiobookPartVersions(for: detail) {
             return try await startMultipartPlayback(parts: parts, profileID: profileID, book: book)
@@ -341,10 +389,12 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         let response = try await startPartSession(
             fileID: version.fileID,
             profileID: profileID,
-            disableProgressPersistence: false
+            disableProgressPersistence: !serverSyncEnabled()
         )
-        let duration = response.durationSeconds ?? Double(version.duration ?? detail.runtime ?? 0)
-        let streamURL = try absoluteURL(response.streamURL).absoluteString
+        let (sessionID, plan) = try response.audioPlan()
+        singleSessionFiles[book.id] = version.fileID
+        let duration = plan.source.durationSeconds ?? Double(version.duration ?? detail.runtime ?? 0)
+        let streamURL = try absoluteURL(plan.stream.url).absoluteString
         let track = AudioTrackInfo(
             index: 0,
             startOffset: 0,
@@ -355,10 +405,10 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         )
         let chapters = chapters(from: version, fallbackDuration: duration, isAudiobook: true) ?? []
         return PlaybackSessionInfo(
-            sessionId: response.sessionID,
+            sessionId: sessionID,
             audioTracks: [track],
             chapters: chapters,
-            serverCurrentTime: response.position
+            serverCurrentTime: serverSyncEnabled() ? plan.timeline.sourceStartSeconds : nil
         )
     }
 
@@ -378,8 +428,9 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
                 profileID: profileID,
                 disableProgressPersistence: true
             )
-            let partDuration = response.durationSeconds ?? Double(part.duration ?? 0)
-            let streamURL = try absoluteURL(response.streamURL).absoluteString
+            let (sessionID, plan) = try response.audioPlan()
+            let partDuration = plan.source.durationSeconds ?? Double(part.duration ?? 0)
+            let streamURL = try absoluteURL(plan.stream.url).absoluteString
             tracks.append(
                 AudioTrackInfo(
                     index: index,
@@ -392,12 +443,12 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
             )
             sessions.append(
                 MultipartPartSession(
-                    sessionID: response.sessionID,
+                    sessionID: sessionID,
                     startOffset: offset,
                     duration: partDuration
                 )
             )
-            if index == 0 { serverPosition = response.position }
+            if index == 0 { serverPosition = 0 }
             offset += partDuration
         }
 
@@ -413,20 +464,41 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
     private func startPartSession(
         fileID: Int,
         profileID: String,
-        disableProgressPersistence: Bool
+        disableProgressPersistence: Bool,
+        startPosition: Double? = nil
     ) async throws -> SiloPlaybackStartResponse {
         var request = try makeRequest(path: "/playback/start", method: "POST")
+        let audioCodecs = ["aac", "mp3"]
+        let containers = ["mp3", "m4a", "m4b", "aac", "mp4"]
         var body: [String: Any] = [
+            "protocol_version": 3,
+            "client_features": [],
             "file_id": fileID,
             "profile_id": profileID,
-            "play_method": "direct",
-            "codecs_audio": ["aac", "mp3", "m4a", "m4b", "alac", "flac", "opus", "vorbis"],
-            "containers": ["mp3", "m4a", "m4b", "aac", "flac", "ogg", "opus", "wav"],
-            "max_resolution": "original",
-            "hdr": true,
+            "playback_attempt_id": UUID().uuidString,
+            "quality_preference": "original",
+            "subtitle_fidelity_preference": "compatible",
+            "progress_persistence": disableProgressPersistence ? "client" : "server",
+            "client_capabilities": [
+                "video_evidence": "declared", "audio_evidence": "declared",
+                "codecs_audio": audioCodecs, "containers": containers, "hdr": false,
+            ],
+            "client_playback_context": [
+                "protocol_version": 3, "form_factor": "phone",
+                "device": ["platform": "ios"],
+                "deliveries": ["original_http": [
+                    "enabled": true, "supported_on_device": true,
+                    "containers": containers, "audio_decode_codecs": audioCodecs,
+                    "audio_passthrough_codecs": [], "subtitles": [
+                        "embedded_text": false, "sidecar_text": false, "ass_styling": false,
+                        "embedded_bitmap": false, "sidecar_bitmap": false, "font_attachments": false,
+                    ], "features": [], "auth_header_refresh": false,
+                    "validated_claims": [], "transformations": [],
+                ]],
+            ],
         ]
-        if disableProgressPersistence {
-            body["disable_progress_persistence"] = true
+        if disableProgressPersistence || startPosition != nil {
+            body["start_position"] = startPosition ?? 0
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         return try await send(request, as: SiloPlaybackStartResponse.self)
@@ -439,21 +511,49 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         isFinished: Bool,
         timeListened: TimeInterval
     ) async throws {
+        guard serverSyncEnabled() else { return }
         if let sessionId, !sessionId.isEmpty {
             if let parts = multipartSessions[book.id], parts.contains(where: { $0.sessionID == sessionId }) {
 
-                await heartbeatMultipartSession(parts: parts, currentTime: currentTime, isFinished: isFinished)
+                await heartbeatMultipartSession(parts: parts, currentTime: currentTime, isPaused: pausedSessionIDs.contains(sessionId))
             } else {
+                let activeSessionID = replacementSessionIDs[sessionId] ?? sessionId
                 do {
-                    var request = try makeRequest(path: "/playback/\(sessionId)/progress", method: "POST")
+                    var request = try makeRequest(path: "/playback/\(activeSessionID)/progress", method: "POST")
                     request.httpBody = try JSONSerialization.data(withJSONObject: [
                         "position": max(0, currentTime),
-                        "is_paused": isFinished,
+                        "is_paused": pausedSessionIDs.contains(sessionId) || pausedSessionIDs.contains(activeSessionID),
                     ])
                     try await sendEmpty(request)
                     return
                 } catch is CancellationError {
                     throw CancellationError()
+                } catch ProviderError.serverError(let message) where message == "Silo returned HTTP 404" {
+                    if let fileID = singleSessionFiles[book.id] {
+                        do {
+                            let profileID = try await ensureProfile()
+                            let response = try await startPartSession(
+                                fileID: fileID,
+                                profileID: profileID,
+                                disableProgressPersistence: !serverSyncEnabled(),
+                                startPosition: max(0, currentTime)
+                            )
+                            let (newSessionID, _) = try response.audioPlan()
+                            replacementSessionIDs[sessionId] = newSessionID
+                            replacementSessionIDs[activeSessionID] = newSessionID
+                            var request = try makeRequest(path: "/playback/\(newSessionID)/progress", method: "POST")
+                            request.httpBody = try JSONSerialization.data(withJSONObject: [
+                                "position": max(0, currentTime),
+                                "is_paused": pausedSessionIDs.contains(sessionId) || pausedSessionIDs.contains(activeSessionID),
+                            ])
+                            try await sendEmpty(request)
+                            return
+                        } catch is CancellationError {
+                            throw CancellationError()
+                        } catch {
+                            // Keep the position through item-level sync when session recovery fails.
+                        }
+                    }
                 } catch {
 
                 }
@@ -762,7 +862,7 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         if let token = connection.token, !token.isEmpty {
             return
         }
-        if let storedToken = SharedKeychainStore.shared.token(forConnectionId: connection.id.uuidString), !storedToken.isEmpty {
+        if let storedToken = keychain.token(forConnectionId: connection.id.uuidString), !storedToken.isEmpty {
             connection.token = storedToken
             return
         }
@@ -770,13 +870,13 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
             return
         }
         if connection.password?.isEmpty ?? true,
-            let storedPassword = SharedKeychainStore.shared.password(forConnectionId: connection.id.uuidString),
+            let storedPassword = keychain.password(forConnectionId: connection.id.uuidString),
             !storedPassword.isEmpty
         {
             connection.password = storedPassword
         }
         if connection.password?.isEmpty ?? true,
-            let storedPassword = KeychainHelper.shared.get(legacyPasswordKey),
+            let storedPassword = legacyKeychain.get(legacyPasswordKey),
             !storedPassword.isEmpty
         {
             connection.password = storedPassword
@@ -821,13 +921,13 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
 
     private func reauthenticateWithStoredCredentials() async -> Bool {
         if connection.password?.isEmpty ?? true,
-            let storedPassword = SharedKeychainStore.shared.password(forConnectionId: connection.id.uuidString),
+            let storedPassword = keychain.password(forConnectionId: connection.id.uuidString),
             !storedPassword.isEmpty
         {
             connection.password = storedPassword
         }
         if connection.password?.isEmpty ?? true,
-            let storedPassword = KeychainHelper.shared.get(legacyPasswordKey),
+            let storedPassword = legacyKeychain.get(legacyPasswordKey),
             !storedPassword.isEmpty
         {
             connection.password = storedPassword
@@ -871,14 +971,14 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
     private var profileNameKey: String { "silo_profile_name_\(connection.id.uuidString)" }
     private var profileUserIDKey: String { "silo_profile_user_id_\(connection.id.uuidString)" }
 
-    private func storedRefreshToken() -> String? { KeychainHelper.shared.get(refreshTokenKey) }
-    private func storeRefreshToken(_ token: String) { KeychainHelper.shared.set(token, key: refreshTokenKey) }
-    private func storedProfileID() -> String? { UserDefaults.standard.string(forKey: profileIDKey) }
-    private func storedProfileUserID() -> String? { UserDefaults.standard.string(forKey: profileUserIDKey) }
+    private func storedRefreshToken() -> String? { legacyKeychain.get(refreshTokenKey) }
+    private func storeRefreshToken(_ token: String) { legacyKeychain.set(token, key: refreshTokenKey) }
+    private func storedProfileID() -> String? { defaults.string(forKey: profileIDKey) }
+    private func storedProfileUserID() -> String? { defaults.string(forKey: profileUserIDKey) }
     private func storeProfile(_ profile: SiloProfile) {
-        UserDefaults.standard.set(profile.id, forKey: profileIDKey)
-        UserDefaults.standard.set(profile.name, forKey: profileNameKey)
-        UserDefaults.standard.set(connection.userId, forKey: profileUserIDKey)
+        defaults.set(profile.id, forKey: profileIDKey)
+        defaults.set(profile.name, forKey: profileNameKey)
+        defaults.set(connection.userId, forKey: profileUserIDKey)
     }
 
     private func notifyTokenUpdated() {
@@ -911,6 +1011,8 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         profileRequired: Bool = true,
         includeAuth: Bool = true
     ) throws -> URLRequest {
+        guard !isRetired else { throw CancellationError() }
+        try Task.checkCancellation()
         var request = URLRequest(url: try apiURL(path: path, query: query))
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -933,7 +1035,11 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
     }
 
     func send<T: Decodable>(_ request: URLRequest, as type: T.Type, retryingAuth: Bool = true) async throws -> T {
+        guard !isRetired else { throw CancellationError() }
+        try Task.checkCancellation()
         let (data, response) = try await session.data(for: request)
+        try Task.checkCancellation()
+        guard !isRetired else { throw CancellationError() }
         guard let http = response as? HTTPURLResponse else { throw ProviderError.invalidResponse }
         if http.statusCode == 401, retryingAuth, await recoverAuthentication() {
             var retried = request
@@ -953,7 +1059,11 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
     }
 
     private func sendEmpty(_ request: URLRequest, retryingAuth: Bool = true) async throws {
+        guard !isRetired else { throw CancellationError() }
+        try Task.checkCancellation()
         let (_, response) = try await session.data(for: request)
+        try Task.checkCancellation()
+        guard !isRetired else { throw CancellationError() }
         guard let http = response as? HTTPURLResponse else { throw ProviderError.invalidResponse }
         if http.statusCode == 401, retryingAuth, await recoverAuthentication() {
             var retried = request
@@ -967,7 +1077,11 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
     }
 
     private func sendData(_ request: URLRequest, retryingAuth: Bool = true) async throws -> Data {
+        guard !isRetired else { throw CancellationError() }
+        try Task.checkCancellation()
         let (data, response) = try await session.data(for: request)
+        try Task.checkCancellation()
+        guard !isRetired else { throw CancellationError() }
         guard let http = response as? HTTPURLResponse else { throw ProviderError.invalidResponse }
         if http.statusCode == 401, retryingAuth, await recoverAuthentication() {
             var retried = request
@@ -989,7 +1103,11 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
             path: "/progress",
             query: [URLQueryItem(name: "since", value: cursor)]
         )
+        guard !isRetired else { throw CancellationError() }
+        try Task.checkCancellation()
         let (data, response) = try await session.data(for: request)
+        try Task.checkCancellation()
+        guard !isRetired else { throw CancellationError() }
         guard let http = response as? HTTPURLResponse else {
             throw ProviderError.invalidResponse
         }
@@ -1077,7 +1195,7 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
             ),
             as: SiloCatalogResponse.self
         )
-        RejectedContentStore.shared.record(
+        rejectedContent.record(
             providerId: connection.id,
             providerType: connection.type,
             sourceName: connection.name,
@@ -1318,7 +1436,11 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         retryingAuth: Bool = true
     ) async throws -> SiloEbookProgress? {
         let request = try makeRequest(path: "/ebooks/\(contentID)/progress")
+        guard !isRetired else { throw CancellationError() }
+        try Task.checkCancellation()
         let (data, response) = try await session.data(for: request)
+        try Task.checkCancellation()
+        guard !isRetired else { throw CancellationError() }
         guard let http = response as? HTTPURLResponse else {
             throw ProviderError.invalidResponse
         }
@@ -1377,7 +1499,7 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
             }
         }
 
-        RejectedContentStore.shared.update(
+        rejectedContent.update(
             connection: connection,
             libraryId: libraryId,
             acceptedItemIdentifiers: acceptedItemIdentifiers,
@@ -1548,10 +1670,43 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         return result
     }
 
+    func reportPlayback(_ event: ServerPlaybackEvent, book: Book, sessionId: String, position: TimeInterval) async {
+        guard serverSyncEnabled() else { return }
+        guard !sessionId.hasPrefix("local-") else { return }
+        let parts = multipartSessions[book.id]
+        let activeSessionID = replacementSessionIDs[sessionId] ?? sessionId
+        let sessionIDs = parts?.map(\.sessionID) ?? [activeSessionID]
+        switch event {
+        case .started, .resumed, .paused:
+            if event == .paused { pausedSessionIDs.formUnion(sessionIDs) } else { pausedSessionIDs.subtract(sessionIDs) }
+            if let parts {
+                await heartbeatMultipartSession(parts: parts, currentTime: position, isPaused: event == .paused)
+            } else if var request = try? makeRequest(path: "/playback/\(activeSessionID)/progress", method: "POST") {
+                request.httpBody = try? JSONSerialization.data(withJSONObject: [
+                    "position": max(0, position),
+                    "is_paused": event == .paused,
+                ])
+                try? await sendEmpty(request)
+            }
+        case .stopped:
+            // Silo writes watch history only when the session is deleted, using its last reported position.
+            pausedSessionIDs.subtract(sessionIDs)
+            multipartSessions[book.id] = nil
+            singleSessionFiles[book.id] = nil
+            replacementSessionIDs[sessionId] = nil
+            replacementSessionIDs[activeSessionID] = nil
+            for id in sessionIDs {
+                if let request = try? makeRequest(path: "/playback/\(id)", method: "DELETE") {
+                    try? await sendEmpty(request)
+                }
+            }
+        }
+    }
+
     private func heartbeatMultipartSession(
         parts: [MultipartPartSession],
         currentTime: TimeInterval,
-        isFinished: Bool
+        isPaused: Bool
     ) async {
         guard let active = parts.last(where: { currentTime >= $0.startOffset }) ?? parts.first,
             var request = try? makeRequest(path: "/playback/\(active.sessionID)/progress", method: "POST")
@@ -1561,7 +1716,7 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         let localPosition = min(max(currentTime - active.startOffset, 0), active.duration)
         request.httpBody = try? JSONSerialization.data(withJSONObject: [
             "position": localPosition,
-            "is_paused": isFinished,
+            "is_paused": isPaused,
         ])
         try? await sendEmpty(request)
     }
@@ -1657,7 +1812,11 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
     }
 
     private func authenticatedStreamURL(_ url: URL) -> URL {
-        guard url.path.contains("/stream/"),
+        guard let serverURL = URL(string: baseURLString),
+            url.scheme == serverURL.scheme,
+            url.host == serverURL.host,
+            url.port == serverURL.port,
+            url.path.contains("/stream/"),
             let token = connection.token,
             !token.isEmpty,
             var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
@@ -2154,17 +2313,82 @@ private struct SiloChapter: Decodable {
 }
 
 private struct SiloPlaybackStartResponse: Decodable {
-    let sessionID: String
-    let streamURL: String
-    let position: Double?
+    let protocolVersion: Int
+    let outcome: String
+    let sessionID: String?
+    let playbackPlan: SiloPlaybackPlan?
+    let terminal: SiloPlaybackTerminal?
+
+    func audioPlan() throws -> (String, SiloPlaybackPlan) {
+        guard protocolVersion == 3 else { throw ProviderError.serverError("Silo returned an unsupported playback protocol") }
+        guard outcome == "playable" else {
+            throw ProviderError.serverError("Silo cannot play this audio: \(terminal?.reason ?? "no compatible route")")
+        }
+        guard let sessionID, !sessionID.isEmpty, let playbackPlan else {
+            throw ProviderError.serverError("Silo did not return a playback session")
+        }
+        guard playbackPlan.protocolVersion == 3,
+            playbackPlan.delivery == "original_http",
+            playbackPlan.stream.protocolName == "http_progressive",
+            !playbackPlan.stream.url.isEmpty,
+            playbackPlan.timeline.timelineOffsetSeconds == 0
+        else {
+            throw ProviderError.serverError("Silo returned an unsupported audio playback route")
+        }
+        return (sessionID, playbackPlan)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case outcome, terminal
+        case protocolVersion = "protocol_version"
+        case sessionID = "session_id"
+        case playbackPlan = "playback_plan"
+    }
+}
+
+private struct SiloPlaybackPlan: Decodable {
+    let protocolVersion: Int
+    let delivery: String
+    let stream: SiloPlaybackStream
+    let timeline: SiloPlaybackTimeline
+    let source: SiloPlaybackSource
+
+    enum CodingKeys: String, CodingKey {
+        case delivery, stream, timeline, source
+        case protocolVersion = "protocol_version"
+    }
+}
+
+private struct SiloPlaybackStream: Decodable {
+    let url: String
+    let protocolName: String
+
+    enum CodingKeys: String, CodingKey {
+        case url
+        case protocolName = "protocol"
+    }
+}
+
+private struct SiloPlaybackTimeline: Decodable {
+    let sourceStartSeconds: Double
+    let timelineOffsetSeconds: Double
+
+    enum CodingKeys: String, CodingKey {
+        case sourceStartSeconds = "source_start_seconds"
+        case timelineOffsetSeconds = "timeline_offset_seconds"
+    }
+}
+
+private struct SiloPlaybackSource: Decodable {
     let durationSeconds: Double?
 
     enum CodingKeys: String, CodingKey {
-        case position
-        case sessionID = "session_id"
-        case streamURL = "stream_url"
         case durationSeconds = "duration_seconds"
     }
+}
+
+private struct SiloPlaybackTerminal: Decodable {
+    let reason: String
 }
 
 private struct SiloEbookProgress: Decodable {

@@ -241,11 +241,17 @@ final class StorytellerPositionSyncService {
 
     private let ledger: StorytellerPositionLedger
     private let providerResolver: any LibraryProviderResolving
+    private let libraryCache: LibraryBookCache
+    private let serverSyncEnabled: @MainActor () -> Bool
 
     init(
         ledger: StorytellerPositionLedger = StorytellerPositionLedger(),
-        providerResolver: any LibraryProviderResolving
+        providerResolver: any LibraryProviderResolving,
+        libraryCache: LibraryBookCache = AppState.shared.libraryCache,
+        serverSyncEnabled: @escaping @MainActor () -> Bool = { true }
     ) {
+        self.serverSyncEnabled = serverSyncEnabled
+        self.libraryCache = libraryCache
         self.ledger = ledger
         self.providerResolver = providerResolver
     }
@@ -254,6 +260,9 @@ final class StorytellerPositionSyncService {
         for book: Book,
         through provider: StorytellerProvider
     ) async throws -> StorytellerSnapshotReconciliation {
+        guard serverSyncEnabled() else {
+            return StorytellerSnapshotReconciliation(authoritative: nil, pushedPendingPosition: false)
+        }
         guard isValid(book: book, provider: provider) else {
             throw ProviderError.invalidResponse
         }
@@ -295,11 +304,13 @@ final class StorytellerPositionSyncService {
         for book: Book,
         through provider: StorytellerProvider
     ) async -> StorytellerAuthoritativePosition? {
+        guard serverSyncEnabled() else { return nil }
         guard isValid(book: book, provider: provider) else { return nil }
         let transportBook = transportBook(for: book)
         let key = StorytellerPositionKey(book: transportBook)
 
         let server = try? await provider.fetchPipelinePosition(for: transportBook)
+        guard serverSyncEnabled() else { return nil }
         if let server {
             ledger.mergeServer(server)
         }
@@ -329,7 +340,7 @@ final class StorytellerPositionSyncService {
             }
         }
 
-        return ledger.authoritative(for: key)
+        return serverSyncEnabled() ? ledger.authoritative(for: key) : nil
     }
 
     @discardableResult
@@ -339,6 +350,7 @@ final class StorytellerPositionSyncService {
         observedAt: Date,
         through provider: StorytellerProvider? = nil
     ) async throws -> StorytellerPositionSendResult {
+        guard serverSyncEnabled() else { return .accepted }
         let provider = provider ?? (providerResolver.provider(for: book) as? StorytellerProvider)
         guard let provider,
             isValid(book: book, provider: provider),
@@ -366,6 +378,7 @@ final class StorytellerPositionSyncService {
         observedAt: Date,
         through provider: StorytellerProvider? = nil
     ) async throws -> StorytellerPositionSendResult {
+        guard serverSyncEnabled() else { return .accepted }
         let provider = provider ?? (providerResolver.provider(for: book) as? StorytellerProvider)
         guard let provider, isValid(book: book, provider: provider) else {
             throw ProviderError.invalidResponse
@@ -434,11 +447,13 @@ final class StorytellerPositionSyncService {
         transportBook: Book,
         through provider: StorytellerProvider
     ) async throws -> StorytellerPositionSendResult {
+        guard serverSyncEnabled() else { return .accepted }
         let result = try await provider.sendPipelinePosition(position, for: transportBook)
         switch result {
         case .accepted:
             ledger.markAccepted(position)
         case .conflict(let server):
+            guard serverSyncEnabled() else { return .accepted }
             ledger.mergeServer(server)
             await notifyServerPosition(server, for: displayBook, through: provider)
         }
@@ -450,6 +465,7 @@ final class StorytellerPositionSyncService {
         for book: Book,
         through provider: StorytellerProvider
     ) async {
+        guard serverSyncEnabled() else { return }
         let isAudiobook = book.mediaType == .audiobook && !book.isStorytellerReadAloud
         var userInfo: [String: Any] = [
             "bookId": book.id,
@@ -467,6 +483,7 @@ final class StorytellerPositionSyncService {
         {
             userInfo["positionSeconds"] = progress.positionSeconds
         }
+        guard serverSyncEnabled() else { return }
         NotificationCenter.default.post(
             name: .serverProgressUpdated,
             object: nil,
@@ -480,7 +497,7 @@ final class StorytellerPositionSyncService {
 
     private func transportBook(for book: Book) -> Book {
         guard let sourceStableId = book.readAloudSourceStableId,
-            let source = AppState.shared.bookInMemory(stableId: sourceStableId),
+            let source = libraryCache.bookInMemory(stableId: sourceStableId),
             source.readAloudSourceStableId == nil
         else {
             return book

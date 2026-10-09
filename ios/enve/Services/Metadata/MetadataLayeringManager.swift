@@ -6,7 +6,16 @@ import Logging
 final class MetadataLayeringManager {
     static let shared = MetadataLayeringManager()
 
-    private let playbackStateManager = PlaybackStateManager.shared
+    private let playbackStateManager: PlaybackStateManager
+    private let localStorage: LocalStorageManager
+    private let providerConnections: any ProviderConnectionAccessing
+
+    init(playbackStateManager: PlaybackStateManager = .shared, localStorage: LocalStorageManager = .shared,
+        providerConnections: any ProviderConnectionAccessing = AppState.shared.providerConnections) {
+        self.playbackStateManager = playbackStateManager
+        self.localStorage = localStorage
+        self.providerConnections = providerConnections
+    }
 
     func getChapters(for book: Book) async throws -> [Chapter]? {
         return book.chapters
@@ -32,7 +41,7 @@ final class MetadataLayeringManager {
             return chapters.isEmpty ? nil : chapters
         }
 
-        if let localFiles = LocalStorageManager.shared.localAudiobookFilesIfExists(for: book) {
+        if let localFiles = localStorage.localAudiobookFilesIfExists(for: book) {
             for fileURL in localFiles {
                 if let chapters = await extractEmbeddedChapters(from: fileURL), !chapters.isEmpty {
                     AppLogger.network.debug(
@@ -43,7 +52,7 @@ final class MetadataLayeringManager {
             }
         }
 
-        let provider = AppState.shared.providerConnections.capability(PlaybackSessionProvider.self, for: book)
+        let provider = providerConnections.capability(PlaybackSessionProvider.self, for: book)
         var audioURL: URL?
         if let path = book.filePath, FileManager.default.fileExists(atPath: path) {
             audioURL = URL(fileURLWithPath: path)

@@ -3,9 +3,17 @@ import SwiftUI
 struct HearthScreen: View {
 
     var isActive: Bool = true
+    let profileSession: ProfileSession
+
+    init(isActive: Bool = true, profileSession: ProfileSession) {
+        self.isActive = isActive
+        self.profileSession = profileSession
+        _sectionOrder = State(initialValue: profileSession.preferences.loadPreferences().normalizedHomeSectionOrder)
+    }
 
     @Environment(EnveEngine.self) private var engine
     @Environment(AppState.self) private var appState
+    @Environment(ProfileSwitchCoordinator.self) private var profiles
     @Environment(\.hearth) private var hearth
     @Environment(\.mantelInset) private var mantelInset
 
@@ -17,11 +25,9 @@ struct HearthScreen: View {
     @State private var loaded = false
     @State private var seeAll: HearthSeeAll?
     @State private var lastOpenedBook: Book?
-    @State private var sectionOrder = LibraryDisplayPreferencesStore.shared
-        .loadPreferences()
-        .normalizedHomeSectionOrder
+    @State private var sectionOrder: [UserPreferences.HomeSection]
 
-    private let lastOpened = LastOpenedBookStore.shared
+    private var lastOpened: LastOpenedBookStore { profileSession.lastOpened }
 
     var body: some View {
         GeometryReader { geo in
@@ -40,7 +46,7 @@ struct HearthScreen: View {
                     }
 
                     if let hero {
-                        HearthHero(book: hero, tint: heroTint)
+                        HearthBookCard(book: hero, sourceLabel: sourceLabel(for: hero), prominent: true)
                             .padding(.horizontal, 24)
                         HearthPulse(
                             activeCount: activeBookCount,
@@ -98,7 +104,7 @@ struct HearthScreen: View {
         .task {
             for await _ in NotificationCenter.default.notifications(named: .preferencesDidChange) {
                 sectionOrder =
-                    LibraryDisplayPreferencesStore.shared
+                    profileSession.preferences
                     .loadPreferences()
                     .normalizedHomeSectionOrder
             }
@@ -115,7 +121,9 @@ struct HearthScreen: View {
                     ShelfHeader(title: "Continue Reading", actionTitle: "See all") {
                         seeAll = HearthSeeAll(title: "Continue Reading", kind: .reading)
                     }
-                    shelf(books: shelfReading, width: 108, showsProgress: true, dismissable: true)
+                    HearthContinueCarousel(books: shelfReading, sourceLabel: sourceLabel) { book in
+                        shelfMenu(for: book, dismissable: true)
+                    }
                 }
             }
         case .continueListening:
@@ -124,7 +132,9 @@ struct HearthScreen: View {
                     ShelfHeader(title: "Continue Listening", actionTitle: "See all") {
                         seeAll = HearthSeeAll(title: "Continue Listening", kind: .listening)
                     }
-                    shelf(books: shelfListening, width: 108, showsProgress: true, dismissable: true)
+                    HearthContinueCarousel(books: shelfListening, sourceLabel: sourceLabel) { book in
+                        shelfMenu(for: book, dismissable: true)
+                    }
                 }
             }
         case .recentlyAdded:
@@ -133,14 +143,14 @@ struct HearthScreen: View {
                     ShelfHeader(title: "Recently Added", actionTitle: "See all") {
                         seeAll = HearthSeeAll(title: "Recently Added", kind: .fresh)
                     }
-                    shelf(books: shelfFresh, width: 96, showsProgress: false, dismissable: false)
+                    shelf(books: shelfFresh)
                 }
             }
         case .downloaded:
             if !downloaded.isEmpty {
                 VStack(alignment: .leading, spacing: 14) {
                     ShelfHeader(title: "On this device")
-                    shelf(books: downloaded, width: 96, showsProgress: false, dismissable: false)
+                    shelf(books: downloaded)
                 }
             }
         case .doorways:
@@ -164,8 +174,20 @@ struct HearthScreen: View {
                 }
             }
             Spacer()
+            if profiles.isEnabled {
+                NavigationLink {
+                    ProfilesScreen()
+                } label: {
+                    Image(systemName: profileSession.profile.role == .child ? "figure.child.circle" : "person.crop.circle")
+                        .font(.hearthUI(22, weight: .medium))
+                        .foregroundStyle(hearth.ember)
+                        .frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("Profiles, \(profiles.activeProfile.name)")
+                .accessibilityIdentifier("home-profiles")
+            }
             NavigationLink {
-                SettingsScreen()
+                SettingsScreen(profileSession: profileSession)
             } label: {
                 Image(systemName: "gearshape")
                     .font(.hearthUI(17, weight: .medium))
@@ -209,7 +231,7 @@ struct HearthScreen: View {
         engine.playback.progressFraction(for: book)
     }
 
-    private func shelf(books: [Book], width: CGFloat, showsProgress: Bool, dismissable: Bool) -> some View {
+    private func shelf(books: [Book]) -> some View {
         ScrollView(.horizontal) {
             LazyHStack(alignment: .top, spacing: 16) {
                 ForEach(books, id: \.stableId) { book in
@@ -217,7 +239,7 @@ struct HearthScreen: View {
                         BookDetailScreen(book: book)
                     } label: {
                         VStack(alignment: .center, spacing: 8) {
-                            ShelfCoverCell(book: book, width: width, showsProgress: showsProgress)
+                            ShelfCoverCell(book: book, width: 96, showsProgress: false)
                             VStack(alignment: .center, spacing: 2) {
                                 Text(book.title)
                                     .font(.hearthDisplay(13, weight: .medium))
@@ -233,36 +255,41 @@ struct HearthScreen: View {
                                 }
                                 HearthSourceBadge(text: sourceLabel(for: book))
                             }
-                            .frame(width: width, alignment: .center)
+                            .frame(width: 96, alignment: .center)
                         }
                     }
                     .buttonStyle(PressableStyle())
                     .contextMenu {
-                        if dismissable {
-                            Button("Hide from Hearth", systemImage: "minus.circle") {
-                                dismissFromShelf(book)
-                            }
-                        }
-                        Button(
-                            book.isFinished ? "Mark Unfinished" : "Mark Finished",
-                            systemImage: book.isFinished ? "circle" : "checkmark.circle"
-                        ) {
-                            toggleFinished(book)
-                        }
-                        if hasProgress(book) {
-                            Button("Reset Progress", systemImage: "arrow.counterclockwise") {
-                                resetProgress(book)
-                            }
-                        }
-                        Button(book.mediaType == .ebook ? "Read" : "Listen", systemImage: book.mediaType == .ebook ? "book" : "play") {
-                            engine.playback.play(book)
-                        }
+                        shelfMenu(for: book, dismissable: false)
                     }
                 }
             }
             .padding(.horizontal, 24)
         }
         .scrollIndicators(.hidden)
+    }
+
+    @ViewBuilder
+    private func shelfMenu(for book: Book, dismissable: Bool) -> some View {
+        if dismissable {
+            Button("Hide from Hearth", systemImage: "minus.circle") {
+                dismissFromShelf(book)
+            }
+        }
+        Button(
+            book.isFinished ? "Mark Unfinished" : "Mark Finished",
+            systemImage: book.isFinished ? "circle" : "checkmark.circle"
+        ) {
+            toggleFinished(book)
+        }
+        if hasProgress(book) {
+            Button("Reset Progress", systemImage: "arrow.counterclockwise") {
+                resetProgress(book)
+            }
+        }
+        Button(book.mediaType == .ebook ? "Read" : "Listen", systemImage: book.mediaType == .ebook ? "book" : "play") {
+            engine.playback.play(book)
+        }
     }
 
     private func shelfByline(for book: Book) -> String? {
@@ -284,7 +311,7 @@ struct HearthScreen: View {
                         PodcastsHomeScreen()
                     }
                 }
-                if SettingsManager.shared.hardcoverApiKey != nil {
+                if profileSession.isOwner && SettingsManager.shared.hardcoverApiKey != nil {
                     HearthDoorway(glyph: "person.2", title: "Hardcover", line: "Your reading circle") {
                         HardcoverHubScreen()
                     }
@@ -315,7 +342,7 @@ struct HearthScreen: View {
     }
 
     private var hasPodcasts: Bool {
-        !PodcastSubscriptionStore.shared.feeds.isEmpty
+        !profileSession.podcastSubscriptions.feeds.isEmpty
             || engine.sources.hasActiveConnection(type: .audiobookshelf)
     }
 
@@ -351,7 +378,7 @@ struct HearthScreen: View {
     }
 
     private func dismissFromShelf(_ book: Book) {
-        HearthDismissedShelfStore.shared.insert(stableId: book.stableId)
+        profileSession.dismissedShelves.insert(stableId: book.stableId)
         reading.removeAll { $0.stableId == book.stableId }
         listening.removeAll { $0.stableId == book.stableId }
         PlatformHaptics.impact(.light)
@@ -432,7 +459,7 @@ struct HearthScreen: View {
             lastOpenedBook = nil
         }
         let feed = await engine.library.hearthFeed(
-            dismissedStableIds: HearthDismissedShelfStore.shared.stableIds,
+            dismissedStableIds: profileSession.dismissedShelves.stableIds,
             currentStableId: hero?.stableId
         )
         listening = feed.listening
@@ -441,7 +468,7 @@ struct HearthScreen: View {
         downloaded = feed.downloaded
 
         if let hero {
-            heroTint = await AmbientColorStore.shared.resolve(for: hero)
+            heroTint = await profileSession.ambientColors.resolve(for: hero)
         }
     }
 }
@@ -585,152 +612,5 @@ private struct HearthPulseStat: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(label), \(value)")
-    }
-}
-
-struct HearthHero: View {
-    let book: Book
-    let tint: Color
-
-    @Environment(EnveEngine.self) private var engine
-    @Environment(\.hearth) private var hearth
-
-    private var player: PlayerViewModel { PlayerViewModel.shared }
-
-    private var byline: String? {
-        if book.isPodcastEpisode {
-            return book.podcastName ?? PodcastsFormat.displayAuthor(book.author)
-        }
-        return book.author
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            HStack(alignment: .top, spacing: 20) {
-                NavigationLink {
-                    BookDetailScreen(book: book)
-                } label: {
-                    CoverTile(book: book, width: 132)
-                }
-                .buttonStyle(PressableStyle())
-                .accessibilityLabel("Open \(book.title)")
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Overline(statusOverline, color: tint)
-                    Text(book.title)
-                        .font(.hearthDisplay(24, weight: .bold))
-                        .foregroundStyle(hearth.text)
-                        .fixedSize(horizontal: false, vertical: true)
-                    if let byline {
-                        Text(byline)
-                            .font(.hearthUI(14, weight: .semibold))
-                            .foregroundStyle(hearth.text)
-                            .lineLimit(2)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    HearthSourceBadge(text: sourceName)
-                    Spacer(minLength: 4)
-                    if remainingText != nil || progressFraction > 0 {
-                        VStack(alignment: .leading, spacing: 7) {
-                            Ribbon(progress: progressFraction, tint: tint, ticks: chapterTicks)
-                            if let remainingText {
-                                Text(remainingText)
-                                    .font(.hearthUI(12, weight: .medium))
-                                    .foregroundStyle(hearth.textTertiary)
-                            }
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
-            EmberButton(title: continueTitle, systemImage: continueGlyph, tint: tint) {
-                engine.playback.play(book)
-            }
-        }
-        .padding(22)
-        .background {
-            ZStack {
-                RoundedRectangle(cornerRadius: Hearth.radiusCard, style: .continuous)
-                    .fill(hearth.bgElevated)
-                EmberGlow(tint: tint, isBreathing: player.isPlaying, intensity: 0.55)
-                    .clipShape(RoundedRectangle(cornerRadius: Hearth.radiusCard, style: .continuous))
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: Hearth.radiusCard, style: .continuous)
-                    .strokeBorder(hearth.hairline, lineWidth: 1)
-            }
-        }
-    }
-
-    private var isEbook: Bool { book.mediaType == .ebook }
-    private var isPodcast: Bool { book.isPodcastEpisode || book.mediaType == .podcast }
-
-    private var isLive: Bool {
-        engine.playback.isLive(book)
-    }
-
-    private var position: TimeInterval {
-        engine.playback.position(for: book)
-    }
-
-    private var totalDuration: TimeInterval? {
-        engine.playback.duration(for: book)
-    }
-
-    private var continueTitle: String {
-        if progressFraction > 0.001 { return "Continue" }
-        if isEbook { return "Start reading" }
-        if isPodcast { return "Play episode" }
-        return "Start listening"
-    }
-
-    private var continueGlyph: String {
-        isEbook ? "book" : "play.fill"
-    }
-
-    private var progressFraction: Double {
-        if isEbook { return book.canonicalEbookProgress }
-        guard let duration = totalDuration, duration > 0 else { return 0 }
-        return min(max(position / duration, 0), 1)
-    }
-
-    private var chapterTicks: [Double] {
-        guard !isEbook, let chapters = book.chapters, chapters.count > 1,
-            let duration = totalDuration, duration > 0
-        else { return [] }
-        return chapters.dropFirst().map { $0.start / duration }
-    }
-
-    private var statusOverline: String {
-        if isEbook {
-            let pct = Int((book.canonicalEbookProgress * 100).rounded())
-            return pct > 0 ? "\(pct)% read" : "Unread"
-        }
-        if isPodcast {
-            return "Podcast"
-        }
-        if isLive, let chapter = engine.playback.currentChapter, !chapter.title.isEmpty {
-            return chapter.title
-        }
-        if let chapters = book.chapters, !chapters.isEmpty {
-            let index = chapters.lastIndex(where: { $0.start <= position }) ?? 0
-            return "Chapter \(index + 1) of \(chapters.count)"
-        }
-        return "Audiobook"
-    }
-
-    private var remainingText: String? {
-        guard !isEbook, let duration = totalDuration, duration > 0 else { return nil }
-        let remaining = duration - position
-        guard remaining > 0 else { return nil }
-        return HearthFormat.remaining(remaining)
-    }
-
-    private var sourceName: String {
-        if let connection = engine.library.sourceConnection(for: book), !connection.name.isEmpty {
-            return connection.name
-        }
-        return book.source.hearthDisplayName
     }
 }

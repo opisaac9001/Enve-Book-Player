@@ -1,6 +1,6 @@
 import Foundation
 
-typealias LibraryProviderFactory = (ServerConnection) -> LibraryProvider
+typealias LibraryProviderFactory = (ServerConnection) -> LibraryProvider?
 
 @MainActor
 final class PluginRegistry {
@@ -10,7 +10,7 @@ final class PluginRegistry {
     private(set) var syncStrategies: [any ProviderSyncStrategy] = []
     private var libraryProviderFactories: [ProviderType: LibraryProviderFactory] = [:]
 
-    private init() {}
+    init() {}
 
     func register(sink: any SyncSink) {
         guard !sinks.contains(where: { $0.id == sink.id }) else { return }
@@ -43,6 +43,12 @@ final class PluginRegistry {
 
     func makeLibraryProvider(for connection: ServerConnection) -> LibraryProvider? {
         libraryProviderFactories[connection.type]?(connection)
+    }
+
+    func retire() {
+        sinks.removeAll()
+        syncStrategies.removeAll()
+        libraryProviderFactories.removeAll()
     }
 
     var registeredProviderTypes: Set<ProviderType> {

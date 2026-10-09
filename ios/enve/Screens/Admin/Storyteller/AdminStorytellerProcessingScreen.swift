@@ -226,7 +226,7 @@ struct AdminStorytellerProcessingScreen: View {
 
             HStack(spacing: 10) {
                 NavigationLink {
-                    AdminStorytellerAlignmentReportScreen(connection: model.connection, book: book)
+                    AdminStorytellerAlignmentReportScreen(connection: model.connection, book: book, profileSession: model.profileSession)
                 } label: {
                     Label("Report", systemImage: "doc.text.magnifyingglass")
                         .font(.hearthUI(13, weight: .medium))
@@ -315,13 +315,19 @@ struct AdminStorytellerAlignmentReportScreen: View {
     let book: StorytellerProcessingBook
 
     @Environment(\.hearth) private var hearth
-    @State private var model = AdminStorytellerReportModel()
+    @State private var model: AdminStorytellerReportModel
     @State private var flaggedOnly = true
 
     private var visibleChapters: [StorytellerAlignmentChapter] {
         guard let chapters = model.report?.chapters else { return [] }
         let flagged = chapters.filter(\.flagged)
         return flaggedOnly && !flagged.isEmpty ? flagged : chapters
+    }
+
+    init(connection: ServerConnection, book: StorytellerProcessingBook, profileSession: ProfileSession = .owner) {
+        self.connection = connection
+        self.book = book
+        _model = State(initialValue: AdminStorytellerReportModel(profileSession: profileSession))
     }
 
     var body: some View {

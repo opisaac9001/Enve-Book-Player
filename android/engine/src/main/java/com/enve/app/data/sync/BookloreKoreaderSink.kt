@@ -17,6 +17,7 @@ class BookloreKoreaderSink @Inject constructor(
     private val vault: CredentialVault,
     private val deviceIdentity: DeviceIdentity,
     private val connectionRegistry: ConnectionRegistry,
+    private val serverSync: com.enve.core.data.local.ProfileServerSyncStore,
 ) {
     data class KoreaderCredentials(
         val username: String,
@@ -68,6 +69,8 @@ class BookloreKoreaderSink @Inject constructor(
     }
 
     suspend fun push(book: Book, locatorJson: String?, percentage: Float): Result<Unit> {
+        val syncStartedAt = System.currentTimeMillis()
+        if (!serverSync.isEnabled) return Result.success(Unit)
         if (book.mediaType != AppMediaType.EBOOK) return Result.success(Unit)
         val target = targetForBook(book) ?: return Result.failure(Exception("No server URL"))
         val creds = credentialsForTarget(target) ?: return Result.success(Unit)
@@ -89,6 +92,7 @@ class BookloreKoreaderSink @Inject constructor(
             runCatching { PartialMd5.compute(it) }.getOrNull()
         } ?: return Result.success(Unit)
 
+        if (!serverSync.accepts(syncStartedAt)) return Result.success(Unit)
         return kosyncClient.pushProgress(
             baseUrl = target.serverUrl,
             username = creds.username,
@@ -104,6 +108,8 @@ class BookloreKoreaderSink @Inject constructor(
     }
 
     suspend fun pull(book: Book): SyncSnapshot? {
+        val syncStartedAt = System.currentTimeMillis()
+        if (!serverSync.isEnabled) return null
         if (book.mediaType != AppMediaType.EBOOK) return null
         val target = targetForBook(book) ?: return null
         val creds = credentialsForTarget(target) ?: return null
@@ -130,6 +136,7 @@ class BookloreKoreaderSink @Inject constructor(
                 ?: pos.takeIf { it.startsWith("epubcfi(") }
         }
 
+        if (!serverSync.accepts(syncStartedAt)) return null
         return SyncSnapshot(
             percentage = pct,
             locatorJson = locatorJson,

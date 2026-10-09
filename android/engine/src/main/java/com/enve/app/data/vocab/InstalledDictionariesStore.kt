@@ -1,6 +1,8 @@
 package com.enve.app.data.vocab
 
 import android.content.Context
+import com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
+import com.enve.core.data.local.ProfileStorageLocations
 import android.net.Uri
 import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -14,6 +16,7 @@ import javax.inject.Singleton
 @Singleton
 class InstalledDictionariesStore @Inject constructor(
     @ApplicationContext private val context: Context,
+    private val locations: ProfileStorageLocations = ProfileStorageLocations.forProfile(context, DEFAULT_ADULT_PROFILE_ID),
 ) {
 
     data class InstalledDictionary(
@@ -23,7 +26,7 @@ class InstalledDictionariesStore @Inject constructor(
         val folder: File,
     )
 
-    private val rootDir: File = File(context.filesDir, "StarDict").apply { mkdirs() }
+    private val rootDir: File = File(locations.filesDirectory, "StarDict").apply { mkdirs() }
     private val cache = mutableMapOf<String, StarDictDictionary>()
 
     private val _dictionaries = MutableStateFlow<List<InstalledDictionary>>(emptyList())

@@ -8,14 +8,14 @@ final class DetailShelfStatus {
     private(set) var failed = false
     private(set) var isUpdating = false
 
-    func load(book: Book, library: LibraryEngine) async {
+    func load(book: Book, library: LibraryEngine, profileSession: ProfileSession = .owner) async {
         guard book.source == .bookOrbit,
             let provider = library.provider(for: book) as? BookOrbitProvider
         else { return }
         current = await provider.fetchReadStatus(for: book)
     }
 
-    func set(_ status: BookOrbitProvider.BookOrbitReadStatus, book: Book, library: LibraryEngine) async {
+    func set(_ status: BookOrbitProvider.BookOrbitReadStatus, book: Book, library: LibraryEngine, profileSession: ProfileSession = .owner) async {
         guard let provider = library.provider(for: book) as? BookOrbitProvider else {
             failed = true
             message = "BookOrbit isn't reachable right now"
@@ -44,7 +44,7 @@ final class DetailShelfStatus {
                         $0.currentTime = duration
                     }
                 }
-                BookProgressStore.shared.remove(stableId: book.stableId)
+                profileSession.bookProgress.remove(stableId: book.stableId)
                 message = "Shelved as finished on BookOrbit"
             case .abandoned:
                 _ = library.updateBook(uniqueId: book.uniqueId) {
@@ -53,7 +53,7 @@ final class DetailShelfStatus {
                     $0.serverReadStatus = status.rawValue.uppercased()
                     $0.lastUpdate = now
                 }
-                BookProgressStore.shared.remove(stableId: book.stableId)
+                profileSession.bookProgress.remove(stableId: book.stableId)
                 message = "Set aside on BookOrbit"
             case .reading, .rereading:
                 _ = library.updateBook(uniqueId: book.uniqueId) {
@@ -70,7 +70,7 @@ final class DetailShelfStatus {
                     $0.serverReadStatus = status.rawValue.uppercased()
                     $0.lastUpdate = now
                 }
-                BookProgressStore.shared.remove(stableId: book.stableId)
+                profileSession.bookProgress.remove(stableId: book.stableId)
                 message = status == .onHold ? "Resting on hold on BookOrbit" : "Shelved as want to read"
             case .skimmed:
                 _ = library.updateBook(uniqueId: book.uniqueId) {
@@ -79,7 +79,7 @@ final class DetailShelfStatus {
                     $0.serverReadStatus = status.rawValue.uppercased()
                     $0.lastUpdate = now
                 }
-                BookProgressStore.shared.remove(stableId: book.stableId)
+                profileSession.bookProgress.remove(stableId: book.stableId)
                 message = "Shelved as skimmed on BookOrbit"
             case .unread:
                 _ = library.updateBook(uniqueId: book.uniqueId) {
@@ -91,7 +91,7 @@ final class DetailShelfStatus {
                     $0.serverReadStatus = status.rawValue.uppercased()
                     $0.lastUpdate = now
                 }
-                BookProgressStore.shared.remove(stableId: book.stableId)
+                profileSession.bookProgress.remove(stableId: book.stableId)
                 message = "Shelved as unread on BookOrbit"
             }
 

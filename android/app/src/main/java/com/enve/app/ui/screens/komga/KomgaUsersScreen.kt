@@ -24,7 +24,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.hilt.navigation.compose.hiltViewModel
+import com.enve.hearth.shell.profileViewModel
 import com.enve.komga.dto.KomgaLibraryDto
 import com.enve.komga.dto.KomgaUserDto
 import com.enve.app.ui.components.SettingsCard
@@ -40,7 +40,7 @@ private val HearthRed = Color(0xFFB3453E)
 @Composable
 fun KomgaUsersScreen(onBack: () -> Unit) {
     val colors = EnveTheme.colors
-    val viewModel: KomgaUsersViewModel = hiltViewModel()
+    val viewModel: KomgaUsersViewModel = profileViewModel()
     val state by viewModel.state.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     var showCreate by remember { mutableStateOf(false) }

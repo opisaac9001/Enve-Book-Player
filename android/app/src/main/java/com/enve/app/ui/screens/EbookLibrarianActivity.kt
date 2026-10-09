@@ -23,9 +23,13 @@ import dagger.hilt.android.AndroidEntryPoint
 
 @AndroidEntryPoint
 class EbookLibrarianActivity : ComponentActivity() {
-    private val librarianViewModel: EnveLibrarianViewModel by viewModels()
-    private val themeViewModel: ThemeViewModel by viewModels()
-    @javax.inject.Inject lateinit var hearthPreferences: com.enve.engine.prefs.PreferencesFacade
+    @javax.inject.Inject lateinit var profileCoordinator: com.enve.app.profiles.ProfileSwitchCoordinator
+    @javax.inject.Inject lateinit var profileLifecycle: com.enve.app.profiles.ProfileLifecycleRegistry
+    private lateinit var profileBinding: com.enve.app.profiles.ProfileActivityBinding
+
+    private val librarianViewModel: EnveLibrarianViewModel by viewModels { profileBinding.factory }
+    private val themeViewModel: ThemeViewModel by viewModels { profileBinding.factory }
+    private val hearthPreferences get() = profileBinding.runtime.component.preferencesFacade()
 
     companion object {
         private const val EXTRA_BOOK_ID = "bookId"
@@ -46,6 +50,7 @@ class EbookLibrarianActivity : ComponentActivity() {
             bookFormat: String?,
             currentProgress: Double,
         ): Intent = Intent(context, EbookLibrarianActivity::class.java).apply {
+            com.enve.app.profiles.ProfileActivityBinding.capture(context, this)
             putExtra(EXTRA_BOOK_ID, bookId)
             putExtra(EXTRA_BOOK_SOURCE, bookSource.name)
             if (connectionId != null) putExtra(EXTRA_CONNECTION_ID, connectionId)
@@ -58,6 +63,10 @@ class EbookLibrarianActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        profileBinding = com.enve.app.profiles.ProfileActivityBinding.attach(this, profileCoordinator, profileLifecycle) {
+            Unit
+        } ?: run { finish(); return }
+
         enableEdgeToEdge()
 
         val bookId = intent.getStringExtra(EXTRA_BOOK_ID) ?: run {

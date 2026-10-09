@@ -11,6 +11,16 @@ class AudiobookshelfTrackResolver @Inject constructor(
 ) : AudiobookTrackResolver {
 
     override suspend fun resolveTracks(book: Book): Result<List<ResolvedTrack>> = runCatching {
+        book.podcastEnclosureUrl?.let { url ->
+            return@runCatching listOf(
+                ResolvedTrack(
+                    index = 0,
+                    title = book.title,
+                    durationMs = book.duration * 1000L,
+                    url = url,
+                ),
+            )
+        }
         val tracks = repository.getAudioTracks(book).getOrThrow()
         if (tracks.isEmpty()) error("Audiobookshelf returned no tracks for ${book.title}")
         tracks.map { track ->

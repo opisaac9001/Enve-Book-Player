@@ -41,7 +41,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.hilt.navigation.compose.hiltViewModel
+import com.enve.hearth.shell.profileViewModel
 import com.enve.app.ui.components.ScreenBackButton
 import com.enve.app.ui.components.SettingsCard
 import com.enve.app.ui.components.SettingsHeroHeader
@@ -58,7 +58,7 @@ import com.enve.hearth.design.hearthDisplay
 @Composable
 fun ObsidianSyncScreen(
     onBack: () -> Unit,
-    viewModel: ObsidianSyncViewModel = hiltViewModel(),
+    viewModel: ObsidianSyncViewModel = profileViewModel(),
 ) {
     val state by viewModel.state.collectAsState()
     val colors = EnveTheme.colors

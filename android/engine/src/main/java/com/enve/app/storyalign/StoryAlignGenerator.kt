@@ -1,6 +1,8 @@
 package com.enve.app.storyalign
 
 import android.content.Context
+import com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
+import com.enve.core.data.local.ProfileStorageLocations
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.net.Uri
@@ -33,6 +35,9 @@ import com.enve.core.data.remote.ConnectionScope
 import com.enve.engine.storyalign.StoryAlignSettings
 import com.enve.engine.storyalign.StoryAlignStage
 import dagger.hilt.android.qualifiers.ApplicationContext
+import com.enve.app.data.offline.withDownloadCalls
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -60,6 +65,7 @@ class StoryAlignGenerator @Inject constructor(
     private val bookCacheDao: BookCacheDao,
     private val modelManager: WhisperModelManager,
     private val outputs: StoryAlignOutputStore,
+    private val locations: ProfileStorageLocations = ProfileStorageLocations.forProfile(context, DEFAULT_ADULT_PROFILE_ID),
 ) {
     fun interface ProgressSink {
         suspend fun onStage(stage: StoryAlignStage, stageProgress: Float, overallProgress: Float)
@@ -153,10 +159,22 @@ class StoryAlignGenerator @Inject constructor(
             ?: throw IllegalStateException("No ebook download URL for ${book.title}")
         val dest = File(sessionDir, "source.epub")
         val fetch: suspend () -> Unit = {
-            okHttpClient.newCall(Request.Builder().url(url).get().build()).execute().use { resp ->
+            okHttpClient.withDownloadCalls { calls ->
+            calls.execute(Request.Builder().url(url).get().build()).use { resp ->
                 if (!resp.isSuccessful) throw IllegalStateException("Ebook download HTTP ${resp.code}")
                 val body = resp.body ?: throw IllegalStateException("Empty ebook response")
-                body.byteStream().use { input -> dest.outputStream().use { input.copyTo(it) } }
+                body.byteStream().use { input ->
+                    dest.outputStream().use { output ->
+                        val buffer = ByteArray(32_768)
+                        while (true) {
+                            currentCoroutineContext().ensureActive()
+                            val count = input.read(buffer)
+                            if (count <= 0) break
+                            output.write(buffer, 0, count)
+                        }
+                    }
+                }
+            }
             }
         }
         val scope = book.connectionId?.let { ConnectionScope.asContextElement(it) }
@@ -205,7 +223,7 @@ class StoryAlignGenerator @Inject constructor(
         }
 
     private fun storageFile(relativePath: String): File =
-        File(File(context.filesDir, "offline-audio"), relativePath)
+        File(File(locations.filesDirectory, "offline-audio"), relativePath)
 
     private fun File.hasAudioTrack(): Boolean {
         if (!exists() || length() <= 0L) return false
@@ -252,15 +270,17 @@ class StoryAlignGenerator @Inject constructor(
         }
         try {
             withContext(Dispatchers.Default) {
+                val executionContext = currentCoroutineContext()
                 var doneDur = 0.0
                 for (track in tracks) {
-
+                    executionContext.ensureActive()
                     val audioFile = AudioFile(track.index, 0.0, track.durationSec, "storyalign/Audio/${track.file.name}")
                     val base = doneDur
                     val buf = FloatArray(WINDOW_SAMPLES)
                     var fill = 0
                     var windowStart = 0.0
                     AudioDecoder().decode(track.file.absolutePath) { chunk, _ ->
+                        executionContext.ensureActive()
                         var i = 0
                         while (i < chunk.size) {
                             val n = minOf(chunk.size - i, WINDOW_SAMPLES - fill)

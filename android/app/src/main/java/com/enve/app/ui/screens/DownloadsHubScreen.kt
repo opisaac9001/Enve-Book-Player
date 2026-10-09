@@ -41,6 +41,7 @@ import com.enve.app.ui.theme.rememberAdaptiveMetrics
 import com.enve.app.ui.theme.scaled
 import com.enve.app.viewmodel.DownloadsHubState
 import com.enve.core.data.local.KeepNextOfflineSettings
+import com.enve.core.data.model.Book
 import com.enve.hearth.design.hearthDisplay
 
 @Composable
@@ -48,6 +49,7 @@ fun DownloadsHubScreen(
     state: DownloadsHubState,
     onRefresh: () -> Unit,
     onBack: () -> Unit,
+    onOpenBook: (Book) -> Unit = {},
     onRemoveItem: (String) -> Unit = {},
     onCancelDownload: (String) -> Unit = {},
     onRetryDownload: (String) -> Unit = {},
@@ -195,6 +197,7 @@ fun DownloadsHubScreen(
                         items(state.downloadedBooks.take(50), key = { it.uniqueKey }) { book ->
                             DownloadedBookCard(
                                 book = book,
+                                onOpen = { onOpenBook(book) },
                                 onRemove = { onRemoveItem(book.id) },
                                 modifier = Modifier.padding(horizontal = hPad),
                             )
@@ -626,7 +629,8 @@ private fun TerminalDownloadCard(
 
 @Composable
 private fun DownloadedBookCard(
-    book: com.enve.core.data.model.Book,
+    book: Book,
+    onOpen: () -> Unit,
     onRemove: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -637,6 +641,7 @@ private fun DownloadedBookCard(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .clickable(onClick = onOpen)
                 .padding(DS.Spacing.MD.scaled(metrics)),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(DS.Spacing.MD.scaled(metrics)),

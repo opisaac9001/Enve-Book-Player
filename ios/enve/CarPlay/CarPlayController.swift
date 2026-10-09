@@ -22,6 +22,7 @@ final class CarPlayController {
 
     func start() {
         Task { @MainActor in
+            guard self.isConnected else { return }
             let nowPlaying = CarPlayNowPlaying(
                 interfaceController: self.interfaceController,
                 environment: self.environment
@@ -62,10 +63,10 @@ func carPlayInterfaceCompletion(
 }
 
 extension CarPlayEnvironment {
-    static func live() -> CarPlayEnvironment {
-        let composition = ActivePlayback.composition
-        let library = AppState.shared
-        let downloads = LocalCarPlayDownloadState()
+    static func live(profileSession: ProfileSession = .owner) -> CarPlayEnvironment {
+        let composition = profileSession.playback.composition
+        let library = profileSession.appState
+        let downloads = LocalCarPlayDownloadState(profileSession: profileSession)
         return CarPlayEnvironment(
             controller: composition.controller,
             nowPlayingUpdater: composition.nowPlayingUpdater,
@@ -73,15 +74,15 @@ extension CarPlayEnvironment {
             playback: CarPlayPlaybackService(
                 controller: composition.controller,
                 nowPlayingUpdater: composition.nowPlayingUpdater,
-                bookStarter: EnveEngine.shared.playback,
+                bookStarter: profileSession.engine.playback,
                 library: library,
-                chapterSource: PlayerCarPlayChapterSource(),
+                chapterSource: PlayerCarPlayChapterSource(profileSession: profileSession),
                 downloads: downloads
             ),
-            catalog: AppState.shared.bookStore,
-            connections: AppState.shared.providerConnections,
+            catalog: profileSession.bookStore,
+            connections: profileSession.providerConnections,
             library: library,
-            progress: BookProgressStore.shared,
+            progress: profileSession.bookProgress,
             downloads: downloads
         )
     }
@@ -114,17 +115,21 @@ extension BookProgressStore: CarPlayProgressReading {
 }
 
 private final class PlayerCarPlayChapterSource: CarPlayChapterSource {
-    var playerBook: Book? { PlayerViewModel.shared.currentBook }
-    var playerChapters: [Chapter] { PlayerViewModel.shared.chapters }
+    private let profileSession: ProfileSession
+    init(profileSession: ProfileSession) { self.profileSession = profileSession }
+    var playerBook: Book? { profileSession.playback.player.currentBook }
+    var playerChapters: [Chapter] { profileSession.playback.player.chapters }
 
     func cachedChapters(bookId: String) -> [Chapter] {
-        ReaderArtifactsStore.shared.loadCachedChapters(bookId: bookId) ?? []
+        profileSession.readerArtifacts.loadCachedChapters(bookId: bookId) ?? []
     }
 }
 
 private final class LocalCarPlayDownloadState: CarPlayDownloadState {
+    private let profileSession: ProfileSession
+    init(profileSession: ProfileSession) { self.profileSession = profileSession }
     func downloadedAudiobookIds() async -> Set<String> {
-        let storage = LocalStorageManager.shared
+        let storage = profileSession.localStorage
         return await Task.detached(priority: .userInitiated) {
             Set(storage.downloadedAudiobookIds())
         }.value
@@ -139,14 +144,14 @@ private final class LocalCarPlayDownloadState: CarPlayDownloadState {
     }
 
     func isAudiobookDownloaded(_ book: Book, downloadedIds: Set<String>) -> Bool {
-        LocalStorageManager.shared.isAudiobookDownloaded(book, downloadedIds: downloadedIds)
+        profileSession.localStorage.isAudiobookDownloaded(book, downloadedIds: downloadedIds)
     }
 
     func hasActiveDownload(_ book: Book) -> Bool {
-        UnifiedDownloadService.shared.tasks.contains { $0.isActive && $0.bookId == book.downloadKey }
+        profileSession.downloads.tasks.contains { $0.isActive && $0.bookId == book.downloadKey }
     }
 
     func hasLocalReadaloudEbook(_ book: Book) -> Bool {
-        LocalEbookImporter.shared.resolveEbookForOverlay(book: book) != nil
+        profileSession.ebooks.resolveEbookForOverlay(book: book) != nil
     }
 }

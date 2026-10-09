@@ -7,14 +7,19 @@ import SwiftUI
 @Observable
 @MainActor
 public class AppState {
-    public static let shared = AppState()
+    public static let shared = ProfileSession.owner.appState
 
-    let presentation = AppPresentationState()
-    let providerConnections = ProviderConnectionStore()
+    let presentation: AppPresentationState
+    let providerConnections: ProviderConnectionStore
+    private unowned var profileSession: ProfileSession?
+    private var operations: [UUID: Task<Void, Never>] = [:]
+    private var notificationObservers: [NSObjectProtocol] = []
+    private var hasStarted = false
+    private var isRetiring = false
 
-    private var catalog: LibraryCatalogCoordinator { .shared }
-    private var progress: UserProgressStore { .shared }
-    private var recovery: LibraryRecoveryCoordinator { .shared }
+    private var catalog: LibraryCatalogCoordinator { profileSession?.catalog ?? .shared }
+    private var progress: UserProgressStore { profileSession?.progress ?? .shared }
+    private var recovery: LibraryRecoveryCoordinator { profileSession?.recovery ?? .shared }
 
     private let networkMonitor = NWPathMonitor()
     private let networkQueue = DispatchQueue(label: "NetworkMonitor")
@@ -30,10 +35,10 @@ public class AppState {
     }
 
     private var hasScheduledReadAloudLibrarySync = false
-    @ObservationIgnored let libraryCache = LibraryBookCache()
+    @ObservationIgnored let libraryCache: LibraryBookCache
     private var memoryDiagTimer: Timer?
 
-    let bookStore: BookStoreRepository = BookStoreManager.shared.repository
+    let bookStore: BookStoreRepository
 
     var hotCache: BookHotCache { libraryCache.hot }
 
@@ -90,36 +95,61 @@ public class AppState {
     private var bootstrapComplete = false
     var isBootstrapComplete: Bool { bootstrapComplete }
 
-    init() {
+    convenience init() {
+        self.init(bookStore: BookStoreManager.shared.repository, providerConnections: ProviderConnectionStore())
+        start()
+    }
+
+    init(bookStore: BookStoreRepository, providerConnections: ProviderConnectionStore) {
+        self.bookStore = bookStore
+        self.providerConnections = providerConnections
+        presentation = AppPresentationState()
+        libraryCache = LibraryBookCache(writer: bookStore)
+        libraryCache.session = self
+    }
+
+    func bind(to profileSession: ProfileSession) {
+        precondition(self.profileSession == nil && !hasStarted)
+        self.profileSession = profileSession
+    }
+
+    func start() {
+        guard !hasStarted else { return }
+        hasStarted = true
+        isRetiring = false
         libraryCache.session = self
         allBooksChanged
             .sink { _ in BookStoreChangeNotifier.notify() }
             .store(in: &cancellables)
 
-        providerConnections.configurationDidChange = {
-            LibraryRecoveryCoordinator.shared.pruneDisconnectedProviderData()
+        providerConnections.configurationDidChange = { [weak self] in
+            self?.recovery.pruneDisconnectedProviderData()
         }
 
-        Task {
+        retainOperation { [self] in
             await self.migrateJellyfinEmbyConnectionTypesIfNeeded()
             await self.migrateTokensFromOldBackends()
         }
 
-        UserCollectionStore.shared.refresh()
+        (profileSession?.userCollections ?? UserCollectionStore.shared).refresh()
 
         setupNetworkMonitor()
 
-        SmartCollectionStore.shared.refresh()
+        (profileSession?.smartCollections ?? SmartCollectionStore.shared).refresh()
 
-        NotificationCenter.default.addObserver(forName: .metadataUpdated, object: nil, queue: .main) { [weak self] notification in
-            guard let self, let bookId = notification.object as? String else { return }
-            Task { @MainActor in
-                await self.refreshBookAfterMetadataUpdate(bookId: bookId)
+        let metadataObserver = NotificationCenter.default.addObserver(forName: .metadataUpdated, object: nil, queue: .main) { [weak self] notification in
+            guard let bookId = notification.object as? String else { return }
+            Task { @MainActor [weak self] in
+                self?.retainOperation { [weak self] in
+                    await self?.refreshBookAfterMetadataUpdate(bookId: bookId)
+                }
             }
         }
 
-        Task {
-            MetadataStorage.shared.recoverMisplacedMetadataDirectory()
+        notificationObservers.append(metadataObserver)
+
+        retainOperation { [self] in
+            (profileSession?.metadataStorage ?? MetadataStorage.shared).recoverMisplacedMetadataDirectory()
 
             libraryCache.suppressNotifications = true
 
@@ -146,16 +176,16 @@ public class AppState {
             let hasCache = await catalog.loadCachedMetadata()
             await Task.yield()
 
-            let needsLegacyImport = BookStoreManager.shared.needsLegacyImport
+            let needsLegacyImport = (profileSession?.libraryDatabase ?? BookStoreManager.shared).needsLegacyImport
             if needsLegacyImport && !self.allBooks.isEmpty {
-                await BookStoreManager.shared.runLegacyImportIfNeeded(
+                await (profileSession?.libraryDatabase ?? BookStoreManager.shared).runLegacyImportIfNeeded(
                     allBooks: self.allBooks,
                     hiddenStableIds: [],
-                    deletedStableIds: DeletedBooksTombstoneStore.shared.allDeleted
+                    deletedStableIds: (profileSession?.deletedBooks ?? DeletedBooksTombstoneStore.shared).allDeleted
                 )
             }
 
-            await ReaderArtifactsStore.shared.migrateToBookStoreIfNeeded(bookStore: self.bookStore)
+            await (profileSession?.readerArtifacts ?? ReaderArtifactsStore.shared).migrateToBookStoreIfNeeded(bookStore: self.bookStore)
 
             let hasLocalBooks = self.allBooks.contains { $0.source == .local }
             if !hasCache || !hasLocalBooks {
@@ -163,7 +193,7 @@ public class AppState {
             }
             catalog.performInitialCloudSyncIfNeeded()
 
-            await EbookLinkStore.shared.reapplyLinks()
+            await (profileSession?.ebookLinks ?? EbookLinkStore.shared).reapplyLinks()
             await Task.yield()
 
             if needsLegacyImport {
@@ -190,16 +220,16 @@ public class AppState {
                 }
                 let bookSnapshotsForImport = self.allBooks.map { (stableId: $0.stableId, id: $0.id, isEbook: $0.mediaType == .ebook) }
                 let bookStoreRef = self.bookStore
-                Task.detached(priority: .utility) {
+                retainOperation(priority: .utility) { [self] in
                     for book in bookSnapshotsForImport {
                         let (bookmarks, annotations) = await MainActor.run {
                             let bm =
-                                ReaderArtifactsStore.shared.loadBookmarks(bookId: book.stableId)
-                                + (book.stableId != book.id ? ReaderArtifactsStore.shared.loadBookmarks(bookId: book.id) : [])
+                                (profileSession?.readerArtifacts ?? ReaderArtifactsStore.shared).loadBookmarks(bookId: book.stableId)
+                                + (book.stableId != book.id ? (profileSession?.readerArtifacts ?? ReaderArtifactsStore.shared).loadBookmarks(bookId: book.id) : [])
                             let ann: [ReaderAnnotation] =
                                 book.isEbook
-                                ? ReaderArtifactsStore.shared.loadAnnotations(bookId: book.stableId)
-                                    + (book.stableId != book.id ? ReaderArtifactsStore.shared.loadAnnotations(bookId: book.id) : [])
+                                ? (profileSession?.readerArtifacts ?? ReaderArtifactsStore.shared).loadAnnotations(bookId: book.stableId)
+                                    + (book.stableId != book.id ? (profileSession?.readerArtifacts ?? ReaderArtifactsStore.shared).loadAnnotations(bookId: book.id) : [])
                                 : []
                             return (bm, ann)
                         }
@@ -224,7 +254,7 @@ public class AppState {
 
             await self.catalog.resumeStartupCatalogWork()
 
-            Task {
+            retainOperation { [self] in
                 try? await Task.sleep(nanoseconds: 250_000_000)
                 await self.reEnrichCachedBooksIfNeeded()
             }
@@ -257,7 +287,7 @@ public class AppState {
                     .filter { !$0.isArchived }
                     .map { $0.id.uuidString }
             )
-            Task(priority: .background) {
+            retainOperation(priority: .background) {
                 let removed = await store.deleteBooksFromUnknownProviders(validProviderIds: validProviderIds)
                 if removed > 0 {
                     AppLogger.general.info("[BookStore] Purged \(removed) orphan books from disconnected providers")
@@ -269,15 +299,38 @@ public class AppState {
             await recovery.rescueOrphanedDownloads()
             self.scheduleReadAloudLibrarySyncIfNeeded()
 
-            Task(priority: .utility) {
+            retainOperation(priority: .utility) { [self] in
 
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
                 if PlatformRuntime.cloudKitEnabled {
-                    _ = await SyncCoordinator.shared.runRecentlyPlayedSync(trigger: .appLaunch)
+                    _ = await (profileSession?.sync ?? SyncCoordinator.shared).runRecentlyPlayedSync(trigger: .appLaunch)
                 }
                 await self.catalog.refreshStaleServerMirrorDomains()
             }
         }
+    }
+
+    private func retainOperation(priority: TaskPriority? = nil, operation: @escaping @MainActor () async -> Void) {
+        guard !isRetiring else { return }
+        let id = UUID()
+        operations[id] = Task(priority: priority) {
+            await operation()
+            operations[id] = nil
+        }
+    }
+
+    func retire() async {
+        isRetiring = true
+        networkMonitor.cancel()
+        memoryDiagTimer?.invalidate()
+        memoryDiagTimer = nil
+        notificationObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        notificationObservers.removeAll()
+        cancellables.removeAll()
+        providerConnections.configurationDidChange = nil
+        let pending = Array(operations.values)
+        pending.forEach { $0.cancel() }
+        for operation in pending { await operation.value }
     }
 
     nonisolated static func currentMemoryMB() -> Int {
@@ -296,7 +349,7 @@ public class AppState {
         memoryDiagTimer?.invalidate()
         memoryDiagTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self else { return }
+                guard let self, !self.isRetiring else { return }
                 let mem = Self.currentMemoryMB()
                 AppLogger.general.debug("[MEM] \(mem)MB | allBooks=\(self.allBooks.count) | mutations=\(self.libraryCache.mutationCount)")
             }
@@ -309,9 +362,11 @@ public class AppState {
 
         hasScheduledReadAloudLibrarySync = true
 
-        Task(priority: .utility) {
+        retainOperation(priority: .utility) { [self] in
             try? await Task.sleep(nanoseconds: 3_000_000_000)
-            await StoryAlignService.shared.syncReadAloudLibraryOnLaunch()
+            guard !Task.isCancelled, !isRetiring, profileSession?.isRetired != true,
+                profileSession?.isOwner ?? true else { return }
+            await (profileSession?.storyAlignService ?? StoryAlignService.shared).syncReadAloudLibraryOnLaunch()
         }
     }
 
@@ -326,7 +381,7 @@ public class AppState {
             }
         }
 
-        guard let provider = ProviderFactory.create(for: corrected) else {
+        guard let provider = (profileSession?.registry ?? PluginRegistry.shared).makeLibraryProvider(for: corrected) else {
             throw ProviderError.notImplemented
         }
 
@@ -347,7 +402,7 @@ public class AppState {
         request.timeoutInterval = 5
 
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await (profileSession?.networkSession ?? URLSession.shared).data(for: request)
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
 
             if let decoded = try? JSONDecoder().decode(PublicSystemInfo.self, from: data) {
@@ -422,7 +477,7 @@ public class AppState {
         let books = await MainActor.run { self.allBooks }
         guard !books.isEmpty else { return }
 
-        let storedIds = await MetadataStorage.shared.bookIdsWithStoredMetadata()
+        let storedIds = await (profileSession?.metadataStorage ?? MetadataStorage.shared).bookIdsWithStoredMetadata()
         guard !storedIds.isEmpty else {
             AppLogger.general.warning("[AppState] No stored metadata files found - skipping startup re-enrichment")
             return
@@ -435,7 +490,7 @@ public class AppState {
         }
 
         AppLogger.general.info("[AppState] Re-enriching \(booksToEnrich.count) book(s) with stored metadata on startup...")
-        let enrichedSubset = await MetadataManager.shared.enrichBooksWithStoredMetadata(booksToEnrich)
+        let enrichedSubset = await (profileSession?.metadataManager ?? MetadataManager.shared).enrichBooksWithStoredMetadata(booksToEnrich)
 
         let enrichedById: [String: Book] = Dictionary(enrichedSubset.map { ($0.uniqueId, $0) }, uniquingKeysWith: { _, new in new })
         var changedCount = 0
@@ -458,30 +513,28 @@ public class AppState {
         if changedCount > 0 {
             let changed = Array(enrichedById.values)
             let store = bookStore
-            Task(priority: .utility) { await store.upsertBooks(changed) }
+            retainOperation(priority: .utility) { await store.upsertBooks(changed) }
         }
     }
 
     private func setupNetworkMonitor() {
-        NotificationCenter.default.addObserver(
-            forName: .localLibraryUpdated,
-            object: nil,
-            queue: .main
+        let observer = NotificationCenter.default.addObserver(
+            forName: .localLibraryUpdated, object: nil, queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
-                await self?.catalog.refreshLocalLibraries()
+                self?.retainOperation { [weak self] in
+                    await self?.catalog.refreshLocalLibraries()
+                }
             }
         }
-
+        notificationObservers.append(observer)
         networkMonitor.pathUpdateHandler = { [weak self] path in
-            guard let self else { return }
             Task { @MainActor [weak self] in
-                guard let self else { return }
+                guard let self, !self.isRetiring else { return }
                 if path.status != .satisfied {
                     self.networkWasEverUnsatisfied = true
                 } else if self.networkWasEverUnsatisfied {
-                    AppLogger.general.info("Network connection restored, retrying syncs...")
-                    await self.progress.retryPendingSyncs()
+                    self.retainOperation { [weak self] in await self?.progress.retryPendingSyncs() }
                 }
             }
         }
@@ -502,7 +555,7 @@ public class AppState {
         catalog.saveMetadata()
         let b = updatedBook
         let store = bookStore
-        Task(priority: .utility) { await store.upsertBooks([b]) }
+        retainOperation(priority: .utility) { await store.upsertBooks([b]) }
     }
 
     @MainActor func refreshBookAfterMetadataUpdate(bookId: String) async {
@@ -517,7 +570,7 @@ public class AppState {
             return
         }
 
-        let enrichedBook = await MetadataManager.shared.enrichBookWithStoredMetadata(book)
+        let enrichedBook = await (profileSession?.metadataManager ?? MetadataManager.shared).enrichBookWithStoredMetadata(book)
 
         updateBookWithMetadata(enrichedBook)
 
@@ -541,7 +594,8 @@ public class AppState {
     func migrateTokensFromOldBackends() async {
         AppLogger.general.info("Starting token migration from old backends...")
 
-        let oldBackends = ServerConfigStore.shared.loadBackends()
+        guard profileSession?.isOwner ?? true else { return }
+        let oldBackends = (profileSession?.serverConfig ?? ServerConfigStore.shared).loadBackends()
         var needsSave = false
 
         await MainActor.run {

@@ -1,5 +1,6 @@
 package com.enve.app.readium
 
+import com.enve.core.di.ApplicationScope
 import android.content.ComponentName
 import android.content.Context
 import android.net.Uri
@@ -67,13 +68,15 @@ internal data class ReadAloudPlaybackRevocation(
 @androidx.annotation.OptIn(UnstableApi::class)
 class ReadAloudPlaybackCoordinator @Inject constructor(
     @ApplicationContext private val context: Context,
+    @ApplicationScope parentScope: CoroutineScope =
+        CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) {
     companion object {
         const val MEDIA_ID_PREFIX = "readaloud:"
         private const val POSITION_POLL_INTERVAL_MS = 40L
     }
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val scope = CoroutineScope(SupervisorJob(parentScope.coroutineContext[Job]) + Dispatchers.Main.immediate)
     private val _state = MutableStateFlow(ReadAloudPlaybackState())
     val state: StateFlow<ReadAloudPlaybackState> = _state.asStateFlow()
 

@@ -22,21 +22,32 @@ final class RemoteImportService: NSObject, ObservableObject {
     @Published private(set) var webDAVServers: [WebDAVServerConfig] = []
 
     private let fileManager = FileManager.default
-    private let storage = LocalStorageManager.shared
+    private let storage: LocalStorageManager
+    private let ebooks: LocalEbookImporter
+    private let locations: ProfileStorageLocations
+    private let certificateTransport: InsecureURLSession
+    private let networkSession: URLSession
+    private var isRetired = false
     private var cancellables = Set<AnyCancellable>()
 
     private var stagingDirectory: URL {
-        let appSupportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let appSupportURL = locations.applicationSupportDirectory
         return appSupportURL.appendingPathComponent("Enve/ImportStaging", isDirectory: true)
     }
 
     private var canonicalLibraryRoot: URL {
-        let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let documentsURL = locations.documentsDirectory
         return documentsURL.appendingPathComponent("Individual_Audiobooks", isDirectory: true)
     }
 
     private lazy var backgroundSession: URLSession = {
-        let config = URLSessionConfiguration.background(withIdentifier: "com.enve.import")
+        let config = URLSessionConfiguration.background(withIdentifier: locations.profileID == FamilyProfile.ownerID ? "com.enve.import" : "com.enve.import.profile.\(locations.profileID)")
+        if locations.profileID != FamilyProfile.ownerID {
+            config.httpCookieStorage = nil
+            config.httpShouldSetCookies = false
+            config.urlCredentialStorage = nil
+            config.urlCache = nil
+        }
         config.waitsForConnectivity = true
         config.timeoutIntervalForRequest = 300
         config.timeoutIntervalForResource = 7200
@@ -48,10 +59,29 @@ final class RemoteImportService: NSObject, ObservableObject {
     private var downloadCompletionHandlers: [Int: (URL?, Error?) -> Void] = [:]
     private var activeDownloadTasks: [Int: ImportProgress] = [:]
 
-    private override init() {
+    init(profileSession: ProfileSession? = nil) {
+        storage = profileSession?.localStorage ?? .shared
+        ebooks = profileSession?.ebooks ?? .shared
+        locations = profileSession?.storage ?? .owner
+        certificateTransport = profileSession?.transport ?? .delegateInstance
+        networkSession = profileSession?.networkSession ?? .shared
         super.init()
         createDirectoriesIfNeeded()
         loadWebDAVServers()
+    }
+
+    func retire() {
+        isRetired = true
+        let pending = downloadCompletionHandlers.values
+        downloadCompletionHandlers.removeAll()
+        activeDownloadTasks.removeAll()
+        for completion in pending { completion(nil, CancellationError()) }
+        isImporting = false
+    }
+
+    private func checkActive() throws {
+        guard !isRetired else { throw CancellationError() }
+        try Task.checkCancellation()
     }
 
     private func createDirectoriesIfNeeded() {
@@ -62,6 +92,7 @@ final class RemoteImportService: NSObject, ObservableObject {
     }
 
     func saveWebDAVServer(_ server: WebDAVServerConfig) {
+        guard !isRetired else { return }
         if let index = webDAVServers.firstIndex(where: { $0.id == server.id }) {
             webDAVServers[index] = server
         } else {
@@ -91,7 +122,7 @@ final class RemoteImportService: NSObject, ObservableObject {
     }
 
     private var serversConfigURL: URL {
-        let appSupportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let appSupportURL = locations.applicationSupportDirectory
         return appSupportURL.appendingPathComponent("Enve/webdav_servers.json")
     }
 
@@ -123,14 +154,14 @@ final class RemoteImportService: NSObject, ObservableObject {
 
         if !username.isEmpty {
             AppLogger.network.info("Auth: user=<redacted>, pass=<redacted> (challenge-based)")
-            challengeDelegate = WebDAVAuthDelegate(username: username, password: password)
-            let config = URLSessionConfiguration.default
+            challengeDelegate = WebDAVAuthDelegate(username: username, password: password, certificateTransport: certificateTransport)
+            let config = locations.profileID == FamilyProfile.ownerID ? URLSessionConfiguration.default : .ephemeral
             config.timeoutIntervalForRequest = 30
             config.timeoutIntervalForResource = 60
             session = URLSession(configuration: config, delegate: challengeDelegate, delegateQueue: nil)
         } else {
             AppLogger.network.info("No auth credentials set")
-            session = URLSession.shared
+            session = networkSession
         }
 
         let propfindXML = """
@@ -275,7 +306,7 @@ final class RemoteImportService: NSObject, ObservableObject {
         var fileURLs: [URL] = []
 
         for url in urls {
-            try Task.checkCancellation()
+            try checkActive()
             let secured = url.startAccessingSecurityScopedResource()
             defer { if secured { url.stopAccessingSecurityScopedResource() } }
 
@@ -297,7 +328,7 @@ final class RemoteImportService: NSObject, ObservableObject {
         }
 
         for folderURL in directoryURLs {
-            try Task.checkCancellation()
+            try checkActive()
             let secured = folderURL.startAccessingSecurityScopedResource()
             defer { if secured { folderURL.stopAccessingSecurityScopedResource() } }
             do {
@@ -316,7 +347,7 @@ final class RemoteImportService: NSObject, ObservableObject {
 
         var audioByParent: [String: [URL]] = [:]
         for url in audioFileURLs {
-            try Task.checkCancellation()
+            try checkActive()
             let parent = url.deletingLastPathComponent().path
             audioByParent[parent, default: []].append(url)
         }
@@ -331,7 +362,7 @@ final class RemoteImportService: NSObject, ObservableObject {
             }
 
             for audioGroup in audioGroups {
-                try Task.checkCancellation()
+                try checkActive()
                 do {
                     if audioGroup.count > 1 {
 
@@ -339,7 +370,7 @@ final class RemoteImportService: NSObject, ObservableObject {
                         try fileManager.createDirectory(at: stagingFolder, withIntermediateDirectories: true)
                         defer { try? fileManager.removeItem(at: stagingFolder) }
                         for fileURL in audioGroup {
-                            try Task.checkCancellation()
+                            try checkActive()
                             let dest = stagingFolder.appendingPathComponent(fileURL.lastPathComponent)
                             let secured = fileURL.startAccessingSecurityScopedResource()
                             try fileManager.copyItem(at: fileURL, to: dest)
@@ -365,7 +396,7 @@ final class RemoteImportService: NSObject, ObservableObject {
         }
 
         for url in nonAudioFileURLs {
-            try Task.checkCancellation()
+            try checkActive()
             let secured = url.startAccessingSecurityScopedResource()
             defer { if secured { url.stopAccessingSecurityScopedResource() } }
             let lowerExt = url.pathExtension.lowercased()
@@ -487,7 +518,7 @@ final class RemoteImportService: NSObject, ObservableObject {
         }
 
         for item in rootContents {
-            try Task.checkCancellation()
+            try checkActive()
             var isDirectory: ObjCBool = false
             guard fileManager.fileExists(atPath: item.path, isDirectory: &isDirectory) else { continue }
 
@@ -522,7 +553,7 @@ final class RemoteImportService: NSObject, ObservableObject {
             AppLogger.network.info("Container folder detected at '\(remotePath)' - recursing into \(subdirEntries.count) subdirectorie(s)")
             var firstBook: LocalBookFile?
             for subdir in subdirEntries {
-                try Task.checkCancellation()
+                try checkActive()
                 do {
                     if let book = try await importFromWebDAVInternal(server: server, remotePath: subdir.path, isTopLevel: false) {
                         if firstBook == nil { firstBook = book }
@@ -545,7 +576,7 @@ final class RemoteImportService: NSObject, ObservableObject {
 
         var downloadedZipFiles: [URL] = []
         for entry in fileEntries {
-            try Task.checkCancellation()
+            try checkActive()
             let remoteURL = server.url(for: entry.path)
             let localPath = stagingFolder.appendingPathComponent(entry.name)
 
@@ -590,7 +621,7 @@ final class RemoteImportService: NSObject, ObservableObject {
             }
         }
 
-        let (tempURL, response) = try await URLSession.shared.download(for: request)
+        let (tempURL, response) = try await networkSession.download(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
             throw ImportError.downloadFailed
@@ -610,7 +641,7 @@ final class RemoteImportService: NSObject, ObservableObject {
 
         let contents = try fileManager.contentsOfDirectory(at: folderURL, includingPropertiesForKeys: nil)
         for item in contents {
-            try Task.checkCancellation()
+            try checkActive()
             let isDirectory = (try? item.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
             if !isDirectory {
                 try ImportLimits.validateImportedMediaFile(item)
@@ -642,9 +673,9 @@ final class RemoteImportService: NSObject, ObservableObject {
     }
 
     private func importEbookFile(from fileURL: URL, sourceType: SourceType) async throws -> LocalBookFile? {
-        try Task.checkCancellation()
+        try checkActive()
         try ImportLimits.validateImportedMediaFile(fileURL)
-        let ebooksRoot = LocalEbookImporter.shared.localEbooksRoot
+        let ebooksRoot = ebooks.localEbooksRoot
         try fileManager.createDirectory(at: ebooksRoot, withIntermediateDirectories: true)
 
         let destinationURL = uniqueDestinationURL(
@@ -655,7 +686,7 @@ final class RemoteImportService: NSObject, ObservableObject {
 
         var metadata: LocalBookMetadata
         do {
-            metadata = try await LocalEbookImporter.shared.extractMetadata(from: destinationURL)
+            metadata = try await ebooks.extractMetadata(from: destinationURL)
         } catch {
             AppLogger.network.error(
                 "Ebook metadata extraction failed for '\(destinationURL.lastPathComponent)': \(error.localizedDescription)"
@@ -719,7 +750,7 @@ final class RemoteImportService: NSObject, ObservableObject {
     }
 
     private func importSingleAudioFile(from fileURL: URL, sourceType: SourceType) async throws -> LocalBookFile? {
-        try Task.checkCancellation()
+        try checkActive()
         try ImportLimits.validateImportedMediaFile(fileURL)
         let stagingFolder = stagingDirectory.appendingPathComponent(UUID().uuidString)
         try fileManager.createDirectory(at: stagingFolder, withIntermediateDirectories: true)
@@ -791,7 +822,7 @@ final class RemoteImportService: NSObject, ObservableObject {
         var totalSize: Int64 = 0
 
         for audioFile in allAudioFiles {
-            try Task.checkCancellation()
+            try checkActive()
             try ImportLimits.validateImportedMediaFile(audioFile)
             let destName =
                 isMultiFile
@@ -1500,10 +1531,12 @@ private struct GenericBookMetadata: Codable {
 }
 
 private final class WebDAVAuthDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private let certificateTransport: InsecureURLSession
     let credential: URLCredential
     private var challengeCount = 0
 
-    init(username: String, password: String) {
+    init(username: String, password: String, certificateTransport: InsecureURLSession = .delegateInstance) {
+        self.certificateTransport = certificateTransport
         self.credential = URLCredential(
             user: username,
             password: password,
@@ -1523,11 +1556,7 @@ private final class WebDAVAuthDelegate: NSObject, URLSessionTaskDelegate, @unche
         AppLogger.network.info("Auth challenge: \(method) (attempt \(challengeCount + 1))")
 
         if method == NSURLAuthenticationMethodClientCertificate {
-            if let identity = NetworkHostUtils.findMTLSIdentity(forHost: host) {
-                completionHandler(.useCredential, URLCredential(identity: identity, certificates: nil, persistence: .forSession))
-            } else {
-                completionHandler(.performDefaultHandling, nil)
-            }
+            certificateTransport.urlSession(session, didReceive: challenge, completionHandler: completionHandler)
             return
         }
 

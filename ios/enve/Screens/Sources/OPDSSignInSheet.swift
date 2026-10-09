@@ -6,6 +6,8 @@ struct OPDSSignInSheet: View {
     let connection: ServerConnection?
     let onSignedIn: () -> Void
 
+    @Environment(\.profileSession) private var capturedSession
+    private var profileSession: ProfileSession { capturedSession ?? .owner }
     @Environment(\.hearth) private var hearth
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
@@ -129,7 +131,7 @@ struct OPDSSignInSheet: View {
         defer { isWorking = false }
 
         do {
-            _ = try await OPDSAuthenticationService.shared.signIn(
+            _ = try await profileSession.opdsLogin.signIn(
                 connectionId: connection.id,
                 flow: flow,
                 login: login,
@@ -157,7 +159,7 @@ struct OPDSSignInSheet: View {
         defer { isWorking = false }
 
         do {
-            _ = try await OPDSAuthenticationService.shared.signInWithBrowser(
+            _ = try await profileSession.opdsLogin.signInWithBrowser(
                 connectionId: connection.id,
                 flow: flow,
                 documentURL: document.documentURL,

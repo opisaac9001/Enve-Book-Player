@@ -42,9 +42,14 @@ final class CarPlayAppDelegate: NSObject, UIApplicationDelegate {
         AppLogger.general.info("handleEventsForBackgroundURLSession identifier=\(identifier)")
         backgroundSessionCompletionHandlers[identifier] = completionHandler
 
+        if UnifiedDownloadService.profileID(forBackgroundSessionIdentifier: identifier) != nil {
+            ProfileSwitchCoordinator.shared.handleBackgroundSession(identifier: identifier) { [weak self] in
+                self?.consumeBackgroundCompletionHandler(forIdentifier: identifier)?()
+            }
+            return
+        }
+
         switch identifier {
-        case UnifiedDownloadService.backgroundSessionIdentifier:
-            _ = UnifiedDownloadService.shared
         case "com.enve.import":
             _ = RemoteImportService.shared
         case "com.narrator.metadata-downloads":

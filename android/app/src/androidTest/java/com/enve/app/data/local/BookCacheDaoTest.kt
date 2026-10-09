@@ -55,6 +55,21 @@ class BookCacheDaoTest {
     }
 
     @Test
+    fun detectedNarrationSurvivesReplacementWithoutLeakingToAnotherConnection() = runBlocking {
+        val first = cachedBook(id = "narrated").copy(cacheKey = "one:narrated", connectionId = "one", readAlongAvailable = false)
+        val second = first.copy(cacheKey = "two:narrated", connectionId = "two")
+        dao.upsert(listOf(first, second))
+        dao.markReadAlongAvailable(first.cacheKey)
+        dao.upsert(listOf(first.copy(title = "Refreshed"), second))
+        val narrated = dao.getByCacheKey(first.cacheKey)!!
+        assertEquals(true, narrated.readAlongAvailable)
+        assertEquals(true, narrated.hasAudio)
+        assertEquals(true, narrated.hasEbook)
+        assertEquals("Refreshed", narrated.title)
+        assertEquals(false, dao.getByCacheKey(second.cacheKey)!!.readAlongAvailable)
+    }
+
+    @Test
     fun groupBySeries_aggregates_books_with_same_seriesName() = runBlocking {
         dao.upsert(listOf(
             cachedBook(id = "1", seriesName = "Mistborn"),
@@ -565,6 +580,94 @@ class BookCacheDaoTest {
 
         assertEquals(-1L, dao.insertIfAbsent(cachedBook("audio")))
         assertEquals(local, dao.getByCacheKey(local.cacheKey))
+    }
+
+    @Test
+    fun delayedRemoteResumeCannotReplaceNewerLocalAdvanceOrRewind() = runBlocking {
+        val initial = cachedBook("audio", mediaType = "AUDIOBOOK").copy(
+            source = "AUDIOBOOKSHELF", duration = 1000L, currentTime = 120L,
+            readProgress = 0.12f, lastReadTime = 1000L,
+        )
+        dao.upsert(listOf(initial))
+        assertEquals(1, dao.updateAudiobookProgress(initial.cacheKey, 0.24f, 240L, 2000L))
+        assertEquals(0, dao.updateAudiobookProgressIfUnchanged(initial, 0.12f, 120L, 3000L))
+        val advanced = dao.getByCacheKey(initial.cacheKey)!!
+        assertEquals(240L, advanced.currentTime)
+        assertEquals(1, dao.updateAudiobookProgress(initial.cacheKey, 0f, 0L, 4000L))
+        assertEquals(0, dao.updateAudiobookProgressIfUnchanged(advanced, 0.24f, 240L, 5000L))
+        assertEquals(0L, dao.getByCacheKey(initial.cacheKey)!!.currentTime)
+        assertEquals(0f, dao.getByCacheKey(initial.cacheKey)!!.readProgress)
+    }
+
+    @Test
+    fun audiobookCheckpointUsesExactSourceAndConnectionIdentity() = runBlocking {
+        val first = cachedBook("same", connectionId = null, mediaType = "AUDIOBOOK").copy(
+            cacheKey = "AUDIOBOOKSHELF:same", source = "AUDIOBOOKSHELF",
+        )
+        val otherSource = first.copy(cacheKey = "GRIMMORY:same", source = "GRIMMORY")
+        val otherConnection = first.copy(cacheKey = "two:same", connectionId = "two")
+        dao.upsert(listOf(first, otherSource, otherConnection))
+        assertEquals(1, dao.updateAudiobookProgressIfUnchanged(first, 0.3f, 300L, 1000L))
+        assertEquals(300L, dao.getByCacheKey(first.cacheKey)!!.currentTime)
+        assertEquals(otherSource, dao.getByCacheKey(otherSource.cacheKey))
+        assertEquals(otherConnection, dao.getByCacheKey(otherConnection.cacheKey))
+    }
+
+    @Test
+    fun successfulAcknowledgementIgnoresMetadataOnlyChangesButKeepsNewerPendingVersion() = runBlocking {
+        val row = cachedBook("ack", mediaType = "AUDIOBOOK").copy(source = "AUDIOBOOKSHELF", currentTime = 240L, readProgress = 0.24f, lastReadTime = 2000L)
+        val dirty = PendingProgressPush(row.id, row.source, row.connectionId.orEmpty(), "AUDIOBOOK", 0.24f, false, 2000L)
+        dao.upsert(listOf(row))
+        db.pendingProgressPushDao().upsert(dirty)
+        dao.upsert(listOf(row.copy(title = "Refreshed", cachedAt = 3000L)))
+        assertEquals(1, dao.acknowledgeAudiobookProgress(row, dirty.createdAt, dirty.percentage))
+        assertNull(db.pendingProgressPushDao().get(row.id, row.source, row.connectionId.orEmpty()))
+        db.pendingProgressPushDao().upsert(dirty.copy(createdAt = 4000L))
+        assertEquals(0, dao.acknowledgeAudiobookProgress(row, dirty.createdAt, dirty.percentage))
+        assertEquals(4000L, db.pendingProgressPushDao().get(row.id, row.source, row.connectionId.orEmpty())!!.createdAt)
+    }
+
+    @Test
+    fun oldAcknowledgementAndCompletionCannotConsumeNewerZeroCheckpoint() = runBlocking {
+        val row = cachedBook("command", mediaType = "AUDIOBOOK").copy(source = "AUDIOBOOKSHELF", currentTime = 240L, readProgress = 0.24f, lastReadTime = 2000L)
+        val dirty = PendingProgressPush(row.id, row.source, row.connectionId.orEmpty(), "AUDIOBOOK", 0.24f, false, 2000L)
+        dao.upsert(listOf(row))
+        db.pendingProgressPushDao().upsert(dirty)
+        assertEquals(1, dao.updateAudiobookProgress(row.cacheKey, 0f, 0L, 3000L))
+        db.pendingProgressPushDao().upsert(dirty.copy(percentage = 0f, createdAt = 3000L))
+        assertEquals(0, dao.acknowledgeAudiobookProgress(row, dirty.createdAt, dirty.percentage))
+        assertEquals(0, dao.commitAudiobookCommandIfUnchanged(row, 1f, 1000L, true, false, "READ", 4000L, dirty.createdAt, dirty.percentage))
+        assertEquals(0L, dao.getByCacheKey(row.cacheKey)!!.currentTime)
+        assertEquals(3000L, db.pendingProgressPushDao().get(row.id, row.source, row.connectionId.orEmpty())!!.createdAt)
+    }
+
+    @Test
+    fun resetCommitsAgainstUnchangedCheckpointAndClearsOnlyItsDirtyRow() = runBlocking {
+        val row = cachedBook("reset", mediaType = "AUDIOBOOK").copy(source = "AUDIOBOOKSHELF", currentTime = 240L, readProgress = 0.24f, lastReadTime = 2000L)
+        val dirty = PendingProgressPush(row.id, row.source, row.connectionId.orEmpty(), "AUDIOBOOK", 0.24f, false, 2000L)
+        dao.upsert(listOf(row))
+        db.pendingProgressPushDao().upsert(dirty)
+        assertEquals(1, dao.commitAudiobookCommandIfUnchanged(row, 0f, 0L, false, false, null, 3000L, dirty.createdAt, dirty.percentage))
+        assertEquals(0L, dao.getByCacheKey(row.cacheKey)!!.currentTime)
+        assertEquals(0f, dao.getByCacheKey(row.cacheKey)!!.readProgress)
+        assertNull(db.pendingProgressPushDao().get(row.id, row.source, row.connectionId.orEmpty()))
+    }
+
+    @Test
+    fun catalogInvalidationRetainsAudioZeroCheckpointAndPendingRows() = runBlocking {
+        val zero = cachedBook("zero", mediaType = "AUDIOBOOK").copy(source = "AUDIOBOOKSHELF", lastReadTime = 2000L)
+        val fresh = cachedBook("fresh", mediaType = "AUDIOBOOK")
+        val pending = fresh.copy(id = "pending", cacheKey = "test-conn:pending")
+        dao.upsert(listOf(zero, fresh, pending, cachedBook("ebook")))
+        db.pendingProgressPushDao().upsert(PendingProgressPush(pending.id, pending.source, "test-conn", "AUDIOBOOK", 0f, false, 1000L))
+        dao.deleteCatalogForConnectionPreservingAudioCheckpoints("test-conn")
+        assertEquals(zero, dao.getByCacheKey(zero.cacheKey))
+        assertEquals(pending, dao.getByCacheKey(pending.cacheKey))
+        assertNull(dao.getByCacheKey(fresh.cacheKey))
+        assertNull(dao.getByCacheKey("test-conn:ebook"))
+        dao.clearCatalogPreservingAudioCheckpoints()
+        assertEquals(zero, dao.getByCacheKey(zero.cacheKey))
+        assertEquals(pending, dao.getByCacheKey(pending.cacheKey))
     }
 
     private suspend fun applyRemoteAudio(updatedAt: Long, position: Long = 120L, progress: Float = 0.2f) =

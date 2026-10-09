@@ -1,6 +1,6 @@
 # Reader position regressions — 2026-09-23
 
-Scope: the reporting user’s reports of lost read-aloud position, non-navigating notes, seeking, and headset pause/resume. These changes address reproduced code-level failures; they do not establish that every reported symptom has the same cause.
+Scope: Charlie's reports of lost read-aloud position, non-navigating notes, seeking, and headset pause/resume. These changes address reproduced code-level failures; they do not establish that every reported symptom has the same cause.
 
 ## Changes
 
@@ -23,8 +23,8 @@ Scope: the reporting user’s reports of lost read-aloud position, non-navigatin
 
 ## Remaining acceptance checks
 
-Obtain the reporting user’s current Enve build, affected EPUB, current provider (Grimmory or Storyteller), and a saved note's locator. Fresh Grimmory notes imported with only a CFI have position zero and no native Readium locator; the short-quote fix does not add general CFI support. Do not treat those notes as verified fixed.
+Obtain Charlie's current Enve build, affected EPUB, current provider (Grimmory or Storyteller), and a saved note's locator. Fresh Grimmory notes imported with only a CFI have position zero and no native Readium locator; the short-quote fix does not add general CFI support. Do not treat those notes as verified fixed.
 
-On the affected book: create a short note, move away, reopen the note; swipe while reading, close/reopen; start narration mid-chapter, lock, pause/resume, unlock, close/reopen; seek backward and across audio files while paused. Repeat the headset sequence with the reporting user’s Bose hardware. Simulator remote-command calls do not test Bluetooth delivery or MPNowPlayingSession ownership.
+On the affected book: create a short note, move away, reopen the note; swipe while reading, close/reopen; start narration mid-chapter, lock, pause/resume, unlock, close/reopen; seek backward and across audio files while paused. Repeat the headset sequence with Charlie's Bose hardware. Simulator remote-command calls do not test Bluetooth delivery or MPNowPlayingSession ownership.
 
 No production server, Discord messages, commits, pushes, or releases were changed. Pre-existing podcast edits were preserved.

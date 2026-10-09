@@ -15,11 +15,11 @@ struct EbookSyncConflict: Equatable, Identifiable {
 @MainActor
 @Observable
 final class EbookConflictStore {
-    static let shared = EbookConflictStore()
+    static var shared: EbookConflictStore { ProfileSession.owner.ebookConflicts }
 
     private(set) var pending: [EbookSyncConflict] = []
 
-    private init() {}
+    init() {}
 
     func contains(stableId: String) -> Bool {
         pending.contains { $0.bookStableId == stableId }

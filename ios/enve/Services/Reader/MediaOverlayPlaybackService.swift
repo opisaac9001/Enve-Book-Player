@@ -7,7 +7,7 @@ import UIKit
 
 @MainActor
 final class MediaOverlayPlaybackService {
-    static let shared = MediaOverlayPlaybackService()
+    static let shared = MediaOverlayPlaybackService(profileSession: .owner)
     private let playback: any PlaybackControlling
     private let overlayController: (any PlaybackOverlayControlling)?
     private let bookSession: any CurrentBookSession
@@ -16,7 +16,10 @@ final class MediaOverlayPlaybackService {
     private let providerResolver: any LibraryProviderResolving
     private let bookRepository: BookStoreRepository
 
-    private init(
+    private unowned let profileSession: ProfileSession
+
+    init(
+        profileSession: ProfileSession,
         playbackComposition: PlaybackComposition = ActivePlayback.composition,
         bookSession: any CurrentBookSession = AppState.shared,
         libraryCache: LibraryBookCache = AppState.shared.libraryCache,
@@ -24,6 +27,7 @@ final class MediaOverlayPlaybackService {
         providerResolver: any LibraryProviderResolving = AppState.shared.providerConnections,
         bookRepository: BookStoreRepository = AppState.shared.bookStore
     ) {
+        self.profileSession = profileSession
         self.playback = playbackComposition.controller
         self.overlayController = playbackComposition.overlayController
         self.bookSession = bookSession
@@ -61,6 +65,14 @@ final class MediaOverlayPlaybackService {
         let audioDurationsBySource: [String: TimeInterval]
         let clipTextProgressions: [Double]
         let chapters: [Chapter]
+    }
+
+    func retire() async {
+        let task = positionSyncTask
+        cancelPendingPlay()
+        task?.cancel()
+        await task?.value
+        clearActiveResult()
     }
 
     func prepareAudioTracks(for book: Book) async throws -> OverlayAudioResult {
@@ -107,7 +119,8 @@ final class MediaOverlayPlaybackService {
                 clips: clips,
                 publication: publication,
                 bookId: book.stableId,
-                epubFileURL: fileURL
+                epubFileURL: fileURL,
+                audioRoot: profileSession.storage.cachesDirectory.appendingPathComponent("enve-overlay", isDirectory: true)
             )
             srcFileURLs = Dictionary(
                 uniqueKeysWithValues: seenSrcs.map {
@@ -214,7 +227,7 @@ final class MediaOverlayPlaybackService {
     /// The narration timeline of an EPUB already on this device, without extracting its audio.
     func overlayTimeline(forLocalBook book: Book) async -> MediaOverlayTimeline? {
         if let timeline = narrationTimeline(for: book) { return timeline }
-        guard let fileURL = UnifiedDownloadService.shared.existingReaderAsset(for: book) else { return nil }
+        guard let fileURL = profileSession.downloads.existingReaderAsset(for: book) else { return nil }
         if let index = loadReadAloudIndex(for: book, epubFileURL: fileURL) {
             return MediaOverlayTimeline(
                 clips: index.clips,
@@ -287,9 +300,9 @@ final class MediaOverlayPlaybackService {
             playbackBook.duration = result.totalDuration
             if !result.chapters.isEmpty {
                 playbackBook.chapters = result.chapters
-                ReaderArtifactsStore.shared.saveCachedChapters(bookId: playbackBook.stableId, chapters: result.chapters)
+                profileSession.readerArtifacts.saveCachedChapters(bookId: playbackBook.stableId, chapters: result.chapters)
                 if playbackBook.id != playbackBook.stableId {
-                    ReaderArtifactsStore.shared.saveCachedChapters(bookId: playbackBook.id, chapters: result.chapters)
+                    profileSession.readerArtifacts.saveCachedChapters(bookId: playbackBook.id, chapters: result.chapters)
                 }
             }
 
@@ -353,9 +366,10 @@ final class MediaOverlayPlaybackService {
 
     private func refreshedBookForPlayback(_ book: Book) async -> Book {
         var current = libraryCache.bookInMemory(uniqueId: book.uniqueId) ?? book
+        guard profileSession.serverSyncEnabled else { return current }
         if current.isStorytellerReadAloud {
             guard let provider = providerResolver.provider(for: current.providerId) as? StorytellerProvider,
-                let authoritative = await StorytellerPositionSyncService.shared.authoritativePosition(
+                let authoritative = await profileSession.playback.storytellerPositions.authoritativePosition(
                     for: current,
                     through: provider
                 )
@@ -385,6 +399,7 @@ final class MediaOverlayPlaybackService {
             let server = try? await provider.fetchEbookProgress(for: current),
             let serverDate = server.updatedAt
         else { return current }
+        guard profileSession.serverSyncEnabled else { return current }
         current = libraryCache.bookInMemory(uniqueId: book.uniqueId) ?? current
         guard serverDate > current.lastUpdate else { return current }
 
@@ -456,7 +471,7 @@ final class MediaOverlayPlaybackService {
         let now = Date()
         let current = libraryCache.bookInMemory(uniqueId: book.uniqueId) ?? book
         var syncBook = current
-        NarratedAudioPositionStore.shared.recordNarration(audioTime: clampedAudioTime, for: current)
+        profileSession.narratedPositions.recordNarration(audioTime: clampedAudioTime, for: current)
 
         let mutated = libraryCache.mutateBook(uniqueId: current.uniqueId) { updated in
             updated.epubLocator = jsonString
@@ -483,7 +498,7 @@ final class MediaOverlayPlaybackService {
             }
         }
 
-        EbookLinkStore.shared.saveLinks()
+        profileSession.ebookLinks.saveLinks()
 
         var currentPersistedBook = current
         currentPersistedBook.epubLocator = jsonString
@@ -546,7 +561,7 @@ final class MediaOverlayPlaybackService {
             guard !Task.isCancelled, self.positionSyncGeneration == syncGeneration else { return }
             if capturedCurrentBook.isStorytellerReadAloud {
                 do {
-                    try await StorytellerPositionSyncService.shared.submit(
+                    try await profileSession.playback.storytellerPositions.submit(
                         book: capturedCurrentBook,
                         locatorJSON: jsonString,
                         observedAt: now
@@ -559,11 +574,11 @@ final class MediaOverlayPlaybackService {
                     )
                 }
             } else {
-                await SyncCoordinator.shared.pushProgress(book: capturedBook, domain: .ebook)
+                await profileSession.sync.pushProgress(book: capturedBook, domain: .ebook)
             }
             guard !Task.isCancelled, self.positionSyncGeneration == syncGeneration else { return }
 
-            await LinkedBookProgressCoordinator.shared.recordEbookProgress(
+            await profileSession.linkedProgress.recordEbookProgress(
                 book: capturedCurrentBook,
                 progression: ebookProgress,
                 exactAudioTime: clampedAudioTime,
@@ -618,7 +633,7 @@ final class MediaOverlayPlaybackService {
     }
 
     private func resolveEbookFile(for book: Book) async throws -> URL {
-        return try await UnifiedDownloadService.shared.prepareReaderAsset(for: book)
+        return try await profileSession.downloads.prepareReaderAsset(for: book)
     }
 
     private func loadIndexedAudioTracks(for book: Book, epubFileURL: URL) -> OverlayAudioResult? {
@@ -689,7 +704,7 @@ final class MediaOverlayPlaybackService {
     }
 
     private func readAloudIndexURL(for book: Book) -> URL {
-        LocalStorageManager.shared.bookAudioDirectory(for: book.downloadKey)
+        profileSession.localStorage.bookAudioDirectory(for: book.downloadKey)
             .appendingPathComponent("readaloud-index.json", isDirectory: false)
     }
 
@@ -721,7 +736,7 @@ final class MediaOverlayPlaybackService {
         chapters: [Chapter],
         audioDirectory: URL
     ) {
-        let persistentDirectory = LocalStorageManager.shared.bookAudioDirectory(for: book.downloadKey)
+        let persistentDirectory = profileSession.localStorage.bookAudioDirectory(for: book.downloadKey)
         guard audioDirectory.standardizedFileURL.path == persistentDirectory.standardizedFileURL.path,
             !clips.isEmpty
         else { return }
@@ -757,7 +772,7 @@ final class MediaOverlayPlaybackService {
     ) -> (directory: URL, filesBySource: [String: URL])? {
         guard !sources.isEmpty else { return nil }
 
-        let directory = LocalStorageManager.shared.bookAudioDirectory(for: book.downloadKey)
+        let directory = profileSession.localStorage.bookAudioDirectory(for: book.downloadKey)
         let files =
             ((try? FileManager.default.contentsOfDirectory(
                 at: directory,

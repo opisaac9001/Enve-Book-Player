@@ -72,7 +72,10 @@ final class SourcesEngine {
     private var hasRefreshedLibrarySourceNames = false
     private var librarySourceRevision = 0
 
-    init(appState: AppState = .shared, catalog: LibraryCatalogCoordinator = .shared) {
+    private unowned let profileSession: ProfileSession?
+
+    init(profileSession: ProfileSession? = nil, appState: AppState = .shared, catalog: LibraryCatalogCoordinator = .shared) {
+        self.profileSession = profileSession
         self.appState = appState
         self.catalog = catalog
     }
@@ -174,25 +177,26 @@ final class SourcesEngine {
     #if !os(tvOS)
     func makeLoginDelegate(for type: ProviderType) -> any UnifiedLoginDelegate {
         switch type {
-        case .emby: EmbyLoginDelegate()
-        case .jellyfin: JellyfinLoginDelegate()
-        case .audiobookshelf: AudiobookshelfLoginDelegate()
-        case .storyteller: StorytellerLoginDelegate()
-        case .booklore: GrimmoryLoginDelegate(appState: appState)
-        case .bookOrbit: BookOrbitLoginDelegate(appState: appState)
-        case .webdav: ValidatedConnectionLoginDelegate(appState: appState, providerType: .webdav, defaultName: "WebDAV")
-        case .torbox: ValidatedConnectionLoginDelegate(appState: appState, providerType: .torbox, defaultName: "TorBox")
-        case .komga: KomgaLoginDelegate(appState: appState)
-        case .kavita: ValidatedConnectionLoginDelegate(appState: appState, providerType: .kavita, defaultName: "Kavita")
-        case .opds: ValidatedConnectionLoginDelegate(appState: appState, providerType: .opds, defaultName: "OPDS")
-        default: ValidatedConnectionLoginDelegate(appState: appState, providerType: type, defaultName: type.rawValue.capitalized)
+        case .emby: EmbyLoginDelegate(profileSession: profileSession ?? .owner)
+        case .jellyfin: JellyfinLoginDelegate(profileSession: profileSession ?? .owner)
+        case .audiobookshelf: AudiobookshelfLoginDelegate(profileSession: profileSession ?? .owner)
+        case .storyteller: StorytellerLoginDelegate(profileSession: profileSession ?? .owner)
+        case .booklore: GrimmoryLoginDelegate(appState: appState, profileSession: profileSession ?? .owner)
+        case .bookOrbit: BookOrbitLoginDelegate(appState: appState, profileSession: profileSession ?? .owner)
+        case .webdav: ValidatedConnectionLoginDelegate(appState: appState, providerType: .webdav, defaultName: "WebDAV", profileSession: profileSession ?? .owner)
+        case .torbox: ValidatedConnectionLoginDelegate(appState: appState, providerType: .torbox, defaultName: "TorBox", profileSession: profileSession ?? .owner)
+        case .komga: KomgaLoginDelegate(appState: appState, profileSession: profileSession ?? .owner)
+        case .kavita: ValidatedConnectionLoginDelegate(appState: appState, providerType: .kavita, defaultName: "Kavita", profileSession: profileSession ?? .owner)
+        case .opds: ValidatedConnectionLoginDelegate(appState: appState, providerType: .opds, defaultName: "OPDS", profileSession: profileSession ?? .owner)
+        default: ValidatedConnectionLoginDelegate(appState: appState, providerType: type, defaultName: type.rawValue.capitalized, profileSession: profileSession ?? .owner)
         }
     }
     #endif
 
     func completeAuthenticatedConnection(_ connection: ServerConnection) throws -> SourcesConnectionCompletion {
+        if let profileSession { try ProfileSwitchCoordinator.shared.authorizeChanges(in: profileSession) }
         let connection = SourcesFinalizer.resolvedConnection(connection, in: appState)
-        SourcesFinalizer.persistPassword(for: connection)
+        SourcesFinalizer.persistPassword(for: connection, profileSession: profileSession)
 
         switch connection.type {
         case .webdav:
@@ -212,8 +216,8 @@ final class SourcesEngine {
                 isEnabled: true,
                 lastConnected: Date()
             )
-            RemoteImportService.shared.saveWebDAVServer(server)
-            SourcesFinalizer.upsert(connection, into: appState)
+            (profileSession?.remoteImport ?? RemoteImportService.shared).saveWebDAVServer(server)
+            SourcesFinalizer.upsert(connection, into: appState, profileSession: profileSession)
             return .chooseWebDAVRoot(server: server, connection: connection)
 
         case .torbox:
@@ -230,16 +234,16 @@ final class SourcesEngine {
                 isEnabled: true,
                 lastConnected: Date()
             )
-            RemoteImportService.shared.saveWebDAVServer(server)
-            SourcesFinalizer.upsert(connection, into: appState)
+            (profileSession?.remoteImport ?? RemoteImportService.shared).saveWebDAVServer(server)
+            SourcesFinalizer.upsert(connection, into: appState, profileSession: profileSession)
             return .chooseWebDAVRoot(server: server, connection: connection)
 
         case .realdebrid:
-            SourcesFinalizer.upsert(connection, into: appState)
+            SourcesFinalizer.upsert(connection, into: appState, profileSession: profileSession)
             return .chooseCloudFolder(connection: connection)
 
         default:
-            SourcesFinalizer.upsert(connection, into: appState)
+            SourcesFinalizer.upsert(connection, into: appState, profileSession: profileSession)
             Task { await self.importAndSync(providerId: connection.id) }
             return .completed
         }
@@ -251,7 +255,7 @@ final class SourcesEngine {
         let roots = normalized.isEmpty ? ["/"] : normalized
         updated.rootPath = roots.first ?? "/"
         updated.indexedPaths = roots
-        RemoteImportService.shared.saveWebDAVServer(updated)
+        (profileSession?.remoteImport ?? RemoteImportService.shared).saveWebDAVServer(updated)
         if let idx = appState.providerConnections.connections.firstIndex(where: { $0.id == connectionId }) {
             appState.providerConnections.connections[idx].rootPath = updated.rootPath
         }
@@ -285,7 +289,7 @@ final class SourcesEngine {
     }
 
     func importFiles(urls: [URL], mode: SourcesFilesImportMode) async throws -> Int {
-        let imported = try await RemoteImportService.shared.importFromFilesApp(
+        let imported = try await (profileSession?.remoteImport ?? RemoteImportService.shared).importFromFilesApp(
             urls: urls,
             audioSelectionMode: mode.remoteMode
         )
@@ -293,15 +297,15 @@ final class SourcesEngine {
         let library = LocalLibrary(
             id: LocalLibraryService.fileSharingLibraryId,
             name: "Drag & Drop Books",
-            folderPath: LocalLibraryService.fileSharingRootURL.path,
+            folderPath: (profileSession?.storage.documentsDirectory ?? LocalLibraryService.fileSharingRootURL).path,
             createdAt: Date(),
             isEnabled: true,
             type: .fileSharing
         )
-        LocalLibraryStorageStore.shared.saveLibrary(library)
+        (profileSession?.localLibrary ?? LocalLibraryStorageStore.shared).saveLibrary(library)
 
-        let scanResult = try await LocalLibraryService.shared.scanLibrary(library)
-        LocalLibraryStorageStore.shared.saveScanResult(scanResult)
+        let scanResult = try await (profileSession?.localLibraryService ?? LocalLibraryService.shared).scanLibrary(library)
+        (profileSession?.localLibrary ?? LocalLibraryStorageStore.shared).saveScanResult(scanResult)
 
         for bookFile in imported {
             if let coverPath = bookFile.metadata?.coverImagePath,
@@ -309,7 +313,7 @@ final class SourcesEngine {
                 let data = try? Data(contentsOf: URL(fileURLWithPath: coverPath))
             {
                 let book = bookFile.toBook(libraryId: LocalLibraryService.fileSharingLibraryId)
-                await AppCache.shared.setCoverData(data, for: book)
+                await (profileSession?.appCache ?? AppCache.shared).setCoverData(data, for: book)
             }
         }
 
@@ -321,7 +325,7 @@ final class SourcesEngine {
     }
 
     func dragDropBooks() -> [SourcesDragDropBook] {
-        LocalLibraryStorageStore.shared.loadBooks(libraryId: LocalLibraryService.fileSharingLibraryId)
+        (profileSession?.localLibrary ?? LocalLibraryStorageStore.shared).loadBooks(libraryId: LocalLibraryService.fileSharingLibraryId)
             .map {
                 SourcesDragDropBook(
                     id: $0.id,
@@ -336,9 +340,9 @@ final class SourcesEngine {
 
     func scanDragDropLibrary() async throws -> Int {
         let library = fileSharingLibrary()
-        LocalLibraryStorageStore.shared.saveLibrary(library)
-        let result = try await LocalLibraryService.shared.scanLibrary(library)
-        LocalLibraryStorageStore.shared.saveScanResult(result)
+        (profileSession?.localLibrary ?? LocalLibraryStorageStore.shared).saveLibrary(library)
+        let result = try await (profileSession?.localLibraryService ?? LocalLibraryService.shared).scanLibrary(library)
+        (profileSession?.localLibrary ?? LocalLibraryStorageStore.shared).saveScanResult(result)
         catalog.forceNextLocalRefresh = true
         NotificationCenter.default.post(name: .localLibraryUpdated, object: library.id)
         return result.totalBooks
@@ -394,12 +398,12 @@ final class SourcesEngine {
     }
 
     private func fileSharingLibrary() -> LocalLibrary {
-        LocalLibraryStorageStore.shared.loadLibraries()
+        (profileSession?.localLibrary ?? LocalLibraryStorageStore.shared).loadLibraries()
             .first { $0.id == LocalLibraryService.fileSharingLibraryId }
             ?? LocalLibrary(
                 id: LocalLibraryService.fileSharingLibraryId,
                 name: "Drag & Drop Books",
-                folderPath: LocalLibraryService.fileSharingRootURL.path,
+                folderPath: (profileSession?.storage.documentsDirectory ?? LocalLibraryService.fileSharingRootURL).path,
                 createdAt: Date(),
                 isEnabled: true,
                 type: .fileSharing
@@ -417,8 +421,8 @@ enum SourcesFinalizer {
         return resolved
     }
 
-    static func persistPassword(for connection: ServerConnection) {
-        connection.persistSecretsToSharedKeychain()
+    static func persistPassword(for connection: ServerConnection, profileSession: ProfileSession? = nil) {
+        connection.persistSecretsToSharedKeychain(using: profileSession?.keychain ?? .shared)
 
         guard let password = connection.password, !password.isEmpty else { return }
         let key: String
@@ -427,11 +431,11 @@ enum SourcesFinalizer {
         case .audiobookshelf: key = "abs_password_\(connection.id.uuidString)"
         default: key = "\(connection.type.rawValue)_password_\(connection.id.uuidString)"
         }
-        KeychainHelper.shared.set(password, key: key)
+        (profileSession?.legacyKeychain ?? KeychainHelper.shared).set(password, key: key)
     }
 
     @discardableResult
-    static func upsert(_ connection: ServerConnection, into appState: AppState) -> ServerConnection {
+    static func upsert(_ connection: ServerConnection, into appState: AppState, profileSession: ProfileSession? = nil) -> ServerConnection {
         let resolved = resolvedConnection(connection, in: appState)
         if let index = appState.providerConnections.connections.firstIndex(where: { $0.id == connection.id }) {
             appState.providerConnections.connections[index] = resolved
@@ -440,14 +444,14 @@ enum SourcesFinalizer {
         } else {
             appState.providerConnections.connections.append(resolved)
         }
-        AuthenticationFailureStore.shared.clear(connectionId: resolved.id)
+        (profileSession?.authenticationFailures ?? AuthenticationFailureStore.shared).clear(connectionId: resolved.id)
         appState.providerConnections.clearReauthentication(connectionId: resolved.id)
         return resolved
     }
 
-    static func importAndSync(catalog: LibraryCatalogCoordinator = .shared, providerId: UUID) async {
+    static func importAndSync(profileSession: ProfileSession? = nil, catalog: LibraryCatalogCoordinator = .shared, providerId: UUID) async {
         await catalog.refreshConnectionLibraries(providerId: providerId)
-        _ = await SyncCoordinator.shared.runRecentlyPlayedSync(trigger: .appLaunch)
+        _ = await (profileSession?.sync ?? SyncCoordinator.shared).runRecentlyPlayedSync(trigger: .appLaunch)
     }
 
     private static func duplicateIndex(for connection: ServerConnection, in connections: [ServerConnection]) -> Int? {

@@ -1,5 +1,6 @@
 package com.enve.silo
 
+import com.enve.core.data.util.runSuspendCatching
 import com.enve.silo.api.SiloApi
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -23,9 +24,9 @@ class SiloPersonalRepository @Inject constructor(
     private val api: SiloApi,
     private val repository: SiloRepository,
 ) {
-    suspend fun history(limit: Int): Result<List<SiloHistoryItem>?> = runCatching {
+    suspend fun history(limit: Int): Result<List<SiloHistoryItem>?> = runSuspendCatching {
         val response = api.history(repository.ensureProfile(), limit.coerceIn(1, 100))
-        if (response.code() == 404) return@runCatching null
+        if (response.code() == 404) return@runSuspendCatching null
         if (!response.isSuccessful) error("Silo history failed: HTTP ${response.code()}")
         response.body()?.items.orEmpty().map { entry ->
             SiloHistoryItem(
@@ -38,9 +39,9 @@ class SiloPersonalRepository @Inject constructor(
         }
     }
 
-    suspend fun similar(contentId: String, limit: Int): Result<List<SiloSimilarItem>?> = runCatching {
+    suspend fun similar(contentId: String, limit: Int): Result<List<SiloSimilarItem>?> = runSuspendCatching {
         val response = api.similarItems(repository.ensureProfile(), contentId, limit.coerceIn(1, 50))
-        if (response.code() == 404) return@runCatching null
+        if (response.code() == 404) return@runSuspendCatching null
         if (!response.isSuccessful) error("Silo similar items failed: HTTP ${response.code()}")
         response.body()?.items.orEmpty()
             .filter { it.mediaItemId.isNotBlank() && it.mediaItemId != contentId }

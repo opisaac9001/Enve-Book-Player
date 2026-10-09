@@ -8,7 +8,11 @@ extension Notification.Name {
 class MetadataManager {
     static let shared = MetadataManager()
 
-    private init() {}
+    nonisolated private let storage: MetadataStorage
+
+    init(storage: MetadataStorage = .shared) {
+        self.storage = storage
+    }
 
     nonisolated func mergeMetadata(_ metadata: BookMetadata) -> MergedMetadata {
         let backend = metadata.backend
@@ -326,13 +330,13 @@ class MetadataManager {
         Task {
             do {
                 var metadata =
-                    try await MetadataStorage.shared.loadMetadata(bookId: bookId)
+                    try await storage.loadMetadata(bookId: bookId)
                     ?? BookMetadata(bookId: bookId, file: FileMetadataLayer())
 
                 metadata.userOverrides = overrides
                 metadata.lastUpdated = Date()
 
-                try await MetadataStorage.shared.saveMetadata(metadata)
+                try await storage.saveMetadata(metadata)
 
                 NotificationCenter.default.post(name: .metadataUpdated, object: bookId)
 
@@ -355,13 +359,13 @@ class MetadataManager {
         Task {
             do {
                 var metadata =
-                    try await MetadataStorage.shared.loadMetadata(bookId: bookId)
+                    try await storage.loadMetadata(bookId: bookId)
                     ?? BookMetadata(bookId: bookId, file: FileMetadataLayer())
 
                 metadata.appCache = cache
                 metadata.lastUpdated = Date()
 
-                try await MetadataStorage.shared.saveMetadata(metadata)
+                try await storage.saveMetadata(metadata)
 
                 NotificationCenter.default.post(name: .metadataUpdated, object: bookId)
 
@@ -384,13 +388,13 @@ class MetadataManager {
         Task {
             do {
                 var metadata =
-                    try await MetadataStorage.shared.loadMetadata(bookId: bookId)
+                    try await storage.loadMetadata(bookId: bookId)
                     ?? BookMetadata(bookId: bookId, file: FileMetadataLayer())
 
                 metadata.audible = audible
                 metadata.lastUpdated = Date()
 
-                try await MetadataStorage.shared.saveMetadata(metadata)
+                try await storage.saveMetadata(metadata)
 
                 NotificationCenter.default.post(name: .metadataUpdated, object: bookId)
 
@@ -413,13 +417,13 @@ class MetadataManager {
         Task {
             do {
                 var metadata =
-                    try await MetadataStorage.shared.loadMetadata(bookId: bookId)
+                    try await storage.loadMetadata(bookId: bookId)
                     ?? BookMetadata(bookId: bookId, file: FileMetadataLayer())
 
                 metadata.iTunes = iTunes
                 metadata.lastUpdated = Date()
 
-                try await MetadataStorage.shared.saveMetadata(metadata)
+                try await storage.saveMetadata(metadata)
 
                 NotificationCenter.default.post(name: .metadataUpdated, object: bookId)
 
@@ -442,13 +446,13 @@ class MetadataManager {
         Task {
             do {
                 var metadata =
-                    try await MetadataStorage.shared.loadMetadata(bookId: bookId)
+                    try await storage.loadMetadata(bookId: bookId)
                     ?? BookMetadata(bookId: bookId, file: FileMetadataLayer())
 
                 metadata.googleBooks = google
                 metadata.lastUpdated = Date()
 
-                try await MetadataStorage.shared.saveMetadata(metadata)
+                try await storage.saveMetadata(metadata)
 
                 NotificationCenter.default.post(name: .metadataUpdated, object: bookId)
 
@@ -471,7 +475,7 @@ class MetadataManager {
         Task {
             do {
                 var metadata =
-                    try await MetadataStorage.shared.loadMetadata(bookId: bookId)
+                    try await storage.loadMetadata(bookId: bookId)
                     ?? BookMetadata(bookId: bookId, file: FileMetadataLayer())
 
                 let merged = matchesMergeOverrides(
@@ -491,7 +495,7 @@ class MetadataManager {
                 metadata.userOverrides = merged
                 metadata.lastUpdated = Date()
 
-                try await MetadataStorage.shared.saveMetadata(metadata)
+                try await storage.saveMetadata(metadata)
 
                 NotificationCenter.default.post(name: .metadataUpdated, object: bookId)
 
@@ -514,13 +518,13 @@ class MetadataManager {
         Task {
             do {
                 var metadata =
-                    try await MetadataStorage.shared.loadMetadata(bookId: bookId)
+                    try await storage.loadMetadata(bookId: bookId)
                     ?? BookMetadata(bookId: bookId, file: FileMetadataLayer())
 
                 metadata.enve = enve
                 metadata.lastUpdated = Date()
 
-                try await MetadataStorage.shared.saveMetadata(metadata)
+                try await storage.saveMetadata(metadata)
 
                 NotificationCenter.default.post(name: .metadataUpdated, object: bookId)
 
@@ -539,7 +543,7 @@ class MetadataManager {
     nonisolated func recordStreamExtractedMetadata(for book: Book) async {
         var metadata = await loadMetadata(for: book, readOnly: true)
         metadata.backend = Self.backendLayer(fillingGapsIn: metadata.backend, from: book)
-        try? await MetadataStorage.shared.saveMetadata(metadata)
+        try? await storage.saveMetadata(metadata)
     }
 
     nonisolated static func backendLayer(
@@ -601,7 +605,7 @@ class MetadataManager {
         let diagnosticID = DiagnosticLogSanitizer.identifier(for: book.stableId)
         do {
             for candidateId in Array(Set([book.id, book.stableId])) {
-                guard var loaded = try await MetadataStorage.shared.loadMetadata(bookId: candidateId) else {
+                guard var loaded = try await storage.loadMetadata(bookId: candidateId) else {
                     continue
                 }
                 if let actual = book.duration {
@@ -619,7 +623,7 @@ class MetadataManager {
                             loaded.backend = backend
                             loaded.lastUpdated = Date()
                             if !readOnly {
-                                try? await MetadataStorage.shared.saveMetadata(loaded)
+                                try? await storage.saveMetadata(loaded)
                             }
                         }
                     } else if !readOnly {
@@ -642,7 +646,7 @@ class MetadataManager {
                         )
                         loaded.backend = backend
                         loaded.lastUpdated = Date()
-                        try? await MetadataStorage.shared.saveMetadata(loaded)
+                        try? await storage.saveMetadata(loaded)
                     }
                 }
                 return loaded
@@ -653,7 +657,7 @@ class MetadataManager {
         let initialized = initializeBookMetadata(from: book)
         if !readOnly {
             do {
-                try await MetadataStorage.shared.saveMetadata(initialized)
+                try await storage.saveMetadata(initialized)
             } catch {
                 AppLogger.network.error("Failed to persist initialized metadata bookId=\(diagnosticID): \(error)")
             }

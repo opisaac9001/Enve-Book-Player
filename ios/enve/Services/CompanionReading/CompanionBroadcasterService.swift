@@ -50,7 +50,7 @@ public final class CompanionBroadcasterService {
 
     public private(set) var isVideoStreaming: Bool = false
 
-    private init() {}
+    init() {}
 
     public func start(bookTitle: String, bookStableId: String, hasMediaOverlay: Bool) async throws {
         await stop(reason: .userClosedReader)

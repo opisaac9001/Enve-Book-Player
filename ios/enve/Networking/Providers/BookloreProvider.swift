@@ -4,6 +4,9 @@ import CryptoKit
 import Foundation
 import Logging
 import os.lock
+#if canImport(WebKit)
+import WebKit
+#endif
 
 enum GrimmoryRemoteSort: String, Sendable {
     case addedOn
@@ -88,7 +91,7 @@ struct BookloreTierPreference {
 }
 
 class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, AudiobookProgressProvider,
-    EbookProgressProvider, EngineAwareEbookProgressProvider, EbookDownloadProvider, PersonalRatingProvider, ObservableObject,
+    EbookProgressProvider, EngineAwareEbookProgressProvider, EbookDownloadProvider, PersonalRatingProvider, SavedBooksProvider, ObservableObject,
     @unchecked Sendable
 {
     @Published var connection: ServerConnection
@@ -107,6 +110,19 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
         !useLegacyRestAPI && !useKomgaFallback
     }
 
+    #if !os(tvOS)
+    private let cloudflareRefresh: CloudflareSilentRefreshService
+    #endif
+    private let defaults: UserDefaults
+    private let keychain: KeychainHelper
+    private let ebooks: LocalEbookImporter
+    private let rejectedContent: RejectedContentStore
+    private let metadataLayering: MetadataLayeringManager
+    private let metadataManager: MetadataManager
+    private let catalogCheckpoints: GrimmoryCatalogCheckpointStore
+    private let certificateTransport: InsecureURLSession
+    private let isolatesCredentials: Bool
+    private var tierUpgradeTask: Task<Void, Never>?
     private let transport: BookloreTransport
     private lazy var progressClient = BookloreProgressClient(
         makeRequest: { [unowned self] path in
@@ -119,6 +135,26 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
             try self.guardJSON(data, response: response, endpoint: endpoint)
         }
     )
+    private struct PendingListening: Codable {
+        let book: Book
+        var seconds: TimeInterval
+        var position: TimeInterval
+        var duration: TimeInterval
+    }
+    // Kept on disk so listening that hasn't reached Grimmory yet survives the app closing.
+    private var pendingListening: [String: PendingListening] {
+        get {
+            guard let data = defaults.data(forKey: pendingListeningKey) else { return [:] }
+            return (try? JSONDecoder().decode([String: PendingListening].self, from: data)) ?? [:]
+        }
+        set {
+            defaults.set(try? JSONEncoder().encode(newValue), forKey: pendingListeningKey)
+        }
+    }
+    private var pendingListeningKey: String { "grimmory.pendingListening.\(connection.id.uuidString)" }
+    private let maxPendingListening: TimeInterval = 15 * 60
+    private var pausedListeningBooks: Set<String> = []
+
     private lazy var readingSessionClient = BookloreReadingSessionClient(
         makeRequest: { [unowned self] path in
             try self.makeRequest(path: path)
@@ -151,11 +187,11 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
     private func saveRefreshToken(_ token: String?) {
         guard let token, !token.isEmpty else { return }
         refreshToken = token
-        KeychainHelper.shared.set(token, key: refreshTokenKeychainKey)
+        keychain.set(token, key: refreshTokenKeychainKey)
     }
 
     private func loadRefreshTokenFromKeychain() -> String? {
-        KeychainHelper.shared.get(refreshTokenKeychainKey)
+        keychain.get(refreshTokenKeychainKey)
     }
 
     var onTokenUpdated: ((ServerConnection) -> Void)?
@@ -182,11 +218,11 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
     private let coverCircuitBreaker = CoverCircuitBreaker()
 
     static var pendingCatalogSyncConnectionIds: Set<UUID> {
-        GrimmoryCatalogCheckpointStore.pendingConnectionIds()
+        GrimmoryCatalogCheckpointStore().pendingConnectionIds()
     }
 
     func completeCatalogSync(libraryId: String) {
-        GrimmoryCatalogCheckpointStore.clear(connectionId: connection.id, libraryId: libraryId)
+        catalogCheckpoints.clear(connectionId: connection.id, libraryId: libraryId)
     }
 
     var supportsTransactionalCatalogImport: Bool {
@@ -201,7 +237,7 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
         let firstPageData = try await fetchAppBooksPageData(libraryId: libraryId, page: 0)
         let firstPage = try JSONDecoder().decode(BooklorePage<BookloreBookSummary>.self, from: firstPageData)
         guard firstPage.rawItemCount > 0 else { throw ProviderError.invalidResponse }
-        RejectedContentStore.shared.update(
+        rejectedContent.update(
             connection: connection,
             libraryId: libraryId,
             acceptedItemIdentifiers: Set(firstPage.content.map { $0.id.stringValue }),
@@ -209,7 +245,7 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
             fallbackScope: "page-0"
         )
 
-        let prepared = try GrimmoryCatalogCheckpointStore.prepare(
+        let prepared = try catalogCheckpoints.prepare(
             connectionId: connection.id,
             libraryId: libraryId,
             serverIdentity: connection.url.trimmingCharacters(in: CharacterSet(charactersIn: "/")).lowercased(),
@@ -235,7 +271,7 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
         _ session: GrimmoryCatalogImportSession,
         to reconciliation: ReconciliationStart
     ) throws {
-        try GrimmoryCatalogCheckpointStore.bindReconciliation(reconciliation, checkpoint: &session.checkpoint)
+        try catalogCheckpoints.bindReconciliation(reconciliation, checkpoint: &session.checkpoint)
     }
 
     func nextCatalogImportBatch(_ session: GrimmoryCatalogImportSession) async throws -> GrimmoryCatalogImportBatch? {
@@ -248,7 +284,7 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
         var pagesToFetch: [Int] = []
         for page in requestedPages {
             if session.checkpoint.completedPages.contains(page),
-                let data = try? GrimmoryCatalogCheckpointStore.pageData(
+                let data = try? catalogCheckpoints.pageData(
                     connectionId: connection.id,
                     libraryId: session.libraryId,
                     page: page
@@ -272,7 +308,7 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
                 return result
             }
             for (page, data) in fetched {
-                try GrimmoryCatalogCheckpointStore.recordPage(data, page: page, checkpoint: &session.checkpoint)
+                try catalogCheckpoints.recordPage(data, page: page, checkpoint: &session.checkpoint)
                 dataByPage[page] = data
             }
         }
@@ -287,7 +323,7 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
                 page.totalElements == session.totalElements
             else { throw ProviderError.invalidResponse }
             if !page.rejectedItems.isEmpty { session.isComplete = false }
-            RejectedContentStore.shared.update(
+            rejectedContent.update(
                 connection: connection,
                 libraryId: session.libraryId,
                 acceptedItemIdentifiers: Set(page.content.map { $0.id.stringValue }),
@@ -322,7 +358,7 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
         _ batch: GrimmoryCatalogImportBatch,
         session: GrimmoryCatalogImportSession
     ) throws {
-        try GrimmoryCatalogCheckpointStore.markCommitted(
+        try catalogCheckpoints.markCommitted(
             pages: batch.pages,
             bookCount: batch.books.count,
             checkpoint: &session.checkpoint
@@ -352,10 +388,22 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
         return result
     }
 
-    init(connection: ServerConnection = ServerConnection(name: "Grimmory", url: "", type: .booklore)) {
+    init(connection: ServerConnection = ServerConnection(name: "Grimmory", url: "", type: .booklore), profileSession: ProfileSession? = nil) {
         self.connection = connection
+        #if !os(tvOS)
+        cloudflareRefresh = CloudflareSilentRefreshService(websiteDataStore: profileSession?.websiteDataStore ?? .default())
+        #endif
+        defaults = profileSession?.defaults ?? .standard
+        keychain = profileSession?.legacyKeychain ?? .shared
+        ebooks = profileSession?.ebooks ?? .shared
+        rejectedContent = profileSession?.rejectedContent ?? .shared
+        metadataLayering = profileSession?.metadataLayering ?? .shared
+        metadataManager = profileSession?.metadataManager ?? .shared
+        catalogCheckpoints = GrimmoryCatalogCheckpointStore(root: profileSession?.storage.applicationSupportDirectory ?? ProfileStorageLocations.owner.applicationSupportDirectory)
+        isolatesCredentials = profileSession?.isOwner == false
+        certificateTransport = profileSession?.transport ?? .delegateInstance
 
-        let tierPreference = BookloreTierPreference(connectionId: connection.id)
+        let tierPreference = BookloreTierPreference(connectionId: connection.id, defaults: defaults)
         self.tierPreference = tierPreference
         let restoredTier = tierPreference.restored
         switch restoredTier {
@@ -373,7 +421,7 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
             let keys = customHeaders.keys.sorted().joined(separator: ", ")
             AppLogger.network.info("Session custom headers: \(keys)")
         }
-        transport = BookloreTransport(connection: connection)
+        transport = BookloreTransport(connection: connection, profileSession: profileSession)
         transport.setCustomHeadersProvider { [weak self] in self?.connection.customHeaders }
 
         self.refreshToken = loadRefreshTokenFromKeychain()
@@ -382,8 +430,25 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
         }
 
         if restoredTier != nil, tierPreference.consumeUpgradeProbe() {
-            Task { [weak self] in await self?.attemptTierUpgrade() }
+            tierUpgradeTask = Task { [weak self] in await self?.attemptTierUpgrade() }
         }
+    }
+
+    func retire() async {
+        onTokenUpdated = nil
+        tierUpgradeTask?.cancel()
+        activeLoginTask?.cancel()
+        activeRefreshTask?.cancel()
+        transport.invalidate()
+        #if !os(tvOS)
+        await cloudflareRefresh.retire()
+        #endif
+        await tierUpgradeTask?.value
+        _ = try? await activeLoginTask?.value
+        _ = try? await activeRefreshTask?.value
+        tierUpgradeTask = nil
+        activeLoginTask = nil
+        activeRefreshTask = nil
     }
 
     private func addAuthHeaders(_ request: inout URLRequest) {
@@ -445,7 +510,7 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
         guard usesBrowserCloudflareCookie,
             let serverURL = URL(string: normalize(connection.url))
         else { return false }
-        guard let newCookieHeader = await CloudflareSilentRefreshService.shared.refreshedCookieHeader(for: serverURL),
+        guard let newCookieHeader = await cloudflareRefresh.refreshedCookieHeader(for: serverURL),
             connection.customHeaders?["Cookie"] != newCookieHeader
         else {
             return false
@@ -559,9 +624,16 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
             let progressCallback: @Sendable (Double) -> Void = onProgress ?? { _ in }
             let delegate = URLSessionDownloadProgressDelegate(
                 progressHandler: progressCallback,
-                credential: transport.credential
+                credential: transport.credential,
+                certificateTransport: certificateTransport
             )
             let bgConfig = URLSessionConfiguration.background(withIdentifier: "com.enve.ebookdownload.\(UUID().uuidString)")
+            if isolatesCredentials {
+                bgConfig.httpCookieStorage = nil
+                bgConfig.httpShouldSetCookies = false
+                bgConfig.urlCredentialStorage = nil
+                bgConfig.urlCache = nil
+            }
             bgConfig.waitsForConnectivity = true
             bgConfig.allowsExpensiveNetworkAccess = true
             bgConfig.allowsConstrainedNetworkAccess = true
@@ -666,7 +738,7 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
             }
             AppLogger.network.error("Token refresh rejected (HTTP \(response.statusCode)), will re-login")
             refreshToken = nil
-            KeychainHelper.shared.delete(refreshTokenKeychainKey)
+            keychain.delete(refreshTokenKeychainKey)
             return nil
         }
 
@@ -1629,7 +1701,7 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
                 throw error
             }
             if !result.rejectedItems.isEmpty { isComplete = false }
-            RejectedContentStore.shared.update(
+            rejectedContent.update(
                 connection: connection,
                 libraryId: libraryId,
                 acceptedItemIdentifiers: Set(result.content.map(\.id)),
@@ -1678,7 +1750,7 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
             return Array(all.prefix(limit))
         }
         let result = try JSONDecoder().decode(KomgaPage<KomgaBook>.self, from: data)
-        RejectedContentStore.shared.update(
+        rejectedContent.update(
             connection: connection,
             libraryId: libraryId,
             acceptedItemIdentifiers: Set(result.content.map(\.id)),
@@ -1800,7 +1872,7 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
             throw error
         }
         let books = decoded.values
-        RejectedContentStore.shared.update(
+        rejectedContent.update(
             connection: connection,
             libraryId: libraryId,
             acceptedItemIdentifiers: Set(books.map { $0.id.stringValue }),
@@ -1905,7 +1977,7 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
 
         var checkpoint: GrimmoryCatalogCheckpoint?
         do {
-            let prepared = try GrimmoryCatalogCheckpointStore.prepare(
+            let prepared = try catalogCheckpoints.prepare(
                 connectionId: connection.id,
                 libraryId: libraryId,
                 serverIdentity: connection.url.trimmingCharacters(in: CharacterSet(charactersIn: "/")).lowercased(),
@@ -1929,7 +2001,7 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
         if var current = checkpoint {
             for page in current.completedPages.sorted() where page > 0 && page < firstPage.totalPages {
                 do {
-                    let data = try GrimmoryCatalogCheckpointStore.pageData(
+                    let data = try catalogCheckpoints.pageData(
                         connectionId: connection.id,
                         libraryId: libraryId,
                         page: page
@@ -1943,7 +2015,7 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
                     }
                     pageData[page] = data
                 } catch {
-                    GrimmoryCatalogCheckpointStore.discardPage(page: page, checkpoint: &current)
+                    catalogCheckpoints.discardPage(page: page, checkpoint: &current)
                     AppLogger.network.warning("[Booklore] Discarded invalid staged catalog page \(page)")
                 }
             }
@@ -1983,7 +2055,7 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
                         pageData[page] = data
                         if var current = checkpoint {
                             do {
-                                try GrimmoryCatalogCheckpointStore.recordPage(data, page: page, checkpoint: &current)
+                                try catalogCheckpoints.recordPage(data, page: page, checkpoint: &current)
                                 checkpoint = current
                             } catch {
                                 checkpoint = nil
@@ -2013,7 +2085,7 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
         // Returns false when the server has no batch format endpoint so the snapshot can switch tiers.
         func append(_ page: BooklorePage<BookloreBookSummary>) async throws -> Bool {
             if !page.rejectedItems.isEmpty { snapshotIsComplete = false }
-            RejectedContentStore.shared.update(
+            rejectedContent.update(
                 connection: connection,
                 libraryId: libraryId,
                 acceptedItemIdentifiers: Set(page.content.map { $0.id.stringValue }),
@@ -2218,7 +2290,7 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
             search: search
         )
         let result = try JSONDecoder().decode(BooklorePage<BookloreBookSummary>.self, from: data)
-        RejectedContentStore.shared.update(
+        rejectedContent.update(
             connection: connection,
             libraryId: libraryId,
             acceptedItemIdentifiers: Set(result.content.map { $0.id.stringValue }),
@@ -3067,7 +3139,7 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
         }
 
         let cacheDirName = resource.map { "book-\(book.id)-file-\($0.fileId)" } ?? "book-\(book.id)"
-        let cacheRoot = LocalEbookImporter.shared.streamedEpubCacheRoot
+        let cacheRoot = ebooks.streamedEpubCacheRoot
             .appendingPathComponent(connection.id.uuidString, isDirectory: true)
             .appendingPathComponent(cacheDirName, isDirectory: true)
 
@@ -3175,7 +3247,7 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
             let chapterDuration = enriched.duration ?? 0
             if sessionTracks.count <= 1,
                 BookloreBookMapper.chaptersAreInadequate(enriched.chapters ?? [], bookDuration: chapterDuration),
-                let extractedChapters = await MetadataLayeringManager.shared.extractEmbeddedChapters(
+                let extractedChapters = await metadataLayering.extractEmbeddedChapters(
                     from: streamURL,
                     headers: streamHeaders
                 ),
@@ -3285,7 +3357,7 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
                     enriched.duration = embeddedDuration
                 }
 
-                await MetadataManager.shared.recordStreamExtractedMetadata(for: enriched)
+                await metadataManager.recordStreamExtractedMetadata(for: enriched)
             }
         }
 
@@ -3756,13 +3828,13 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
         let expectedExtension = resource?.format
             ?? BookloreBookMapper.normalizedEbookFormat(book.ebookFormat)
 
-        if let cached = LocalEbookImporter.shared.cachedEbook(forBookId: cacheIdentifier) {
+        if let cached = ebooks.cachedEbook(forBookId: cacheIdentifier) {
             if expectedExtension == nil || cached.pathExtension.lowercased() == expectedExtension {
                 AppLogger.network.info("Using cached ebook for \(book.title) (\(book.id))")
                 onProgress?(1)
                 return cached
             }
-            try? LocalEbookImporter.shared.deleteRemoteEbookArtifacts(forBookId: cacheIdentifier)
+            try? ebooks.deleteRemoteEbookArtifacts(forBookId: cacheIdentifier)
         }
 
         AppLogger.network.info("Downloading ebook: \(book.title) (\(book.id))")
@@ -3787,7 +3859,7 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
             .map { URL(fileURLWithPath: $0).deletingPathExtension().lastPathComponent }
             ?? book.title.replacingOccurrences(of: "/", with: "-")
         AppLogger.network.info("Downloaded ebook: \(book.title) (\(ext), \(localURL.lastPathComponent))")
-        let cachedURL = try LocalEbookImporter.shared.cacheRemoteEbook(
+        let cachedURL = try ebooks.cacheRemoteEbook(
             tempURL: localURL,
             preferredFilename: "\(safeTitle).\(ext)",
             bookIdentifier: cacheIdentifier
@@ -3874,6 +3946,7 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
     func uploadEbookReadingSession(
         for book: Book,
         startDate: Date,
+        activeSeconds: Int,
         startProgress: Double,
         endProgress: Double,
         epubLocator: String?
@@ -3884,6 +3957,7 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
             for: book,
             bookId: bookId,
             startDate: startDate,
+            activeSeconds: activeSeconds,
             startProgress: startProgress,
             endProgress: endProgress,
             locator: epubLocator
@@ -3936,6 +4010,91 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
         let (_, response) = try await performAuthorizedRequest(request)
         guard (200...204).contains(response.statusCode) else {
             throw ProviderError.serverError("Failed to update Grimmory rating (HTTP \(response.statusCode))")
+        }
+    }
+
+    func canSyncSavedBooks() async throws -> Bool {
+        !useLegacyRestAPI && !useKomgaFallback
+    }
+
+    func relatedSavedBookIDs(for book: Book) -> Set<String> {
+        guard !useLegacyRestAPI, !useKomgaFallback else { return [book.uniqueId] }
+        let numericId = grimmoryNumericId(book)
+        return ["\(book.providerId)_\(numericId)", "\(book.providerId)_\(Self.companionAudiobookIDPrefix)\(numericId)"]
+    }
+
+    func localSavedBookIDs(_ serverIDs: Set<String>, existingIDs: Set<String>, availableIDs: Set<String>) -> Set<String> {
+        guard !useLegacyRestAPI, !useKomgaFallback else { return serverIDs }
+        var result = Set<String>()
+        for id in serverIDs {
+            let companionId = Self.companionAudiobookIDPrefix + id
+            if existingIDs.contains(companionId) {
+                result.insert(companionId)
+            } else if existingIDs.contains(id) || availableIDs.contains(id) || !availableIDs.contains(companionId) {
+                result.insert(id)
+            } else {
+                result.insert(companionId)
+            }
+        }
+        return result
+    }
+
+    func fetchSavedBookIDs(libraryIds: Set<String>) async throws -> [SavedBookList: Set<String>] {
+        let collections = try await fetchCollections(libraryId: nil)
+        var snapshot: [SavedBookList: Set<String>] = [:]
+        for list in SavedBookList.allCases {
+            let name = list == .favorites ? "Favorites" : "Enve For Later"
+            let shelf = collections.first {
+                $0.description != "Magic Shelf"
+                    && $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame
+            }
+            if let shelf {
+                guard shelf.books.count == shelf.bookCount else { throw ProviderError.invalidResponse }
+                snapshot[list] = Set(shelf.books)
+            } else {
+                snapshot[list] = []
+            }
+        }
+        return snapshot
+    }
+
+    func setSavedBook(_ book: Book, list: SavedBookList, saved: Bool) async throws {
+        guard !useLegacyRestAPI, !useKomgaFallback else { throw ProviderError.notImplemented }
+        let name = list == .favorites ? "Favorites" : "Enve For Later"
+        let shelf = try await fetchGrimmoryShelves().first {
+            $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame
+        }
+        let shelfId: Int
+        if let shelf {
+            shelfId = shelf.id
+        } else if saved {
+            shelfId = try await createShelf(name: name, icon: list == .favorites ? "heart" : "bookmark").id
+        } else {
+            return
+        }
+
+        guard let bookId = Int(grimmoryNumericId(book)) else {
+            throw ProviderError.invalidResponse
+        }
+        struct Assignment: Encodable {
+            let bookIds: [Int]
+            let shelvesToAssign: [Int]
+            let shelvesToUnassign: [Int]
+        }
+        let payload = Assignment(
+            bookIds: [bookId],
+            shelvesToAssign: saved ? [shelfId] : [],
+            shelvesToUnassign: saved ? [] : [shelfId]
+        )
+        let request = try makeRequest(
+            path: "/api/v1/books/shelves",
+            method: "POST",
+            body: JSONEncoder().encode(payload),
+            contentType: "application/json"
+        )
+        let (_, response) = try await performAuthorizedRequest(request)
+        guard (200...204).contains(response.statusCode) else {
+            throw ProviderError.serverError("Failed to update Grimmory shelf (HTTP \(response.statusCode))")
         }
     }
 
@@ -4517,6 +4676,14 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
         guard !useLegacyRestAPI, !useKomgaFallback else { return }
 
         guard let duration = book.duration, duration > 0 else { return }
+        // Counted before the progress write so a failed write can't drop the listening time.
+        if timeListened > 0 {
+            var pending = pendingListening[book.stableId] ?? PendingListening(book: book, seconds: 0, position: currentTime, duration: duration)
+            pending.seconds += timeListened
+            pending.position = currentTime
+            pending.duration = duration
+            pendingListening[book.stableId] = pending
+        }
         let progress = try await progressClient.updateAudiobookProgress(
             for: book,
             bookId: grimmoryNumericId(book),
@@ -4526,24 +4693,46 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
             isFinished: isFinished
         )
 
-        if timeListened > 0 {
-            do {
-                try await uploadReadingSession(
-                    for: book,
-                    currentTime: currentTime,
-                    duration: duration,
-                    timeListened: timeListened
-                )
-            } catch {
-                AppLogger.network.error(
-                    "Failed to sync reading session bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId)): \(error.localizedDescription)"
-                )
-            }
+        if (pendingListening[book.stableId]?.seconds ?? 0) >= maxPendingListening
+            || pausedListeningBooks.contains(book.stableId)
+        {
+            await flushListeningSession(for: book.stableId)
         }
 
         AppLogger.network.debug(
             "[Booklore] Synced playback progress bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId)) percentage=\(Int(progress * 100))"
         )
+    }
+
+    func reportPlayback(_ event: ServerPlaybackEvent, book: Book, sessionId: String, position: TimeInterval) async {
+        guard event == .paused || event == .stopped else {
+            pausedListeningBooks.remove(book.stableId)
+            return
+        }
+        pausedListeningBooks.insert(book.stableId)
+        for stableId in pendingListening.keys {
+            await flushListeningSession(for: stableId)
+        }
+    }
+
+    // One Grimmory session per stretch of listening, sent on pause or stop, instead of one per progress sync.
+    private func flushListeningSession(for stableId: String) async {
+        guard let pending = pendingListening.removeValue(forKey: stableId), pending.seconds >= 1 else { return }
+        do {
+            try await uploadReadingSession(
+                for: pending.book,
+                currentTime: pending.position,
+                duration: pending.duration,
+                timeListened: pending.seconds
+            )
+        } catch {
+            var retry = pendingListening[stableId] ?? PendingListening(book: pending.book, seconds: 0, position: pending.position, duration: pending.duration)
+            retry.seconds += pending.seconds
+            pendingListening[stableId] = retry
+            AppLogger.network.error(
+                "Failed to sync reading session bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: stableId)): \(error.localizedDescription)"
+            )
+        }
     }
 
     private func uploadReadingSession(
@@ -4588,10 +4777,10 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
         }
     }
 
-    func fetchReadingSessions(limit: Int = 20) async throws -> [GrimmoryReadingSessionEntry] {
+    func fetchReadingSessions(limit: Int = 20, recentBooks: Int = 25) async throws -> [GrimmoryReadingSessionEntry] {
         guard !useLegacyRestAPI, !useKomgaFallback else { return [] }
 
-        let activeBooks = ((try? await fetchRecentBooks(limit: 25)) ?? []).filter { $0.lastReadTime != nil }
+        let activeBooks = ((try? await fetchRecentBooks(limit: recentBooks)) ?? []).filter { $0.lastReadTime != nil }
         guard !activeBooks.isEmpty else { return [] }
         return await readingSessionClient.fetchSessions(
             bookIds: activeBooks.map(\.bookId),
@@ -4720,13 +4909,25 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
         }
     }
 
+    // Stops at the first never-read book so large libraries don't page through every title.
     func fetchAllBooksForStats() async throws -> [GrimmoryRecentBook] {
         guard !useLegacyRestAPI, !useKomgaFallback else { return [] }
 
+        guard let recent = try await fetchStatsBookPages(
+            filter: [URLQueryItem(name: "sort", value: "lastReadTime"), URLQueryItem(name: "dir", value: "desc")],
+            stopAtNeverRead: true
+        ) else {
+            return try await fetchBooksFromStableCatalogForStats()
+        }
+        let finished = try await fetchStatsBookPages(filter: [URLQueryItem(name: "status", value: "READ")], stopAtNeverRead: false) ?? []
+        var seen = Set(recent.map(\.bookId))
+        return recent + finished.filter { seen.insert($0.bookId).inserted }
+    }
+
+    private func fetchStatsBookPages(filter: [URLQueryItem], stopAtNeverRead: Bool) async throws -> [GrimmoryRecentBook]? {
         var page = 0
         var allBooks: [GrimmoryRecentBook] = []
         let base = normalize(connection.url)
-        var attemptedStableFallback = false
 
         while true {
             let request = try makeRequest(
@@ -4734,17 +4935,11 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
                 queryItems: [
                     URLQueryItem(name: "page", value: String(page)),
                     URLQueryItem(name: "size", value: "50"),
-                    URLQueryItem(name: "sort", value: "lastReadTime"),
-                    URLQueryItem(name: "dir", value: "desc"),
-                ]
+                ] + filter
             )
             let (data, response) = try await performAuthorizedRequest(request)
             guard response.statusCode == 200 else {
-                if !attemptedStableFallback {
-                    attemptedStableFallback = true
-                    return try await fetchBooksFromStableCatalogForStats()
-                }
-                break
+                return page == 0 ? nil : allBooks
             }
 
             struct AppBook: Decodable {
@@ -4767,16 +4962,13 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
             }
 
             guard let pageResp = try? JSONDecoder().decode(PageResponse.self, from: data) else {
-                if !attemptedStableFallback {
-                    attemptedStableFallback = true
-                    return try await fetchBooksFromStableCatalogForStats()
-                }
-                break
+                return page == 0 ? nil : allBooks
             }
-            if pageResp.content.isEmpty { break }
+            let readBooks = stopAtNeverRead ? pageResp.content.filter { $0.lastReadTime != nil } : pageResp.content
+            if readBooks.isEmpty { break }
 
             allBooks.append(
-                contentsOf: pageResp.content.map { book in
+                contentsOf: readBooks.map { book in
                     let resolvedType = BookloreCatalogMapper.resolvedFileType(primaryFileType: book.primaryFileType, primaryFile: book.primaryFile)
                     let mediaType = BookloreBookMapper.mediaType(from: resolvedType)
                     let fallbackPath = fallbackCoverPath(for: book.id.stringValue, mediaType: mediaType)
@@ -4799,7 +4991,7 @@ class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
                 }
             )
 
-            if pageResp.last == true || pageResp.hasNext == false { break }
+            if readBooks.count < pageResp.content.count || pageResp.last == true || pageResp.hasNext == false { break }
             page += 1
             if page > 50 { break }
         }
@@ -4988,8 +5180,8 @@ final class BookloreTransport: @unchecked Sendable {
     var credential: URLCredential { authDelegate.credential }
     var sessionHeaders: [AnyHashable: Any]? { session.configuration.httpAdditionalHeaders }
 
-    init(connection: ServerConnection) {
-        let configuration = URLSessionConfiguration.default
+    init(connection: ServerConnection, profileSession: ProfileSession? = nil) {
+        let configuration: URLSessionConfiguration = profileSession?.isOwner == false ? .ephemeral : .default
         configuration.timeoutIntervalForRequest = 60
         configuration.waitsForConnectivity = false
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
@@ -5001,10 +5193,13 @@ final class BookloreTransport: @unchecked Sendable {
         authDelegate = BookloreAuthDelegate(
             username: connection.username ?? "",
             password: connection.password ?? "",
-            serverHost: URL(string: connection.url)?.host
+            serverHost: URL(string: connection.url)?.host,
+            certificateTransport: profileSession?.transport ?? .delegateInstance
         )
         session = URLSession(configuration: configuration, delegate: authDelegate, delegateQueue: nil)
     }
+
+    func invalidate() { session.invalidateAndCancel() }
 
     func setCustomHeadersProvider(_ provider: @escaping () -> [String: String]?) {
         authDelegate.customHeadersProvider = provider
@@ -5086,12 +5281,14 @@ final class BookloreTransport: @unchecked Sendable {
 final class BookloreAuthDelegate: NSObject, URLSessionTaskDelegate, URLSessionDelegate, @unchecked Sendable {
     let credential: URLCredential
     private let serverHost: String?
+    private let certificateTransport: InsecureURLSession
     private var challengeCount = 0
     var customHeadersProvider: (() -> [String: String]?)?
 
-    init(username: String, password: String, serverHost: String?) {
+    init(username: String, password: String, serverHost: String?, certificateTransport: InsecureURLSession = .delegateInstance) {
         credential = URLCredential(user: username, password: password, persistence: .forSession)
         self.serverHost = serverHost?.lowercased()
+        self.certificateTransport = certificateTransport
         super.init()
     }
 
@@ -5131,11 +5328,7 @@ final class BookloreAuthDelegate: NSObject, URLSessionTaskDelegate, URLSessionDe
         let method = challenge.protectionSpace.authenticationMethod
         let host = challenge.protectionSpace.host
         if method == NSURLAuthenticationMethodClientCertificate {
-            if let identity = NetworkHostUtils.findMTLSIdentity(forHost: host) {
-                completionHandler(.useCredential, URLCredential(identity: identity, certificates: nil, persistence: .forSession))
-            } else {
-                completionHandler(.performDefaultHandling, nil)
-            }
+            certificateTransport.urlSession(session, didReceive: challenge, completionHandler: completionHandler)
         } else if method == NSURLAuthenticationMethodServerTrust,
             let trust = challenge.protectionSpace.serverTrust,
             NetworkHostUtils.isLocalNetworkHost(host)
@@ -5155,11 +5348,7 @@ final class BookloreAuthDelegate: NSObject, URLSessionTaskDelegate, URLSessionDe
         let method = challenge.protectionSpace.authenticationMethod
         AppLogger.network.debug("Booklore auth challenge method=\(method) attempt=\(challengeCount + 1)")
         if method == NSURLAuthenticationMethodClientCertificate {
-            if let identity = NetworkHostUtils.findMTLSIdentity(forHost: challenge.protectionSpace.host) {
-                completionHandler(.useCredential, URLCredential(identity: identity, certificates: nil, persistence: .forSession))
-            } else {
-                completionHandler(.performDefaultHandling, nil)
-            }
+            certificateTransport.urlSession(session, didReceive: challenge, completionHandler: completionHandler)
         } else if (method == NSURLAuthenticationMethodHTTPBasic || method == NSURLAuthenticationMethodHTTPDigest)
             && challengeCount < 2 && isServerHost(challenge.protectionSpace.host)
         {
@@ -6879,12 +7068,13 @@ final class BookloreReadingSessionClient {
         for book: Book,
         bookId: Int,
         startDate: Date,
+        activeSeconds: Int,
         startProgress: Double,
         endProgress: Double,
         locator: String?
     ) async throws {
         let endDate = now()
-        let durationSeconds = max(1, Int(endDate.timeIntervalSince(startDate).rounded()))
+        let durationSeconds = activeSeconds
         guard durationSeconds >= 5 else { return }
 
         let startPercent = min(max(startProgress, 0), 1) * 100
@@ -6980,24 +7170,16 @@ final class BookloreReadingSessionClient {
         let pageSize = min(max(limit, 1), 100)
         var entries: [GrimmoryReadingSessionEntry] = []
 
-        for bookId in bookIds {
-            guard var request = try? makeRequest("/api/v1/reading-sessions/book/\(bookId)") else {
-                continue
+        // A few books at a time; one-by-one requests made the Stats Hub wait on every book in turn.
+        for batch in stride(from: 0, to: bookIds.count, by: 6).map({ Array(bookIds[$0..<min($0 + 6, bookIds.count)]) }) {
+            await withTaskGroup(of: [GrimmoryReadingSessionEntry].self) { group in
+                for bookId in batch {
+                    group.addTask { await self.fetchBookSessions(bookId: bookId, pageSize: pageSize) }
+                }
+                for await page in group {
+                    entries.append(contentsOf: page)
+                }
             }
-            if var components = request.url.flatMap({ URLComponents(url: $0, resolvingAgainstBaseURL: false) }) {
-                components.queryItems = (components.queryItems ?? []) + [
-                    URLQueryItem(name: "page", value: "0"),
-                    URLQueryItem(name: "size", value: String(pageSize)),
-                ]
-                request.url = components.url
-            }
-            guard let (data, response) = try? await performAuthorizedRequest(request),
-                response.statusCode == 200,
-                let page = try? JSONDecoder().decode(SessionPage.self, from: data)
-            else {
-                continue
-            }
-            entries.append(contentsOf: page.content)
         }
 
         return Array(
@@ -7006,18 +7188,33 @@ final class BookloreReadingSessionClient {
         )
     }
 
-    private static func ebookType(for book: Book) -> String {
-        if let url = book.ebookFileURL ?? book.filePath.map({ URL(fileURLWithPath: $0) }) {
-            switch url.pathExtension.lowercased() {
-            case "cbz", "cbr", "cb7": return "CBX"
-            case "azw": return "AZW3"
-            case let fileExtension where !fileExtension.isEmpty:
-                return fileExtension.uppercased()
-            default:
-                break
-            }
+    private func fetchBookSessions(bookId: Int, pageSize: Int) async -> [GrimmoryReadingSessionEntry] {
+        guard var request = try? makeRequest("/api/v1/reading-sessions/book/\(bookId)") else { return [] }
+        if var components = request.url.flatMap({ URLComponents(url: $0, resolvingAgainstBaseURL: false) }) {
+            components.queryItems = (components.queryItems ?? []) + [
+                URLQueryItem(name: "page", value: "0"),
+                URLQueryItem(name: "size", value: String(pageSize)),
+            ]
+            request.url = components.url
         }
-        return "EPUB"
+        guard let (data, response) = try? await performAuthorizedRequest(request),
+            response.statusCode == 200,
+            let page = try? JSONDecoder().decode(SessionPage.self, from: data)
+        else { return [] }
+        return page.content
+    }
+
+    // Grimmory rejects any bookType outside its BookFileType enum with a 400.
+    private static func ebookType(for book: Book) -> String {
+        let fileExtension = (book.ebookFileURL ?? book.filePath.map { URL(fileURLWithPath: $0) })?.pathExtension.lowercased()
+        switch fileExtension ?? book.ebookFormat?.lowercased() ?? "" {
+        case "pdf": return "PDF"
+        case "cbz", "cbr", "cb7", "cbt", "cbx", "zip": return "CBX"
+        case "fb2": return "FB2"
+        case "mobi": return "MOBI"
+        case "azw", "azw3", "kfx": return "AZW3"
+        default: return "EPUB"
+        }
     }
 
     private static func locationValue(from locator: String?) -> Int? {
@@ -7090,11 +7287,16 @@ struct GrimmoryCatalogCheckpoint: Codable {
     var updatedAt: Date
 }
 
-enum GrimmoryCatalogCheckpointStore {
-    private static let version = 1
-    private static let manifestFilename = "manifest.json"
+struct GrimmoryCatalogCheckpointStore {
+    private let root: URL
 
-    static func prepare(
+    init(root: URL = ProfileStorageLocations.owner.applicationSupportDirectory) {
+        self.root = root.appendingPathComponent("GrimmoryCatalogCheckpoints", isDirectory: true)
+    }
+    private let version = 1
+    private let manifestFilename = "manifest.json"
+
+    func prepare(
         connectionId: UUID,
         libraryId: String,
         serverIdentity: String,
@@ -7150,11 +7352,11 @@ enum GrimmoryCatalogCheckpointStore {
         return (checkpoint, canResume)
     }
 
-    static func pageData(connectionId: UUID, libraryId: String, page: Int) throws -> Data {
+    func pageData(connectionId: UUID, libraryId: String, page: Int) throws -> Data {
         try Data(contentsOf: pageURL(page, in: directoryURL(connectionId: connectionId, libraryId: libraryId)))
     }
 
-    static func recordPage(
+    func recordPage(
         _ data: Data,
         page: Int,
         checkpoint: inout GrimmoryCatalogCheckpoint
@@ -7166,7 +7368,7 @@ enum GrimmoryCatalogCheckpointStore {
         try saveManifest(checkpoint, at: directory)
     }
 
-    static func discardPage(page: Int, checkpoint: inout GrimmoryCatalogCheckpoint) {
+    func discardPage(page: Int, checkpoint: inout GrimmoryCatalogCheckpoint) {
         let directory = directoryURL(connectionId: checkpoint.connectionId, libraryId: checkpoint.libraryId)
         try? FileManager.default.removeItem(at: pageURL(page, in: directory))
         checkpoint.completedPages.remove(page)
@@ -7174,7 +7376,7 @@ enum GrimmoryCatalogCheckpointStore {
         try? saveManifest(checkpoint, at: directory)
     }
 
-    static func bindReconciliation(
+    func bindReconciliation(
         _ reconciliation: ReconciliationStart,
         checkpoint: inout GrimmoryCatalogCheckpoint
     ) throws {
@@ -7189,7 +7391,7 @@ enum GrimmoryCatalogCheckpointStore {
         )
     }
 
-    static func markCommitted(
+    func markCommitted(
         pages: [Int],
         bookCount: Int,
         checkpoint: inout GrimmoryCatalogCheckpoint
@@ -7205,12 +7407,12 @@ enum GrimmoryCatalogCheckpointStore {
         )
     }
 
-    static func clear(connectionId: UUID, libraryId: String) {
+    func clear(connectionId: UUID, libraryId: String) {
         try? FileManager.default.removeItem(at: directoryURL(connectionId: connectionId, libraryId: libraryId))
     }
 
-    static func pendingConnectionIds() -> Set<UUID> {
-        let root = rootDirectoryURL()
+    func pendingConnectionIds() -> Set<UUID> {
+        let root = root
         guard let enumerator = FileManager.default.enumerator(
             at: root,
             includingPropertiesForKeys: nil,
@@ -7228,18 +7430,18 @@ enum GrimmoryCatalogCheckpointStore {
         return result
     }
 
-    private static func loadManifest(at directory: URL) -> GrimmoryCatalogCheckpoint? {
+    private func loadManifest(at directory: URL) -> GrimmoryCatalogCheckpoint? {
         let url = directory.appendingPathComponent(manifestFilename, isDirectory: false)
         guard let data = try? Data(contentsOf: url) else { return nil }
         return try? JSONDecoder().decode(GrimmoryCatalogCheckpoint.self, from: data)
     }
 
-    private static func saveManifest(_ checkpoint: GrimmoryCatalogCheckpoint, at directory: URL) throws {
+    private func saveManifest(_ checkpoint: GrimmoryCatalogCheckpoint, at directory: URL) throws {
         let data = try JSONEncoder().encode(checkpoint)
         try data.write(to: directory.appendingPathComponent(manifestFilename, isDirectory: false), options: .atomic)
     }
 
-    private static func createDirectoryIfNeeded(_ directory: URL) throws {
+    private func createDirectoryIfNeeded(_ directory: URL) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
@@ -7247,19 +7449,15 @@ enum GrimmoryCatalogCheckpointStore {
         try? mutableDirectory.setResourceValues(values)
     }
 
-    private static func rootDirectoryURL() -> URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("GrimmoryCatalogCheckpoints", isDirectory: true)
-    }
 
-    private static func directoryURL(connectionId: UUID, libraryId: String) -> URL {
+    private func directoryURL(connectionId: UUID, libraryId: String) -> URL {
         let digest = SHA256.hash(data: Data("\(connectionId.uuidString):\(libraryId)".utf8))
             .map { String(format: "%02x", $0) }
             .joined()
-        return rootDirectoryURL().appendingPathComponent(digest, isDirectory: true)
+        return root.appendingPathComponent(digest, isDirectory: true)
     }
 
-    private static func pageURL(_ page: Int, in directory: URL) -> URL {
+    private func pageURL(_ page: Int, in directory: URL) -> URL {
         directory.appendingPathComponent("page-\(page).json", isDirectory: false)
     }
 }

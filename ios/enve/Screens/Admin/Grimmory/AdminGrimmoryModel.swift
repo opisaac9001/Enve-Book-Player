@@ -4,6 +4,7 @@ import Observation
 @MainActor
 @Observable
 final class AdminGrimmoryModel {
+    let profileSession: ProfileSession
     let connection: ServerConnection
 
     var currentUser: GrimmoryUser?
@@ -20,12 +21,13 @@ final class AdminGrimmoryModel {
     var error: String?
     var successMessage: String?
 
-    init(connection: ServerConnection) {
+    init(connection: ServerConnection, profileSession: ProfileSession = .owner) {
+        self.profileSession = profileSession
         self.connection = connection
     }
 
     private var provider: BookloreProvider? {
-        AppState.shared.getProvider(connection.id) as? BookloreProvider
+        profileSession.appState.getProvider(connection.id) as? BookloreProvider
     }
 
     func refreshAll() async {
@@ -77,7 +79,7 @@ final class AdminGrimmoryModel {
 
     private func adminSyncCollections(provider: BookloreProvider) async {
         guard let refreshed = try? await provider.fetchCollections(libraryId: nil) else { return }
-        LibraryCatalogCoordinator.shared.commitServerCollectionSnapshot(refreshed, from: provider)
+        profileSession.catalog.commitServerCollectionSnapshot(refreshed, from: provider)
     }
 
     func createUser(_ request: GrimmoryCreateUserRequest) async {
@@ -192,6 +194,7 @@ final class AdminGrimmoryModel {
 @MainActor
 @Observable
 final class AdminGrimmoryStatsModel {
+    let profileSession: ProfileSession
     let connection: ServerConnection
 
     var isLoading = false
@@ -224,12 +227,13 @@ final class AdminGrimmoryStatsModel {
         let sessions: Int
     }
 
-    init(connection: ServerConnection) {
+    init(connection: ServerConnection, profileSession: ProfileSession = .owner) {
+        self.profileSession = profileSession
         self.connection = connection
     }
 
     func loadStats() async {
-        guard let provider = AppState.shared.getProvider(connection.id) as? BookloreProvider else {
+        guard let provider = profileSession.appState.getProvider(connection.id) as? BookloreProvider else {
             error = "This source has no live connection."
             hasLoaded = true
             return

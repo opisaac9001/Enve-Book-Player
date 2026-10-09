@@ -6,3 +6,5 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.preferencesDataStore
 
 internal val Context.enveDataStore: DataStore<Preferences> by preferencesDataStore(name = "enve_prefs")
+
+internal val Context.hearthDataStore: DataStore<Preferences> by preferencesDataStore(name = "hearth_prefs")

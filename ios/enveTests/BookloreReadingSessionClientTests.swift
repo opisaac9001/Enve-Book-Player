@@ -18,6 +18,7 @@ struct BookloreReadingSessionClientTests {
             for: book,
             bookId: 42,
             startDate: now.addingTimeInterval(-10),
+            activeSeconds: 10,
             startProgress: 0.1,
             endProgress: 0.4,
             locator: "{\"page\":40}"
@@ -49,12 +50,35 @@ struct BookloreReadingSessionClientTests {
             for: Self.book(id: "42", mediaType: .ebook),
             bookId: 42,
             startDate: now.addingTimeInterval(-4),
+            activeSeconds: 4,
             startProgress: 0.1,
             endProgress: 0.2,
             locator: nil
         )
 
         #expect(requestCount == 0)
+    }
+
+    @Test func ebookSessionReportsActiveTimeNotTimeOpen() async throws {
+        var capturedRequest: URLRequest?
+        let now = Date(timeIntervalSince1970: 100_000)
+        let client = Self.makeClient(now: now) { request in
+            capturedRequest = request
+            return (Data(), Self.response(for: request, statusCode: 201))
+        }
+
+        try await client.uploadEbookSession(
+            for: Self.book(id: "42", mediaType: .ebook),
+            bookId: 42,
+            startDate: now.addingTimeInterval(-8 * 3600),
+            activeSeconds: 300,
+            startProgress: 0.1,
+            endProgress: 0.2,
+            locator: nil
+        )
+
+        let root = try Self.jsonBody(from: try #require(capturedRequest))
+        #expect(root["durationSeconds"] as? Int == 300)
     }
 
     @Test func audiobookSessionEncodesListeningWindow() async throws {

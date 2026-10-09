@@ -49,8 +49,23 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         ]
     }
 
-    init(connection: ServerConnection) {
+    private let appState: AppState
+    private let localStorage: LocalStorageManager
+    private let rejectedContent: RejectedContentStore
+    private let certificateTransport: InsecureURLSession
+    private let isolatesCredentials: Bool
+    private let storageService: StorageService
+    private let session: URLSession
+
+    init(connection: ServerConnection, profileSession: ProfileSession? = nil) {
         self.connection = connection
+        certificateTransport = profileSession?.transport ?? .delegateInstance
+        isolatesCredentials = profileSession?.isOwner == false
+        appState = profileSession?.appState ?? .shared
+        localStorage = profileSession?.localStorage ?? .shared
+        rejectedContent = profileSession?.rejectedContent ?? .shared
+        storageService = profileSession?.storageService ?? .shared
+        session = profileSession?.networkSession ?? InsecureURLSession.shared
     }
 
     private static let maxTracksForMultiFileBook: Int = 200
@@ -485,9 +500,9 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
 
         var clientId = "Enve-App"
         #if canImport(UIKit)
-        clientId = UIDevice.current.identifierForVendor?.uuidString ?? StorageService.shared.loadDeviceUUID()
+        clientId = UIDevice.current.identifierForVendor?.uuidString ?? storageService.loadDeviceUUID()
         #else
-        clientId = StorageService.shared.loadDeviceUUID()
+        clientId = storageService.loadDeviceUUID()
         #endif
 
         if let token = connection.effectivePlexToken {
@@ -502,10 +517,11 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
     func validateConnection() async throws -> Bool {
         let request = try buildRequest(path: "identity")
 
-        let config = URLSessionConfiguration.default
+        let config: URLSessionConfiguration = isolatesCredentials ? .ephemeral : .default
         config.timeoutIntervalForRequest = 10.0
-        let session = URLSession(configuration: config, delegate: InsecureURLSession.delegateInstance, delegateQueue: nil)
+        let session = URLSession(configuration: config, delegate: certificateTransport, delegateQueue: nil)
 
+        defer { session.finishTasksAndInvalidate() }
         let (_, response) = try await session.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -721,7 +737,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
             if progressPercent / 10 > prevPercent / 10 || processedGroups >= totalAlbums {
                 let currentBookCount = books.count
                 await MainActor.run {
-                    AppState.shared.presentation.libraryImportProgress = LibraryImportProgress(
+                    appState.presentation.libraryImportProgress = LibraryImportProgress(
                         libraryId: libraryId,
                         libraryName: connection.name,
                         loadedCount: currentBookCount,
@@ -821,7 +837,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
             throw ProviderError.invalidResponse
         }
         let container = try decodeItemsContainer(from: data)
-        RejectedContentStore.shared.update(
+        rejectedContent.update(
             connection: connection,
             libraryId: libraryId,
             acceptedItemIdentifiers: Set((container.metadata ?? []).map(\.ratingKey)),
@@ -837,7 +853,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
 
     private func publishPlexImportProgress(libraryId: String, loaded: Int, total: Int, startTime: Date) async {
         await MainActor.run {
-            AppState.shared.presentation.libraryImportProgress = LibraryImportProgress(
+            appState.presentation.libraryImportProgress = LibraryImportProgress(
                 libraryId: libraryId,
                 libraryName: connection.name,
                 loadedCount: loaded,
@@ -889,7 +905,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
             if totalSize == nil { totalSize = container.totalSize }
 
             await MainActor.run {
-                AppState.shared.presentation.libraryImportProgress = LibraryImportProgress(
+                appState.presentation.libraryImportProgress = LibraryImportProgress(
                     libraryId: libraryId,
                     libraryName: connection.name,
                     loadedCount: allTracks.count,
@@ -990,7 +1006,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
 
         let container = try decodeItemsContainer(from: data)
         let albums = container.metadata ?? []
-        RejectedContentStore.shared.update(
+        rejectedContent.update(
             connection: connection,
             libraryId: libraryId,
             acceptedItemIdentifiers: Set(albums.map(\.ratingKey)),
@@ -1018,7 +1034,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
             let (trackData, _) = try await performDataTask(for: trackRequest)
             let trackContainer = try decodeItemsContainer(from: trackData)
             let tracks = orderedTracks(trackContainer.metadata ?? [])
-            RejectedContentStore.shared.update(
+            rejectedContent.update(
                 connection: connection,
                 libraryId: libraryId,
                 acceptedItemIdentifiers: Set(tracks.map(\.ratingKey)),
@@ -1034,9 +1050,9 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
             }
             var books = mapPlexAlbum(album, tracks: tracks, libraryId: libraryId, libraryRoots: roots)
             if books.count > 1,
-                let existing = await AppState.shared.bookStore.book(uniqueId: "\(connection.id.uuidString)_\(album.ratingKey)") {
-                let bookmarks = await AppState.shared.bookStore.bookmarks(forBookStableId: existing.stableId)
-                let downloaded = await MainActor.run { LocalStorageManager.shared.isAudiobookDownloaded(existing.downloadKey) }
+                let existing = await appState.bookStore.book(uniqueId: "\(connection.id.uuidString)_\(album.ratingKey)") {
+                let bookmarks = await appState.bookStore.bookmarks(forBookStableId: existing.stableId)
+                let downloaded = await MainActor.run { localStorage.isAudiobookDownloaded(existing.downloadKey) }
                 if Self.shouldPreserveAlbum(existing, hasBookmarks: !bookmarks.isEmpty, isDownloaded: downloaded) {
                     books = [existing]
                 }
@@ -1125,7 +1141,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         AppLogger.network.info("[PlexProvider] Fetching full details for book: \(bookId) in library: \(libraryId)")
 
         let existingBook: Book? = await {
-            let candidate = await AppState.shared.bookStore.book(byBookId: bookId)
+            let candidate = await appState.bookStore.book(byBookId: bookId)
             return candidate?.source == .plex ? candidate : nil
         }()
         if let existingBook, let audioTracks = existingBook.audioTracks, audioTracks.count > 1 {
@@ -1665,6 +1681,17 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
                 latest = (position, .distantPast)
             }
         }
+        // Older Android builds saved the resume point on the album rather than its tracks.
+        if latest == nil, !tracks.isEmpty, !allFinished {
+            let request = try buildRequest(path: "library/metadata/\(book.id)")
+            let (data, response) = try await performDataTask(for: request)
+            if let http = response as? HTTPURLResponse, http.statusCode == 200,
+                let album = try decodeItemsContainer(from: data).metadata?.first,
+                let offset = album.viewOffset, offset > 0
+            {
+                latest = (offset / 1000, album.lastViewedAt.map { Date(timeIntervalSince1970: TimeInterval($0)) } ?? .distantPast)
+            }
+        }
         let position = allFinished ? duration : (latest?.position ?? 0)
         return (positionSeconds: position, percentage: duration > 0 ? position / duration : 0,
                 trackIndex: nil, updatedAt: latest?.date, isFinished: allFinished)
@@ -1677,6 +1704,20 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         isFinished: Bool,
         timeListened: TimeInterval
     ) async throws {
+        try await sendTimeline(book: book, sessionId: sessionId, currentTime: currentTime, state: isFinished ? "stopped" : "playing")
+    }
+
+    func reportPlayback(_ event: ServerPlaybackEvent, book: Book, sessionId: String, position: TimeInterval) async {
+        let state: String
+        switch event {
+        case .started, .resumed: state = "playing"
+        case .paused: state = "paused"
+        case .stopped: state = "stopped"
+        }
+        try? await sendTimeline(book: book, sessionId: sessionId, currentTime: position, state: state)
+    }
+
+    private func sendTimeline(book: Book, sessionId: String?, currentTime: TimeInterval, state: String) async throws {
         let target = resolvePlexProgressTarget(book: book, currentTime: currentTime)
         let offsetMs = Int(target.time * 1000)
         let durationMs = Int(target.duration * 1000)
@@ -1685,7 +1726,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
             URLQueryItem(name: "key", value: "/library/metadata/\(target.ratingKey)"),
             URLQueryItem(name: "ratingKey", value: target.ratingKey),
             URLQueryItem(name: "identifier", value: "com.plexapp.plugins.library"),
-            URLQueryItem(name: "state", value: isFinished ? "stopped" : "playing"),
+            URLQueryItem(name: "state", value: state),
             URLQueryItem(name: "time", value: "\(offsetMs)"),
             URLQueryItem(name: "duration", value: "\(durationMs)"),
         ]
@@ -1702,7 +1743,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
     }
 
     func performDataTask(for request: URLRequest, retryCount: Int = 3) async throws -> (Data, URLResponse) {
-        try await InsecureURLSession.shared.retryingData(for: request, retryCount: retryCount)
+        try await session.retryingData(for: request, retryCount: retryCount)
     }
 
     private func mapPlexMetadataToBook(

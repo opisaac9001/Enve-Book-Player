@@ -54,13 +54,44 @@ final class StoryAlignService {
 
     private let libraryCache: LibraryBookCache
     private let bookRepository: BookStoreRepository
+    private unowned let profileSession: ProfileSession?
+    private let defaults: UserDefaults
+    private nonisolated let cacheRoot: URL
+    private var operations: [UUID: Task<Void, Never>] = [:]
+    private var cancelledConversions: [Task<Void, Never>] = []
+    private var isRetired = false
 
-    private init(
+    init(
         libraryCache: LibraryBookCache = AppState.shared.libraryCache,
-        bookRepository: BookStoreRepository = AppState.shared.bookStore
+        bookRepository: BookStoreRepository = AppState.shared.bookStore,
+        profileSession: ProfileSession? = nil
     ) {
+        self.profileSession = profileSession
+        defaults = profileSession?.defaults ?? .standard
+        cacheRoot = (profileSession?.storage.applicationSupportDirectory ?? URL.applicationSupportDirectory).appendingPathComponent("Enve/StoryAlignCache", isDirectory: true)
         self.libraryCache = libraryCache
         self.bookRepository = bookRepository
+    }
+
+    private func retainOperation(priority: TaskPriority? = nil, _ operation: @escaping @MainActor () async -> Void) {
+        guard !isRetired else { return }
+        let id = UUID()
+        operations[id] = Task(priority: priority) {
+            await operation()
+            operations[id] = nil
+        }
+    }
+
+    func retire() async {
+        isRetired = true
+        let pending = Array(operations.values) + cancelledConversions + [currentTask].compactMap { $0 }
+        pending.forEach { $0.cancel() }
+        for task in pending { await task.value }
+        currentTask = nil
+        cancelledConversions.removeAll()
+        currentSession?.cleanup()
+        currentSession = nil
+        endExecutionProtection(success: false)
     }
 
     var activeConversion: ConversionState?
@@ -101,14 +132,15 @@ final class StoryAlignService {
         if let paused = pausedConversion,
             let data = try? JSONEncoder().encode(paused)
         {
-            UserDefaults.standard.set(data, forKey: Self.pausedConversionKey)
+            defaults.set(data, forKey: Self.pausedConversionKey)
         } else {
-            UserDefaults.standard.removeObject(forKey: Self.pausedConversionKey)
+            defaults.removeObject(forKey: Self.pausedConversionKey)
         }
     }
 
     func loadPausedConversion() {
-        guard let data = UserDefaults.standard.data(forKey: Self.pausedConversionKey),
+        guard !isRetired else { return }
+        guard let data = defaults.data(forKey: Self.pausedConversionKey),
             let paused = try? JSONDecoder().decode(PausedConversion.self, from: data)
         else { return }
         pausedConversion = paused
@@ -145,11 +177,12 @@ final class StoryAlignService {
     }
 
     func cachedNarratedEpubURL(ebook: Book, audiobook: Book) -> URL? {
-        return Self.cachedNarratedEpubURL(ebookStableId: ebook.stableId, audiobookStableId: audiobook.stableId)
+        return cachedNarratedEpubURL(ebookStableId: ebook.stableId, audiobookStableId: audiobook.stableId)
     }
 
     func cancelConversion() {
-        currentTask?.cancel()
+        guard !isRetired else { return }
+        if let currentTask { currentTask.cancel(); cancelledConversions.append(currentTask) }
         currentTask = nil
         currentSession?.cleanup()
         currentSession = nil
@@ -159,11 +192,13 @@ final class StoryAlignService {
     }
 
     func resumeConversion(ebook: Book, audiobook: Book) {
+        guard !isRetired else { return }
         pausedConversion = nil
         downloadAndConvert(ebook: ebook, audiobook: audiobook)
     }
 
     func dismissConversion() {
+        guard !isRetired else { return }
         activeConversion = nil
         currentTask = nil
         currentSession = nil
@@ -212,7 +247,7 @@ final class StoryAlignService {
 
     private func handleBackgroundTaskExpiration() {
         bgTaskExpired = true
-        currentTask?.cancel()
+        if let currentTask { currentTask.cancel(); cancelledConversions.append(currentTask) }
         currentTask = nil
 
         currentSession = nil
@@ -230,7 +265,7 @@ final class StoryAlignService {
     }
 
     func downloadAndConvert(ebook: Book, audiobook: Book) {
-        guard activeConversion == nil else { return }
+        guard !isRetired, activeConversion == nil else { return }
         guard ebook.mediaType == .ebook, audiobook.mediaType == .audiobook else { return }
 
         beginExecutionProtection()
@@ -251,6 +286,8 @@ final class StoryAlignService {
         currentTask = Task { [weak self] in
             guard let self else { return }
             do {
+                try Task.checkCancellation()
+                guard !isRetired else { throw CancellationError() }
                 let speechAnalyzerConfig = self.currentSpeechAnalyzerConfig()
                 if resolveEpubURL(ebook) == nil {
                     await MainActor.run {
@@ -259,7 +296,7 @@ final class StoryAlignService {
                         self.activeConversion?.progress = 0
                         self.activeConversion?.detailText = nil
                     }
-                    await UnifiedDownloadService.shared.download(book: ebook)
+                    await (profileSession?.downloads ?? UnifiedDownloadService.shared).download(book: ebook)
                     try await awaitEbookDownload(ebook)
                 }
 
@@ -272,7 +309,7 @@ final class StoryAlignService {
                         self.activeConversion?.progress = 0
                         self.activeConversion?.detailText = nil
                     }
-                    await UnifiedDownloadService.shared.download(book: audiobook)
+                    await (profileSession?.downloads ?? UnifiedDownloadService.shared).download(book: audiobook)
                     try await awaitAudiobookDownload(audiobook)
                 }
 
@@ -334,7 +371,7 @@ final class StoryAlignService {
             if Task.isCancelled { throw CancellationError() }
             if resolveEpubURL(book) != nil { return }
             let failed = await MainActor.run {
-                UnifiedDownloadService.shared.tasks
+                (profileSession?.downloads ?? UnifiedDownloadService.shared).tasks
                     .first(where: { $0.bookId == book.downloadKey })
                     .map { $0.status == .failed } ?? false
             }
@@ -350,11 +387,11 @@ final class StoryAlignService {
         while Date() < deadline {
             if Task.isCancelled { throw CancellationError() }
             let ready = await MainActor.run {
-                LocalStorageManager.shared.isAudiobookDownloaded(book.downloadKey)
+                (profileSession?.localStorage ?? LocalStorageManager.shared).isAudiobookDownloaded(book.downloadKey)
             }
             if ready { return }
             let failed = await MainActor.run {
-                UnifiedDownloadService.shared.tasks
+                (profileSession?.downloads ?? UnifiedDownloadService.shared).tasks
                     .first(where: { $0.bookId == book.downloadKey })
                     .map { $0.status == .failed } ?? false
             }
@@ -367,7 +404,7 @@ final class StoryAlignService {
 
     private func updateDownloadProgress(for book: Book) async {
         let task = await MainActor.run {
-            UnifiedDownloadService.shared.tasks
+            (profileSession?.downloads ?? UnifiedDownloadService.shared).tasks
                 .first(where: { $0.bookId == book.downloadKey })
         }
         await MainActor.run {
@@ -479,12 +516,13 @@ final class StoryAlignService {
 
         let listener = ProgressBridge { [weak self] snapshot in
             Task { @MainActor in
+                guard let self, !self.isRetired else { return }
                 let stage = snapshot.stage.rawValue.capitalized
-                self?.activeConversion?.stage = stage
-                self?.activeConversion?.progress = snapshot.timeEstimateProgress()
-                self?.activeConversion?.detailText = nil
+                self.activeConversion?.stage = stage
+                self.activeConversion?.progress = snapshot.timeEstimateProgress()
+                self.activeConversion?.detailText = nil
                 #if !targetEnvironment(macCatalyst)
-                if let bgTask = self?.continuedTask {
+                if let bgTask = self.continuedTask {
                     bgTask.progress.completedUnitCount = Int64(snapshot.timeEstimateProgress() * 100)
                     bgTask.updateTitle("StoryAlign", subtitle: stage)
                 }
@@ -495,6 +533,8 @@ final class StoryAlignService {
 
         let result = try await StoryAligner().alignStory(session: session)
         let alignedEpubURL = result.alignedEpubURL
+        try Task.checkCancellation()
+        guard !isRetired else { throw CancellationError() }
         await MainActor.run {
             let elapsed = self.activeConversion.map { Date().timeIntervalSince($0.startedAt) }
             self.registerReadAloudBook(ebook: ebook, audiobook: audiobook, epubURL: alignedEpubURL)
@@ -519,17 +559,19 @@ final class StoryAlignService {
     }
 
     func deleteConversion(ebook: Book, audiobook: Book) {
-        for dir in Self.cacheDirectories(ebookStableId: ebook.stableId, audiobookStableId: audiobook.stableId) {
+        guard !isRetired else { return }
+        for dir in cacheDirectories(ebookStableId: ebook.stableId, audiobookStableId: audiobook.stableId) {
             try? FileManager.default.removeItem(at: dir)
         }
         unregisterReadAloudBook(forSourceStableId: ebook.stableId)
     }
 
     func deleteConversions(involving book: Book) {
+        guard !isRetired else { return }
         let stableId = book.stableId
         guard
             let entries = try? FileManager.default.contentsOfDirectory(
-                at: Self.cacheRoot,
+                at: cacheRoot,
                 includingPropertiesForKeys: nil
             )
         else { return }
@@ -546,8 +588,9 @@ final class StoryAlignService {
     }
 
     func deleteAllConversions() {
-        try? FileManager.default.removeItem(at: Self.cacheRoot)
-        Task.detached(priority: .utility) {
+        guard !isRetired else { return }
+        try? FileManager.default.removeItem(at: cacheRoot)
+        retainOperation(priority: .utility) { [self] in
             let readAloud = await self.bookRepository.firstBooksWithReadAloudSource(limit: 5000)
             let ids = Set(readAloud.map(\.uniqueId))
             await MainActor.run {
@@ -558,7 +601,7 @@ final class StoryAlignService {
             if !ids.isEmpty {
                 await self.bookRepository.deleteBooks(uniqueIds: ids)
             }
-            await LibraryCatalogCoordinator.shared.flushLocalBooksToCache()
+            (profileSession?.catalog ?? LibraryCatalogCoordinator.shared).flushLocalBooksToCache()
         }
     }
 
@@ -566,6 +609,7 @@ final class StoryAlignService {
 
     @MainActor
     private func registerReadAloudBook(ebook: Book, audiobook: Book, epubURL: URL) {
+        guard !isRetired else { return }
         let readAloudBook = Book(
             id: "storyalign_\(ebook.id)",
             title: "\(ebook.title)",
@@ -597,7 +641,7 @@ final class StoryAlignService {
         )
 
         self.libraryCache.hot.insert(readAloudBook)
-        Task.detached(priority: .utility) {
+        retainOperation(priority: .utility) { [self] in
             let existing = await self.bookRepository.firstBooksWithReadAloudSource(limit: 5000)
             let staleIds = Set(
                 existing.filter { $0.readAloudSourceStableId == ebook.stableId && $0.uniqueId != readAloudBook.uniqueId }.map(\.uniqueId)
@@ -611,7 +655,7 @@ final class StoryAlignService {
 
     @MainActor
     private func unregisterReadAloudBook(forSourceStableId stableId: String) {
-        Task.detached(priority: .utility) {
+        retainOperation(priority: .utility) { [self] in
             let readAloud = await self.bookRepository.firstBooksWithReadAloudSource(limit: 5000)
             let removedIds = Set(readAloud.filter { $0.readAloudSourceStableId == stableId }.map(\.uniqueId))
             await MainActor.run {
@@ -620,12 +664,12 @@ final class StoryAlignService {
             if !removedIds.isEmpty {
                 await self.bookRepository.deleteBooks(uniqueIds: removedIds)
             }
-            await LibraryCatalogCoordinator.shared.flushLocalBooksToCache()
+            (profileSession?.catalog ?? LibraryCatalogCoordinator.shared).flushLocalBooksToCache()
         }
     }
 
     func completedConversions() async -> [CompletedConversion] {
-        let pairs = Self.completedCachePairs()
+        let pairs = completedCachePairs()
         let readAloudBooks = await self.bookRepository.firstBooksWithReadAloudSource(limit: 5000)
         guard !pairs.isEmpty || !readAloudBooks.isEmpty else { return [] }
 
@@ -637,7 +681,7 @@ final class StoryAlignService {
                 ebook.mediaType == .ebook,
                 let audiobook = await audiobook,
                 audiobook.mediaType == .audiobook,
-                let url = Self.cachedNarratedEpubURL(ebookStableId: pair.ebookStableId, audiobookStableId: pair.audiobookStableId)
+                let url = cachedNarratedEpubURL(ebookStableId: pair.ebookStableId, audiobookStableId: pair.audiobookStableId)
             else {
                 continue
             }
@@ -684,7 +728,7 @@ final class StoryAlignService {
 
     @MainActor
     func syncReadAloudLibrary() {
-        Task { @MainActor in
+        retainOperation { [self] in
             let completed = await completedConversions()
             let readAloudBooks = await self.bookRepository.firstBooksWithReadAloudSource(limit: 5000)
             let existingSourceIds = Set(readAloudBooks.compactMap(\.readAloudSourceStableId))
@@ -704,9 +748,9 @@ final class StoryAlignService {
             if !toRemove.isEmpty {
                 let removeIds = Set(toRemove.map(\.uniqueId))
                 for id in removeIds { self.libraryCache.hot.remove(uniqueId: id) }
-                Task.detached(priority: .utility) {
+                retainOperation(priority: .utility) { [self] in
                     await self.bookRepository.deleteBooks(uniqueIds: removeIds)
-                    await LibraryCatalogCoordinator.shared.flushLocalBooksToCache()
+                    (profileSession?.catalog ?? LibraryCatalogCoordinator.shared).flushLocalBooksToCache()
                 }
             }
         }
@@ -717,11 +761,6 @@ final class StoryAlignService {
             self.syncReadAloudLibrary()
         }
     }
-
-    private nonisolated static let cacheRoot: URL = {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return appSupport.appendingPathComponent("Enve/StoryAlignCache", isDirectory: true)
-    }()
 
     private nonisolated struct CachePair: Hashable {
         let ebookStableId: String
@@ -734,7 +773,7 @@ final class StoryAlignService {
         }
     }
 
-    private nonisolated static func cachedNarratedEpubURL(ebookStableId: String, audiobookStableId: String) -> URL? {
+    private nonisolated func cachedNarratedEpubURL(ebookStableId: String, audiobookStableId: String) -> URL? {
         for dir in cacheDirectories(ebookStableId: ebookStableId, audiobookStableId: audiobookStableId) {
             let epubFiles = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil))?.filter {
                 $0.pathExtension.lowercased() == "epub"
@@ -746,20 +785,20 @@ final class StoryAlignService {
         return nil
     }
 
-    private nonisolated static func cacheDirectory(ebookStableId: String, audiobookStableId: String) -> URL {
-        cacheRoot.appendingPathComponent(cacheKey(ebookStableId: ebookStableId, audiobookStableId: audiobookStableId), isDirectory: true)
+    private nonisolated func cacheDirectory(ebookStableId: String, audiobookStableId: String) -> URL {
+        cacheRoot.appendingPathComponent(Self.cacheKey(ebookStableId: ebookStableId, audiobookStableId: audiobookStableId), isDirectory: true)
     }
 
-    private nonisolated static func cacheDirectories(ebookStableId: String, audiobookStableId: String) -> [URL] {
+    private nonisolated func cacheDirectories(ebookStableId: String, audiobookStableId: String) -> [URL] {
         let current = cacheDirectory(ebookStableId: ebookStableId, audiobookStableId: audiobookStableId)
         let legacy = cacheRoot.appendingPathComponent(
-            legacyCacheKey(ebookStableId: ebookStableId, audiobookStableId: audiobookStableId),
+            Self.legacyCacheKey(ebookStableId: ebookStableId, audiobookStableId: audiobookStableId),
             isDirectory: true
         )
         return current == legacy ? [current] : [current, legacy]
     }
 
-    private nonisolated static func completedCachePairs() -> [CachePair] {
+    private nonisolated func completedCachePairs() -> [CachePair] {
         guard
             let entries = try? FileManager.default.contentsOfDirectory(
                 at: cacheRoot,
@@ -777,7 +816,7 @@ final class StoryAlignService {
             var isDirectory: ObjCBool = false
             guard FileManager.default.fileExists(atPath: entry.path, isDirectory: &isDirectory),
                 isDirectory.boolValue,
-                let pair = cachePair(from: entry)
+                let pair = Self.cachePair(from: entry)
             else {
                 continue
             }
@@ -860,11 +899,11 @@ final class StoryAlignService {
     }
 
     private func cacheDirectory(ebook: Book, audiobook: Book) -> URL {
-        Self.cacheDirectory(ebookStableId: ebook.stableId, audiobookStableId: audiobook.stableId)
+        cacheDirectory(ebookStableId: ebook.stableId, audiobookStableId: audiobook.stableId)
     }
 
     private func resolveEpubURL(_ book: Book) -> URL? {
-        LocalEbookImporter.shared.resolveExistingLocalEbookURL(
+        (profileSession?.ebooks ?? LocalEbookImporter.shared).resolveExistingLocalEbookURL(
             bookIdentifier: book.id,
             ebookFileURL: book.ebookFileURL,
             filePath: book.filePath
@@ -884,11 +923,11 @@ final class StoryAlignService {
         activeConversion?.stage = "Converting Ebook"
         activeConversion?.detailText = url.lastPathComponent
         activeConversion?.isDownloadPhase = false
-        return try await LocalEbookImporter.shared.convertMobiToEpub(url)
+        return try await (profileSession?.ebooks ?? LocalEbookImporter.shared).convertMobiToEpub(url)
     }
 
     private func resolveAudioURLs(_ book: Book) -> [URL]? {
-        if let urls = LocalStorageManager.shared.localAudiobookFilesIfExists(for: book), !urls.isEmpty {
+        if let urls = (profileSession?.localStorage ?? LocalStorageManager.shared).localAudiobookFilesIfExists(for: book), !urls.isEmpty {
             return urls
         }
 
@@ -912,8 +951,9 @@ final class StoryAlignService {
     }
 
     func cleanupOrphanedCaches(allBooks: [Book]) {
-        guard FileManager.default.fileExists(atPath: Self.cacheRoot.path) else { return }
-        guard let contents = try? FileManager.default.contentsOfDirectory(at: Self.cacheRoot, includingPropertiesForKeys: nil) else {
+        guard !isRetired else { return }
+        guard FileManager.default.fileExists(atPath: cacheRoot.path) else { return }
+        guard let contents = try? FileManager.default.contentsOfDirectory(at: cacheRoot, includingPropertiesForKeys: nil) else {
             return
         }
         let stableIds = Set(allBooks.map(\.stableId))

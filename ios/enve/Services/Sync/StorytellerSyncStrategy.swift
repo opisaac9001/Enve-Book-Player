@@ -8,19 +8,43 @@ final class StorytellerSyncStrategy: ProviderSyncStrategy {
 
     private let minimumServerSyncInterval: TimeInterval = 60
     private var lastSyncTime: Date?
-    private let playbackState: any PlaybackStateProvider = ActivePlayback.controller
+    private let playbackState: any PlaybackStateProvider
     private let providerConnections: any ProviderConnectionAccessing
     private let books: any BookQuerying
     private let catalogRepository: any CatalogReconciling
+    private let pendingSync: PendingSyncQueueStore
+    private let mirrorCheckpoints: ServerMirrorCheckpointStore
+    private let lastOpened: LastOpenedBookStore
+    private let storytellerPositions: StorytellerPositionSyncService
+    private let isEbookReaderOpen: @MainActor () -> Bool
+    // Resolved on demand so registration does not construct the session's progress or catalog owners.
+    private let progress: @MainActor () -> UserProgressStore
+    private let catalog: @MainActor () -> LibraryCatalogCoordinator
 
     init(
         providerConnections: any ProviderConnectionAccessing,
         books: any BookQuerying,
-        catalogRepository: any CatalogReconciling
+        catalogRepository: any CatalogReconciling,
+        playbackState: any PlaybackStateProvider = ActivePlayback.controller,
+        pendingSync: PendingSyncQueueStore = .shared,
+        mirrorCheckpoints: ServerMirrorCheckpointStore = .shared,
+        lastOpened: LastOpenedBookStore = .shared,
+        storytellerPositions: StorytellerPositionSyncService = .shared,
+        isEbookReaderOpen: @escaping @MainActor () -> Bool = { SyncCoordinator.shared.isEbookReaderOpen },
+        progress: @escaping @MainActor () -> UserProgressStore = { .shared },
+        catalog: @escaping @MainActor () -> LibraryCatalogCoordinator = { .shared }
     ) {
         self.providerConnections = providerConnections
         self.books = books
         self.catalogRepository = catalogRepository
+        self.playbackState = playbackState
+        self.pendingSync = pendingSync
+        self.mirrorCheckpoints = mirrorCheckpoints
+        self.lastOpened = lastOpened
+        self.storytellerPositions = storytellerPositions
+        self.isEbookReaderOpen = isEbookReaderOpen
+        self.progress = progress
+        self.catalog = catalog
     }
 
     func sync(force: Bool, launchOptimized: Bool) async -> ProviderSyncResult {
@@ -84,7 +108,7 @@ final class StorytellerSyncStrategy: ProviderSyncStrategy {
 
                     let reconciliation: StorytellerSnapshotReconciliation
                     do {
-                        reconciliation = try await StorytellerPositionSyncService.shared.reconcileSnapshot(
+                        reconciliation = try await storytellerPositions.reconcileSnapshot(
                             for: remoteBook,
                             through: provider
                         )
@@ -112,7 +136,7 @@ final class StorytellerSyncStrategy: ProviderSyncStrategy {
                     }
                 }
 
-                await UserProgressStore.shared.applyAuthoritativeServerActivity(updates)
+                await progress().applyAuthoritativeServerActivity(updates)
                 pulled += updates.count
 
                 let scope = ServerMirrorScope(
@@ -121,7 +145,7 @@ final class StorytellerSyncStrategy: ProviderSyncStrategy {
                     libraryId: nil,
                     domain: .activity
                 )
-                ServerMirrorCheckpointStore.shared.commitCompleteSnapshot(
+                mirrorCheckpoints.commitCompleteSnapshot(
                     scope: scope,
                     syncLevel: .fullSnapshot,
                     fingerprint: activityFingerprint(remoteBooks),
@@ -165,12 +189,12 @@ final class StorytellerSyncStrategy: ProviderSyncStrategy {
             }.map(\.id)
         )
         let remoteIds = Set(remoteBooks.map(\.id))
-        let checkpoint = ServerMirrorCheckpointStore.shared.checkpoint(for: scope)
+        let checkpoint = mirrorCheckpoints.checkpoint(for: scope)
         let needsReconciliation = checkpoint?.fingerprint != fingerprint || localIds != remoteIds
 
         if needsReconciliation {
             let startedAt = Date()
-            await LibraryCatalogCoordinator.shared.refreshConnectionLibraries(
+            await catalog().refreshConnectionLibraries(
                 providerId: connection.id,
                 forceFullReconciliation: true,
                 refreshCollections: false
@@ -194,7 +218,7 @@ final class StorytellerSyncStrategy: ProviderSyncStrategy {
             )
         }
 
-        ServerMirrorCheckpointStore.shared.commitCompleteSnapshot(
+        mirrorCheckpoints.commitCompleteSnapshot(
             scope: scope,
             syncLevel: .fullSnapshot,
             fingerprint: fingerprint,
@@ -310,7 +334,7 @@ final class StorytellerSyncStrategy: ProviderSyncStrategy {
 
     private func pendingBookIds(providerId: UUID) -> (uniqueIds: Set<String>, stableIds: Set<String>) {
         let stableIds = Set(
-            PendingSyncQueueStore.shared.entries.values
+            pendingSync.entries.values
                 .filter { $0.source == .storyteller }
                 .map(\.stableId)
         )
@@ -321,7 +345,7 @@ final class StorytellerSyncStrategy: ProviderSyncStrategy {
         if playbackState.currentBook?.stableId == book.stableId {
             return true
         }
-        return SyncCoordinator.shared.isEbookReaderOpen
-            && LastOpenedBookStore.shared.stableId == book.stableId
+        return isEbookReaderOpen()
+            && lastOpened.stableId == book.stableId
     }
 }

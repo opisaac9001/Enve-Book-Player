@@ -1,23 +1,53 @@
 import SwiftUI
 
 struct DetailHistorySection: View {
+    @Environment(\.profileSession) private var capturedSession
+    private var profileSession: ProfileSession { capturedSession ?? .owner }
     let book: Book
     let tint: Color
 
     @Environment(\.hearth) private var hearth
     @State private var record: DetailHistoryRecord?
+    @State private var showABSMatch = false
+    @State private var historyMapping: CrossProviderHistorySessionSync.Mapping?
 
     var body: some View {
         Group {
-            if let record {
+            if record != nil || (book.source == .booklore && book.mediaType == .audiobook) {
                 VStack(alignment: .leading, spacing: 14) {
                     ShelfHeader(title: "History")
-                    card(record)
+                    if let record {
+                        card(record)
+                            .padding(.horizontal, 24)
+                    }
+                    if book.source == .booklore, book.mediaType == .audiobook {
+                        HStack {
+                            Button(historyMapping == nil ? "Link Audiobookshelf history" : "Change Audiobookshelf history link") {
+                                showABSMatch = true
+                            }
+                            Spacer()
+                            if historyMapping != nil {
+                                Button("Unlink") {
+                                    profileSession.crossProviderHistory.remove(source: book)
+                                    historyMapping = nil
+                                }
+                            }
+                        }
+                        .font(.hearthCaption)
                         .padding(.horizontal, 24)
+                    }
                 }
             }
         }
-        .task(id: book.stableId) { await load() }
+        .task(id: book.stableId) {
+            historyMapping = profileSession.crossProviderHistory.mapping(for: book)
+            await load()
+        }
+        .sheet(isPresented: $showABSMatch, onDismiss: {
+            historyMapping = profileSession.crossProviderHistory.mapping(for: book)
+        }) {
+            CrossProviderHistoryMatchScreen(source: book)
+        }
     }
 
     private func card(_ record: DetailHistoryRecord) -> some View {
@@ -107,7 +137,7 @@ struct DetailHistorySection: View {
 
     private func load() async {
         if book.mediaType == .ebook {
-            let snapshot = await ReadingStatsTracker.shared.currentSnapshot()
+            let snapshot = await profileSession.readingStats.currentSnapshot()
             guard let stat = snapshot.perBook[book.stableId] ?? snapshot.perBook[book.id],
                 stat.totalSecondsRead > 0 || stat.sessionCount > 0
             else {
@@ -126,7 +156,7 @@ struct DetailHistorySection: View {
                 isCompleted: stat.isCompleted
             )
         } else {
-            let snapshot = await ListeningStatsTracker.shared.currentSnapshot()
+            let snapshot = await profileSession.listeningStats.currentSnapshot()
             guard let stat = snapshot.perBook[book.stableId] ?? snapshot.perBook[book.id],
                 stat.totalSeconds > 0 || stat.sessionCount > 0
             else {

@@ -14,7 +14,14 @@ final class PremiumizeProvider: WholeSnapshotCatalogProvider, PlaybackSessionPro
     private let supportedAudioExtensions: Set<String> = ["mp3", "m4b", "m4a", "mp4", "aac", "flac", "ogg", "opus", "wav"]
     private let selfContainedExtensions: Set<String> = ["m4b", "m4a", "mp4"]
 
-    init(connection: ServerConnection) {
+    private let networkSession: URLSession
+    private let ebooks: LocalEbookImporter
+    private let rejectedContent: RejectedContentStore
+
+    init(connection: ServerConnection, profileSession: ProfileSession? = nil) {
+        networkSession = profileSession?.networkSession ?? .shared
+        ebooks = profileSession?.ebooks ?? .shared
+        rejectedContent = profileSession?.rejectedContent ?? .shared
         self.connection = connection
     }
 
@@ -66,7 +73,7 @@ final class PremiumizeProvider: WholeSnapshotCatalogProvider, PlaybackSessionPro
 
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        let (_, response) = try await URLSession.shared.data(for: request)
+        let (_, response) = try await networkSession.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw ProviderError.invalidResponse
         }
@@ -341,14 +348,14 @@ final class PremiumizeProvider: WholeSnapshotCatalogProvider, PlaybackSessionPro
         guard let url = components.url else { return [] }
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await networkSession.data(for: request)
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             return []
         }
 
         let payload = try JSONDecoder().decode(PremiumizeFolderResponse.self, from: data)
         if !payload.rejectedItems.isEmpty { catalogFetchWasComplete = false }
-        RejectedContentStore.shared.update(
+        rejectedContent.update(
             connection: connection,
             libraryId: libraryId,
             acceptedItemIdentifiers: Set(payload.content.compactMap(\.id)),

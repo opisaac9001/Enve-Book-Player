@@ -4,17 +4,16 @@ struct PodcastsHomeScreen: View {
     var isActive: Bool = true
     var showsBackButton: Bool = true
 
+    @Environment(\.profileSession) private var profileSession
     @Environment(EnveEngine.self) private var engine
     @Environment(\.hearth) private var hearth
     @Environment(\.mantelInset) private var mantelInset
 
-    private let model = PodcastsModel.shared
+    @Environment(PodcastsModel.self) private var model
     @State private var heroTint: Color = Hearth.accent
     @State private var browsePushed = false
     @State private var loaded = false
-    @State private var includeAudiobookshelfPodcasts = LibraryDisplayPreferencesStore.shared
-        .loadPreferences()
-        .includeAudiobookshelfPodcasts
+    @State private var includeAudiobookshelfPodcasts = false
 
     var body: some View {
         Group {
@@ -42,7 +41,7 @@ struct PodcastsHomeScreen: View {
             Task { await model.reloadSubscriptions() }
         }
         .onChange(of: includeAudiobookshelfPodcasts) {
-            SettingsPrefs.mutate { preferences in
+            SettingsPrefs.mutate(in: (profileSession ?? .owner).preferences) { preferences in
                 preferences.includeAudiobookshelfPodcasts = includeAudiobookshelfPodcasts
             }
             Task { await model.load() }

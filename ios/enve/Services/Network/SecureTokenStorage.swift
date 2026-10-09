@@ -5,9 +5,15 @@ import Security
 final class SecureTokenStorage {
     static let shared = SecureTokenStorage()
 
-    private let service = "com.narratarr.narrator"
+    private let service: String
+    private let accessibility: CFString
 
-    private init() {}
+    init(profileID: String = FamilyProfile.ownerID) {
+        precondition(FamilyProfile.validID(profileID))
+        let owner = profileID == FamilyProfile.ownerID
+        service = owner ? "com.narratarr.narrator" : "com.narratarr.narrator.profile.\(profileID)"
+        accessibility = owner ? kSecAttrAccessibleAfterFirstUnlock : kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+    }
 
     func saveToken(_ token: OAuthToken, forProvider provider: String) throws {
         let data = try JSONEncoder().encode(token)
@@ -66,7 +72,7 @@ final class SecureTokenStorage {
             kSecAttrService as String: service,
             kSecAttrAccount as String: key,
             kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+            kSecAttrAccessible as String: accessibility,
         ]
 
         SecItemDelete(query as CFDictionary)

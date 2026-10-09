@@ -1,5 +1,7 @@
 package com.enve.app.hearth
 
+import com.enve.core.di.ApplicationScope
+import kotlinx.coroutines.Job
 import android.util.Log
 import com.enve.app.playback.AudioPlaybackManager
 import com.enve.app.playback.AutoMediaBrowserHelper
@@ -35,8 +37,10 @@ class PlaybackFacadeImpl @Inject constructor(
     private val bookCache: BookCacheDao,
     private val queueCoordinator: PlaybackQueueCoordinator,
     private val preferences: PreferencesManager,
+    @ApplicationScope parentScope: CoroutineScope =
+        CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) : PlaybackFacade {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob(parentScope.coroutineContext[Job]) + Dispatchers.Default)
     private val skipForwardSeconds = preferences.skipForwardSeconds
         .stateIn(scope, SharingStarted.Eagerly, 30)
     private val skipBackwardSeconds = preferences.skipBackwardSeconds

@@ -3,11 +3,19 @@ import UIKit
 
 struct AppearanceScreen: View {
     @Environment(\.hearth) private var hearth
+    @Environment(\.profileSession) private var profileSession
 
     @AppStorage("hearth.mode") private var modeRaw = Hearth.Mode.system.rawValue
     @AppStorage("hearth.oled") private var oledEnabled = false
-    @State private var accentColor = Hearth.accent
-    @State private var prefs = LibraryDisplayPreferencesStore.shared.loadPreferences()
+    @State private var accentColor: Color
+    @State private var prefs: UserPreferences
+
+    init(profileSession: ProfileSession = .owner) {
+        _prefs = State(initialValue: profileSession.preferences.loadPreferences())
+        _accentColor = State(initialValue: Hearth.accent(fromHex: profileSession.defaults.string(forKey: "themeColorHex")))
+    }
+
+    private var session: ProfileSession { profileSession ?? .owner }
 
     var body: some View {
         SettingsScaffold(overline: "Playback & experience", title: "Appearance") {
@@ -40,7 +48,7 @@ struct AppearanceScreen: View {
                         .foregroundStyle(hearth.text)
                     Spacer()
                     Button {
-                        UserDefaults.standard.removeObject(forKey: "themeColorHex")
+                        session.theme.themeColorHex = ThemeManager.defaultThemeHex
                         accentColor = Color(hexValue: 0xF5921A)
                         PlatformHaptics.selection()
                     } label: {
@@ -48,7 +56,7 @@ struct AppearanceScreen: View {
                             .fill(Color(hexValue: 0xF5921A))
                             .frame(width: 26, height: 26)
                             .overlay {
-                                if UserDefaults.standard.string(forKey: "themeColorHex") == nil {
+                                if session.theme.themeColorHex.uppercased() == ThemeManager.defaultThemeHex.uppercased() {
                                     Image(systemName: "checkmark")
                                         .font(.hearthUI(11, weight: .bold))
                                         .foregroundStyle(hearth.onEmber)
@@ -63,7 +71,7 @@ struct AppearanceScreen: View {
                         .labelsHidden()
                         .onChange(of: accentColor) { _, newColor in
                             if let hex = newColor.settingsHexString {
-                                UserDefaults.standard.set(hex, forKey: "themeColorHex")
+                                session.theme.themeColorHex = hex
                             }
                         }
                 }
@@ -75,10 +83,10 @@ struct AppearanceScreen: View {
                     value: prefs.playerBackgroundStyle == .albumArt ? "Blurred cover" : "Solid"
                 ) {
                     Button("Blurred cover") {
-                        prefs = SettingsPrefs.mutate { $0.playerBackgroundStyle = .albumArt }
+                        prefs = SettingsPrefs.mutate(in: session.preferences) { $0.playerBackgroundStyle = .albumArt }
                     }
                     Button("Solid") {
-                        prefs = SettingsPrefs.mutate { $0.playerBackgroundStyle = .solid }
+                        prefs = SettingsPrefs.mutate(in: session.preferences) { $0.playerBackgroundStyle = .solid }
                     }
                 }
 
@@ -88,7 +96,7 @@ struct AppearanceScreen: View {
                 ) {
                     ForEach(UserPreferences.ShellNavigationStyle.allCases) { style in
                         Button(style.displayName) {
-                            prefs = SettingsPrefs.mutate { $0.shellNavigationStyle = style }
+                            prefs = SettingsPrefs.mutate(in: session.preferences) { $0.shellNavigationStyle = style }
                         }
                     }
                 }
@@ -98,7 +106,7 @@ struct AppearanceScreen: View {
                     .foregroundStyle(hearth.textSecondary)
             }
         }
-        .onAppear { prefs = LibraryDisplayPreferencesStore.shared.loadPreferences() }
+        .onAppear { prefs = session.preferences.loadPreferences() }
     }
 }
 

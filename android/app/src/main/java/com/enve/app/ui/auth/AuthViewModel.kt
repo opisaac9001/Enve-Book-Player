@@ -1663,10 +1663,11 @@ class AuthViewModel @Inject constructor(
             ?.let { id -> connectionRegistry.getConnectionsSync().find { it.id == id } }
 
         if (normalizedUrl.isBlank()) return connectionId
-        if (existingConnectionId != null) {
-            runCatching { libraryCacheRepository.clearForConnection(existingConnectionId) }
+        if (existingConnection != null &&
+            (existingConnection.source != state.selectedSource || existingConnection.username != username)
+        ) {
+            libraryCacheRepository.clearForConnection(connectionId)
         }
-
         val certBytes = state.mtlsCertBytes
         if (state.mtlsEnabled && certBytes != null && certBytes.isNotEmpty()) {
             runCatching {

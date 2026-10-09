@@ -7,9 +7,9 @@ struct GrimmoryCatalogCheckpointStoreTests {
     @Test func resumesMatchingCatalogSnapshotWithCommittedProgress() throws {
         let connectionId = UUID()
         let libraryId = "library-\(UUID().uuidString)"
-        defer { GrimmoryCatalogCheckpointStore.clear(connectionId: connectionId, libraryId: libraryId) }
+        defer { GrimmoryCatalogCheckpointStore().clear(connectionId: connectionId, libraryId: libraryId) }
         let firstPage = Data("first".utf8)
-        var initial = try GrimmoryCatalogCheckpointStore.prepare(
+        var initial = try GrimmoryCatalogCheckpointStore().prepare(
             connectionId: connectionId,
             libraryId: libraryId,
             serverIdentity: "https://example.invalid",
@@ -19,14 +19,14 @@ struct GrimmoryCatalogCheckpointStoreTests {
             firstPageFingerprint: "snapshot-a",
             firstPageData: firstPage
         ).checkpoint
-        try GrimmoryCatalogCheckpointStore.recordPage(Data("second".utf8), page: 1, checkpoint: &initial)
-        try GrimmoryCatalogCheckpointStore.bindReconciliation(
+        try GrimmoryCatalogCheckpointStore().recordPage(Data("second".utf8), page: 1, checkpoint: &initial)
+        try GrimmoryCatalogCheckpointStore().bindReconciliation(
             ReconciliationStart(generation: 7, existingCount: 4),
             checkpoint: &initial
         )
-        try GrimmoryCatalogCheckpointStore.markCommitted(pages: [0, 1], bookCount: 6, checkpoint: &initial)
+        try GrimmoryCatalogCheckpointStore().markCommitted(pages: [0, 1], bookCount: 6, checkpoint: &initial)
 
-        let resumed = try GrimmoryCatalogCheckpointStore.prepare(
+        let resumed = try GrimmoryCatalogCheckpointStore().prepare(
             connectionId: connectionId,
             libraryId: libraryId,
             serverIdentity: "https://example.invalid",
@@ -41,14 +41,14 @@ struct GrimmoryCatalogCheckpointStoreTests {
         #expect(resumed.checkpoint.completedPages == [0, 1])
         #expect(resumed.checkpoint.committedPages == [0, 1])
         #expect(resumed.checkpoint.committedBookCount == 6)
-        #expect(try GrimmoryCatalogCheckpointStore.pageData(connectionId: connectionId, libraryId: libraryId, page: 1) == Data("second".utf8))
+        #expect(try GrimmoryCatalogCheckpointStore().pageData(connectionId: connectionId, libraryId: libraryId, page: 1) == Data("second".utf8))
     }
 
     @Test func changedSnapshotInvalidatesStagedPages() throws {
         let connectionId = UUID()
         let libraryId = "library-\(UUID().uuidString)"
-        defer { GrimmoryCatalogCheckpointStore.clear(connectionId: connectionId, libraryId: libraryId) }
-        var initial = try GrimmoryCatalogCheckpointStore.prepare(
+        defer { GrimmoryCatalogCheckpointStore().clear(connectionId: connectionId, libraryId: libraryId) }
+        var initial = try GrimmoryCatalogCheckpointStore().prepare(
             connectionId: connectionId,
             libraryId: libraryId,
             serverIdentity: "https://example.invalid",
@@ -58,9 +58,9 @@ struct GrimmoryCatalogCheckpointStoreTests {
             firstPageFingerprint: "snapshot-a",
             firstPageData: Data("first-a".utf8)
         ).checkpoint
-        try GrimmoryCatalogCheckpointStore.recordPage(Data("second".utf8), page: 1, checkpoint: &initial)
+        try GrimmoryCatalogCheckpointStore().recordPage(Data("second".utf8), page: 1, checkpoint: &initial)
 
-        let replaced = try GrimmoryCatalogCheckpointStore.prepare(
+        let replaced = try GrimmoryCatalogCheckpointStore().prepare(
             connectionId: connectionId,
             libraryId: libraryId,
             serverIdentity: "https://example.invalid",
@@ -74,7 +74,7 @@ struct GrimmoryCatalogCheckpointStoreTests {
         #expect(!replaced.resumed)
         #expect(replaced.checkpoint.completedPages == [0])
         #expect(throws: (any Error).self) {
-            try GrimmoryCatalogCheckpointStore.pageData(connectionId: connectionId, libraryId: libraryId, page: 1)
+            try GrimmoryCatalogCheckpointStore().pageData(connectionId: connectionId, libraryId: libraryId, page: 1)
         }
     }
 }

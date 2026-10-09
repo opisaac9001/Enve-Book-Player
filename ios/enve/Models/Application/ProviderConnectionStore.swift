@@ -44,17 +44,51 @@ final class ProviderConnectionStore: ProviderConnectionAccessing, ProviderConnec
     let changes = PassthroughSubject<[ServerConnection], Never>()
     var configurationDidChange: (() -> Void)?
 
+    private var isRetired = false
+    private var authenticationTasks: [Task<Void, Never>] = []
     private var providers: [UUID: LibraryProvider] = [:]
     private let providerFactory: @MainActor (ServerConnection) -> LibraryProvider?
     private(set) var persistsConnections: Bool
+    private let defaults: UserDefaults
+    private let keychain: SharedKeychainStore
+    private let serverConfig: ServerConfigStore
+    private let isOwnerProfile: Bool
+    private let authenticationFailures: AuthenticationFailureStore
+    private let pendingSync: PendingSyncQueueStore
 
     var allProviders: [UUID: LibraryProvider] { providers }
     var providerCount: Int { providers.count }
 
-    init(
+    convenience init(
         initialConnections: [ServerConnection]? = nil,
         providerFactory: @escaping @MainActor (ServerConnection) -> LibraryProvider? = ProviderFactory.create(for:)
     ) {
+        self.init(
+            profileID: FamilyProfile.ownerID,
+            defaults: .standard,
+            keychain: .shared,
+            serverConfig: .shared,
+            initialConnections: initialConnections,
+            providerFactory: providerFactory
+        )
+    }
+
+    init(
+        profileID: String,
+        defaults: UserDefaults,
+        keychain: SharedKeychainStore,
+        serverConfig: ServerConfigStore,
+        authenticationFailures: AuthenticationFailureStore = .shared,
+        pendingSync: PendingSyncQueueStore = .shared,
+        initialConnections: [ServerConnection]? = nil,
+        providerFactory: @escaping @MainActor (ServerConnection) -> LibraryProvider? = ProviderFactory.create(for:)
+    ) {
+        self.defaults = defaults
+        self.keychain = keychain
+        self.serverConfig = serverConfig
+        self.authenticationFailures = authenticationFailures
+        self.pendingSync = pendingSync
+        isOwnerProfile = profileID == FamilyProfile.ownerID
         self.providerFactory = providerFactory
         persistsConnections = initialConnections == nil
         connections = initialConnections ?? load()
@@ -73,6 +107,7 @@ final class ProviderConnectionStore: ProviderConnectionAccessing, ProviderConnec
     }
 
     func provider(for providerId: UUID) -> LibraryProvider? {
+        guard !isRetired else { return nil }
         if let provider = providers[providerId] {
             return provider
         }
@@ -118,7 +153,8 @@ final class ProviderConnectionStore: ProviderConnectionAccessing, ProviderConnec
         }) {
             return BackendConfig(from: connection)
         }
-        return ServerConfigStore.shared.loadBackends().first {
+        guard isOwnerProfile else { return nil }
+        return serverConfig.loadBackends().first {
             $0.id.lowercased() == searchId
         }
     }
@@ -126,8 +162,9 @@ final class ProviderConnectionStore: ProviderConnectionAccessing, ProviderConnec
     func allBackends() -> [BackendConfig] {
         var backends = connections.compactMap(BackendConfig.init(from:))
         let connectionBackendIds = Set(backends.map(\.id))
+        guard isOwnerProfile else { return backends }
         backends.append(
-            contentsOf: ServerConfigStore.shared.loadBackends().filter {
+            contentsOf: serverConfig.loadBackends().filter {
                 !connectionBackendIds.contains($0.id)
             }
         )
@@ -135,6 +172,7 @@ final class ProviderConnectionStore: ProviderConnectionAccessing, ProviderConnec
     }
 
     func syncProviders() {
+        guard !isRetired else { return }
         let connectionIds = Set(connections.filter { !$0.isArchived }.map(\.id))
         providers = providers.filter { connectionIds.contains($0.key) }
 
@@ -177,10 +215,11 @@ final class ProviderConnectionStore: ProviderConnectionAccessing, ProviderConnec
 
     func clearReauthentication(connectionId: UUID) {
         connectionsNeedingReauth.removeAll { $0.id == connectionId }
-        PendingSyncQueueStore.shared.resumeSuspended()
+        pendingSync.resumeSuspended()
     }
 
     func refreshAudiobookshelfAuthentication() async {
+        guard !isRetired else { return }
         if isRefreshingAudiobookshelfAuthentication {
             AppLogger.general.warning("ABS auth refresh already running, skipping duplicate request")
             return
@@ -191,7 +230,7 @@ final class ProviderConnectionStore: ProviderConnectionAccessing, ProviderConnec
         let targets = connections.filter {
             $0.type == .audiobookshelf
                 && !$0.isArchived
-                && !AuthenticationFailureStore.shared.isBlocked(connectionId: $0.id)
+                && !authenticationFailures.isBlocked(connectionId: $0.id)
         }
         guard !targets.isEmpty else { return }
 
@@ -202,19 +241,15 @@ final class ProviderConnectionStore: ProviderConnectionAccessing, ProviderConnec
             tasks.append(
                 Task { @MainActor [weak self] in
                     guard let self else { return }
-                    let provider: AudiobookshelfProvider
-                    if let existing = self[connection.id] as? AudiobookshelfProvider {
-                        provider = existing
-                    } else {
-                        let created = AudiobookshelfProvider(connection: connection)
-                        self[connection.id] = created
-                        provider = created
-                    }
+                    guard !self.isRetired,
+                        let provider = self.provider(for: connection.id) as? AudiobookshelfProvider
+                    else { return }
 
                     do {
                         let isValid = try await Task.withTimeout(seconds: 10) {
                             try await provider.validateConnection()
                         }
+                        guard !self.isRetired else { return }
                         if isValid {
                             if let index = self.connections.firstIndex(where: { $0.id == connection.id }) {
                                 var updated = self.connections[index]
@@ -240,16 +275,17 @@ final class ProviderConnectionStore: ProviderConnectionAccessing, ProviderConnec
             )
         }
 
-        for task in tasks {
-            await task.value
-        }
+        authenticationTasks = tasks
+        for task in tasks { await task.value }
+        authenticationTasks.removeAll()
     }
 
     func refreshBookloreAuthentication() async {
+        guard !isRetired else { return }
         let targets = connections.filter {
             $0.type == .booklore
                 && !$0.isArchived
-                && !AuthenticationFailureStore.shared.isBlocked(connectionId: $0.id)
+                && !authenticationFailures.isBlocked(connectionId: $0.id)
         }
         guard !targets.isEmpty else { return }
 
@@ -271,6 +307,17 @@ final class ProviderConnectionStore: ProviderConnectionAccessing, ProviderConnec
                 markNeedsReauthentication(providerId: connection.id, error: error)
             }
         }
+    }
+
+    func retire() async {
+        isRetired = true
+        configurationDidChange = nil
+        let jobs = authenticationTasks
+        jobs.forEach { $0.cancel() }
+        for job in jobs { await job.value }
+        let retiringProviders = Array(providers.values)
+        providers.removeAll()
+        for provider in retiringProviders { await provider.retire() }
     }
 
     func bookloreProvider(for url: URL) -> BookloreProvider? {
@@ -296,7 +343,7 @@ final class ProviderConnectionStore: ProviderConnectionAccessing, ProviderConnec
         var connection = connections[index]
         connection.isConnected = false
         connections[index] = connection
-        AuthenticationFailureStore.shared.block(connectionId: providerId)
+        authenticationFailures.block(connectionId: providerId)
         markNeedsReauthentication(connection)
         AppLogger.general.warning(
             "[ProviderConnections] Marked \(connection.name) as requiring reauth after authorization failure"
@@ -335,7 +382,7 @@ final class ProviderConnectionStore: ProviderConnectionAccessing, ProviderConnec
     private var isRefreshingAudiobookshelfAuthentication = false
 
     private func refreshAuthenticationFailures() {
-        let blocked = AuthenticationFailureStore.shared.blockedConnectionIds
+        let blocked = authenticationFailures.blockedConnectionIds
         connectionsNeedingReauth = connections.filter {
             !$0.isArchived && blocked.contains($0.id)
         }
@@ -351,35 +398,40 @@ final class ProviderConnectionStore: ProviderConnectionAccessing, ProviderConnec
 
     private func persist() {
         guard persistsConnections else { return }
-
+        let snapshot = connections
         do {
-            UserDefaults.standard.set(try JSONEncoder().encode(connections), forKey: Self.storageKey)
+            defaults.set(try encode(snapshot), forKey: Self.storageKey)
         } catch {
             AppLogger.general.error("Server connections save skipped: \(error.localizedDescription)")
             return
         }
 
-        Task { @MainActor in
-            for connection in connections {
-                if let token = connection.token, !token.isEmpty {
-                    SharedKeychainStore.shared.setToken(token, forConnectionId: connection.id.uuidString)
-                }
-                if let password = connection.password, !password.isEmpty {
-                    SharedKeychainStore.shared.setPassword(password, forConnectionId: connection.id.uuidString)
-                }
-            }
-            if PlatformRuntime.cloudKitEnabled {
-                await ServerConnectionCloudKitSync.shared.pushAll()
+        guard isOwnerProfile, PlatformRuntime.cloudKitEnabled else { return }
+        Task { @MainActor [snapshot] in
+            for connection in snapshot {
+                await ServerConnectionCloudKitSync.shared.pushChange(connection)
             }
         }
+    }
+
+    private func encode(_ connections: [ServerConnection]) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.userInfo[ServerConnection.keychainUserInfoKey] = keychain
+        return try encoder.encode(connections)
+    }
+
+    private func decode(_ data: Data) throws -> [ServerConnection] {
+        let decoder = JSONDecoder()
+        decoder.userInfo[ServerConnection.keychainUserInfoKey] = keychain
+        return try decoder.decode([ServerConnection].self, from: data)
     }
 
     private func load() -> [ServerConnection] {
         migrateSecretsIfNeeded()
         var loaded: [ServerConnection] = []
-        if let data = UserDefaults.standard.data(forKey: Self.storageKey), !data.isEmpty {
+        if let data = defaults.data(forKey: Self.storageKey), !data.isEmpty {
             do {
-                loaded = try JSONDecoder().decode([ServerConnection].self, from: data)
+                loaded = try decode(data)
             } catch {
                 AppLogger.general.error(
                     "Failed to decode connections blob (\(data.count) bytes); preserving blob: \(error.localizedDescription)"
@@ -389,7 +441,7 @@ final class ProviderConnectionStore: ProviderConnectionAccessing, ProviderConnec
             }
         }
 
-        let legacyBackends = ServerConfigStore.shared.loadBackends()
+        let legacyBackends = isOwnerProfile ? serverConfig.loadBackends() : []
         let existingIds = Set(loaded.map { $0.id.uuidString.lowercased() })
         for backend in legacyBackends {
             guard let id = UUID(uuidString: backend.id),
@@ -430,30 +482,14 @@ final class ProviderConnectionStore: ProviderConnectionAccessing, ProviderConnec
     }
 
     private func migrateSecretsIfNeeded() {
-        let defaults = UserDefaults.standard
         guard !defaults.bool(forKey: Self.secretsMigratedKey) else { return }
         guard let data = defaults.data(forKey: Self.storageKey), !data.isEmpty else {
             defaults.set(true, forKey: Self.secretsMigratedKey)
             return
         }
         do {
-            let decoded = try JSONDecoder().decode([ServerConnection].self, from: data)
-            var stored = true
-            for connection in decoded {
-                let id = connection.id.uuidString
-                if let token = connection.token, !token.isEmpty,
-                    SharedKeychainStore.shared.token(forConnectionId: id) == nil
-                {
-                    stored = SharedKeychainStore.shared.setToken(token, forConnectionId: id) && stored
-                }
-                if let password = connection.password, !password.isEmpty,
-                    SharedKeychainStore.shared.password(forConnectionId: id) == nil
-                {
-                    stored = SharedKeychainStore.shared.setPassword(password, forConnectionId: id) && stored
-                }
-            }
-            guard stored else { return }
-            defaults.set(try JSONEncoder().encode(decoded), forKey: Self.storageKey)
+            let decoded = try decode(data)
+            defaults.set(try encode(decoded), forKey: Self.storageKey)
             defaults.set(true, forKey: Self.secretsMigratedKey)
         } catch {
             AppLogger.general.error("Connection secret migration deferred: \(error.localizedDescription)")

@@ -19,19 +19,30 @@ class OPDSProvider: WholeSnapshotCatalogProvider, EbookDownloadProvider, Playbac
 
     private let progressionEndpointStore: OPDSProgressionEndpointStore
     private let authenticationStore: OPDSAuthenticationStore
+    private let certificateTransport: InsecureURLSession
+    private let isolatesCredentials: Bool
     private let authentication: OPDSAuthenticationService
+    private let ebookImporter: LocalEbookImporter
+    private let rejectedContent: RejectedContentStore
 
     init(
         connection: ServerConnection,
         progressionEndpointStore: OPDSProgressionEndpointStore = .shared,
         authenticationStore: OPDSAuthenticationStore = .shared,
-        authentication: OPDSAuthenticationService = .shared
+        authentication: OPDSAuthenticationService = .shared,
+        profileSession: ProfileSession? = nil
     ) {
         self.connection = connection
-        self.progressionEndpointStore = progressionEndpointStore
-        self.authenticationStore = authenticationStore
-        self.authentication = authentication
+        self.progressionEndpointStore = profileSession?.opdsProgressionEndpoints ?? progressionEndpointStore
+        self.authenticationStore = profileSession?.opdsAuthentication ?? authenticationStore
+        certificateTransport = profileSession?.transport ?? .delegateInstance
+        isolatesCredentials = profileSession?.isOwner == false
+        self.authentication = profileSession?.opdsLogin ?? authentication
+        ebookImporter = profileSession?.ebooks ?? .shared
+        rejectedContent = profileSession?.rejectedContent ?? .shared
     }
+
+    func retire() async { await authentication.retire() }
 
     func validateConnection() async throws -> Bool {
         let url = feedURL()
@@ -295,7 +306,7 @@ class OPDSProvider: WholeSnapshotCatalogProvider, EbookDownloadProvider, Playbac
     }
 
     func downloadEbook(for book: Book, onProgress: (@Sendable (Double) -> Void)? = nil) async throws -> URL {
-        if let cached = LocalEbookImporter.shared.cachedEbook(forBookId: book.id) {
+        if let cached = ebookImporter.cachedEbook(forBookId: book.id) {
             onProgress?(1)
             return cached
         }
@@ -336,6 +347,7 @@ class OPDSProvider: WholeSnapshotCatalogProvider, EbookDownloadProvider, Playbac
                     book: book
                 )
                 return try payload.cache(
+                    ebookImporter: ebookImporter,
                     preferredFilename: Self.filename(for: book, format: format),
                     bookIdentifier: book.id
                 )
@@ -369,16 +381,16 @@ class OPDSProvider: WholeSnapshotCatalogProvider, EbookDownloadProvider, Playbac
             }
         }
 
-        func cache(preferredFilename: String, bookIdentifier: String) throws -> URL {
+        func cache(ebookImporter: LocalEbookImporter, preferredFilename: String, bookIdentifier: String) throws -> URL {
             switch self {
             case .body(let data):
-                try LocalEbookImporter.shared.cacheRemoteEbook(
+                try ebookImporter.cacheRemoteEbook(
                     data: data,
                     preferredFilename: preferredFilename,
                     bookIdentifier: bookIdentifier
                 )
             case .file(let url):
-                try LocalEbookImporter.shared.cacheRemoteEbook(
+                try ebookImporter.cacheRemoteEbook(
                     tempURL: url,
                     preferredFilename: preferredFilename,
                     bookIdentifier: bookIdentifier
@@ -405,9 +417,10 @@ class OPDSProvider: WholeSnapshotCatalogProvider, EbookDownloadProvider, Playbac
             progressHandler: onProgress,
             credential: basicCredential(for: url),
             allowedOrigin: feedURL(),
-            sensitiveHeaderNames: sensitiveHeaderNames
+            sensitiveHeaderNames: sensitiveHeaderNames,
+            certificateTransport: certificateTransport
         )
-        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+        let session = URLSession(configuration: isolatesCredentials ? .ephemeral : .default, delegate: delegate, delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
         let (tempURL, response) = try await delegate.awaitResult {
             session.downloadTask(with: makeRequest(url: url))
@@ -505,7 +518,7 @@ class OPDSProvider: WholeSnapshotCatalogProvider, EbookDownloadProvider, Playbac
             AppLogger.library.error("[OPDS] Catalog snapshot is partial: \(notice)")
         }
 
-        RejectedContentStore.shared.update(
+        rejectedContent.update(
             connection: connection,
             libraryId: Self.rootLibraryId,
             acceptedItemIdentifiers: Set(result.books.map(\.id)),
@@ -732,9 +745,10 @@ class OPDSProvider: WholeSnapshotCatalogProvider, EbookDownloadProvider, Playbac
             origin: feedURL(),
             username: connection.username,
             password: connection.password,
-            credentialHeaderNames: sensitiveHeaderNames
+            credentialHeaderNames: sensitiveHeaderNames,
+            certificateTransport: certificateTransport
         )
-        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+        let session = URLSession(configuration: isolatesCredentials ? .ephemeral : .default, delegate: delegate, delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw ProviderError.invalidResponse }
@@ -3022,12 +3036,14 @@ private final class OPDSAtomParser: NSObject, XMLParserDelegate {
 // MARK: - Transport
 
 final class OPDSSessionDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private let certificateTransport: InsecureURLSession
     private let origin: HTTPOrigin
     private let username: String?
     private let password: String?
     private let credentialHeaderNames: Set<String>
 
-    init(origin: URL, username: String?, password: String?, credentialHeaderNames: Set<String>) {
+    init(origin: URL, username: String?, password: String?, credentialHeaderNames: Set<String>, certificateTransport: InsecureURLSession = .delegateInstance) {
+        self.certificateTransport = certificateTransport
         self.origin = HTTPOrigin(url: origin)
         self.username = username
         self.password = password
@@ -3041,6 +3057,11 @@ final class OPDSSessionDelegate: NSObject, URLSessionTaskDelegate, @unchecked Se
         completionHandler: @escaping @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
         let method = challenge.protectionSpace.authenticationMethod
+
+        if method == NSURLAuthenticationMethodClientCertificate {
+            certificateTransport.urlSession(session, didReceive: challenge, completionHandler: completionHandler)
+            return
+        }
 
         if method == NSURLAuthenticationMethodHTTPBasic || method == NSURLAuthenticationMethodHTTPDigest,
             let user = username, !user.isEmpty, let password,

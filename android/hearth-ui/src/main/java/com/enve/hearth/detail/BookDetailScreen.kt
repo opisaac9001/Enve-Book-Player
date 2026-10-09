@@ -72,7 +72,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.hilt.navigation.compose.hiltViewModel
+import com.enve.hearth.shell.profileViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
@@ -92,6 +92,7 @@ import com.enve.core.data.model.ReaderAnnotation
 import com.enve.engine.library.LibraryDownloadState
 import com.enve.engine.library.LibraryDownloadStatus
 import com.enve.engine.library.LibraryLinkCandidate
+import com.enve.engine.library.AudiobookshelfHistoryCandidate
 import com.enve.engine.library.LibraryMetadataEdit
 import com.enve.engine.library.LibraryMetadataMatch
 import com.enve.engine.library.BookOrbitCollectionMembership
@@ -108,6 +109,7 @@ import com.enve.hearth.design.Overline
 import com.enve.hearth.design.Ribbon
 import com.enve.engine.bookorbit.BookOrbitRelatedBook
 import com.enve.hearth.design.ShelfHeader
+import com.enve.engine.library.SavedBookList
 import com.enve.hearth.design.hearthDisplay
 import com.enve.hearth.design.parseHexColor
 import kotlinx.coroutines.Dispatchers
@@ -126,7 +128,7 @@ fun BookDetailScreen(
     onAskLibrarian: (Book) -> Unit = {},
     onOpenAnnotation: (Book, ReaderAnnotation) -> Unit = { _, _ -> },
 ) {
-    val vm: HearthDetailViewModel = hiltViewModel()
+    val vm: HearthDetailViewModel = profileViewModel()
     LaunchedEffect(initial.uniqueKey) { vm.load(initial) }
     val book by vm.book.collectAsStateWithLifecycle()
     val linkedAudiobook by vm.linkedAudiobook.collectAsStateWithLifecycle()
@@ -145,17 +147,28 @@ fun BookDetailScreen(
     val linkCandidateQuery by vm.linkCandidateQuery.collectAsStateWithLifecycle()
     val linkCandidates by vm.linkCandidates.collectAsStateWithLifecycle()
     val linkCandidatesLoading by vm.linkCandidatesLoading.collectAsStateWithLifecycle()
+    val historyTarget by vm.historyTarget.collectAsStateWithLifecycle()
+    val historyQuery by vm.historyQuery.collectAsStateWithLifecycle()
+    val historyCandidates by vm.historyCandidates.collectAsStateWithLifecycle()
+    val historyCandidatesLoading by vm.historyCandidatesLoading.collectAsStateWithLifecycle()
     val downloadState by vm.downloadState.collectAsStateWithLifecycle()
+    val counterpartDownloadState by vm.counterpartDownloadState.collectAsStateWithLifecycle()
     val annotations by vm.annotations.collectAsStateWithLifecycle()
     val knownTags by vm.knownTags.collectAsStateWithLifecycle()
     val bookOrbitCollections by vm.bookOrbitCollections.collectAsStateWithLifecycle()
     val bookOrbitRelated by vm.bookOrbitRelated.collectAsStateWithLifecycle()
+    val saved by vm.saved.collectAsStateWithLifecycle()
+    val savedSyncErrors by vm.savedSyncErrors.collectAsStateWithLifecycle()
     val relatedBooks by vm.relatedBooks.collectAsStateWithLifecycle()
     val palette = Hearth.palette
     val b = book ?: initial
+    val favorite = remember(saved, b) { vm.isSaved(b, SavedBookList.FAVORITES) }
+    val forLater = remember(saved, b) { vm.isSaved(b, SavedBookList.LATER) }
     var showEditMetadata by remember { mutableStateOf(false) }
     var showMetadataMatches by remember { mutableStateOf(false) }
     var showLinkDialog by remember { mutableStateOf(false) }
+    var showHistoryDialog by remember { mutableStateOf(false) }
+    var selectedHistoryTarget by remember { mutableStateOf<AudiobookshelfHistoryCandidate?>(null) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showBookOrbitCollections by remember { mutableStateOf(false) }
     var annotationFilter by remember(initial.id) { mutableStateOf(AnnotationFilter.ALL) }
@@ -176,6 +189,10 @@ fun BookDetailScreen(
                     b = b,
                     vm = vm,
                     downloadState = downloadState,
+                    counterpart = if (b.source == BookSource.GRIMMORY) {
+                        if (b.mediaType == AppMediaType.EBOOK) linkedAudiobook else linkedEbook
+                    } else null,
+                    counterpartDownloadState = counterpartDownloadState,
                     metadataEditSupported = metadataEditSupported,
                     onHidden = onBack,
                     onAskLibrarian = onAskLibrarian,
@@ -183,6 +200,10 @@ fun BookDetailScreen(
                     onFindBetterMatch = {
                         showMetadataMatches = true
                         vm.startMetadataMatch()
+                    },
+                    onAudiobookshelfHistory = {
+                        showHistoryDialog = true
+                        vm.prepareAudiobookshelfHistory()
                     },
                     onLinkEditions = {
                         if (supportsEditionLinking(b)) {
@@ -192,8 +213,22 @@ fun BookDetailScreen(
                     },
                     canManageBookOrbitCollections = bookOrbitCollections.isNotEmpty(),
                     onBookOrbitCollections = { showBookOrbitCollections = true },
+                    isFavorite = favorite,
+                    isForLater = forLater,
+                    onToggleFavorite = { vm.toggleSaved(b, SavedBookList.FAVORITES) },
+                    onToggleForLater = { vm.toggleSaved(b, SavedBookList.LATER) },
                     onDelete = { showDeleteConfirm = true },
                 )
+            }
+            (savedSyncErrors[b.uniqueKey] ?: b.connectionId?.let { savedSyncErrors[it] })?.let { message ->
+                item {
+                    Text(
+                        "Saved on this device, but $message",
+                        style = HearthText.Caption,
+                        color = palette.statusError,
+                        modifier = Modifier.padding(horizontal = Hearth.Spacing.XXL, vertical = Hearth.Spacing.S),
+                    )
+                }
             }
             if (personalRatingSupported) {
                 item {
@@ -289,6 +324,46 @@ fun BookDetailScreen(
                     vm.applyMetadataMatch(match)
                 },
                 onDismiss = { showMetadataMatches = false },
+            )
+        }
+        if (showHistoryDialog) {
+            AudiobookshelfHistoryDialog(
+                currentTarget = historyTarget,
+                query = historyQuery,
+                candidates = historyCandidates,
+                loading = historyCandidatesLoading,
+                onQueryChange = vm::updateAudiobookshelfHistoryQuery,
+                onLink = { target ->
+                    showHistoryDialog = false
+                    selectedHistoryTarget = target
+                },
+                onUnlink = {
+                    showHistoryDialog = false
+                    vm.unlinkAudiobookshelfHistory()
+                },
+                onDismiss = { showHistoryDialog = false },
+            )
+        }
+        selectedHistoryTarget?.let { selected ->
+            AlertDialog(
+                onDismissRequest = { selectedHistoryTarget = null },
+                title = { Text("Confirm listening history") },
+                text = { Text("Share local Grimmory listening for this book with Audiobookshelf account ${selected.accountName} and item ${selected.book.title}? Older sessions on this connection may belong to a previous account.") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        vm.linkAudiobookshelfHistory(selected.book, includePast = false)
+                        selectedHistoryTarget = null
+                    }) { Text("Start now") }
+                },
+                dismissButton = {
+                    Row {
+                        TextButton(onClick = {
+                            vm.linkAudiobookshelfHistory(selected.book, includePast = true)
+                            selectedHistoryTarget = null
+                        }) { Text("Include past sessions") }
+                        TextButton(onClick = { selectedHistoryTarget = null }) { Text("Cancel") }
+                    }
+                },
             )
         }
         if (showLinkDialog) {
@@ -517,14 +592,21 @@ private fun DetailSecondaryActions(
     b: Book,
     vm: HearthDetailViewModel,
     downloadState: LibraryDownloadState,
+    counterpart: Book?,
+    counterpartDownloadState: LibraryDownloadState,
     metadataEditSupported: Boolean,
     onHidden: () -> Unit,
     onAskLibrarian: (Book) -> Unit,
     onEditMetadata: () -> Unit,
     onFindBetterMatch: () -> Unit,
     onLinkEditions: () -> Unit,
+    onAudiobookshelfHistory: () -> Unit,
     canManageBookOrbitCollections: Boolean,
     onBookOrbitCollections: () -> Unit,
+    isFavorite: Boolean,
+    isForLater: Boolean,
+    onToggleFavorite: () -> Unit,
+    onToggleForLater: () -> Unit,
     onDelete: () -> Unit,
 ) {
     val palette = Hearth.palette
@@ -532,6 +614,7 @@ private fun DetailSecondaryActions(
     val coroutineScope = rememberCoroutineScope()
     var menu by remember { mutableStateOf(false) }
     var confirmRemoveDownload by remember(b.uniqueKey) { mutableStateOf(false) }
+    var confirmRemoveCounterpart by remember(b.uniqueKey) { mutableStateOf(false) }
     var confirmResetProgress by remember(b.uniqueKey) { mutableStateOf(false) }
     var confirmHide by remember(b.uniqueKey) { mutableStateOf(false) }
     Row(
@@ -542,6 +625,9 @@ private fun DetailSecondaryActions(
         DownloadStatusPill(
             book = b,
             state = downloadState,
+            formatLabel = if (counterpart?.source == BookSource.GRIMMORY) {
+                if (b.mediaType == AppMediaType.AUDIOBOOK) "audiobook" else "ebook"
+            } else null,
             onClick = {
                 if (b.isDownloaded || downloadState.status == LibraryDownloadStatus.COMPLETED) confirmRemoveDownload = true
                 else vm.toggleDownload()
@@ -568,6 +654,14 @@ private fun DetailSecondaryActions(
                 )
             }
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                DropdownMenuItem(text = { Text(if (isFavorite) "Remove from Favorites" else "Add to Favorites") }, onClick = {
+                    menu = false
+                    onToggleFavorite()
+                })
+                DropdownMenuItem(text = { Text(if (isForLater) "Remove from For Later" else "Add to For Later") }, onClick = {
+                    menu = false
+                    onToggleForLater()
+                })
                 DropdownMenuItem(text = { Text("Copy title") }, onClick = {
                     menu = false
                     coroutineScope.launch {
@@ -590,6 +684,12 @@ private fun DetailSecondaryActions(
                     menu = false
                     onLinkEditions()
                 })
+                if (b.source == BookSource.GRIMMORY && b.mediaType == AppMediaType.AUDIOBOOK) {
+                    DropdownMenuItem(text = { Text("Share listening history with Audiobookshelf") }, onClick = {
+                        menu = false
+                        onAudiobookshelfHistory()
+                    })
+                }
                 DropdownMenuItem(text = { Text("Fetch chapters") }, onClick = {
                     menu = false
                     vm.fetchChaptersFromMenu()
@@ -606,6 +706,19 @@ private fun DetailSecondaryActions(
             }
         }
     }
+    if (counterpart?.source == BookSource.GRIMMORY) {
+        Box(Modifier.fillMaxWidth().padding(horizontal = Hearth.Spacing.XL, vertical = Hearth.Spacing.S), contentAlignment = Alignment.Center) {
+            DownloadStatusPill(
+                book = counterpart,
+                state = counterpartDownloadState,
+                formatLabel = if (counterpart.mediaType == AppMediaType.AUDIOBOOK) "audiobook" else "ebook",
+                onClick = {
+                    if (counterpart.isDownloaded || counterpartDownloadState.status == LibraryDownloadStatus.COMPLETED) confirmRemoveCounterpart = true
+                    else vm.toggleCounterpartDownload()
+                },
+            )
+        }
+    }
     if (confirmRemoveDownload) {
         AlertDialog(
             onDismissRequest = { confirmRemoveDownload = false },
@@ -617,6 +730,19 @@ private fun DetailSecondaryActions(
                 }
             },
             dismissButton = { TextButton(onClick = { confirmRemoveDownload = false }) { Text("Cancel") } },
+        )
+    }
+    if (confirmRemoveCounterpart && counterpart != null) {
+        AlertDialog(
+            onDismissRequest = { confirmRemoveCounterpart = false },
+            title = { Text("Remove ${if (counterpart.mediaType == AppMediaType.AUDIOBOOK) "audiobook" else "ebook"} download?") },
+            text = { Text("This removes the downloaded files for \"${counterpart.title}\" from this device.") },
+            confirmButton = {
+                TextButton(onClick = { confirmRemoveCounterpart = false; vm.removeCounterpartDownload() }) {
+                    Text("Remove", color = palette.statusError)
+                }
+            },
+            dismissButton = { TextButton(onClick = { confirmRemoveCounterpart = false }) { Text("Cancel") } },
         )
     }
     if (confirmResetProgress) {
@@ -701,6 +827,7 @@ private fun DownloadStatusPill(
     book: Book,
     state: LibraryDownloadState,
     onClick: () -> Unit,
+    formatLabel: String? = null,
     modifier: Modifier = Modifier,
 ) {
     val palette = Hearth.palette
@@ -710,7 +837,7 @@ private fun DownloadStatusPill(
         animationSpec = tween(250),
         label = "detail_download_progress",
     )
-    val label = downloadLabel(book, state, progress)
+    val label = downloadLabel(book, state, progress, formatLabel)
     Row(
         modifier
             .height(52.dp)
@@ -797,13 +924,13 @@ private fun DownloadGlyph(book: Book, state: LibraryDownloadState, progress: Flo
     }
 }
 
-private fun downloadLabel(book: Book, state: LibraryDownloadState, progress: Float): String =
+private fun downloadLabel(book: Book, state: LibraryDownloadState, progress: Float, formatLabel: String? = null): String =
     when {
-        book.isDownloaded || state.status == LibraryDownloadStatus.COMPLETED -> "Downloaded"
-        state.status == LibraryDownloadStatus.QUEUED -> "Queued"
-        state.status == LibraryDownloadStatus.DOWNLOADING -> "${(progress * 100).roundToInt()}%"
-        state.status == LibraryDownloadStatus.FAILED || state.status == LibraryDownloadStatus.CANCELLED -> "Try again"
-        else -> "Download"
+        book.isDownloaded || state.status == LibraryDownloadStatus.COMPLETED -> if (formatLabel == null) "Downloaded" else "${formatLabel.replaceFirstChar(Char::uppercaseChar)} downloaded"
+        state.status == LibraryDownloadStatus.QUEUED -> if (formatLabel == null) "Queued" else "${formatLabel.replaceFirstChar(Char::uppercaseChar)} queued"
+        state.status == LibraryDownloadStatus.DOWNLOADING -> if (formatLabel == null) "${(progress * 100).roundToInt()}%" else "$formatLabel ${(progress * 100).roundToInt()}%"
+        state.status == LibraryDownloadStatus.FAILED || state.status == LibraryDownloadStatus.CANCELLED -> if (formatLabel == null) "Try again" else "Retry $formatLabel"
+        else -> if (formatLabel == null) "Download" else "Download $formatLabel"
     }
 
 private enum class AnnotationFilter(val label: String) {
@@ -1259,6 +1386,71 @@ private fun MetadataMatchDialog(
 }
 
 @Composable
+private fun AudiobookshelfHistoryDialog(
+    currentTarget: Book?,
+    query: String,
+    candidates: List<AudiobookshelfHistoryCandidate>,
+    loading: Boolean,
+    onQueryChange: (String) -> Unit,
+    onLink: (AudiobookshelfHistoryCandidate) -> Unit,
+    onUnlink: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val palette = Hearth.palette
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Share listening history") },
+        text = {
+            Column(Modifier.heightIn(max = 560.dp), verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.M)) {
+                Text(
+                    "Choose the matching Audiobookshelf audiobook and account. You can share from now or separately include older local sessions. This does not grant server access.",
+                    style = HearthText.Caption,
+                    color = palette.textSecondary,
+                )
+                currentTarget?.let {
+                    Text("Current: ${it.title} · ${it.libraryName ?: it.connectionId.orEmpty()}", style = HearthText.Label)
+                }
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = onQueryChange,
+                    label = { Text("Search Audiobookshelf books") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (loading) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                if (!loading && candidates.isEmpty()) Text("No Audiobookshelf audiobooks found.", style = HearthText.Body)
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.S)) {
+                    items(candidates, key = { it.book.uniqueKey }) { candidate ->
+                        val target = candidate.book
+                        Column(
+                            Modifier.fillMaxWidth()
+                                .clip(RoundedCornerShape(16.dp))
+                                .border(1.dp, palette.hairline, RoundedCornerShape(16.dp))
+                                .clickable { onLink(candidate) }
+                                .padding(Hearth.Spacing.M),
+                        ) {
+                            Text(target.title, style = HearthText.Label, color = palette.text)
+                            Text(
+                                listOfNotNull(target.author, candidate.accountName, target.libraryName).joinToString(" · "),
+                                style = HearthText.Caption,
+                                color = palette.textSecondary,
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            Row {
+                if (currentTarget != null) TextButton(onClick = onUnlink) { Text("Stop sharing") }
+                TextButton(onClick = onDismiss) { Text("Close") }
+            }
+        },
+    )
+}
+
+@Composable
 private fun EditionLinkDialog(
     book: Book,
     currentLinked: Book?,
@@ -1545,7 +1737,7 @@ private fun DetailActions(
     val palette = Hearth.palette
     val progress = HearthFormat.progress(b)
     val listenTarget = detailListenTarget(b, linkedAudiobook)
-    val readTarget = if (b.mediaType == AppMediaType.EBOOK || b.hasEbook) b else linkedEbook
+    val readTarget = detailReadTarget(b, linkedEbook)
     val canListen = listenTarget != null
     val canRead = readTarget != null
     Column(Modifier.fillMaxWidth().padding(horizontal = Hearth.Spacing.XL).padding(top = Hearth.Spacing.L)) {
@@ -1593,11 +1785,22 @@ private fun DetailActions(
 }
 
 internal fun detailListenTarget(book: Book, linkedAudiobook: Book?): Book? =
-    if (
+    if (book.source == BookSource.GRIMMORY && book.mediaType == AppMediaType.EBOOK && linkedAudiobook != null) {
+        linkedAudiobook
+    } else if (
         book.mediaType == AppMediaType.AUDIOBOOK ||
         book.hasAudio ||
-        (book.source == BookSource.STORYTELLER && book.readAlongAvailable)
+        book.readAlongAvailable
     ) book else linkedAudiobook
+
+internal fun detailReadTarget(book: Book, linkedEbook: Book?): Book? =
+    if (book.source == BookSource.GRIMMORY && book.mediaType == AppMediaType.AUDIOBOOK && linkedEbook != null) {
+        linkedEbook
+    } else if (book.mediaType == AppMediaType.EBOOK || book.hasEbook) {
+        book
+    } else {
+        linkedEbook
+    }
 
 @Composable
 private fun ActionPill(text: String, icon: ImageVector, onClick: () -> Unit, modifier: Modifier = Modifier) {

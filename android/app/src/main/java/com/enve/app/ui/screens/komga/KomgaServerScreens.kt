@@ -25,7 +25,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.hilt.navigation.compose.hiltViewModel
+import com.enve.hearth.shell.profileViewModel
 import com.enve.komga.dto.KomgaApiKeyDto
 import com.enve.app.ui.components.SettingsCard
 import com.enve.app.ui.components.SettingsScreenLayout
@@ -73,7 +73,7 @@ private fun KomgaScreenChrome(
 @Composable
 fun KomgaServerInfoScreen(onBack: () -> Unit) {
     val colors = EnveTheme.colors
-    val vm: KomgaServerViewModel = hiltViewModel()
+    val vm: KomgaServerViewModel = profileViewModel()
     val state by vm.state.collectAsState()
     val snackbar = remember { SnackbarHostState() }
 
@@ -153,7 +153,7 @@ private fun InfoRow(label: String, value: String) {
 @Composable
 fun KomgaAnnouncementsScreen(onBack: () -> Unit) {
     val colors = EnveTheme.colors
-    val vm: KomgaServerViewModel = hiltViewModel()
+    val vm: KomgaServerViewModel = profileViewModel()
     val state by vm.state.collectAsState()
     val snackbar = remember { SnackbarHostState() }
 
@@ -230,7 +230,7 @@ fun KomgaAnnouncementsScreen(onBack: () -> Unit) {
 @Composable
 fun KomgaHistoryScreen(onBack: () -> Unit) {
     val colors = EnveTheme.colors
-    val vm: KomgaServerViewModel = hiltViewModel()
+    val vm: KomgaServerViewModel = profileViewModel()
     val state by vm.state.collectAsState()
 
     KomgaScreenChrome(title = "History", onBack = onBack) { padding ->
@@ -269,7 +269,7 @@ fun KomgaHistoryScreen(onBack: () -> Unit) {
 @Composable
 fun KomgaApiKeysScreen(onBack: () -> Unit) {
     val colors = EnveTheme.colors
-    val vm: KomgaServerViewModel = hiltViewModel()
+    val vm: KomgaServerViewModel = profileViewModel()
     val state by vm.state.collectAsState()
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }

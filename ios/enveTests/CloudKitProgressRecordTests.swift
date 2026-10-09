@@ -253,6 +253,52 @@ struct CloudKitProgressRecordTests {
         }
     }
 
+    @Test func disablingICloudRemovesCloudKitAsASyncDestination() {
+        let book = makeBook(source: .local)
+
+        #expect(CloudProgressEligibility.canSync(book, isEnabled: true, isAvailable: true))
+        #expect(!CloudProgressEligibility.canSync(book, isEnabled: false, isAvailable: true))
+        #expect(!CloudProgressEligibility.canSync(book, isEnabled: true, isAvailable: false))
+    }
+
+    @Test func downloadedProviderBooksNeverUseCloudKitProgress() {
+        for source in [Book.BookSource.booklore, .audiobookshelf] {
+            let ebookPath = "/downloads/\(source.rawValue)/book.epub"
+            let ebook = Book(
+                id: "\(source.rawValue)-ebook",
+                title: "Downloaded ebook",
+                source: source,
+                filePath: ebookPath,
+                mediaType: .ebook,
+                ebookFileURL: URL(fileURLWithPath: ebookPath),
+                providerId: UUID(),
+                libraryId: "cloud-eligibility"
+            )
+
+            let audiobookPath = "/downloads/\(source.rawValue)/chapter_0.m4b"
+            let audiobook = Book(
+                id: "\(source.rawValue)-audiobook",
+                title: "Downloaded audiobook",
+                source: source,
+                filePath: audiobookPath,
+                audioTracks: [
+                    AudioTrack(
+                        index: 0,
+                        filePath: audiobookPath,
+                        duration: 3_600,
+                        startOffset: 0
+                    )
+                ],
+                mediaType: .audiobook,
+                providerId: UUID(),
+                libraryId: "cloud-eligibility"
+            )
+
+            #expect(!CloudProgressEligibility.canSync(ebook, isEnabled: true, isAvailable: true))
+            #expect(!CloudProgressEligibility.canSync(audiobook, isEnabled: true, isAvailable: true))
+        }
+    }
+
     @Test(.enabled(if: ProcessInfo.processInfo.environment["ENVE_ICLOUD_LIVE_RUN_ID"] != nil))
     func livePrivateDatabaseRoundTrip() async throws {
         let environment = ProcessInfo.processInfo.environment

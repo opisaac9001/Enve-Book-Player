@@ -5,7 +5,9 @@ actor StorytellerStreamingServer {
     static let shared = StorytellerStreamingServer()
 
     private var listener: NWListener?
-    private var connections: Set<ObjectIdentifier> = []
+    private var connections: [ObjectIdentifier: NWConnection] = [:]
+    private var jobs: [ObjectIdentifier: Task<Void, Never>] = [:]
+    private var isRetired = false
     private var port: UInt16 = 0
 
     private var currentTrackInfos: [AudioTrackInfo] = []
@@ -13,15 +15,23 @@ actor StorytellerStreamingServer {
     private var currentHeaders: [String: String] = [:]
     private let session: URLSession
 
-    private init() {
+    init(isolatesCredentials: Bool = false) {
         let config = URLSessionConfiguration.default
+        if isolatesCredentials {
+            config.httpCookieStorage = nil
+            config.urlCredentialStorage = nil
+            config.urlCache = nil
+            config.httpShouldSetCookies = false
+        }
         config.timeoutIntervalForRequest = 120
         config.timeoutIntervalForResource = 300
         self.session = URLSession(configuration: config)
     }
 
     func startStreaming(tracks: [AudioTrackInfo], headers: [String: String]) async throws -> [AudioTrackInfo] {
+        guard !isRetired else { throw CancellationError() }
         await stopStreaming()
+        guard !isRetired else { throw CancellationError() }
 
         let resolvedTracks = tracks.compactMap { track -> URL? in
             URL(string: track.contentUrl)
@@ -37,6 +47,7 @@ actor StorytellerStreamingServer {
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
         let listener = try NWListener(using: parameters, on: .any)
+        self.listener = listener
 
         let serverPort: UInt16 = try await withCheckedThrowingContinuation { continuation in
 
@@ -78,18 +89,13 @@ actor StorytellerStreamingServer {
 
             listener.newConnectionHandler = { [weak self] connection in
                 guard let self else { return }
-                let connId = ObjectIdentifier(connection)
-                Task {
-                    await self.addConnection(connId)
-                    await self.handleConnection(connection)
-                    await self.removeConnection(connId)
-                }
+                Task { await self.accept(connection) }
             }
 
             listener.start(queue: .global(qos: .userInitiated))
         }
 
-        self.listener = listener
+        guard !isRetired else { listener.cancel(); throw CancellationError() }
         self.port = serverPort
 
         return tracks.enumerated().map { index, track in
@@ -105,25 +111,41 @@ actor StorytellerStreamingServer {
         }
     }
 
+    func retire() async {
+        isRetired = true
+        session.invalidateAndCancel()
+        await stopStreaming()
+    }
+
     func stopStreaming() async {
         listener?.cancel()
         listener = nil
+        let pending = Array(jobs.values)
+        pending.forEach { $0.cancel() }
+        connections.values.forEach { $0.cancel() }
         connections.removeAll()
+        jobs.removeAll()
         currentTrackInfos = []
         currentRemoteTrackURLs = []
         currentHeaders = [:]
         port = 0
+        for job in pending { await job.value }
     }
 
-    private func addConnection(_ id: ObjectIdentifier) {
-        connections.insert(id)
-    }
-
-    private func removeConnection(_ id: ObjectIdentifier) {
-        connections.remove(id)
+    private func accept(_ connection: NWConnection) {
+        guard !isRetired else { connection.cancel(); return }
+        let id = ObjectIdentifier(connection)
+        connections[id] = connection
+        jobs[id] = Task {
+            await self.handleConnection(connection)
+            self.connections.removeValue(forKey: id)
+            self.jobs.removeValue(forKey: id)
+        }
     }
 
     private func handleConnection(_ connection: NWConnection) async {
+        defer { connection.cancel() }
+        guard !isRetired, !Task.isCancelled else { return }
         connection.start(queue: .global(qos: .userInitiated))
 
         let requestData = await withCheckedContinuation { (continuation: CheckedContinuation<Data?, Never>) in
@@ -137,6 +159,7 @@ actor StorytellerStreamingServer {
             return
         }
 
+        guard !Task.isCancelled, !isRetired else { return }
         await processRequest(connection: connection, requestData: requestData)
     }
 
@@ -192,6 +215,7 @@ actor StorytellerStreamingServer {
 
         do {
             let (data, response) = try await session.data(for: request)
+            try Task.checkCancellation()
             guard let http = response as? HTTPURLResponse else {
                 await sendErrorResponse(connection: connection, status: 502, message: "Invalid upstream response")
                 return

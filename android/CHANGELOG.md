@@ -2,6 +2,15 @@
 
 Release notes for the Android app. Versions are `<name> build <code>`, matching `versionName` and `versionCode` in `app/build.gradle.kts`.
 
+## 1.2 build 53 — 2026-10-09
+
+- Added separate user profiles with isolated settings, history, downloads, and sync state.
+- Scoped provider caches and progress writes to the correct server and account.
+- Improved Android Auto checkpoints and resume handling.
+- Fixed retry counts, cancellation, concurrent KOReader link updates, and streamed-comic cleanup.
+- Respected manual and provider-supplied comic reading direction.
+- Removed unused sync code and expanded regression tests and contributor setup checks.
+
 ## 1.2 build 52 — 2026-09-28
 
 Changes since the Android build 51 public snapshot.
@@ -15,9 +24,20 @@ Changes since the Android build 51 public snapshot.
 - KOReader links now detect replaced EPUB files and update their hashes.
 - Expanded OPDS browsing, downloads, sign-in, and reading-progress support.
 - Fixed provider metadata and progress handling for Komga, Kavita, Grimmory, Jellyfin, Emby, and TorBox.
+- Listening on downloaded or offline Audiobookshelf books now counts in Audiobookshelf's listening stats, and listening time is no longer lost when a sync fails.
+- Jellyfin, Emby, Plex, and Silo show Enve in Now Playing and record listening in their play history. Jellyfin no longer resets positions early in an audiobook, and other apps resume multi-file books on the right file.
+- Kavita reading statistics load again, and finishing a book reaches its last page so Kavita counts it.
+- Grimmory receives one session per stretch of listening with active reading time and the correct file type. BookOrbit sessions also use active time.
+- Plex progress is saved per track on both platforms, so iOS and Android share positions.
 
 ### Android
 
+- Added cards to Continue Reading and Continue Listening with progress, chapter, and time or page, plus a matching top card with Read and Listen buttons for paired books.
+- Jellyfin and Emby progress now syncs; it was being skipped.
+- Opening a book's details or downloading no longer interrupts your Audiobookshelf listening session, and each install has its own device ID for Audiobookshelf and Komga.
+- Grimmory sessions that fail to upload are retried, and the stats screen uses your recorded listening time.
+- The Stats Hub says when Audiobookshelf can't be reached and offers a retry.
+- Added standalone Wear OS listening for Audiobookshelf and Grimmory, with phone-based linking, offline downloads, playback, and progress sync.
 - StoryAlign keeps the previous read-aloud book when a new alignment scores worse. You can restore the earlier version yourself.
 - Fixed BookOrbit highlights with attached notes not appearing in the reader.
 - Fixed reader page restoration, PDF page counts, comic edge taps, and highlight handles across paragraphs.

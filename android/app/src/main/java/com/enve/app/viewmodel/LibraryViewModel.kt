@@ -131,48 +131,34 @@ class LibraryViewModel @Inject constructor(
     init {
 
         viewModelScope.launch {
-            android.util.Log.i("LibraryViewModel", "init hydrate: starting prefs read")
             try {
-                val sortOption = runCatching { SortOption.valueOf(prefs.librarySortOption.first()) }
+                val sortOption = prefs.librarySortOption.first().let { raw -> runCatching { SortOption.valueOf(raw) } }
                     .getOrDefault(SortOption.DATE_ADDED)
-                android.util.Log.i("LibraryViewModel", "init hydrate: read sortOption=${sortOption.name}")
                 val secondarySortRaw = prefs.librarySortSecondary.first()
-                android.util.Log.i("LibraryViewModel", "init hydrate: read secondarySortRaw='$secondarySortRaw'")
                 val secondarySortOption = secondarySortRaw.takeIf { it.isNotBlank() }
                     ?.let { runCatching { SortOption.valueOf(it) }.getOrNull() }
-                val sortDirection = runCatching { SortDirection.valueOf(prefs.librarySortDirection.first()) }
+                val sortDirection = prefs.librarySortDirection.first().let { raw -> runCatching { SortDirection.valueOf(raw) } }
                     .getOrDefault(SortDirection.DESCENDING)
-                android.util.Log.i("LibraryViewModel", "init hydrate: read sortDirection=${sortDirection.name}")
                 val readStatus = prefs.libraryFilterReadStatus.first()
                     .takeIf { it.isNotBlank() }
                     ?.let { runCatching { ReadStatus.valueOf(it) }.getOrNull() }
-                android.util.Log.i("LibraryViewModel", "init hydrate: read readStatus=$readStatus")
                 val downloadedOnly = prefs.libraryFilterDownloadedOnly.first()
-                android.util.Log.i("LibraryViewModel", "init hydrate: read downloadedOnly=$downloadedOnly")
                 val inProgressOnly = prefs.libraryFilterInProgressOnly.first()
                 val completedOnly = prefs.libraryFilterCompletedOnly.first()
                 val notStartedOnly = prefs.libraryFilterNotStartedOnly.first()
-                android.util.Log.i("LibraryViewModel", "init hydrate: read progress filters")
                 val excludedLibraryIds = prefs.excludedLibraryIds.first()
                 val persistedLibrary = prefs.librarySelectedId.first()
                 val selectedLibrary = persistedLibrary?.takeUnless { it in excludedLibraryIds }
                 if (persistedLibrary != selectedLibrary) prefs.setLibrarySelectedId(null)
-                android.util.Log.i("LibraryViewModel", "init hydrate: read selectedLibrary=$selectedLibrary")
-                val layout = runCatching { LibraryLayout.valueOf(prefs.libraryLayout.first()) }
+                val layout = prefs.libraryLayout.first().let { raw -> runCatching { LibraryLayout.valueOf(raw) } }
                     .getOrDefault(LibraryLayout.TWO_COLUMN)
-                android.util.Log.i("LibraryViewModel", "init hydrate: read layout=${layout.name}")
                 val mediaTypeRaw = prefs.mediaType.first()
-                android.util.Log.i("LibraryViewModel", "init hydrate: read mediaTypeRaw=$mediaTypeRaw")
                 val mediaType = runCatching {
                     when (AppMediaType.valueOf(mediaTypeRaw)) {
                         AppMediaType.PODCAST -> AppMediaType.AUDIOBOOK
                         else -> AppMediaType.valueOf(mediaTypeRaw)
                     }
                 }.getOrDefault(AppMediaType.AUDIOBOOK)
-                android.util.Log.i(
-                    "LibraryViewModel",
-                    "init hydrate: sortOption=${sortOption.name} secondary=${secondarySortOption?.name ?: "<none>"} dir=${sortDirection.name} layout=${layout.name} mediaType=${mediaType.name} downloadedOnly=$downloadedOnly inProgressOnly=$inProgressOnly completedOnly=$completedOnly notStartedOnly=$notStartedOnly selectedLib=$selectedLibrary",
-                )
                 _state.update {
                     it.copy(
                         sortOption = sortOption,
@@ -188,8 +174,9 @@ class LibraryViewModel @Inject constructor(
                         mediaType = mediaType,
                     )
                 }
-                android.util.Log.i("LibraryViewModel", "init hydrate: state updated")
-            } catch (e: Throwable) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
                 android.util.Log.e("LibraryViewModel", "Initial hydration failed; state remains at defaults", e)
             }
         }
@@ -348,10 +335,6 @@ class LibraryViewModel @Inject constructor(
 
         val sorted = filteredList.sortedWith(comparatorForSort(sort))
         _state.update { it.copy(totalBookCount = sorted.size) }
-        android.util.Log.i(
-            "LibraryViewModel",
-            "allLibrariesBooks: input=${books.size} mediaType=${filter.mediaType} downloadedOnly=${filter.downloadedOnly} sort=${sort.primary.name}/${sort.direction.name} search='${needle ?: ""}' filtered=${sorted.size}",
-        )
 
         PagingData.from(
             data = sorted,
@@ -673,19 +656,16 @@ class LibraryViewModel @Inject constructor(
         aggregatorRepository.checkAllConnectionsHealth()
 
     fun setSortOption(option: SortOption) {
-        android.util.Log.i("LibraryViewModel", "setSortOption: persisting ${option.name}")
         _state.update { it.copy(sortOption = option) }
         viewModelScope.launch { prefs.setLibrarySortOption(option.name) }
     }
 
     fun setSecondarySortOption(option: SortOption?) {
-        android.util.Log.i("LibraryViewModel", "setSecondarySortOption: persisting ${option?.name ?: "<none>"}")
         _state.update { it.copy(secondarySortOption = option) }
         viewModelScope.launch { prefs.setLibrarySortSecondary(option?.name) }
     }
 
     fun setSortDirection(direction: SortDirection) {
-        android.util.Log.i("LibraryViewModel", "setSortDirection: persisting ${direction.name}")
         _state.update { it.copy(sortDirection = direction) }
         viewModelScope.launch { prefs.setLibrarySortDirection(direction.name) }
     }

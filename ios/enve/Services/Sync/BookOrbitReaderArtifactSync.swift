@@ -344,7 +344,7 @@ enum BookOrbitArtifactMerge {
 
 @MainActor
 final class BookOrbitReaderArtifactSync {
-    static let shared = BookOrbitReaderArtifactSync()
+    static var shared: BookOrbitReaderArtifactSync { ProfileSession.owner.bookOrbitArtifacts }
 
     struct Result {
         let pulled: Int
@@ -353,8 +353,15 @@ final class BookOrbitReaderArtifactSync {
 
     private var queue: BookOrbitArtifactQueue
 
-    private init() {
-        queue = .loaded(from: .standard)
+    private let defaults: UserDefaults
+    private let artifacts: ReaderArtifactsStore
+    private let bookStore: any ReaderArtifactRepository
+
+    init(defaults: UserDefaults, artifacts: ReaderArtifactsStore, bookStore: any ReaderArtifactRepository) {
+        self.defaults = defaults
+        self.artifacts = artifacts
+        self.bookStore = bookStore
+        queue = .loaded(from: defaults)
     }
 
     func enqueueBookmarkUpsert(book: Book, localId: String) {
@@ -409,7 +416,7 @@ final class BookOrbitReaderArtifactSync {
 
     private func enqueue(_ operation: BookOrbitArtifactQueue.Operation) {
         queue.enqueue(operation)
-        queue.persist(to: .standard)
+        queue.persist(to: defaults)
     }
 
     private func flush(book: Book, provider: BookOrbitProvider, now: Date) async -> Int {
@@ -424,7 +431,7 @@ final class BookOrbitReaderArtifactSync {
             do {
                 switch operation {
                 case .upsertBookmark(_, _, let localId):
-                    var bookmarks = ReaderArtifactsStore.shared.loadBookmarks(bookId: book.stableId)
+                    var bookmarks = artifacts.loadBookmarks(bookId: book.stableId)
                     guard let index = bookmarks.firstIndex(where: { $0.id == localId }) else {
                         queue.remove(operation)
                         continue
@@ -443,7 +450,7 @@ final class BookOrbitReaderArtifactSync {
                     try await provider.deleteReaderBookmark(for: book, remoteId: remoteId)
 
                 case .upsertAnnotation(_, _, let localId):
-                    var annotations = ReaderArtifactsStore.shared.loadAnnotations(bookId: book.stableId)
+                    var annotations = artifacts.loadAnnotations(bookId: book.stableId)
                     guard let index = annotations.firstIndex(where: { $0.id == localId }) else {
                         queue.remove(operation)
                         continue
@@ -475,7 +482,7 @@ final class BookOrbitReaderArtifactSync {
         }
 
         if queue != before {
-            queue.persist(to: .standard)
+            queue.persist(to: defaults)
         }
         return pushed
     }
@@ -506,8 +513,8 @@ final class BookOrbitReaderArtifactSync {
         spineHrefs: [String: String]
     ) async -> Int {
         let snapshot = BookOrbitArtifactMerge.Snapshot(
-            bookmarks: ReaderArtifactsStore.shared.loadBookmarks(bookId: book.stableId),
-            annotations: ReaderArtifactsStore.shared.loadAnnotations(bookId: book.stableId)
+            bookmarks: artifacts.loadBookmarks(bookId: book.stableId),
+            annotations: artifacts.loadAnnotations(bookId: book.stableId)
         )
         let merged = BookOrbitArtifactMerge.applying(
             bookmarks: remoteBookmarks,
@@ -536,13 +543,13 @@ final class BookOrbitReaderArtifactSync {
     }
 
     private func persist(bookmarks: [Bookmark], book: Book) async {
-        ReaderArtifactsStore.shared.saveBookmarks(bookId: book.stableId, bookmarks: bookmarks)
-        await AppState.shared.bookStore.replaceBookmarks(forBookStableId: book.stableId, bookmarks: bookmarks)
+        artifacts.saveBookmarks(bookId: book.stableId, bookmarks: bookmarks)
+        await bookStore.replaceBookmarks(forBookStableId: book.stableId, bookmarks: bookmarks)
     }
 
     private func persist(annotations: [ReaderAnnotation], book: Book) async {
-        ReaderArtifactsStore.shared.saveAnnotations(bookId: book.stableId, annotations: annotations)
-        await AppState.shared.bookStore.replaceAnnotations(forBookStableId: book.stableId, annotations: annotations)
+        artifacts.saveAnnotations(bookId: book.stableId, annotations: annotations)
+        await bookStore.replaceAnnotations(forBookStableId: book.stableId, annotations: annotations)
     }
 
     private func bookmarkWithRemoteId(_ bookmark: Bookmark, remoteId: Int) -> Bookmark {

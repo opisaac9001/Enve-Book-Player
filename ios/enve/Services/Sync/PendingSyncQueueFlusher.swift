@@ -16,17 +16,21 @@ final class ProviderPendingSyncTransport: PendingSyncTransporting {
     private let providerResolver: any LibraryProviderResolving
     private let providerSink: ProviderSyncSink
     private let bookLookup: (String) async -> Book?
+    private let serverSyncEnabled: () -> Bool
 
     init(
         providerResolver: any LibraryProviderResolving,
-        bookLookup: @escaping (String) async -> Book?
+        bookLookup: @escaping (String) async -> Book?,
+        serverSyncEnabled: @escaping () -> Bool = { true }
     ) {
         self.providerResolver = providerResolver
         providerSink = ProviderSyncSink(providerResolver: providerResolver)
         self.bookLookup = bookLookup
+        self.serverSyncEnabled = serverSyncEnabled
     }
 
     func push(stableId: String, entry: PendingServerSync) async throws -> PendingSyncDisposition {
+        guard serverSyncEnabled() else { return .retain }
         guard var book = await bookLookup(stableId) else {
             return entry.source == .local || entry.source == .smb ? .remove : .retain
         }
@@ -42,6 +46,7 @@ final class ProviderPendingSyncTransport: PendingSyncTransporting {
         }
         book.isFinished = entry.isFinished ?? (entry.duration > 0 && entry.position >= entry.duration * Book.finishedProgressThreshold)
         book.lastUpdate = Date(timeIntervalSince1970: entry.updatedAt)
+        guard serverSyncEnabled() else { return .retain }
         try await providerSink.push(
             ProgressUpdate(
                 book: book,

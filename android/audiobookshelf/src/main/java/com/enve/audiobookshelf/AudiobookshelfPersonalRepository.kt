@@ -2,6 +2,7 @@ package com.enve.audiobookshelf
 
 import com.enve.audiobookshelf.api.AudiobookshelfApi
 import com.enve.audiobookshelf.dto.AbsListeningStatsDto
+import com.enve.core.data.util.runSuspendCatching
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.roundToLong
@@ -26,14 +27,14 @@ data class AbsBookmark(
 class AudiobookshelfPersonalRepository @Inject constructor(
     private val api: AudiobookshelfApi,
 ) {
-    suspend fun listeningStats(): Result<AbsListeningStats?> = runCatching {
+    suspend fun listeningStats(): Result<AbsListeningStats?> = runSuspendCatching {
         val response = api.getListeningStats()
-        if (response.code() == 404) return@runCatching null
+        if (response.code() == 404) return@runSuspendCatching null
         if (!response.isSuccessful) error("Audiobookshelf listening stats failed: HTTP ${response.code()}")
         response.body()?.toStats()
     }
 
-    suspend fun bookmarks(): Result<List<AbsBookmark>> = runCatching {
+    suspend fun bookmarks(): Result<List<AbsBookmark>> = runSuspendCatching {
         val response = api.getMe()
         if (!response.isSuccessful) error("Audiobookshelf profile failed: HTTP ${response.code()}")
         response.body()?.bookmarks.orEmpty()

@@ -6,6 +6,9 @@ import WebKit
 struct BrowserSessionLoginView: View {
     let url: URL
     var onAuthenticated: ([String: String]) -> Void
+    @Environment(\.profileSession) private var capturedSession
+    private var profileSession: ProfileSession { capturedSession ?? .owner }
+    @Environment(ProfileSwitchCoordinator.self) private var profiles
     @Environment(\.hearth) private var hearth
     @Environment(\.dismiss) private var dismiss
 
@@ -19,6 +22,7 @@ struct BrowserSessionLoginView: View {
             ZStack {
                 BrowserSessionWebView(
                     url: url,
+                    websiteDataStore: profileSession.websiteDataStore,
                     onCookiesChanged: { sessionHeaders = $0 },
                     isLoading: $isLoading,
                     error: $error,
@@ -77,7 +81,9 @@ struct BrowserSessionLoginView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Use Session") {
-                        guard let sessionHeaders else { return }
+                        guard !profileSession.isRetired, !profiles.isLocked,
+                            !profiles.isParentAuthorizationRequired || profiles.isParentAuthorized,
+                            let sessionHeaders else { return }
                         onAuthenticated(sessionHeaders)
                         dismiss()
                     }
@@ -90,6 +96,7 @@ struct BrowserSessionLoginView: View {
 
 struct BrowserSessionWebView: UIViewRepresentable {
     let url: URL
+    let websiteDataStore: WKWebsiteDataStore
     let onCookiesChanged: ([String: String]?) -> Void
     @Binding var isLoading: Bool
     @Binding var error: String?
@@ -101,6 +108,7 @@ struct BrowserSessionWebView: UIViewRepresentable {
 
         let config = WKWebViewConfiguration()
         config.defaultWebpagePreferences = prefs
+        config.websiteDataStore = websiteDataStore
 
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
@@ -112,6 +120,12 @@ struct BrowserSessionWebView: UIViewRepresentable {
         webView.load(request)
 
         return webView
+    }
+
+    static func dismantleUIView(_ uiView: WKWebView, coordinator: Coordinator) {
+        coordinator.cancel()
+        uiView.stopLoading()
+        uiView.navigationDelegate = nil
     }
 
     func updateUIView(_ uiView: WKWebView, context: Context) {}
@@ -195,7 +209,7 @@ struct BrowserSessionWebView: UIViewRepresentable {
             pollingTask?.cancel()
             pollingTask = Task { [weak self, weak webView] in
                 while !Task.isCancelled {
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    do { try await Task.sleep(nanoseconds: 1_000_000_000) } catch { return }
 
                     guard let self = self, let webView = webView else { break }
 
@@ -236,6 +250,11 @@ struct BrowserSessionWebView: UIViewRepresentable {
                 .joined(separator: "; ")
 
             return headerValue.isEmpty ? nil : headerValue
+        }
+
+        func cancel() {
+            pollingTask?.cancel()
+            loadingTimeoutTask?.cancel()
         }
 
         deinit {

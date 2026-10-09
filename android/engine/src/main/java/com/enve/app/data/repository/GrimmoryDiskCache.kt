@@ -1,6 +1,8 @@
 package com.enve.app.data.repository
 
 import android.content.Context
+import com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
+import com.enve.core.data.local.ProfileStorageLocations
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -12,9 +14,10 @@ import javax.inject.Singleton
 @Singleton
 class GrimmoryDiskCache @Inject constructor(
     @ApplicationContext private val context: Context,
+    private val locations: ProfileStorageLocations = ProfileStorageLocations.forProfile(context, DEFAULT_ADULT_PROFILE_ID),
 ) {
     private val root: File by lazy {
-        File(context.cacheDir, "bookloore").apply { mkdirs() }
+        File(locations.cacheDirectory, "bookloore").apply { mkdirs() }
     }
 
     suspend fun read(key: String, ttlMs: Long): CachedEntry? = withContext(Dispatchers.IO) {

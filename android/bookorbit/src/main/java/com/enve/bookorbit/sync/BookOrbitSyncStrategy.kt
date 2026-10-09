@@ -31,6 +31,7 @@ class BookOrbitSyncStrategy @Inject constructor(
 
     private val minSyncIntervalMs = 60_000L
     @Volatile private var lastSyncAtMs: Long? = null
+    private val lastFullPassAtMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     override suspend fun sync(force: Boolean, launchOptimized: Boolean): ProviderSyncResult {
         val now = System.currentTimeMillis()
@@ -58,7 +59,11 @@ class BookOrbitSyncStrategy @Inject constructor(
                         adapter.getContinueReading().getOrDefault(emptyList())
                 }
 
-                if (!launchOptimized) {
+                // Paging the whole catalog is slow on big libraries, so the full pass runs at most daily.
+                val fullPassDue = !launchOptimized &&
+                    now - (lastFullPassAtMs[connection.id] ?: 0L) >= FULL_PASS_INTERVAL_MS
+                if (fullPassDue) {
+                    lastFullPassAtMs[connection.id] = now
                     val activity = withContext(ConnectionScope.asContextElement(connection.id)) {
                         fetchAllBooks()
                     }
@@ -156,10 +161,11 @@ class BookOrbitSyncStrategy @Inject constructor(
 
                 withContext(ConnectionScope.asContextElement(connection.id)) {
                     pushed += historySync.retry(connection.id, booksByKey)
-                    val userDataBooks = if (launchOptimized) {
-                        continueBooks.mapNotNull { remote -> booksByKey[remote.copy(connectionId = connection.id).uniqueKey] }
-                    } else {
-                        cachedBooks
+                    val userDataBooks = when {
+                        launchOptimized ->
+                            continueBooks.mapNotNull { remote -> booksByKey[remote.copy(connectionId = connection.id).uniqueKey] }
+                        fullPassDue -> cachedBooks
+                        else -> cachedBooks.filter { it.hasReadingActivity() }
                     }.distinctBy(Book::uniqueKey)
                     for (book in userDataBooks) {
                         try {
@@ -202,6 +208,9 @@ class BookOrbitSyncStrategy @Inject constructor(
         return books.distinctBy(Book::uniqueKey)
     }
 
+    private fun Book.hasReadingActivity(): Boolean =
+        lastReadTime > 0L || progress > 0f || (epubProgress ?: 0f) > 0f || serverReadStatus != null
+
     private fun Book.syncProgress(): Float = when (mediaType) {
         AppMediaType.EBOOK -> (epubProgress ?: readProgress).coerceIn(0f, 1f)
         else -> progress.coerceIn(0f, 1f)
@@ -210,5 +219,6 @@ class BookOrbitSyncStrategy @Inject constructor(
     private companion object {
         const val TAG = "BookOrbitSyncStrategy"
         const val USER_DATA_PAGE_SIZE = 200
+        const val FULL_PASS_INTERVAL_MS = 24L * 60 * 60 * 1000
     }
 }

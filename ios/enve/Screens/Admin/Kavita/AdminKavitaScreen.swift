@@ -1,15 +1,17 @@
 import SwiftUI
 
 struct AdminKavitaScreen: View {
+    private let profileSession: ProfileSession
     let connection: ServerConnection
     @State private var model: AdminKavitaModel
 
     @Environment(\.hearth) private var hearth
     @Environment(\.mantelInset) private var mantelInset
 
-    init(connection: ServerConnection) {
+    init(connection: ServerConnection, profileSession: ProfileSession = .owner) {
+        self.profileSession = profileSession
         self.connection = connection
-        _model = State(initialValue: AdminKavitaModel(connection: connection))
+        _model = State(initialValue: AdminKavitaModel(connection: connection, profileSession: profileSession))
     }
 
     var body: some View {

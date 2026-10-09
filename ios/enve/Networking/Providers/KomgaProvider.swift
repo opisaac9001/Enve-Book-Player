@@ -5,10 +5,22 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
     ServerPageProvider, @unchecked Sendable
 {
     var connection: ServerConnection
+    var catalogMappingRevision: Int { 1 }
+    private let isolatesCredentials: Bool
+    private let certificateTransport: InsecureURLSession
     private let pageSize = 100
 
-    init(connection: ServerConnection) {
+    private let networkSession: URLSession
+    private let ebooks: LocalEbookImporter
+    private let rejectedContent: RejectedContentStore
+
+    init(connection: ServerConnection, profileSession: ProfileSession? = nil) {
+        networkSession = profileSession?.networkSession ?? .shared
+        ebooks = profileSession?.ebooks ?? .shared
+        rejectedContent = profileSession?.rejectedContent ?? .shared
         self.connection = connection
+        isolatesCredentials = profileSession?.isOwner == false
+        certificateTransport = profileSession?.transport ?? .delegateInstance
     }
 
     func validateConnection() async throws -> Bool {
@@ -299,7 +311,7 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
     }
 
     func downloadEbook(for book: Book, onProgress: (@Sendable (Double) -> Void)? = nil) async throws -> URL {
-        if let cached = LocalEbookImporter.shared.cachedEbook(forBookId: book.id) {
+        if let cached = ebooks.cachedEbook(forBookId: book.id) {
             onProgress?(1)
             return cached
         }
@@ -321,8 +333,8 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
             else { return nil }
             return URLCredential(user: username, password: password, persistence: .forSession)
         }()
-        let delegate = URLSessionDownloadProgressDelegate(progressHandler: progressHandler, credential: credential)
-        let config = URLSessionConfiguration.default
+        let delegate = URLSessionDownloadProgressDelegate(progressHandler: progressHandler, credential: credential, certificateTransport: certificateTransport)
+        let config: URLSessionConfiguration = isolatesCredentials ? .ephemeral : .default
         config.timeoutIntervalForRequest = 300
         config.timeoutIntervalForResource = 3600
         config.waitsForConnectivity = true
@@ -342,7 +354,7 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
             }
             let ext = detectEbookExtension(response: httpResponse) ?? "epub"
             let filename = "\(book.title.replacingOccurrences(of: "/", with: "-")).\(ext)"
-            return try LocalEbookImporter.shared.cacheRemoteEbook(
+            return try ebooks.cacheRemoteEbook(
                 tempURL: tempURL,
                 preferredFilename: filename,
                 bookIdentifier: book.id
@@ -529,7 +541,7 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
     }
 
     private func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await networkSession.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ProviderError.invalidResponse
         }
@@ -590,8 +602,8 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
         )
     }
 
-    private func mimeToExtension(_ mime: String) -> String? {
-        switch mime.lowercased() {
+    private static func mimeToExtension(_ mime: String) -> String? {
+        switch mime.split(separator: ";").first?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "application/epub+zip": return "epub"
         case "application/pdf": return "pdf"
         case "application/x-cbz", "application/vnd.comicbook+zip", "application/zip", "application/x-zip-compressed": return "cbz"
@@ -600,9 +612,18 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
         }
     }
 
+    static func ebookFormat(mediaType: String?, mediaProfile: String?, fileName: String?) -> String? {
+        if let fileName {
+            let ext = (fileName as NSString).pathExtension.lowercased()
+            if EbookFormat.allExtensions.contains(ext) { return ext }
+        }
+        if let mediaType, let ext = mimeToExtension(mediaType) { return ext }
+        return mediaProfile?.uppercased() == "DIVINA" ? "cbz" : nil
+    }
+
     private func detectEbookExtension(response: HTTPURLResponse) -> String? {
         if let mimeType = response.mimeType,
-            let ext = mimeToExtension(mimeType)
+            let ext = Self.mimeToExtension(mimeType)
         {
             return ext
         }
@@ -666,12 +687,11 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
             detectedMediaType = .ebook
         }
 
-        let comicFormat: String? = {
-            guard let ext = book.media?.mediaType.flatMap(mimeToExtension),
-                ext == EbookFormat.cbz.rawValue || ext == EbookFormat.cbr.rawValue
-            else { return nil }
-            return ext
-        }()
+        let ebookFormat = Self.ebookFormat(
+            mediaType: book.media?.mediaType,
+            mediaProfile: book.media?.mediaProfile,
+            fileName: book.url ?? book.name
+        )
         return Book(
             id: book.id,
             title: title,
@@ -682,7 +702,7 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
             duration: 0,
             coverURL: coverURL(bookId: book.id),
             mediaType: detectedMediaType,
-            ebookFormat: comicFormat,
+            ebookFormat: ebookFormat,
             dateAdded: book.created,
             description: book.metadata?.summary?.nonEmpty ?? book.summary,
             genres: book.metadata?.tags,
@@ -726,7 +746,7 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
         libraryId: String,
         fallbackScope: String
     ) {
-        RejectedContentStore.shared.update(
+        rejectedContent.update(
             connection: connection,
             libraryId: libraryId,
             acceptedItemIdentifiers: Set(page.content.map(\.id)),
@@ -842,6 +862,7 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
         let seriesTitle: String?
         let libraryId: String?
         let name: String
+        let url: String?
         let number: String?
         let created: Date?
         let lastModified: Date?
@@ -851,12 +872,13 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
         let readProgress: KomgaReadProgress?
 
         enum CodingKeys: String, CodingKey {
-            case id, seriesId, seriesTitle, libraryId, name, number, created, lastModified, summary, media, metadata, readProgress
+            case id, seriesId, seriesTitle, libraryId, name, url, number, created, lastModified, summary, media, metadata, readProgress
         }
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             name = try container.decode(String.self, forKey: .name)
+            url = try container.decodeIfPresent(String.self, forKey: .url)
             id = try Self.decodeFlexibleId(container, key: .id) ?? "unknown"
             seriesId = try Self.decodeFlexibleId(container, key: .seriesId) ?? ""
             libraryId = try Self.decodeFlexibleId(container, key: .libraryId)

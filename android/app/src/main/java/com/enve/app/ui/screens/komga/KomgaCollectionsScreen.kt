@@ -19,7 +19,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.hilt.navigation.compose.hiltViewModel
+import com.enve.hearth.shell.profileViewModel
 import com.enve.komga.dto.KomgaCollectionDto
 import com.enve.app.ui.components.SettingsCard
 import com.enve.app.ui.components.SettingsScreenLayout
@@ -34,7 +34,7 @@ private val HearthRed = Color(0xFFB3453E)
 @Composable
 fun KomgaCollectionsScreen(onBack: () -> Unit) {
     val colors = EnveTheme.colors
-    val vm: KomgaCollectionsViewModel = hiltViewModel()
+    val vm: KomgaCollectionsViewModel = profileViewModel()
     val state by vm.state.collectAsState()
     val snackbar = remember { SnackbarHostState() }
     var showCreate by remember { mutableStateOf(false) }

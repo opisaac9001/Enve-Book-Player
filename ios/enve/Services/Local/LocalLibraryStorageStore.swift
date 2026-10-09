@@ -16,9 +16,17 @@ final class LocalLibraryStorageStore {
     nonisolated private static let bookmarkPrefix = "libraryBookmark_"
     private static let mergeCacheKey = "mergeLibraryCache"
 
-    private let userDefaults = UserDefaults.standard
+    nonisolated(unsafe) private let userDefaults: UserDefaults
+    nonisolated private let storage: ProfileStorageLocations
 
-    nonisolated private init() {}
+    nonisolated private convenience init() {
+        self.init(defaults: .standard, storage: .owner)
+    }
+
+    nonisolated init(defaults: UserDefaults, storage: ProfileStorageLocations) {
+        userDefaults = defaults
+        self.storage = storage
+    }
 
     func saveLibrary(_ library: LocalLibrary) {
         var libraries = loadLibraries()
@@ -62,8 +70,8 @@ final class LocalLibraryStorageStore {
         let key = Self.booksPrefix + libraryId
         let books = decode([LocalBookFile].self, forKey: key) ?? []
 
-        let serverRoot = LocalEbookImporter.shared.serverEbooksRoot.standardizedFileURL.path
-        let localRoot = LocalEbookImporter.shared.localEbooksRoot.standardizedFileURL.path
+        let serverRoot = storage.documentsDirectory.appendingPathComponent("Ebooks", isDirectory: true).standardizedFileURL.path
+        let localRoot = storage.documentsDirectory.appendingPathComponent("Ebooks/local", isDirectory: true).standardizedFileURL.path
         let filtered = books.filter { book in
             let path = book.filePath
             if path.hasPrefix(serverRoot) && !path.hasPrefix(localRoot) { return false }
@@ -80,16 +88,16 @@ final class LocalLibraryStorageStore {
     }
 
     nonisolated func saveBookmark(_ bookmark: Data, for libraryId: String) {
-        UserDefaults.standard.set(bookmark, forKey: Self.bookmarkPrefix + libraryId)
+        userDefaults.set(bookmark, forKey: Self.bookmarkPrefix + libraryId)
         AppLogger.network.info("Saved bookmark for library: \(libraryId)")
     }
 
     nonisolated func loadBookmark(for libraryId: String) -> Data? {
-        UserDefaults.standard.data(forKey: Self.bookmarkPrefix + libraryId)
+        userDefaults.data(forKey: Self.bookmarkPrefix + libraryId)
     }
 
     nonisolated func deleteBookmark(for libraryId: String) {
-        UserDefaults.standard.removeObject(forKey: Self.bookmarkPrefix + libraryId)
+        userDefaults.removeObject(forKey: Self.bookmarkPrefix + libraryId)
     }
 
     func loadMergeCache() -> MergeLibraryCache? {

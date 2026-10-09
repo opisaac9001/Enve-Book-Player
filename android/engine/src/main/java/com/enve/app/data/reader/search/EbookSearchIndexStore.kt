@@ -1,6 +1,8 @@
 package com.enve.app.data.reader.search
 
 import android.content.Context
+import com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
+import com.enve.core.data.local.ProfileStorageLocations
 import android.database.sqlite.SQLiteException
 import androidx.room.Room
 import androidx.room.RoomDatabase
@@ -26,6 +28,7 @@ class EbookSearchIndexHandle(
 @Singleton
 class EbookSearchIndexStore @Inject constructor(
     @ApplicationContext private val context: Context,
+    private val locations: ProfileStorageLocations = ProfileStorageLocations.forProfile(context, DEFAULT_ADULT_PROFILE_ID),
 ) {
     private val lock = Mutex()
     private val open = HashMap<String, OpenIndex>()
@@ -35,7 +38,7 @@ class EbookSearchIndexStore @Inject constructor(
             it.refCount++
             return@withLock it.handle
         }
-        val directory = File(context.cacheDir, DIRECTORY).apply { mkdirs() }
+        val directory = File(locations.cacheDirectory, DIRECTORY).apply { mkdirs() }
         trim(directory, open.keys + fingerprint)
         val file = File(directory, "$fingerprint$SUFFIX")
         val database = try {
@@ -61,7 +64,7 @@ class EbookSearchIndexStore @Inject constructor(
         if (entry.refCount > 0) return@withLock
         open.remove(fingerprint)
         entry.handle.database.close()
-        trim(File(context.cacheDir, DIRECTORY), open.keys)
+        trim(File(locations.cacheDirectory, DIRECTORY), open.keys)
     }
 
     private suspend fun openVerified(file: File, fingerprint: String): EbookSearchIndexDatabase {

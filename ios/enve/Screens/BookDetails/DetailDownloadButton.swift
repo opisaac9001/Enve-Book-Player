@@ -1,8 +1,17 @@
 import SwiftUI
 
 struct DetailDownloadButton: View {
+    @Environment(\.profileSession) private var capturedSession
+    private var profileSession: ProfileSession { capturedSession ?? .owner }
     let book: Book
     let tint: Color
+    let formatName: String?
+
+    init(book: Book, tint: Color, formatName: String? = nil) {
+        self.book = book
+        self.tint = tint
+        self.formatName = formatName
+    }
 
     @Environment(EnveEngine.self) private var engine
     @Environment(\.hearth) private var hearth
@@ -61,7 +70,7 @@ struct DetailDownloadButton: View {
 
     private var phase: Phase {
         if isDownloaded { return .downloaded }
-        if book.mediaType == .ebook, let progress = EbookDownloadProgressStore.shared.progress(for: book.downloadKey) {
+        if book.mediaType == .ebook, let progress = profileSession.downloads.tasks.first(where: { $0.bookId == book.downloadKey && $0.isActive })?.progress {
             return .active(progress: progress, queued: false)
         }
         if let task {
@@ -81,20 +90,20 @@ struct DetailDownloadButton: View {
 
     private var label: String {
         switch phase {
-        case .downloaded: "Downloaded"
+        case .downloaded: formatName.map { "\($0.capitalized) downloaded" } ?? "Downloaded"
         case .active(let progress, let queued): queued ? "Queued" : "\(Int((progress * 100).rounded()))%"
         case .failed: "Try again"
-        case .idle: "Download"
+        case .idle: formatName.map { "Download \($0)" } ?? "Download"
         }
     }
 
     private var accessibilityText: String {
         switch phase {
-        case .downloaded: "Downloaded. Remove download"
+        case .downloaded: formatName.map { "\($0.capitalized) downloaded. Remove download" } ?? "Downloaded. Remove download"
         case .active(let progress, let queued):
             queued ? "Queued. Cancel download" : "Downloading, \(Int((progress * 100).rounded())) percent. Cancel download"
-        case .failed: "Download failed. Try again"
-        case .idle: "Download"
+        case .failed: formatName.map { "\($0.capitalized) download failed. Try again" } ?? "Download failed. Try again"
+        case .idle: formatName.map { "Download \($0)" } ?? "Download"
         }
     }
 

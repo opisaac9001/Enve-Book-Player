@@ -31,8 +31,10 @@ struct MantelBar: View {
     @Environment(AppState.self) private var appState
     @Environment(EnveEngine.self) private var engine
 
-    private var player: PlayerViewModel { PlayerViewModel.shared }
-    private let lastOpened = LastOpenedBookStore.shared
+    @Environment(PlayerViewModel.self) private var player
+    @Environment(\.profileSession) private var capturedSession
+    private var profileSession: ProfileSession { capturedSession ?? .owner }
+    private var lastOpened: LastOpenedBookStore { profileSession.lastOpened }
 
     @State private var pillTint: Color = Hearth.accent
     @State private var lastOpenedBook: Book?
@@ -258,7 +260,7 @@ struct MantelBar: View {
                             .opacity(pillFraction(book) > 0.001 ? 1 : 0)
                     }
                     .task(id: book.stableId) {
-                        pillTint = await AmbientColorStore.shared.resolve(for: book)
+                        pillTint = await profileSession.ambientColors.resolve(for: book)
                     }
                     .frame(width: 42, height: 42)
 

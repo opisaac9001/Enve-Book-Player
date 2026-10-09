@@ -1,5 +1,6 @@
 package com.enve.bookorbit
 
+import com.enve.core.data.util.runSuspendCatching
 import com.enve.bookorbit.api.BookOrbitApi
 import com.enve.bookorbit.dto.BookOrbitAchievementCatalogueDto
 import com.enve.bookorbit.dto.BookOrbitCompletionLatencyDto
@@ -62,7 +63,7 @@ data class BookOrbitDashboard(
 class BookOrbitInsightsRepository @Inject constructor(
     private val api: BookOrbitApi,
 ) {
-    suspend fun getDashboard(days: Int): Result<BookOrbitDashboard> = runCatching {
+    suspend fun getDashboard(days: Int): Result<BookOrbitDashboard> = runSuspendCatching {
         val window = days.coerceIn(1, 3650)
         val heatmapWindow = maxOf(window, HEATMAP_DAYS)
         val probe = ReachabilityProbe()
@@ -112,9 +113,9 @@ class BookOrbitInsightsRepository @Inject constructor(
         dashboard
     }
 
-    suspend fun getAchievements(): Result<BookOrbitAchievementCatalogueDto?> = runCatching {
+    suspend fun getAchievements(): Result<BookOrbitAchievementCatalogueDto?> = runSuspendCatching {
         val response = api.achievements()
-        if (response.code() == 404) return@runCatching null
+        if (response.code() == 404) return@runSuspendCatching null
         if (!response.isSuccessful) error("BookOrbit achievements failed: HTTP ${response.code()}")
         response.body()
     }

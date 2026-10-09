@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-10-09
+
+Public source update to iOS 1.2.6 and Android 1.2 build 53.
+
+Both platforms include separate user profiles, provider and sync fixes, reader improvements, and code cleanup.
+
+- [iOS changes](ios/CHANGELOG.md)
+- [Android changes](android/CHANGELOG.md)
+- [Signed Android APK and corresponding source](https://github.com/opisaac9001/Enve-Book-Player/releases/tag/v1.2.53)
+
+### Verification
+
+- iOS: 1,267 tests passed, ten live-service tests skipped; simulator build and launch passed.
+- Android: 2,244 tests passed, two skipped; debug build, release lint, and acknowledgement inventory passed.
+- Sensitive-source and asset provenance checks passed for both platforms.
+
+Existing bundled iOS library compiler warnings and Android lint warnings remain. Live-provider and hardware checks listed in the platform testing guides remain open.
+
 ## 2026-09-28
 
 This brings the public source to iOS 1.2.5 and Android 1.2 build 52.

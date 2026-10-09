@@ -61,4 +61,20 @@ class LibraryDownloadRoutingTest {
 
         assertFalse(book.usesOfflineAudioDownload())
     }
+
+    @Test
+    fun `grimmory mixed format ebook and audiobook use separate downloads`() {
+        val ebook = Book(
+            id = "42",
+            title = "Mixed book",
+            source = BookSource.GRIMMORY,
+            mediaType = AppMediaType.EBOOK,
+            hasAudio = true,
+            hasEbook = true,
+        )
+        val audiobook = ebook.copy(id = "grimmory-ab-42", mediaType = AppMediaType.AUDIOBOOK)
+
+        assertFalse(ebook.usesOfflineAudioDownload())
+        assertTrue(audiobook.usesOfflineAudioDownload())
+    }
 }

@@ -350,6 +350,17 @@ private fun AppearanceSheet(vm: ReaderViewModel, state: ReaderUiState, customFon
             }
         }
 
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            HearthToggleRow("Bionic reading", prefs.bionicReading) {
+                vm.updatePreferences(prefs.copy(bionicReading = it))
+            }
+            Text(
+                "Bolds the first letters of each word to anchor the eye.",
+                style = HearthText.Caption,
+                color = palette.textSecondary,
+            )
+        }
+
         Overline("Page flow")
         Row(horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S)) {
             HearthChip("Paged", selected = !prefs.scroll, onClick = { vm.updatePreferences(prefs.copy(scroll = false)) })

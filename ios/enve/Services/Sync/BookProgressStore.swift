@@ -9,7 +9,7 @@ struct RecentlyPlayedSnapshot: Codable {
 
 @MainActor
 final class BookProgressStore {
-    static let shared = BookProgressStore()
+    static var shared: BookProgressStore { ProfileSession.owner.bookProgress }
 
     private let userDefaults: UserDefaults
     private var lastNotificationAt: TimeInterval = 0

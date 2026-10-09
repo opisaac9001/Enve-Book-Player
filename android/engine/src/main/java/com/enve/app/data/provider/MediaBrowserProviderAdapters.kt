@@ -11,16 +11,26 @@ import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.Library
 import com.enve.core.data.provider.ProviderAdapter
+import com.enve.core.data.provider.PlaybackReportEvent
 import com.enve.core.data.provider.ProviderPlaybackSession
 import com.enve.core.data.provider.synthesizeChaptersFromTracks
 import com.enve.core.data.remote.ConnectionScope
 import com.enve.core.data.sync.SyncCapability
 import com.enve.core.data.util.runSuspendCatching
 import com.enve.app.data.remote.dto.MediaBrowserItemsDto
+import com.enve.app.data.remote.dto.MediaBrowserPlaybackReport
+import com.enve.app.data.remote.dto.MediaBrowserUserDataUpdate
+import com.enve.core.data.util.FINISHED_PROGRESS_THRESHOLD
+import java.time.Instant
+import kotlinx.coroutines.CancellationException
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import com.enve.app.data.repository.durationMs
 import retrofit2.Response
 import javax.inject.Inject
 import javax.inject.Singleton
+
+private const val TICKS_PER_SECOND = 10_000_000L
 
 private data class ProviderRequestContext(
     val serverUrl: String,
@@ -29,10 +39,12 @@ private data class ProviderRequestContext(
 
 abstract class MediaBrowserProviderAdapter(
     private val repository: GrimmoryRepository,
+    protected val api: GrimmoryApi,
     private val prefs: PreferencesManager,
     private val vault: CredentialVault,
     private val connectionRegistry: ConnectionRegistry,
 ) : ProviderAdapter {
+    private val userIds = ConcurrentHashMap<String, String>()
 
     protected abstract val providerSource: BookSource
     override val source: BookSource get() = providerSource
@@ -85,7 +97,93 @@ abstract class MediaBrowserProviderAdapter(
         }
     }
 
-    override suspend fun startPlaybackSession(book: Book): Result<ProviderPlaybackSession> = runCatching {
+    override suspend fun syncAudiobookProgress(
+        book: Book,
+        currentTimeSec: Long,
+        progressFraction: Float,
+    ): Result<Unit> = runSuspendCatching {
+        val finished = progressFraction >= FINISHED_PROGRESS_THRESHOLD
+        // Only finishing or resetting changes the played flag, so a played mark set elsewhere isn't cleared mid-listen.
+        saveUserData(book.id, currentTimeSec, played = finished.takeIf { it || currentTimeSec <= 1L })
+        try {
+            saveChildPosition(book.id, currentTimeSec)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // The book-level position above is the one Enve reads back; the per-file one is a courtesy to other apps.
+        }
+    }
+
+    private data class ChildSpan(val id: String, val startMs: Long, val durationMs: Long)
+    private val childSpans = ConcurrentHashMap<String, List<ChildSpan>>()
+
+    // Other clients resume multi-file books from the file playing, so its own resume point is kept too.
+    private suspend fun saveChildPosition(bookId: String, positionSec: Long) {
+        val spans = childSpans[bookId] ?: run {
+            val userId = cachedUserId() ?: return
+            val response = audioChildren(userId, bookId)
+            if (!response.isSuccessful) return
+            var start = 0L
+            response.body()?.items.orEmpty().filter { it.type == "Audio" }
+                .map { item -> ChildSpan(item.id, start, item.durationMs).also { start += item.durationMs } }
+                .also { childSpans[bookId] = it }
+        }
+        if (spans.size < 2) return
+        val positionMs = positionSec * 1000L
+        val span = spans.lastOrNull { positionMs >= it.startMs } ?: spans.first()
+        val localSec = ((positionMs - span.startMs).coerceIn(0L, span.durationMs)) / 1000L
+        saveUserData(span.id, localSec, played = null)
+    }
+
+    override suspend fun reportPlayback(
+        book: Book,
+        event: PlaybackReportEvent,
+        sessionId: String,
+        positionSec: Long,
+    ): Result<Unit> = runSuspendCatching {
+        val report = MediaBrowserPlaybackReport(
+            ItemId = book.id,
+            PlaySessionId = sessionId,
+            PositionTicks = positionSec.coerceAtLeast(0L) * TICKS_PER_SECOND,
+            IsPaused = event == PlaybackReportEvent.PAUSED,
+            EventName = when (event) {
+                PlaybackReportEvent.PAUSED -> "Pause"
+                PlaybackReportEvent.RESUMED -> "Unpause"
+                PlaybackReportEvent.PROGRESS -> "TimeUpdate"
+                else -> null
+            },
+        )
+        val response = when (event) {
+            PlaybackReportEvent.STARTED -> api.mediaBrowserPlaybackStarted(report)
+            PlaybackReportEvent.STOPPED -> api.mediaBrowserPlaybackStopped(report)
+            else -> api.mediaBrowserPlaybackProgress(report)
+        }
+        if (!response.isSuccessful) error("$source playback report failed: HTTP ${response.code()}")
+        // Playstate reports apply the server's resume rules (early audiobook positions reset to 0), so restore Enve's position.
+        if (event != PlaybackReportEvent.STARTED) saveUserData(book.id, positionSec, played = null)
+    }
+
+    private suspend fun saveUserData(itemId: String, positionSec: Long, played: Boolean?) {
+        val userId = cachedUserId() ?: error("$source user unavailable")
+        val response = api.mediaBrowserUpdateUserData(
+            userId = userId,
+            itemId = itemId,
+            body = MediaBrowserUserDataUpdate(
+                PlaybackPositionTicks = positionSec.coerceAtLeast(0L) * TICKS_PER_SECOND,
+                LastPlayedDate = Instant.now().toString(),
+                Played = played,
+            ),
+        )
+        if (!response.isSuccessful) error("$source progress update failed: HTTP ${response.code()}")
+    }
+
+    private suspend fun cachedUserId(): String? {
+        val key = ConnectionScope.getConnectionId().orEmpty()
+        userIds[key]?.let { return it }
+        return currentUserId()?.also { userIds[key] = it }
+    }
+
+    override suspend fun startPlaybackSession(book: Book): Result<ProviderPlaybackSession> = runSuspendCatching {
         val tracks = getAudioTracks(book).getOrThrow()
         val durationSec = when {
             book.duration > 0 -> book.duration
@@ -93,7 +191,7 @@ abstract class MediaBrowserProviderAdapter(
             else -> 0L
         }
         ProviderPlaybackSession(
-            sessionId = "${source.name.lowercase()}-${book.id}",
+            sessionId = UUID.randomUUID().toString(),
             audioTracks = tracks,
             chapters = book.chapters.ifEmpty { synthesizeChaptersFromTracks(tracks, durationSec) },
             serverCurrentTimeSec = book.currentTime.takeIf { it > 0L },
@@ -157,11 +255,11 @@ abstract class MediaBrowserProviderAdapter(
 @Singleton
 class JellyfinProviderAdapter @Inject constructor(
     repository: GrimmoryRepository,
-    private val api: GrimmoryApi,
+    api: GrimmoryApi,
     prefs: PreferencesManager,
     vault: CredentialVault,
     connectionRegistry: ConnectionRegistry,
-) : MediaBrowserProviderAdapter(repository, prefs, vault, connectionRegistry) {
+) : MediaBrowserProviderAdapter(repository, api, prefs, vault, connectionRegistry) {
     override val providerSource: BookSource = BookSource.JELLYFIN
 
     override suspend fun currentUserId(): String? =
@@ -180,11 +278,11 @@ class JellyfinProviderAdapter @Inject constructor(
 @Singleton
 class EmbyProviderAdapter @Inject constructor(
     repository: GrimmoryRepository,
-    private val api: GrimmoryApi,
+    api: GrimmoryApi,
     prefs: PreferencesManager,
     vault: CredentialVault,
     connectionRegistry: ConnectionRegistry,
-) : MediaBrowserProviderAdapter(repository, prefs, vault, connectionRegistry) {
+) : MediaBrowserProviderAdapter(repository, api, prefs, vault, connectionRegistry) {
     override val providerSource: BookSource = BookSource.EMBY
 
     override suspend fun currentUserId(): String? {
@@ -205,3 +303,4 @@ class EmbyProviderAdapter @Inject constructor(
             limit = 1000,
         )
 }
+

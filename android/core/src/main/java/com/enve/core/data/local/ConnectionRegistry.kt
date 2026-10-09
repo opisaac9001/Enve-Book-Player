@@ -1,6 +1,7 @@
 package com.enve.core.data.local
 
 import android.content.Context
+import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -17,10 +18,11 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
-class ConnectionRegistry @Inject constructor(
-    @ApplicationContext private val context: Context,
+class ConnectionRegistry(
+    private val dataStore: DataStore<Preferences>,
 ) {
-    private val dataStore get() = context.enveDataStore
+    @Inject
+    constructor(@ApplicationContext context: Context) : this(context.enveDataStore)
 
     private val json = Json {
         ignoreUnknownKeys = true

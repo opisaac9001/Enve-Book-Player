@@ -60,6 +60,14 @@ final class PlaybackQueueCoordinator {
         }
     }
 
+    func retire() async {
+        eventSubscription = nil
+        let tasks = [failureAdvanceTask, startPlaybackTask]
+        startRequestID = nil
+        tasks.forEach { $0?.cancel() }
+        for task in tasks { await task?.value }
+    }
+
     var entries: [PlaybackQueueEntry] { store.entries }
 
     @discardableResult

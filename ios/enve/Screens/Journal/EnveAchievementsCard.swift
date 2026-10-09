@@ -7,13 +7,16 @@ final class EnveAchievementsModel {
     private(set) var achievements: [EnveAchievement] = []
     private(set) var loaded = false
 
+    private let history: HistorySessionStore
     private let journal: JournalEngine
     private let books: any BookQuerying
 
     init(
         journal: JournalEngine = EnveEngine.shared.journal,
-        books: any BookQuerying = AppState.shared.bookStore
+        books: any BookQuerying = AppState.shared.bookStore,
+        history: HistorySessionStore = .shared
     ) {
+        self.history = history
         self.journal = journal
         self.books = books
     }
@@ -27,12 +30,11 @@ final class EnveAchievementsModel {
     }
 
     func refresh() async {
-        async let listening = HistorySessionStore.shared.loadListeningSessions()
-        async let reading = HistorySessionStore.shared.loadReadingSessions()
-        async let remote = journal.remoteHistorySessions()
+        let local = await history.loadListeningSessions() + history.loadReadingSessions()
+        async let remote = journal.remoteHistorySessions(excludingCoveredBy: local)
         async let library = books.finishedBookSummaries()
 
-        let sessions = await listening + reading + remote
+        let sessions = await local + remote
         let finishedBooks = await library
         tally = EnveAchievementsPolicy.tally(sessions: sessions, finishedBooks: finishedBooks)
         achievements = EnveAchievementsPolicy.achievements(tally)
@@ -43,7 +45,7 @@ final class EnveAchievementsModel {
 struct EnveAchievementsCard: View {
     @Environment(\.hearth) private var hearth
 
-    @State private var model = EnveAchievementsModel()
+    @Environment(EnveAchievementsModel.self) private var model
 
     var body: some View {
         JournalCard("Milestones · every source") {

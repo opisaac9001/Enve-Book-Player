@@ -1,6 +1,8 @@
 package com.enve.app.data.repository
 
 import android.content.Context
+import com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
+import com.enve.core.data.local.ProfileStorageLocations
 import android.net.Uri
 import com.enve.app.data.local.ReaderDatabase
 import com.enve.app.data.reader.CustomFont
@@ -28,10 +30,12 @@ internal fun detectCustomFontExtension(file: File): String? {
 @Singleton
 class CustomFontRepository @Inject constructor(
     @ApplicationContext private val context: Context,
+    private val database: ReaderDatabase,
+    private val locations: ProfileStorageLocations = ProfileStorageLocations.forProfile(context, DEFAULT_ADULT_PROFILE_ID),
 ) {
     enum class Variant { REGULAR, BOLD, ITALIC, BOLD_ITALIC }
 
-    private val dao by lazy { ReaderDatabase.getInstance(context).customFontDao() }
+    private val dao by lazy { database.customFontDao() }
 
     fun observeFonts(): Flow<List<CustomFont>> = dao.observeAll()
 
@@ -142,7 +146,7 @@ class CustomFontRepository @Inject constructor(
             }
         }
 
-    private fun fontRoot(): File = File(context.filesDir, "reader-fonts").apply {
+    private fun fontRoot(): File = File(locations.filesDirectory, "reader-fonts").apply {
         if (!exists()) mkdirs()
     }
 

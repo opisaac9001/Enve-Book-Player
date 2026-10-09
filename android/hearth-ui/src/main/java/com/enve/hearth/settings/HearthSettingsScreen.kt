@@ -44,6 +44,7 @@ import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Palette
+import androidx.compose.material.icons.outlined.People
 import androidx.compose.material.icons.outlined.PhonelinkSetup
 import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material.icons.outlined.Sync
@@ -73,7 +74,7 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.hilt.navigation.compose.hiltViewModel
+import com.enve.hearth.shell.profileViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.enve.core.data.model.ProviderConnection
 import com.enve.core.data.model.ComicPageLoadingMode
@@ -101,6 +102,7 @@ private val ACCENTS = listOf(
 )
 
 enum class HearthSettingsDestination {
+    Profiles,
     Sources,
     ServerManagement,
     LibraryHub,
@@ -144,7 +146,7 @@ fun HearthSettingsScreen(
     onOpenDestination: (HearthSettingsDestination) -> Unit = {},
     onOpdsAuthorize: (connectionId: String, methodType: String, authorizeUrl: String) -> Unit = { _, _, _ -> },
 ) {
-    val vm: HearthSettingsViewModel = hiltViewModel()
+    val vm: HearthSettingsViewModel = profileViewModel()
     val connections by vm.connections.collectAsStateWithLifecycle()
     var category by rememberSaveable { mutableStateOf<SettingsCategory?>(null) }
     var selectedConnectionId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -191,7 +193,7 @@ fun HearthSettingsScreen(
     }
 
     when (category) {
-        null -> SettingsOverview(connections, onBack = onBack, onSelect = { category = it })
+        null -> SettingsOverview(connections, onBack = onBack, onSelect = { category = it }, onProfiles = { onOpenDestination(HearthSettingsDestination.Profiles) })
         SettingsCategory.Sources -> SourcesPage(
             connections,
             onBack = { category = null },
@@ -212,6 +214,7 @@ private fun SettingsOverview(
     connections: List<ProviderConnection>,
     onBack: () -> Unit,
     onSelect: (SettingsCategory) -> Unit,
+    onProfiles: () -> Unit,
 ) {
     val palette = Hearth.palette
     val enabled = connections.count { it.enabled }
@@ -223,6 +226,11 @@ private fun SettingsOverview(
         else -> "$enabled connected"
     }
     SettingsPage("Sources & Settings", "Settings", onBack) {
+        item {
+            QuietCard {
+                ToolRow(Icons.Outlined.People, "Profiles", "Separate libraries and positions for each person", onProfiles)
+            }
+        }
         item {
             QuietCard {
                 CategoryRow(
@@ -335,8 +343,12 @@ private fun AppearancePage(
                     horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.XS),
                 ) {
                     ACCENTS.forEach { (name, hex) ->
-                        val c = parseHexColor(hex) ?: EmberAccent
                         val selected = accentMatches(accent, hex)
+                        val c = if (Hearth.eink.monochrome) {
+                            if (selected) palette.text else palette.bg
+                        } else {
+                            parseHexColor(hex) ?: EmberAccent
+                        }
                         Box(
                             Modifier
                                 .size(48.dp)

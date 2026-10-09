@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct DetailBookmarksSection: View {
+    @Environment(\.profileSession) private var capturedSession
+    private var profileSession: ProfileSession { capturedSession ?? .owner }
     let book: Book
     let tint: Color
 
@@ -168,13 +170,13 @@ struct DetailBookmarksSection: View {
     }
 
     private func load() {
-        var marks = ReaderArtifactsStore.shared.loadBookmarks(bookId: book.stableId)
-        var notes = ReaderArtifactsStore.shared.loadAnnotations(bookId: book.stableId)
+        var marks = profileSession.readerArtifacts.loadBookmarks(bookId: book.stableId)
+        var notes = profileSession.readerArtifacts.loadAnnotations(bookId: book.stableId)
         if book.stableId != book.id {
             let seenMarks = Set(marks.map(\.id))
-            marks += ReaderArtifactsStore.shared.loadBookmarks(bookId: book.id).filter { !seenMarks.contains($0.id) }
+            marks += profileSession.readerArtifacts.loadBookmarks(bookId: book.id).filter { !seenMarks.contains($0.id) }
             let seenNotes = Set(notes.map(\.id))
-            notes += ReaderArtifactsStore.shared.loadAnnotations(bookId: book.id).filter { !seenNotes.contains($0.id) }
+            notes += profileSession.readerArtifacts.loadAnnotations(bookId: book.id).filter { !seenNotes.contains($0.id) }
         }
         bookmarks = marks.sorted { $0.position < $1.position }
         annotations =

@@ -1,6 +1,8 @@
 package com.enve.core.data.local
 
 import android.content.Context
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
@@ -22,10 +24,9 @@ data class KeepNextOfflineSettings(
 }
 
 @Singleton
-class KeepNextOfflineStore @Inject constructor(
-    @ApplicationContext context: Context,
-) {
-    private val dataStore = context.enveDataStore
+class KeepNextOfflineStore(private val dataStore: DataStore<Preferences>) {
+    @Inject
+    constructor(@ApplicationContext context: Context) : this(context.enveDataStore)
 
     val settings: Flow<KeepNextOfflineSettings> = dataStore.data.map { preferences ->
         KeepNextOfflineSettings(

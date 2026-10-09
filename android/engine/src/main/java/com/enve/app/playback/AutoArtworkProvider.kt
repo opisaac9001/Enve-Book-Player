@@ -26,7 +26,18 @@ class AutoArtworkProvider : ContentProvider() {
         val fileName = requireNotNull(uri.lastPathSegment?.takeIf(FILE_NAME_PATTERN::matches)) {
             "Invalid artwork path"
         }
-        val cacheDirectory = File(requireNotNull(context).cacheDir, CACHE_DIRECTORY).canonicalFile
+        val providerContext = requireNotNull(context)
+        val coordinator = dagger.hilt.android.EntryPointAccessors.fromApplication(providerContext.applicationContext, DeviceEntryPoint::class.java).profiles()
+        val profileId = when (uri.pathSegments.size) {
+            1 -> com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID.also { require(!coordinator.state.value.enabled) }
+            2 -> uri.pathSegments.first().also { require(com.enve.core.data.local.FamilyProfile.validId(it)) }
+            else -> throw java.io.FileNotFoundException("Artwork not found")
+        }
+        if (coordinator.state.value.enabled) {
+            require(!coordinator.state.value.locked && !coordinator.state.value.switching && coordinator.activeRuntime.value?.profileId == profileId)
+        }
+        val locations = com.enve.core.data.local.ProfileStorageLocations.forProfile(providerContext, profileId)
+        val cacheDirectory = File(locations.cacheDirectory, CACHE_DIRECTORY).canonicalFile
         val artwork = File(cacheDirectory, fileName).canonicalFile
         require(artwork.parentFile == cacheDirectory && artwork.isFile) { "Artwork not found" }
         return ParcelFileDescriptor.open(artwork, ParcelFileDescriptor.MODE_READ_ONLY)
@@ -78,13 +89,20 @@ class AutoArtworkProvider : ContentProvider() {
         selectionArgs: Array<out String>?,
     ): Int = 0
 
+    @dagger.hilt.EntryPoint
+    @dagger.hilt.InstallIn(dagger.hilt.components.SingletonComponent::class)
+    interface DeviceEntryPoint {
+        fun profiles(): com.enve.app.profiles.ProfileSwitchCoordinator
+    }
+
     companion object {
         const val CACHE_DIRECTORY = "android_auto_artwork"
         private val FILE_NAME_PATTERN = Regex("[0-9a-f]{64}\\.jpg")
 
-        fun uriFor(context: Context, fileName: String): Uri = Uri.Builder()
+        fun uriFor(context: Context, fileName: String, profileId: String = com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID): Uri = Uri.Builder()
             .scheme("content")
             .authority("${context.packageName}.auto-artwork")
+            .appendPath(profileId)
             .appendPath(fileName)
             .build()
     }

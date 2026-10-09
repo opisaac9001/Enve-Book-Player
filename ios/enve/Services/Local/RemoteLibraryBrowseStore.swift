@@ -7,11 +7,13 @@ final class RemoteLibraryBrowseStore: @unchecked Sendable {
 
     private static let defaultsKey = "enve.library.remoteBrowsedCatalogCounts"
 
+    private let defaults: UserDefaults
     private let lock = NSLock()
     private var counts: [String: Int]
 
-    private init() {
-        counts = UserDefaults.standard.dictionary(forKey: Self.defaultsKey) as? [String: Int] ?? [:]
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        counts = defaults.dictionary(forKey: Self.defaultsKey) as? [String: Int] ?? [:]
     }
 
     func record(providerId: UUID, libraryId: String, bookCount: Int) {
@@ -24,7 +26,7 @@ final class RemoteLibraryBrowseStore: @unchecked Sendable {
         } else {
             guard counts.removeValue(forKey: key) != nil else { return }
         }
-        UserDefaults.standard.set(counts, forKey: Self.defaultsKey)
+        defaults.set(counts, forKey: Self.defaultsKey)
     }
 
     func isRemoteBrowsed(providerId: UUID, libraryId: String) -> Bool {

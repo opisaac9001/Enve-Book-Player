@@ -171,6 +171,11 @@ public class PlayerViewModel {
     @ObservationIgnored private var lastHardcoverSyncProgress: Double = -1
     private var sleepTimerBaseVolume: Double?
 
+    @ObservationIgnored private unowned let profileSession: ProfileSession
+    @ObservationIgnored private let audiobookshelfService: AudiobookshelfService
+    @ObservationIgnored private var restorationTask: Task<Void, Never>?
+    @ObservationIgnored private var isRetired = false
+
     init(
         playbackComposition: PlaybackComposition = ActivePlayback.composition,
         storageService: StorageService = StorageService(),
@@ -181,8 +186,11 @@ public class PlayerViewModel {
         streamResolver: PlayerStreamURLResolver = .shared,
         progressService: PlayerProgressService = .shared,
         sessionService: PlayerSessionService = .shared,
-        chapterService: PlayerChapterService = .shared
+        chapterService: PlayerChapterService = .shared,
+        profileSession: ProfileSession = .owner
     ) {
+        self.profileSession = profileSession
+        self.audiobookshelfService = profileSession.absService
         self.playbackController = playbackComposition.controller
         self.bookStarter = playbackComposition.bookStarter
         self.restorationPreparer = playbackComposition.restorationPreparer
@@ -196,7 +204,7 @@ public class PlayerViewModel {
         self.readerArtifacts = readerArtifacts
         self.libraryCache = libraryCache
         self.streamResolver = streamResolver
-        let initialPrefs = LibraryDisplayPreferencesStore.shared.loadPreferences()
+        let initialPrefs = profileSession.preferences.loadPreferences()
         let initialSnapshot = playbackComposition.controller.snapshot
         self.playbackSnapshot = initialSnapshot
         self.isPlayingSubject = CurrentValueSubject<Bool, Never>(initialSnapshot.isPlaying)
@@ -204,7 +212,7 @@ public class PlayerViewModel {
         self.preferences = initialPrefs
         self.preferencesSubject = CurrentValueSubject<UserPreferences, Never>(initialPrefs)
         self.progressService = progressService
-        self.bookmarkService = PlayerBookmarkService(storageService: storageService)
+        self.bookmarkService = PlayerBookmarkService(storageService: storageService, readerArtifacts: profileSession.readerArtifacts)
         self.chapterService = chapterService
         self.sessionService = sessionService
 
@@ -212,11 +220,27 @@ public class PlayerViewModel {
         setupServiceObservers()
         observePreferencesChanges()
 
-        Task { [weak self] in
-            guard let self else { return }
+        restorationTask = Task { [weak self] in
+            guard let self, !self.isRetired else { return }
             await self.restoreLastPlayedForMiniPlayer()
         }
 
+    }
+
+    func retire() async {
+        guard !isRetired else { return }
+        isRetired = true
+        restorationTask?.cancel()
+        remoteSyncTask?.cancel()
+        chapterSleepTimerTask?.cancel()
+        stopSleepTimer()
+        stopProgressSync()
+        hardcoverSyncTimer?.invalidate()
+        cancellables.removeAll()
+        streamResolver.cleanupSecurityScopedAccess()
+        await restorationTask?.value
+        await remoteSyncTask?.value
+        await chapterSleepTimerTask?.value
     }
 
     private func setupServiceObservers() {
@@ -383,7 +407,7 @@ public class PlayerViewModel {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 guard let self else { return }
-                let updated = LibraryDisplayPreferencesStore.shared.loadPreferences()
+                let updated = profileSession.preferences.loadPreferences()
 
                 if self.preferences.playbackSpeed != updated.playbackSpeed {
                     self.playbackController.setPlaybackRate(updated.playbackSpeed)
@@ -443,7 +467,7 @@ public class PlayerViewModel {
 
         #if os(iOS)
         if let sessionId = sessionService.currentABSSessionId {
-            ABSSessionBackgroundTask.shared.scheduleSessionClose(sessionId: sessionId)
+            if profileSession.isOwner { ABSSessionBackgroundTask.shared.scheduleSessionClose(sessionId: sessionId) }
         }
         #endif
     }
@@ -455,7 +479,7 @@ public class PlayerViewModel {
         streamResolver.cleanupSecurityScopedAccess()
 
         #if os(iOS)
-        ABSSessionBackgroundTask.shared.cancelScheduledClose()
+        if profileSession.isOwner { ABSSessionBackgroundTask.shared.cancelScheduledClose() }
         #endif
 
         Task {
@@ -464,7 +488,7 @@ public class PlayerViewModel {
         }
 
         Task {
-            await SMBStreamingServer.shared.stopStreaming()
+            if profileSession.isOwner { await SMBStreamingServer.shared.stopStreaming() }
         }
     }
 
@@ -496,25 +520,25 @@ public class PlayerViewModel {
         let clampedSpeed = min(max(speed, Double(AppConstants.Playback.minSpeed)), Double(AppConstants.Playback.maxSpeed))
         preferences.playbackSpeed = clampedSpeed
         playbackController.setPlaybackRate(clampedSpeed)
-        LibraryDisplayPreferencesStore.shared.savePreferences(preferences)
+        profileSession.preferences.savePreferences(preferences)
     }
 
     func setVolume(_ volume: Double) {
         preferences.volume = volume
         playbackController.setVolume(volume)
-        LibraryDisplayPreferencesStore.shared.savePreferences(preferences)
+        profileSession.preferences.savePreferences(preferences)
     }
 
     func setBasicVoiceMode(_ mode: BasicVoiceMode) {
         preferences.basicVoiceMode = mode
         audioProcessingController.setBasicVoiceMode(mode)
-        LibraryDisplayPreferencesStore.shared.savePreferences(preferences)
+        profileSession.preferences.savePreferences(preferences)
     }
 
     func setVoiceBoostEnabled(_ enabled: Bool) {
         preferences.voiceBoostEnabled = enabled
         audioProcessingController.setVoiceBoostEnabled(enabled)
-        LibraryDisplayPreferencesStore.shared.savePreferences(preferences)
+        profileSession.preferences.savePreferences(preferences)
     }
 
     func setVoiceBoostPreset(_ preset: VoiceBoostPreset) {
@@ -523,46 +547,46 @@ public class PlayerViewModel {
 
         preferences.eqBands = audioProcessingController.eqBands
 
-        LibraryDisplayPreferencesStore.shared.savePreferences(preferences)
+        profileSession.preferences.savePreferences(preferences)
     }
 
     func setEQEnabled(_ enabled: Bool) {
         preferences.eqEnabled = enabled
         audioProcessingController.setEQEnabled(enabled)
-        LibraryDisplayPreferencesStore.shared.savePreferences(preferences)
+        profileSession.preferences.savePreferences(preferences)
     }
 
     func setEQBands(_ bands: [Float]) {
         preferences.eqBands = bands
         audioProcessingController.setEQBands(bands)
-        LibraryDisplayPreferencesStore.shared.savePreferences(preferences)
+        profileSession.preferences.savePreferences(preferences)
     }
 
     func setIndependentPitchSemitones(_ semitones: Double) {
         preferences.independentPitchSemitones = semitones
-        LibraryDisplayPreferencesStore.shared.savePreferences(preferences)
+        profileSession.preferences.savePreferences(preferences)
     }
 
     func setMonoMixEnabled(_ enabled: Bool) {
         preferences.monoMixEnabled = enabled
         monoMixController?.setMonoMixEnabled(enabled)
-        LibraryDisplayPreferencesStore.shared.savePreferences(preferences)
+        profileSession.preferences.savePreferences(preferences)
     }
 
     func setStereoBalance(_ balance: Float) {
         preferences.stereoBalance = balance
         stereoBalanceController?.setStereoBalance(balance)
-        LibraryDisplayPreferencesStore.shared.savePreferences(preferences)
+        profileSession.preferences.savePreferences(preferences)
     }
 
     func setNoiseReductionLevel(_ level: Float) {
         preferences.noiseReductionLevel = level
-        LibraryDisplayPreferencesStore.shared.savePreferences(preferences)
+        profileSession.preferences.savePreferences(preferences)
     }
 
     func setBinauralEnabled(_ enabled: Bool) {
         preferences.binauralEnabled = enabled
-        LibraryDisplayPreferencesStore.shared.savePreferences(preferences)
+        profileSession.preferences.savePreferences(preferences)
     }
 
     func nextChapter() {
@@ -614,9 +638,9 @@ public class PlayerViewModel {
     }
 
     private func mergedBookmarks(for book: Book) -> [Bookmark] {
-        var loaded = ReaderArtifactsStore.shared.loadBookmarks(bookId: book.stableId)
+        var loaded = profileSession.readerArtifacts.loadBookmarks(bookId: book.stableId)
         if book.stableId != book.id {
-            let legacy = ReaderArtifactsStore.shared.loadBookmarks(bookId: book.id)
+            let legacy = profileSession.readerArtifacts.loadBookmarks(bookId: book.id)
             let existingIds = Set(loaded.map(\.id))
             loaded.append(contentsOf: legacy.filter { !existingIds.contains($0.id) })
         }
@@ -646,18 +670,17 @@ public class PlayerViewModel {
             }
         }
 
-        if let bookChapters = book.chapters, !bookChapters.isEmpty {
-            chapters = bookChapters
-            currentChapter = activeChapter(at: activePlaybackTime, book: book)
-        }
+        chapters = book.chapters ?? []
+        currentChapter = activeChapter(at: activePlaybackTime, book: book)
     }
 
     private func syncBookOrbitBookmarks(book: Book) async {
         guard book.source == .bookOrbit,
             let provider = providerConnections.provider(for: book.providerId) as? BookOrbitProvider
         else { return }
+        guard profileSession.isOwner else { return }
         _ = await BookOrbitReaderArtifactSync.shared.sync(book: book, provider: provider)
-        let merged = ReaderArtifactsStore.shared.loadBookmarks(bookId: book.stableId)
+        let merged = profileSession.readerArtifacts.loadBookmarks(bookId: book.stableId)
         await MainActor.run { bookmarks = merged }
     }
 
@@ -683,12 +706,12 @@ public class PlayerViewModel {
             await readerArtifacts.upsertBookmark(capturedBookmark, bookStableId: stableId)
         }
 
-        ObsidianNotesCoordinator.shared.scheduleAutoExport(book: book)
+        if profileSession.isOwner { ObsidianNotesCoordinator.shared.scheduleAutoExport(book: book) }
 
         if let backend = absBackend(for: book) {
             Task {
                 do {
-                    let synced = try await AudiobookshelfService.shared.createBookmark(
+                    let synced = try await audiobookshelfService.createBookmark(
                         libraryItemId: AudiobookshelfProvider.itemId(forBookId: book.id),
                         time: newBookmark.position,
                         title: newBookmark.title,
@@ -719,7 +742,7 @@ public class PlayerViewModel {
             }
         }
         if book.source == .bookOrbit {
-            BookOrbitReaderArtifactSync.shared.enqueueBookmarkUpsert(book: book, localId: newBookmark.id)
+            if profileSession.isOwner { BookOrbitReaderArtifactSync.shared.enqueueBookmarkUpsert(book: book, localId: newBookmark.id) }
             Task { await syncBookOrbitBookmarks(book: book) }
         }
 
@@ -734,7 +757,7 @@ public class PlayerViewModel {
         bookmarkService.deleteBookmark(bookmark)
         bookmarks.removeAll { $0.id == bookmark.id }
         #if !os(tvOS)
-        AudiobookClipService.shared.deleteClip(bookId: bookmark.bookId, clipId: bookmark.id)
+        if profileSession.isOwner { AudiobookClipService.shared.deleteClip(bookId: bookmark.bookId, clipId: bookmark.id) }
         #endif
 
         let bid = bookmark.id
@@ -743,13 +766,13 @@ public class PlayerViewModel {
         }
 
         if let book = activeBook {
-            ObsidianNotesCoordinator.shared.scheduleAutoExport(book: book)
+            if profileSession.isOwner { ObsidianNotesCoordinator.shared.scheduleAutoExport(book: book) }
         }
 
         if let book = activeBook, let backend = absBackend(for: book) {
             Task {
                 do {
-                    try await AudiobookshelfService.shared.deleteBookmark(
+                    try await audiobookshelfService.deleteBookmark(
                         libraryItemId: AudiobookshelfProvider.itemId(forBookId: book.id),
                         time: bookmark.position,
                         backend: backend
@@ -762,7 +785,7 @@ public class PlayerViewModel {
             }
         }
         if let book = activeBook, book.source == .bookOrbit, let remoteID = bookmark.remoteID {
-            BookOrbitReaderArtifactSync.shared.enqueueBookmarkDelete(book: book, remoteId: remoteID)
+            if profileSession.isOwner { BookOrbitReaderArtifactSync.shared.enqueueBookmarkDelete(book: book, remoteId: remoteID) }
             Task { await syncBookOrbitBookmarks(book: book) }
         }
     }
@@ -791,13 +814,13 @@ public class PlayerViewModel {
         }
 
         if let book = activeBook {
-            ObsidianNotesCoordinator.shared.scheduleAutoExport(book: book)
+            if profileSession.isOwner { ObsidianNotesCoordinator.shared.scheduleAutoExport(book: book) }
         }
 
         if let book = activeBook, let backend = absBackend(for: book) {
             Task {
                 do {
-                    _ = try await AudiobookshelfService.shared.updateBookmark(
+                    _ = try await audiobookshelfService.updateBookmark(
                         libraryItemId: AudiobookshelfProvider.itemId(forBookId: book.id),
                         time: bookmark.position,
                         title: newTitle,
@@ -811,7 +834,7 @@ public class PlayerViewModel {
             }
         }
         if let book = activeBook, book.source == .bookOrbit {
-            BookOrbitReaderArtifactSync.shared.enqueueBookmarkUpsert(book: book, localId: updatedBookmark.id)
+            if profileSession.isOwner { BookOrbitReaderArtifactSync.shared.enqueueBookmarkUpsert(book: book, localId: updatedBookmark.id) }
             Task { await syncBookOrbitBookmarks(book: book) }
         }
     }
@@ -946,7 +969,7 @@ public class PlayerViewModel {
         sleepTimerService.startTimer(minutes: minutes, fadeOut: fadeOut)
 
         var state =
-            PlayerStateStore.shared.loadSleepTimer()
+            profileSession.playerState.loadSleepTimer()
             ?? SleepTimerState(
                 isActive: false,
                 isPaused: false,
@@ -957,7 +980,7 @@ public class PlayerViewModel {
             )
         state.timerStartedDate = Date()
         state.lastDurationMinutes = minutes
-        PlayerStateStore.shared.saveSleepTimer(state)
+        profileSession.playerState.saveSleepTimer(state)
     }
 
     func stopSleepTimer() {
@@ -1019,7 +1042,7 @@ public class PlayerViewModel {
     private func recordSleepTimerFiredPosition() {
         guard let book = currentBook else { return }
         var state =
-            PlayerStateStore.shared.loadSleepTimer()
+            profileSession.playerState.loadSleepTimer()
             ?? SleepTimerState(
                 isActive: false,
                 isPaused: false,
@@ -1033,7 +1056,7 @@ public class PlayerViewModel {
         state.timerFiredBookId = book.id
         state.lastEndedByExpiry = true
 
-        PlayerStateStore.shared.saveSleepTimer(state)
+        profileSession.playerState.saveSleepTimer(state)
         AppLogger.player.info(
             "[SleepTimer] Recorded fire: pos=\(String(format: "%.0f", progress))s, started=\(state.timerStartedDate?.description ?? "nil")"
         )
@@ -1051,11 +1074,7 @@ public class PlayerViewModel {
 
     private func startProgressSync() {
         guard !activePlaybackOwnsProgressPersistence else { return }
-        guard preferences.autoSyncProgress,
-            SyncCoordinator.shared.syncEnabled
-        else {
-            return
-        }
+        guard preferences.autoSyncProgress else { return }
 
         guard sessionService.currentABSSessionId == nil else { return }
         progressService.startProgressSync(currentBook: currentBook, isPlaying: isPlaying) { [weak self] in self?.progress ?? 0 }
@@ -1102,7 +1121,7 @@ public class PlayerViewModel {
 
     private func startHardcoverSyncTimer() {
         hardcoverSyncTimer?.invalidate()
-        guard SettingsManager.shared.hardcoverAutoSyncEnabled,
+        guard profileSession.isOwner, !isRetired, SettingsManager.shared.hardcoverAutoSyncEnabled,
             SettingsManager.shared.hardcoverApiKey != nil
         else { return }
 
@@ -1121,11 +1140,12 @@ public class PlayerViewModel {
     }
 
     private func syncHardcoverProgress() async {
+        guard profileSession.isOwner, !isRetired else { return }
         guard let book = currentBook, duration > 0, progress > 0 else { return }
         let fraction = progress / duration
         guard abs(fraction - lastHardcoverSyncProgress) > 0.005 else { return }
         lastHardcoverSyncProgress = fraction
-        await SyncCoordinator.shared.pushHardcoverIfNeeded(book: book, progress: fraction, sessionService: sessionService)
+        await profileSession.sync.pushHardcoverIfNeeded(book: book, progress: fraction, sessionService: sessionService)
     }
 
     private func syncProgress() {
@@ -1147,9 +1167,9 @@ public class PlayerViewModel {
         else { return }
 
         progressService.saveProgress(book: book, position: progress, duration: duration)
-        BookProgressStore.shared.saveRecentlyPlayed(book)
+        profileSession.bookProgress.saveRecentlyPlayed(book)
 
-        if preferences.autoSyncProgress, SyncCoordinator.shared.syncEnabled {
+        if preferences.autoSyncProgress {
             remoteSyncTask?.cancel()
             remoteSyncTask = Task {
                 await progressService.syncProgressToRemote(book: book, progress: progress)
@@ -1170,7 +1190,7 @@ public class PlayerViewModel {
 
         let currentPercent = progress / duration
         Task {
-            await SyncCoordinator.shared.pushHardcoverIfNeeded(book: book, progress: currentPercent, sessionService: sessionService)
+            await profileSession.sync.pushHardcoverIfNeeded(book: book, progress: currentPercent, sessionService: sessionService)
         }
     }
 
@@ -1245,16 +1265,16 @@ public class PlayerViewModel {
 
         let downloadId = book.downloadKey
 
-        if LocalStorageManager.shared.isAudiobookDownloaded(downloadId) {
+        if profileSession.localStorage.isAudiobookDownloaded(downloadId) {
             AppLogger.player.debug("Book already downloaded; bookDiagnosticID=\(diagnosticBookID(book))")
             return
         }
 
-        await UnifiedDownloadService.shared.download(book: book)
+        await profileSession.downloads.download(book: book)
     }
 
     func removeDownload(book: Book) async {
-        await UnifiedDownloadService.shared.deleteDownload(book: book)
+        await profileSession.downloads.deleteDownload(book: book)
     }
 
     func markAsFinished(book: Book) async {
@@ -1263,17 +1283,17 @@ public class PlayerViewModel {
                 throw NSError(domain: "PlayerViewModel", code: -1, userInfo: [NSLocalizedDescriptionKey: "Missing duration for this book"])
             }
 
-            BookProgressStore.shared.saveProgress(for: book, progress: dur, duration: dur)
-            BookProgressStore.shared.saveRecentlyPlayed(book)
+            profileSession.bookProgress.saveProgress(for: book, progress: dur, duration: dur)
+            profileSession.bookProgress.saveRecentlyPlayed(book)
 
-            await ListeningStatsTracker.shared.markBookAsFinished(bookId: book.stableId)
+            await profileSession.listeningStats.markBookAsFinished(bookId: book.stableId)
 
             Task {
-                await HardcoverSyncService.shared.syncBookFinished(book: book)
+                if profileSession.isOwner { await HardcoverSyncService.shared.syncBookFinished(book: book) }
 
-                if LibraryDisplayPreferencesStore.shared.loadPreferences().autoDeleteFinishedBooks {
+                if profileSession.preferences.loadPreferences().autoDeleteFinishedBooks {
                     AppLogger.player.debug("Auto-deleting finished bookDiagnosticID=\(diagnosticBookID(book))")
-                    await UnifiedDownloadService.shared.deleteDownload(book: book)
+                    await profileSession.downloads.deleteDownload(book: book)
                 }
             }
 
@@ -1287,7 +1307,7 @@ public class PlayerViewModel {
             finishedBook.currentTime = dur
             finishedBook.isFinished = true
             finishedBook.lastUpdate = Date()
-            await SyncCoordinator.shared.pushFinished(book: finishedBook, domain: .audiobook)
+            await profileSession.sync.pushFinished(book: finishedBook, domain: .audiobook)
         } catch {
             await MainActor.run {
                 self.error = error
@@ -1296,11 +1316,11 @@ public class PlayerViewModel {
     }
 
     private func restoreLastPlayedForMiniPlayer() async {
-        guard let lastId = PlayerStateStore.shared.loadLastPlayedBookId(), !lastId.isEmpty else { return }
+        guard let lastId = profileSession.playerState.loadLastPlayedBookId(), !lastId.isEmpty else { return }
 
         var match = await bookQuerying.book(byAnyId: lastId)
         if match == nil {
-            let recentBooks = BookProgressStore.shared.loadRecentlyPlayed()
+            let recentBooks = profileSession.bookProgress.loadRecentlyPlayed()
             match = recentBooks.first(where: { $0.stableId == lastId || $0.id == lastId })
         }
 
@@ -1309,7 +1329,7 @@ public class PlayerViewModel {
         var resumeProgress: TimeInterval?
         var resumeDuration: TimeInterval?
 
-        if let savedProgress = BookProgressStore.shared.loadProgress(for: match) {
+        if let savedProgress = profileSession.bookProgress.loadProgress(for: match) {
             resumeProgress = savedProgress.progress
             resumeDuration = savedProgress.duration
         }

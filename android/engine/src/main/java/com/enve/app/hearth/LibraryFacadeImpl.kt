@@ -7,8 +7,10 @@ import com.enve.app.data.offline.OfflineDownloadManager
 import com.enve.app.data.offline.OfflineDownloadProgress
 import com.enve.app.data.offline.OfflineDownloadStatus
 import com.enve.app.data.metadata.MatchedBookMetadataStore
+import com.enve.app.data.duplicates.DuplicateGroupStore
 import com.enve.app.data.links.BookLinkRepository
 import com.enve.app.data.history.HistorySessionStore
+import com.enve.app.data.history.AbsCrossProviderHistorySync
 import com.enve.app.data.metadata.MetadataCandidateSource
 import com.enve.app.data.metadata.MetadataMatchCandidate
 import com.enve.app.data.metadata.MetadataSearchRepository
@@ -52,6 +54,7 @@ import com.enve.engine.library.LibraryMetadataEdit
 import com.enve.engine.library.LibraryMetadataMatch
 import com.enve.engine.library.LibraryShelfPage
 import com.enve.engine.library.LibraryConnectionOption
+import com.enve.engine.library.AudiobookshelfHistoryCandidate
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -81,14 +84,17 @@ class LibraryFacadeImpl @Inject constructor(
     private val providerMetadata: ProviderMetadataRepository,
     private val metadataSearch: MetadataSearchRepository,
     private val matchedMetadata: MatchedBookMetadataStore,
+    private val duplicateGroups: DuplicateGroupStore,
     private val bookLinks: BookLinkRepository,
     private val recentlyPlayedSync: RecentlyPlayedSyncService,
     private val chapterStore: PlaybackChapterStore,
     private val audioManager: AudioPlaybackManager,
     private val bookExtras: BookExtrasDao,
     private val history: HistorySessionStore,
+    private val crossProviderHistory: AbsCrossProviderHistorySync,
     private val groupingOverrides: AudiobookGroupingOverrideStore,
 ) : LibraryFacade {
+    override val locallyMatchedMetadataKeys: Flow<Set<String>> = matchedMetadata.matchedKeys
     override val historySessions = history.sessions
     override val continueBooks: Flow<List<Book>> = visibleBooks(cache::inProgressBooksExcludingLibraries)
     override val editionLinks: Flow<List<com.enve.engine.library.LibraryEditionLink>> =
@@ -104,14 +110,16 @@ class LibraryFacadeImpl @Inject constructor(
 
     private fun visibleBooks(source: (Set<String>) -> Flow<List<Book>>): Flow<List<Book>> =
         prefs.excludedLibraryIds.flatMapLatest { excluded ->
-            source(excluded).map { books -> books.visibleLibraryBooks(excluded) }
+            combine(source(excluded), duplicateGroups.groups) { books, groups ->
+                books.visibleLibraryBooks(excluded).filterNot { it.uniqueKey in groups }
+            }
         }
 
     private suspend fun visibleBooks(books: List<Book>): List<Book> =
-        books.visibleLibraryBooks(prefs.excludedLibraryIds.first())
+        books.visibleLibraryBooks(prefs.excludedLibraryIds.first()).filterNot { it.uniqueKey in duplicateGroups.groups.value }
 
     private suspend fun Book.takeIfVisible(): Book? =
-        takeIf { it.isVisibleLibraryBook(prefs.excludedLibraryIds.first()) }
+        takeIf { it.isVisibleLibraryBook(prefs.excludedLibraryIds.first()) && it.uniqueKey !in duplicateGroups.groups.value }
 
     override suspend fun browseSeries(): List<BrowseGroup> = aggregator.getBrowseSeries()
     override suspend fun browseAuthors(): List<BrowseGroup> = aggregator.getBrowseAuthors()
@@ -307,8 +315,15 @@ class LibraryFacadeImpl @Inject constructor(
             comicDownloadedIds = comicOffline.downloadedBookIds.value,
         )?.takeIfVisible()?.let { matchedMetadata.applyStoredMetadata(it) }
 
-    override suspend fun bookDetail(book: Book): Book? =
-        aggregator.getBookDetail(book).getOrNull()
+    override suspend fun bookDetail(book: Book): Book? {
+        val local = comicOffline.detectReadAloud(book)
+        val detail = aggregator.getBookDetail(book).getOrNull() ?: return local
+        return detail.copy(
+            readAlongAvailable = detail.readAlongAvailable || local.readAlongAvailable,
+            hasAudio = detail.hasAudio || local.hasAudio,
+            hasEbook = detail.hasEbook || local.hasEbook,
+        )
+    }
 
     override fun bookFlow(bookId: String): Flow<Book?> = flow {
         combine(
@@ -316,10 +331,11 @@ class LibraryFacadeImpl @Inject constructor(
             offlineDownloads.downloadedBookIds,
             comicOffline.downloadedBookIds,
             prefs.excludedLibraryIds,
-        ) { cached, audioDownloadedIds, comicDownloadedIds, excludedLibraryIds ->
+            duplicateGroups.groups,
+        ) { cached, audioDownloadedIds, comicDownloadedIds, excludedLibraryIds, groups ->
             cached?.toBook()
                 ?.withActualDownloadState(audioDownloadedIds, comicDownloadedIds)
-                ?.takeIf { it.isVisibleLibraryBook(excludedLibraryIds) }
+                ?.takeIf { it.isVisibleLibraryBook(excludedLibraryIds) && it.uniqueKey !in groups }
         }.collect { book ->
             emit(book?.let { matchedMetadata.applyStoredMetadata(it) })
         }
@@ -331,10 +347,11 @@ class LibraryFacadeImpl @Inject constructor(
             offlineDownloads.downloadedBookIds,
             comicOffline.downloadedBookIds,
             prefs.excludedLibraryIds,
-        ) { cached, audioDownloadedIds, comicDownloadedIds, excludedLibraryIds ->
+            duplicateGroups.groups,
+        ) { cached, audioDownloadedIds, comicDownloadedIds, excludedLibraryIds, groups ->
             cached?.toBook()
                 ?.withActualDownloadState(audioDownloadedIds, comicDownloadedIds)
-                ?.takeIf { it.isVisibleLibraryBook(excludedLibraryIds) }
+                ?.takeIf { it.isVisibleLibraryBook(excludedLibraryIds) && it.uniqueKey !in groups }
         }.collect { book ->
             emit(book?.let { matchedMetadata.applyStoredMetadata(it) })
         }
@@ -374,6 +391,33 @@ class LibraryFacadeImpl @Inject constructor(
 
     override suspend fun unlinkEditions(book: Book): Boolean =
         bookLinks.unlink(book)
+
+    override suspend fun audiobookshelfHistoryCandidates(book: Book, query: String): List<AudiobookshelfHistoryCandidate> {
+        if (book.source != BookSource.GRIMMORY || book.mediaType != AppMediaType.AUDIOBOOK) return emptyList()
+        val needle = query.trim()
+        val accountNames = connectionRegistry.connections.first().associate { it.id to
+            (it.username.takeIf(String::isNotBlank) ?: it.name) }
+        return visibleBooks(
+            bookCache.getBooksForLinking(20_000).map { it.toBook() }
+                .filter { it.source == BookSource.AUDIOBOOKSHELF && it.mediaType == AppMediaType.AUDIOBOOK &&
+                    it.episodeId == null && it.connectionId != null &&
+                    (needle.isBlank() || it.title.contains(needle, ignoreCase = true) ||
+                        it.author?.contains(needle, ignoreCase = true) == true) }
+                .sortedWith(compareBy<Book> { it.title.lowercase() }.thenBy { it.connectionId })
+                .take(80),
+        ).map { AudiobookshelfHistoryCandidate(it, accountNames[it.connectionId].orEmpty()) }
+    }
+
+    override suspend fun linkedAudiobookshelfHistoryTarget(book: Book): Book? =
+        crossProviderHistory.linkedTargetKey(book)?.let { key ->
+            bookCache.getByCacheKey(key)?.toBook()?.takeIfVisible()
+        }
+
+    override suspend fun linkAudiobookshelfHistory(book: Book, target: Book, includePast: Boolean): Boolean =
+        crossProviderHistory.link(book, target, includePast)
+
+    override suspend fun unlinkAudiobookshelfHistory(book: Book): Boolean =
+        crossProviderHistory.unlink(book)
 
     override suspend fun refresh() {
         cache.refreshNow()
@@ -510,13 +554,11 @@ class LibraryFacadeImpl @Inject constructor(
             applyFetchedChapters(book, it)
             return it
         }
+        suspend fun embeddedChapters() = aggregator.fetchEmbeddedChapters(book).getOrNull()?.takeIf { it.isNotEmpty() }
         val chapters = if (forceEmbedded) {
-            aggregator.fetchEmbeddedChapters(book)
-                .getOrNull()
-                ?.takeIf { it.isNotEmpty() }
-                ?: aggregator.fetchChapters(book).getOrNull()
+            embeddedChapters() ?: aggregator.fetchChapters(book).getOrNull()
         } else {
-            aggregator.fetchChapters(book).getOrNull()
+            aggregator.fetchChapters(book).getOrNull()?.let { fetched -> fetched.ifEmpty { embeddedChapters().orEmpty() } }
         }
         return chapters?.also { applyFetchedChapters(book, it) }
     }
@@ -571,7 +613,7 @@ class LibraryFacadeImpl @Inject constructor(
 
 internal fun Book.usesOfflineAudioDownload(): Boolean =
     !(source == BookSource.STORYTELLER && readAlongAvailable) &&
-        (mediaType == AppMediaType.AUDIOBOOK || hasAudio)
+        mediaType == AppMediaType.AUDIOBOOK
 
 private fun Book.withActualDownloadState(
     audioDownloadedIds: Set<String>,

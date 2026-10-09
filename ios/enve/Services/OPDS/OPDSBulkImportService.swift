@@ -24,9 +24,25 @@ final class OPDSBulkImportService: ObservableObject {
     @Published private(set) var lastSummary: String?
 
     private let maxConcurrent: Int
+    private let providers: any OPDSProviderMaking
+    private let collections: UserCollectionStore
+    private weak var profileSession: ProfileSession?
+    private var pendingImport: Task<Void, Never>?
+    private var isRetired = false
 
-    init(maxConcurrent: Int = 3) {
+    func retire() async {
+        isRetired = true
+        pendingImport?.cancel()
+        await pendingImport?.value
+        pendingImport = nil
+    }
+
+    init(maxConcurrent: Int = 3, profileSession: ProfileSession? = nil,
+        providers: (any OPDSProviderMaking)? = nil, collections: UserCollectionStore? = nil) {
         self.maxConcurrent = maxConcurrent
+        self.profileSession = profileSession
+        self.providers = providers ?? profileSession?.registry ?? PluginRegistry.shared
+        self.collections = collections ?? profileSession?.userCollections ?? .shared
     }
 
     func importBooks(
@@ -34,7 +50,20 @@ final class OPDSBulkImportService: ObservableObject {
         from connection: ServerConnection,
         collectionName: String
     ) async {
-        guard let provider = PluginRegistry.shared.makeLibraryProvider(for: connection) as? OPDSProvider else {
+        guard !isRetired, profileSession?.isRetired != true, pendingImport == nil else { return }
+        let task = Task { await performImport(books, from: connection, collectionName: collectionName) }
+        pendingImport = task
+        await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
+        pendingImport = nil
+    }
+
+    private func performImport(_ books: [Book], from connection: ServerConnection, collectionName: String) async {
+        guard !isRetired, !Task.isCancelled else { return }
+        guard let provider = providers.makeLibraryProvider(for: connection) as? OPDSProvider else {
             lastSummary = "Couldn't open OPDS connection."
             return
         }
@@ -82,6 +111,10 @@ final class OPDSBulkImportService: ObservableObject {
                     setStatus(id: result.bookId, .failed(message: result.failureMessage ?? "Failed"))
                 }
 
+                if Task.isCancelled {
+                    group.cancelAll()
+                    break
+                }
                 if let next = iterator.next() {
                     let bookId = next.book.id
                     let book = next.book
@@ -102,6 +135,7 @@ final class OPDSBulkImportService: ObservableObject {
             return done
         }
 
+        guard !isRetired, !Task.isCancelled, profileSession?.isRetired != true else { return }
         if !completedIDs.isEmpty {
             createCollection(name: collectionName, bookIDs: completedIDs)
         }
@@ -109,6 +143,7 @@ final class OPDSBulkImportService: ObservableObject {
     }
 
     private func setStatus(id: String, _ status: ImportItem.Status) {
+        guard !isRetired else { return }
         guard let idx = items.firstIndex(where: { $0.id == id }) else { return }
         items[idx].status = status
     }
@@ -136,6 +171,6 @@ final class OPDSBulkImportService: ObservableObject {
             isSystem: false,
             isUserGenerated: true,
         )
-        UserCollectionStore.shared.save(collection)
+        collections.save(collection)
     }
 }

@@ -36,13 +36,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
-import androidx.hilt.navigation.compose.hiltViewModel
+import com.enve.hearth.shell.profileViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.HistorySession
 import com.enve.hearth.design.Hearth
 import com.enve.hearth.design.HearthText
 import com.enve.hearth.design.Overline
+import com.enve.hearth.design.QuietButton
 import com.enve.hearth.design.hearthDisplay
 import com.enve.engine.servertools.ServerStatGroup
 import com.enve.engine.servertools.ServerFeature
@@ -53,12 +54,13 @@ fun HearthStatsHubScreen(
     onBack: () -> Unit,
     onOpenBookOrbit: () -> Unit,
 ) {
-    val vm: HearthJournalViewModel = hiltViewModel()
+    val vm: HearthJournalViewModel = profileViewModel()
     val books by vm.books.collectAsStateWithLifecycle()
     val sessions by vm.sessions.collectAsStateWithLifecycle()
     val targets by vm.statsTargets.collectAsStateWithLifecycle()
     val remoteStats by vm.serverStats.collectAsStateWithLifecycle()
     val loadingRemote by vm.loadingServerStats.collectAsStateWithLifecycle()
+    val failedRemote by vm.serverStatsFailures.collectAsStateWithLifecycle()
     val sources = (books.map { it.source } + sessions.map { it.source } + targets.filter { it.enabled }.map { it.source })
         .distinct()
         .sortedBy(BookSource::displayName)
@@ -127,6 +129,10 @@ fun HearthStatsHubScreen(
             if (richGroups.isEmpty() && (!hasRemoteStats || selected !in loadingRemote)) {
                 item { StatsCard(selected?.displayName ?: "All services", stats) }
             }
+            val failedSource = selected?.takeIf { it in failedRemote }
+            if (failedSource != null) {
+                item { StatsUnavailableCard(failedSource.displayName) { vm.loadServerStats(failedSource) } }
+            }
             if (selected in loadingRemote) {
                 item { LoadingStatsCard(selected?.displayName ?: "service") }
             } else {
@@ -156,6 +162,24 @@ fun HearthStatsHubScreen(
             }
             if (richGroups.isEmpty()) item { ActivityCard(selectedSessions) }
         }
+    }
+}
+
+@Composable
+private fun StatsUnavailableCard(service: String, onRetry: () -> Unit) {
+    val palette = Hearth.palette
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(Hearth.Radius.Card)).background(palette.bgElevated)
+            .border(1.dp, palette.hairline, RoundedCornerShape(Hearth.Radius.Card)).padding(Hearth.Spacing.L),
+        verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
+    ) {
+        Text("Couldn't reach $service", style = HearthText.Label, color = palette.text)
+        Text(
+            "Showing what Enve recorded on this device until the server answers.",
+            style = HearthText.Caption,
+            color = palette.textSecondary,
+        )
+        QuietButton("Try again", onClick = onRetry)
     }
 }
 

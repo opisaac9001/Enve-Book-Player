@@ -2,15 +2,17 @@ import Combine
 import SwiftUI
 
 struct LibraryScreen: View {
+    @Environment(PodcastsModel.self) private var podcastsModel
 
     var isActive: Bool = true
 
+    @Environment(\.profileSession) private var profileSession
     @Environment(EnveEngine.self) private var engine
     @Environment(\.hearth) private var hearth
     @Environment(\.mantelInset) private var mantelInset
     @Environment(\.shellNavigationStyle) private var shellNavigationStyle
 
-    @State private var model = LibraryModel()
+    @Environment(LibraryModel.self) private var model
     @State private var searchText = ""
     @State private var searchExpanded = false
     @FocusState private var searchFocused: Bool
@@ -152,15 +154,11 @@ struct LibraryScreen: View {
         let compact = width < 520
         return VStack(alignment: .leading, spacing: 7) {
             Overline("The stacks")
-            HStack(alignment: .center, spacing: 12) {
-                Text("Library")
-                    .font(.hearthScreenTitle)
-                    .foregroundStyle(hearth.text)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.78)
-                Spacer(minLength: 6)
-                headerControls(effectiveColumns: effectiveColumns, compact: compact)
-            }
+            Text("Library")
+                .font(.hearthScreenTitle)
+                .foregroundStyle(hearth.text)
+            headerControls(effectiveColumns: effectiveColumns, compact: compact)
+                .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .padding(.horizontal, 24)
     }
@@ -216,7 +214,7 @@ struct LibraryScreen: View {
                 cycleDisplay(effectiveColumns: effectiveColumns, compact: compact)
             }
             NavigationLink {
-                SettingsScreen()
+                SettingsScreen(profileSession: profileSession ?? .owner)
             } label: {
                 Image(systemName: "gearshape")
                     .font(.hearthUI(15, weight: .semibold))
@@ -328,6 +326,18 @@ struct LibraryScreen: View {
                     ) {
                         focusShelf(status: .downloaded, media: .all, source: .all)
                     }
+                    NavigationLink {
+                        SavedBooksDetailScreen(list: .favorites)
+                    } label: {
+                        LibraryShelfLabel(glyph: "heart", title: "Favorites", line: "Saved stories")
+                    }
+                    .buttonStyle(PressableStyle())
+                    NavigationLink {
+                        SavedBooksDetailScreen(list: .later)
+                    } label: {
+                        LibraryShelfLabel(glyph: "bookmark", title: "For Later", line: "To revisit")
+                    }
+                    .buttonStyle(PressableStyle())
                     NavigationLink {
                         CollectionsScreen()
                     } label: {
@@ -832,7 +842,7 @@ struct LibraryScreen: View {
     }
 
     private var showsContent: some View {
-        let podcasts = PodcastsModel.shared
+        let podcasts = podcastsModel
         return VStack(alignment: .leading, spacing: 18) {
             browseShowsLink
             if podcasts.isLoading && podcasts.playableShows.isEmpty {

@@ -96,7 +96,10 @@ data class BookOrbitCollectionMembership(
 
 data class LibraryConnectionOption(val id: String, val name: String)
 
+data class AudiobookshelfHistoryCandidate(val book: Book, val accountName: String)
+
 interface LibraryFacade {
+    val locallyMatchedMetadataKeys: Flow<Set<String>>
 
     val historySessions: Flow<List<HistorySession>>
 
@@ -155,6 +158,14 @@ interface LibraryFacade {
     suspend fun linkEditions(book: Book, counterpart: Book): Boolean
 
     suspend fun unlinkEditions(book: Book): Boolean
+
+    suspend fun audiobookshelfHistoryCandidates(book: Book, query: String = ""): List<AudiobookshelfHistoryCandidate>
+
+    suspend fun linkedAudiobookshelfHistoryTarget(book: Book): Book?
+
+    suspend fun linkAudiobookshelfHistory(book: Book, target: Book, includePast: Boolean): Boolean
+
+    suspend fun unlinkAudiobookshelfHistory(book: Book): Boolean
 
     val isRefreshing: StateFlow<Boolean>
 

@@ -33,6 +33,7 @@ nonisolated struct HTTPOrigin: Hashable {
 final class URLSessionDownloadProgressDelegate: NSObject, URLSessionDownloadDelegate, URLSessionTaskDelegate, @unchecked Sendable {
     private let progressHandler: @Sendable (Double) -> Void
     private let credential: URLCredential?
+    private let certificateTransport: InsecureURLSession
     /// Default to the original request origin when the caller provides none.
     private let allowedOrigin: HTTPOrigin?
     private let sensitiveHeaderNames: Set<String>
@@ -50,10 +51,12 @@ final class URLSessionDownloadProgressDelegate: NSObject, URLSessionDownloadDele
         progressHandler: @escaping @Sendable (Double) -> Void,
         credential: URLCredential? = nil,
         allowedOrigin: URL? = nil,
-        sensitiveHeaderNames: Set<String> = []
+        sensitiveHeaderNames: Set<String> = [],
+        certificateTransport: InsecureURLSession = .delegateInstance
     ) {
         self.progressHandler = progressHandler
         self.credential = credential
+        self.certificateTransport = certificateTransport
         self.allowedOrigin = allowedOrigin.map(HTTPOrigin.init(url:))
         self.sensitiveHeaderNames = sensitiveHeaderNames.union(HTTPRedirectPolicy.alwaysSensitiveHeaderNames)
         super.init()
@@ -184,11 +187,7 @@ final class URLSessionDownloadProgressDelegate: NSObject, URLSessionDownloadDele
         let host = challenge.protectionSpace.host
 
         if method == NSURLAuthenticationMethodClientCertificate {
-            if let identity = NetworkHostUtils.findMTLSIdentity(forHost: host) {
-                completionHandler(.useCredential, URLCredential(identity: identity, certificates: nil, persistence: .forSession))
-            } else {
-                completionHandler(.performDefaultHandling, nil)
-            }
+            certificateTransport.urlSession(session, didReceive: challenge, completionHandler: completionHandler)
             return
         }
 
@@ -205,7 +204,7 @@ final class URLSessionDownloadProgressDelegate: NSObject, URLSessionDownloadDele
 
         if let credential,
             method == NSURLAuthenticationMethodHTTPBasic || method == NSURLAuthenticationMethodHTTPDigest,
-            allowedOrigin?.matches(challenge.protectionSpace) != false
+            (allowedOrigin ?? task.originalRequest?.url.map(HTTPOrigin.init(url:)))?.matches(challenge.protectionSpace) == true
         {
             completionHandler(.useCredential, credential)
             return

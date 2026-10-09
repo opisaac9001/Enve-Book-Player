@@ -3,7 +3,7 @@ import Logging
 
 @MainActor
 final class EbookLinkStore {
-    static let shared = EbookLinkStore()
+    static var shared: EbookLinkStore { ProfileSession.owner.ebookLinks }
 
     private let library: LibraryBookCache
     private let repository: any ReaderArtifactRepository

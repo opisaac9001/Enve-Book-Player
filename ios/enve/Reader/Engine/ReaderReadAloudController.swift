@@ -10,6 +10,7 @@ protocol ReaderReadAloudHosting: AnyObject {
     var readAloudPublication: Publication? { get }
     var readAloudPublicationFileURL: URL? { get }
     var readAloudProgress: Double? { get }
+    var readAloudHasActiveSelection: Bool { get }
     var readAloudObservedProgression: Double? { get }
     var readAloudStorytellerActivityAt: Date? { get set }
     func readAloudDidChange()
@@ -25,7 +26,7 @@ protocol ReaderReadAloudHosting: AnyObject {
 final class ReaderReadAloudController {
     weak var host: (any ReaderReadAloudHosting)?
 
-    private let playback = ReadAloudPlaybackCoordinator()
+    private let playback: ReadAloudPlaybackCoordinator
     private let book: Book
     private let libraryCache: LibraryBookCache
     private let appearanceController: ReaderAppearanceController
@@ -37,12 +38,17 @@ final class ReaderReadAloudController {
     private var clipTextProgressions: [Double] = []
     private var wasPlaying = false
 
+    private let profileSession: ProfileSession
+
     init(
         book: Book,
         libraryCache: LibraryBookCache,
         appearanceController: ReaderAppearanceController,
-        locatorProgress: ReaderLocatorProgress
+        locatorProgress: ReaderLocatorProgress,
+        profileSession: ProfileSession = .owner
     ) {
+        self.profileSession = profileSession
+        playback = ReadAloudPlaybackCoordinator(profileSession: profileSession)
         self.book = book
         self.libraryCache = libraryCache
         self.appearanceController = appearanceController
@@ -144,6 +150,12 @@ final class ReaderReadAloudController {
         return true
     }
 
+    func retire() async {
+        let tasks = [mediaOverlayPreparationTask, readAloudStartTask]
+        cleanup()
+        for task in tasks { await task?.value }
+    }
+
     func cleanup() {
         mediaOverlayPreparationTask?.cancel()
         mediaOverlayPreparationTask = nil
@@ -196,7 +208,8 @@ final class ReaderReadAloudController {
                 clips: clips,
                 publication: publication,
                 bookId: book.stableId,
-                epubFileURL: publicationFileURL
+                epubFileURL: publicationFileURL,
+                audioRoot: profileSession.storage.cachesDirectory.appendingPathComponent("enve-overlay", isDirectory: true)
             )
             guard !Task.isCancelled else { return }
             let measuredDurations = await MediaOverlayTimeline.measuredAudioDurations(
@@ -494,7 +507,7 @@ final class ReaderReadAloudController {
     }
 
     private func autoPageToFragmentIfNeeded(fragmentId: String, navigator: EPUBNavigatorViewController) async {
-        guard !playback.userDidPageTurn else { return }
+        guard !playback.userDidPageTurn, host?.readAloudHasActiveSelection != true else { return }
 
         let preferredHref = preferredOverlayHref(for: fragmentId, navigator: navigator)
         guard let clipIdx = playback.bestClipIndex(for: fragmentId, preferredHref: preferredHref) else { return }
@@ -508,6 +521,8 @@ final class ReaderReadAloudController {
         if onSameDocument, await isOverlayFragmentVisible(fragmentId, in: navigator) {
             return
         }
+
+        guard !Task.isCancelled, host?.readAloudHasActiveSelection != true else { return }
 
         if onSameDocument {
             if appearance.scrollEnabled {
@@ -552,6 +567,10 @@ final class ReaderReadAloudController {
                 let linkHref = $0.url().string
                 return linkHref.hasSuffix(clipHref) || clipHref.hasSuffix(linkHref) || linkHref == clipHref
             }), var locator = await publication.locate(link) {
+                guard !Task.isCancelled, host?.readAloudHasActiveSelection != true else {
+                    playback.audioIsNavigating = false
+                    return
+                }
                 locator = locator.copy(locations: { locations in
                     locations.fragments = [fragmentId]
                 })
@@ -578,6 +597,29 @@ final class ReaderReadAloudController {
         playback.audioIsNavigating = false
     }
 
+    func selectionDidChange() {
+        playback.pendingPreflipTask?.cancel()
+        playback.pendingPreflipTask = nil
+        guard host?.readAloudHasActiveSelection != true,
+            playback.isReadAloudMode,
+            let player = playback.overlayPlayer, player.isPlaying,
+            let fragmentId = player.currentFragmentId,
+            let navigator
+        else { return }
+
+        playback.overlayFragmentUpdateTask?.cancel()
+        playback.overlayFragmentUpdateTask = Task { @MainActor [weak self, weak navigator] in
+            // Let WebKit clear its native selection and finish any explicit page turn.
+            try? await Task.sleep(for: .milliseconds(300))
+            guard let self, let navigator, !Task.isCancelled,
+                self.playback.overlayPlayer?.isPlaying == true
+            else { return }
+            await self.autoPageToFragmentIfNeeded(fragmentId: fragmentId, navigator: navigator)
+            guard !Task.isCancelled else { return }
+            await self.schedulePagePreflipIfNeeded(fragmentId: fragmentId, navigator: navigator)
+        }
+    }
+
     private func rescheduleCurrentPageFollow() {
         playback.pendingPreflipTask?.cancel()
         playback.pendingPreflipTask = nil
@@ -598,6 +640,7 @@ final class ReaderReadAloudController {
         playback.pendingPreflipTask = nil
 
         guard !playback.userDidPageTurn,
+            host?.readAloudHasActiveSelection != true,
             !appearance.scrollEnabled,
             let player = playback.overlayPlayer, player.isPlaying,
             let clipIdx = playback.bestClipIndex(for: fragmentId, preferredHref: preferredOverlayHref(for: fragmentId, navigator: navigator)),
@@ -605,7 +648,7 @@ final class ReaderReadAloudController {
         else { return }
 
         let split = await overlayFragmentSplit(fragmentId, in: navigator)
-        guard let split else { return }
+        guard let split, !Task.isCancelled, host?.readAloudHasActiveSelection != true else { return }
 
         let currentClip = playback.overlayClips[clipIdx]
         let clipDuration = max(0, currentClip.duration)
@@ -639,6 +682,7 @@ final class ReaderReadAloudController {
                 self.playback.manualNavigationGeneration == scheduledGeneration,
                 ReadAloudOverlayTransform.normalizedDocumentHref(navigator.currentLocation?.href.string) == scheduledDocumentHref,
                 !self.playback.userDidPageTurn,
+                self.host?.readAloudHasActiveSelection != true,
                 !self.playback.audioIsNavigating
             else { return }
             let now = CFAbsoluteTimeGetCurrent()
@@ -1269,7 +1313,7 @@ final class ReaderReadAloudController {
 
     func reconcileAfterForeground() {
         guard playback.isReadAloudMode, let player = playback.overlayPlayer else {
-            MediaOverlayPlaybackService.shared.syncCurrentPlaybackPositionIfActive(for: book)
+            profileSession.playback.mediaOverlay.syncCurrentPlaybackPositionIfActive(for: book)
             return
         }
 

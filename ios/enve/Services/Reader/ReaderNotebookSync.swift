@@ -25,7 +25,8 @@ final class ProviderReaderNotebookSync: ReaderNotebookSyncing {
     private let book: Book
     private let providerResolver: any LibraryProviderResolving
     private let siloIDMap: any SiloReaderArtifactIDMapping
-    private let bookOrbitQueue: BookOrbitReaderArtifactSync
+    private let allowsExternalSync: Bool
+    private let bookOrbitQueue: BookOrbitReaderArtifactSync?
     var bookOrbitSpineHrefs: (() -> [String: String])?
     var activeReaderEngine: (() -> ReaderEngineKind)?
     var epubFileURL: (() -> URL?)?
@@ -36,8 +37,10 @@ final class ProviderReaderNotebookSync: ReaderNotebookSyncing {
         book: Book,
         providerResolver: any LibraryProviderResolving,
         siloIDMap: any SiloReaderArtifactIDMapping = SiloReaderArtifactIDStore.shared,
-        bookOrbitQueue: BookOrbitReaderArtifactSync = .shared
+        bookOrbitQueue: BookOrbitReaderArtifactSync? = .shared,
+        allowsExternalSync: Bool = true
     ) {
+        self.allowsExternalSync = allowsExternalSync
         self.book = book
         self.providerResolver = providerResolver
         self.siloIDMap = siloIDMap
@@ -49,6 +52,7 @@ final class ProviderReaderNotebookSync: ReaderNotebookSyncing {
         case .silo:
             return await pullSilo(mergingInto: localArtifacts)
         case .bookOrbit:
+            guard allowsExternalSync else { return .unchanged }
             return await syncBookOrbit()
         case .booklore:
             return await pullBooklore(mergingInto: localArtifacts)
@@ -74,7 +78,8 @@ final class ProviderReaderNotebookSync: ReaderNotebookSyncing {
                 return .unchanged
             }
         case .bookOrbit:
-            bookOrbitQueue.enqueueBookmarkUpsert(book: book, localId: bookmark.id)
+            guard allowsExternalSync else { return .unchanged }
+            bookOrbitQueue?.enqueueBookmarkUpsert(book: book, localId: bookmark.id)
             return await syncBookOrbit()
         case .silo:
             guard let provider = siloProvider else { return .unchanged }
@@ -115,7 +120,8 @@ final class ProviderReaderNotebookSync: ReaderNotebookSyncing {
                 return .unchanged
             }
         case .bookOrbit:
-            bookOrbitQueue.enqueueBookmarkUpsert(book: book, localId: bookmark.id)
+            guard allowsExternalSync else { return .unchanged }
+            bookOrbitQueue?.enqueueBookmarkUpsert(book: book, localId: bookmark.id)
             return await syncBookOrbit()
         case .silo:
             guard let provider = siloProvider else { return .unchanged }
@@ -143,8 +149,9 @@ final class ProviderReaderNotebookSync: ReaderNotebookSyncing {
             try? await provider.deleteRemoteBookmark(id: remoteID)
             return .unchanged
         case .bookOrbit:
+            guard allowsExternalSync else { return .unchanged }
             guard let remoteID = bookmark.remoteID else { return .unchanged }
-            bookOrbitQueue.enqueueBookmarkDelete(book: book, remoteId: remoteID)
+            bookOrbitQueue?.enqueueBookmarkDelete(book: book, remoteId: remoteID)
             return await syncBookOrbit()
         case .silo:
             guard let provider = siloProvider else { return .unchanged }
@@ -182,7 +189,8 @@ final class ProviderReaderNotebookSync: ReaderNotebookSyncing {
                 return .unchanged
             }
         case .bookOrbit:
-            bookOrbitQueue.enqueueAnnotationUpsert(book: book, localId: annotation.id)
+            guard allowsExternalSync else { return .unchanged }
+            bookOrbitQueue?.enqueueAnnotationUpsert(book: book, localId: annotation.id)
             return await syncBookOrbit()
         case .silo:
             guard let provider = siloProvider else { return .unchanged }
@@ -212,8 +220,9 @@ final class ProviderReaderNotebookSync: ReaderNotebookSyncing {
             try? await provider.deleteRemoteAnnotation(id: remoteID)
             return .unchanged
         case .bookOrbit:
+            guard allowsExternalSync else { return .unchanged }
             guard let remoteID = annotation.remoteID else { return .unchanged }
-            bookOrbitQueue.enqueueAnnotationDelete(book: book, remoteId: remoteID)
+            bookOrbitQueue?.enqueueAnnotationDelete(book: book, remoteId: remoteID)
             return await syncBookOrbit()
         case .silo:
             guard let provider = siloProvider else { return .unchanged }
@@ -319,8 +328,8 @@ final class ProviderReaderNotebookSync: ReaderNotebookSyncing {
     }
 
     private func syncBookOrbit() async -> ReaderNotebookSyncOutcome {
-        guard let provider = providerResolver.provider(for: book.providerId) as? BookOrbitProvider else { return .unchanged }
-        _ = await bookOrbitQueue.sync(
+        guard allowsExternalSync, let provider = providerResolver.provider(for: book.providerId) as? BookOrbitProvider else { return .unchanged }
+        _ = await bookOrbitQueue?.sync(
             book: book,
             provider: provider,
             spineHrefs: bookOrbitSpineHrefs?() ?? [:]

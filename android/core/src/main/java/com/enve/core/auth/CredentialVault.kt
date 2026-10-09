@@ -5,20 +5,26 @@ import android.content.Context
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import dagger.hilt.android.qualifiers.ApplicationContext
+import com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
+import com.enve.core.data.local.FamilyProfile
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
-class CredentialVault @Inject constructor(
-    @ApplicationContext context: Context,
+class CredentialVault private constructor(
+    context: Context,
+    profileId: String,
 ) {
+    @Inject
+    constructor(@ApplicationContext context: Context) : this(context, DEFAULT_ADULT_PROFILE_ID)
+
     private val masterKey = MasterKey.Builder(context)
         .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
         .build()
 
     private val prefs = EncryptedSharedPreferences.create(
         context,
-        FILE_NAME,
+        if (profileId == DEFAULT_ADULT_PROFILE_ID) FILE_NAME else "$FILE_NAME.profile.$profileId",
         masterKey,
         EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
         EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
@@ -41,11 +47,16 @@ class CredentialVault @Inject constructor(
     }
 
     fun clearAll() {
-        prefs.edit().clear().apply()
+        check(prefs.edit().clear().commit())
     }
 
     companion object {
         private const val FILE_NAME = "enve_credentials"
+
+        fun forProfile(context: Context, profileId: String): CredentialVault {
+            require(FamilyProfile.validId(profileId))
+            return CredentialVault(context, profileId)
+        }
 
         const val KEY_ACCESS_TOKEN = "grimmory_access_token"
         const val KEY_REFRESH_TOKEN = "grimmory_refresh_token"

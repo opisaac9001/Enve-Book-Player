@@ -2,13 +2,16 @@ import Foundation
 
 @MainActor
 final class AlignedReadAloudSessionCoordinator {
-    static let shared = AlignedReadAloudSessionCoordinator()
+    static let shared = AlignedReadAloudSessionCoordinator(profileSession: .owner)
 
     private var preparationTask: Task<Void, Never>?
     private var generation = 0
     private let preparationReporter: any PlaybackPreparationReporting
 
-    private init(preparationReporter: any PlaybackPreparationReporting = ActivePlayback.composition.preparationReporter) {
+    private unowned let profileSession: ProfileSession
+
+    init(profileSession: ProfileSession, preparationReporter: any PlaybackPreparationReporting = ActivePlayback.composition.preparationReporter) {
+        self.profileSession = profileSession
         self.preparationReporter = preparationReporter
     }
 
@@ -18,7 +21,7 @@ final class AlignedReadAloudSessionCoordinator {
             errorDescription: "Read-aloud books play on iPhone or iPad. Use Read Together to mirror them here."
         )
         #else
-        LastOpenedBookStore.shared.record(book)
+        profileSession.lastOpened.record(book)
         cancel()
         let requestGeneration = generation
         preparationReporter.beginPreparation()
@@ -26,14 +29,14 @@ final class AlignedReadAloudSessionCoordinator {
         preparationTask = Task { @MainActor in
             do {
                 if book.source == .storyteller,
-                    LocalEbookImporter.shared.resolveEbookForOverlay(book: book) == nil
+                    profileSession.ebooks.resolveEbookForOverlay(book: book) == nil
                 {
-                    _ = try await UnifiedDownloadService.shared.ensureStorytellerReadaloudCached(for: book)
+                    _ = try await profileSession.downloads.ensureStorytellerReadaloudCached(for: book)
                 }
                 try Task.checkCancellation()
                 guard requestGeneration == generation else { return }
-                let current = AppState.shared.bookInMemory(uniqueId: book.uniqueId) ?? book
-                try await MediaOverlayPlaybackService.shared.play(current, presentPlayer: presentPlayer)
+                let current = profileSession.appState.bookInMemory(uniqueId: book.uniqueId) ?? book
+                try await profileSession.playback.mediaOverlay.play(current, presentPlayer: presentPlayer)
                 guard requestGeneration == generation else { return }
                 preparationTask = nil
             } catch is CancellationError {
@@ -47,6 +50,12 @@ final class AlignedReadAloudSessionCoordinator {
             }
         }
         #endif
+    }
+
+    func retire() async {
+        let task = preparationTask
+        cancel()
+        await task?.value
     }
 
     func cancel() {

@@ -51,8 +51,8 @@ struct OPDSCredentialBoundaryTests {
     @Test func aPlaintextEndpointOnTheLocalNetworkIsStillPostable() {
         #expect(
             OPDSCredentialTransport.isPostable(
-                URL(string: "http://192.168.1.10:9000/application/o/token/")!,
-                feedURL: URL(string: "http://192.168.1.10:13378/opds/")!
+                URL(string: "http://10.0.0.1:9000/application/o/token/")!,
+                feedURL: URL(string: "http://10.0.0.1:13378/opds/")!
             )
         )
     }

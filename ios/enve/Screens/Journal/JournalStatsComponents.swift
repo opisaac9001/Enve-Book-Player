@@ -151,7 +151,8 @@ struct JournalAllTimeFigure: View {
             }
             if months > 0 || days > 0 || hours > 0 {
                 journalPart(hours, "h")
-            } else {
+            }
+            if months == 0 && days == 0 {
                 journalPart(minutes, "m")
             }
         }

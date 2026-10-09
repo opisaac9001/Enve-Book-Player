@@ -13,6 +13,27 @@ class InsecureURLSession: NSObject, URLSessionDelegate, URLSessionTaskDelegate, 
         return URLSession(configuration: config, delegate: delegateInstance, delegateQueue: nil)
     }()
 
+    private let clientCertificate: @Sendable (String) async -> URLCredential?
+
+    override convenience init() {
+        self.init { host in
+            guard let identity = NetworkHostUtils.findMTLSIdentity(forHost: host) else { return nil }
+            return URLCredential(identity: identity, certificates: nil, persistence: .forSession)
+        }
+    }
+
+    init(clientCertificate: @escaping @Sendable (String) async -> URLCredential?) {
+        self.clientCertificate = clientCertificate
+        super.init()
+    }
+
+    func makeSession(configuration: URLSessionConfiguration = .ephemeral) -> URLSession {
+        configuration.timeoutIntervalForRequest = 30
+        configuration.timeoutIntervalForResource = 600
+        configuration.waitsForConnectivity = false
+        return URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+    }
+
     var delegate: URLSessionDelegate { self }
 
     nonisolated func urlSession(
@@ -24,10 +45,12 @@ class InsecureURLSession: NSObject, URLSessionDelegate, URLSessionTaskDelegate, 
         let host = challenge.protectionSpace.host
 
         if method == NSURLAuthenticationMethodClientCertificate {
-            if let identity = NetworkHostUtils.findMTLSIdentity(forHost: host) {
-                completionHandler(.useCredential, URLCredential(identity: identity, certificates: nil, persistence: .forSession))
-            } else {
-                completionHandler(.performDefaultHandling, nil)
+            Task {
+                if let credential = await clientCertificate(host) {
+                    completionHandler(.useCredential, credential)
+                } else {
+                    completionHandler(.performDefaultHandling, nil)
+                }
             }
             return
         }

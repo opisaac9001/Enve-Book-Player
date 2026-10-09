@@ -9,39 +9,37 @@ import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import com.enve.engine.impl.R
-import com.enve.app.data.offline.OfflineAudioStorage
-import com.enve.app.data.offline.OfflineDownloadManager
+import com.enve.app.profiles.ProfileRuntimeRegistry
+import com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
 import com.enve.core.data.remote.ConnectionScope
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 
 @HiltWorker
 class AudiobookDownloadWorker @AssistedInject constructor(
     @Assisted appContext: Context,
     @Assisted params: WorkerParameters,
-    private val manager: OfflineDownloadManager,
-    private val storage: OfflineAudioStorage,
+    private val runtimes: ProfileRuntimeRegistry,
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
         val bookId = inputData.getString(KEY_BOOK_ID) ?: return Result.failure()
-        val book = storage.getPendingRequest(bookId) ?: return Result.failure()
+        val profileId = inputData.getString(KEY_PROFILE_ID) ?: DEFAULT_ADULT_PROFILE_ID
+        return runtimes.withProfile(profileId) { runtime ->
+            val manager = runtime.downloads()
+            val book = runtime.audioStorage().getPendingRequest(bookId) ?: return@withProfile Result.failure()
+            val requireWifi = inputData.getBoolean(KEY_REQUIRE_WIFI, false)
 
-        setForeground(foregroundInfo(book.title))
+            setForeground(foregroundInfo(book.title))
 
-        val scopeElement = book.connectionId?.let { ConnectionScope.asContextElement(it) }
-        return try {
+            val scopeElement = book.connectionId?.let { ConnectionScope.asContextElement(it) }
             val ok = if (scopeElement != null) {
-                withContext(scopeElement) { manager.runDownload(book) }
+                withContext(scopeElement) { manager.runDownload(book, requireWifi) }
             } else {
-                manager.runDownload(book)
+                manager.runDownload(book, requireWifi)
             }
             if (ok) Result.success() else Result.retry()
-        } catch (e: CancellationException) {
-
-            Result.failure()
         }
     }
 
@@ -63,6 +61,8 @@ class AudiobookDownloadWorker @AssistedInject constructor(
     companion object {
         const val CHANNEL_ID = "enve_downloads"
         const val KEY_BOOK_ID = "book_id"
+        const val KEY_PROFILE_ID = "profile_id"
+        const val KEY_REQUIRE_WIFI = "require_wifi"
         private const val NOTIFICATION_ID = 0xD0
     }
 }

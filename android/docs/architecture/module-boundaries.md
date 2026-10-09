@@ -17,7 +17,9 @@ Enve's Android source is split so that the Compose UI cannot reach a backend imp
 providers        :audiobookshelf :storyteller :komga :local :plex :bookorbit :silo.
                  Depend on :core only.
 :wear-protocol   message and payload types shared by the phone and watch apps.
-:wear            Wear OS companion app. Depends on :wear-protocol only.
+:wear            Standalone Wear OS audio and phone remote. Its only project
+                 dependency is :wear-protocol; watch services use external Android
+                 libraries without bringing in the phone engine. See wear.md.
 ```
 
 Two rules carry the design:

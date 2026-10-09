@@ -81,6 +81,15 @@ actor ABSCredentialsActor {
     private weak var provider: AudiobookshelfProvider?
 
     private var refreshTask: Task<ABSCredentials, Error>?
+    private var isRetired = false
+
+    func retire() async {
+        isRetired = true
+        let pending = refreshTask
+        pending?.cancel()
+        _ = try? await pending?.value
+        refreshTask = nil
+    }
 
     init(provider: AudiobookshelfProvider) {
         self.provider = provider
@@ -88,11 +97,13 @@ actor ABSCredentialsActor {
 
     var freshCredentials: ABSCredentials {
         get async throws {
+            guard !isRetired else { throw CancellationError() }
             guard let provider else {
                 throw ProviderError.unauthorized
             }
 
             let snapshot = await provider.tokenSnapshot
+            guard !isRetired else { throw CancellationError() }
             guard let token = snapshot.token, !token.isEmpty else {
                 throw ProviderError.unauthorized
             }
@@ -126,8 +137,12 @@ actor ABSCredentialsActor {
     }
 
     func forceRefresh() async throws -> ABSCredentials {
-        refreshTask?.cancel()
-        refreshTask = nil
+        guard !isRetired else { throw CancellationError() }
+        let pending = refreshTask
+        pending?.cancel()
+        _ = try? await pending?.value
+        guard !isRetired else { throw CancellationError() }
+        if let refreshTask { return try await refreshTask.value }
 
         guard let provider else { throw ProviderError.unauthorized }
 

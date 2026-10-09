@@ -3,6 +3,7 @@ import SwiftUI
 struct BookSyncScreen: View {
     @Environment(EnveEngine.self) private var engine
     @Environment(\.hearth) private var hearth
+    @Environment(\.profileSession) private var profileSession
 
     @State private var ebookCount = 0
     @State private var allEbooks: [Book] = []
@@ -10,15 +11,17 @@ struct BookSyncScreen: View {
     @State private var unlinkTarget: Book?
     @State private var matchTarget: Book?
 
+    private var linker: EbookAudiobookLinker { (profileSession ?? .owner).ebookLinker }
+
     private var linkedPairs: [(ebook: Book, audiobook: Book)] {
         allEbooks.compactMap { ebook in
-            guard let audiobook = EbookAudiobookLinker.shared.linkedAudiobook(for: ebook) else { return nil }
+            guard let audiobook = linker.linkedAudiobook(for: ebook) else { return nil }
             return (ebook, audiobook)
         }
     }
 
     private var unlinkedEbooks: [Book] {
-        allEbooks.filter { EbookAudiobookLinker.shared.linkedAudiobook(for: $0) == nil }
+        allEbooks.filter { linker.linkedAudiobook(for: $0) == nil }
     }
 
     var body: some View {

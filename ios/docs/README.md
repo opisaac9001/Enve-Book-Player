@@ -8,6 +8,7 @@ Start with the root [architecture guide](../ARCHITECTURE.md) for targets, source
 - [Deduplication](architecture/deduplication.md)
 - [Download ownership](architecture/download-ownership.md)
 - [Book identity contract](architecture/identity-contract.md)
+- [Profiles implementation plan](architecture/profiles-plan.md)
 - [OPDS Authentication](architecture/opds-authentication.md)
 - [OPDS catalog](architecture/opds-catalog.md)
 - [OPDS Progression (draft)](architecture/opds-progression.md)

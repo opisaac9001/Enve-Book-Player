@@ -9,19 +9,30 @@ final class BookloreAudiobookSyncStrategy: ProviderSyncStrategy {
     private let minimumServerSyncInterval: TimeInterval = 60
     private let largeBookloreLibraryThreshold = 20_000
     private var lastSyncTime: Date?
-    private let playbackState: any PlaybackStateProvider = ActivePlayback.controller
+    private let playbackState: any PlaybackStateProvider
     private let providerConnections: any ProviderConnectionAccessing
     private let books: any BookQuerying
     private let bookWriter: any BookWriting
+    private let libraryCache: any RecentlyPlayedLibraryCaching
+    private let bookProgress: BookProgressStore
+    private let pendingSync: PendingSyncQueueStore
 
     init(
         providerConnections: any ProviderConnectionAccessing,
         books: any BookQuerying,
-        bookWriter: any BookWriting
+        bookWriter: any BookWriting,
+        libraryCache: any RecentlyPlayedLibraryCaching = AppState.shared,
+        playbackState: any PlaybackStateProvider = ActivePlayback.controller,
+        bookProgress: BookProgressStore = .shared,
+        pendingSync: PendingSyncQueueStore = .shared
     ) {
         self.providerConnections = providerConnections
         self.books = books
         self.bookWriter = bookWriter
+        self.libraryCache = libraryCache
+        self.playbackState = playbackState
+        self.bookProgress = bookProgress
+        self.pendingSync = pendingSync
     }
 
     func sync(force: Bool, launchOptimized: Bool) async -> ProviderSyncResult {
@@ -153,10 +164,10 @@ final class BookloreAudiobookSyncStrategy: ProviderSyncStrategy {
                     AppLogger.sync.debug("Booklore audiobook sync cancelled bookDiagnosticID=\(diagnosticID)")
                     return ProviderSyncResult(pulled: pullCount, pushed: pushCount, failedBackends: failedBackends, wasCancelled: true)
                 }
-                guard book.stableId != currentlyPlaying, PendingSyncQueueStore.shared.entries[book.stableId] == nil else { continue }
+                guard book.stableId != currentlyPlaying, pendingSync.entries[book.stableId] == nil else { continue }
 
                 do {
-                    let local = BookProgressStore.shared.loadProgress(for: book)
+                    let local = bookProgress.loadProgress(for: book)
                     let localTime = local?.progress ?? book.currentTime
                     let localDate = local.flatMap { Date(timeIntervalSince1970: $0.lastUpdated) } ?? book.lastUpdate
 
@@ -181,7 +192,7 @@ final class BookloreAudiobookSyncStrategy: ProviderSyncStrategy {
                     if serverResult.readState.isAbandoned {
                         persistedBook.hideFromContinue = true
                         persistedBook.serverReadStatus = "ABANDONED"
-                        let mutated = AppState.shared.mutateBook(stableId: book.stableId) {
+                        let mutated = libraryCache.mutateBook(stableId: book.stableId) {
                             $0.hideFromContinue = true
                             $0.serverReadStatus = "ABANDONED"
                         }
@@ -189,7 +200,7 @@ final class BookloreAudiobookSyncStrategy: ProviderSyncStrategy {
                             await bookWriter.upsertBooks([persistedBook])
                         }
                         didMutateContinueListeningState = true
-                        BookProgressStore.shared.remove(stableId: book.stableId)
+                        bookProgress.remove(stableId: book.stableId)
                         AppLogger.sync.debug("Grimmory audiobook marked abandoned bookDiagnosticID=\(diagnosticID)")
                         continue
                     }
@@ -201,13 +212,13 @@ final class BookloreAudiobookSyncStrategy: ProviderSyncStrategy {
                         persistedBook.lastUpdate = serverResult.updatedAt ?? book.lastUpdate
                         if serverResult.positionSeconds > 0 {
                             persistedBook.currentTime = serverResult.positionSeconds
-                            BookProgressStore.shared.saveProgress(
+                            bookProgress.saveProgress(
                                 for: book,
                                 progress: serverResult.positionSeconds,
                                 duration: book.duration ?? 0
                             )
                         }
-                        let mutated = AppState.shared.mutateBook(stableId: book.stableId) {
+                        let mutated = libraryCache.mutateBook(stableId: book.stableId) {
                             $0.serverReadStatus = persistedBook.serverReadStatus
                             $0.isFinished = persistedBook.isFinished
                             $0.hideFromContinue = true
@@ -238,9 +249,9 @@ final class BookloreAudiobookSyncStrategy: ProviderSyncStrategy {
 
                     switch direction {
                     case .pull:
-                        BookProgressStore.shared.saveProgress(for: book, progress: serverTime, duration: duration)
+                        bookProgress.saveProgress(for: book, progress: serverTime, duration: duration)
                         if let stamp = serverResult.updatedAt {
-                            BookProgressStore.shared.saveServerStamp(for: book, stamp)
+                            bookProgress.saveServerStamp(for: book, stamp)
                         }
                         persistedBook.currentTime = serverTime
                         persistedBook.lastUpdate = serverDate
@@ -248,7 +259,7 @@ final class BookloreAudiobookSyncStrategy: ProviderSyncStrategy {
                             persistedBook.isFinished = serverResult.percentage >= Book.finishedProgressThreshold
                         }
                         let isPercentFinished = serverResult.percentage >= Book.finishedProgressThreshold
-                        let mutated = AppState.shared.mutateBook(stableId: book.stableId) {
+                        let mutated = libraryCache.mutateBook(stableId: book.stableId) {
                             $0.hideFromContinue = false
                             $0.serverReadStatus = serverResult.readState.persistedStatus ?? "READING"
                             $0.currentTime = serverTime
@@ -264,7 +275,7 @@ final class BookloreAudiobookSyncStrategy: ProviderSyncStrategy {
                         )
                         pullCount += 1
                     case .push:
-                        let mutated = AppState.shared.mutateBook(stableId: book.stableId) {
+                        let mutated = libraryCache.mutateBook(stableId: book.stableId) {
                             $0.hideFromContinue = false
                             $0.serverReadStatus = serverResult.readState.persistedStatus ?? "READING"
                         }
@@ -284,7 +295,7 @@ final class BookloreAudiobookSyncStrategy: ProviderSyncStrategy {
                         )
                         pushCount += 1
                     case .conflict, .none:
-                        let mutated = AppState.shared.mutateBook(stableId: book.stableId) {
+                        let mutated = libraryCache.mutateBook(stableId: book.stableId) {
                             $0.hideFromContinue = false
                             $0.serverReadStatus = serverResult.readState.persistedStatus ?? "READING"
                         }

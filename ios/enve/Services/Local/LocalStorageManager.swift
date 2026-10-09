@@ -4,31 +4,83 @@ import Logging
 final class LocalStorageManager {
     static let shared = LocalStorageManager()
 
+    nonisolated private let storage: ProfileStorageLocations
+    private let isDownloadActive: @MainActor (String) -> Bool
+
+    nonisolated var profileStorageLocations: ProfileStorageLocations { storage }
+
+    func hasActiveDownload(for book: Book) -> Bool {
+        isDownloadActive(book.downloadKey)
+    }
+
+    func completedAudiobookFiles(for book: Book) throws -> [URL] {
+        guard !hasActiveDownload(for: book) else { throw ProfileDownloadImportError.incompleteDownload }
+        guard let files = localAudiobookFilesIfExists(for: book), !files.isEmpty else {
+            throw ProfileDownloadImportError.missingMedia
+        }
+        if let tracks = book.audioTracks, tracks.count > 1, files.count != tracks.count {
+            throw ProfileDownloadImportError.missingMedia
+        }
+        for file in files {
+            guard let root = candidateAudiobooksDirectories().first(where: {
+                file.standardizedFileURL.path.hasPrefix($0.standardizedFileURL.path + "/")
+            }) else { throw ProfileDownloadImportError.invalidMediaPath }
+            let boundary = root == audiobooksDirectory
+                ? storage.applicationSupportDirectory : storage.documentsDirectory
+            try Self.validateImportPath(file, within: boundary)
+            let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            guard values.isRegularFile == true, values.isSymbolicLink != true else {
+                throw ProfileDownloadImportError.invalidMediaPath
+            }
+        }
+        return files
+    }
+
+    static func validateImportPath(_ url: URL, within root: URL) throws {
+        let root = root.standardizedFileURL
+        let url = url.standardizedFileURL
+        guard url.path == root.path || url.path.hasPrefix(root.path + "/") else {
+            throw ProfileDownloadImportError.invalidMediaPath
+        }
+        var component = url
+        while component.path.count >= root.path.count {
+            if FileManager.default.fileExists(atPath: component.path) {
+                let values = try component.resourceValues(forKeys: [.isSymbolicLinkKey])
+                guard values.isSymbolicLink != true else { throw ProfileDownloadImportError.invalidMediaPath }
+            }
+            if component == root { break }
+            component.deleteLastPathComponent()
+        }
+        let resolvedRoot = root.resolvingSymlinksInPath().path
+        let resolved = url.resolvingSymlinksInPath().path
+        guard resolved == resolvedRoot || resolved.hasPrefix(resolvedRoot + "/") else {
+            throw ProfileDownloadImportError.invalidMediaPath
+        }
+    }
+
     nonisolated var audiobooksDirectory: URL {
-        let appSupportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return appSupportURL.appendingPathComponent("Enve/Audiobooks", isDirectory: true)
+        storage.applicationSupportDirectory.appendingPathComponent("Enve/Audiobooks", isDirectory: true)
     }
 
     nonisolated private var legacyDocumentsAudiobooksDirectory: URL? {
-        guard let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
-            return nil
-        }
-        return documentsURL.appendingPathComponent("Enve/Audiobooks", isDirectory: true)
+        guard storage.profileID == FamilyProfile.ownerID else { return nil }
+        return storage.documentsDirectory.appendingPathComponent("Enve/Audiobooks", isDirectory: true)
     }
 
     private var metadataDirectory: URL {
-        let appSupportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return appSupportURL.appendingPathComponent("Enve/Metadata", isDirectory: true)
+        storage.applicationSupportDirectory.appendingPathComponent("Enve/Metadata", isDirectory: true)
     }
 
     private var playbackStateDirectory: URL {
-        let appSupportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return appSupportURL.appendingPathComponent("Enve/PlaybackState", isDirectory: true)
+        storage.applicationSupportDirectory.appendingPathComponent("Enve/PlaybackState", isDirectory: true)
     }
 
     nonisolated private var coverOverridesDirectory: URL {
-        let appSupportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return appSupportURL.appendingPathComponent("Enve/Covers", isDirectory: true)
+        storage.applicationSupportDirectory.appendingPathComponent("Enve/Covers", isDirectory: true)
+    }
+
+    private var storageDirectories: [URL] {
+        [audiobooksDirectory, metadataDirectory, playbackStateDirectory]
     }
 
     nonisolated(unsafe) private let fileManager = FileManager.default
@@ -38,6 +90,8 @@ final class LocalStorageManager {
     private let reVerificationQueue = DispatchQueue(label: "com.enve.reVerification", attributes: .concurrent)
 
     private init() {
+        storage = .owner
+        isDownloadActive = { UnifiedDownloadService.shared.hasActiveTaskForBookId($0) }
         createDirectoriesIfNeeded()
         let center = NotificationCenter.default
         center.addObserver(
@@ -52,6 +106,17 @@ final class LocalStorageManager {
         ) { [weak self] _ in self?.invalidateDownloadedIdsCache() }
     }
 
+    init(
+        storage: ProfileStorageLocations,
+        isDownloadActive: @escaping @MainActor (String) -> Bool
+    ) throws {
+        self.storage = storage
+        self.isDownloadActive = isDownloadActive
+        for directory in storageDirectories {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+    }
+
     nonisolated private func candidateAudiobooksDirectories() -> [URL] {
         var dirs: [URL] = [audiobooksDirectory]
         if let legacy = legacyDocumentsAudiobooksDirectory {
@@ -61,9 +126,7 @@ final class LocalStorageManager {
     }
 
     private func createDirectoriesIfNeeded() {
-        let directories = [audiobooksDirectory, metadataDirectory, playbackStateDirectory]
-
-        for directory in directories {
+        for directory in storageDirectories {
             do {
                 try fileManager.createDirectory(at: directory, withIntermediateDirectories: true, attributes: nil)
                 AppLogger.network.info("Storage directory ready: \(directory.lastPathComponent)")
@@ -76,14 +139,14 @@ final class LocalStorageManager {
     }
 
     nonisolated static func sanitizedId(for bookId: String) -> String {
-        return
-            bookId
+        let sanitized = bookId
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: "\\", with: "-")
             .replacingOccurrences(of: ":", with: "-")
             .replacingOccurrences(of: "?", with: "-")
             .replacingOccurrences(of: "&", with: "-")
             .replacingOccurrences(of: "=", with: "-")
+        return sanitized.isEmpty || sanitized == "." || sanitized == ".." ? "_" : sanitized
     }
 
     nonisolated func bookAudioDirectory(for bookId: String) -> URL {
@@ -155,7 +218,7 @@ final class LocalStorageManager {
 
     func isAudiobookDownloaded(_ bookId: String) -> Bool {
 
-        if UnifiedDownloadService.shared.hasActiveTaskForBookId(bookId) {
+        if isDownloadActive(bookId) {
             return false
         }
 
@@ -437,12 +500,12 @@ final class LocalStorageManager {
     }
 
     nonisolated func downloadedAudiobookIds() -> [String] {
-        Self.downloadedIdsCacheLock.lock()
-        if let cached = Self.cachedDownloadedIds {
-            Self.downloadedIdsCacheLock.unlock()
+        downloadedIdsCacheLock.lock()
+        if let cached = cachedDownloadedIds {
+            downloadedIdsCacheLock.unlock()
             return cached
         }
-        Self.downloadedIdsCacheLock.unlock()
+        downloadedIdsCacheLock.unlock()
 
         var ids: [String] = []
 
@@ -464,20 +527,20 @@ final class LocalStorageManager {
         }
 
         let result = Array(Set(ids)).sorted()
-        Self.downloadedIdsCacheLock.lock()
-        Self.cachedDownloadedIds = result
-        Self.downloadedIdsCacheLock.unlock()
+        downloadedIdsCacheLock.lock()
+        cachedDownloadedIds = result
+        downloadedIdsCacheLock.unlock()
         return result
     }
 
     nonisolated func invalidateDownloadedIdsCache() {
-        Self.downloadedIdsCacheLock.lock()
-        Self.cachedDownloadedIds = nil
-        Self.downloadedIdsCacheLock.unlock()
+        downloadedIdsCacheLock.lock()
+        cachedDownloadedIds = nil
+        downloadedIdsCacheLock.unlock()
     }
 
-    nonisolated(unsafe) private static var cachedDownloadedIds: [String]?
-    nonisolated private static let downloadedIdsCacheLock = NSLock()
+    nonisolated(unsafe) private var cachedDownloadedIds: [String]?
+    nonisolated private let downloadedIdsCacheLock = NSLock()
 
     nonisolated func getOldestDownloadedBookIds() -> [(bookId: String, date: Date)] {
         var result: [(String, Date)] = []
@@ -508,6 +571,28 @@ final class LocalStorageManager {
         return result.sorted { $0.1 < $1.1 }
     }
 
+    nonisolated func totalEbookSize() -> Int64 {
+        let roots = [storage.documentsDirectory.appendingPathComponent("Ebooks", isDirectory: true),
+            storage.cachesDirectory.appendingPathComponent("ReaderEbooks", isDirectory: true),
+            storage.cachesDirectory.appendingPathComponent("StreamedEpubs", isDirectory: true)]
+        var bytes: Int64 = 0
+        for root in roots {
+            guard (try? root.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true,
+                let enumerator = fileManager.enumerator(at: root,
+                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]) else { continue }
+            for case let file as URL in enumerator {
+                guard let values = try? file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]) else { continue }
+                if values.isSymbolicLink == true { enumerator.skipDescendants(); continue }
+                if values.isRegularFile == true { bytes += Int64(values.fileSize ?? 0) }
+            }
+        }
+        return bytes
+    }
+
+    nonisolated func totalDownloadedMediaSize() -> Int64 {
+        totalAudiobooksSize() + totalEbookSize()
+    }
+
     nonisolated func totalAudiobooksSize() -> Int64 {
         return downloadedAudiobookIds().reduce(0) { total, bookId in
             total + sizeOfAudiobook(bookId)
@@ -526,7 +611,10 @@ final class LocalStorageManager {
     }
 
     func loadMetadataOverride<T: Decodable>(_ type: T.Type, for bookId: String) throws -> T {
-        let path = metadataOverridePath(for: bookId)
+        let override = metadataOverridePath(for: bookId)
+        let path = fileManager.fileExists(atPath: override.path)
+            ? override
+            : bookAudioDirectory(for: bookId).appendingPathComponent("profile-import-metadata.json")
         let data = try Data(contentsOf: path)
         return try JSONDecoder().decode(type, from: data)
     }

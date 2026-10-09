@@ -1,5 +1,7 @@
 package com.enve.app.viewmodel
 
+import com.enve.core.data.util.runSuspendCatching
+
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.enve.core.data.local.BookCacheDao
@@ -160,7 +162,7 @@ class KOReaderHubViewModel @Inject constructor(
     fun syncNow() {
         viewModelScope.launch {
             _state.update { it.copy(busy = true, statusMessage = null) }
-            val applied = runCatching { service.pullAllAndMerge() }.getOrDefault(0)
+            val applied = runSuspendCatching { service.pullAllAndMerge() }.getOrDefault(0)
             _state.update {
                 it.copy(
                     busy = false,

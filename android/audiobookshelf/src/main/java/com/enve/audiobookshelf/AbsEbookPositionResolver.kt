@@ -21,10 +21,13 @@ class AbsEbookPositionResolver @Inject constructor(
     private val api: AudiobookshelfApi,
     private val narration: ReaderNarrationSource,
     private val syncedAudioTimes: SyncedItemAudioTimeStore,
+    private val serverSync: com.enve.core.data.local.ProfileServerSyncStore,
 ) {
     private val itemAudioDurations = ConcurrentHashMap<String, Double>()
 
     suspend fun pushEbookProgress(bookId: String, percentage: Float, locator: String?) {
+        val syncStartedAt = System.currentTimeMillis()
+        if (!serverSync.isEnabled) return
         val readiumLocator = locator?.let(::absReadiumLocator)
         val ebookLocation = readiumLocator?.let { json ->
             narration.existingReaderAsset(bookId)?.let { epub ->
@@ -45,12 +48,15 @@ class AbsEbookPositionResolver @Inject constructor(
             itemHasAudio = itemAudioDuration != 0.0,
             audioPosition = audioPosition,
         )
+        if (!serverSync.accepts(syncStartedAt)) return
         val response = api.updateEbookProgress(libraryItemId = bookId, body = body)
         if (!response.isSuccessful) error("Audiobookshelf ebook progress sync failed: HTTP ${response.code()}")
         audioPosition?.let { syncedAudioTimes.record(bookId, it.currentTime) }
     }
 
     suspend fun ebookSnapshot(book: Book, record: AbsMediaProgressDto): SyncSnapshot? {
+        val syncStartedAt = System.currentTimeMillis()
+        if (!serverSync.isEnabled) return null
         val ebookFraction = when {
             !(book.hasAudio && book.hasEbook) -> record.ebookProgress ?: record.progress
             absHasEbookPosition(record) -> record.ebookProgress
@@ -74,6 +80,7 @@ class AbsEbookPositionResolver @Inject constructor(
             percentage = progression.toFloat()
         }
         if (percentage <= 0f) return null
+        if (!serverSync.accepts(syncStartedAt)) return null
         return SyncSnapshot(
             percentage = percentage,
             locatorJson = locator,

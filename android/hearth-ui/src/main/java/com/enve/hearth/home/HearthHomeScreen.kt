@@ -1,8 +1,10 @@
 package com.enve.hearth.home
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,69 +16,77 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.MenuBook
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.TrendingUp
-import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ArrowCircleDown
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.AutoStories
+import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.Explore
 import androidx.compose.material.icons.outlined.LocalFireDepartment
+import androidx.compose.material.icons.outlined.Podcasts
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.Verified
+import androidx.compose.material.icons.outlined.WifiOff
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.hilt.navigation.compose.hiltViewModel
+import com.enve.hearth.shell.profileViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
 import com.enve.core.data.util.FINISHED_PROGRESS_THRESHOLD
+import com.enve.engine.prefs.HearthHomeSection
 import com.enve.hearth.design.CoverTile
 import com.enve.hearth.design.EmberButton
-import com.enve.hearth.design.EmberGlow
 import com.enve.hearth.design.Hearth
 import com.enve.hearth.design.HearthFormat
 import com.enve.hearth.design.HearthText
 import com.enve.hearth.design.LocalMantelInset
 import com.enve.hearth.design.Overline
-import com.enve.hearth.design.QuietButton
-import com.enve.hearth.design.Ribbon
 import com.enve.hearth.design.ShelfHeader
 import com.enve.hearth.design.hearthDisplay
 import com.enve.hearth.design.hearthUI
 import com.enve.hearth.design.rememberAmbientTint
+import com.enve.hearth.detail.detailListenTarget
 import kotlin.math.roundToInt
-import kotlinx.coroutines.launch
-import com.enve.engine.prefs.HearthHomeSection
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -84,9 +94,16 @@ fun HearthHomeScreen(
     isPlaying: Boolean,
     onSelectBook: (Book) -> Unit,
     onPlayBook: (Book) -> Unit,
+    onListenBook: (Book) -> Unit,
+    onReadBook: (Book) -> Unit,
     onOpenSettings: () -> Unit,
+    onAddSource: () -> Unit,
+    onOpenPodcasts: () -> Unit,
+    onOpenHardcover: () -> Unit,
+    onOpenProfiles: (() -> Unit)? = null,
+    profileName: String? = null,
 ) {
-    val vm: HearthHomeViewModel = hiltViewModel()
+    val vm: HearthHomeViewModel = profileViewModel()
     val continueBooks by vm.continueBooks.collectAsStateWithLifecycle()
     val lastOpenedBook by vm.lastOpenedBook.collectAsStateWithLifecycle()
     val editionLinks by vm.editionLinks.collectAsStateWithLifecycle()
@@ -96,16 +113,61 @@ fun HearthHomeScreen(
     val refreshing by vm.isRefreshing.collectAsStateWithLifecycle()
     val lastSyncMillis by vm.lastSyncMillis.collectAsStateWithLifecycle()
     val homeSectionOrder by vm.homeSectionOrder.collectAsStateWithLifecycle()
+    val networkAvailable by vm.networkAvailable.collectAsStateWithLifecycle()
+    val dismissedKeys by vm.dismissedShelfKeys.collectAsStateWithLifecycle()
+    var showingDiscover by rememberSaveable { mutableStateOf(false) }
+    var seeAllSection by rememberSaveable { mutableStateOf<HearthHomeSection?>(null) }
+    var contextBook by remember { mutableStateOf<Book?>(null) }
+    var contextDismissable by rememberSaveable { mutableStateOf(false) }
     val palette = Hearth.palette
+
+    if (showingDiscover) {
+        DiscoverScreen(onBack = { showingDiscover = false }, onOpenBook = onSelectBook, onPlayBook = onPlayBook)
+        return
+    }
+
+    val visibleContinue = continueBooks.filterNot { it.uniqueKey in dismissedKeys }
+    val (allListening, allReading) = splitContinueShelves(visibleContinue, editionLinks)
+    val selectedSection = seeAllSection
+    if (selectedSection != null) {
+        val books = when (selectedSection) {
+            HearthHomeSection.CONTINUE_READING -> allReading
+            HearthHomeSection.CONTINUE_LISTENING -> allListening
+            HearthHomeSection.RECENTLY_ADDED -> recent
+            HearthHomeSection.DOWNLOADED -> downloaded
+            else -> emptyList()
+        }
+        BackHandler { seeAllSection = null }
+        HomeSeeAll(selectedSection.label, books, onBack = { seeAllSection = null }, onOpen = onSelectBook)
+        return
+    }
+
+    contextBook?.let { book ->
+        AlertDialog(
+            onDismissRequest = { contextBook = null },
+            title = { Text(book.title) },
+            text = {
+                Column {
+                    if (contextDismissable) TextButton(onClick = { vm.dismissFromShelf(book); contextBook = null }) { Text("Hide from Hearth") }
+                    TextButton(onClick = { vm.setFinished(book, !book.isFinished); contextBook = null }) { Text(if (book.isFinished) "Mark unfinished" else "Mark finished") }
+                    if (book.progress > 0f) TextButton(onClick = { vm.resetProgress(book); contextBook = null }) { Text("Reset progress") }
+                    TextButton(onClick = { onPlayBook(book); contextBook = null }) { Text(if (book.mediaType == AppMediaType.EBOOK) "Read" else "Listen") }
+                }
+            },
+            confirmButton = { TextButton(onClick = { contextBook = null }) { Text("Done") } },
+        )
+    }
 
     PullToRefreshBox(
         isRefreshing = refreshing,
         onRefresh = vm::refresh,
-        modifier = Modifier.fillMaxSize().background(palette.bg),
+        modifier = Modifier.fillMaxSize().background(palette.bg).statusBarsPadding(),
     ) {
-        val hero = lastOpenedBook ?: continueBooks.firstOrNull()
-
-        val (allListening, allReading) = splitContinueShelves(continueBooks, editionLinks)
+        val hero = lastOpenedBook?.takeUnless { it.uniqueKey in dismissedKeys }
+            ?: visibleContinue.firstOrNull() ?: recent.firstOrNull { it.uniqueKey !in dismissedKeys }
+        val heroLinks by produceState<Pair<Book?, Book?>>(null to null, hero?.uniqueKey) {
+            value = hero?.let { vm.linkedAudiobook(it) to vm.linkedEbook(it) } ?: (null to null)
+        }
 
         val heroCounterpart = hero?.let { h ->
             editionLinks.firstNotNullOfOrNull { l ->
@@ -120,30 +182,42 @@ fun HearthHomeScreen(
         val listening = allListening.filter { it.uniqueKey !in excluded }
         val reading = allReading.filter { it.uniqueKey !in excluded }
         val hasNoMedia = hero == null &&
-            continueBooks.isEmpty() &&
+            visibleContinue.isEmpty() &&
             recent.isEmpty() &&
             downloaded.isEmpty() &&
             allBooks.isEmpty()
 
         LazyColumn(
             Modifier.fillMaxSize(),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(
+            contentPadding = PaddingValues(
                 top = 0.dp, bottom = LocalMantelInset.current + Hearth.Spacing.L,
             ),
             verticalArrangement = Arrangement.spacedBy(if (Hearth.typeCompact) Hearth.Spacing.L else Hearth.Spacing.XXL),
         ) {
+            item { HomeHeader(lastSyncMillis, onOpenSettings, onOpenProfiles, profileName) }
+            if (!networkAvailable) item { OfflineBanner() }
+            item { QuoteBlock() }
             if (hasNoMedia) {
-                item { EmptyHearth(onOpenSettings) }
+                item { EmptyHearth(onAddSource) }
             } else {
-                item { HomeHeader(lastSyncMillis, onOpenSettings) }
-                item { QuoteBlock() }
                 hero?.let { book ->
                     item {
-                        HeroSection(book, book.source.displayName, isPlaying, onContinue = { onPlayBook(book) }, onOpen = { onSelectBook(book) })
+                        BookCard(
+                            book,
+                            onOpen = { onSelectBook(book) },
+                            onPlay = { onPlayBook(book) },
+                            modifier = Modifier.padding(horizontal = Hearth.Spacing.XL),
+                            prominent = true,
+                            isPlaying = isPlaying,
+                            listenTarget = detailListenTarget(book, heroLinks.first),
+                            readTarget = if (book.mediaType == AppMediaType.EBOOK || book.hasEbook) book else heroLinks.second,
+                            onListen = onListenBook,
+                            onRead = onReadBook,
+                        )
                     }
                     item {
                         TodayStack(
-                            activeCount = continueBooks.distinctBy { it.uniqueKey }.size,
+                            activeCount = visibleContinue.distinctBy { it.uniqueKey }.size,
                             downloadedCount = allBooks.count { it.isDownloaded },
                             freshCount = recent.size,
                             progress = HearthFormat.progress(book),
@@ -153,17 +227,54 @@ fun HearthHomeScreen(
                 }
                 homeSectionOrder.forEach { section ->
                     when (section) {
+                        HearthHomeSection.DOORWAYS -> if (hero != null) item {
+                            Doorways(
+                                onDiscover = { showingDiscover = true },
+                                onPodcasts = onOpenPodcasts,
+                                onHardcover = onOpenHardcover,
+                            )
+                        }
                         HearthHomeSection.CONTINUE_READING -> if (reading.isNotEmpty()) {
-                            item { BookShelf("Continue reading", reading, showProgress = true, onOpen = onSelectBook) }
+                            item {
+                                ContinueCarousel(
+                                    "Continue reading", reading,
+                                    onOpen = onSelectBook,
+                                    onPlay = onPlayBook,
+                                    onSeeAll = { seeAllSection = section },
+                                    onContextBook = { contextBook = it; contextDismissable = true },
+                                )
+                            }
                         }
                         HearthHomeSection.CONTINUE_LISTENING -> if (listening.isNotEmpty()) {
-                            item { BookShelf("Continue listening", listening, showProgress = true, onOpen = onSelectBook) }
+                            item {
+                                ContinueCarousel(
+                                    "Continue listening", listening,
+                                    onOpen = onSelectBook,
+                                    onPlay = onPlayBook,
+                                    onSeeAll = { seeAllSection = section },
+                                    onContextBook = { contextBook = it; contextDismissable = true },
+                                )
+                            }
                         }
-                        HearthHomeSection.RECENTLY_ADDED -> if (recent.isNotEmpty()) {
-                            item { BookShelf("Fresh ink", recent, showProgress = false, onOpen = onSelectBook) }
+                        HearthHomeSection.RECENTLY_ADDED -> if (recent.any { it.uniqueKey != hero?.uniqueKey }) {
+                            item {
+                                BookShelf(
+                                    "Recently Added", recent.filter { it.uniqueKey != hero?.uniqueKey },
+                                    onOpen = onSelectBook,
+                                    onSeeAll = { seeAllSection = section },
+                                    onContextBook = { contextBook = it; contextDismissable = false },
+                                )
+                            }
                         }
                         HearthHomeSection.DOWNLOADED -> if (downloaded.isNotEmpty()) {
-                            item { BookShelf("On this device", downloaded, showProgress = false, onOpen = onSelectBook) }
+                            item {
+                                BookShelf(
+                                    "On this device", downloaded,
+                                    onOpen = onSelectBook,
+                                    onSeeAll = { seeAllSection = section },
+                                    onContextBook = { contextBook = it; contextDismissable = false },
+                                )
+                            }
                         }
                     }
                 }
@@ -173,12 +284,11 @@ fun HearthHomeScreen(
 }
 
 @Composable
-private fun HomeHeader(lastSyncMillis: Long, onOpenSettings: () -> Unit) {
+private fun HomeHeader(lastSyncMillis: Long, onOpenSettings: () -> Unit, onOpenProfiles: (() -> Unit)?, profileName: String?) {
     val palette = Hearth.palette
     Row(
         Modifier
             .fillMaxWidth()
-            .statusBarsPadding()
             .padding(horizontal = Hearth.Spacing.XL)
             .padding(top = Hearth.Spacing.L),
         verticalAlignment = Alignment.Top,
@@ -189,6 +299,14 @@ private fun HomeHeader(lastSyncMillis: Long, onOpenSettings: () -> Unit) {
             Text("Hearth", style = HearthText.ScreenTitle, color = palette.text)
             HearthFormat.relativeAgo(lastSyncMillis)?.let {
                 Text("Synced $it", style = hearthUI(11.sp), color = palette.textTertiary)
+            }
+        }
+        if (onOpenProfiles != null) {
+            Box(
+                Modifier.size(48.dp).clip(CircleShape).clickable(onClick = onOpenProfiles),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Outlined.AccountCircle, contentDescription = profileName?.let { "Profiles, $it" } ?: "Profiles", tint = palette.ember, modifier = Modifier.size(26.dp))
             }
         }
         Box(
@@ -223,79 +341,6 @@ private fun QuoteBlock() {
         )
         Overline(quote.author, color = palette.textTertiary)
     }
-}
-
-@Composable
-private fun HeroSection(book: Book, sourceName: String, isPlaying: Boolean, onContinue: () -> Unit, onOpen: () -> Unit) {
-    val palette = Hearth.palette
-    val tint = rememberAmbientTint(book)
-    val shape = RoundedCornerShape(Hearth.Radius.Card)
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = Hearth.Spacing.XL)
-            .clip(shape)
-            .background(palette.bgElevated)
-            .border(1.dp, palette.hairline, shape),
-    ) {
-        EmberGlow(color = tint, playing = isPlaying, modifier = Modifier.matchParentSize())
-        val compact = Hearth.typeCompact
-        Column(
-            Modifier.padding(if (compact) Hearth.Spacing.L else 22.dp),
-            verticalArrangement = Arrangement.spacedBy(if (compact) Hearth.Spacing.L else Hearth.Spacing.XL),
-        ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(if (compact) Hearth.Spacing.L else Hearth.Spacing.XL)) {
-                CoverTile(
-                    model = book.coverUrl,
-                    ambient = tint,
-                    mediaType = book.mediaType,
-                    modifier = Modifier.width(if (compact) 106.dp else 132.dp).clickable(onClick = onOpen),
-                )
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.S)) {
-                    Overline(HearthFormat.heroOverline(book), color = tint)
-                    Text(
-                        book.title,
-                        style = hearthDisplay(if (compact) 20.sp else 24.sp, FontWeight.SemiBold),
-                        color = palette.text,
-                        maxLines = if (compact) 2 else 3,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    book.author?.let { Text(it, style = hearthUI(14.sp), color = palette.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                    SourceBadge(sourceName)
-                    Spacer(Modifier.height(Hearth.Spacing.XS))
-                    Ribbon(progress = HearthFormat.progress(book), fill = tint, ticks = HearthFormat.chapterTicks(book))
-                    HearthFormat.timeLeft(book)?.let { Text(it, style = hearthUI(12.sp, FontWeight.Medium), color = palette.textTertiary) }
-                }
-            }
-            val started = HearthFormat.progress(book) > 0.001f
-            EmberButton(
-                text = when {
-                    started -> "Continue"
-                    book.mediaType == AppMediaType.EBOOK -> "Start reading"
-                    else -> "Start listening"
-                },
-                onClick = onContinue,
-                modifier = Modifier.fillMaxWidth(),
-                leadingIcon = if (book.mediaType == AppMediaType.EBOOK) Icons.AutoMirrored.Outlined.MenuBook else Icons.Filled.PlayArrow,
-                tint = tint,
-            )
-        }
-    }
-}
-
-@Composable
-private fun SourceBadge(name: String) {
-    val palette = Hearth.palette
-    Text(
-        name,
-        style = hearthUI(10.sp, FontWeight.SemiBold),
-        color = palette.textTertiary,
-        modifier = Modifier
-            .clip(RoundedCornerShape(50))
-            .background(palette.bg.copy(alpha = 0.62f))
-            .border(1.dp, palette.hairline.copy(alpha = 0.75f), RoundedCornerShape(50))
-            .padding(horizontal = 7.dp, vertical = 3.dp),
-    )
 }
 
 @Composable
@@ -353,50 +398,55 @@ private fun StackTile(icon: androidx.compose.ui.graphics.vector.ImageVector, val
 }
 
 @Composable
-private fun BookShelf(title: String, books: List<Book>, showProgress: Boolean, onOpen: (Book) -> Unit) {
+private fun BookShelf(title: String, books: List<Book>, onOpen: (Book) -> Unit, onSeeAll: () -> Unit, onContextBook: (Book) -> Unit) {
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.M)) {
-        ShelfHeader(title, modifier = Modifier.fillMaxWidth().padding(horizontal = Hearth.Spacing.XL))
+        ShelfHeader(title, modifier = Modifier.fillMaxWidth().padding(horizontal = Hearth.Spacing.XL), actionLabel = "See all", onAction = onSeeAll)
         LazyRow(
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = Hearth.Spacing.XL),
+            contentPadding = PaddingValues(horizontal = Hearth.Spacing.XL),
             horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.M),
         ) {
             items(books, key = { it.id + (it.connectionId ?: "") }) { book ->
-                ShelfCard(book, showProgress, onOpen)
+                ShelfCard(book, onOpen, onContextBook)
             }
         }
     }
 }
 
 @Composable
-private fun ShelfCard(book: Book, showProgress: Boolean, onOpen: (Book) -> Unit) {
+private fun ShelfCard(book: Book, onOpen: (Book) -> Unit, onLongClick: (Book) -> Unit) {
     val palette = Hearth.palette
-    val cardWidth = if (showProgress) 118.dp else 92.dp
     Column(
-        Modifier.width(cardWidth).clickable { onOpen(book) },
+        Modifier.width(96.dp).combinedClickable(onClick = { onOpen(book) }, onLongClick = { onLongClick(book) }),
+        horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.XS),
     ) {
         CoverTile(
             model = book.coverUrl,
             mediaType = book.mediaType,
-            modifier = if (showProgress) {
-                Modifier.fillMaxWidth()
-            } else {
-                Modifier.width(76.dp).align(Alignment.CenterHorizontally)
-            },
+            modifier = Modifier.width(96.dp),
         )
         Text(
             book.title,
-            style = HearthText.Label,
+            style = hearthDisplay(13.sp, FontWeight.Medium),
             color = palette.text,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
         )
-        if (showProgress) {
-            Ribbon(progress = HearthFormat.progress(book))
-            HearthFormat.timeLeft(book)?.let {
-                Text(it, style = HearthText.Overline, color = palette.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
+        val byline = if (book.mediaType == AppMediaType.PODCAST) book.podcastName ?: book.author else book.author
+        if (!byline.isNullOrBlank()) {
+            Text(byline, style = hearthUI(11.sp), color = palette.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
+        Text(
+            book.source.displayName,
+            style = HearthText.Overline,
+            color = palette.textTertiary,
+            maxLines = 1,
+            modifier = Modifier
+                .clip(RoundedCornerShape(Hearth.Radius.Inner))
+                .border(1.dp, palette.hairline, RoundedCornerShape(Hearth.Radius.Inner))
+                .padding(horizontal = Hearth.Spacing.S, vertical = Hearth.Spacing.XS),
+        )
     }
 }
 
@@ -422,162 +472,110 @@ internal fun splitContinueShelves(
     return listening to reading
 }
 
-private data class EmptyHearthRoom(
-    val icon: ImageVector,
-    val overline: String,
-    val title: String,
-    val body: String,
-)
-
 @Composable
-private fun EmptyHearth(onOpenSettings: () -> Unit) {
+private fun EmptyHearth(onAddSource: () -> Unit) {
     val palette = Hearth.palette
-    val eink = Hearth.eink
-    val rooms = remember {
-        listOf(
-            EmptyHearthRoom(
-                Icons.Outlined.LocalFireDepartment,
-                "The first room",
-                "Hearth",
-                "Your current book lives here, glowing in its own colors. Everything you're reading waits beside it.",
-            ),
-            EmptyHearthRoom(
-                Icons.AutoMirrored.Outlined.MenuBook,
-                "The second room",
-                "Library",
-                "Every book from every source, gathered into one set of stacks. Search is always close at hand.",
-            ),
-            EmptyHearthRoom(
-                Icons.Outlined.AutoAwesome,
-                "The third room",
-                "Journal",
-                "See the hours you've kept and the passages you've saved: a record of your reading life.",
-            ),
-            EmptyHearthRoom(
-                Icons.Outlined.ArrowCircleDown,
-                "The mantel",
-                "One bar, two jobs",
-                "The bar below is both compass and player. When a book is active, tap it to open the full player.",
-            ),
-        )
-    }
-    val pagerState = rememberPagerState(pageCount = { rooms.size })
-    val scope = rememberCoroutineScope()
-    val goToPage: (Int) -> Unit = { page ->
-        scope.launch {
-            if (eink.suppressAnimations) pagerState.scrollToPage(page)
-            else pagerState.animateScrollToPage(page)
-        }
-    }
-
     Column(
         Modifier
             .fillMaxWidth()
-            .statusBarsPadding()
-            .padding(horizontal = Hearth.Spacing.L)
-            .padding(top = Hearth.Spacing.M),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.M),
+            .padding(horizontal = Hearth.Spacing.XL, vertical = Hearth.Spacing.S),
+        verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.L),
     ) {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Overline("Welcome to Enve")
-            QuietButton("Add a source", onClick = onOpenSettings)
-        }
-
-        HorizontalPager(
-            state = pagerState,
-            modifier = Modifier.fillMaxWidth().height(350.dp),
-            contentPadding = PaddingValues(horizontal = Hearth.Spacing.XS),
-            pageSpacing = Hearth.Spacing.M,
-        ) { page ->
-            val room = rooms[page]
-            val shape = RoundedCornerShape(if (eink.sharpCorners) 0.dp else Hearth.Radius.Card)
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .clip(shape)
-                    .background(palette.bgElevated.copy(alpha = if (eink.active) 1f else 0.48f))
-                    .border(1.dp, palette.hairline, shape),
-                contentAlignment = Alignment.Center,
-            ) {
-                EmberGlow(palette.ember, playing = true, modifier = Modifier.fillMaxSize())
-                Column(
-                    Modifier.padding(horizontal = Hearth.Spacing.XXL),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.L),
-                ) {
-                    Box(
-                        Modifier
-                            .size(76.dp)
-                            .clip(CircleShape)
-                            .background(palette.ember.copy(alpha = if (eink.active) 0f else 0.14f))
-                            .border(1.dp, palette.ember.copy(alpha = 0.5f), CircleShape),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(room.icon, contentDescription = null, tint = palette.ember, modifier = Modifier.size(38.dp))
-                    }
-                    Overline(room.overline)
-                    Text(room.title, style = hearthDisplay(32.sp), color = palette.text)
-                    Text(
-                        room.body,
-                        style = HearthText.Body,
-                        color = palette.textSecondary,
-                        textAlign = TextAlign.Center,
+        Box(Modifier.fillMaxWidth().height(180.dp), contentAlignment = Alignment.Center) {
+            if (!Hearth.eink.suppressGradients) {
+                Box(Modifier.size(180.dp).drawBehind {
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(palette.ember.copy(alpha = 0.25f), Color.Transparent),
+                            radius = size.minDimension / 2f,
+                        ),
                     )
-                }
+                })
             }
+            Icon(Icons.Outlined.LocalFireDepartment, contentDescription = null, tint = palette.ember, modifier = Modifier.size(44.dp))
         }
-
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.XS),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            rooms.indices.forEach { page ->
-                Box(
-                    Modifier
-                        .size(32.dp)
-                        .semantics { contentDescription = "Show ${rooms[page].title} page" }
-                        .clickable { goToPage(page) },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Box(
-                        Modifier
-                            .size(if (pagerState.currentPage == page) 10.dp else 7.dp)
-                            .clip(CircleShape)
-                            .background(if (pagerState.currentPage == page) palette.ember else palette.hairline),
-                    )
-                }
-            }
-        }
-
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (pagerState.currentPage > 0) {
-                QuietButton("Back", onClick = { goToPage(pagerState.currentPage - 1) })
-            } else {
-                Spacer(Modifier.width(72.dp))
-            }
-            EmberButton(
-                text = if (pagerState.currentPage == rooms.lastIndex) "Add a source" else "Next",
-                onClick = {
-                    if (pagerState.currentPage == rooms.lastIndex) onOpenSettings()
-                    else goToPage(pagerState.currentPage + 1)
-                },
-            )
-        }
-
+        Text("Light the fire.", style = hearthDisplay(26.sp), color = palette.text)
         Text(
-            "Connect your library when you're ready. Your books will appear here automatically.",
-            style = HearthText.Caption,
-            color = palette.textTertiary,
-            textAlign = TextAlign.Center,
+            "Connect a server or import your books, and your reading life gathers here.",
+            style = HearthText.Body,
+            color = palette.textSecondary,
         )
+        EmberButton("Add a source", onClick = onAddSource, leadingIcon = Icons.Outlined.Add)
+    }
+}
+
+@Composable
+private fun OfflineBanner() {
+    val palette = Hearth.palette
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = Hearth.Spacing.XL)
+            .clip(RoundedCornerShape(Hearth.Radius.Inner))
+            .background(palette.statusWarn.copy(alpha = 0.12f))
+            .padding(Hearth.Spacing.M),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
+    ) {
+        Icon(Icons.Outlined.WifiOff, null, tint = palette.statusWarn, modifier = Modifier.size(18.dp))
+        Text("Offline · Your downloaded books are ready", style = HearthText.Caption, color = palette.text)
+    }
+}
+
+@Composable
+private fun Doorways(onDiscover: () -> Unit, onPodcasts: () -> Unit, onHardcover: () -> Unit) {
+    val palette = Hearth.palette
+    Column(Modifier.fillMaxWidth().padding(horizontal = Hearth.Spacing.XL), verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.M)) {
+        Overline("DOORWAYS")
+        Column(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(Hearth.Radius.Card))
+                .background(palette.bgElevated).border(1.dp, palette.hairline, RoundedCornerShape(Hearth.Radius.Card)),
+        ) {
+            DoorwayRow("Discover", "Find your next read", Icons.Outlined.Explore, onDiscover)
+            DoorwayRow("Podcasts", "Browse shows and episodes", Icons.Outlined.Podcasts, onPodcasts)
+            DoorwayRow("Hardcover", "Explore your reading life", Icons.Outlined.AutoStories, onHardcover)
+        }
+    }
+}
+
+@Composable
+private fun DoorwayRow(title: String, subtitle: String, icon: ImageVector, onClick: () -> Unit) {
+    val palette = Hearth.palette
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = Hearth.Spacing.L, vertical = Hearth.Spacing.M),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.M),
+    ) {
+        Icon(icon, null, tint = palette.ember, modifier = Modifier.size(23.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, style = hearthUI(15.sp, FontWeight.SemiBold), color = palette.text)
+            Text(subtitle, style = HearthText.Caption, color = palette.textSecondary)
+        }
+        Icon(Icons.Outlined.ChevronRight, null, tint = palette.textTertiary)
+    }
+}
+
+@Composable
+private fun HomeSeeAll(title: String, books: List<Book>, onBack: () -> Unit, onOpen: (Book) -> Unit) {
+    val palette = Hearth.palette
+    Column(Modifier.fillMaxSize().background(palette.bg).statusBarsPadding()) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = Hearth.Spacing.XL, vertical = Hearth.Spacing.L), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.AutoMirrored.Outlined.ArrowBack, "Back", tint = palette.text, modifier = Modifier.clickable(onClick = onBack).padding(8.dp))
+            Text(title, style = hearthDisplay(28.sp, FontWeight.SemiBold), color = palette.text, modifier = Modifier.padding(start = Hearth.Spacing.M))
+        }
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(3),
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = Hearth.Spacing.XL, end = Hearth.Spacing.XL, bottom = LocalMantelInset.current + Hearth.Spacing.L),
+            horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.M),
+            verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.L),
+        ) {
+            items(books.size, key = { books[it].uniqueKey }) { index ->
+                val book = books[index]
+                Column(Modifier.clickable { onOpen(book) }, verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.XS)) {
+                    CoverTile(book.coverUrl, mediaType = book.mediaType, modifier = Modifier.fillMaxWidth())
+                    Text(book.title, style = hearthDisplay(13.sp, FontWeight.Medium), color = palette.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    book.author?.let { Text(it, style = hearthUI(11.sp), color = palette.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                }
+            }
+        }
     }
 }

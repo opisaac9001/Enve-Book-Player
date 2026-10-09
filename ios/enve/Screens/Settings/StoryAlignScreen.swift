@@ -3,9 +3,18 @@ import UniformTypeIdentifiers
 
 struct StoryAlignScreen: View {
     @Environment(\.hearth) private var hearth
+    @Environment(\.profileSession) private var profileSession
 
     var body: some View {
-        if #available(iOS 26.0, *) {
+        if profileSession?.isOwner == false {
+            SettingsScaffold(overline: "Library & content", title: "StoryAlign", subtitle: "Available in the original adult profile") {
+                SourcesCard {
+                    Text("You can import and read completed read-aloud books in this profile. Create new alignments in the original adult profile.")
+                        .font(.hearthBody)
+                        .foregroundStyle(hearth.textSecondary)
+                }
+            }
+        } else if #available(iOS 26.0, *) {
             StoryAlignHub()
         } else {
             SettingsScaffold(
@@ -31,6 +40,7 @@ private struct StoryAlignHub: View {
     @Environment(EnveEngine.self) private var engine
     @Environment(\.hearth) private var hearth
 
+    @State private var actionError: String?
     @State private var selectedEbook: Book?
     @State private var selectedAudiobook: Book?
     @State private var showEbookPicker = false
@@ -38,6 +48,11 @@ private struct StoryAlignHub: View {
     @State private var showStartWarning = false
     @State private var deleteCandidate: StoryAlignService.CompletedConversion?
     @State private var completed: [StoryAlignService.CompletedConversion] = []
+
+    private func perform(_ operation: () throws -> Void) {
+        do { try operation() }
+        catch { actionError = error.localizedDescription }
+    }
 
     private var canStart: Bool {
         engine.storyAlign.canStart(ebook: selectedEbook, audiobook: selectedAudiobook)
@@ -64,10 +79,13 @@ private struct StoryAlignHub: View {
             StoryAlignBookPicker(title: "Choose the audiobook", mediaType: "audiobook", selection: $selectedAudiobook)
                 .enveEnvironment()
         }
+        .alert("StoryAlign", isPresented: Binding(get: { actionError != nil }, set: { if !$0 { actionError = nil } })) {
+            Button("OK", role: .cancel) { actionError = nil }
+        } message: { Text(actionError ?? "") }
         .alert(StoryAlignLaunchWarning.title, isPresented: $showStartWarning) {
             Button("I understand") {
                 guard let ebook = selectedEbook, let audiobook = selectedAudiobook else { return }
-                engine.storyAlign.startConversion(ebook: ebook, audiobook: audiobook)
+                perform { try engine.storyAlign.startConversion(ebook: ebook, audiobook: audiobook) }
             }
             Button("Maybe later", role: .cancel) {}
         } message: {
@@ -80,7 +98,7 @@ private struct StoryAlignHub: View {
             presenting: deleteCandidate
         ) { conversion in
             Button("Delete", role: .destructive) {
-                engine.storyAlign.deleteConversion(ebook: conversion.ebook, audiobook: conversion.audiobook)
+                perform { try engine.storyAlign.deleteConversion(ebook: conversion.ebook, audiobook: conversion.audiobook) }
                 completed.removeAll { $0.id == conversion.id }
                 deleteCandidate = nil
             }
@@ -256,11 +274,11 @@ private struct StoryAlignHub: View {
                         .font(.hearthCaption)
                         .foregroundStyle(hearth.textSecondary)
                 }
-                QuietButton(title: "Done", systemImage: "checkmark") { engine.storyAlign.dismissConversion() }
+                QuietButton(title: "Done", systemImage: "checkmark") { perform { try engine.storyAlign.dismissConversion() } }
             } else if state.error != nil {
-                QuietButton(title: "Dismiss", systemImage: nil) { engine.storyAlign.dismissConversion() }
+                QuietButton(title: "Dismiss", systemImage: nil) { perform { try engine.storyAlign.dismissConversion() } }
             } else {
-                QuietButton(title: "Cancel", systemImage: nil) { engine.storyAlign.cancelConversion() }
+                QuietButton(title: "Cancel", systemImage: nil) { perform { try engine.storyAlign.cancelConversion() } }
             }
         }
     }
@@ -289,13 +307,13 @@ private struct StoryAlignHub: View {
             HStack(spacing: 10) {
                 if let ebook, let audiobook {
                     EmberButton(title: "Resume", systemImage: "play.fill", tint: nil) {
-                        engine.storyAlign.resumeConversion(ebook: ebook, audiobook: audiobook)
+                        perform { try engine.storyAlign.resumeConversion(ebook: ebook, audiobook: audiobook) }
                     }
                 }
                 QuietButton(title: "Discard", systemImage: nil) {
-                    engine.storyAlign.cancelConversion()
+                    perform { try engine.storyAlign.cancelConversion() }
                     if let ebook, let audiobook {
-                        engine.storyAlign.deleteConversion(ebook: ebook, audiobook: audiobook)
+                        perform { try engine.storyAlign.deleteConversion(ebook: ebook, audiobook: audiobook) }
                     }
                 }
             }

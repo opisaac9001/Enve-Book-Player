@@ -8,7 +8,7 @@ import SwiftUI
 import os
 
 final class AudioProcessor: ObservableObject {
-    static let shared = AudioProcessor()
+    static var shared: AudioProcessor { ProfileSession.owner.playback.manager.audioProcessor }
 
     @Published var bands: [EqualizerBand] = EqualizerPreset.flat.bands
     @Published private(set) var volumeLevelingStrength: VolumeLevelingStrength
@@ -38,9 +38,12 @@ final class AudioProcessor: ObservableObject {
 
     private let rebuildQueue = DispatchQueue(label: "enve.audioProcessor.rebuild", qos: .userInitiated)
 
-    init() {
+    private let preferencesStore: LibraryDisplayPreferencesStore
+
+    init(preferencesStore: LibraryDisplayPreferencesStore = .shared) {
+        self.preferencesStore = preferencesStore
         volumeLevelingStrength =
-            LibraryDisplayPreferencesStore.shared
+            preferencesStore
             .loadPreferences()
             .volumeLevelingStrength
     }
@@ -61,9 +64,9 @@ final class AudioProcessor: ObservableObject {
         guard strength != volumeLevelingStrength else { return }
         volumeLevelingStrength = strength
 
-        var preferences = LibraryDisplayPreferencesStore.shared.loadPreferences()
+        var preferences = preferencesStore.loadPreferences()
         preferences.volumeLevelingStrength = strength
-        LibraryDisplayPreferencesStore.shared.savePreferences(preferences)
+        preferencesStore.savePreferences(preferences)
         scheduleRebuildFiltersAsync()
     }
 

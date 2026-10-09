@@ -5,6 +5,8 @@ import com.enve.plex.dto.PlexItemsResponse
 import com.enve.plex.dto.PlexSectionsResponse
 import retrofit2.Response
 import retrofit2.http.GET
+import retrofit2.http.Header
+import retrofit2.http.POST
 import retrofit2.http.Path
 import retrofit2.http.Query
 
@@ -46,6 +48,17 @@ interface PlexApi {
         @Query("identifier") identifier: String = "com.plexapp.plugins.library",
         @Query("time") timeMs: Long,
         @Query("state") state: String = "stopped",
+    ): Response<Unit>
+
+    @POST(":/timeline")
+    suspend fun reportTimeline(
+        @Query("ratingKey") ratingKey: String,
+        @Query("key") key: String,
+        @Query("state") state: String,
+        @Query("time") timeMs: Long,
+        @Query("duration") durationMs: Long,
+        @Header("X-Plex-Session-Identifier") sessionId: String,
+        @Query("identifier") identifier: String = "com.plexapp.plugins.library",
     ): Response<Unit>
 
     @GET(":/scrobble")

@@ -3,17 +3,25 @@ import Foundation
 
 @MainActor
 final class ServerConfigStore {
-    static let shared = ServerConfigStore()
+    static let shared = ServerConfigStore(profileID: FamilyProfile.ownerID, defaults: .standard)
 
     private static let backendsKey = "backends"
     private static let smbServersKey = "smbServers"
     private static let smbBooksPrefix = "smbBooks_"
     private static let smbPasswordPrefix = "smb:password:"
 
-    private let userDefaults = UserDefaults.standard
-    private var keychain: KeychainHelper { KeychainHelper.shared }
+    private let userDefaults: UserDefaults
+    private let profileID: String
+    private let keychain: KeychainHelper
 
-    private init() {}
+    init(
+        profileID: String, defaults: UserDefaults, keychain: KeychainHelper = .shared
+    ) {
+        precondition(FamilyProfile.validID(profileID))
+        self.profileID = profileID
+        self.keychain = keychain
+        userDefaults = defaults
+    }
 
     func saveBackends(_ backends: [BackendConfig]) {
         guard let encoded = try? JSONEncoder().encode(backends) else { return }
@@ -44,15 +52,15 @@ final class ServerConfigStore {
     }
 
     func saveSMBPassword(_ password: String, for serverId: UUID) {
-        keychain.set(password, key: Self.smbPasswordPrefix + serverId.uuidString)
+        keychain.set(password, key: smbPasswordKey(for: serverId))
     }
 
     func loadSMBPassword(for serverId: UUID) -> String? {
-        keychain.get(Self.smbPasswordPrefix + serverId.uuidString)
+        keychain.get(smbPasswordKey(for: serverId))
     }
 
     func deleteSMBPassword(for serverId: UUID) {
-        try? keychain.remove(Self.smbPasswordPrefix + serverId.uuidString)
+        try? keychain.remove(smbPasswordKey(for: serverId))
     }
 
     func saveSMBBooks(serverId: UUID, books: [LocalBookFile]) {
@@ -69,5 +77,10 @@ final class ServerConfigStore {
             return []
         }
         return books
+    }
+
+    private func smbPasswordKey(for serverID: UUID) -> String {
+        let key = Self.smbPasswordPrefix + serverID.uuidString
+        return profileID == FamilyProfile.ownerID ? key : "profile:\(profileID):\(key)"
     }
 }

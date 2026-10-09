@@ -5,6 +5,9 @@ import com.enve.core.data.model.Chapter
 import kotlinx.coroutines.flow.StateFlow
 
 interface PlayerSessionFacade {
+    val readAloud: StateFlow<PlayerReadAloudState>
+    fun seekToReadAloudLine(line: ReadAloudLyricLine)
+
     val chapters: StateFlow<List<Chapter>>
     val currentChapterIndex: StateFlow<Int>
     val bookmarks: StateFlow<List<AudiobookBookmark>>

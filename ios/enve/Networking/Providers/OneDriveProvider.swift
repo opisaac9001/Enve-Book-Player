@@ -56,6 +56,9 @@ final class OneDriveProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvi
     private let oauthManager: OAuthManager
     private let tokenStorage: SecureTokenStorage
     private var token: OAuthToken?
+    private let appState: AppState
+    private let metadataLayering: MetadataLayeringManager
+    private let ebooks: LocalEbookImporter
 
     private static let graphBaseURL = URL(string: "https://graph.microsoft.com/v1.0")!
     private static let maximumCatalogItems = 1_000_000
@@ -65,13 +68,17 @@ final class OneDriveProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvi
         session: URLSession = .shared,
         oauthManager: OAuthManager = .shared,
         tokenStorage: SecureTokenStorage = .shared,
-        initialToken: OAuthToken? = nil
+        initialToken: OAuthToken? = nil,
+        profileSession: ProfileSession? = nil
     ) {
         self.connection = connection
-        self.session = session
-        self.oauthManager = oauthManager
-        self.tokenStorage = tokenStorage
-        token = initialToken ?? (try? tokenStorage.loadToken(forProvider: tokenStorageKey))
+        self.appState = profileSession?.appState ?? .shared
+        self.metadataLayering = profileSession?.metadataLayering ?? .shared
+        self.ebooks = profileSession?.ebooks ?? .shared
+        self.session = profileSession?.networkSession ?? session
+        self.oauthManager = profileSession?.oauth ?? oauthManager
+        self.tokenStorage = profileSession?.tokenStorage ?? tokenStorage
+        token = initialToken ?? (try? self.tokenStorage.loadToken(forProvider: tokenStorageKey))
     }
 
     var authenticationState: AuthenticationState {
@@ -195,7 +202,7 @@ final class OneDriveProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvi
     func fetchUserMediaProgress(libraryId: String) async throws -> [UserMediaProgress] { [] }
 
     func fetchFullBookDetails(bookId: String, libraryId: String) async throws -> Book {
-        guard var book = await AppState.shared.bookStore.book(byBookId: bookId) else {
+        guard var book = await appState.bookStore.book(byBookId: bookId) else {
             throw ProviderError.invalidResponse
         }
         guard book.mediaType == .audiobook else { return book }
@@ -206,7 +213,7 @@ final class OneDriveProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvi
 
         if playbackSession.audioTracks.count == 1,
             let url = URL(string: playbackSession.audioTracks[0].contentUrl),
-            let embedded = await MetadataLayeringManager.shared.extractEmbeddedChapters(from: url),
+            let embedded = await metadataLayering.extractEmbeddedChapters(from: url),
             !embedded.isEmpty
         {
             book.chapters = embedded
@@ -281,7 +288,7 @@ final class OneDriveProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvi
         let (temporaryURL, response) = try await session.download(from: downloadURL)
         try validate(response: response, data: nil)
         onProgress?(1)
-        return try LocalEbookImporter.shared.cacheRemoteEbook(
+        return try ebooks.cacheRemoteEbook(
             tempURL: temporaryURL,
             preferredFilename: remote.name,
             bookIdentifier: book.id
@@ -292,7 +299,7 @@ final class OneDriveProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvi
         Self.tokenStorageKey(connectionId: connection.id)
     }
 
-    private static func tokenStorageKey(connectionId: UUID) -> String {
+    static func tokenStorageKey(connectionId: UUID) -> String {
         "onedrive-\(connectionId.uuidString.lowercased())"
     }
 

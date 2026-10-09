@@ -204,23 +204,96 @@ data class SiloChapterDto(
 
 @Serializable
 data class SiloPlaybackStartRequest(
+    @SerialName("protocol_version") val protocolVersion: Int = 3,
+    @SerialName("client_features") val clientFeatures: List<String> = emptyList(),
     @SerialName("file_id") val fileId: Int,
     @SerialName("profile_id") val profileId: String,
-    @SerialName("play_method") val playMethod: String = "direct",
-    @SerialName("disable_progress_persistence") val disableProgressPersistence: Boolean = false,
-    @SerialName("codecs_audio") val audioCodecs: List<String> = listOf("aac", "mp3", "m4a", "m4b", "alac", "flac", "opus", "vorbis"),
-    val containers: List<String> = listOf("mp3", "m4a", "m4b", "aac", "flac", "ogg", "opus", "wav"),
-    @SerialName("max_resolution") val maxResolution: String = "original",
-    val hdr: Boolean = true,
+    @SerialName("playback_attempt_id") val playbackAttemptId: String,
+    @SerialName("quality_preference") val qualityPreference: String = "original",
+    @SerialName("subtitle_fidelity_preference") val subtitleFidelityPreference: String = "compatible",
+    @SerialName("progress_persistence") val progressPersistence: String = "server",
+    @SerialName("start_position") val startPosition: Double? = null,
+    @SerialName("client_capabilities") val clientCapabilities: SiloAudioCapabilities = SiloAudioCapabilities(),
+    @SerialName("client_playback_context") val playbackContext: SiloPlaybackContext = SiloPlaybackContext(),
+)
+
+@Serializable
+data class SiloAudioCapabilities(
+    @SerialName("video_evidence") val videoEvidence: String = "declared",
+    @SerialName("audio_evidence") val audioEvidence: String = "declared",
+    @SerialName("codecs_audio") val audioCodecs: List<String> = listOf("aac", "mp3"),
+    val containers: List<String> = listOf("mp3", "m4a", "m4b", "aac", "mp4"),
+    val hdr: Boolean = false,
+)
+
+@Serializable
+data class SiloPlaybackContext(
+    @SerialName("protocol_version") val protocolVersion: Int = 3,
+    @SerialName("form_factor") val formFactor: String = "phone",
+    val device: SiloPlaybackDevice = SiloPlaybackDevice(),
+    val deliveries: Map<String, SiloAudioDelivery> = mapOf("original_http" to SiloAudioDelivery()),
+)
+
+@Serializable
+data class SiloPlaybackDevice(val platform: String = "android")
+
+@Serializable
+data class SiloAudioDelivery(
+    val enabled: Boolean = true,
+    @SerialName("supported_on_device") val supportedOnDevice: Boolean = true,
+    val containers: List<String> = listOf("mp3", "m4a", "m4b", "aac", "mp4"),
+    @SerialName("audio_decode_codecs") val audioDecodeCodecs: List<String> = listOf("aac", "mp3"),
+    @SerialName("audio_passthrough_codecs") val audioPassthroughCodecs: List<String> = emptyList(),
+    val subtitles: SiloSubtitleCapabilities = SiloSubtitleCapabilities(),
+    val features: List<String> = emptyList(),
+    @SerialName("auth_header_refresh") val authHeaderRefresh: Boolean = false,
+    @SerialName("validated_claims") val validatedClaims: List<String> = emptyList(),
+    val transformations: List<String> = emptyList(),
+)
+
+@Serializable
+data class SiloSubtitleCapabilities(
+    @SerialName("embedded_text") val embeddedText: Boolean = false,
+    @SerialName("sidecar_text") val sidecarText: Boolean = false,
+    @SerialName("ass_styling") val assStyling: Boolean = false,
+    @SerialName("embedded_bitmap") val embeddedBitmap: Boolean = false,
+    @SerialName("sidecar_bitmap") val sidecarBitmap: Boolean = false,
+    @SerialName("font_attachments") val fontAttachments: Boolean = false,
 )
 
 @Serializable
 data class SiloPlaybackStartResponse(
-    @SerialName("session_id") val sessionId: String,
-    @SerialName("stream_url") val streamUrl: String,
-    val position: Double? = null,
-    @SerialName("duration_seconds") val durationSeconds: Double? = null,
+    @SerialName("protocol_version") val protocolVersion: Int,
+    val outcome: String,
+    @SerialName("session_id") val sessionId: String? = null,
+    @SerialName("playback_plan") val playbackPlan: SiloPlaybackPlan? = null,
+    val terminal: SiloPlaybackTerminal? = null,
 )
+
+@Serializable
+data class SiloPlaybackPlan(
+    @SerialName("protocol_version") val protocolVersion: Int,
+    val delivery: String,
+    val stream: SiloPlaybackStream,
+    val timeline: SiloPlaybackTimeline,
+    val source: SiloPlaybackSource,
+)
+
+@Serializable
+data class SiloPlaybackStream(val url: String, val protocol: String)
+
+@Serializable
+data class SiloPlaybackTimeline(
+    @SerialName("source_start_seconds") val sourceStartSeconds: Double,
+    @SerialName("player_start_seconds") val playerStartSeconds: Double,
+    @SerialName("timeline_offset_seconds") val timelineOffsetSeconds: Double,
+)
+
+@Serializable
+data class SiloPlaybackSource(@SerialName("duration_seconds") val durationSeconds: Double? = null)
+
+@Serializable
+data class SiloPlaybackTerminal(val reason: String)
 
 @Serializable
 data class SiloPlaybackProgressRequest(

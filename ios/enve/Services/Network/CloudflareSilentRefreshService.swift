@@ -9,13 +9,28 @@ import UIKit
 @MainActor
 final class CloudflareSilentRefreshService: NSObject {
     static let shared = CloudflareSilentRefreshService()
-    private override init() { super.init() }
+    private let websiteDataStore: WKWebsiteDataStore
+    private var isRetired = false
+
+    init(websiteDataStore: WKWebsiteDataStore = .default()) {
+        self.websiteDataStore = websiteDataStore
+        super.init()
+    }
+
+    func retire() async {
+        isRetired = true
+        retainedWebView?.stopLoading()
+        let tasks = Array(inFlight.values)
+        tasks.forEach { $0.cancel() }
+        for task in tasks { _ = await task.value }
+        inFlight.removeAll()
+    }
 
     private var inFlight: [String: Task<String?, Never>] = [:]
     private var retainedWebView: WKWebView?
 
     func refreshedCookieHeader(for serverURL: URL, timeout: TimeInterval = 15) async -> String? {
-        guard let host = serverURL.host?.lowercased() else { return nil }
+        guard !isRetired, let host = serverURL.host?.lowercased() else { return nil }
         if let existing = inFlight[host] { return await existing.value }
 
         let task = Task { [weak self] () -> String? in
@@ -31,7 +46,7 @@ final class CloudflareSilentRefreshService: NSObject {
     private func performRefresh(serverURL: URL, host: String, timeout: TimeInterval) async -> String? {
         let config = WKWebViewConfiguration()
 
-        config.websiteDataStore = .default()
+        config.websiteDataStore = websiteDataStore
         config.defaultWebpagePreferences.allowsContentJavaScript = true
 
         let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 320, height: 480), configuration: config)
@@ -59,7 +74,8 @@ final class CloudflareSilentRefreshService: NSObject {
         let store = config.websiteDataStore.httpCookieStore
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            try? await Task.sleep(nanoseconds: 700_000_000)
+            do { try await Task.sleep(nanoseconds: 700_000_000) } catch { return nil }
+            guard !isRetired else { return nil }
             let cookies = await allCookies(from: store)
             if let header = Self.validCookieHeader(from: cookies, host: host) {
                 AppLogger.network.info("[Cloudflare] Silently re-minted CF_Authorization for \(host)")

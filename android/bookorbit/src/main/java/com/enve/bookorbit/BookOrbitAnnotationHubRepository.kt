@@ -1,5 +1,6 @@
 package com.enve.bookorbit
 
+import com.enve.core.data.util.runSuspendCatching
 import com.enve.bookorbit.api.BookOrbitApi
 import com.enve.bookorbit.dto.BookOrbitAnnotationBookFacetDto
 import com.enve.bookorbit.dto.BookOrbitAnnotationBulkRequest
@@ -28,7 +29,7 @@ data class BookOrbitAnnotationExport(
 class BookOrbitAnnotationHubRepository @Inject constructor(
     private val api: BookOrbitApi,
 ) {
-    suspend fun list(filter: BookOrbitAnnotationHubFilter): Result<BookOrbitAnnotationHubPageDto?> = runCatching {
+    suspend fun list(filter: BookOrbitAnnotationHubFilter): Result<BookOrbitAnnotationHubPageDto?> = runSuspendCatching {
         val response = api.annotationHub(
             page = filter.page.coerceAtLeast(1),
             pageSize = filter.pageSize.coerceIn(1, 100),
@@ -42,7 +43,7 @@ class BookOrbitAnnotationHubRepository @Inject constructor(
         response.unwrap("BookOrbit highlights failed")
     }
 
-    suspend fun books(trashed: Boolean, query: String?): Result<List<BookOrbitAnnotationBookFacetDto>> = runCatching {
+    suspend fun books(trashed: Boolean, query: String?): Result<List<BookOrbitAnnotationBookFacetDto>> = runSuspendCatching {
         val response = api.annotationHubBooks(
             status = if (trashed) STATUS_TRASHED else STATUS_ACTIVE,
             query = query?.trim()?.takeIf { it.isNotEmpty() },
@@ -55,12 +56,12 @@ class BookOrbitAnnotationHubRepository @Inject constructor(
 
     suspend fun restoreAll(ids: List<Int>): Result<Int> = bulk(ids, "restore")
 
-    suspend fun restore(annotationId: Int): Result<Unit> = runCatching {
+    suspend fun restore(annotationId: Int): Result<Unit> = runSuspendCatching {
         val response = api.restoreHubAnnotation(annotationId)
         if (!response.isSuccessful) error("BookOrbit highlight restore failed: HTTP ${response.code()}")
     }
 
-    suspend fun purge(annotationId: Int): Result<Unit> = runCatching {
+    suspend fun purge(annotationId: Int): Result<Unit> = runSuspendCatching {
         val response = api.purgeHubAnnotation(annotationId)
         if (!response.isSuccessful && response.code() != 404) {
             error("BookOrbit highlight delete failed: HTTP ${response.code()}")
@@ -70,7 +71,7 @@ class BookOrbitAnnotationHubRepository @Inject constructor(
     suspend fun export(
         filter: BookOrbitAnnotationHubFilter,
         format: String,
-    ): Result<BookOrbitAnnotationExport?> = runCatching {
+    ): Result<BookOrbitAnnotationExport?> = runSuspendCatching {
         val response = api.exportAnnotations(
             format = format,
             status = filter.status(),
@@ -80,18 +81,18 @@ class BookOrbitAnnotationHubRepository @Inject constructor(
             origins = filter.origins.joinToCsv(),
             hasNote = true.takeIf { filter.notesOnly },
         )
-        if (response.code() == 404) return@runCatching null
+        if (response.code() == 404) return@runSuspendCatching null
         if (!response.isSuccessful) error("BookOrbit highlight export failed: HTTP ${response.code()}")
-        val body = response.body() ?: return@runCatching null
+        val body = response.body() ?: return@runSuspendCatching null
         BookOrbitAnnotationExport(
             filename = response.headers()["Content-Disposition"].toFilename(format),
             content = body.string(),
         )
     }
 
-    private suspend fun bulk(ids: List<Int>, action: String): Result<Int> = runCatching {
+    private suspend fun bulk(ids: List<Int>, action: String): Result<Int> = runSuspendCatching {
         val distinct = ids.distinct()
-        if (distinct.isEmpty()) return@runCatching 0
+        if (distinct.isEmpty()) return@runSuspendCatching 0
         var affected = 0
         for (chunk in distinct.chunked(BULK_CHUNK)) {
             val response = api.annotationHubBulk(BookOrbitAnnotationBulkRequest(ids = chunk, action = action))

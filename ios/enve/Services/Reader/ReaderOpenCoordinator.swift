@@ -29,18 +29,22 @@ final class ReaderOpenCoordinator {
     @ObservationIgnored private var requestTask: Task<Void, Never>?
     @ObservationIgnored private var requestedBookID: String?
 
+    private unowned let profileSession: ProfileSession
+
     init(
         appState: AppState = .shared,
         downloads: UnifiedDownloadService = .shared,
         linkedProgress: LinkedBookProgressCoordinator = .shared,
-        present: ((Book) -> Void)? = nil
+        present: ((Book) -> Void)? = nil,
+        profileSession: ProfileSession = .owner
     ) {
+        self.profileSession = profileSession
         self.appState = appState
         self.downloads = downloads
         self.linkedProgress = linkedProgress
         self.present =
-            present ?? { book in
-                LastOpenedBookStore.shared.record(book)
+            present ?? { [lastOpened = profileSession.lastOpened] book in
+                lastOpened.record(book)
                 appState.presentation.selectedEbookForDetail = book
             }
     }
@@ -89,6 +93,12 @@ final class ReaderOpenCoordinator {
                 requestedLocator: requestedLocator
             )
         }
+    }
+
+    func retire() async {
+        let task = requestTask
+        cancel()
+        await task?.value
     }
 
     func cancel() {
@@ -196,7 +206,7 @@ final class ReaderOpenCoordinator {
             ) == nil {
                 appState.hotCache.insert(requested)
             }
-            EbookLinkStore.shared.saveLinks()
+            profileSession.ebookLinks.saveLinks()
             await appState.bookStore.updateEbookProgress(
                 uniqueId: requested.uniqueId,
                 ebookProgress: progression,

@@ -47,7 +47,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.hilt.navigation.compose.hiltViewModel
+import com.enve.hearth.shell.profileViewModel
 import com.enve.app.data.reader.CustomFont
 import com.enve.app.data.repository.CustomFontRepository
 import com.enve.app.ui.components.ScreenBackButton
@@ -64,7 +64,7 @@ import com.enve.hearth.design.hearthDisplay
 @Composable
 fun CustomFontsScreen(
     onBack: () -> Unit,
-    viewModel: CustomFontsViewModel = hiltViewModel(),
+    viewModel: CustomFontsViewModel = profileViewModel(),
 ) {
     val colors = EnveTheme.colors
     val metrics = rememberAdaptiveMetrics()

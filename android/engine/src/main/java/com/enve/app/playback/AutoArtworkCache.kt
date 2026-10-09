@@ -25,6 +25,7 @@ class AutoArtworkCache @Inject constructor(
     @ApplicationContext private val context: Context,
     private val offlineDownloadManager: OfflineDownloadManager,
     private val imageLoader: ImageLoader,
+    private val locations: com.enve.core.data.local.ProfileStorageLocations = com.enve.core.data.local.ProfileStorageLocations.forProfile(context, com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID),
 ) {
     suspend fun uriFor(bookId: String, cacheKey: String, coverUrl: String?): Uri? =
         withContext(Dispatchers.IO) {
@@ -63,13 +64,13 @@ class AutoArtworkCache @Inject constructor(
                     temporary.delete()
                 }
             }
-            AutoArtworkProvider.uriFor(context, artwork.name)
+            AutoArtworkProvider.uriFor(context, artwork.name, locations.profileId)
         }
 
     fun cachedUriFor(bookId: String, cacheKey: String, coverUrl: String?): Uri? {
         val source = sourceFor(bookId, coverUrl) ?: return null
         val artwork = artworkFile(cacheKey, source)
-        return artwork.takeIf(File::isFile)?.let { AutoArtworkProvider.uriFor(context, it.name) }
+        return artwork.takeIf(File::isFile)?.let { AutoArtworkProvider.uriFor(context, it.name, locations.profileId) }
     }
 
     private fun sourceFor(bookId: String, coverUrl: String?): String? =
@@ -80,7 +81,7 @@ class AutoArtworkCache @Inject constructor(
         val digest = MessageDigest.getInstance("SHA-256")
             .digest("v2|$cacheKey|$source".toByteArray())
             .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
-        return File(File(context.cacheDir, AutoArtworkProvider.CACHE_DIRECTORY), "$digest.jpg")
+        return File(File(locations.cacheDirectory, AutoArtworkProvider.CACHE_DIRECTORY), "$digest.jpg")
     }
 
     private suspend fun fetchCoverBytes(source: String): ByteArray? =

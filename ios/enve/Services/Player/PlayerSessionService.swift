@@ -14,18 +14,22 @@ public class PlayerSessionService {
     private var currentBackend: BackendConfig?
     private let audiobookshelfService: AudiobookshelfService
     private let providerConnections: any ProviderConnectionAccessing
+    private let serverSyncEnabled: @MainActor () -> Bool
 
     public var pendingTimeListened: TimeInterval = 0
 
     init(
         audiobookshelfService: AudiobookshelfService = AudiobookshelfService(),
-        providerConnections: any ProviderConnectionAccessing
+        providerConnections: any ProviderConnectionAccessing,
+        serverSyncEnabled: @escaping @MainActor () -> Bool = { true }
     ) {
+        self.serverSyncEnabled = serverSyncEnabled
         self.audiobookshelfService = audiobookshelfService
         self.providerConnections = providerConnections
     }
 
     public func startABSSession(for book: Book, startTime: TimeInterval) async throws -> ABSPlaySession {
+        guard serverSyncEnabled() else { throw CancellationError() }
         guard let backendId = book.backendId,
             let backend = providerConnections.backend(id: backendId)
         else {
@@ -38,6 +42,7 @@ public class PlayerSessionService {
             backend: backend,
             forceDirectPlay: true
         )
+        guard serverSyncEnabled() else { throw CancellationError() }
         currentABSSessionId = session.id
         currentBook = book
         currentBackend = backend
@@ -49,7 +54,7 @@ public class PlayerSessionService {
     }
 
     public func syncABSSession(progress: TimeInterval, duration: TimeInterval, timeListened: TimeInterval) async {
-        guard let backend = currentBackend, duration > 0 else { return }
+        guard serverSyncEnabled(), let backend = currentBackend, duration > 0 else { return }
 
         if let sessionId = currentABSSessionId {
             do {
@@ -71,6 +76,15 @@ public class PlayerSessionService {
     }
 
     public func closeABSSession(progress: TimeInterval, duration: TimeInterval) async {
+        guard serverSyncEnabled() else {
+            currentABSSessionId = nil
+            lastServerCurrentTime = nil
+            lastSession = nil
+            pendingTimeListened = 0
+            currentBook = nil
+            currentBackend = nil
+            return
+        }
         guard let backend = currentBackend else {
             currentABSSessionId = nil
             lastServerCurrentTime = nil
@@ -105,7 +119,7 @@ public class PlayerSessionService {
     }
 
     private func updateProgressDirectly(progress: TimeInterval, duration: TimeInterval, backend: BackendConfig) async {
-        guard let book = currentBook else { return }
+        guard serverSyncEnabled(), let book = currentBook else { return }
         let libraryItemId = book.partKey ?? book.id
         do {
             try await audiobookshelfService.updateProgress(
@@ -121,6 +135,7 @@ public class PlayerSessionService {
     }
 
     public func syncHardcoverProgress(book: Book, progress: Double) async {
+        guard serverSyncEnabled() else { return }
         await HardcoverSyncService.shared.syncProgress(book: book, progress: progress)
     }
 }

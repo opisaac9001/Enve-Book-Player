@@ -1,6 +1,8 @@
 package com.enve.app.playback
 
 import android.content.Context
+import android.net.Uri
+import android.os.ParcelFileDescriptor
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Metadata
 import androidx.media3.common.PlaybackException
@@ -24,6 +26,7 @@ import okhttp3.Credentials
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okio.Buffer
+import java.nio.ByteBuffer
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.min
@@ -73,7 +76,7 @@ class EmbeddedChapterExtractor @Inject constructor(
         val firstUrl = playableTracks.first().contentUrl.orEmpty()
         val mp4Chapters = probeMp4Chapters(firstUrl, durationSec)
         if (mp4Chapters.isNotEmpty()) return mp4Chapters
-        if (firstUrl.isRemoteMp4Audio()) return emptyList()
+        if (firstUrl.isProbeableMp4Audio()) return emptyList()
 
         return probeTrack(firstUrl, durationSec)
     }
@@ -127,7 +130,7 @@ class EmbeddedChapterExtractor @Inject constructor(
     }
 
     private suspend fun probeMp4Chapters(url: String, durationSec: Long): List<Chapter> = withContext(Dispatchers.IO) {
-        if (!url.isRemoteMp4Audio()) {
+        if (!url.isProbeableMp4Audio()) {
             return@withContext emptyList()
         }
 
@@ -188,10 +191,18 @@ class EmbeddedChapterExtractor @Inject constructor(
             path.endsWith(".m4b") || path.endsWith(".m4a") || path.endsWith(".mp4")
         }
 
-    private fun String.isRemoteMp4Audio(): Boolean =
-        (startsWith("http://", ignoreCase = true) || startsWith("https://", ignoreCase = true)) && isMp4Audio()
+    private fun String.isLocalUri(): Boolean =
+        startsWith("content://", ignoreCase = true) || startsWith("file://", ignoreCase = true)
+
+    private fun String.isProbeableMp4Audio(): Boolean =
+        (isLocalUri() || startsWith("http://", ignoreCase = true) || startsWith("https://", ignoreCase = true)) && isMp4Audio()
 
     private fun contentLength(url: String): Long? {
+        if (url.isLocalUri()) {
+            return runCatching {
+                context.contentResolver.openFileDescriptor(Uri.parse(url), "r")?.use { it.statSize }
+            }.getOrNull()?.takeIf { it >= 0L }
+        }
         val head = Request.Builder().url(url).head().build()
         runCatching {
             httpClient.newCall(head).execute().use { response ->
@@ -217,6 +228,7 @@ class EmbeddedChapterExtractor @Inject constructor(
     }
 
     private fun fetchRange(url: String, start: Long, endInclusive: Long, maxBytes: Long): ByteArray {
+        if (url.isLocalUri()) return readLocalRange(url, start, endInclusive, maxBytes)
         val request = Request.Builder()
             .url(url)
             .header("Range", "bytes=$start-$endInclusive")
@@ -228,6 +240,18 @@ class EmbeddedChapterExtractor @Inject constructor(
             }
         }.getOrDefault(ByteArray(0))
     }
+
+    private fun readLocalRange(url: String, start: Long, endInclusive: Long, maxBytes: Long): ByteArray =
+        runCatching {
+            val descriptor = context.contentResolver.openFileDescriptor(Uri.parse(url), "r")
+                ?: return@runCatching ByteArray(0)
+            ParcelFileDescriptor.AutoCloseInputStream(descriptor).channel.use { channel ->
+                val buffer = ByteBuffer.allocate(min(endInclusive - start + 1, maxBytes).toInt())
+                channel.position(start)
+                while (buffer.hasRemaining() && channel.read(buffer) != -1) Unit
+                buffer.array().copyOf(buffer.position())
+            }
+        }.getOrDefault(ByteArray(0))
 
     private fun okio.BufferedSource.readLimited(maxBytes: Long): ByteArray {
         val buffer = Buffer()

@@ -9,6 +9,19 @@ import org.junit.Test
 class DetailListenTargetTest {
 
     @Test
+    fun localNarratedEpubListensToItsEmbeddedAudio() {
+        val book = Book(
+            id = "local-narrated",
+            title = "Narrated EPUB",
+            source = BookSource.LOCAL,
+            mediaType = AppMediaType.EBOOK,
+            readAlongAvailable = true,
+        )
+
+        assertSame(book, detailListenTarget(book, null))
+    }
+
+    @Test
     fun storytellerReadAloudListensToItselfEvenWhenLinkedToAudiobookshelf() {
         val storyteller = Book(
             id = "storyteller",

@@ -18,7 +18,7 @@ The dependency graph enforces this: `:hearth-ui` cannot see an engine class, so 
 |---|---|---|
 | `LibraryFacade` | `AggregatorRepository`, `BookCacheDao`, paging sources | Home and library flows (`continueBooks`, `recentlyAdded`, `downloaded`, `allBooks`, `libraries`), series/author/shelf browsing and paging, edition links, collection membership, progress and finished mutations. |
 | `PlaybackFacade` | `AudioPlaybackManager` via `MediaController` | `transport` / `nowPlaying` / `queue` StateFlows, `open`, `playAll`, queue mutation, transport controls, an error `SharedFlow`. |
-| `PlayerSessionFacade` | `PlayerChapterService`, `PlayerBookmarkService`, `PlayerSleepTimerService`, `PlayerProgressService`, `PlaybackChapterStore` | Chapter list and current index, bookmark CRUD and seek, sleep timer including end-of-chapter. |
+| `PlayerSessionFacade` | `PlayerChapterService`, `PlayerBookmarkService`, `PlayerSleepTimerService`, `PlayerProgressService`, `PlaybackChapterStore`, `PlayerReadAloudService` | Chapter list and current index, bookmark CRUD and seek, sleep timer including end-of-chapter, synchronized read-aloud sentences and sentence seeking. |
 | `AnnotationsFacade` | `AnnotationRepository`, `ReaderAnnotationDao` | Per-book annotation flow, tags, refresh, update, delete. |
 | `SourcesFacade` | `ConnectionRegistry` | Connection list, enable/disable, edit, remove. Provider auth flows stay in their own Activities. |
 | `PreferencesFacade` | `PreferencesManager` (DataStore) | Typed slices only — theme mode, OLED, accent, text scale, reduce motion, skip intervals, default speed, library layout/sort/filters, start tab, home section order. Not a whole-store passthrough. |
@@ -30,6 +30,16 @@ The dependency graph enforces this: `:hearth-ui` cannot see an engine class, so 
 | `SleepDataFacade` | `HealthConnectSleepDataFacade` | Sleep-session snapshot for the sleep-tracking surfaces. |
 
 Readium, downloads, and per-book sync are not yet behind facades. Reader Activities in `:app` still talk to `ReadiumManager`, `OfflineDownloadManager`, and `SyncCoordinator` directly, because those engines need Android lifecycle integration. New general-purpose UI must not follow that path — add a facade instead.
+
+## Read-aloud inside the player
+
+The player’s Read control replaces the cover with the current chapter’s synchronized text while retaining the audiobook transport, speed, sleep timer, chapters and bookmarks. `PlayerSessionFacade.readAloud` carries the active book key, sentence list and active sentence. Sentence seeks use whole-book milliseconds and reject stale book state.
+
+`PlayerReadAloudService` reads EPUB media overlays in the captured profile graph. Narrated EPUBs extract their embedded audio into that profile’s cache and use ordinary audiobook playback. Their measured audio timeline takes precedence over external audiobook tracks. Linked audiobooks use matched track names and durations, or a duration-checked overlay timeline. EPUB cache identity includes the connection; reused offline files require a matching manifest identity.
+
+The Compose panel has no reader-engine dependency. It follows the active sentence, supports tapping to seek, and respects reduced motion and e-ink settings.
+
+Verified October 6, 2026: debug, test APK and minified release builds passed with no new compiler warnings. Core, engine, Hearth UI and app unit suites reported 894 tests with one skipped and zero failures; ten cover player narration timing. Pixel 7a instrumentation reported OK (149 tests, five skipped), including both player text-panel tests. A two-chapter local narrated EPUB passed Listen, sentence seeking across files, chapter navigation, highlighting after background playback, and reopening through the mini-player. The same fixture was exercised in the iOS player on iPhone Air Simulator; AllTests passed 1,247 tests with ten skipped and zero failures. Existing iOS audio-session runtime warnings remain; Xcode's diagnostic collection timed out after the tests, with a successful exit and a Passed result bundle. Real-server alignment and physical iPhone checks remain separate acceptance checks.
 
 ## Binding pattern
 

@@ -1,18 +1,14 @@
 package com.enve.app.hearth
 
 import android.content.Context
-import androidx.work.BackoffPolicy
-import androidx.work.Constraints
-import androidx.work.Data
+import com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
+import com.enve.core.data.local.ProfileStorageLocations
 import androidx.work.ExistingWorkPolicy
-import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.WorkManager
 import com.enve.app.data.links.BookLinkRepository
 import com.enve.app.storyalign.StoryAlignJobEntity
 import com.enve.app.storyalign.StoryAlignJobRepository
 import com.enve.app.storyalign.StoryAlignOutputStore
 import com.enve.app.storyalign.StoryAlignReport
-import com.enve.app.storyalign.StoryAlignWorker
 import com.enve.core.data.local.LinkedBookPair
 import com.enve.core.data.model.Book
 import com.enve.engine.storyalign.StoryAlignFacade
@@ -28,7 +24,6 @@ import kotlinx.coroutines.flow.map
 import kotlinx.serialization.json.Json
 import java.io.File
 import java.util.UUID
-import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -38,6 +33,8 @@ class StoryAlignFacadeImpl @Inject constructor(
     private val repo: StoryAlignJobRepository,
     private val bookLinks: BookLinkRepository,
     private val outputs: StoryAlignOutputStore,
+    private val scheduler: com.enve.app.storyalign.StoryAlignJobScheduler,
+    private val locations: ProfileStorageLocations = ProfileStorageLocations.forProfile(context, DEFAULT_ADULT_PROFILE_ID),
 ) : StoryAlignFacade {
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -80,7 +77,7 @@ class StoryAlignFacadeImpl @Inject constructor(
             stageProgress = 0f,
             overallProgress = 0f,
             settingsJson = json.encodeToString(StoryAlignSettings.serializer(), settings),
-            sessionDir = File(context.filesDir, "storyalign/$id").absolutePath,
+            sessionDir = File(locations.filesDirectory, "storyalign/$id").absolutePath,
             outputPath = null,
             outputBookId = null,
             reportJson = null,
@@ -97,7 +94,7 @@ class StoryAlignFacadeImpl @Inject constructor(
     override suspend fun cancelJob(jobId: String) {
 
         repo.markCancelled(jobId)
-        WorkManager.getInstance(context).cancelUniqueWork(workName(jobId))
+        scheduler.cancel(jobId)
     }
 
     override suspend fun retryJob(jobId: String) {
@@ -125,7 +122,7 @@ class StoryAlignFacadeImpl @Inject constructor(
     }
 
     override suspend fun deleteJob(jobId: String, deleteOutput: Boolean) {
-        WorkManager.getInstance(context).cancelUniqueWork(workName(jobId))
+        scheduler.cancel(jobId)
         val job = repo.get(jobId)
         repo.delete(jobId)
         if (job != null) {
@@ -135,20 +132,8 @@ class StoryAlignFacadeImpl @Inject constructor(
     }
 
     private fun enqueue(jobId: String, settings: StoryAlignSettings, policy: ExistingWorkPolicy) {
-        val constraints = Constraints.Builder()
-            .setRequiresStorageNotLow(true)
-            .apply { if (!settings.allowOnBattery) setRequiresCharging(true) }
-            .build()
-        val request = OneTimeWorkRequestBuilder<StoryAlignWorker>()
-            .setConstraints(constraints)
-            .setInputData(Data.Builder().putString(StoryAlignWorker.KEY_JOB_ID, jobId).build())
-            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
-            .addTag(StoryAlignWorker.WORK_TAG)
-            .build()
-        WorkManager.getInstance(context).enqueueUniqueWork(workName(jobId), policy, request)
+        scheduler.enqueue(jobId, settings, policy)
     }
-
-    private fun workName(jobId: String) = "storyalign:$jobId"
 
     private fun StoryAlignJobEntity.toUi(): StoryAlignJobUi {
         val report = StoryAlignReport.decode(reportJson)

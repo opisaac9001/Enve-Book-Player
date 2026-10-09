@@ -59,15 +59,19 @@ import kotlinx.coroutines.launch
 
 @AndroidEntryPoint
 class ComicReaderActivity : ComponentActivity() {
+    @javax.inject.Inject lateinit var profileCoordinator: com.enve.app.profiles.ProfileSwitchCoordinator
+    @javax.inject.Inject lateinit var profileLifecycle: com.enve.app.profiles.ProfileLifecycleRegistry
+    private lateinit var profileBinding: com.enve.app.profiles.ProfileActivityBinding
 
-    private val vm: ComicReaderViewModel by viewModels()
-    private val themeViewModel: ThemeViewModel by viewModels()
+
+    private val vm: ComicReaderViewModel by viewModels { profileBinding.factory }
+    private val themeViewModel: ThemeViewModel by viewModels { profileBinding.factory }
     private lateinit var insetsController: WindowInsetsControllerCompat
 
-    @javax.inject.Inject lateinit var epdRefreshManager: com.enve.app.eink.EpdRefreshManager
-    @javax.inject.Inject lateinit var audioPlaybackManager: com.enve.app.playback.AudioPlaybackManager
-    @javax.inject.Inject lateinit var lastOpenedBookStore: LastOpenedBookStore
-    @javax.inject.Inject lateinit var hearthPreferences: com.enve.engine.prefs.PreferencesFacade
+    private val epdRefreshManager get() = profileBinding.runtime.component.epdRefreshManager()
+    private val audioPlaybackManager get() = profileBinding.runtime.component.audioPlayback()
+    private val lastOpenedBookStore get() = profileBinding.runtime.component.lastOpenedBookStore()
+    private val hearthPreferences get() = profileBinding.runtime.component.preferencesFacade()
 
     fun refreshEinkAfterPageTurn() {
         if (themeViewModel.themeState.value.einkProfile.active) {
@@ -94,6 +98,7 @@ class ComicReaderActivity : ComponentActivity() {
             format: String?,
             locator: String?,
         ): Intent = Intent(context, ComicReaderActivity::class.java).apply {
+            com.enve.app.profiles.ProfileActivityBinding.capture(context, this)
             putExtra(EXTRA_BOOK_ID, bookId)
             putExtra(EXTRA_BOOK_SOURCE, bookSource.name)
             if (connectionId != null) {
@@ -109,6 +114,10 @@ class ComicReaderActivity : ComponentActivity() {
     @Suppress("DEPRECATION")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        profileBinding = com.enve.app.profiles.ProfileActivityBinding.attach(this, profileCoordinator, profileLifecycle) {
+            vm.checkpointForProfileSwitch()
+        } ?: run { finish(); return }
+
 
         WindowCompat.setDecorFitsSystemWindows(window, false)
         window.statusBarColor = android.graphics.Color.BLACK
@@ -207,11 +216,12 @@ class ComicReaderActivity : ComponentActivity() {
 
     override fun onPause() {
         super.onPause()
+        if (!::profileBinding.isInitialized || profileBinding.retired) return
         vm.syncProgress()
     }
 
     override fun onDestroy() {
-        if (isFinishing) vm.endStreamingSession()
+        if (::profileBinding.isInitialized && !profileBinding.retired && isFinishing) vm.endStreamingSession()
         super.onDestroy()
     }
 

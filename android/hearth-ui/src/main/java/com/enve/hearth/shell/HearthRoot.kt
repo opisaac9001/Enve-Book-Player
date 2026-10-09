@@ -32,7 +32,7 @@ import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
-import androidx.hilt.navigation.compose.hiltViewModel
+import com.enve.hearth.shell.profileViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.ImageLoader
 import com.enve.core.data.model.AnnotationMedia
@@ -60,6 +60,8 @@ import com.enve.hearth.journal.HearthStatsHubScreen
 import com.enve.hearth.library.HearthLibraryScreen
 import com.enve.hearth.player.PlayerScreen
 import com.enve.hearth.podcasts.PodcastShowScreen
+import com.enve.hearth.podcasts.PodcastEpisodeScreen
+import com.enve.hearth.podcasts.PodcastsScreen
 import com.enve.hearth.podcasts.isPodcastShow
 import com.enve.hearth.player.HearthSleepInsightsScreen
 import com.enve.hearth.settings.HearthSettingsDestination
@@ -69,9 +71,13 @@ import com.enve.engine.prefs.HearthStartTab
 @Composable
 fun HearthRoot(
     imageLoader: ImageLoader? = null,
+    onOpenProfiles: (() -> Unit)? = null,
+    profileName: String? = null,
     initialShowSettings: Boolean = false,
     showPlayerRequest: Boolean = false,
     onPlayerRequestConsumed: () -> Unit = {},
+    openBookRequest: Book? = null,
+    onBookRequestConsumed: () -> Unit = {},
     onOpenEbook: (Book) -> Unit = {},
     onOpenAnnotation: (Book, ReaderAnnotation) -> Unit = { book, _ -> onOpenEbook(book) },
     onAskLibrarian: (Book) -> Unit = {},
@@ -81,7 +87,7 @@ fun HearthRoot(
     playerTopAction: @Composable () -> Unit = {},
     playerOverlay: @Composable () -> Unit = {},
 ) {
-    val vm: HearthShellViewModel = hiltViewModel()
+    val vm: HearthShellViewModel = profileViewModel()
     val mode by vm.themeMode.collectAsStateWithLifecycle()
     val oled by vm.oled.collectAsStateWithLifecycle()
     val uiTextScale by vm.uiTextScale.collectAsStateWithLifecycle()
@@ -124,7 +130,14 @@ fun HearthRoot(
             var showBookOrbitAchievements by rememberSaveable { mutableStateOf(false) }
             var showBookOrbitHighlights by rememberSaveable { mutableStateOf(false) }
             var detailBook by remember { mutableStateOf<Book?>(null) }
+            var episodeBook by remember { mutableStateOf<Book?>(null) }
             var castBlockedTitle by remember { mutableStateOf<String?>(null) }
+            LaunchedEffect(openBookRequest) {
+                if (openBookRequest != null) {
+                    detailBook = openBookRequest
+                    onBookRequestConsumed()
+                }
+            }
             LaunchedEffect(preferredStartTab, startupTabApplied) {
                 val preferred = preferredStartTab
                 if (!startupTabApplied && preferred != null) {
@@ -175,7 +188,7 @@ fun HearthRoot(
             }
             val bookOrbitOverlayVisible = showBookOrbitInsights || showBookOrbitAchievements || showBookOrbitHighlights
             val overlayVisible = showPlayer || showSettings || showCompletionCenter || showInsights ||
-                showStatsHub || showSleepInsights || bookOrbitOverlayVisible || detailBook != null
+                showStatsHub || showSleepInsights || bookOrbitOverlayVisible || detailBook != null || episodeBook != null
             BackHandler(enabled = overlayVisible || tab != HearthTab.HEARTH) {
                 when {
                     showPlayer -> {
@@ -183,6 +196,7 @@ fun HearthRoot(
                         pendingPlayerBookId = null
                     }
                     showSettings -> showSettings = false
+                    episodeBook != null -> episodeBook = null
                     detailBook != null -> detailBook = null
                     showBookOrbitInsights -> showBookOrbitInsights = false
                     showBookOrbitAchievements -> showBookOrbitAchievements = false
@@ -195,23 +209,27 @@ fun HearthRoot(
                 }
             }
 
+            val listenBook: (Book) -> Unit = { book ->
+                pendingPlayerBookId = book.id
+                vm.openAudio(book)
+                showPlayer = true
+            }
             val playBook: (Book) -> Unit = { book ->
                 if (book.mediaType == AppMediaType.EBOOK) {
                     onOpenEbook(book)
                 } else if (book.isPodcastShow) {
                     detailBook = book
                 } else {
-                    pendingPlayerBookId = book.id
-                    vm.openAudio(book)
-                    showPlayer = true
+                    listenBook(book)
                 }
             }
             val mantelBook = lastOpenedBook
             val lastOpenedIsActiveAudio = mantelBook?.let { book ->
-                book.mediaType != AppMediaType.EBOOK && nowPlaying?.bookKey == book.uniqueKey
+                nowPlaying?.bookKey == book.uniqueKey
             } == true
             val openMantelItem: () -> Unit = {
                 when {
+                    lastOpenedIsActiveAudio -> showPlayer = true
                     mantelBook?.mediaType == AppMediaType.EBOOK -> onOpenEbook(mantelBook)
                     mantelBook != null && !lastOpenedIsActiveAudio -> playBook(mantelBook)
                     nowPlaying != null -> showPlayer = true
@@ -219,12 +237,15 @@ fun HearthRoot(
             }
             val activateMantelItem: () -> Unit = {
                 when {
-                    mantelBook?.mediaType == AppMediaType.EBOOK -> onOpenEbook(mantelBook)
                     lastOpenedIsActiveAudio || (mantelBook == null && nowPlaying != null) -> vm.togglePlayPause()
+                    mantelBook?.mediaType == AppMediaType.EBOOK -> onOpenEbook(mantelBook)
                     mantelBook != null -> playBook(mantelBook)
                 }
             }
-            val selectBook: (Book) -> Unit = { detailBook = it }
+            val selectBook: (Book) -> Unit = {
+                if (it.mediaType == AppMediaType.PODCAST && it.episodeId != null) episodeBook = it
+                else detailBook = it
+            }
             val jumpToAnnotation: (Book, ReaderAnnotation) -> Unit = { book, annotation ->
                 val positionMs = annotation.audioPositionMs
                 if (AnnotationMedia.parse(annotation.media) == AnnotationMedia.AUDIOBOOK || positionMs != null) {
@@ -243,6 +264,7 @@ fun HearthRoot(
                 tab,
                 showPlayer,
                 detailBook != null,
+                episodeBook != null,
                 showSettings,
                 showCompletionCenter,
                 showInsights,
@@ -258,10 +280,17 @@ fun HearthRoot(
             Box(Modifier.fillMaxSize().background(palette.bg)) {
                 when (tab) {
                     HearthTab.HEARTH -> HearthHomeScreen(
+                        onOpenProfiles = onOpenProfiles,
+                        profileName = profileName,
                         isPlaying = transport.isPlaying && lastOpenedIsActiveAudio,
                         onSelectBook = selectBook,
                         onPlayBook = playBook,
+                        onListenBook = listenBook,
+                        onReadBook = onOpenEbook,
                         onOpenSettings = { showSettings = true },
+                        onAddSource = onManageSources,
+                        onOpenPodcasts = { tab = HearthTab.PODCASTS },
+                        onOpenHardcover = { onOpenSettingsDestination(HearthSettingsDestination.Hardcover) },
                     )
                     HearthTab.LIBRARY -> HearthLibraryScreen(
                         covered = overlayVisible,
@@ -270,6 +299,11 @@ fun HearthRoot(
                         onPlaybackStarted = { showPlayer = true },
                         onAddSource = onManageSources,
                         onOpenSettings = { showSettings = true },
+                    )
+                    HearthTab.PODCASTS -> PodcastsScreen(
+                        onOpenShow = selectBook,
+                        onOpenEpisode = { episodeBook = it },
+                        onPlay = listenBook,
                     )
                     HearthTab.JOURNAL -> HearthJournalScreen(
                         onSelectBook = selectBook,
@@ -397,6 +431,7 @@ fun HearthRoot(
                                     vm.openAudio(it)
                                     showPlayer = true
                                 },
+                                onOpenEpisode = { episodeBook = it },
                             )
                         } else {
                             BookDetailScreen(
@@ -421,6 +456,20 @@ fun HearthRoot(
                                 onOpenAnnotation = jumpToAnnotation,
                             )
                         }
+                    }
+                }
+
+                AnimatedVisibility(
+                    visible = episodeBook != null,
+                    enter = enterT,
+                    exit = exitT,
+                ) {
+                    episodeBook?.let { episode ->
+                        PodcastEpisodeScreen(
+                            episode = episode,
+                            onBack = { episodeBook = null },
+                            onPlay = listenBook,
+                        )
                     }
                 }
 
@@ -474,6 +523,7 @@ fun HearthRoot(
 private fun HearthStartTab.toHearthTab(): HearthTab = when (this) {
     HearthStartTab.HEARTH -> HearthTab.HEARTH
     HearthStartTab.LIBRARY -> HearthTab.LIBRARY
+    HearthStartTab.PODCASTS -> HearthTab.PODCASTS
     HearthStartTab.JOURNAL -> HearthTab.JOURNAL
 }
 

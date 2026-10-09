@@ -49,7 +49,7 @@ cd <repository-directory>
 xcodebuild -resolvePackageDependencies -project enve.xcodeproj -scheme enve
 ```
 
-For optional Google Drive or Dropbox development, create the ignored local settings file:
+For optional Google Drive, Dropbox, or OneDrive development, create the ignored local settings file:
 
 ```sh
 cp enve/Configuration/DeveloperSettings.example.plist \
@@ -57,6 +57,7 @@ cp enve/Configuration/DeveloperSettings.example.plist \
 ```
 
 Use developer-owned OAuth applications and redirect schemes. Never commit the populated file. Do not put OAuth client secrets in an iOS application.
+For OneDrive, register a public native client using the redirect URI and delegated permission in [the OneDrive setup guide](docs/reference/onedrive.md).
 
 ## Build the iOS app
 

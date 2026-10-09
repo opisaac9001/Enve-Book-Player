@@ -461,11 +461,12 @@ enum EPUB3SMILParser {
         clips: [AudioOverlayClip],
         publication: Publication,
         bookId: String,
-        epubFileURL: URL? = nil
+        epubFileURL: URL? = nil,
+        audioRoot: URL = FileManager.default.temporaryDirectory.appendingPathComponent("enve-overlay")
     ) async throws -> URL {
 
-        let audioDir = overlayAudioDirectory(bookId: bookId, epubFileURL: epubFileURL)
-        pruneOverlayAudio(keeping: audioDir)
+        let audioDir = overlayAudioDirectory(bookId: bookId, epubFileURL: epubFileURL, audioRoot: audioRoot)
+        pruneOverlayAudio(keeping: audioDir, audioRoot: audioRoot)
         try FileManager.default.createDirectory(at: audioDir, withIntermediateDirectories: true)
 
         let uniqueAudioSrcs = Array(Set(clips.map(\.audioSrc)))
@@ -582,10 +583,6 @@ enum EPUB3SMILParser {
         return audioDir
     }
 
-    private static func overlayAudioRoot() -> URL {
-        FileManager.default.temporaryDirectory.appendingPathComponent("enve-overlay")
-    }
-
     private static func publicationKey(for epubFileURL: URL?) -> String {
         let values = epubFileURL.flatMap {
             try? $0.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
@@ -595,18 +592,18 @@ enum EPUB3SMILParser {
         return "\(epubFileURL?.lastPathComponent ?? "-")-\(size)-\(modified)"
     }
 
-    private static func overlayAudioDirectory(bookId: String, epubFileURL: URL?) -> URL {
+    private static func overlayAudioDirectory(bookId: String, epubFileURL: URL?, audioRoot: URL) -> URL {
         let values = epubFileURL.flatMap {
             try? $0.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
         }
         let size = values?.fileSize ?? 0
         let modified = Int((values?.contentModificationDate ?? .distantPast).timeIntervalSince1970)
-        return overlayAudioRoot()
+        return audioRoot
             .appendingPathComponent(bookId)
             .appendingPathComponent("\(size)-\(modified)")
     }
 
-    private static func pruneOverlayAudio(keeping audioDir: URL) {
+    private static func pruneOverlayAudio(keeping audioDir: URL, audioRoot: URL) {
         let fileManager = FileManager.default
         let keep = audioDir.standardizedFileURL.path
         let bookDir = audioDir.deletingLastPathComponent().standardizedFileURL.path
@@ -623,7 +620,7 @@ enum EPUB3SMILParser {
             }
         }
 
-        prune(overlayAudioRoot(), survivor: bookDir)
+        prune(audioRoot, survivor: bookDir)
         prune(audioDir.deletingLastPathComponent(), survivor: keep)
     }
 

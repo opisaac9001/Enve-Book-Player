@@ -11,7 +11,7 @@ private final class SyncLifecycleRecorder {
 
 @MainActor
 struct SyncLifecycleControllerTests {
-    @Test func routesApplicationEventsToSyncActions() async throws {
+    @Test(.timeLimit(.minutes(1))) func routesApplicationEventsToSyncActions() async throws {
         let center = NotificationCenter()
         let events = SyncLifecycleEvents(
             didEnterBackground: Notification.Name("test.background"),
@@ -20,24 +20,27 @@ struct SyncLifecycleControllerTests {
             audioInterruption: nil
         )
         let recorder = SyncLifecycleRecorder()
+        let (observedEvents, continuation) = AsyncStream.makeStream(of: Void.self)
+        defer { continuation.finish() }
         let controller = SyncLifecycleController(
             center: center,
             events: events,
-            save: { recorder.saves.append($0) },
-            enterForeground: { recorder.foregroundCount += 1 }
+            save: { recorder.saves.append($0); continuation.yield(()) },
+            enterForeground: { recorder.foregroundCount += 1; continuation.yield(()) }
         )
         controller.start()
+        defer { controller.stop() }
 
         center.post(name: events.didEnterBackground, object: nil)
         center.post(name: events.willTerminate, object: nil)
         center.post(name: events.willEnterForeground, object: nil)
-        try await Task.sleep(for: .milliseconds(20))
+        for await _ in observedEvents.prefix(3) {}
 
         #expect(recorder.saves == [.appBackground, .appTermination])
         #expect(recorder.foregroundCount == 1)
     }
 
-    @Test func startIsIdempotentAndStopRemovesObservers() async throws {
+    @Test(.timeLimit(.minutes(1))) func startIsIdempotentAndStopRemovesObservers() async throws {
         let center = NotificationCenter()
         let events = SyncLifecycleEvents(
             didEnterBackground: Notification.Name("test.background"),
@@ -46,19 +49,21 @@ struct SyncLifecycleControllerTests {
             audioInterruption: nil
         )
         let recorder = SyncLifecycleRecorder()
+        let (observedEvents, continuation) = AsyncStream.makeStream(of: Void.self)
+        defer { continuation.finish() }
         let controller = SyncLifecycleController(
             center: center,
             events: events,
-            save: { recorder.saves.append($0) },
-            enterForeground: { recorder.foregroundCount += 1 }
+            save: { recorder.saves.append($0); continuation.yield(()) },
+            enterForeground: { recorder.foregroundCount += 1; continuation.yield(()) }
         )
         controller.start()
         controller.start()
         center.post(name: events.didEnterBackground, object: nil)
-        try await Task.sleep(for: .milliseconds(20))
+        for await _ in observedEvents.prefix(1) {}
         controller.stop()
         center.post(name: events.didEnterBackground, object: nil)
-        try await Task.sleep(for: .milliseconds(20))
+        await Task.yield()
 
         #expect(recorder.saves == [.appBackground])
     }

@@ -56,10 +56,18 @@ public actor HistorySessionStore {
         readingURL = dir.appendingPathComponent("reading_sessions.json")
     }
 
+    init(directory: URL) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        listeningURL = directory.appendingPathComponent("listening_sessions.json")
+        readingURL = directory.appendingPathComponent("reading_sessions.json")
+        listeningCache = try Self.readSessions(from: listeningURL)
+        readingCache = try Self.readSessions(from: readingURL)
+    }
+
     public func appendListeningSession(_ session: HistorySession) async {
         var sessions = await loadListeningSessions()
         sessions.insert(session, at: 0)
-        if sessions.count > 500 { sessions = Array(sessions.prefix(500)) }
+        sessions = Self.trimmed(sessions)
         listeningCache = sessions
         persist(sessions, to: listeningURL)
     }
@@ -75,7 +83,7 @@ public actor HistorySessionStore {
     public func appendReadingSession(_ session: HistorySession) async {
         var sessions = await loadReadingSessions()
         sessions.insert(session, at: 0)
-        if sessions.count > 500 { sessions = Array(sessions.prefix(500)) }
+        sessions = Self.trimmed(sessions)
         readingCache = sessions
         persist(sessions, to: readingURL)
     }
@@ -119,7 +127,7 @@ public actor HistorySessionStore {
         }
         sessions.append(contentsOf: imported)
         sessions.sort { $0.endTime > $1.endTime }
-        if sessions.count > 500 { sessions = Array(sessions.prefix(500)) }
+        sessions = Self.trimmed(sessions)
 
         if mediaType == .audiobook {
             listeningCache = sessions
@@ -131,11 +139,26 @@ public actor HistorySessionStore {
         return previousRemoteIds.symmetricDifference(importedIds).count
     }
 
+    // Imported server sessions never push out this device's own sessions, which may not be uploaded yet.
+    private static func trimmed(_ sessions: [HistorySession], cap: Int = 500) -> [HistorySession] {
+        guard sessions.count > cap else { return sessions }
+        let ordered = sessions.sorted { $0.endTime > $1.endTime }
+        let local = ordered.filter { $0.source == .local }
+        guard local.count < cap else { return Array(local.prefix(cap)) }
+        let remote = ordered.filter { $0.source != .local }.prefix(cap - local.count)
+        return (local + remote).sorted { $0.endTime > $1.endTime }
+    }
+
     private func load(from url: URL) -> [HistorySession] {
-        guard let data = try? Data(contentsOf: url) else { return [] }
+        (try? Self.readSessions(from: url)) ?? []
+    }
+
+    private static func readSessions(from url: URL) throws -> [HistorySession] {
+        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+        let data = try Data(contentsOf: url)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return (try? decoder.decode([HistorySession].self, from: data)) ?? []
+        return try decoder.decode([HistorySession].self, from: data)
     }
 
     private func persist(_ sessions: [HistorySession], to url: URL) {

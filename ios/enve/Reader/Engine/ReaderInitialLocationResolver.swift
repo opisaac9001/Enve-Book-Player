@@ -29,12 +29,16 @@ final class ReaderInitialLocationResolver {
     private let tocIndex: ReaderTOCIndex
     private let readAloud: ReaderReadAloudController
 
+    private let profileSession: ProfileSession
+
     init(
         book: Book,
         libraryCache: LibraryBookCache,
         tocIndex: ReaderTOCIndex,
-        readAloud: ReaderReadAloudController
+        readAloud: ReaderReadAloudController,
+        profileSession: ProfileSession = .owner
     ) {
+        self.profileSession = profileSession
         self.book = book
         self.libraryCache = libraryCache
         self.tocIndex = tocIndex
@@ -143,7 +147,7 @@ final class ReaderInitialLocationResolver {
     }
 
     private func preferredLocation(in publication: Publication) async -> Locator? {
-        MediaOverlayPlaybackService.shared.syncCurrentPlaybackPositionIfActive(for: book)
+        profileSession.playback.mediaOverlay.syncCurrentPlaybackPositionIfActive(for: book)
         let freshestBook = libraryCache.bookInMemory(uniqueId: book.uniqueId) ?? book
         let isReadAloudLike = freshestBook.hasEPUB3MediaOverlay || readAloud.hasMediaOverlay
         let rawLocator = freshestBook.epubLocator.flatMap { $0.isEmpty ? nil : $0 }
@@ -200,11 +204,11 @@ final class ReaderInitialLocationResolver {
         for freshestBook: Book,
         in publication: Publication
     ) async -> Locator? {
-        guard let linkedBook = EbookAudiobookLinker.shared.linkedAudiobook(for: freshestBook) else {
+        guard let linkedBook = profileSession.playback.linker.linkedAudiobook(for: freshestBook) else {
             return nil
         }
         let linked = libraryCache.bookInMemory(stableId: linkedBook.stableId) ?? linkedBook
-        let stored = BookProgressStore.shared.loadProgress(for: linked)
+        let stored = profileSession.bookProgress.loadProgress(for: linked)
         let duration = max(linked.duration ?? 0, stored?.duration ?? 0)
         let linkedDate = linked.lastUpdate
         let storedDate = stored.map { Date(timeIntervalSince1970: $0.lastUpdated) } ?? .distantPast
@@ -212,7 +216,7 @@ final class ReaderInitialLocationResolver {
         let audioTime = storedDate > linkedDate ? (stored?.progress ?? 0) : linked.currentTime
         guard duration > 0,
             audioDate >= freshestBook.lastUpdate,
-            let hint = LinkedBookProgressCoordinator.shared.calibratedLocatorHint(
+            let hint = profileSession.linkedProgress.calibratedLocatorHint(
                 ebookStableId: freshestBook.stableId,
                 audiobookStableId: linked.stableId,
                 audioProgress: min(max(audioTime / duration, 0), 1)

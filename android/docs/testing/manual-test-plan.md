@@ -101,6 +101,31 @@ Several sections need setup that a bare device cannot provide: a live server wit
 
 ## Android Auto
 
+Run these checks through a compatible vehicle or the supported Desktop Head Unit, using the same APK as the phone checks. MediaBrowser instrumentation and unit tests are supplemental evidence.
+
+- [ ] Listen on the phone, continue from the car, pause in the car, disconnect, and reopen on the phone; resume at the latest car checkpoint
+- [ ] Seek while paused, including an intentional rewind to zero and a seek across audiobook files; pause, stop, and disconnect retain the chosen absolute position
+- [ ] Repeat with downloaded audio while offline, reopen, reconnect, and confirm the latest checkpoint reaches the provider without replaying an older position
+- [ ] Delay or fail a server progress response while advancing or rewinding; a late acknowledgement cannot replace the local checkpoint
+- [ ] Recreate the playback service, remove the phone task, and recreate the app process through supported user flows; resume from the persisted checkpoint (allow the five-second interval during uninterrupted playback)
+- [ ] Use books with matching provider IDs on different connections and confirm progress remains scoped to the selected book
+- [ ] Reconcile a newer remote checkpoint on both phone and car; unresolved conflicts retain local playback and the phone offers the existing conflict choice
+- [ ] With server sync disabled, car progress still saves locally and sends no provider write
+- [ ] Disable or remove connection A while its write waits; an enabled connection B with the same source must receive no request
+- [ ] Disable the active connection, then stop/clear and switch profile; local checkpoint/history shutdown completes without sending a provider request or hanging
+- [ ] Refresh the catalog during car playback, including a pending offline zero rewind; refreshed metadata must retain the current local checkpoint
+- [ ] After a successful normal push, open a newer checkpoint from another device; an acknowledged pending row must not hold local playback indefinitely
+- [ ] Reopen a zero checkpoint through both the Hearth phone player and the legacy phone player when the provider session suggests a positive position
+- [ ] Block a local checkpoint save, stop and clear the queue, then destroy the service through supported user flows; the captured terminal checkpoint must persist
+- [ ] With a fixture containing future server last-read metadata, seek to zero, pause, stop and reopen; fresh local checkpoints must persist
+- [ ] Use injected checkpoint times to simulate wall-clock rollback without changing the device clock; elapsed-time throttling, zero rewind and shutdown saves must still work
+- [ ] Block the session state mutex after capturing 120 seconds, save a newer zero seek, then release it; the older snapshot must be superseded and must not acknowledge a newer pending snapshot
+- [ ] Hold local persistence after capturing a zero seek while an earlier automatic remote pull completes; the remote mirror must yield and the zero must still save. An explicit remote choice may replace an earlier local capture, but a seek captured after that choice must win
+- [ ] Commit a zero checkpoint and pending push between the resolver cache/pending reads; opening returns the coherent zero checkpoint
+- [ ] Submit REMOTE in the phone conflict prompt, then seek to zero before its continuation runs; that later seek must prevent the mirror and remain saveable
+- [ ] Delay ABS session close, native listening-history upload, or Silo session progress while resetting or marking an audiobook finished; the final provider and phone position must reflect the latest intended operation
+
+
 - [ ] Enve appears in the media launcher on a compatible car or Desktop Head Unit
 - [ ] Recently played, downloads, and provider/library browsing load without unsafe or dead-end rows
 - [ ] Selecting a playable book starts playback and updates title, author, artwork, duration, and position
@@ -141,6 +166,7 @@ Several sections need setup that a bare device cannot provide: a live server wit
 - [ ] Covers are cached; the Downloaded filter reflects state
 - [ ] Interrupting a download and resuming continues rather than restarting
 - [ ] Airplane mode: cached books open and play; uncached books fail gracefully
+- [ ] Close and immediately reopen a streamed comic; pages remain available after cleanup
 
 ## Sync and progress
 
@@ -148,6 +174,11 @@ Several sections need setup that a bare device cannot provide: a live server wit
 - [ ] Advance on one device, open on another: pull-on-open offers or applies the newer position
 - [ ] Finished status syncs
 - [ ] Offline progress queues and flushes on reconnect
+- [ ] Sync Center's pending count changes when persistent retries are added or cleared
+- [ ] Connect two Grimmory servers with the same book ID; progress and narrator backfills remain independent
+- [ ] Edit a KOReader link while another book syncs; both links survive
+
+`PublicSourceRegressionTest` covers these cases with isolated profiles and local server fixtures. `ProfilePersonalStoresTest` verifies profile persistence and late writes without changing the owner's data.
 
 ## Wear companion
 

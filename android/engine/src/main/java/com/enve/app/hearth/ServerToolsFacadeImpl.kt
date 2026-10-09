@@ -65,7 +65,7 @@ class ServerToolsFacadeImpl @Inject constructor(
                 kavitaTools.stats().getOrNull()?.let(ServerToolsMapping::kavitaStats).orEmpty()
             }
             BookSource.AUDIOBOOKSHELF -> scoped(connectionId) {
-                absPersonal.listeningStats().getOrNull()?.let(ServerToolsMapping::absStats).orEmpty()
+                absPersonal.listeningStats().getOrThrow()?.let(ServerToolsMapping::absStats).orEmpty()
             }
             else -> emptyList()
         }

@@ -18,8 +18,11 @@ final class PodcastSubscriptionStore {
 
     private(set) var feeds: [PodcastSubscription]
 
-    private init() {
-        if let data = UserDefaults.standard.data(forKey: Self.storageKey),
+    @ObservationIgnored private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        if let data = defaults.data(forKey: Self.storageKey),
             let decoded = try? JSONDecoder().decode([PodcastSubscription].self, from: data)
         {
             self.feeds = decoded
@@ -44,6 +47,6 @@ final class PodcastSubscriptionStore {
 
     private func persist() {
         guard let data = try? JSONEncoder().encode(feeds) else { return }
-        UserDefaults.standard.set(data, forKey: Self.storageKey)
+        defaults.set(data, forKey: Self.storageKey)
     }
 }

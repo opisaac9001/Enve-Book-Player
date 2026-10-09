@@ -38,6 +38,7 @@ struct SettingsScaffold<Content: View>: View {
         .scrollIndicators(.hidden)
         .background(HearthBackground())
         .toolbar(.hidden, for: .navigationBar)
+        .hearthInteractiveBack()
     }
 }
 
@@ -158,13 +159,63 @@ struct SettingsMenuRow<Choices: View>: View {
     }
 }
 
+struct SettingsParentGate<Content: View>: View {
+    private let content: () -> Content
+
+    @Environment(ProfileSwitchCoordinator.self) private var profiles
+    @Environment(\.hearth) private var hearth
+    @State private var pin = ""
+    @State private var failed = false
+
+    init(@ViewBuilder content: @escaping () -> Content) {
+        self.content = content
+    }
+
+    var body: some View {
+        if profiles.isParentAuthorizationRequired && !profiles.isParentAuthorized {
+            SettingsScaffold(
+                overline: "Adult controls",
+                title: "Ask an adult",
+                subtitle: "Enter the adult PIN to manage sources, keys, and data on this device."
+            ) {
+                SourcesCard {
+                    SourcesField(label: "Adult PIN", text: $pin, secure: true)
+                        .keyboardType(.numberPad)
+                        .accessibilityIdentifier("settings-parent-pin")
+                    EmberButton(title: "Unlock", systemImage: "lock.open") { unlock() }
+                        .disabled(pin.isEmpty)
+                }
+                if failed {
+                    Text("That PIN didn't work. Too many incorrect attempts temporarily lock adult controls.")
+                        .font(.hearthCaption)
+                        .foregroundStyle(hearth.statusError)
+                }
+            }
+        } else {
+            content()
+        }
+    }
+
+    private func unlock() {
+        do {
+            try profiles.authorizeParent(pin: pin)
+            failed = false
+        } catch {
+            failed = true
+        }
+        pin = ""
+    }
+}
+
 enum SettingsPrefs {
     @discardableResult
-    static func mutate(_ change: (inout UserPreferences) -> Void) -> UserPreferences {
-        var prefs = LibraryDisplayPreferencesStore.shared.loadPreferences()
+    static func mutate(
+        in store: LibraryDisplayPreferencesStore = .shared,
+        _ change: (inout UserPreferences) -> Void
+    ) -> UserPreferences {
+        var prefs = store.loadPreferences()
         change(&prefs)
-        LibraryDisplayPreferencesStore.shared.savePreferences(prefs)
-        Theme.currentPreferences = prefs
+        store.savePreferences(prefs)
         return prefs
     }
 }

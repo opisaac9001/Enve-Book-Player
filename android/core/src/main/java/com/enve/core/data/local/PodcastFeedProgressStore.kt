@@ -1,6 +1,8 @@
 package com.enve.core.data.local
 
 import android.content.Context
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -21,10 +23,9 @@ data class PodcastFeedProgress(
 )
 
 @Singleton
-class PodcastFeedProgressStore @Inject constructor(
-    @ApplicationContext context: Context,
-) {
-    private val dataStore = context.enveDataStore
+class PodcastFeedProgressStore(private val dataStore: DataStore<Preferences>) {
+    @Inject
+    constructor(@ApplicationContext context: Context) : this(context.enveDataStore)
     private val json = Json { ignoreUnknownKeys = true }
 
     suspend fun save(episodeKey: String, progress: PodcastFeedProgress) {

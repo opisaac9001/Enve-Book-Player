@@ -27,7 +27,7 @@ enum LinkedBookQuickSyncError: LocalizedError {
 
 @MainActor
 final class LinkedBookProgressCoordinator {
-    static let shared = LinkedBookProgressCoordinator()
+    static let shared = LinkedBookProgressCoordinator(profileSession: .owner)
 
     private struct Anchor: Codable, Equatable {
         var ebookProgress: Double
@@ -107,14 +107,13 @@ final class LinkedBookProgressCoordinator {
     private let libraryCache: LibraryBookCache
     private let bookRepository: BookStoreRepository
 
-    private init(
-        defaults: UserDefaults = .standard,
-        libraryCache: LibraryBookCache = AppState.shared.libraryCache,
-        bookRepository: BookStoreRepository = AppState.shared.bookStore
-    ) {
-        self.defaults = defaults
-        self.libraryCache = libraryCache
-        self.bookRepository = bookRepository
+    private unowned let profileSession: ProfileSession
+
+    init(profileSession: ProfileSession) {
+        self.profileSession = profileSession
+        defaults = profileSession.defaults
+        libraryCache = profileSession.appState.libraryCache
+        bookRepository = profileSession.bookStore
         if let data = defaults.data(forKey: storageKey),
             let decoded = try? JSONDecoder().decode([MappingRecord].self, from: data)
         {
@@ -527,7 +526,7 @@ final class LinkedBookProgressCoordinator {
                 )
             )
         }
-        if let stored = BookProgressStore.shared.loadProgress(for: book),
+        if let stored = profileSession.bookProgress.loadProgress(for: book),
             stored.duration > 0,
             stored.progress > 0 || book.isFinished
         {
@@ -544,7 +543,7 @@ final class LinkedBookProgressCoordinator {
     }
 
     private func resolvedAudioDuration(for book: Book) -> TimeInterval {
-        let storedDuration = BookProgressStore.shared.loadProgress(for: book)?.duration ?? 0
+        let storedDuration = profileSession.bookProgress.loadProgress(for: book)?.duration ?? 0
         return max(book.duration ?? 0, storedDuration)
     }
 
@@ -556,7 +555,7 @@ final class LinkedBookProgressCoordinator {
         forceRemote: Bool
     ) async -> Book? {
         let current = await book(stableId: target.stableId) ?? target
-        let stored = BookProgressStore.shared.loadProgress(for: current)
+        let stored = profileSession.bookProgress.loadProgress(for: current)
         let storedUpdate = stored.map { Date(timeIntervalSince1970: $0.lastUpdated) }
         guard max(current.lastUpdate, storedUpdate ?? .distantPast) <= observedAt else {
             return nil
@@ -608,8 +607,8 @@ final class LinkedBookProgressCoordinator {
             lastUpdate: observedAt,
             ebookProgress: nil
         )
-        UserProgressStore.shared.update(localProgress)
-        BookProgressStore.shared.saveProgress(
+        profileSession.progress.update(localProgress)
+        profileSession.bookProgress.saveProgress(
             for: updated,
             progress: currentTime,
             duration: duration,
@@ -622,8 +621,8 @@ final class LinkedBookProgressCoordinator {
             lastUpdate: observedAt
         )
 
-        if UserProgressStore.shared.syncProgressToServer {
-            await SyncCoordinator.shared.pushProgress(
+        if profileSession.progress.syncProgressToServer {
+            await profileSession.sync.pushProgress(
                 book: updated,
                 forceImmediate: forceRemote,
                 domain: .audiobook
@@ -681,7 +680,7 @@ final class LinkedBookProgressCoordinator {
         ) == nil {
             self.libraryCache.hot.insert(updated)
         }
-        EbookLinkStore.shared.saveLinks()
+        profileSession.ebookLinks.saveLinks()
         await self.bookRepository.updateEbookProgress(
             uniqueId: updated.uniqueId,
             ebookProgress: progress,
@@ -690,8 +689,8 @@ final class LinkedBookProgressCoordinator {
             lastUpdate: observedAt
         )
 
-        if UserProgressStore.shared.syncProgressToServer {
-            await SyncCoordinator.shared.pushProgress(
+        if profileSession.progress.syncProgressToServer {
+            await profileSession.sync.pushProgress(
                 book: updated,
                 forceImmediate: forceRemote,
                 sourceEngine: EpubLocationBridge.sourceEngine(from: updated.epubLocator),
@@ -932,6 +931,8 @@ final class LinkedBookProgressCoordinator {
     }
 
     private func persistMappings() {
+        if !profileSession.isOwner, let existing = defaults.data(forKey: storageKey),
+            (try? JSONDecoder().decode([MappingRecord].self, from: existing)) == nil { return }
         guard let data = try? JSONEncoder().encode(mappings) else { return }
         defaults.set(data, forKey: storageKey)
     }

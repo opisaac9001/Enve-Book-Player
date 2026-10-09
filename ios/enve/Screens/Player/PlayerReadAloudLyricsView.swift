@@ -8,6 +8,8 @@ struct PlayerReadAloudLyricsView: View {
     let onSeek: (TimeInterval) -> Void
 
     @Environment(\.hearth) private var hearth
+    @Environment(\.profileSession) private var capturedSession
+    private var profileSession: ProfileSession { capturedSession ?? .owner }
     @State private var lines: [ReadAloudLyricLine] = []
     @State private var loadedHref: String?
 
@@ -98,7 +100,7 @@ struct PlayerReadAloudLyricsView: View {
     }
 
     private var timeline: MediaOverlayTimeline? {
-        MediaOverlayPlaybackService.shared.activeResult?.timeline
+        profileSession.playback.mediaOverlay.activeResult?.timeline
     }
 
     private var activeClipIndex: Int? {
@@ -126,7 +128,7 @@ struct PlayerReadAloudLyricsView: View {
     private func loadLines() async {
         guard let href = activeHref, href != loadedHref else { return }
         guard let clips = timeline?.clips,
-            let epubURL = LocalEbookImporter.shared.resolveEbookForOverlay(book: book),
+            let epubURL = profileSession.ebooks.resolveEbookForOverlay(book: book),
             let html = await ReadAloudLyricsBuilder.chapterHTML(epubURL: epubURL, href: href)
         else { return }
         lines = ReadAloudLyricsBuilder.lines(for: clips, inHTML: html, matching: href)

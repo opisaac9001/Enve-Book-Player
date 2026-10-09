@@ -28,6 +28,8 @@ import com.enve.core.data.local.LinkedBookPair
 import com.enve.core.data.local.LinkedBookPairDao
 import com.enve.core.data.local.PendingProgressPush
 import com.enve.core.data.local.PendingProgressPushDao
+import com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
+import com.enve.core.data.local.ProfileStorageLocations
 import com.enve.core.data.local.UserCollection
 import com.enve.core.data.local.UserCollectionBook
 import com.enve.core.data.local.UserCollectionDao
@@ -808,6 +810,21 @@ private val OPDS_ACQUISITION_COLUMNS = mapOf(
     "updatedAt" to "ALTER TABLE opds_acquisition ADD COLUMN updatedAt INTEGER NOT NULL DEFAULT 0",
 )
 
+val MIGRATION_26_27 = object : Migration(26, 27) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE custom_smart_collections ADD COLUMN rulesJson TEXT")
+    }
+}
+
+val MIGRATION_27_28 = object : Migration(27, 28) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE user_collections ADD COLUMN coverPath TEXT")
+        db.execSQL("ALTER TABLE custom_smart_collections ADD COLUMN iconName TEXT NOT NULL DEFAULT 'folder'")
+        db.execSQL("ALTER TABLE custom_smart_collections ADD COLUMN colorHex TEXT NOT NULL DEFAULT '#F5921A'")
+        db.execSQL("ALTER TABLE custom_smart_collections ADD COLUMN coverPath TEXT")
+    }
+}
+
 @Database(
     entities = [
         ReaderAnnotation::class,
@@ -830,7 +847,7 @@ private val OPDS_ACQUISITION_COLUMNS = mapOf(
         com.enve.app.data.opds.OpdsProgressionStateEntity::class,
         com.enve.app.data.opds.OpdsAcquisitionEntity::class,
     ],
-    version  = 26,
+    version  = 28,
     exportSchema = false,
 )
 abstract class ReaderDatabase : RoomDatabase() {
@@ -859,16 +876,34 @@ abstract class ReaderDatabase : RoomDatabase() {
 
         fun getInstance(context: Context): ReaderDatabase =
             INSTANCE ?: synchronized(this) {
-                INSTANCE ?: Room.databaseBuilder(
-                    context.applicationContext,
-                    ReaderDatabase::class.java,
-                    "reader.db",
+                INSTANCE ?: builder(
+                    context,
+                    ProfileStorageLocations.forProfile(context, DEFAULT_ADULT_PROFILE_ID),
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26)
-
                     .fallbackToDestructiveMigrationOnDowngrade(dropAllTables = true)
                     .build()
                     .also { INSTANCE = it }
             }
+
+        fun open(context: Context, locations: ProfileStorageLocations): ReaderDatabase {
+            val database = builder(context, locations).build()
+            try {
+                database.openHelper.writableDatabase
+                return database
+            } catch (failure: Exception) {
+                database.close()
+                throw failure
+            }
+        }
+
+        private fun builder(
+            context: Context,
+            locations: ProfileStorageLocations,
+        ): RoomDatabase.Builder<ReaderDatabase> = Room.databaseBuilder(
+            context.applicationContext,
+            ReaderDatabase::class.java,
+            locations.readerDatabaseFile.absolutePath,
+        )
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26, MIGRATION_26_27, MIGRATION_27_28)
     }
 }

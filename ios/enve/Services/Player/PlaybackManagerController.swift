@@ -8,7 +8,7 @@ final class PlaybackManagerController: PlaybackControlling, PlaybackEventPublish
     PlaybackBookMetadataUpdating, PlaybackNowPlayingUpdating, PlaybackConflictResolving,
     PlaybackOverlayControlling, PlaybackPreparationReporting
 {
-    static let shared = PlaybackManagerController()
+    static var shared: PlaybackManagerController { ProfileSession.owner.playback.controller }
 
     private let manager: PlaybackManager
     private let changeSignal = PassthroughSubject<Void, Never>()
@@ -190,7 +190,7 @@ final class PlaybackManagerController: PlaybackControlling, PlaybackEventPublish
 
 @MainActor
 final class PlaybackManagerAudioProcessingController: PlaybackAudioProcessingControlling {
-    static let shared = PlaybackManagerAudioProcessingController()
+    static var shared: PlaybackManagerAudioProcessingController { ProfileSession.owner.playback.audioProcessing }
 
     private let processor: AudioProcessor
 

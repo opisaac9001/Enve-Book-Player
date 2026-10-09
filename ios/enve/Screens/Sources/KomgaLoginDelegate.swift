@@ -3,15 +3,18 @@ import SwiftUI
 import UIKit
 
 final class KomgaLoginDelegate: UnifiedLoginDelegate {
+    private unowned let profileSession: ProfileSession
     private let appState: AppState
     private let validatedLogin: ValidatedConnectionLoginDelegate
 
-    init(appState: AppState) {
+    init(appState: AppState, profileSession: ProfileSession = .owner) {
+        self.profileSession = profileSession
         self.appState = appState
         self.validatedLogin = ValidatedConnectionLoginDelegate(
             appState: appState,
             providerType: .komga,
-            defaultName: "Komga"
+            defaultName: "Komga",
+            profileSession: profileSession
         )
     }
 
@@ -118,7 +121,7 @@ final class KomgaLoginDelegate: UnifiedLoginDelegate {
             request.setValue(value, forHTTPHeaderField: key)
         }
 
-        let (data, response) = try await InsecureURLSession.shared.data(for: request)
+        let (data, response) = try await profileSession.networkSession.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw ProviderError.invalidResponse
         }
@@ -147,7 +150,7 @@ final class KomgaLoginDelegate: UnifiedLoginDelegate {
         }
         request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
 
-        let (data, response) = try await InsecureURLSession.shared.data(for: request)
+        let (data, response) = try await profileSession.networkSession.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw ProviderError.invalidResponse
         }

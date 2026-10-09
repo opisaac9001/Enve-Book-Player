@@ -13,18 +13,27 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.runBlocking
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
-class PreferencesManager @Inject constructor(
-    @ApplicationContext private val context: Context,
+class PreferencesManager(
+    private val dataStore: DataStore<Preferences>,
     private val vault: CredentialVault,
+    private val scope: CoroutineScope,
 ) {
-    private val dataStore get() = context.enveDataStore
-    private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main.immediate)
+    @Inject
+    constructor(@ApplicationContext context: Context, vault: CredentialVault) : this(
+        context.enveDataStore,
+        vault,
+        CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+    )
+
     private val pendingPublisherStyles = PendingPublisherStyles()
 
     @Volatile private var cachedServerUrl: String? = null

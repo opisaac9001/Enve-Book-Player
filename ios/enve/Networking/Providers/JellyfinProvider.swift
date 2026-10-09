@@ -7,7 +7,12 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
     EbookDownloadProvider, ObservableObject, @unchecked Sendable
 {
     @Published var connection: ServerConnection
+    private let isolatesCredentials: Bool
+    private let certificateTransport: InsecureURLSession
     let session: URLSession
+    let tokenStorage: SecureTokenStorage
+    private let ebooks: LocalEbookImporter
+    private let rejectedContent: RejectedContentStore
 
     var capabilities: ProviderCapabilities {
         [
@@ -23,13 +28,18 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
     var jellyfinDeviceId: String { MediaBrowserClient.deviceId }
     var jellyfinDeviceName: String { MediaBrowserClient.deviceName }
 
-    init(connection: ServerConnection = ServerConnection(name: "Jellyfin", url: "", type: .jellyfin)) {
+    init(connection: ServerConnection = ServerConnection(name: "Jellyfin", url: "", type: .jellyfin), profileSession: ProfileSession? = nil) {
         self.connection = connection
+        isolatesCredentials = profileSession?.isOwner == false
+        certificateTransport = profileSession?.transport ?? .delegateInstance
+        tokenStorage = profileSession?.tokenStorage ?? .shared
+        ebooks = profileSession?.ebooks ?? .shared
+        rejectedContent = profileSession?.rejectedContent ?? .shared
 
-        let config = URLSessionConfiguration.default
+        let config: URLSessionConfiguration = isolatesCredentials ? .ephemeral : .default
         config.timeoutIntervalForRequest = 120
         config.waitsForConnectivity = true
-        self.session = URLSession(configuration: config)
+        self.session = profileSession?.networkSession ?? URLSession(configuration: config)
     }
 
     private func addAuthHeaders(_ request: inout URLRequest) {
@@ -271,7 +281,7 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
             throw ProviderError.invalidResponse
         }
         let result = try JSONDecoder().decode(JellyfinItemsResponse.self, from: data)
-        RejectedContentStore.shared.update(
+        rejectedContent.update(
             connection: connection,
             libraryId: libraryId,
             acceptedItemIdentifiers: Set(result.Items.map(\.Id)),
@@ -478,6 +488,66 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
         )
     }
 
+    func reportPlayback(_ event: ServerPlaybackEvent, book: Book, sessionId: String, position: TimeInterval) async {
+        await sendPlaystate(event, itemId: book.id, sessionId: sessionId, position: position)
+        if event != .started {
+            await savePosition(itemId: book.id, position: position)
+        }
+    }
+
+    private struct ChildSpan {
+        let id: String
+        let start: TimeInterval
+        let duration: TimeInterval
+    }
+    private var childSpans: [String: [ChildSpan]] = [:]
+
+    // Other clients resume multi-file books from the file playing, so its own resume point is kept too.
+    private func saveChildPosition(bookId: String, position: TimeInterval) async {
+        if childSpans[bookId] == nil, let children = try? await fetchChildAudioItems(parentId: bookId) {
+            var start: TimeInterval = 0
+            childSpans[bookId] = children.map { item in
+                let duration = Double(item.RunTimeTicks ?? 0) / 10_000_000
+                defer { start += duration }
+                return ChildSpan(id: item.Id, start: start, duration: duration)
+            }
+        }
+        guard let spans = childSpans[bookId], spans.count > 1,
+            let span = spans.last(where: { position >= $0.start }) ?? spans.first
+        else { return }
+        await savePosition(itemId: span.id, position: min(max(0, position - span.start), span.duration))
+    }
+
+    // Playstate reports apply the server's resume rules (e.g. positions in an audiobook's first minutes reset to 0), so restore Enve's position.
+    private func savePosition(itemId: String, position: TimeInterval) async {
+        guard let userId = connection.userId,
+            let url = URL(string: "\(normalizeServerURL(connection.url))/Users/\(userId)/Items/\(itemId)/UserData")
+        else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        addAuthHeaders(&request)
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "PlaybackPositionTicks": Int64(max(0, position) * 10_000_000),
+            "LastPlayedDate": ISO8601DateFormatter().string(from: Date()),
+        ])
+        _ = try? await session.data(for: request)
+    }
+
+    private func sendPlaystate(_ event: ServerPlaybackEvent?, itemId: String, sessionId: String, position: TimeInterval) async {
+        guard
+            var request = MediaBrowserClient.playstateRequest(
+                baseURL: normalizeServerURL(connection.url),
+                event: event,
+                itemId: itemId,
+                sessionId: sessionId,
+                position: position
+            )
+        else { return }
+        addAuthHeaders(&request)
+        _ = try? await session.data(for: request)
+    }
+
     func updatePlaybackProgress(
         book: Book,
         sessionId: String?,
@@ -485,6 +555,9 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
         isFinished: Bool,
         timeListened: TimeInterval
     ) async throws {
+        if let sessionId {
+            await sendPlaystate(nil, itemId: book.id, sessionId: sessionId, position: currentTime)
+        }
         guard let userId = connection.userId, connection.token != nil else { throw ProviderError.unauthorized }
         let base = normalizeServerURL(connection.url)
         guard let url = URL(string: "\(base)/Users/\(userId)/Items/\(book.id)/UserData") else {
@@ -494,15 +567,18 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         addAuthHeaders(&request)
-        request.httpBody = try JSONSerialization.data(withJSONObject: [
+        var body: [String: Any] = [
             "PlaybackPositionTicks": Int64(max(0, currentTime) * 10_000_000),
-            "Played": isFinished,
             "LastPlayedDate": ISO8601DateFormatter().string(from: Date()),
-        ])
+        ]
+        // Only finishing or resetting changes the played flag, so a played mark set elsewhere isn't cleared mid-listen.
+        if isFinished || currentTime <= 1 { body["Played"] = isFinished }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (_, response) = try await performDataTask(for: request)
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             throw ProviderError.invalidResponse
         }
+        await saveChildPosition(bookId: book.id, position: currentTime)
     }
 
     func performDataTask(for request: URLRequest, retryCount: Int = 3) async throws -> (Data, URLResponse) {
@@ -606,7 +682,7 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
     }
 
     func downloadEbook(for book: Book, onProgress: (@Sendable (Double) -> Void)? = nil) async throws -> URL {
-        if let cached = LocalEbookImporter.shared.cachedEbook(forBookId: book.id) {
+        if let cached = ebooks.cachedEbook(forBookId: book.id) {
             onProgress?(1)
             return cached
         }
@@ -625,8 +701,8 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
         let tempURL: URL
         if let onProgress {
 
-            let delegate = URLSessionDownloadProgressDelegate(progressHandler: onProgress)
-            let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+            let delegate = URLSessionDownloadProgressDelegate(progressHandler: onProgress, certificateTransport: certificateTransport)
+            let session = URLSession(configuration: isolatesCredentials ? .ephemeral : .default, delegate: delegate, delegateQueue: nil)
             defer { session.finishTasksAndInvalidate() }
             let (url, http) = try await delegate.awaitResult {
                 session.downloadTask(with: request)
@@ -634,7 +710,7 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
             tempURL = url
             response = http
         } else {
-            (tempURL, response) = try await URLSession.shared.download(for: request)
+            (tempURL, response) = try await session.download(for: request)
         }
 
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
@@ -651,7 +727,7 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
             filename = String(header[start..<end])
         }
 
-        return try LocalEbookImporter.shared.cacheRemoteEbook(
+        return try ebooks.cacheRemoteEbook(
             tempURL: tempURL,
             preferredFilename: filename,
             bookIdentifier: book.id

@@ -9,16 +9,28 @@ final class SiloActivitySyncStrategy: ProviderSyncStrategy {
     private let minimumServerSyncInterval: TimeInterval = 60
     private var lastSyncTime: Date?
     private var cursorUnsupportedConnections: Set<UUID> = []
-    private let playbackState: any PlaybackStateProvider = ActivePlayback.controller
+    private let playbackState: any PlaybackStateProvider
     private let providerConnections: any ProviderConnectionAccessing
     private let books: any BookQuerying
+    private let pendingSync: PendingSyncQueueStore
+    private let mirrorCheckpoints: ServerMirrorCheckpointStore
+    // Resolved on demand so registration does not construct the session's progress owner.
+    private let progressStore: @MainActor () -> UserProgressStore
 
     init(
         providerConnections: any ProviderConnectionAccessing,
-        books: any BookQuerying
+        books: any BookQuerying,
+        playbackState: any PlaybackStateProvider,
+        pendingSync: PendingSyncQueueStore,
+        mirrorCheckpoints: ServerMirrorCheckpointStore,
+        progress: @escaping @MainActor () -> UserProgressStore
     ) {
         self.providerConnections = providerConnections
         self.books = books
+        self.playbackState = playbackState
+        self.pendingSync = pendingSync
+        self.mirrorCheckpoints = mirrorCheckpoints
+        self.progressStore = progress
     }
 
     func sync(force: Bool, launchOptimized: Bool) async -> ProviderSyncResult {
@@ -99,7 +111,7 @@ final class SiloActivitySyncStrategy: ProviderSyncStrategy {
         forceFullReplay: Bool,
         through provider: SiloProvider
     ) async throws -> Int {
-        let checkpoint = ServerMirrorCheckpointStore.shared.checkpoint(for: scope)
+        let checkpoint = mirrorCheckpoints.checkpoint(for: scope)
         let isFullReplay = forceFullReplay || checkpoint?.cursor == nil
         if isFullReplay {
             return try await pullCompleteCursorState(
@@ -123,7 +135,7 @@ final class SiloActivitySyncStrategy: ProviderSyncStrategy {
             guard result.didApplyPage else { return pulled }
             pulled += result.appliedCount
 
-            ServerMirrorCheckpointStore.shared.commit(
+            mirrorCheckpoints.commit(
                 scope: scope,
                 syncLevel: .nativeCursorDelta,
                 cursor: page.nextCursor,
@@ -168,7 +180,7 @@ final class SiloActivitySyncStrategy: ProviderSyncStrategy {
         )
         guard result.didApplyPage else { return 0 }
 
-        ServerMirrorCheckpointStore.shared.commit(
+        mirrorCheckpoints.commit(
             scope: scope,
             syncLevel: .nativeCursorDelta,
             cursor: cursor,
@@ -200,7 +212,7 @@ final class SiloActivitySyncStrategy: ProviderSyncStrategy {
         let uniqueIds = Set(progress.map(\.uniqueId))
         let booksById = await books.booksByAnyIds(uniqueIds)
         let pendingStableIds = Set(
-            PendingSyncQueueStore.shared.entries.values
+            pendingSync.entries.values
                 .filter { $0.source == .silo }
                 .map(\.stableId)
         )
@@ -259,7 +271,7 @@ final class SiloActivitySyncStrategy: ProviderSyncStrategy {
             }
         }
 
-        await UserProgressStore.shared.applyAuthoritativeServerProgress(updates)
+        await progressStore().applyAuthoritativeServerProgress(updates)
         return (true, updates.count)
     }
 }

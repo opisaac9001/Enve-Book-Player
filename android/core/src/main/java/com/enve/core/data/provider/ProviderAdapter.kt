@@ -114,6 +114,13 @@ interface ProviderAdapter {
         progressFraction: Float,
     ): Result<Unit> = Result.success(Unit)
 
+    suspend fun reportPlayback(
+        book: Book,
+        event: PlaybackReportEvent,
+        sessionId: String,
+        positionSec: Long,
+    ): Result<Unit> = Result.success(Unit)
+
     suspend fun syncEbookProgress(
         bookId: String,
         percentage: Float,
@@ -190,3 +197,5 @@ fun synthesizeChaptersFromTracks(
         )
     }
 }
+
+enum class PlaybackReportEvent { STARTED, PROGRESS, PAUSED, RESUMED, STOPPED }

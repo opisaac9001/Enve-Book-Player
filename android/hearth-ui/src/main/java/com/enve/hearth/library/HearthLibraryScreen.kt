@@ -66,6 +66,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -79,7 +80,7 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.hilt.navigation.compose.hiltViewModel
+import com.enve.hearth.shell.profileViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
@@ -88,7 +89,9 @@ import com.enve.core.data.model.BrowseGroup
 import com.enve.core.data.model.Library
 import com.enve.engine.library.BookOrbitCollectionEdit
 import com.enve.engine.library.LibraryConnectionOption
+import com.enve.engine.library.SavedBookList
 import com.enve.hearth.design.CoverTile
+import com.enve.hearth.collections.CollectionsScreen
 import com.enve.hearth.design.Hearth
 import com.enve.hearth.design.HearthChip
 import com.enve.hearth.design.HearthText
@@ -110,7 +113,12 @@ fun HearthLibraryScreen(
     onAddSource: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
 ) {
-    val vm: HearthLibraryViewModel = hiltViewModel()
+    var showPersonalCollections by rememberSaveable { mutableStateOf(false) }
+    if (showPersonalCollections) {
+        CollectionsScreen(onBack = { showPersonalCollections = false }, onOpenBook = onSelectBook)
+        return
+    }
+    val vm: HearthLibraryViewModel = profileViewModel()
     val facet by vm.facet.collectAsStateWithLifecycle()
     val query by vm.query.collectAsStateWithLifecycle()
     val status by vm.status.collectAsStateWithLifecycle()
@@ -122,6 +130,8 @@ fun HearthLibraryScreen(
     val libraryFilter by vm.libraryFilter.collectAsStateWithLifecycle()
     var showFilterSort by remember { mutableStateOf(false) }
     val books by vm.books.collectAsStateWithLifecycle()
+    val savedBooks by vm.savedBooks.collectAsStateWithLifecycle()
+    var savedList by remember { mutableStateOf<SavedBookList?>(null) }
     val series by vm.series.collectAsStateWithLifecycle()
     val authors by vm.authors.collectAsStateWithLifecycle()
     val narrators by vm.narrators.collectAsStateWithLifecycle()
@@ -143,10 +153,11 @@ fun HearthLibraryScreen(
     var pendingBulkAction by remember { mutableStateOf<BulkAction?>(null) }
     var batchCollectionCreateConnection by remember { mutableStateOf<LibraryConnectionOption?>(null) }
     val palette = Hearth.palette
-    BackHandler(enabled = !covered && (drill != null || selectionMode || searchExpanded)) {
+    BackHandler(enabled = !covered && (drill != null || savedList != null || selectionMode || searchExpanded)) {
         when {
             searchExpanded -> { searchExpanded = false; vm.setQuery("") }
             selectionMode -> vm.endSelection()
+            savedList != null -> savedList = null
             else -> vm.clearDrill()
         }
     }
@@ -205,11 +216,22 @@ fun HearthLibraryScreen(
             vm.setStatus(it)
         }
         Spacer(Modifier.size(headerGap))
-        FacetRow(facet, vm::setFacet)
+        FacetRow(facet) { selected -> savedList = null; vm.setFacet(selected) }
         Spacer(Modifier.size(headerGap))
 
         val drillNow = drill
         when {
+            savedList != null -> Column(Modifier.fillMaxSize()) {
+                val list = savedList!!
+                Row(Modifier.fillMaxWidth().padding(horizontal = Hearth.Spacing.XL, vertical = Hearth.Spacing.S)) {
+                    Text("‹ Back", style = HearthText.Label, color = palette.ember, modifier = Modifier.clickable { savedList = null })
+                    Spacer(Modifier.width(Hearth.Spacing.M))
+                    Text(list.title, style = hearthDisplay(20.sp, FontWeight.SemiBold), color = palette.text)
+                }
+                val items = savedBooks[list].orEmpty()
+                if (items.isEmpty()) BrowseEmptyState("Nothing saved yet", "Save a book from its details to find it here.")
+                else BookGrid(items, columns, vm, selectionMode, selection, onSelectBook, onPlayBook)
+            }
             drillNow != null -> Column(Modifier.fillMaxSize()) {
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = Hearth.Spacing.XL, vertical = Hearth.Spacing.S),
@@ -272,7 +294,11 @@ fun HearthLibraryScreen(
                     onOpenSort = { showFilterSort = true },
                 )
                 Spacer(Modifier.size(Hearth.Spacing.M))
-                BookGrid(books, columns, vm, selectionMode, selection, onSelectBook, onPlayBook)
+                BookGrid(
+                    books, columns, vm, selectionMode, selection, onSelectBook, onPlayBook,
+                    hasLibraryBooks = total > 0,
+                    onAddSource = onAddSource,
+                )
             }
 
             facet == LibraryFacet.SERIES && series.isEmpty() -> BrowseEmptyState(
@@ -290,7 +316,29 @@ fun HearthLibraryScreen(
                 "Audiobooks with narrator details from your servers will be grouped here.",
             )
             facet == LibraryFacet.NARRATORS -> BrowseLayout(narrators, columns) { vm.openNarrator(it.name) }
-            facet == LibraryFacet.SHELVES -> when {
+            facet == LibraryFacet.SHELVES -> Column(Modifier.fillMaxSize()) {
+                Row(
+                    Modifier.fillMaxWidth().clickable { showPersonalCollections = true }
+                        .padding(horizontal = Hearth.Spacing.XXL, vertical = Hearth.Spacing.M),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Outlined.Folder, null, tint = palette.ember, modifier = Modifier.size(28.dp))
+                    Text("Personal collections", style = HearthText.Label, color = palette.text,
+                        modifier = Modifier.weight(1f).padding(start = Hearth.Spacing.M))
+                    Text("Open", style = HearthText.Caption, color = palette.textSecondary)
+                }
+                Overline("SAVED BOOKS", modifier = Modifier.padding(horizontal = Hearth.Spacing.XXL, vertical = Hearth.Spacing.S))
+                SavedBookList.entries.forEach { list ->
+                    Row(
+                        Modifier.fillMaxWidth().clickable { savedList = list }
+                            .padding(horizontal = Hearth.Spacing.XXL, vertical = Hearth.Spacing.M),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(list.title, style = HearthText.Label, color = palette.text, modifier = Modifier.weight(1f))
+                        Text("${savedBooks[list].orEmpty().size}", style = HearthText.Caption, color = palette.textSecondary)
+                    }
+                }
+                when {
                 shelvesLoading -> BrowseLoadingState()
                 shelves.isEmpty() && bookOrbitAdminConnections.isEmpty() -> if (hasGrimmoryConnection) {
                     BrowseEmptyState("No shelves found", "Create a shelf in Grimmory, then refresh.")
@@ -305,6 +353,7 @@ fun HearthLibraryScreen(
                     onEdit = { collectionEditor = it },
                     onMove = vm::moveBookOrbitCollection,
                 )
+                }
             }
         }
     }
@@ -1141,11 +1190,13 @@ private fun BookGrid(
     onOpen: (Book) -> Unit,
     onPlay: (Book) -> Unit,
     onRemove: ((Book) -> Unit)? = null,
+    hasLibraryBooks: Boolean = true,
+    onAddSource: (() -> Unit)? = null,
 ) {
     val eink = Hearth.eink
     val listLayout = eink.denseListLibrary || columns == 1
     if (books.isEmpty()) {
-        EmptyLibraryState()
+        EmptyLibraryState(hasLibraryBooks, onAddSource)
         return
     }
     LazyVerticalGrid(
@@ -1225,21 +1276,31 @@ private fun BrowseGrid(groups: List<BrowseGroup>, columns: Int, onOpen: (BrowseG
 }
 
 @Composable
-private fun EmptyLibraryState() {
+private fun EmptyLibraryState(hasLibraryBooks: Boolean, onAddSource: (() -> Unit)?) {
     val palette = Hearth.palette
     Column(
         Modifier.fillMaxSize().padding(horizontal = Hearth.Spacing.XL),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Text("Nothing matches this filter.", style = hearthDisplay(22.sp, FontWeight.Bold), color = palette.text, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+        Text(
+            if (hasLibraryBooks) "Nothing matches this filter." else "Your library is empty.",
+            style = hearthDisplay(22.sp, FontWeight.Bold),
+            color = palette.text,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+        )
         Spacer(Modifier.size(Hearth.Spacing.S))
         Text(
-            "Your shelves aren't empty. A filter is just hiding them.",
+            if (hasLibraryBooks) "Your shelves aren't empty. A filter is just hiding them."
+            else "Connect a source or import books to get started.",
             style = HearthText.Body,
             color = palette.textSecondary,
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
         )
+        if (!hasLibraryBooks && onAddSource != null) {
+            Spacer(Modifier.size(Hearth.Spacing.M))
+            Button(onClick = onAddSource) { Text("Add a source") }
+        }
     }
 }
 

@@ -83,7 +83,7 @@ struct VocabularyHubScreen: View {
                 Task { await vocabReload() }
             }
         ) { launch in
-            VocabStudyScreen(entries: launch.entries, booksById: booksById)
+            VocabStudyScreen(entries: launch.entries, booksById: booksById, vocabulary: engine.vocabulary)
                 .enveEnvironment()
         }
     }

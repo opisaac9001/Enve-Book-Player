@@ -2,15 +2,17 @@ import Foundation
 
 @MainActor
 final class WorkProgressSync {
-    static let shared = WorkProgressSync()
+    static let shared = WorkProgressSync(profileSession: .owner)
 
-    private init() {}
+    private unowned let profileSession: ProfileSession
+
+    init(profileSession: ProfileSession) { self.profileSession = profileSession }
 
     private var lastFanOut: [String: Date] = [:]
     private let minInterval: TimeInterval = 15
 
     func fanOut(from book: Book, fraction rawFraction: Double, isFinished: Bool, force: Bool = false) async {
-        guard UserProgressStore.shared.syncProgressToServer else { return }
+        guard profileSession.progress.syncProgressToServer else { return }
         let editionKey = WorkIdentity.editionKey(for: book)
         guard !editionKey.isEmpty else { return }
 
@@ -20,7 +22,7 @@ final class WorkProgressSync {
         if !force, let last = lastFanOut[editionKey], Date().timeIntervalSince(last) < minInterval { return }
         lastFanOut[editionKey] = Date()
 
-        let siblings = await AppState.shared.bookStore.books(editionKey: editionKey)
+        let siblings = await profileSession.bookStore.books(editionKey: editionKey)
             .filter { $0.stableId != book.stableId }
         for sibling in siblings {
             await applyAndPush(to: sibling, fraction: fraction, finished: isFinished)
@@ -44,11 +46,11 @@ final class WorkProgressSync {
         updated.lastUpdate = Date()
 
         if updated.mediaType == .audiobook {
-            BookProgressStore.shared.saveProgress(for: updated, progress: updated.currentTime, duration: duration)
+            profileSession.bookProgress.saveProgress(for: updated, progress: updated.currentTime, duration: duration)
         }
-        await AppState.shared.bookStore.upsertBooks([updated])
+        await profileSession.bookStore.upsertBooks([updated])
 
-        await SyncCoordinator.shared.pushProgress(
+        await profileSession.sync.pushProgress(
             book: updated,
             forceImmediate: true,
             domain: updated.mediaType == .ebook ? .ebook : .audiobook

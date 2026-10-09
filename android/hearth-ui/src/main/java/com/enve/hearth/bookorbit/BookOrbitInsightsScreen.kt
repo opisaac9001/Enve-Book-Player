@@ -27,7 +27,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.hilt.navigation.compose.hiltViewModel
+import com.enve.hearth.shell.profileViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.enve.core.data.model.Book
 import com.enve.engine.bookorbit.BookOrbitDailyPoint
@@ -48,7 +48,7 @@ fun BookOrbitInsightsScreen(
     onBack: () -> Unit,
     onOpenBook: (Book) -> Unit,
 ) {
-    val vm: BookOrbitInsightsViewModel = hiltViewModel()
+    val vm: BookOrbitInsightsViewModel = profileViewModel()
     val accounts by vm.accounts.collectAsStateWithLifecycle()
     val accountId by vm.activeAccountId.collectAsStateWithLifecycle()
     val days by vm.days.collectAsStateWithLifecycle()

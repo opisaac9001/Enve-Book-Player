@@ -45,6 +45,8 @@ class AutoMediaBrowserHelper @Inject constructor(
     private val offlineDownloadManager: OfflineDownloadManager,
     private val autoArtworkCache: AutoArtworkCache,
     private val lastOpenedBookStore: LastOpenedBookStore,
+    private val embeddedChapterExtractor: EmbeddedChapterExtractor,
+    private val openProgress: PlaybackOpenProgressResolver,
 ) {
 
     companion object {
@@ -273,7 +275,7 @@ class AutoMediaBrowserHelper @Inject constructor(
             Log.w(TAG, "resolve: no cached book for cacheKey='$cacheKey'")
             return@withContext null
         }
-        val cachedBook = cached.toBook()
+        val cachedBook = cached.toBook().forAudioPlayback()
         val storedChapters = bookExtrasDao.get(cached.cacheKey)
             ?.decodeChapters()
             .orEmpty()
@@ -282,13 +284,17 @@ class AutoMediaBrowserHelper @Inject constructor(
         } else {
             cachedBook
         }
-        val localResumeMs = (cached.currentTime * 1000L).coerceAtLeast(0L)
+        val localResumeMs = if (forPlayback) {
+            openProgress.resolveStartSeconds(book, promptForConflict = false) * 1000L
+        } else {
+            audioLocalStartSeconds(book) * 1000L
+        }
 
         val offline = offlineTracks(book)
         if (offline.isNotEmpty()) {
-            val chapters = book.chapters.ifEmpty {
-                synthesizeChaptersFromTracks(offline, book.duration)
-            }
+            val chapters = book.chapters.takeIf { it.size > 1 }
+                ?: embeddedChapters(offline, book.duration)
+                ?: book.chapters.ifEmpty { synthesizeChaptersFromTracks(offline, book.duration) }
             Log.i(TAG, "resolve: ${book.id} using ${offline.size} offline tracks resume=${localResumeMs}ms")
             return@withContext buildResolved(book, offline, localResumeMs, chapters, null)
         }
@@ -298,15 +304,19 @@ class AutoMediaBrowserHelper @Inject constructor(
             Log.w(TAG, "resolve: no playable tracks for ${book.source}/${book.id}")
             return@withContext null
         }
-        val resumeMs = localResumeMs.takeIf { it > 0L }
-            ?: remote.session?.serverCurrentTimeSec?.times(1000L)
-            ?: 0L
+        val resumeMs = localResumeMs
         val chapters = remote.session?.chapters?.takeIf { it.isNotEmpty() }
-            ?: book.chapters.takeIf { it.isNotEmpty() }
-            ?: synthesizeChaptersFromTracks(remote.tracks, book.duration)
+            ?: book.chapters.takeIf { it.size > 1 }
+            ?: embeddedChapters(remote.tracks, book.duration)
+            ?: book.chapters.ifEmpty { synthesizeChaptersFromTracks(remote.tracks, book.duration) }
         Log.i(TAG, "resolve: ${book.id} using ${remote.tracks.size} provider tracks resume=${resumeMs}ms")
         buildResolved(book, remote.tracks, resumeMs, chapters, remote.session?.sessionId)
     }
+
+    private suspend fun embeddedChapters(tracks: List<AudioTrack>, durationSec: Long): List<Chapter>? =
+        tracks.singleOrNull()
+            ?.let { embeddedChapterExtractor.fetchEmbeddedChapters(listOf(it), durationSec) }
+            ?.takeIf { it.size > 1 }
 
     private suspend fun buildResolved(
         book: Book,

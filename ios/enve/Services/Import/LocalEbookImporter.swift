@@ -17,37 +17,53 @@ final class LocalEbookImporter: @unchecked Sendable {
     static let shared = LocalEbookImporter()
 
     private let fileManager = FileManager.default
+    private let storage: ProfileStorageLocations
 
     var localEbooksRoot: URL {
-        let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        return documentsURL.appendingPathComponent("Ebooks/local", isDirectory: true)
+        storage.documentsDirectory.appendingPathComponent("Ebooks/local", isDirectory: true)
     }
 
     var serverEbooksRoot: URL {
-        let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        return documentsURL.appendingPathComponent("Ebooks", isDirectory: true)
+        storage.documentsDirectory.appendingPathComponent("Ebooks", isDirectory: true)
     }
 
     var remoteReaderCacheRoot: URL {
-        let cachesURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        return cachesURL.appendingPathComponent("ReaderEbooks", isDirectory: true)
+        storage.cachesDirectory.appendingPathComponent("ReaderEbooks", isDirectory: true)
     }
 
     var streamedEpubCacheRoot: URL {
-        let cachesURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        return cachesURL.appendingPathComponent("StreamedEpubs", isDirectory: true)
+        storage.cachesDirectory.appendingPathComponent("StreamedEpubs", isDirectory: true)
     }
 
     var readaloudCacheRoot: URL {
-        let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        return documentsURL.appendingPathComponent("Ebooks/readaloud", isDirectory: true)
+        storage.documentsDirectory.appendingPathComponent("Ebooks/readaloud", isDirectory: true)
     }
 
     private init() {
-        try? fileManager.createDirectory(at: localEbooksRoot, withIntermediateDirectories: true)
-        try? fileManager.createDirectory(at: serverEbooksRoot, withIntermediateDirectories: true)
-        try? fileManager.createDirectory(at: remoteReaderCacheRoot, withIntermediateDirectories: true)
-        try? fileManager.createDirectory(at: readaloudCacheRoot, withIntermediateDirectories: true)
+        storage = .owner
+        for directory in storageDirectories {
+            try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+    }
+
+    init(storage: ProfileStorageLocations) throws {
+        self.storage = storage
+        for directory in storageDirectories {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+    }
+
+    private var storageDirectories: [URL] {
+        [localEbooksRoot, serverEbooksRoot, remoteReaderCacheRoot, readaloudCacheRoot]
+    }
+
+    private func isProfileOwnedURL(_ url: URL) -> Bool {
+        guard storage.profileID != FamilyProfile.ownerID else { return true }
+        guard url.isFileURL else { return false }
+        let path = url.resolvingSymlinksInPath().standardizedFileURL.path
+        return [storage.documentsDirectory, storage.cachesDirectory].contains { root in
+            path.hasPrefix(root.resolvingSymlinksInPath().standardizedFileURL.path + "/")
+        }
     }
 
     func resolveExistingLocalEbookURL(bookIdentifier: String? = nil, ebookFileURL: URL?, filePath: String?) -> URL? {
@@ -63,7 +79,7 @@ final class LocalEbookImporter: @unchecked Sendable {
         var candidates: [URL] = []
 
         func appendCandidate(_ url: URL?) {
-            guard let url, !candidates.contains(url) else { return }
+            guard let url, isProfileOwnedURL(url), !candidates.contains(url) else { return }
             candidates.append(url)
         }
 
@@ -108,7 +124,7 @@ final class LocalEbookImporter: @unchecked Sendable {
             let marker = "/Documents/Ebooks/"
             if let range = path.range(of: marker) {
                 let relative = String(path[range.upperBound...])
-                let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                let docs = storage.documentsDirectory
                 appendCandidate(
                     docs.appendingPathComponent("Ebooks", isDirectory: true).appendingPathComponent(relative, isDirectory: false)
                 )
@@ -214,11 +230,14 @@ final class LocalEbookImporter: @unchecked Sendable {
     func deleteRemoteEbookArtifacts(forBookId bookId: String) throws {
         if let connectionDirs = try? fileManager.contentsOfDirectory(at: streamedEpubCacheRoot, includingPropertiesForKeys: nil) {
             for connectionDir in connectionDirs {
-                guard let bookDirs = try? fileManager.contentsOfDirectory(at: connectionDir, includingPropertiesForKeys: nil) else {
+                guard isProfileOwnedURL(connectionDir),
+                    let bookDirs = try? fileManager.contentsOfDirectory(at: connectionDir, includingPropertiesForKeys: nil)
+                else {
                     continue
                 }
                 for dir in bookDirs
-                where dir.lastPathComponent == "book-\(bookId)" || dir.lastPathComponent.hasPrefix("book-\(bookId)-file-") {
+                where isProfileOwnedURL(dir)
+                    && (dir.lastPathComponent == "book-\(bookId)" || dir.lastPathComponent.hasPrefix("book-\(bookId)-file-")) {
                     try? fileManager.removeItem(at: dir)
                 }
             }
@@ -246,7 +265,7 @@ final class LocalEbookImporter: @unchecked Sendable {
 
     private func isExistingEbook(_ url: URL) -> Bool {
         var isDirectory: ObjCBool = false
-        guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+        guard isProfileOwnedURL(url), fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
             return false
         }
         return isDirectory.boolValue
@@ -271,6 +290,7 @@ final class LocalEbookImporter: @unchecked Sendable {
             if let match = contents.first(where: {
                 Self.matchesRemoteBookIdentifier($0.lastPathComponent, identifier: safeId)
                     && Self.validEbookExtensions.contains($0.pathExtension.lowercased())
+                    && isProfileOwnedURL($0)
             }) {
                 return match
             }
@@ -295,12 +315,13 @@ final class LocalEbookImporter: @unchecked Sendable {
     }
 
     func readaloudEpubURL(forBookId bookId: String) -> URL {
-        readaloudCacheRoot.appendingPathComponent("\(bookId).epub")
+        let identifier = storage.profileID == FamilyProfile.ownerID ? bookId : sanitizeFilename(bookId)
+        return readaloudCacheRoot.appendingPathComponent("\(identifier).epub")
     }
 
     func cachedReadaloudEpub(forBookId bookId: String) -> URL? {
         let url = readaloudEpubURL(forBookId: bookId)
-        return fileManager.fileExists(atPath: url.path) ? url : nil
+        return isProfileOwnedURL(url) && fileManager.fileExists(atPath: url.path) ? url : nil
     }
 
     func resolveEbookForOverlay(book: Book) -> URL? {
@@ -347,9 +368,11 @@ final class LocalEbookImporter: @unchecked Sendable {
         let epubURL = readaloudEpubURL(forBookId: bookId)
         try? fileManager.removeItem(at: epubURL)
         for key in Set([bookId, stableId].compactMap { $0 }) {
-            let overlayDir = FileManager.default.temporaryDirectory
-                .appendingPathComponent("enve-overlay")
-                .appendingPathComponent(key)
+            let overlayRoot = storage.profileID == FamilyProfile.ownerID
+                ? FileManager.default.temporaryDirectory : storage.cachesDirectory
+            let identifier = storage.profileID == FamilyProfile.ownerID ? key : sanitizeFilename(key)
+            let overlayDir = overlayRoot.appendingPathComponent("enve-overlay")
+                .appendingPathComponent(identifier)
             try? fileManager.removeItem(at: overlayDir)
         }
     }
@@ -373,7 +396,7 @@ final class LocalEbookImporter: @unchecked Sendable {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         let sanitized = trimmed.replacingOccurrences(of: "[^A-Za-z0-9._ -]", with: "-", options: .regularExpression)
         let collapsed = sanitized.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-        return collapsed.isEmpty ? "ebook.epub" : collapsed
+        return collapsed.isEmpty || collapsed == "." || collapsed == ".." ? "ebook.epub" : collapsed
     }
 
     func extractChapters(from fileURL: URL) async throws -> [LocalChapter] {
@@ -582,8 +605,7 @@ final class LocalEbookImporter: @unchecked Sendable {
     }
 
     func convertedEpubURL(for mobiURL: URL) -> URL {
-        let cachesURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        let convertedRoot = cachesURL.appendingPathComponent("ConvertedEbooks", isDirectory: true)
+        let convertedRoot = storage.cachesDirectory.appendingPathComponent("ConvertedEbooks", isDirectory: true)
         try? fileManager.createDirectory(at: convertedRoot, withIntermediateDirectories: true)
         let baseName = mobiURL.deletingPathExtension().lastPathComponent
         return convertedRoot.appendingPathComponent(baseName + "-" + convertedEpubCacheVersion + ".epub")

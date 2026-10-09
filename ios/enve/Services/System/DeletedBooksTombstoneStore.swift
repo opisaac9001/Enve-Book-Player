@@ -15,14 +15,16 @@ final class DeletedBooksTombstoneStore {
     @ObservationIgnored private static let storageKey = "permanently_deleted_books_v2"
     @ObservationIgnored private static let legacyStorageKey = "permanently_deleted_book_stable_ids"
 
+    private let defaults: UserDefaults
     private var entries: [String: Entry]
 
-    private init() {
-        if let data = UserDefaults.standard.data(forKey: Self.storageKey),
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        if let data = defaults.data(forKey: Self.storageKey),
             let decoded = try? JSONDecoder().decode([String: Entry].self, from: data)
         {
             self.entries = decoded
-        } else if let legacy = UserDefaults.standard.data(forKey: Self.legacyStorageKey),
+        } else if let legacy = defaults.data(forKey: Self.legacyStorageKey),
             let ids = try? JSONDecoder().decode(Set<String>.self, from: legacy)
         {
 
@@ -32,7 +34,7 @@ final class DeletedBooksTombstoneStore {
                 }
             )
             persist()
-            UserDefaults.standard.removeObject(forKey: Self.legacyStorageKey)
+            defaults.removeObject(forKey: Self.legacyStorageKey)
         } else {
             self.entries = [:]
         }
@@ -62,11 +64,11 @@ final class DeletedBooksTombstoneStore {
 
     func clearAll() {
         entries.removeAll()
-        UserDefaults.standard.removeObject(forKey: Self.storageKey)
+        defaults.removeObject(forKey: Self.storageKey)
     }
 
     private func persist() {
         guard let data = try? JSONEncoder().encode(entries) else { return }
-        UserDefaults.standard.set(data, forKey: Self.storageKey)
+        defaults.set(data, forKey: Self.storageKey)
     }
 }

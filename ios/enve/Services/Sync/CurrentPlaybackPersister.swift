@@ -19,16 +19,25 @@ enum ProgressSaveReason: String {
 final class CurrentPlaybackPersister {
     static let shared = CurrentPlaybackPersister()
 
-    private let playbackState: any PlaybackStateProvider = ActivePlayback.controller
+    private let playbackState: any PlaybackStateProvider
+    private let coordinator: SyncCoordinator
+    private let cloudSync: CloudKitProgressSync
 
     private let minimumCloudSyncInterval: TimeInterval = 10
     private var lastCloudSaveTime: Date?
 
-    private init() {}
+    init(
+        playbackState: any PlaybackStateProvider = ActivePlayback.controller,
+        coordinator: SyncCoordinator = .shared,
+        cloudSync: CloudKitProgressSync = .shared
+    ) {
+        self.playbackState = playbackState
+        self.coordinator = coordinator
+        self.cloudSync = cloudSync
+    }
 
     @discardableResult
     func saveCurrent(reason: ProgressSaveReason) async -> Bool {
-        let coordinator = SyncCoordinator.shared
         guard coordinator.syncEnabled else { return false }
         guard await ensureCloudAvailability(using: coordinator) else {
             AppLogger.sync.warning("CloudKit not available, skipping save")
@@ -56,7 +65,7 @@ final class CurrentPlaybackPersister {
             "Saving progress reason=\(reason.rawValue) bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: currentBook.stableId)) positionSeconds=\(Int(currentPosition))"
         )
 
-        let saved = await SyncCoordinator.shared.persistCurrentPlayback(
+        let saved = await coordinator.persistCurrentPlayback(
             book: currentBook,
             position: currentPosition,
             playbackRate: currentRate(),
@@ -72,7 +81,6 @@ final class CurrentPlaybackPersister {
     func save(for book: Book, position: TimeInterval, playbackRate: Double = 1.0) async {
         guard book.mediaType == .audiobook else { return }
         guard !isActiveReadAloudPlayback(book) else { return }
-        let coordinator = SyncCoordinator.shared
         guard coordinator.syncEnabled else { return }
         guard await ensureCloudAvailability(using: coordinator) else { return }
         guard position > 0 else { return }
@@ -85,7 +93,7 @@ final class CurrentPlaybackPersister {
             "Saving progress bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId)) positionSeconds=\(Int(position))"
         )
 
-        let saved = await SyncCoordinator.shared.persistCurrentPlayback(
+        let saved = await coordinator.persistCurrentPlayback(
             book: book,
             position: position,
             playbackRate: playbackRate,
@@ -103,7 +111,7 @@ final class CurrentPlaybackPersister {
 
     private func ensureCloudAvailability(using coordinator: SyncCoordinator) async -> Bool {
         if coordinator.isCloudKitAvailable { return true }
-        let available = await CloudKitProgressSync.shared.isAvailable()
+        let available = await cloudSync.isAvailable()
         coordinator.updateCloudAvailability(available)
         return available
     }

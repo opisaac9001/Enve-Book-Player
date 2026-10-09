@@ -4,7 +4,7 @@ struct CoverImage: View {
     let colorName: String
     var cornerRadius: CGFloat = 8
 
-    @ObservedObject private var themeManager = ThemeManager.shared
+    @EnvironmentObject private var themeManager: ThemeManager
 
     private var color: Color {
         switch colorName.lowercased() {
@@ -45,4 +45,5 @@ struct CoverImage: View {
             .frame(width: 100, height: 100)
     }
     .padding()
+    .environmentObject(ThemeManager.shared)
 }

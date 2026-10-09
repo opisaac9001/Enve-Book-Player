@@ -4,7 +4,7 @@ struct JournalInsightsScreen: View {
     @Environment(\.hearth) private var hearth
     @Environment(\.mantelInset) private var mantelInset
 
-    @State private var model = JournalInsightsModel()
+    @Environment(JournalInsightsModel.self) private var model
     @State private var loaded = false
 
     var body: some View {

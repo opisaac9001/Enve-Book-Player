@@ -2,6 +2,7 @@ package com.enve.app.data.servertools
 
 import com.enve.app.data.remote.GrimmoryApi
 import com.enve.app.data.remote.dto.KavitaAnnotationDto
+import com.enve.core.data.util.runSuspendCatching
 import kotlinx.coroutines.CancellationException
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -31,11 +32,13 @@ data class KavitaAnnotation(
 class KavitaToolsRepository @Inject constructor(
     private val api: GrimmoryApi,
 ) {
-    suspend fun stats(): Result<KavitaReadingStats?> = runCatching {
-        val userId = currentUserId() ?: return@runCatching null
-        val bar = optional { api.kavitaUserStatBar(userId) }
+    suspend fun stats(): Result<KavitaReadingStats?> = runSuspendCatching {
+        val userId = currentUserId() ?: return@runSuspendCatching null
+        // Kavita's stats filter drops every library not listed, so an empty list returns zeros.
+        val libraries = optional { api.kavitaLibraries() }.orEmpty().map { it.id }
+        val bar = optional { api.kavitaUserStatBar(userId, libraries, java.time.ZoneId.systemDefault().id) }
         val read = optional { api.kavitaUserReadStatistics(userId) }
-        if (bar == null && read == null) return@runCatching null
+        if (bar == null && read == null) return@runSuspendCatching null
         KavitaReadingStats(
             booksRead = bar?.booksRead ?: 0,
             comicsRead = bar?.comicsRead ?: 0,
@@ -48,9 +51,9 @@ class KavitaToolsRepository @Inject constructor(
         )
     }
 
-    suspend fun annotations(limit: Int): Result<List<KavitaAnnotation>?> = runCatching {
+    suspend fun annotations(limit: Int): Result<List<KavitaAnnotation>?> = runSuspendCatching {
         val seriesResponse = api.kavitaSeriesWithAnnotations()
-        if (seriesResponse.code() == 404) return@runCatching null
+        if (seriesResponse.code() == 404) return@runSuspendCatching null
         if (!seriesResponse.isSuccessful) error("Kavita annotated series failed: HTTP ${seriesResponse.code()}")
         val series = seriesResponse.body().orEmpty().filter { it.id > 0 }
         buildList {

@@ -39,7 +39,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.hilt.navigation.compose.hiltViewModel
+import com.enve.hearth.shell.profileViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.enve.app.ui.components.ScreenBackButton
 import com.enve.app.ui.components.SettingsCard
@@ -55,7 +55,7 @@ import com.enve.hearth.design.hearthDisplay
 @Composable
 fun DictionariesSettingsScreen(
     onBack: () -> Unit,
-    viewModel: DictionariesSettingsViewModel = hiltViewModel(),
+    viewModel: DictionariesSettingsViewModel = profileViewModel(),
 ) {
     val dictionaries by viewModel.dictionaries.collectAsStateWithLifecycle()
     val colors = EnveTheme.colors

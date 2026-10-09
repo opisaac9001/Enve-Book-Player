@@ -30,8 +30,17 @@ import androidx.core.view.WindowCompat
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewFeature
 import com.enve.app.MainActivity
+import com.enve.app.profiles.ProfileActivityBinding
+import com.enve.app.profiles.ProfileSwitchCoordinator
+import com.enve.app.profiles.ProfileLifecycleRegistry
+import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
 
+@AndroidEntryPoint
 class AuthBrowserActivity : ComponentActivity() {
+    @Inject lateinit var profiles: ProfileSwitchCoordinator
+    @Inject lateinit var profileLifecycle: ProfileLifecycleRegistry
+    private lateinit var profileBinding: ProfileActivityBinding
     private lateinit var webView: WebView
     private lateinit var progressBar: ProgressBar
     private var originServerUrl: String = ""
@@ -49,7 +58,7 @@ class AuthBrowserActivity : ComponentActivity() {
     }
 
     private fun checkRequiredCookie(currentUrl: String? = null): Boolean {
-        if (cookieReturned || originServerUrl.isBlank()) return false
+        if (cookieReturned || originServerUrl.isBlank() || !isProfileActive()) return false
         val name = requiredCookieName ?: return false
         if (requireOriginReturnBeforeCookie && !isReturnedFromCookieAuth(currentUrl)) return false
         val raw = CookieManager.getInstance().getCookie(originServerUrl).orEmpty()
@@ -62,6 +71,10 @@ class AuthBrowserActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        profileBinding = ProfileActivityBinding.attach(this, profiles, profileLifecycle) ?: run {
+            finish()
+            return
+        }
         WindowCompat.setDecorFitsSystemWindows(window, true)
 
         val startUrl = intent.getStringExtra(EXTRA_URL)?.takeIf { it.isNotBlank() }
@@ -77,13 +90,16 @@ class AuthBrowserActivity : ComponentActivity() {
         requireOriginReturnBeforeCookie = intent.getBooleanExtra(EXTRA_REQUIRE_ORIGIN_RETURN_BEFORE_COOKIE, false)
 
         setupContent(startUrl)
-        CookieManager.getInstance().removeAllCookies(null)
-        CookieManager.getInstance().flush()
+        CookieManager.getInstance().removeAllCookies {
+            if (isProfileActive() && !isFinishing && !isDestroyed) {
+                CookieManager.getInstance().flush()
+                webView.loadUrl(startUrl)
+                if (requiredCookieName != null) cookieHandler.post(cookiePoller)
+            }
+        }
         android.webkit.WebStorage.getInstance().deleteAllData()
         webView.clearCache(true)
         webView.clearHistory()
-        webView.loadUrl(startUrl)
-        if (requiredCookieName != null) cookieHandler.postDelayed(cookiePoller, 1000L)
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
@@ -104,6 +120,8 @@ class AuthBrowserActivity : ComponentActivity() {
             webView.stopLoading()
             webView.destroy()
         }
+        CookieManager.getInstance().removeAllCookies { CookieManager.getInstance().flush() }
+        android.webkit.WebStorage.getInstance().deleteAllData()
         super.onDestroy()
     }
 
@@ -213,7 +231,13 @@ class AuthBrowserActivity : ComponentActivity() {
         setContentView(root)
     }
 
+    private fun isProfileActive(): Boolean =
+        ::profileBinding.isInitialized && !profileBinding.retired &&
+            profiles.activeRuntime.value?.generation == profileBinding.runtime.generation &&
+            !profiles.state.value.locked && !profiles.state.value.switching
+
     private fun handleUrl(uri: Uri): Boolean {
+        if (!isProfileActive()) return true
         markCookieAuthNavigation(uri)
         if (isAuthCallback(uri)) {
             val enrichedUri = if (originServerUrl.isNotBlank() && uri.getQueryParameter("server").isNullOrBlank()) {
@@ -226,6 +250,7 @@ class AuthBrowserActivity : ComponentActivity() {
                 data = enrichedUri
                 flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
             }
+            ProfileActivityBinding.capture(this, callbackIntent)
             startActivity(callbackIntent)
             finish()
             return true
@@ -366,6 +391,7 @@ class AuthBrowserActivity : ComponentActivity() {
             requireOriginReturnBeforeCookie: Boolean = false,
         ): Intent {
             return Intent(context, AuthBrowserActivity::class.java).apply {
+                ProfileActivityBinding.capture(context, this)
                 putExtra(EXTRA_URL, url)
                 putExtra(EXTRA_ACCENT, accent)
                 putExtra(EXTRA_REQUIRE_ORIGIN_RETURN_BEFORE_COOKIE, requireOriginReturnBeforeCookie)

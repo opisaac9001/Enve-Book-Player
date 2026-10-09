@@ -7,7 +7,7 @@ final class AuthenticationFailureStore {
     private let defaults: UserDefaults
     private let key = "enve.authenticationFailures.v1"
 
-    private init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
     }
 

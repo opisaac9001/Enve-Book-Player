@@ -4,6 +4,7 @@ import Observation
 @MainActor
 @Observable
 final class AdminSiloModel {
+    let profileSession: ProfileSession
     let connection: ServerConnection
     private let service: SiloAdminService
 
@@ -30,9 +31,10 @@ final class AdminSiloModel {
         var ebooks = 0
     }
 
-    init(connection: ServerConnection) {
+    init(connection: ServerConnection, profileSession: ProfileSession = .owner) {
+        self.profileSession = profileSession
         self.connection = connection
-        self.service = SiloAdminService(connection: connection)
+        self.service = SiloAdminService(connection: connection, profileSession: profileSession)
     }
 
     func refreshAll() async {
@@ -74,13 +76,13 @@ final class AdminSiloModel {
     }
 
     private func loadPersonalReading() async {
-        guard let provider = AppState.shared.getProvider(connection.id) as? SiloProvider,
+        guard let provider = profileSession.appState.getProvider(connection.id) as? SiloProvider,
             let progress = try? await provider.fetchUserMediaProgress(libraryId: "")
         else {
             return
         }
         personalProgress = progress.filter { $0.duration > 0 || $0.isFinished }
-        personalBooks = await AppState.shared.bookStore.booksByAnyIds(Set(personalProgress.map(\.uniqueId)))
+        personalBooks = await profileSession.appState.bookStore.booksByAnyIds(Set(personalProgress.map(\.uniqueId)))
     }
 
     private func loadCatalogCounts() async {

@@ -1,11 +1,7 @@
 package com.enve.app.wear
 
 import com.enve.core.data.model.AppMediaType
-import com.enve.engine.library.LibraryFacade
-import com.enve.engine.playback.PlaybackFacade
-import com.enve.engine.playback.PlayerSessionFacade
 import com.enve.engine.sleep.SleepDataAccess
-import com.enve.engine.sleep.SleepDataFacade
 import com.enve.wear.protocol.WearBook
 import com.enve.wear.protocol.WearProtocol
 import com.enve.wear.protocol.WearState
@@ -16,11 +12,7 @@ import com.google.android.gms.wearable.WearableListenerService
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
@@ -29,20 +21,31 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 @AndroidEntryPoint
 class WearCompanionService : WearableListenerService() {
-    @Inject lateinit var playback: PlaybackFacade
-    @Inject lateinit var session: PlayerSessionFacade
-    @Inject lateinit var library: LibraryFacade
-    @Inject lateinit var sleepData: SleepDataFacade
+    @Inject lateinit var profiles: com.enve.app.profiles.ProfileSwitchCoordinator
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     override fun onMessageReceived(event: MessageEvent) {
-        scope.launch {
+        if (event.path == WearProtocol.PROVISIONING_RESULT_PATH) {
+            if (profiles.state.value.enabled || profiles.state.value.locked || profiles.state.value.switching) return
+            runCatching { WearProtocol.decodeProvisioningResult(event.data) }
+                .onSuccess(PhoneWearProvisioningEvents::receive)
+            return
+        }
+        val runtime = profiles.activeRuntime.value
+        if (profiles.state.value.enabled || profiles.state.value.locked || profiles.state.value.switching || runtime == null) {
+            val empty = WearState(updatedAtMs = System.currentTimeMillis())
+            val request = PutDataRequest.create(WearProtocol.STATE_PATH).apply { data = WearProtocol.encode(empty); setUrgent() }
+            Wearable.getDataClient(this).putDataItem(request)
+            return
+        }
+        val playback = runtime.component.playback()
+        val session = runtime.component.playerSession()
+        runtime.component.resources().scope.launch {
             when (event.path) {
                 WearProtocol.TOGGLE_PATH -> playback.togglePlayPause()
                 WearProtocol.BACK_PATH -> playback.skipBackward()
                 WearProtocol.FORWARD_PATH -> playback.skipForward()
-                WearProtocol.OPEN_BOOK_PATH -> openBook(event.data.decodeToString())
+                WearProtocol.OPEN_BOOK_PATH -> openBook(runtime, event.data.decodeToString())
                 WearProtocol.START_SLEEP_PATH -> session.startSleepTimer(
                     event.data.decodeToString().toIntOrNull()?.coerceIn(1, 120) ?: 30,
                 )
@@ -50,16 +53,22 @@ class WearCompanionService : WearableListenerService() {
                 WearProtocol.REQUEST_STATE_PATH -> Unit
                 else -> return@launch
             }
-            publishState()
+            publishState(runtime)
         }
     }
 
-    private suspend fun openBook(key: String) {
+    private suspend fun openBook(runtime: com.enve.app.profiles.ActiveProfileRuntime, key: String) {
+        val library = runtime.component.library()
+        val playback = runtime.component.playback()
         val book = library.bookByKeyFlow(key).first() ?: return
         if (book.mediaType == AppMediaType.AUDIOBOOK || book.hasAudio) playback.open(book)
     }
 
-    private suspend fun publishState() {
+    private suspend fun publishState(runtime: com.enve.app.profiles.ActiveProfileRuntime) {
+        val playback = runtime.component.playback()
+        val session = runtime.component.playerSession()
+        val library = runtime.component.library()
+        val sleepData = runtime.component.sleepDataFacade()
         val (transport, nowPlaying) = coroutineScope {
             val transportSnapshot = async {
                 withTimeoutOrNull(1_500) { playback.transport.drop(1).first() } ?: playback.transport.value
@@ -103,6 +112,7 @@ class WearCompanionService : WearableListenerService() {
             sleepNights = if (sleep?.access == SleepDataAccess.AVAILABLE) nights.size else 0,
             updatedAtMs = System.currentTimeMillis(),
         )
+        if (profiles.state.value.enabled || profiles.state.value.locked || profiles.state.value.switching || profiles.activeRuntime.value !== runtime) return
         val request = PutDataRequest.create(WearProtocol.STATE_PATH).apply {
             data = WearProtocol.encode(state)
             setUrgent()
@@ -110,8 +120,4 @@ class WearCompanionService : WearableListenerService() {
         Wearable.getDataClient(this).putDataItem(request)
     }
 
-    override fun onDestroy() {
-        scope.cancel()
-        super.onDestroy()
-    }
 }

@@ -16,7 +16,11 @@ final class ComicArchiveService: @unchecked Sendable {
     private let lock = NSLock()
     private var inFlightExtractions: [String: Task<[URL], any Error>] = [:]
 
-    private init() {}
+    private let cachesDirectory: URL
+
+    init(cachesDirectory: URL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]) {
+        self.cachesDirectory = cachesDirectory
+    }
 
     func extractedPages(from archiveURL: URL, bookId: String) async throws -> [URL] {
         let existing: Task<[URL], any Error>? = lock.withLock { inFlightExtractions[bookId] }
@@ -319,9 +323,6 @@ final class ComicArchiveService: @unchecked Sendable {
     }
 
     private func extractionDirectory(for bookId: String) throws -> URL {
-        guard let cachesDirectory = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first else {
-            throw ComicArchiveError.cacheDirectoryUnavailable
-        }
 
         let directory =
             cachesDirectory

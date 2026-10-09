@@ -238,6 +238,91 @@ class ReaderDatabaseMigrationTest {
         assertTrue(indexNames(db, "opds_acquisition").contains("index_opds_acquisition_bookKey"))
     }
 
+    @Test
+    fun migration_26_to_27_preserves_existing_smart_shelves() {
+        val db = helper.writableDatabase
+        db.execSQL(
+            """
+            CREATE TABLE custom_smart_collections (
+                id TEXT NOT NULL PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT,
+                mediaType TEXT,
+                status TEXT NOT NULL,
+                length TEXT NOT NULL,
+                addedWithinDays INTEGER,
+                query TEXT,
+                createdAt INTEGER NOT NULL,
+                updatedAt INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            "INSERT INTO custom_smart_collections (id, name, status, length, createdAt, updatedAt) VALUES ('saved', 'My shelf', 'FINISHED', 'ANY', 1, 2)",
+        )
+
+        MIGRATION_26_27.migrate(db)
+
+        assertTrue(columnNames(db, "custom_smart_collections").contains("rulesJson"))
+        db.query("SELECT name, status, rulesJson FROM custom_smart_collections WHERE id = 'saved'").use {
+            assertTrue(it.moveToFirst())
+            assertEquals("My shelf", it.getString(0))
+            assertEquals("FINISHED", it.getString(1))
+            assertTrue(it.isNull(2))
+        }
+    }
+
+    @Test
+    fun migration_27_to_28_keeps_shelf_memberships_and_smart_rules() {
+        val db = helper.writableDatabase
+        db.execSQL(
+            """
+            CREATE TABLE user_collections (
+                id TEXT NOT NULL PRIMARY KEY, name TEXT NOT NULL, description TEXT,
+                iconName TEXT NOT NULL, colorHex TEXT NOT NULL, createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE TABLE user_collection_books (
+                collectionId TEXT NOT NULL, bookKey TEXT NOT NULL, addedAt INTEGER NOT NULL,
+                PRIMARY KEY(collectionId, bookKey)
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE TABLE custom_smart_collections (
+                id TEXT NOT NULL PRIMARY KEY, name TEXT NOT NULL, description TEXT, mediaType TEXT,
+                status TEXT NOT NULL, length TEXT NOT NULL, addedWithinDays INTEGER, query TEXT,
+                createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL, rulesJson TEXT
+            )
+            """.trimIndent(),
+        )
+        db.execSQL("INSERT INTO user_collections VALUES ('manual', 'Mine', NULL, 'folder', '#F5921A', 1, 2)")
+        db.execSQL("INSERT INTO user_collection_books VALUES ('manual', 'book-1', 3)")
+        db.execSQL(
+            "INSERT INTO custom_smart_collections VALUES ('smart', 'Recent', NULL, NULL, 'ANY', 'ANY', NULL, NULL, 1, 2, ?)",
+            arrayOf("""{"logicOperator":"AND","rules":[]}"""),
+        )
+
+        MIGRATION_27_28.migrate(db)
+
+        assertTrue(columnNames(db, "user_collections").contains("coverPath"))
+        assertTrue(columnNames(db, "custom_smart_collections").containsAll(setOf("iconName", "colorHex", "coverPath")))
+        db.query("SELECT bookKey FROM user_collection_books WHERE collectionId = 'manual'").use {
+            assertTrue(it.moveToFirst())
+            assertEquals("book-1", it.getString(0))
+        }
+        db.query("SELECT rulesJson, iconName, colorHex FROM custom_smart_collections WHERE id = 'smart'").use {
+            assertTrue(it.moveToFirst())
+            assertEquals("""{"logicOperator":"AND","rules":[]}""", it.getString(0))
+            assertEquals("folder", it.getString(1))
+            assertEquals("#F5921A", it.getString(2))
+        }
+    }
+
     private fun indexNames(db: SupportSQLiteDatabase, table: String): Set<String> =
         db.query("PRAGMA index_list(`$table`)").use { cursor ->
             val nameIndex = cursor.getColumnIndexOrThrow("name")

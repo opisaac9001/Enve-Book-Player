@@ -8,6 +8,7 @@ import com.enve.core.data.util.optObject
 import com.enve.core.data.util.optString
 import com.enve.core.di.RefreshClient
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -86,9 +87,34 @@ data class HardcoverHubData(
     val lists: List<HardcoverUserList>,
     val activity: List<HardcoverActivity>,
     val readingGoal: HardcoverReadingGoal?,
+    val listsError: String? = null,
+    val activityError: String? = null,
+    val goalError: String? = null,
 )
 
 class HardcoverException(message: String) : Exception(message)
+
+internal fun hardcoverHttpError(status: Int, body: String): HardcoverException {
+    val code = runCatching { Json.parseToJsonElement(body).jsonObject.optString("error") }.getOrDefault("").orEmpty()
+    val capacity = body.contains("request_exceeds_capacity")
+    val message = when {
+        status == 401 -> "Hardcover token is invalid or expired."
+        status == 403 && code == "insufficient_scope" -> "This Hardcover token needs additional permissions for this section."
+        status == 403 && capacity -> "This Hardcover request exceeds the account's burst capacity."
+        status == 403 && code == "unsupported_operation" -> "Hardcover does not allow this operation for API tokens."
+        status == 403 -> "Hardcover denied access to this section."
+        status == 429 -> "Hardcover is rate limiting requests. Try again shortly."
+        else -> "Hardcover returned HTTP $status."
+    }
+    return HardcoverException(message)
+}
+
+internal fun hardcoverInvalidTokenMessage(message: String): Boolean =
+    listOf("invalid_token", "invalid api key", "jwtexpired", "invalid-jwt", "unable to verify token")
+        .any { message.contains(it, ignoreCase = true) }
+
+internal fun hardcoverRetryDelaySeconds(status: Int, retryAfter: String?): Long? =
+    retryAfter?.toLongOrNull()?.takeIf { status == 429 && it in 0..3 }
 
 @Serializable
 private data class HardcoverSearchResultsDto(val hits: List<HardcoverSearchHitDto>)
@@ -138,9 +164,16 @@ class HardcoverService @Inject constructor(
     suspend fun saveToken(token: String): HardcoverProfile {
         val trimmed = token.trim()
         if (trimmed.isBlank()) throw HardcoverException("Paste a Hardcover API token.")
+        val previous = vault.get(CredentialVault.HARDCOVER_API_KEY)
         vault.put(CredentialVault.HARDCOVER_API_KEY, trimmed)
         return runCatching { getCurrentUser() }
-            .onFailure { clearToken() }
+            .onFailure {
+                val current = vault.get(CredentialVault.HARDCOVER_API_KEY)
+                if (current == trimmed || current == null) {
+                    if (previous != null) vault.put(CredentialVault.HARDCOVER_API_KEY, previous)
+                    else if (hardcoverInvalidTokenMessage(it.message.orEmpty())) clearToken()
+                }
+            }
             .getOrThrow()
     }
 
@@ -152,11 +185,23 @@ class HardcoverService @Inject constructor(
         val endDate = "$year-12-31"
 
         val library = getUserBooks(limit = 50)
-        val lists = getUserLists(userId)
-        val activity = getActivityFeed(userId, profile.username, limit = 10)
-        val goal = getReadingGoal(userId, year, startDate, endDate)
+        var listsError: String? = null
+        val lists = try { getUserLists(userId) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
+            listsError = e.message
+            emptyList()
+        }
+        var activityError: String? = null
+        val activity = try { getActivityFeed(userId, profile.username, limit = 10) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
+            activityError = e.message
+            emptyList()
+        }
+        var goalError: String? = null
+        val goal = try { getReadingGoal(userId, year, startDate, endDate) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
+            goalError = e.message
+            null
+        }
 
-        return HardcoverHubData(profile, library, lists, activity, goal)
+        return HardcoverHubData(profile, library, lists, activity, goal, listsError, activityError, goalError)
     }
 
     suspend fun searchBooks(query: String, limit: Int = 20): List<HardcoverBookResult> {
@@ -372,19 +417,26 @@ class HardcoverService @Inject constructor(
             .header("Authorization", "Bearer $token")
             .build()
 
-        client.newCall(request).execute().use { response ->
+        var response = client.newCall(request).execute()
+        val retryAfter = hardcoverRetryDelaySeconds(response.code, response.header("Retry-After"))
+        if (retryAfter != null) {
+            response.close()
+            delay(retryAfter * 1_000)
+            response = client.newCall(request).execute()
+        }
+        response.use { response ->
             val responseText = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
-                if (response.code == 401 || response.code == 403) clearToken()
-                throw HardcoverException("Hardcover returned HTTP ${response.code}.")
+                if (response.code == 401 && vault.get(CredentialVault.HARDCOVER_API_KEY) == token) clearToken()
+                throw hardcoverHttpError(response.code, responseText)
             }
             val root = json.parseToJsonElement(responseText).jsonObject
             root.optString("error")?.let { error ->
-                if (error.contains("token", ignoreCase = true)) clearToken()
+                if (hardcoverInvalidTokenMessage(error) && vault.get(CredentialVault.HARDCOVER_API_KEY) == token) clearToken()
                 throw HardcoverException(error)
             }
             root.optArray("errors")?.firstOrNull()?.jsonObject?.optString("message")?.let { message ->
-                if (message.contains("token", ignoreCase = true) || message.contains("unauthorized", ignoreCase = true)) {
+                if (hardcoverInvalidTokenMessage(message) && vault.get(CredentialVault.HARDCOVER_API_KEY) == token) {
                     clearToken()
                 }
                 throw HardcoverException(message)

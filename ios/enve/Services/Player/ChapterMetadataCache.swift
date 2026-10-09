@@ -2,16 +2,17 @@ import Foundation
 import Logging
 
 enum ChapterMetadataCache {
-    static func cache(_ book: Book) async {
+    static func cache(_ book: Book, readerArtifacts: ReaderArtifactsStore = .shared,
+        metadataStorage: MetadataStorage = .shared) async {
         guard let chapters = book.chapters, !chapters.isEmpty else { return }
 
-        ReaderArtifactsStore.shared.saveCachedChapters(bookId: book.stableId, chapters: chapters)
+        readerArtifacts.saveCachedChapters(bookId: book.stableId, chapters: chapters)
         if book.id != book.stableId {
-            ReaderArtifactsStore.shared.saveCachedChapters(bookId: book.id, chapters: chapters)
+            readerArtifacts.saveCachedChapters(bookId: book.id, chapters: chapters)
         }
 
         do {
-            try await MetadataStorage.shared.updateLayer(bookId: book.id, layer: .appCache) { metadata in
+            try await metadataStorage.updateLayer(bookId: book.id, layer: .appCache) { metadata in
                 var backend =
                     metadata.backend
                     ?? BackendMetadataLayer(

@@ -36,7 +36,8 @@ class GrimmoryLiveFormatSyncTest {
         val documentPath = System.getenv("ENVE_LAB_DOCUMENT")
         assumeTrue(System.getenv("ENVE_LAB_SERVICE") == "Grimmory" && documentPath != null)
         val document = File(requireNotNull(documentPath)).readText()
-        val baseUrl = rowValue(document, "Grimmory") { it.startsWith("http") }
+        val baseUrl = System.getenv("ENVE_LAB_BASE_URL")
+            ?: rowValue(document, "Grimmory") { it.startsWith("http") }
         val host = URL(baseUrl).host
         val permittedHosts = listOf("LAN address", "Tailscale address").map { rowValue(document, it) }
         check(host in permittedHosts) { "Live sync tests may only use the Enve lab" }
@@ -98,7 +99,7 @@ class GrimmoryLiveFormatSyncTest {
         val audioFixture = resolveFixture(
             baseUrl,
             token,
-            FixtureSpec("Audiobook", "AUDIOBOOK", "Chaptered M4B Book", "Chaptered M4B Book.m4b"),
+            FixtureSpec("Audiobook", "AUDIOBOOK", "Chaptered M4B Book", "Enve Dual Audio First.m4b"),
         )
         val originalAudio = fetchProgress(baseUrl, token, audioFixture.bookId)
         try {

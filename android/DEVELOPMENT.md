@@ -18,7 +18,7 @@ plex/            Plex provider
 silo/            Silo provider
 storyteller/     Storyteller provider
 wear-protocol/   message types shared by the phone and watch apps
-wear/            Wear OS companion app
+wear/            standalone Wear OS player and phone remote
 ThirdParty/      vendored upstream source, licences, and reference assets
 BuildSupport/    reproducible build assets and provenance
 docs/            architecture, guides, testing, and release documentation
@@ -29,10 +29,9 @@ The `hearth-ui` to `engine-api` boundary is deliberate. UI code must not import 
 
 ## Initial setup
 
-From the combined Enve Book Player checkout, enter the Android directory, initialize the Foliate submodule, open that directory in Android Studio, and let Gradle sync:
+Open the directory containing `settings.gradle.kts` in Android Studio and let Gradle sync. In the standalone Android repository this is the checkout root; in the combined public repository it is `android/`. Run the setup command from that directory:
 
 ```sh
-cd android
 git submodule update --init --recursive
 ```
 
@@ -68,11 +67,14 @@ adb shell am force-stop com.enve.app.debug
 adb shell am start -n com.enve.app.debug/com.enve.app.MainActivity
 ```
 
-Add `-s <serial>` to every `adb` command when more than one device is attached. The Wear companion builds separately:
+Add `-s <serial>` to every `adb` command when more than one device is attached. The watch app builds separately:
 
 ```sh
-./gradlew :wear:assembleDebug
+./gradlew :wear:assembleDebug :wear:assembleRelease :wear:testDebugUnitTest
+ANDROID_SERIAL=<watch-serial> ./gradlew :wear:connectedDebugAndroidTest
 ```
+
+See [wear.md](docs/architecture/wear.md) for watch scope and remaining release checks.
 
 ## Architecture entry points
 

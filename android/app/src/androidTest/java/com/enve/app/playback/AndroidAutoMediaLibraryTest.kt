@@ -20,6 +20,10 @@ import androidx.media3.session.SessionResult
 import androidx.media3.session.SessionToken
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.enve.core.data.local.toCachedBook
+import com.enve.core.data.model.AppMediaType
+import com.enve.core.data.model.Book
+import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.Chapter
 import com.enve.engine.playback.PlaybackAutomationContract
 import dagger.hilt.android.EntryPointAccessors
@@ -27,6 +31,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
@@ -40,6 +45,18 @@ import kotlinx.coroutines.runBlocking
 @RunWith(AndroidJUnit4::class)
 @androidx.annotation.OptIn(UnstableApi::class)
 class AndroidAutoMediaLibraryTest {
+    @Before
+    fun initializeRuntime() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val profiles = EntryPointAccessors.fromApplication(context, AndroidAutoDebugEntryPoint::class.java).profileCoordinator()
+        profiles.initialize()
+        check(!profiles.state.value.locked && !profiles.state.value.switching)
+        checkNotNull(profiles.activeRuntime.value)
+        Unit
+    }
+
+    private fun AndroidAutoDebugEntryPoint.runtime() = checkNotNull(profileCoordinator().activeRuntime.value).component
+
     @Test
     fun artworkProviderServesCachedJpeg() {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
@@ -98,8 +115,8 @@ class AndroidAutoMediaLibraryTest {
             context,
             AndroidAutoDebugEntryPoint::class.java,
         )
-        val audioManager = entryPoint.audioPlaybackManager()
-        val chapterStore = entryPoint.chapterStore()
+        val audioManager = entryPoint.runtime().audioPlayback()
+        val chapterStore = entryPoint.runtime().chapterStore()
         val bookId = "android-auto-chapter-controls"
         chapterStore.set(
             cacheKey = bookId,
@@ -171,8 +188,8 @@ class AndroidAutoMediaLibraryTest {
             context,
             AndroidAutoDebugEntryPoint::class.java,
         )
-        val audioManager = entryPoint.audioPlaybackManager()
-        val chapterStore = entryPoint.chapterStore()
+        val audioManager = entryPoint.runtime().audioPlayback()
+        val chapterStore = entryPoint.runtime().chapterStore()
         val bookId = "android-auto-multi-file-chapters"
         chapterStore.set(
             cacheKey = bookId,
@@ -266,7 +283,7 @@ class AndroidAutoMediaLibraryTest {
             .buildAsync()
             .get(15, TimeUnit.SECONDS)
         val originalSpeed = runBlocking {
-            entryPoint.preferencesManager().playbackSpeed.first()
+            entryPoint.runtime().preferences().playbackSpeed.first()
         }
 
         try {
@@ -286,12 +303,12 @@ class AndroidAutoMediaLibraryTest {
                 browser.playbackParameters.speed == 1.25f
             }
             val persistedSpeed = runBlocking {
-                entryPoint.preferencesManager().playbackSpeed.first()
+                entryPoint.runtime().preferences().playbackSpeed.first()
             }
             assertEquals(1.25f, persistedSpeed)
         } finally {
             controllerHandler.call { browser.setPlaybackSpeed(originalSpeed) }
-            runBlocking { entryPoint.preferencesManager().setPlaybackSpeed(originalSpeed) }
+            runBlocking { entryPoint.runtime().preferences().setPlaybackSpeed(originalSpeed) }
             controllerHandler.call { browser.release() }
             controllerThread.quitSafely()
         }
@@ -309,7 +326,7 @@ class AndroidAutoMediaLibraryTest {
         val audioManager = EntryPointAccessors.fromApplication(
             context,
             AndroidAutoDebugEntryPoint::class.java,
-        ).audioPlaybackManager()
+        ).runtime().audioPlayback()
         val token = SessionToken(context, ComponentName(context, PlaybackService::class.java))
         val controllerThread = HandlerThread("android-auto-artwork-test").apply { start() }
         val controllerHandler = Handler(controllerThread.looper)
@@ -365,7 +382,7 @@ class AndroidAutoMediaLibraryTest {
         val audioManager = EntryPointAccessors.fromApplication(
             context,
             AndroidAutoDebugEntryPoint::class.java,
-        ).audioPlaybackManager()
+        ).runtime().audioPlayback()
         val token = SessionToken(context, ComponentName(context, PlaybackService::class.java))
         val controllerThread = HandlerThread("android-auto-idle-connect-test").apply { start() }
         val controllerHandler = Handler(controllerThread.looper)
@@ -424,7 +441,7 @@ class AndroidAutoMediaLibraryTest {
         val chapterStore = EntryPointAccessors.fromApplication(
             context,
             AndroidAutoDebugEntryPoint::class.java,
-        ).chapterStore()
+        ).runtime().chapterStore()
         chapterStore.set(
             cacheKey = "android-auto-controls",
             bookId = "android-auto-controls",
@@ -536,6 +553,156 @@ class AndroidAutoMediaLibraryTest {
             controllerThread.quitSafely()
             chapterStore.clear()
         }
+    }
+
+    @Test
+    fun pausedMultiTrackSeekRewindAndClearSaveExactBookCheckpoint() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val runtime = EntryPointAccessors.fromApplication(context, AndroidAutoDebugEntryPoint::class.java).runtime()
+        val dao = runtime.bookCacheDao()
+        val audioManager = runtime.audioPlayback()
+        val audio = File(context.cacheDir, "android-auto-checkpoint.wav")
+        writeSilentWav(audio)
+        val book = Book(
+            id = "android-auto-checkpoint", title = "Android Auto Checkpoint", source = BookSource.LOCAL,
+            connectionId = "android-auto-checkpoint-one", mediaType = AppMediaType.AUDIOBOOK,
+            duration = 60L, currentTime = 7L, readProgress = 7f / 60f,
+        )
+        val other = book.copy(connectionId = "android-auto-checkpoint-two")
+        runBlocking { dao.upsert(listOf(book.toCachedBook(0L), other.toCachedBook(0L))) }
+        val thread = HandlerThread("android-auto-checkpoint-test").apply { start() }
+        val handler = Handler(thread.looper)
+        val token = SessionToken(context, ComponentName(context, PlaybackService::class.java))
+        var browser = MediaBrowser.Builder(context, token).setApplicationLooper(thread.looper)
+            .buildAsync().get(15, TimeUnit.SECONDS)
+        try {
+            val url = Uri.fromFile(audio).toString()
+            audioManager.playMultiTrack(
+                tracks = listOf(
+                    AudioPlaybackManager.TrackInfo(url, "Part 1", 30_000L),
+                    AudioPlaybackManager.TrackInfo(url, "Part 2", 30_000L),
+                ),
+                bookId = book.id, title = book.title, author = null, coverUrl = null,
+                mediaId = AutoMediaBrowserHelper.mediaIdForCacheKey(book.uniqueKey),
+            )
+            waitUntil(handler) { browser.mediaItemCount == 2 && browser.duration >= 30_000L }
+            handler.call { browser.pause(); browser.seekTo(1, 12_000L) }
+            waitForPosition(handler, browser, 12_000L)
+            waitForSavedCheckpoint(dao, book.uniqueKey, 42L)
+            runBlocking { assertEquals(other.toCachedBook(0L), dao.getByCacheKey(other.uniqueKey)) }
+
+            handler.call { browser.seekTo(0, 0L) }
+            waitForPosition(handler, browser, 0L)
+            waitForSavedCheckpoint(dao, book.uniqueKey, 0L)
+            runBlocking { assertEquals(0f, dao.getByCacheKey(book.uniqueKey)!!.readProgress) }
+
+            handler.call { browser.seekTo(1, 9_000L) }
+            waitForPosition(handler, browser, 9_000L)
+            waitForSavedCheckpoint(dao, book.uniqueKey, 39L)
+            handler.call { browser.release() }
+            browser = MediaBrowser.Builder(context, token).setApplicationLooper(thread.looper)
+                .buildAsync().get(15, TimeUnit.SECONDS)
+            waitUntil(handler) { browser.mediaItemCount == 2 }
+            waitForPosition(handler, browser, 9_000L)
+            handler.call { browser.stop(); browser.clearMediaItems() }
+            waitUntil(handler) { browser.mediaItemCount == 0 }
+            waitForSavedCheckpoint(dao, book.uniqueKey, 39L)
+            runBlocking { assertEquals(39L, runtime.playbackOpenProgressResolver().resolveStartSeconds(book)) }
+        } finally {
+            audioManager.stop()
+            handler.call { browser.release() }
+            thread.quitSafely()
+            runBlocking { dao.deleteByCacheKeys(listOf(book.uniqueKey, other.uniqueKey)) }
+            audio.delete()
+        }
+    }
+
+    @Test
+    fun unsentLocalCheckpointWinsWhenPhoneReopensWithStaleBook() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val runtime = EntryPointAccessors.fromApplication(context, AndroidAutoDebugEntryPoint::class.java).runtime()
+        val dao = runtime.bookCacheDao()
+        val pending = runtime.database().pendingProgressPushDao()
+        val stale = Book(
+            id = "android-auto-pending-resume", title = "Pending Resume", source = BookSource.AUDIOBOOKSHELF,
+            connectionId = "android-auto-pending-test", duration = 60L, currentTime = 10L, readProgress = 1f / 6f,
+        )
+        val checkpoint = stale.copy(currentTime = 18L, readProgress = 0.3f, lastReadTime = System.currentTimeMillis())
+        dao.upsert(listOf(checkpoint.toCachedBook(0L)))
+        pending.upsert(com.enve.core.data.local.PendingProgressPush(
+            bookId = stale.id, source = stale.source.name, connectionKey = stale.connectionId.orEmpty(),
+            mediaType = AppMediaType.AUDIOBOOK.name, percentage = 0.3f, isFinished = false,
+            createdAt = checkpoint.lastReadTime,
+        ))
+        try {
+            assertEquals(18L, runtime.playbackOpenProgressResolver().resolveStartSeconds(stale, promptForConflict = false))
+            assertEquals(checkpoint.toCachedBook(0L), dao.getByCacheKey(stale.uniqueKey))
+            val zero = checkpoint.copy(currentTime = 0L, readProgress = 0f, lastReadTime = checkpoint.lastReadTime + 1L)
+            dao.upsert(listOf(zero.toCachedBook(0L)))
+            pending.upsert(com.enve.core.data.local.PendingProgressPush(
+                bookId = stale.id, source = stale.source.name, connectionKey = stale.connectionId.orEmpty(),
+                mediaType = AppMediaType.AUDIOBOOK.name, percentage = 0f, isFinished = false,
+                createdAt = zero.lastReadTime,
+            ))
+            assertEquals(0L, runtime.playbackOpenProgressResolver().resolveStartSeconds(stale, promptForConflict = false))
+            assertEquals(zero.toCachedBook(0L), dao.getByCacheKey(stale.uniqueKey))
+        } finally {
+            pending.delete(stale.id, stale.source.name, stale.connectionId.orEmpty())
+            dao.deleteByCacheKeys(listOf(stale.uniqueKey))
+        }
+    }
+
+    @Test
+    fun futureServerTimestampDoesNotRejectLocalZeroCheckpoint() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val runtime = EntryPointAccessors.fromApplication(context, AndroidAutoDebugEntryPoint::class.java).runtime()
+        val book = Book(id = "auto-future-clock", title = "Future clock", source = BookSource.AUDIOBOOKSHELF,
+            connectionId = "auto-clock-test", mediaType = AppMediaType.AUDIOBOOK, duration = 60L,
+            currentTime = 30L, readProgress = 0.5f, lastReadTime = System.currentTimeMillis() + 86_400_000L)
+        val dao = runtime.bookCacheDao()
+        val pending = runtime.database().pendingProgressPushDao()
+        dao.upsert(listOf(book.toCachedBook(0L)))
+        try {
+            val point = runtime.progressService().capturePlayback(AutoMediaBrowserHelper.mediaIdForCacheKey(book.uniqueKey),
+                positionMs = 0L, durationMs = 60_000L, capturedAtMs = System.currentTimeMillis(), capturedElapsedMs = 1000L)!!
+            assertTrue(runtime.progressService().persistCheckpoint(point, force = true) is PlayerProgressService.SaveResult.Saved)
+            assertEquals(0L, dao.getByCacheKey(book.uniqueKey)!!.currentTime)
+            assertEquals(point.capturedAtMs, dao.getByCacheKey(book.uniqueKey)!!.lastReadTime)
+        } finally {
+            pending.delete(book.id, book.source.name, book.connectionId.orEmpty())
+            dao.deleteByCacheKeys(listOf(book.uniqueKey))
+        }
+    }
+
+    @Test
+    fun wallClockRollbackDoesNotRejectForcedRewind() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val runtime = EntryPointAccessors.fromApplication(context, AndroidAutoDebugEntryPoint::class.java).runtime()
+        val book = Book(id = "auto-clock-rollback", title = "Clock rollback", source = BookSource.LOCAL,
+            mediaType = AppMediaType.AUDIOBOOK, duration = 60L)
+        val dao = runtime.bookCacheDao()
+        dao.upsert(listOf(book.toCachedBook(0L)))
+        try {
+            val service = runtime.progressService()
+            val id = AutoMediaBrowserHelper.mediaIdForCacheKey(book.uniqueKey)
+            val time = System.currentTimeMillis()
+            val first = service.capturePlayback(id, positionMs = 30_000L, durationMs = 60_000L,
+                capturedAtMs = time, capturedElapsedMs = 1000L)!!
+            assertTrue(service.persistCheckpoint(first, true) is PlayerProgressService.SaveResult.Saved)
+            val zero = service.capturePlayback(id, positionMs = 0L, durationMs = 60_000L,
+                capturedAtMs = time - 3_600_000L, capturedElapsedMs = 2000L)!!
+            assertTrue(service.persistCheckpoint(zero, true) is PlayerProgressService.SaveResult.Saved)
+            assertEquals(0L, dao.getByCacheKey(book.uniqueKey)!!.currentTime)
+            assertEquals(zero.capturedAtMs, dao.getByCacheKey(book.uniqueKey)!!.lastReadTime)
+        } finally { dao.deleteByCacheKeys(listOf(book.uniqueKey)) }
+    }
+
+    private fun waitForSavedCheckpoint(dao: com.enve.core.data.local.BookCacheDao, cacheKey: String, seconds: Long) = runBlocking {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+        while (dao.getByCacheKey(cacheKey)?.currentTime != seconds && System.nanoTime() < deadline) {
+            kotlinx.coroutines.delay(100L)
+        }
+        assertEquals(seconds, dao.getByCacheKey(cacheKey)?.currentTime)
     }
 
     private fun <T> Handler.call(block: () -> T): T =

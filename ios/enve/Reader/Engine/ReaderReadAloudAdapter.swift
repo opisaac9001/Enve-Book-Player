@@ -31,6 +31,10 @@ enum ReaderScrubGeometry {
 
 @MainActor
 final class ReadAloudPlaybackCoordinator {
+    private let profileSession: ProfileSession
+
+    init(profileSession: ProfileSession = .owner) { self.profileSession = profileSession }
+
     var onChange: (() -> Void)?
     var onPlayerStateChange: (() -> Void)?
     var onPlaybackChange: ((Bool) -> Void)?
@@ -92,7 +96,7 @@ final class ReadAloudPlaybackCoordinator {
         configureMapping(clips: clips, timeline: timeline, chapterDurations: chapterDurations)
 
         overlayPlayer?.stop()
-        let player = MediaOverlayPlayer()
+        let player = MediaOverlayPlayer(defaults: profileSession.defaults, playbackState: { [unowned profileSession] in profileSession.playback.composition.controller.snapshot })
         player.load(clips: clips, timeline: timeline, audioDir: audioDir)
         player.syncOffset = syncOffset
         player.bookTitle = book.title

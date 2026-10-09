@@ -197,21 +197,7 @@ enum ActivePlayback {
             stereoBalance: controller
         )
         #else
-        return PlaybackComposition(
-            controller: PlaybackManagerController.shared,
-            eventPublisher: PlaybackManagerController.shared,
-            loader: nil,
-            bookStarter: AudiobookPlaybackCoordinator.shared,
-            restorationPreparer: nil,
-            bookMetadataUpdater: PlaybackManagerController.shared,
-            nowPlayingUpdater: PlaybackManagerController.shared,
-            conflictResolver: PlaybackManagerController.shared,
-            overlayController: PlaybackManagerController.shared,
-            preparationReporter: PlaybackManagerController.shared,
-            audioProcessing: PlaybackManagerAudioProcessingController.shared,
-            monoMix: nil,
-            stereoBalance: nil
-        )
+        return ProfileSession.owner.playback.composition
         #endif
     }()
 

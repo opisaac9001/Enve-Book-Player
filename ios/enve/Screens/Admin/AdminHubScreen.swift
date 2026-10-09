@@ -3,32 +3,37 @@ import SwiftUI
 struct AdminHubScreen: View {
     let connection: ServerConnection
 
+    @Environment(\.profileSession) private var profileSession
     @Environment(\.hearth) private var hearth
     @Environment(\.mantelInset) private var mantelInset
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        switch connection.type {
-        case .audiobookshelf:
-            AdminABSScreen(connection: connection)
-        case .plex:
-            AdminPlexScreen(connection: connection)
-        case .jellyfin, .emby:
-            AdminJellyfinScreen(connection: connection)
-        case .komga:
-            AdminKomgaScreen(connection: connection)
-        case .booklore:
-            AdminGrimmoryScreen(connection: connection)
-        case .silo:
-            AdminSiloScreen(connection: connection)
-        case .kavita:
-            AdminKavitaScreen(connection: connection)
-        case .bookOrbit:
-            AdminBookOrbitScreen(connection: connection)
-        case .storyteller:
-            AdminStorytellerScreen(connection: connection)
-        default:
+        if profileSession?.isOwner == false {
             adminUnsupported
+        } else {
+            switch connection.type {
+            case .audiobookshelf:
+                AdminABSScreen(connection: connection)
+            case .plex:
+                AdminPlexScreen(connection: connection)
+            case .jellyfin, .emby:
+                AdminJellyfinScreen(connection: connection)
+            case .komga:
+                AdminKomgaScreen(connection: connection)
+            case .booklore:
+                AdminGrimmoryScreen(connection: connection, profileSession: profileSession ?? .owner)
+            case .silo:
+                AdminSiloScreen(connection: connection, profileSession: profileSession ?? .owner)
+            case .kavita:
+                AdminKavitaScreen(connection: connection, profileSession: profileSession ?? .owner)
+            case .bookOrbit:
+                AdminBookOrbitScreen(connection: connection)
+            case .storyteller:
+                AdminStorytellerScreen(connection: connection, profileSession: profileSession ?? .owner)
+            default:
+                adminUnsupported
+            }
         }
     }
 
@@ -45,7 +50,7 @@ struct AdminHubScreen: View {
                             .lineLimit(2)
                     }
                 }
-                Text("This source manages itself. There are no server tools to offer here.")
+                Text(profileSession?.isOwner == false ? "Server administration is available in the original adult profile." : "This source manages itself. There are no server tools to offer here.")
                     .font(.hearthBody)
                     .foregroundStyle(hearth.textSecondary)
             }

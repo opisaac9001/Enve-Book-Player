@@ -1,5 +1,9 @@
 package com.enve.app.data.repository
 
+import androidx.room.withTransaction
+import com.enve.app.data.local.ReaderDatabase
+import com.enve.core.di.ApplicationScope
+import kotlinx.coroutines.Job
 import android.util.Log
 import com.enve.app.data.links.BookLinkRepository
 import com.enve.app.data.metadata.MatchedBookMetadataStore
@@ -45,6 +49,8 @@ import javax.inject.Singleton
 @Singleton
 class LibraryCacheRepository @Inject constructor(
     private val dao: BookCacheDao,
+    private val database: ReaderDatabase,
+    private val checkpointOrder: com.enve.core.data.sync.AudiobookCheckpointOrder,
     private val libraryDao: LibraryCacheDao,
     private val metadataOverrideDao: BookMetadataOverrideDao,
     private val connectionRegistry: ConnectionRegistry,
@@ -52,8 +58,11 @@ class LibraryCacheRepository @Inject constructor(
     private val matchedMetadataStore: MatchedBookMetadataStore,
     private val bookLinkRepository: BookLinkRepository,
     private val libraryRevocations: LibraryAccessRevocations,
+    @ApplicationScope parentScope: CoroutineScope =
+        CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    private val serverSync: com.enve.core.data.local.ProfileServerSyncStore,
 ) {
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob(parentScope.coroutineContext[Job]))
     private val refreshMutex = Mutex()
 
     private val _isRefreshing = MutableStateFlow(false)
@@ -230,11 +239,10 @@ class LibraryCacheRepository @Inject constructor(
         _isRefreshing.value = true
         _refreshError.value = null
         try {
-            val allLibs = aggregator.getLibraries().getOrElse {
+            val targetLibs = aggregator.getLibraries(connectionIds).getOrElse {
                 Log.w(TAG, "ingestConnections getLibraries failed: ${it.message}")
                 emptyList()
             }
-            val targetLibs = allLibs.filter { it.connectionId in connectionIds }
             if (targetLibs.isNotEmpty()) {
                 val nowMs = System.currentTimeMillis()
                 libraryDao.upsert(targetLibs.map { it.toCached(nowMs) })
@@ -261,16 +269,16 @@ class LibraryCacheRepository @Inject constructor(
             dao.getInProgressOnce(limit = 2000).associateBy { it.cacheKey }
         }.getOrDefault(emptyMap())
         if (connectionIds.isNullOrEmpty()) {
-            dao.clearAll()
+            dao.clearCatalogPreservingAudioCheckpoints()
             libraryDao.clearAll()
         } else {
             Log.i(TAG, "invalidateAndRefresh: clearing ${connectionIds.size} connections: $connectionIds")
             connectionIds.forEach {
-                dao.deleteByConnection(it)
+                dao.deleteCatalogForConnectionPreservingAudioCheckpoints(it)
                 libraryDao.deleteByConnection(it)
             }
         }
-        doRefresh()
+        doRefresh(connectionIds?.toSet()?.takeIf { it.isNotEmpty() })
     }
 
     suspend fun clearForConnection(connectionId: String) {
@@ -344,7 +352,7 @@ class LibraryCacheRepository @Inject constructor(
         return dao.booksWhereTagLike(needle).map(CachedBook::toBook)
     }
 
-    private suspend fun doRefresh() {
+    private suspend fun doRefresh(connectionIds: Set<String>? = null) {
         if (!refreshMutex.tryLock()) {
             Log.i(TAG, "doRefresh: another refresh is already running, skipping")
             return
@@ -352,7 +360,7 @@ class LibraryCacheRepository @Inject constructor(
         _isRefreshing.value = true
         _refreshError.value = null
         try {
-            val libraries: List<Library> = aggregator.getLibraries().getOrElse {
+            val libraries: List<Library> = aggregator.getLibraries(connectionIds).getOrElse {
                 Log.w(TAG, "doRefresh: aggregator.getLibraries failed: ${it.message}")
                 emptyList()
             }
@@ -364,7 +372,7 @@ class LibraryCacheRepository @Inject constructor(
                 pruneUnlistedLibraries(libraries)
             }
 
-            if (libraries.isEmpty()) {
+            if (libraries.isEmpty() && connectionIds == null) {
                 Log.i(TAG, "doRefresh: no libraries returned; falling back to fetchAndUpsert(libraryId=null)")
                 fetchAndUpsert(libraryId = null, connectionId = null)
             } else {
@@ -459,6 +467,7 @@ class LibraryCacheRepository @Inject constructor(
         val seenKeys = mutableSetOf<String>()
         val overrides = metadataOverrideDao.getAll().associateBy { it.bookKey }
         while (true) {
+            val fetchSequence = checkpointOrder.newSequence()
             val result = aggregator.getBooks(
                 libraryId = libraryId,
                 page = page,
@@ -486,23 +495,36 @@ class LibraryCacheRepository @Inject constructor(
                 val mapped = matchedMetadataStore.applyStoredMetadata(chunk)
                     .map { it.withMetadataOverride(overrides[it.uniqueKey]).toCachedBook(nowMs) }
 
-                val batchKeys = mapped.mapTo(mutableSetOf()) { it.cacheKey }
-                val existingByKey = dao.getByCacheKeys(batchKeys.toList()).associateBy { it.cacheKey }
-                val supersededKeys = mapped.mapNotNull { it.supersededCacheKey() }.filterNot(batchKeys::contains)
-                val supersededByKey: Map<String, CachedBook> =
-                    if (supersededKeys.isEmpty()) emptyMap()
-                    else dao.getByCacheKeys(supersededKeys).associateBy { it.cacheKey }
-
-                dao.upsert(
-                    mapped.map { book ->
-                        book.preservingLocalProgress(
-                            existingByKey[book.cacheKey]
+                checkpointOrder.serialized { state ->
+                    val applied = mutableListOf<String>()
+                    database.withTransaction {
+                        val batchKeys = mapped.mapTo(mutableSetOf()) { it.cacheKey }
+                        val existingByKey = dao.getByCacheKeys(batchKeys.toList()).associateBy { it.cacheKey }
+                        val supersededKeys = mapped.mapNotNull { it.supersededCacheKey() }.filterNot(batchKeys::contains)
+                        val supersededByKey = if (supersededKeys.isEmpty()) emptyMap() else dao.getByCacheKeys(supersededKeys).associateBy { it.cacheKey }
+                        val pending = database.pendingProgressPushDao()
+                        dao.upsert(mapped.map { book ->
+                            val existing = existingByKey[book.cacheKey]
                                 ?: book.supersededCacheKey()?.let(supersededByKey::get)
-                                ?: progressCarryover?.get(book.cacheKey),
-                        )
+                                ?: progressCarryover?.get(book.cacheKey)
+                            val key = existing?.cacheKey ?: book.cacheKey
+                            val protected = state.hasPendingCapture(key) || state.changedSince(key, fetchSequence)
+                            val dirty = pending.get(book.id, book.source, book.connectionId.orEmpty())?.mediaType == "AUDIOBOOK"
+                            val merged = book.preservingLocalProgress(existing,
+                                allowServerProgress = serverSync.isEnabled,
+                                hasPendingAudioPush = dirty,
+                                preserveAudioCheckpoint = protected,
+                            )
+                            if (!protected && !dirty && (merged.mediaType == AppMediaType.AUDIOBOOK.name || merged.hasAudio || merged.currentTime > 0L) &&
+                                (existing == null || merged.currentTime != existing.currentTime || merged.readProgress != existing.readProgress ||
+                                    merged.lastReadTime != existing.lastReadTime || merged.isFinished != existing.isFinished)
+                            ) applied += merged.cacheKey
+                            merged
+                        })
+                        if (supersededByKey.isNotEmpty()) dao.deleteByCacheKeys(supersededByKey.keys.toList())
                     }
-                )
-                if (supersededByKey.isNotEmpty()) dao.deleteByCacheKeys(supersededByKey.keys.toList())
+                    applied.forEach { state.recordApplied(it, fetchSequence) }
+                }
             }
             Log.i(TAG, "fetchAndUpsert: lib=$libraryId page=$page upserted ${newBooks.size} new rows")
 
@@ -529,13 +551,38 @@ internal fun CachedBook.supersededCacheKey(): String? = opdsAcquisitionUrl
     ?.takeIf { it != id }
     ?.let { "${connectionId ?: source}:$it" }
 
-internal fun CachedBook.preservingLocalProgress(existing: CachedBook?): CachedBook {
+internal fun CachedBook.preservingLocalProgress(
+    existing: CachedBook?,
+    allowServerProgress: Boolean = true,
+    hasPendingAudioPush: Boolean = false,
+    preserveAudioCheckpoint: Boolean = false,
+): CachedBook {
+    val knownReadAlong = readAlongAvailable || existing?.readAlongAvailable == true
+    val keepAudioCheckpoint = existing?.let { checkpoint ->
+        (checkpoint.mediaType == AppMediaType.AUDIOBOOK.name || checkpoint.hasAudio || checkpoint.currentTime > 0L) &&
+            (checkpoint.lastReadTime > lastReadTime || preserveAudioCheckpoint)
+    } == true
+    if (!allowServerProgress || hasPendingAudioPush || keepAudioCheckpoint) return copy(
+        readAlongAvailable = knownReadAlong,
+        hasAudio = hasAudio || knownReadAlong,
+        hasEbook = hasEbook || knownReadAlong,
+        currentTime = existing?.currentTime ?: 0L,
+        readProgress = existing?.readProgress ?: 0f,
+        epubProgress = existing?.epubProgress,
+        epubLocator = existing?.epubLocator,
+        lastReadTime = existing?.lastReadTime ?: 0L,
+        isFinished = existing?.isFinished ?: false,
+        hideFromContinue = existing?.hideFromContinue ?: false,
+        serverReadStatus = existing?.serverReadStatus,
+        inProgress = existing?.inProgress ?: false,
+    )
     if (existing == null) return this
     if (source == BookSource.KOMGA.name && mediaType == AppMediaType.EBOOK.name) {
-        return this
+        return copy(readAlongAvailable = knownReadAlong, hasAudio = hasAudio || knownReadAlong, hasEbook = hasEbook || knownReadAlong)
     }
-    val mergedCurrentTime = if (currentTime > 0L) currentTime else existing.currentTime
-    val mergedReadProgress = if (readProgress > 0.001f) readProgress else existing.readProgress
+    val trustedRemote = lastReadTime > existing.lastReadTime
+    val mergedCurrentTime = if (trustedRemote || currentTime > 0L) currentTime else existing.currentTime
+    val mergedReadProgress = if (trustedRemote || readProgress > 0.001f) readProgress else existing.readProgress
     val mergedEpubProgress = epubProgress?.takeIf { it > 0.001f } ?: existing.epubProgress
     val mergedServerReadStatus = serverReadStatus ?: existing.serverReadStatus
     val statusFinished = mergedServerReadStatus in setOf("READ", "COMPLETED", "FINISHED")
@@ -544,6 +591,9 @@ internal fun CachedBook.preservingLocalProgress(existing: CachedBook?): CachedBo
     val audioProgress =
         if (duration > 0 && mergedCurrentTime > 0) mergedCurrentTime.toFloat() / duration else mergedReadProgress
     return copy(
+        readAlongAvailable = knownReadAlong,
+        hasAudio = hasAudio || knownReadAlong,
+        hasEbook = hasEbook || knownReadAlong,
         currentTime = mergedCurrentTime,
         readProgress = mergedReadProgress,
         epubProgress = mergedEpubProgress,

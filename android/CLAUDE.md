@@ -130,8 +130,10 @@ This mirrors the iOS port one-to-one — same architectural vocabulary, same plu
 :bookorbit :silo   BookOrbit (OIDC) and Silo providers
 :wear-protocol     Message + payload types shared by the phone and watch apps.
                    Depends on nothing but kotlinx.serialization.
-:wear              Wear OS companion app (own applicationId suffixing, minSdk 30).
-                   Depends on :wear-protocol ONLY — never on :core or :engine.
+:wear              Wear OS standalone audiobook player and phone remote (minSdk 30).
+                   Its only project dependency is :wear-protocol — never :core or
+                   :engine. Owns watch playback, downloads, storage, and provider access.
+                   See docs/architecture/wear.md for current scope and release gates.
 :app               THIN shell: MainActivity, EnveApplication (@HiltAndroidApp), Hilt
                    aggregation, AndroidManifest (service registrations), splash,
                    WearCompanionService. Depends on everything except :wear.
@@ -179,7 +181,7 @@ Long-lived state belongs in focused storage:
 - `PreferencesManager` — DataStore for everything UI-persisted (sort order, filters, theme, e-ink prefs)
 - `PendingProgressPushDao` — queue for retried progress pushes
 - `BookCacheDao` — local SQLite cache (the source of truth for in-progress / recently-added)
-- `AnnotationDao` — annotations / highlights
+- `ReaderAnnotationDao` — annotations / highlights
 - `ConnectionRegistry` — multi-connection registry
 
 **Don't add new fields to `AggregatorRepository`, `SyncCoordinator`, or any provider repository to hold state.** If something feels like it belongs in a god class, it belongs in a focused service or store.
@@ -272,7 +274,7 @@ private val _state = MutableStateFlow(...)
 val state: StateFlow<...> = _state.asStateFlow()
 ```
 
-ViewModels collect the flow and re-expose to UI as `StateFlow<...>` via `stateIn(viewModelScope, ...)`. `SyncCoordinator.events` is the canonical example.
+ViewModels collect the flow and re-expose to UI as `StateFlow<...>` via `stateIn(viewModelScope, ...)`.
 
 ### Touch credentials (any backend)
 

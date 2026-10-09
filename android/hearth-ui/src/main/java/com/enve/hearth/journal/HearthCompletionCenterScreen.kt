@@ -30,7 +30,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.hilt.navigation.compose.hiltViewModel
+import com.enve.hearth.shell.profileViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.enve.core.data.model.Book
 import com.enve.hearth.design.CoverTile
@@ -45,7 +45,7 @@ fun HearthCompletionCenterScreen(
     onBack: () -> Unit,
     onSelectBook: (Book) -> Unit,
 ) {
-    val vm: HearthJournalViewModel = hiltViewModel()
+    val vm: HearthJournalViewModel = profileViewModel()
     val almostFinished by vm.almostFinished.collectAsStateWithLifecycle()
     val recentlyFinished by vm.finished.collectAsStateWithLifecycle()
     val palette = Hearth.palette

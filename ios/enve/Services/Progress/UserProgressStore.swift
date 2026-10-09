@@ -4,7 +4,7 @@ import Logging
 @MainActor
 @Observable
 final class UserProgressStore {
-    static let shared = UserProgressStore()
+    static var shared: UserProgressStore { ProfileSession.owner.progress }
 
     private(set) var entries: [String: UserMediaProgress] = [:]
 
@@ -20,6 +20,13 @@ final class UserProgressStore {
     private let providerConnections: any ProviderConnectionAccessing
     private let progressCache: BookProgressStore
     private let defaults: UserDefaults
+    private let pendingSync: PendingSyncQueueStore
+    private let smartCollections: SmartCollectionStore
+    private let annotationSync: AnnotationSyncService
+    private let syncCoordinator: @MainActor () -> SyncCoordinator
+    private let playbackState: @MainActor () -> any PlaybackControlling
+    private var operations: [UUID: Task<Void, Never>] = [:]
+    private var isRetiring = false
 
     private var legacyPendingSyncProgress: [String: UserMediaProgress] = [:]
     private var userProgressSaveTask: Task<Void, Never>?
@@ -37,7 +44,12 @@ final class UserProgressStore {
         providerConnections: any ProviderConnectionAccessing = AppState.shared.providerConnections,
         progressFileURL: URL? = nil,
         progressCache: BookProgressStore = .shared,
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        pendingSync: PendingSyncQueueStore = .shared,
+        smartCollections: SmartCollectionStore = .shared,
+        annotationSync: AnnotationSyncService = .shared,
+        syncCoordinator: @escaping @MainActor () -> SyncCoordinator = { .shared },
+        playbackState: @escaping @MainActor () -> any PlaybackControlling = { ActivePlayback.controller }
     ) {
         self.library = library
         self.session = session
@@ -45,6 +57,11 @@ final class UserProgressStore {
         self.providerConnections = providerConnections
         self.progressCache = progressCache
         self.defaults = defaults
+        self.pendingSync = pendingSync
+        self.smartCollections = smartCollections
+        self.annotationSync = annotationSync
+        self.syncCoordinator = syncCoordinator
+        self.playbackState = playbackState
         self.progressFileURL = progressFileURL ?? Self.defaultProgressFileURL()
 
         if defaults.object(forKey: Self.syncEnabledKey) == nil {
@@ -53,6 +70,27 @@ final class UserProgressStore {
             syncProgressToServer = defaults.bool(forKey: Self.syncEnabledKey)
         }
         loadPendingSyncProgress()
+    }
+
+    private func retainOperation(priority: TaskPriority? = nil, operation: @escaping @MainActor () async -> Void) {
+        guard !isRetiring else { return }
+        let id = UUID()
+        operations[id] = Task(priority: priority) {
+            await operation()
+            operations[id] = nil
+        }
+    }
+
+    func retire() async {
+        isRetiring = true
+        let pending = Array(operations.values)
+        pending.forEach { $0.cancel() }
+        for operation in pending { await operation.value }
+        let deferred = userProgressSaveTask
+        deferred?.cancel()
+        await deferred?.value
+        userProgressSaveTask = nil
+        persist(immediate: true)
     }
 
     var isLegacyProgressMigrationPending: Bool {
@@ -185,7 +223,7 @@ final class UserProgressStore {
         let capturedProgress = progress
         let capturedPreserveEbookPosition = preserveEbookPosition
         let store = bookStore
-        Task.detached(priority: .utility) {
+        retainOperation(priority: .utility) {
             await store.updateProgress(
                 uniqueId: capturedProgress.uniqueId,
                 currentTime: capturedProgress.currentTime,
@@ -322,7 +360,7 @@ final class UserProgressStore {
         persist()
 
         entries.removeValue(forKey: book.stableId)
-        PendingSyncQueueStore.shared.remove(stableId: book.stableId)
+        pendingSync.remove(stableId: book.stableId)
 
         let resetBook = library.mutateBook(uniqueId: book.uniqueId) { updated in
             updated.currentTime = 0
@@ -335,7 +373,7 @@ final class UserProgressStore {
         }
         if let resetBook {
             library.hot.insert(resetBook)
-            Task(priority: .utility) {
+            retainOperation(priority: .utility) { [self] in
                 let store = bookStore
                 await store.updateProgress(
                     uniqueId: resetBook.uniqueId,
@@ -361,7 +399,7 @@ final class UserProgressStore {
         progressCache.clearProgress(for: book.stableId)
         progressCache.clearProgress(for: book.id)
 
-        let playback = ActivePlayback.controller
+        let playback = playbackState()
         if playback.snapshot.currentBook?.uniqueId == book.uniqueId {
             playback.seek(to: 0)
         }
@@ -373,8 +411,8 @@ final class UserProgressStore {
             syncBook.lastUpdate = zeroed.lastUpdate
             syncBook.epubLocator = nil
             if hasTextPosition { syncBook.ebookProgress = 0 }
-            Task {
-                await SyncCoordinator.shared.pushProgress(
+            retainOperation { [self] in
+                await syncCoordinator().pushProgress(
                     book: syncBook,
                     forceImmediate: true,
                     domain: hasTextPosition ? .ebook : .audiobook
@@ -409,7 +447,7 @@ final class UserProgressStore {
                 : nil
             library.mutateBook(uniqueId: book.uniqueId) { $0.epubLocator = locator }
         }
-        SmartCollectionStore.shared.refresh()
+        smartCollections.refresh()
 
         if syncProgressToServer {
             var syncBook = library.bookInMemory(uniqueId: book.uniqueId) ?? book
@@ -417,8 +455,8 @@ final class UserProgressStore {
             syncBook.isFinished = newFinished
             syncBook.lastUpdate = progress.lastUpdate
             if hasTextPosition { syncBook.ebookProgress = newFinished ? 1 : 0 }
-            Task {
-                await SyncCoordinator.shared.pushProgress(
+            retainOperation { [self] in
+                await syncCoordinator().pushProgress(
                     book: syncBook,
                     forceImmediate: true,
                     domain: hasTextPosition ? .ebook : .audiobook
@@ -457,7 +495,7 @@ final class UserProgressStore {
             book.ebookProgress = progress.ebookProgress
             book.isFinished = progress.isFinished
             book.lastUpdate = progress.lastUpdate
-            SyncCoordinator.shared.enqueuePendingSync(
+            syncCoordinator().enqueuePendingSync(
                 book: book,
                 position: progress.currentTime,
                 duration: progress.duration,
@@ -473,10 +511,10 @@ final class UserProgressStore {
             legacyPendingSyncProgress.removeValue(forKey: key)
         }
         persistLegacyPendingSyncProgress()
-        await SyncCoordinator.shared.flushPendingSyncs()
+        await syncCoordinator().flushPendingSyncs()
 
         let grimmoryBooks = library.books.filter { providerConnections.provider(for: $0.providerId) is BookloreProvider }
-        await AnnotationSyncService.shared.flushAllPending(books: grimmoryBooks)
+        await annotationSync.flushAllPending(books: grimmoryBooks)
     }
 
     func progress(for book: Book, episodeId: String? = nil) -> UserMediaProgress? {

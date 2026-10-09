@@ -63,9 +63,13 @@ final class PodcastAutoQueueService {
     private var isRefreshing = false
     private var lastSettings: [String: PodcastAutoQueueSetting]
 
-    init(queue: PlaybackQueueStore) {
+    private unowned let profileSession: ProfileSession?
+    private var isRetired = false
+
+    init(profileSession: ProfileSession? = nil, queue: PlaybackQueueStore) {
+        self.profileSession = profileSession
         self.queue = queue
-        self.lastSettings = LibraryDisplayPreferencesStore.shared.loadPreferences().podcastAutoQueueSettings
+        self.lastSettings = (profileSession?.preferences ?? LibraryDisplayPreferencesStore.shared).loadPreferences().podcastAutoQueueSettings
 
         NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)
             .receive(on: DispatchQueue.main)
@@ -82,16 +86,22 @@ final class PodcastAutoQueueService {
         Task { @MainActor [weak self] in await self?.refresh() }
     }
 
+    func retire() {
+        isRetired = true
+        cancellables.removeAll()
+    }
+
     func refresh(force: Bool = false) async {
+        guard !isRetired else { return }
         #if !os(tvOS)
-        let settings = LibraryDisplayPreferencesStore.shared.loadPreferences().podcastAutoQueueSettings
+        let settings = (profileSession?.preferences ?? LibraryDisplayPreferencesStore.shared).loadPreferences().podcastAutoQueueSettings
         guard settings.values.contains(where: { $0.position.isEnabled }), !isRefreshing else { return }
         if !force, let lastRefresh, Date().timeIntervalSince(lastRefresh) < Self.refreshInterval {
             return
         }
 
         isRefreshing = true
-        await PodcastsModel.shared.load()
+        await (profileSession?.podcastsModel ?? PodcastsModel.shared).load()
         lastRefresh = Date()
         isRefreshing = false
         #endif
@@ -101,7 +111,8 @@ final class PodcastAutoQueueService {
         _ shows: [AudiobookshelfProvider.PodcastShow],
         now: Date = Date()
     ) {
-        var preferences = LibraryDisplayPreferencesStore.shared.loadPreferences()
+        guard !isRetired else { return }
+        var preferences = (profileSession?.preferences ?? LibraryDisplayPreferencesStore.shared).loadPreferences()
         let originalSettings = preferences.podcastAutoQueueSettings
         guard !originalSettings.isEmpty else { return }
 
@@ -141,7 +152,7 @@ final class PodcastAutoQueueService {
         guard settings != originalSettings else { return }
         preferences.podcastAutoQueueSettings = settings
         lastSettings = settings
-        LibraryDisplayPreferencesStore.shared.savePreferences(preferences)
+        (profileSession?.preferences ?? LibraryDisplayPreferencesStore.shared).savePreferences(preferences)
         Theme.currentPreferences = preferences
     }
 
@@ -195,7 +206,7 @@ final class PodcastAutoQueueService {
     }
 
     private func preferencesChanged() {
-        let settings = LibraryDisplayPreferencesStore.shared.loadPreferences().podcastAutoQueueSettings
+        let settings = (profileSession?.preferences ?? LibraryDisplayPreferencesStore.shared).loadPreferences().podcastAutoQueueSettings
         guard settings != lastSettings else { return }
         lastSettings = settings
         Task { @MainActor [weak self] in await self?.refresh(force: true) }

@@ -6,6 +6,7 @@ import android.net.Uri
 import androidx.activity.compose.BackHandler
 import com.enve.app.BuildConfig
 import com.enve.core.data.model.BookSource
+import com.enve.core.data.model.Book
 import androidx.compose.animation.*
 import com.enve.app.ui.components.EnveAnimations
 import com.enve.app.ui.auth.AuthViewModel
@@ -19,7 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
-import androidx.hilt.navigation.compose.hiltViewModel
+import com.enve.hearth.shell.profileViewModel
 import androidx.navigation.compose.*
 import com.enve.app.eink.EpdRefreshManager
 import com.enve.app.ui.screens.*
@@ -28,6 +29,7 @@ import com.enve.app.ui.theme.EnveTheme
 import com.enve.app.viewmodel.*
 
 object Routes {
+    const val PROFILES = "profiles"
     const val STATS = "stats"
     const val LIBRARY_CONNECTIONS = "settings/connections"
     const val SERVER_MANAGEMENT = "settings/serverManagement"
@@ -101,16 +103,18 @@ object Routes {
 
 @Composable
 fun EnveApp(
+    profilesFacade: com.enve.engine.profiles.ProfilesFacade,
     epdRefreshManager: EpdRefreshManager? = null,
     initialRoute: String? = null,
     onExitInitialRoute: () -> Unit = {},
+    onOpenDownloadedBook: (Book) -> Unit = {},
 ) {
     val navController = rememberNavController()
-    val authViewModel: AuthViewModel = hiltViewModel()
-    val libraryViewModel: LibraryViewModel = hiltViewModel()
-    val playerViewModel: PlayerViewModel = hiltViewModel()
-    val statsViewModel: StatsViewModel = hiltViewModel()
-    val themeViewModel: ThemeViewModel = hiltViewModel()
+    val authViewModel: AuthViewModel = profileViewModel()
+    val libraryViewModel: LibraryViewModel = profileViewModel()
+    val playerViewModel: PlayerViewModel = profileViewModel()
+    val statsViewModel: StatsViewModel = profileViewModel()
+    val themeViewModel: ThemeViewModel = profileViewModel()
     val authState by authViewModel.state.collectAsState()
         val context = LocalContext.current
         val rootView = LocalView.current
@@ -152,8 +156,8 @@ fun EnveApp(
     val playerState by playerViewModel.state.collectAsState()
     val statsState by statsViewModel.state.collectAsState()
     val themeState by themeViewModel.themeState.collectAsState()
-    val downloadsHubViewModel: DownloadsHubViewModel = hiltViewModel()
-    val storageHubViewModel: StorageHubViewModel = hiltViewModel()
+    val downloadsHubViewModel: DownloadsHubViewModel = profileViewModel()
+    val storageHubViewModel: StorageHubViewModel = profileViewModel()
     val downloadsHubState by downloadsHubViewModel.state.collectAsState()
     val storageHubState by storageHubViewModel.state.collectAsState()
     val navigationAnimationsEnabled = themeState.effectiveAppTheme != com.enve.app.ui.theme.AppTheme.EINK
@@ -202,6 +206,9 @@ fun EnveApp(
             popEnterTransition = { if (navigationAnimationsEnabled) EnveAnimations.popEnterSlideFade() else EnterTransition.None },
             popExitTransition = { if (navigationAnimationsEnabled) EnveAnimations.popExitSlideFade() else ExitTransition.None },
         ) {
+                composable(Routes.PROFILES) {
+                    com.enve.hearth.profiles.HearthProfilesScreen(profilesFacade, onBack = { navController.popBackStack() })
+                }
             composable(Routes.STATS) {
                 StatsScreen(
                     state = statsState,
@@ -545,6 +552,7 @@ fun EnveApp(
                     state = downloadsHubState,
                     onRefresh = { downloadsHubViewModel.refresh() },
                     onBack = goBack,
+                    onOpenBook = onOpenDownloadedBook,
                     onRemoveItem = { bookId -> downloadsHubViewModel.removeItem(bookId) },
                     onCancelDownload = { bookId -> downloadsHubViewModel.cancelActiveDownload(bookId) },
                     autoDeleteFinishedBooks = downloadsHubState.autoDeleteFinishedBooks,
@@ -572,7 +580,7 @@ fun EnveApp(
             }
 
             composable(Routes.SYNC_CLOUD) {
-                val syncCenterViewModel: com.enve.app.viewmodel.SyncCenterViewModel = hiltViewModel()
+                val syncCenterViewModel: com.enve.app.viewmodel.SyncCenterViewModel = profileViewModel()
                 val syncCenterState by syncCenterViewModel.state.collectAsState()
                 SyncCenterScreen(
                     state = syncCenterState,
@@ -714,7 +722,7 @@ fun EnveApp(
             }
 
             composable(Routes.TIP_JAR) {
-                val tipJarViewModel: TipJarViewModel = hiltViewModel()
+                val tipJarViewModel: TipJarViewModel = profileViewModel()
                 val tipJarState by tipJarViewModel.state.collectAsState()
                 TipJarScreen(
                     state = tipJarState,

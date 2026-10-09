@@ -8,7 +8,8 @@ import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.ProviderConnection
 import com.enve.app.data.repository.GrimmoryRepository
 import com.enve.app.data.sync.BookloreKoreaderSink
-import com.enve.app.data.sync.PendingSyncQueue
+import com.enve.core.data.local.PendingProgressPushDao
+import com.enve.core.data.util.runSuspendCatching
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -51,7 +52,7 @@ class SyncCenterViewModel @Inject constructor(
     private val recentlyPlayedSyncService: com.enve.app.data.sync.RecentlyPlayedSyncService,
     private val repository: GrimmoryRepository,
     private val koreaderSink: BookloreKoreaderSink,
-    private val pendingQueue: PendingSyncQueue,
+    private val pendingProgress: PendingProgressPushDao,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(SyncCenterState())
@@ -66,7 +67,7 @@ class SyncCenterViewModel @Inject constructor(
         }
         viewModelScope.launch {
             prefs.lastSyncTime.collect { lastSync ->
-                _state.update { it.copy(lastSyncTime = lastSync, pendingCount = pendingQueue.pendingCount()) }
+                _state.update { it.copy(lastSyncTime = lastSync) }
             }
         }
         viewModelScope.launch {
@@ -80,6 +81,11 @@ class SyncCenterViewModel @Inject constructor(
             }
         }
 
+        viewModelScope.launch {
+            pendingProgress.observeCount().collect { count ->
+                _state.update { it.copy(pendingCount = count) }
+            }
+        }
         loadKoreaderCredentials()
     }
 
@@ -115,11 +121,11 @@ class SyncCenterViewModel @Inject constructor(
     fun syncNow() {
         viewModelScope.launch {
             _state.update { it.copy(isSyncingAll = true, error = null, lastSyncResult = null) }
-            runCatching {
+            runSuspendCatching {
                 repository.invalidateListCaches()
                 val result = recentlyPlayedSyncService.sync(com.enve.app.data.sync.ServerStatusSyncTrigger.MANUAL_SYNC)
                 val summary = "Synced ${result.mergedItemCount} item(s) (${result.pulledItemCount} pulled, ${result.pushedItemCount} pushed)"
-                _state.update { it.copy(lastSyncResult = summary, pendingCount = pendingQueue.pendingCount()) }
+                _state.update { it.copy(lastSyncResult = summary) }
             }.onFailure { e ->
                 _state.update { it.copy(error = e.message ?: "Sync failed") }
             }

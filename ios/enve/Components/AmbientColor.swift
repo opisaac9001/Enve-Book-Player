@@ -4,7 +4,9 @@ import UIKit
 @MainActor
 final class AmbientColorStore {
     static let shared = AmbientColorStore()
-    private init() {}
+    private let imageCache: DiskImageCache
+
+    init(imageCache: DiskImageCache = .shared) { self.imageCache = imageCache }
 
     private var cache: [String: Color] = [:]
 
@@ -15,9 +17,9 @@ final class AmbientColorStore {
     func resolve(for book: Book) async -> Color {
         if let cached = cache[book.stableId] { return cached }
         guard let url = book.coverURL else { return Hearth.accent }
-        var image = DiskImageCache.shared.memoryImage(for: url)
+        var image = imageCache.memoryImage(for: url)
         if image == nil {
-            image = await DiskImageCache.shared.image(for: url)
+            image = await imageCache.image(for: url)
         }
         guard let image, let extracted = Self.dominantColor(of: image) else { return Hearth.accent }
         let color = Self.warmed(extracted)

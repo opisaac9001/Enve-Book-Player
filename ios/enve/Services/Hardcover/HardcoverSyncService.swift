@@ -20,11 +20,11 @@ actor HardcoverSyncService {
         let bookId = book.stableId
         guard !syncedBookStarts.contains(bookId) else { return }
 
-        let currentProgress: TimeInterval =
+        let currentProgress: Double =
             book.mediaType == .ebook
             ? (book.ebookProgress ?? 0)
-            : book.currentTime
-        guard currentProgress == 0 || currentProgress < 1 else { return }
+            : ((book.duration ?? 0) > 0 ? book.currentTime / (book.duration ?? 1) : 0)
+        guard currentProgress < Book.finishedProgressThreshold else { return }
 
         let diagnosticID = DiagnosticLogSanitizer.identifier(for: bookId)
         AppLogger.sync.debug("[Hardcover Sync] Book started bookId=\(diagnosticID)")
@@ -61,6 +61,19 @@ actor HardcoverSyncService {
             let userBookId = try await resolveUserBookId(for: book)
             let readId = try await resolveReadSessionId(for: book, userBookId: userBookId)
 
+            if let seconds = listenedSeconds(book: book, progress: progress) {
+                let resultReadId = try await HardcoverService.shared.upsertReadingProgress(
+                    userBookId: userBookId,
+                    existingReadId: readId > 0 ? readId : nil,
+                    progressPages: 0,
+                    progressSeconds: seconds,
+                    isFinished: progress >= Book.finishedProgressThreshold,
+                    editionId: await resolveEditionId(for: bookId)
+                )
+                if resultReadId > 0 { readSessionCache[bookId] = resultReadId }
+                return
+            }
+
             guard let pageCount = resolvePageCount(for: bookId), pageCount > 0 else {
                 try await fetchAndCachePageCount(for: book, userBookId: userBookId)
                 guard let pc = resolvePageCount(for: bookId), pc > 0 else {
@@ -91,6 +104,7 @@ actor HardcoverSyncService {
                 userBookId: userBookId,
                 existingReadId: readId > 0 ? readId : nil,
                 progressPages: currentPage,
+                progressSeconds: listenedSeconds(book: book, progress: progress),
                 isFinished: isFinished,
                 editionId: edId
             )
@@ -129,17 +143,22 @@ actor HardcoverSyncService {
 
             try await HardcoverService.shared.markBookAsFinished(userBookId: userBookId)
 
-            if let readId = readSessionCache[bookId], readId > 0,
-                let pageCount = resolvePageCount(for: bookId), pageCount > 0
-            {
-                _ = try? await HardcoverService.shared.upsertReadingProgress(
+            // Close the open read so the finish date lands; a read already finished means this finish was recorded before.
+            switch try await HardcoverService.shared.latestRead(userBookId: userBookId) {
+            case .some(let read) where !read.isFinished:
+                try await HardcoverService.shared.finishRead(readId: read.id)
+            case .some:
+                break
+            case .none:
+                _ = try await HardcoverService.shared.upsertReadingProgress(
                     userBookId: userBookId,
-                    existingReadId: readId,
-                    progressPages: pageCount,
+                    existingReadId: nil,
+                    progressPages: resolvePageCount(for: bookId) ?? 0,
                     isFinished: true,
                     editionId: resolveEditionId(for: bookId)
                 )
             }
+            readSessionCache[bookId] = nil
 
             AppLogger.sync.debug("[Hardcover Sync] Finish synced bookId=\(diagnosticID)")
             syncedBookCompletions.insert(bookId)
@@ -258,6 +277,12 @@ actor HardcoverSyncService {
             return cached
         }
 
+        // The read cache is in memory, so look for the open read before starting another one.
+        if let latest = try await HardcoverService.shared.latestRead(userBookId: userBookId), !latest.isFinished {
+            readSessionCache[localBookId] = latest.id
+            return latest.id
+        }
+
         let editionId = await resolveEditionId(for: localBookId)
 
         let readId = try await HardcoverService.shared.createReadingSession(
@@ -298,6 +323,11 @@ actor HardcoverSyncService {
             localBookId: bookId,
             book: book
         )
+    }
+
+    private func listenedSeconds(book: Book, progress: Double) -> Int? {
+        guard book.mediaType != .ebook, let duration = book.duration, duration > 0 else { return nil }
+        return Int((duration * progress).rounded())
     }
 
     private func resolvePageCount(for localBookId: String) -> Int? {

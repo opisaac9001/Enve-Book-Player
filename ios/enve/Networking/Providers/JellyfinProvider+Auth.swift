@@ -91,7 +91,7 @@ extension JellyfinProvider {
         self.connection.username = username
 
         do {
-            try SecureTokenStorage.shared.saveCredentials(
+            try tokenStorage.saveCredentials(
                 serverUrl: normalizedURL,
                 username: username,
                 token: result.AccessToken,

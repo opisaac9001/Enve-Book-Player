@@ -1,5 +1,6 @@
 package com.enve.local
 
+import com.enve.core.data.util.runSuspendCatching
 import com.enve.core.data.local.ConnectionRegistry
 import com.enve.core.data.local.PreferencesManager
 import com.enve.core.data.model.AppMediaType
@@ -62,8 +63,8 @@ class LocalProviderAdapter @Inject constructor(
         localRepository.deleteBook(uriString, book)
     }
 
-    override suspend fun getAudioTracks(book: Book): Result<List<AudioTrack>> = runCatching {
-        if (book.mediaType != AppMediaType.AUDIOBOOK) return@runCatching emptyList()
+    override suspend fun getAudioTracks(book: Book): Result<List<AudioTrack>> = runSuspendCatching {
+        if (book.mediaType != AppMediaType.AUDIOBOOK) return@runSuspendCatching emptyList()
         val uriString = scopedUri() ?: error("No local library URI found")
         val sourceId = ConnectionScope.getConnectionId() ?: book.connectionId ?: "local-main"
         localRepository.scanDirectory(uriString, sourceId)

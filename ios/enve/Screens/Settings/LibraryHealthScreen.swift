@@ -2,7 +2,14 @@ import SwiftUI
 
 struct LibraryHealthScreen: View {
     @Environment(\.hearth) private var hearth
-    @State private var model = LibraryHealthModel()
+    @Environment(\.profileSession) private var profileSession
+    @State private var model: LibraryHealthModel
+
+    init(profileSession: ProfileSession = .owner) {
+        _model = State(initialValue: LibraryHealthModel(appState: profileSession.appState, engine: profileSession.engine))
+    }
+
+    private var session: ProfileSession { profileSession ?? .owner }
 
     var body: some View {
         SettingsScaffold(
@@ -150,17 +157,19 @@ struct LibraryHealthScreen: View {
                 .tracking(1.2)
                 .foregroundStyle(hearth.text)
                 .accessibilityAddTraits(.isHeader)
-            NavigationLink {
-                SyncScreen()
-            } label: {
-                SettingsLinkRow(
-                    title: "Progress sync",
-                    subtitle: syncSubtitle(snapshot),
-                    detail: snapshot.pendingSyncCount > 0 ? "\(snapshot.pendingSyncCount) waiting" : nil,
-                    systemImage: "icloud.and.arrow.up.fill"
-                )
+            if session.isOwner {
+                NavigationLink {
+                    SyncScreen()
+                } label: {
+                    SettingsLinkRow(
+                        title: "Progress sync",
+                        subtitle: syncSubtitle(snapshot),
+                        detail: snapshot.pendingSyncCount > 0 ? "\(snapshot.pendingSyncCount) waiting" : nil,
+                        systemImage: "icloud.and.arrow.up.fill"
+                    )
+                }
+                .buttonStyle(PressableStyle())
             }
-            .buttonStyle(PressableStyle())
 
             NavigationLink {
                 DownloadsScreen()
@@ -175,7 +184,7 @@ struct LibraryHealthScreen: View {
             .buttonStyle(PressableStyle())
 
             NavigationLink {
-                StorageScreen()
+                SettingsParentGate { StorageScreen(profileSession: session) }
             } label: {
                 SettingsLinkRow(
                     title: "On this phone",

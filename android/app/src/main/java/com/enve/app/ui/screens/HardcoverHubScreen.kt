@@ -53,7 +53,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.hilt.navigation.compose.hiltViewModel
+import com.enve.hearth.shell.profileViewModel
 import com.enve.app.ui.components.SettingsMessageCard
 import com.enve.hearth.design.hearthDisplay
 import coil.compose.AsyncImage
@@ -80,7 +80,7 @@ private val HearthRed = Color(0xFFB3453E)
 fun HardcoverHubScreen(
     onBack: () -> Unit,
 ) {
-    val viewModel: HardcoverHubViewModel = hiltViewModel()
+    val viewModel: HardcoverHubViewModel = profileViewModel()
     val state by viewModel.state.collectAsState()
     val colors = EnveTheme.colors
     val metrics = rememberAdaptiveMetrics()
@@ -136,7 +136,9 @@ fun HardcoverHubScreen(
                     onDisconnect = viewModel::disconnect,
                 )
 
-                state.readingGoal?.let { goal ->
+                state.goalError?.let { HardcoverSectionError("Reading goal", it) }
+
+                if (state.goalError == null) state.readingGoal?.let { goal ->
                     SettingsCard(modifier = Modifier.padding(horizontal = DS.Spacing.LG.scaled(metrics))) {
                         SettingsSectionHeader(title = "Reading Goal")
                         Column(
@@ -234,8 +236,10 @@ fun HardcoverHubScreen(
                 }
 
                 HardcoverLibrarySection(state.library)
-                HardcoverListsSection(state.lists)
-                HardcoverActivitySection(state.activity)
+                state.listsError?.let { HardcoverSectionError("Lists", it) }
+                if (state.listsError == null) HardcoverListsSection(state.lists)
+                state.activityError?.let { HardcoverSectionError("Activity", it) }
+                if (state.activityError == null) HardcoverActivitySection(state.activity)
             }
 
             state.error?.let {
@@ -253,6 +257,18 @@ fun HardcoverHubScreen(
             Spacer(Modifier.height(80.dp.scaled(metrics)))
         }
     }
+}
+
+@Composable
+private fun HardcoverSectionError(section: String, message: String) {
+    val colors = EnveTheme.colors
+    val metrics = rememberAdaptiveMetrics()
+    Text(
+        text = "$section: $message",
+        color = colors.secondaryText,
+        fontSize = DS.FontSize.Caption.scaled(metrics),
+        modifier = Modifier.padding(horizontal = DS.Spacing.LG.scaled(metrics)),
+    )
 }
 
 @Composable

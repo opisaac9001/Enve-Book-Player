@@ -574,6 +574,195 @@ struct ProviderLiveSyncTests {
         }
     }
 
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["ENVE_LAB_DOCUMENT"] != nil
+        && ProcessInfo.processInfo.environment["ENVE_LAB_SERVICE"] == "AudiobookshelfListening"))
+    func audiobookshelfOfflineListeningReachesListeningStats() async throws {
+        let document = try #require(ProcessInfo.processInfo.environment["ENVE_LAB_DOCUMENT"])
+        let text = try String(contentsOfFile: document, encoding: .utf8)
+        var rows: [String: String] = [:]
+        var endpoints: [String: String] = [:]
+        func values(_ row: String) -> [String] {
+            row.split(separator: "`", omittingEmptySubsequences: false).enumerated()
+                .filter { $0.offset % 2 == 1 }.map { String($0.element) }
+        }
+        for line in text.split(separator: "\n") {
+            let cells = line.split(separator: "|", omittingEmptySubsequences: false)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+            guard cells.count >= 4 else { continue }
+            rows[cells[1]] = cells[2]
+            if let url = values(cells[2]).first, url.hasPrefix("http") { endpoints[cells[1]] = url }
+        }
+        let endpoint = try await reachableEndpoint(
+            configuredEndpoint: try #require(endpoints["Audiobookshelf"]),
+            permittedHosts: ["LAN address", "Tailscale address"].flatMap { values(rows[$0] ?? "") }
+        )
+        let username = try #require(values(rows["Username"] ?? "").first)
+        let password = try #require(values(rows["Password"] ?? "").first)
+        let connection = ServerConnection(
+            name: "Disposable listening test",
+            url: endpoint,
+            type: .audiobookshelf,
+            username: username,
+            password: password
+        )
+        let provider = AudiobookshelfProvider(connection: connection)
+        guard try await provider.validateConnection() else { throw LabError.rejected }
+
+        var book: Book?
+        for library in try await provider.fetchLibraries() where book == nil {
+            book = try await provider.fetchRecentBooks(libraryId: library.id, limit: 10)
+                .first { $0.mediaType == .audiobook && !$0.isPodcastEpisode && ($0.duration ?? 0) > 120 }
+        }
+        let fixture = try #require(book)
+        let itemId = AudiobookshelfProvider.libraryItemId(for: fixture)
+        let original = try await provider.fetchAudiobookProgress(for: fixture)
+        let position = original?.positionSeconds ?? 0
+
+        func todaysLocalSession() async throws -> (id: String, timeListening: Double)? {
+            var components = try #require(URLComponents(string: provider.connection.url + "/api/me/listening-sessions"))
+            components.queryItems = [URLQueryItem(name: "itemsPerPage", value: "25")]
+            var request = URLRequest(url: try #require(components.url))
+            for (key, value) in provider.getStreamingHeaders() { request.setValue(value, forHTTPHeaderField: key) }
+            let (data, _) = try await URLSession.shared.data(for: request)
+            let json = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+            let sessions = json["sessions"] as? [[String: Any]] ?? []
+            return sessions
+                .filter { $0["libraryItemId"] as? String == itemId && ($0["playMethod"] as? Int) == 3 }
+                .compactMap { session -> (id: String, timeListening: Double)? in
+                    guard let id = session["id"] as? String, let time = session["timeListening"] as? Double else { return nil }
+                    return (id, time)
+                }
+                .first
+        }
+
+        let previous = try await todaysLocalSession()?.id
+        try await provider.updatePlaybackProgress(
+            book: fixture, sessionId: "local-\(fixture.id)", currentTime: position, isFinished: false, timeListened: 42
+        )
+        let first = try #require(try await todaysLocalSession())
+        #expect(first.id != previous)
+        #expect(abs(first.timeListening - 42) < 0.5)
+
+        try await provider.updatePlaybackProgress(
+            book: fixture, sessionId: "local-\(fixture.id)", currentTime: position, isFinished: false, timeListened: 8
+        )
+        let second = try #require(try await todaysLocalSession())
+        #expect(second.id == first.id)
+        #expect(abs(second.timeListening - (first.timeListening + 8)) < 0.5)
+        record("LAB Audiobookshelf offline listening session=\(second.id) timeListening=\(second.timeListening)")
+
+        let live = try await provider.startPlaybackSession(for: fixture)
+        try await provider.updatePlaybackProgress(
+            book: fixture, sessionId: live.sessionId, currentTime: position, isFinished: false, timeListened: 5
+        )
+        await provider.reportPlayback(.stopped, book: fixture, sessionId: live.sessionId, position: position)
+
+        var listRequest = URLRequest(url: try #require(URL(string: provider.connection.url + "/api/me/listening-sessions?itemsPerPage=25")))
+        for (key, value) in provider.getStreamingHeaders() { listRequest.setValue(value, forHTTPHeaderField: key) }
+        let (listData, _) = try await URLSession.shared.data(for: listRequest)
+        let listed = try #require(try JSONSerialization.jsonObject(with: listData) as? [String: Any])
+        let closed = (listed["sessions"] as? [[String: Any]] ?? []).first { $0["id"] as? String == live.sessionId }
+        #expect(abs((closed?["timeListening"] as? Double ?? 0) - 5) < 0.5)
+
+        var syncAfterClose = URLRequest(url: try #require(URL(string: provider.connection.url + "/api/session/\(live.sessionId)/sync")))
+        syncAfterClose.httpMethod = "POST"
+        for (key, value) in provider.getStreamingHeaders() { syncAfterClose.setValue(value, forHTTPHeaderField: key) }
+        syncAfterClose.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        syncAfterClose.httpBody = try JSONSerialization.data(withJSONObject: ["currentTime": position, "timeListened": 0])
+        let (_, afterClose) = try await URLSession.shared.data(for: syncAfterClose)
+        #expect((afterClose as? HTTPURLResponse)?.statusCode == 404)
+        record("LAB Audiobookshelf live session \(live.sessionId) closed with 5s listened")
+    }
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["ENVE_LAB_DOCUMENT"] != nil
+        && ProcessInfo.processInfo.environment["ENVE_LAB_SERVICE"] == "PlaybackReporting"),
+          arguments: ["Jellyfin", "Plex"])
+    func mediaServerPlaybackReportingShowsAndClearsNowPlaying(service: String) async throws {
+        let document = try #require(ProcessInfo.processInfo.environment["ENVE_LAB_DOCUMENT"])
+        let text = try String(contentsOfFile: document, encoding: .utf8)
+        var rows: [String: String] = [:]
+        var endpoints: [String: String] = [:]
+        func values(_ row: String) -> [String] {
+            row.split(separator: "`", omittingEmptySubsequences: false).enumerated()
+                .filter { $0.offset % 2 == 1 }.map { String($0.element) }
+        }
+        for line in text.split(separator: "\n") {
+            let cells = line.split(separator: "|", omittingEmptySubsequences: false)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+            guard cells.count >= 4 else { continue }
+            rows[cells[1]] = cells[2]
+            if let url = values(cells[2]).first, url.hasPrefix("http") { endpoints[cells[1]] = url }
+        }
+        let endpoint = try await reachableEndpoint(
+            configuredEndpoint: try #require(endpoints[service]),
+            permittedHosts: ["LAN address", "Tailscale address"].flatMap { values(rows[$0] ?? "") }
+        )
+        let plexToken = text.split(separator: "\n").first { $0.hasPrefix("Plex Enve Homelab owner token") }.flatMap { values(String($0)).first }
+        let username = try #require(values(rows["Username"] ?? "").first)
+        let password = try #require(values(rows["Password"] ?? "").first)
+        let connection = ServerConnection(
+            name: "Disposable playback reporting test",
+            url: endpoint,
+            type: service == "Plex" ? .plex : service == "Emby" ? .emby : .jellyfin,
+            username: username,
+            password: password,
+            token: service == "Plex" ? plexToken : nil
+        )
+        let provider: any LibraryProvider & AudiobookProgressProvider & PlaybackSessionProvider
+        switch service {
+        case "Plex": provider = PlexProvider(connection: connection)
+        case "Emby": provider = EmbyProvider(connection: connection)
+        default: provider = JellyfinProvider(connection: connection)
+        }
+        guard try await provider.validateConnection() else { throw LabError.rejected }
+
+        var fixture: Book?
+        for library in try await provider.fetchLibraries() where fixture == nil {
+            if service == "Plex", !library.name.localizedCaseInsensitiveContains("audiobook") { continue }
+            let books = service == "Plex"
+                ? try await provider.fetchRecentBooks(libraryId: library.id, limit: 10)
+                : try await provider.fetchBooks(libraryId: library.id)
+            record("LAB \(service) library=\(library.name) books=\(books.count) audiobooks=\(books.filter { $0.mediaType == .audiobook }.count)")
+            fixture = books.first { $0.mediaType == .audiobook && ($0.duration ?? 0) > 120 }
+                ?? books.first { $0.mediaType == .audiobook }
+        }
+        let book = try #require(fixture)
+        let session = try await provider.startPlaybackSession(for: book)
+        let original = try await provider.fetchAudiobookProgress(for: book)?.positionSeconds ?? 0
+        let position = 61.0
+
+        func nowPlaying() async throws -> Bool {
+            let path = service == "Plex" ? "/status/sessions" : "/Sessions"
+            var request = URLRequest(url: try #require(URL(string: endpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + path)))
+            for (key, value) in provider.getStreamingHeaders() { request.setValue(value, forHTTPHeaderField: key) }
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            if service == "Plex", let plexToken { request.setValue(plexToken, forHTTPHeaderField: "X-Plex-Token") }
+            let (data, _) = try await URLSession.shared.data(for: request)
+            let body = String(decoding: data, as: UTF8.self)
+            if service == "Plex" {
+                let playingKey = resolvePlexProgressTarget(book: book, currentTime: position).ratingKey
+                return body.contains("ratingKey=\"\(playingKey)\"") || body.contains("\"ratingKey\":\"\(playingKey)\"")
+            }
+            return body.contains(session.sessionId) || body.contains("\"NowPlayingItem\"") && body.contains(book.id)
+        }
+
+        await provider.reportPlayback(.started, book: book, sessionId: session.sessionId, position: position)
+        try await provider.updatePlaybackProgress(book: book, sessionId: session.sessionId, currentTime: position, isFinished: false, timeListened: 5)
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        let playingSeen = try await nowPlaying()
+        await provider.reportPlayback(.paused, book: book, sessionId: session.sessionId, position: position)
+        await provider.reportPlayback(.stopped, book: book, sessionId: session.sessionId, position: position)
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        let clearedAfterStop = try await !nowPlaying()
+        let saved = try await provider.fetchAudiobookProgress(for: book)?.positionSeconds ?? 0
+
+        try await provider.updatePlaybackProgress(book: book, sessionId: nil, currentTime: original, isFinished: false, timeListened: 0)
+        record("LAB \(service) playback reporting nowPlaying=\(playingSeen) clearedAfterStop=\(clearedAfterStop) saved=\(saved)")
+        #expect(playingSeen)
+        #expect(clearedAfterStop)
+        #expect(abs(saved - position) < 3)
+    }
+
     private func closeSession(_ session: PlaybackSessionInfo?, provider: any LibraryProvider, book: Book, position: Double) async throws {
         guard let session, let playback = provider as? any PlaybackSessionProvider else { return }
         let path: String

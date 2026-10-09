@@ -26,9 +26,10 @@ class DiskImageCache {
     private let memoryCache = NSCache<NSString, UIImage>()
     private let failedRemoteURLs = NSCache<NSString, NSDate>()
 
-    init() {
-        let paths = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)
-        cacheDirectory = paths[0].appendingPathComponent("BookCovers")
+    private let diskQueue = DispatchQueue(label: "com.enve.cover-cache")
+
+    init(cacheDirectory: URL = URL.cachesDirectory.appendingPathComponent("BookCovers")) {
+        self.cacheDirectory = cacheDirectory
 
         try? FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
 
@@ -80,8 +81,10 @@ class DiskImageCache {
         }
         let fileURL = cacheDirectory.appendingPathComponent(key as String)
 
+        let diskQueue = self.diskQueue
         let image: UIImage? = await Task.detached(priority: .userInitiated) {
-            guard let data = try? Data(contentsOf: fileURL) else { return nil }
+            let data = diskQueue.sync { try? Data(contentsOf: fileURL) }
+            guard let data else { return nil }
             return Self.decodeDownsampled(data)
         }.value
         if let image {
@@ -100,9 +103,9 @@ class DiskImageCache {
         let keyString = key as String
         guard let data = image.jpegData(compressionQuality: 0.8) else { return }
 
-        Task.detached(priority: .background) {
+        diskQueue.async {
             let fileURL = cacheDir.appendingPathComponent(keyString)
-            try? data.write(to: fileURL)
+            try? data.write(to: fileURL, options: .atomic)
         }
     }
 
@@ -111,7 +114,7 @@ class DiskImageCache {
         let key = cacheKey(for: url) as NSString
         memoryCache.removeObject(forKey: key)
         let fileURL = cacheDirectory.appendingPathComponent(key as String)
-        try? FileManager.default.removeItem(at: fileURL)
+        diskQueue.sync { try? FileManager.default.removeItem(at: fileURL) }
     }
 
     private func cacheKey(for url: URL) -> String {
@@ -170,8 +173,9 @@ class DiskImageCache {
 
     func diskBytes() async -> Int64 {
         let directory = cacheDirectory
+        let diskQueue = self.diskQueue
         return await Task.detached(priority: .utility) {
-            Self.directorySize(at: directory)
+            diskQueue.sync { Self.directorySize(at: directory) }
         }.value
     }
 
@@ -202,18 +206,21 @@ class DiskImageCache {
         failedRemoteURLs.removeAllObjects()
 
         let directory = cacheDirectory
+        let diskQueue = self.diskQueue
         await Task.detached(priority: .background) {
-            do {
-                let fileManager = FileManager.default
-                if fileManager.fileExists(atPath: directory.path) {
-                    let contents = try fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-                    for file in contents {
-                        try fileManager.removeItem(at: file)
+            diskQueue.sync {
+                do {
+                    let fileManager = FileManager.default
+                    if fileManager.fileExists(atPath: directory.path) {
+                        let contents = try fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+                        for file in contents {
+                            try fileManager.removeItem(at: file)
+                        }
                     }
+                    AppLogger.library.info("All cache cleared (memory + disk)")
+                } catch {
+                    AppLogger.library.error("Error clearing disk cache: \(error)")
                 }
-                AppLogger.library.info("All cache cleared (memory + disk)")
-            } catch {
-                AppLogger.library.error("Error clearing disk cache: \(error)")
             }
         }.value
     }

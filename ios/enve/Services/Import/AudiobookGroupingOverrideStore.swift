@@ -11,9 +11,9 @@ final class AudiobookGroupingOverrideStore {
     static let shared = AudiobookGroupingOverrideStore()
 
     private static let storageKey = "audiobookGroupingOverrides"
-    private let userDefaults = UserDefaults.standard
+    private let userDefaults: UserDefaults
 
-    private init() {}
+    init(defaults: UserDefaults = .standard) { userDefaults = defaults }
 
     func forceStandalone(source: Book.BookSource, sourceId: String, filePath: String) {
         var overrides = loadOverrides()

@@ -4,8 +4,15 @@ struct HomePreferencesScreen: View {
     @Environment(\.hearth) private var hearth
     @Environment(\.mantelInset) private var mantelInset
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.profileSession) private var profileSession
 
-    @State private var preferences = LibraryDisplayPreferencesStore.shared.loadPreferences()
+    @State private var preferences: UserPreferences
+
+    init(profileSession: ProfileSession = .owner) {
+        _preferences = State(initialValue: profileSession.preferences.loadPreferences())
+    }
+
+    private var session: ProfileSession { profileSession ?? .owner }
 
     private var order: [UserPreferences.HomeSection] {
         preferences.normalizedHomeSectionOrder
@@ -139,7 +146,6 @@ struct HomePreferencesScreen: View {
     }
 
     private func save() {
-        LibraryDisplayPreferencesStore.shared.savePreferences(preferences)
-        Theme.currentPreferences = preferences
+        session.preferences.savePreferences(preferences)
     }
 }

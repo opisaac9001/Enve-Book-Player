@@ -1,5 +1,8 @@
 package com.enve.komga
 
+import com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
+import com.enve.core.data.local.ProfileStorageLocations
+
 import com.enve.core.data.local.ConnectionRegistry
 import com.enve.core.data.local.PreferencesManager
 import com.enve.core.data.model.Book
@@ -50,7 +53,15 @@ class KomgaRepository @Inject constructor(
     private val connectionRegistry: ConnectionRegistry,
     @ApplicationContext private val context: android.content.Context,
     @RefreshClient private val plainHttpClient: OkHttpClient,
+    private val locations: ProfileStorageLocations = ProfileStorageLocations.forProfile(context, DEFAULT_ADULT_PROFILE_ID),
 ) {
+    private val progressionDeviceId: String by lazy {
+        val store = context.getSharedPreferences(if (locations.profileId == DEFAULT_ADULT_PROFILE_ID) "komga_progression" else "komga_progression_profile_${locations.profileId}", android.content.Context.MODE_PRIVATE)
+        store.getString("device_id", null) ?: java.util.UUID.randomUUID().toString().also {
+            store.edit().putString("device_id", it).apply()
+        }
+    }
+
     suspend fun getComicPageCount(bookId: String): Result<Int> = runSuspendCatching {
         val response = api.getBook(bookId)
         if (!response.isSuccessful) error("getBook HTTP ${response.code()}")
@@ -103,7 +114,7 @@ class KomgaRepository @Inject constructor(
     )
 
     private fun cacheFileForBooks(serverUrl: String, libraryId: String?): java.io.File {
-        val cacheDir = java.io.File(context.cacheDir, "book-index-cache").also { it.mkdirs() }
+        val cacheDir = java.io.File(locations.cacheDirectory, "book-index-cache").also { it.mkdirs() }
         val safeServer = serverUrl.lowercase().replace(Regex("[^a-z0-9._-]"), "_")
         val safeLibrary = (libraryId ?: "all").replace(Regex("[^a-zA-Z0-9._-]"), "_")
         val name = "books_komga_${safeServer}_${safeLibrary}.json"
@@ -111,14 +122,14 @@ class KomgaRepository @Inject constructor(
     }
 
     private fun cacheFileForLibraries(serverUrl: String): java.io.File {
-        val cacheDir = java.io.File(context.cacheDir, "book-index-cache").also { it.mkdirs() }
+        val cacheDir = java.io.File(locations.cacheDirectory, "book-index-cache").also { it.mkdirs() }
         val safeServer = serverUrl.lowercase().replace(Regex("[^a-z0-9._-]"), "_")
         val name = "libraries_komga_${safeServer}.json"
         return java.io.File(cacheDir, name)
     }
 
     private fun cacheFileForLane(serverUrl: String, lane: String): java.io.File {
-        val cacheDir = java.io.File(context.cacheDir, "book-index-cache").also { it.mkdirs() }
+        val cacheDir = java.io.File(locations.cacheDirectory, "book-index-cache").also { it.mkdirs() }
         val safeServer = serverUrl.lowercase().replace(Regex("[^a-z0-9._-]"), "_")
         val name = "lane_komga_${safeServer}_${lane}.json"
         return java.io.File(cacheDir, name)
@@ -656,7 +667,7 @@ class KomgaRepository @Inject constructor(
     }
 
     fun invalidateListCaches() {
-        val cacheDir = File(context.cacheDir, "book-index-cache")
+        val cacheDir = File(locations.cacheDirectory, "book-index-cache")
         cacheDir.listFiles()?.forEach { file ->
             if (
                 file.name.startsWith("books_komga_") ||
@@ -684,22 +695,8 @@ class KomgaRepository @Inject constructor(
         val response = api.getBook(bookId)
         if (!response.isSuccessful) return@runSuspendCatching null
         val book = response.body() ?: return@runSuspendCatching null
-        val explicit = getSeriesReadingDirection(book.seriesId)?.takeIf { it.isNotBlank() }
-        if (explicit != null) return@runSuspendCatching explicit
-
-        val libraries = api.getLibraries().takeIf { it.isSuccessful }?.body().orEmpty()
-        val library = libraries.firstOrNull { it.id == book.libraryId }
-        inferReadingDirectionFromLibrary(library?.name, library?.root)
+        getSeriesReadingDirection(book.seriesId)?.takeIf { it.isNotBlank() }
     }.getOrNull()
-
-    private fun inferReadingDirectionFromLibrary(name: String?, root: String?): String? {
-        val value = listOfNotNull(name, root).joinToString(" ").lowercase()
-        return when {
-            value.contains("webtoon") || value.contains("vertical") -> "WEBTOON"
-            value.contains("manga") || value.contains("マンガ") || value.contains("漫画") -> "RIGHT_TO_LEFT"
-            else -> null
-        }
-    }
 
     suspend fun markBookUnread(bookId: String): Result<Unit> = runSuspendCatching {
         val resp = api.deleteReadProgress(bookId)
@@ -902,7 +899,7 @@ class KomgaRepository @Inject constructor(
         locator: com.enve.komga.dto.KomgaR2Locator,
     ): retrofit2.Response<Unit> = api.updateProgression(
         bookId,
-        KomgaReadiumProgression.encode(locator, System.currentTimeMillis())
+        KomgaReadiumProgression.encode(locator, System.currentTimeMillis(), progressionDeviceId)
             .toRequestBody("application/json".toMediaType()),
     )
 

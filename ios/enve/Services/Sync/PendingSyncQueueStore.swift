@@ -61,7 +61,7 @@ struct PendingServerSync: Codable, Equatable {
 @MainActor
 @Observable
 final class PendingSyncQueueStore {
-    static let shared = PendingSyncQueueStore()
+    static var shared: PendingSyncQueueStore { ProfileSession.owner.pendingSync }
 
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let storageKey: String

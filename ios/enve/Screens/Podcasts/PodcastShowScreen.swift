@@ -3,12 +3,13 @@ import SwiftUI
 struct PodcastShowScreen: View {
     let show: Book
 
+    @Environment(\.profileSession) private var profileSession
     @Environment(EnveEngine.self) private var engine
     @Environment(\.hearth) private var hearth
     @Environment(\.mantelInset) private var mantelInset
     @Environment(\.dismiss) private var dismiss
 
-    private let model = PodcastsModel.shared
+    @Environment(PodcastsModel.self) private var model
     @State private var query = ""
     @State private var autoQueueSetting = PodcastAutoQueueSetting()
     @AppStorage("imagine.podcasts.show.newestFirst") private var newestFirst = true
@@ -330,7 +331,7 @@ struct PodcastShowScreen: View {
         }
 
         autoQueueSetting = setting
-        SettingsPrefs.mutate { preferences in
+        SettingsPrefs.mutate(in: (profileSession ?? .owner).preferences) { preferences in
             if position.isEnabled {
                 preferences.podcastAutoQueueSettings[showKey] = setting
             } else {

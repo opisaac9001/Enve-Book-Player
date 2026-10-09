@@ -46,7 +46,6 @@ import androidx.fragment.app.FragmentActivity
 import androidx.fragment.app.commitNow
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
-import com.enve.app.EnveApplication
 import com.enve.app.R
 import com.enve.core.data.local.LastOpenedBookStore
 import com.enve.core.data.local.PreferencesManager
@@ -117,7 +116,6 @@ import java.util.concurrent.TimeUnit
 import java.util.Locale
 import java.util.zip.ZipFile
 import kotlin.math.roundToLong
-import javax.inject.Inject
 
 internal data class OpenProgressResolution(
     val locatorJson: String?,
@@ -185,22 +183,26 @@ internal fun shouldUseReaderNetwork(
 @AndroidEntryPoint
 @OptIn(FlowPreview::class, ExperimentalReadiumApi::class)
 class EbookReaderActivity : FragmentActivity() {
+    @javax.inject.Inject lateinit var profileCoordinator: com.enve.app.profiles.ProfileSwitchCoordinator
+    @javax.inject.Inject lateinit var profileLifecycle: com.enve.app.profiles.ProfileLifecycleRegistry
+    private lateinit var profileBinding: com.enve.app.profiles.ProfileActivityBinding
 
-    @Inject lateinit var prefs: PreferencesManager
-    @Inject lateinit var okHttpClient: OkHttpClient
-    @Inject lateinit var repository: GrimmoryRepository
-    @Inject lateinit var syncCoordinator: com.enve.app.data.sync.SyncCoordinator
-    @Inject lateinit var progressConflictPassages: com.enve.app.data.sync.ProgressConflictPassageService
-    @Inject lateinit var epdRefreshManager: EpdRefreshManager
-    @Inject lateinit var einkManager: com.enve.app.eink.EinkManager
-    @Inject lateinit var audioPlaybackManager: com.enve.app.playback.AudioPlaybackManager
-    @Inject lateinit var comicOfflineStorage: com.enve.app.data.offline.ComicOfflineStorage
-    @Inject lateinit var customFontRepository: com.enve.app.data.repository.CustomFontRepository
-    @Inject lateinit var hearthPreferences: com.enve.engine.prefs.PreferencesFacade
-    @Inject lateinit var lastOpenedBookStore: LastOpenedBookStore
 
-    private val vm: ReaderViewModel by viewModels()
-    private val themeViewModel: ThemeViewModel by viewModels()
+    private val prefs get() = profileBinding.runtime.component.preferences()
+    private val okHttpClient get() = profileBinding.runtime.component.unauthenticatedHttpClient()
+    private val repository get() = profileBinding.runtime.component.grimmoryRepository()
+    private val syncCoordinator get() = profileBinding.runtime.component.syncCoordinator()
+    private val progressConflictPassages get() = profileBinding.runtime.component.progressConflictPassageService()
+    private val epdRefreshManager get() = profileBinding.runtime.component.epdRefreshManager()
+    private val einkManager get() = profileBinding.runtime.component.einkManager()
+    private val audioPlaybackManager get() = profileBinding.runtime.component.audioPlayback()
+    private val comicOfflineStorage get() = profileBinding.runtime.component.comicStorage()
+    private val customFontRepository get() = profileBinding.runtime.component.customFontRepository()
+    private val hearthPreferences get() = profileBinding.runtime.component.preferencesFacade()
+    private val lastOpenedBookStore get() = profileBinding.runtime.component.lastOpenedBookStore()
+
+    private val vm: ReaderViewModel by viewModels { profileBinding.factory }
+    private val themeViewModel: ThemeViewModel by viewModels { profileBinding.factory }
 
     private lateinit var loadingRoot: View
     private lateinit var loadingText: TextView
@@ -483,6 +485,7 @@ class EbookReaderActivity : FragmentActivity() {
             lastReadTime: Long = 0L,
             readerEngine: ReaderEngineKind? = null,
         ): Intent = Intent(context, EbookReaderActivity::class.java).apply {
+            com.enve.app.profiles.ProfileActivityBinding.capture(context, this)
             putExtra(EXTRA_BOOK_ID, bookId)
             putExtra(EXTRA_BOOK_SOURCE, bookSource.name)
             if (connectionId != null) putExtra(EXTRA_CONNECTION_ID, connectionId)
@@ -507,6 +510,10 @@ class EbookReaderActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         supportFragmentManager.fragmentFactory = EpubNavigatorFragment.createDummyFactory()
         super.onCreate(null)
+        profileBinding = com.enve.app.profiles.ProfileActivityBinding.attach(this, profileCoordinator, profileLifecycle) {
+            vm.checkpointForProfileSwitch()
+        } ?: run { finish(); return }
+
 
         enableEdgeToEdge()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -720,7 +727,7 @@ class EbookReaderActivity : FragmentActivity() {
             ).normalizeToEpub(
                 source = sourceFile,
                 format = sourceFormat,
-                outputDir = File(cacheDir, "normalized-ebooks"),
+                outputDir = File(profileBinding.runtime.component.storageLocations().cacheDirectory, "normalized-ebooks"),
                 outputName = bookId.replace(Regex("[^a-zA-Z0-9_-]"), "_"),
             )
         } catch (e: EbookNormalizationException) {
@@ -787,7 +794,7 @@ class EbookReaderActivity : FragmentActivity() {
         }
 
         requestedReaderEngine = ReaderEngineKind.READIUM
-        val readium  = (application as EnveApplication).readiumManager
+        val readium  = profileBinding.runtime.component.readium()
         val customFontResources = ReadiumCustomFontResources(assets, customFonts)
         val readiumOpenStartMs = android.os.SystemClock.elapsedRealtime()
         val asset    = readium.assetRetriever.retrieve(epubFile).getOrElse {
@@ -1550,7 +1557,7 @@ class EbookReaderActivity : FragmentActivity() {
 
         if (publication != null) return passages(publication)
 
-        val readium = (application as EnveApplication).readiumManager
+        val readium = profileBinding.runtime.component.readium()
         val asset = readium.assetRetriever.retrieve(epubFile).getOrElse { return null }
         val preview = readium.publicationOpener.open(asset, allowUserInteraction = false).getOrElse {
             withContext(Dispatchers.IO) { runCatching { asset.close() } }
@@ -1609,7 +1616,7 @@ class EbookReaderActivity : FragmentActivity() {
             return offlineFile
         }
 
-        val dir      = File(cacheDir, "ebooks").also { it.mkdirs() }
+        val dir      = File(profileBinding.runtime.component.storageLocations().cacheDirectory, "ebooks").also { it.mkdirs() }
         val safeName = bookId.replace(Regex("[^a-zA-Z0-9_-]"), "_")
         val fileDiscriminator = resource?.providerFileId
             ?.replace(Regex("[^a-zA-Z0-9_-]"), "_")
@@ -1749,7 +1756,7 @@ class EbookReaderActivity : FragmentActivity() {
     }
 
     private fun discardUnreadableEbookCache(vararg files: File) {
-        val cacheRoot = cacheDir.absolutePath
+        val cacheRoot = profileBinding.runtime.component.storageLocations().cacheDirectory.absolutePath
         files.filter { it.absolutePath.startsWith(cacheRoot) }.forEach { it.delete() }
     }
 
@@ -1804,6 +1811,7 @@ class EbookReaderActivity : FragmentActivity() {
 
     override fun onPause() {
         super.onPause()
+        if (!::profileBinding.isInitialized || profileBinding.retired) return
         vm.flushPreferences()
         vm.flushProgress()
         vm.pauseReadingSession()
@@ -1814,6 +1822,7 @@ class EbookReaderActivity : FragmentActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (!::profileBinding.isInitialized || profileBinding.retired) return
         vm.resumeReadingSession()
         vm.onReaderForegrounded()
     }

@@ -844,69 +844,6 @@ public class PlexService: @unchecked Sendable {
         return streamURL
     }
 
-    func reportProgress(
-        serverUrl: String,
-        token: String,
-        ratingKey: String,
-        time: TimeInterval,
-        duration: TimeInterval,
-        state: String = "playing"
-    ) async throws {
-        guard let baseURL = URL(string: serverUrl) else {
-            throw PlexError.invalidURL
-        }
-
-        let timeMs = Int(time * 1000)
-        guard timeMs >= 60001 else {
-            AppLogger.network.warning("Skipping progress report: time (\(timeMs)ms) is less than minimum (60001ms)")
-            return
-        }
-
-        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
-        components?.path = "/:/progress"
-        components?.queryItems = [
-            URLQueryItem(name: "key", value: ratingKey),
-            URLQueryItem(name: "identifier", value: "com.plexapp.plugins.library"),
-            URLQueryItem(name: "time", value: String(timeMs)),
-            URLQueryItem(name: "state", value: state),
-            URLQueryItem(name: "X-Plex-Token", value: token),
-        ]
-
-        guard let url = components?.url else {
-            throw PlexError.invalidURL
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "PUT"
-        request.setValue(token, forHTTPHeaderField: "X-Plex-Token")
-        request.setValue(product, forHTTPHeaderField: "X-Plex-Product")
-        request.setValue(clientIdentifier, forHTTPHeaderField: "X-Plex-Client-Identifier")
-
-        do {
-            let (_, response) = try await session.data(for: request)
-            guard let httpResponse = response as? HTTPURLResponse else {
-                AppLogger.network.error("Progress report failed: Invalid response type")
-                throw PlexError.serverUnreachable
-            }
-
-            guard (200...299).contains(httpResponse.statusCode) else {
-                AppLogger.network.error("Progress report failed: HTTP \(httpResponse.statusCode)")
-                if (400...599).contains(httpResponse.statusCode) {
-                    throw PlexError.unknownStatusCode(httpResponse.statusCode)
-                }
-                throw PlexError.serverUnreachable
-            }
-
-            AppLogger.network.info("Progress reported successfully: \(timeMs)ms (state: \(state))")
-        } catch {
-            AppLogger.network.error("Failed to report playback progress: \(error.localizedDescription)")
-            if error is PlexError {
-                throw error
-            }
-            throw PlexError.networkError(error)
-        }
-    }
-
     func fetchProgress(serverUrl: String, token: String, ratingKey: String) async throws -> (offset: TimeInterval, duration: TimeInterval)?
     {
         guard let baseURL = URL(string: serverUrl) else {

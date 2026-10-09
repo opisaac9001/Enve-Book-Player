@@ -24,6 +24,7 @@ final class PlaybackQueueStore {
     private(set) var entries: [PlaybackQueueEntry]
 
     @ObservationIgnored private let fileURL: URL
+    @ObservationIgnored private let rejectsUnreadableStorage: Bool
     @ObservationIgnored private let fileManager: FileManager
 
     init(
@@ -33,6 +34,19 @@ final class PlaybackQueueStore {
         self.fileURL = fileURL
         self.fileManager = fileManager
         self.entries = Self.load(from: fileURL)
+        rejectsUnreadableStorage = false
+    }
+
+    init(storage: ProfileStorageLocations, fileManager: FileManager = .default) throws {
+        fileURL = storage.applicationSupportDirectory
+            .appendingPathComponent("Enve/playback-queue.json")
+        self.fileManager = fileManager
+        rejectsUnreadableStorage = storage.profileID != FamilyProfile.ownerID
+        if rejectsUnreadableStorage, fileManager.fileExists(atPath: fileURL.path) {
+            let data = try Data(contentsOf: fileURL)
+            _ = try JSONDecoder().decode([PlaybackQueueEntry].self, from: data)
+        }
+        entries = Self.load(from: fileURL)
     }
 
     func replace(
@@ -127,6 +141,10 @@ final class PlaybackQueueStore {
 
     private func persist() {
         do {
+            if rejectsUnreadableStorage, fileManager.fileExists(atPath: fileURL.path) {
+                let data = try Data(contentsOf: fileURL)
+                _ = try JSONDecoder().decode([PlaybackQueueEntry].self, from: data)
+            }
             try fileManager.createDirectory(
                 at: fileURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true
