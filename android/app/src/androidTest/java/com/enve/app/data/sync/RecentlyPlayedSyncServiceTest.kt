@@ -14,11 +14,11 @@ import org.junit.runner.RunWith
 class RecentlyPlayedSyncServiceTest {
     @Test
     fun reportsPartialFailureAlongsideSuccessfulMerges() = runBlocking {
-        val service = RecentlyPlayedSyncService(setOf(strategy("ABS") {
+        val strategies = setOf(strategy("ABS") {
             ProviderSyncResult(2, 0, listOf("Audiobookshelf"))
-        }))
+        })
 
-        val result = service.syncOnLaunch()
+        val result = dispatchProviderSync(strategies, ServerStatusSyncTrigger.APP_LAUNCH)
 
         assertEquals(2, result.pulledItemCount)
         assertEquals(listOf("Audiobookshelf"), result.failedStrategies)
@@ -29,13 +29,13 @@ class RecentlyPlayedSyncServiceTest {
     fun cancellationStopsDispatchInsteadOfReportingFailure() = runBlocking {
         var nextCalled = false
         val cancellation = CancellationException("cancelled")
-        val service = RecentlyPlayedSyncService(linkedSetOf(
+        val strategies = linkedSetOf(
             strategy("cancelled") { throw cancellation },
             strategy("next") { nextCalled = true; ProviderSyncResult.ZERO },
-        ))
+        )
 
         val error = try {
-            service.syncOnLaunch()
+            dispatchProviderSync(strategies, ServerStatusSyncTrigger.APP_LAUNCH)
             null
         } catch (e: CancellationException) {
             e
@@ -47,12 +47,12 @@ class RecentlyPlayedSyncServiceTest {
 
     @Test
     fun failedProviderDoesNotPreventAnotherProviderFromSyncing() = runBlocking {
-        val service = RecentlyPlayedSyncService(linkedSetOf(
+        val strategies = linkedSetOf(
             strategy("failed") { error("unavailable") },
             strategy("healthy") { ProviderSyncResult(3, 1) },
-        ))
+        )
 
-        val result = service.syncOnLaunch()
+        val result = dispatchProviderSync(strategies, ServerStatusSyncTrigger.APP_LAUNCH)
 
         assertEquals(4, result.mergedItemCount)
         assertEquals(listOf("failed"), result.failedStrategies)

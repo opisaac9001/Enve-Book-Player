@@ -546,3 +546,66 @@ final class enveUISmokeTests: XCTestCase {
         return app
     }
 }
+
+final class ProfileDeviceUITests: XCTestCase {
+    @MainActor
+    func testAdultProfileSwitchReopenAndRemoval() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-imagineScreen", "profiles"]
+        app.launch()
+        XCTAssertTrue(app.descendants(matching: .any)["profiles-screen"].waitForExistence(timeout: 30))
+        guard app.buttons["profiles-enable"].exists else {
+            throw XCTSkip("Existing family profiles are preserved; run the profile workflow manually.")
+        }
+        app.buttons["profiles-enable"].tap()
+        let name = app.textFields["profile-name"]
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        name.tap()
+        name.typeText("Adult")
+        app.buttons["profile-save"].tap()
+        XCTAssertTrue(app.buttons["profiles-add"].waitForExistence(timeout: 10))
+        app.buttons["profiles-add"].tap()
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        name.tap()
+        name.typeText("Device test reader\n")
+        let setupSync = app.switches["profile-setup-server-sync"]
+        XCTAssertTrue(setupSync.exists)
+        XCTAssertEqual(setupSync.value as? String, "0")
+        setupSync.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+        XCTAssertTrue(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == '1'"), object: setupSync)], timeout: 3) == .completed)
+        app.buttons["profile-save"].tap()
+        let useReader = app.buttons["Use Device test reader"]
+        XCTAssertTrue(useReader.waitForExistence(timeout: 10))
+        let readerID = useReader.identifier.replacingOccurrences(of: "profile-switch-", with: "")
+        let readerSync = app.switches["profile-server-sync-\(readerID)"]
+        XCTAssertEqual(readerSync.value as? String, "1")
+        readerSync.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+        XCTAssertTrue(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == '0'"), object: readerSync)], timeout: 3) == .completed)
+        useReader.tap()
+        XCTAssertTrue(app.staticTexts["profile-current-\(readerID)"].waitForExistence(timeout: 30))
+        app.terminate()
+        app.launchArguments = ["-imagineScreen", "library"]
+        app.launch()
+        let library = app.buttons["tab_library"]
+        XCTAssertTrue(library.waitForExistence(timeout: 30))
+        library.tap()
+        XCTAssertTrue(app.staticTexts["The stacks are empty."].waitForExistence(timeout: 30))
+        app.terminate()
+        app.launchArguments = ["-imagineScreen", "profiles"]
+        app.launch()
+        let useAdult = app.buttons["Use Adult"]
+        XCTAssertTrue(useAdult.waitForExistence(timeout: 30))
+        let adultID = useAdult.identifier.replacingOccurrences(of: "profile-switch-", with: "")
+        useAdult.tap()
+        XCTAssertTrue(app.staticTexts["profile-current-\(adultID)"].waitForExistence(timeout: 30))
+        let remove = app.buttons["Remove"].firstMatch
+        XCTAssertTrue(remove.waitForExistence(timeout: 5))
+        remove.tap()
+        app.buttons["profile-save"].tap()
+        let disable = app.buttons["Turn off profiles"]
+        XCTAssertTrue(disable.waitForExistence(timeout: 15))
+        disable.tap()
+        XCTAssertTrue(app.buttons["profiles-enable"].waitForExistence(timeout: 10))
+    }
+}

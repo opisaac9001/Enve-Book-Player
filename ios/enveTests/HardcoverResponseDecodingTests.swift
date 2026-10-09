@@ -4,6 +4,17 @@ import Testing
 @testable import enve
 
 struct HardcoverResponseDecodingTests {
+    @Test func scopedAndRateLimitedResponsesDoNotInvalidateToken() {
+        #expect(!HardcoverError.isAuthenticationFailure(statusCode: 403, message: #"{"error":"insufficient_scope","scope":"read:lists"}"#))
+        #expect(!HardcoverError.isAuthenticationFailure(statusCode: 403, message: #"{"errors":["request_exceeds_capacity"]}"#))
+        #expect(!HardcoverError.isAuthenticationFailure(statusCode: 403, message: #"{"error":"unsupported_operation"}"#))
+        #expect(!HardcoverError.isAuthenticationFailure(statusCode: 429, message: "Too Many Requests"))
+        #expect(HardcoverError.isAuthenticationFailure(statusCode: 401, message: #"{"error":"invalid_token"}"#))
+        #expect(HardcoverError.retryDelay(statusCode: 429, retryAfter: "2") == 2)
+        #expect(HardcoverError.retryDelay(statusCode: 429, retryAfter: "60") == nil)
+        #expect(HardcoverError.retryDelay(statusCode: 403, retryAfter: "2") == nil)
+    }
+
     @Test func readingMutationPreservesServerIdentity() throws {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase

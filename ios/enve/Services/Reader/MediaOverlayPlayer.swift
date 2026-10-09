@@ -70,6 +70,15 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
     private var nowPlayingSession: MPNowPlayingSession?
     #endif
 
+    private let defaults: UserDefaults
+    private let playbackState: () -> PlaybackSnapshot
+
+    init(defaults: UserDefaults = .standard, playbackState: @escaping () -> PlaybackSnapshot = { ActivePlayback.controller.snapshot }) {
+        self.defaults = defaults
+        self.playbackState = playbackState
+        super.init()
+    }
+
     private static let speedDefaultsKey = "readAloud.speed"
     private static let maxBoundaryObserverTimes = 160
 
@@ -185,12 +194,12 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
         let clamped = min(max(rate, 0.5), 3.0)
         playbackRate = clamped
         applyRate()
-        UserDefaults.standard.set(clamped, forKey: Self.speedDefaultsKey)
+        defaults.set(clamped, forKey: Self.speedDefaultsKey)
         updateNowPlayingInfo()
     }
 
     func loadPersistedSpeed() {
-        let stored = UserDefaults.standard.double(forKey: Self.speedDefaultsKey)
+        let stored = defaults.double(forKey: Self.speedDefaultsKey)
         if stored > 0 { setSpeed(stored) }
     }
 
@@ -637,7 +646,7 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
 
     private func deactivateAudioSession() {
         #if os(iOS)
-        guard !ActivePlayback.controller.snapshot.isLoaded else { return }
+        guard !playbackState().isLoaded else { return }
 
         do {
             try AVAudioSession.sharedInstance().setActive(false)

@@ -5,13 +5,16 @@ import Logging
 final class EbookAudiobookLinker {
     static let shared = EbookAudiobookLinker()
 
+    private unowned let profileSession: ProfileSession?
     private let libraryCache: LibraryBookCache
     private let bookRepository: BookStoreRepository
 
-    private init(
+    init(
         libraryCache: LibraryBookCache = AppState.shared.libraryCache,
-        bookRepository: BookStoreRepository = AppState.shared.bookStore
+        bookRepository: BookStoreRepository = AppState.shared.bookStore,
+        profileSession: ProfileSession? = nil
     ) {
+        self.profileSession = profileSession
         self.libraryCache = libraryCache
         self.bookRepository = bookRepository
     }
@@ -129,8 +132,8 @@ final class EbookAudiobookLinker {
         // Stored library books carry no chapters; the player caches them separately.
         let chapters =
             audiobook.chapters.flatMap { $0.isEmpty ? nil : $0 }
-            ?? ReaderArtifactsStore.shared.loadCachedChapters(bookId: audiobook.stableId)
-            ?? ReaderArtifactsStore.shared.loadCachedChapters(bookId: audiobook.id)
+            ?? (profileSession?.readerArtifacts ?? ReaderArtifactsStore.shared).loadCachedChapters(bookId: audiobook.stableId)
+            ?? (profileSession?.readerArtifacts ?? ReaderArtifactsStore.shared).loadCachedChapters(bookId: audiobook.id)
             ?? []
         let abIndex = ebookChapterIndex + ebook.linkedAudiobookChapterOffset
         guard chapters.indices.contains(abIndex) else { return nil }
@@ -147,7 +150,7 @@ final class EbookAudiobookLinker {
         audiobook: Book
     ) async -> TimeInterval? {
         if let locatorJSON, let audioDuration = audiobook.duration,
-            let timeline = await MediaOverlayPlaybackService.shared.overlayTimeline(forLocalBook: ebook),
+            let timeline = await (profileSession?.playback.mediaOverlay ?? MediaOverlayPlaybackService.shared).overlayTimeline(forLocalBook: ebook),
             let narrated = Self.narratedAudioTime(locatorJSON: locatorJSON, timeline: timeline, audioDuration: audioDuration)
         {
             return narrated

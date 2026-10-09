@@ -11,6 +11,8 @@ import com.enve.core.data.model.Library
 import com.enve.core.data.model.ReadStatus
 import com.enve.core.data.util.FINISHED_PROGRESS_THRESHOLD
 import com.enve.engine.library.LibraryFacade
+import com.enve.engine.library.SavedBookList
+import com.enve.engine.library.SavedBooksFacade
 import com.enve.engine.library.BookOrbitCollectionEdit
 import com.enve.engine.library.LibraryConnectionOption
 import com.enve.engine.playback.PlaybackFacade
@@ -157,6 +159,7 @@ data class BatchCollectionPickerState(
 @HiltViewModel
 class HearthLibraryViewModel @Inject constructor(
     private val library: LibraryFacade,
+    private val savedBooksFacade: SavedBooksFacade,
     private val playback: PlaybackFacade,
     private val prefs: PreferencesFacade,
     private val connectionRegistry: ConnectionRegistry,
@@ -183,6 +186,12 @@ class HearthLibraryViewModel @Inject constructor(
 
     private val allBooks: StateFlow<List<Book>> =
         library.allBooks.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val savedBooks: StateFlow<Map<SavedBookList, List<Book>>> =
+        combine(allBooks, savedBooksFacade.saved) { books, saved ->
+            val byKey = books.associateBy(Book::uniqueKey)
+            SavedBookList.entries.associateWith { list -> saved[list].orEmpty().mapNotNull(byKey::get) }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
 
     private val excludedLibraryIds: StateFlow<Set<String>> =
         prefs.excludedLibraryIds.stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
@@ -324,6 +333,10 @@ class HearthLibraryViewModel @Inject constructor(
     private var drillGeneration: Long = 0L
 
     init {
+        viewModelScope.launch {
+            library.libraries.first { it.isNotEmpty() }
+            savedBooksFacade.refresh()
+        }
         viewModelScope.launch {
             val saved = decodeAdvancedFilters(prefs.libraryAdvancedFilters.first())
             if (!hasEditedAdvancedFilters) _advancedFilters.value = saved
@@ -564,6 +577,7 @@ class HearthLibraryViewModel @Inject constructor(
 
     fun refresh() = viewModelScope.launch {
         library.refresh()
+        savedBooksFacade.refresh()
         if (_shelves.value.isNotEmpty() || facet.value == LibraryFacet.SHELVES) {
             _shelvesLoading.value = true
             try {

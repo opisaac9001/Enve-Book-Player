@@ -271,6 +271,7 @@ private struct HearthBackBar: ViewModifier {
             .padding(.top, 4)
         }
         .navigationBarBackButtonHidden(true)
+        .hearthInteractiveBack()
     }
 }
 

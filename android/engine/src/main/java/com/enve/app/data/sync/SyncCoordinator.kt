@@ -1,9 +1,10 @@
 package com.enve.app.data.sync
 
+import com.enve.core.di.ApplicationScope
+import com.enve.core.data.util.runSuspendCatching
 import android.util.Log
 import com.enve.core.data.sync.SyncCapability
 import com.enve.core.data.sync.SyncCapabilityFlag
-import com.enve.core.data.sync.SyncEvent
 import com.enve.core.data.sync.SyncSnapshot
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
@@ -17,10 +18,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -40,8 +37,11 @@ class SyncCoordinator @Inject constructor(
     private val rewindTracker: RemoteRewindTracker,
 
     private val adapters: Set<@JvmSuppressWildcards ProviderAdapter>,
+    @ApplicationScope parentScope: CoroutineScope =
+        CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    private val serverSync: com.enve.core.data.local.ProfileServerSyncStore,
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob(parentScope.coroutineContext[Job]) + Dispatchers.IO)
 
     private val debounceJobs = ConcurrentHashMap<String, Job>()
 
@@ -52,7 +52,6 @@ class SyncCoordinator @Inject constructor(
     private val knownBooks = ConcurrentHashMap<String, Book>()
 
     init {
-
         annotationRepo.setChangeListener { bookId ->
             scheduleAnnotationsPush(bookId)
         }
@@ -62,25 +61,9 @@ class SyncCoordinator @Inject constructor(
         knownBooks[book.id] = book
     }
 
-    private val _events = MutableSharedFlow<SyncEvent>(extraBufferCapacity = 32)
-    val events: Flow<SyncEvent> = _events.asSharedFlow()
-
-    fun subscribe(bookId: String): Flow<SyncEvent> =
-        events.filter { event ->
-            when (event) {
-                is SyncEvent.Syncing -> event.bookId == bookId
-                is SyncEvent.Synced -> event.bookId == bookId
-                is SyncEvent.Failed -> event.bookId == bookId
-                is SyncEvent.ConflictDetected -> event.bookId == bookId
-                is SyncEvent.AnnotationsPulled -> event.bookId == bookId
-                is SyncEvent.AnnotationsPushed -> event.bookId == bookId
-                is SyncEvent.AnnotationConflict -> event.bookId == bookId
-            }
-        }
-
     suspend fun pullOnOpen(book: Book): SyncSnapshot? {
+        if (!serverSync.isEnabled) return null
         registerBook(book)
-        _events.emit(SyncEvent.Syncing(book.id))
 
         scope.launch {
             try {
@@ -91,16 +74,11 @@ class SyncCoordinator @Inject constructor(
             }
         }
         return try {
-            val snapshot = fetchSnapshot(book)
-            if (snapshot != null) {
-                _events.emit(SyncEvent.Synced(book.id, snapshot.percentage, snapshot.source))
-            }
-            snapshot
+            fetchSnapshot(book)
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "pullOnOpen failed for ${book.id}", e)
-            _events.emit(SyncEvent.Failed(book.id, e))
             null
         }
     }
@@ -126,10 +104,8 @@ class SyncCoordinator @Inject constructor(
         val authoritative = authoritativeSource
         if (authoritative != null) {
             annotationRepo.applyAuthoritativeRemote(book.id, authoritative, deduped)
-            _events.emit(SyncEvent.AnnotationsPulled(book.id, deduped.size, authoritative))
         } else if (deduped.isNotEmpty()) {
             annotationRepo.applyRemote(deduped)
-            _events.emit(SyncEvent.AnnotationsPulled(book.id, deduped.size, "remote"))
         }
         return merged
     }
@@ -157,9 +133,6 @@ class SyncCoordinator @Inject constructor(
             val dirty = annotationRepo.dirtyForBook(bookId)
             if (dirty.isEmpty()) return@withLock
 
-            var totalAccepted = 0
-            var totalRejected = 0
-
             for (adapter in adapters) {
                 if (adapter.source != book.source) continue
                 if (!adapter.syncCapability.supports(SyncCapabilityFlag.PUSH_ANNOTATIONS)) continue
@@ -179,34 +152,23 @@ class SyncCoordinator @Inject constructor(
                 }
                 pushResult.conflicts.forEach { remote ->
                     val local = dirty.firstOrNull { it.id == remote.id }
-                    if (local != null) {
-                        _events.emit(SyncEvent.AnnotationConflict(
-                            bookId = bookId,
-                            annotationId = remote.id,
-                            remoteUpdatedAt = remote.updatedAt,
-                            localUpdatedAt = local.updatedAt,
-                        ))
-
-                        if (remote.updatedAt > local.updatedAt) {
-                            annotationRepo.applyRemote(listOf(remote))
-                        }
+                    if (local != null && remote.updatedAt > local.updatedAt) {
+                        annotationRepo.applyRemote(listOf(remote))
                     }
                 }
-                totalAccepted += pushResult.accepted.size
-                totalRejected += pushResult.rejected.size
             }
-
-            _events.emit(SyncEvent.AnnotationsPushed(bookId, totalAccepted, totalRejected))
         }
     }
 
     suspend fun fetchSnapshot(book: Book): SyncSnapshot? {
+        val syncStartedAt = System.currentTimeMillis()
+        if (!serverSync.isEnabled) return null
         val snapshots = mutableListOf<SyncSnapshot>()
 
         if (book.source == BookSource.GRIMMORY) {
             val koreaderCreds = koreaderSink.credentialsForBook(book)
             if (koreaderCreds != null && koreaderCreds.enabled) {
-                val snap = runCatching {
+                val snap = runSuspendCatching {
                     koreaderSink.pull(book)
                 }.getOrNull()
                 if (snap != null) snapshots += snap
@@ -214,20 +176,20 @@ class SyncCoordinator @Inject constructor(
         }
 
         if (book.mediaType == AppMediaType.EBOOK) {
-            runCatching { koreaderHub.snapshotFor(book) }.getOrNull()?.let { snapshots += it }
+            runSuspendCatching { koreaderHub.snapshotFor(book) }.getOrNull()?.let { snapshots += it }
         }
 
         for (adapter in adapters) {
             if (adapter.source != book.source) continue
             if (!adapter.syncCapability.supports(SyncCapabilityFlag.PULL_PROGRESS)) continue
             val result = when (book.mediaType) {
-                AppMediaType.AUDIOBOOK -> aggregatorRepository.fetchAudiobookProgress(book)
+                AppMediaType.AUDIOBOOK, AppMediaType.PODCAST -> aggregatorRepository.fetchAudiobookProgress(book)
                 AppMediaType.EBOOK -> aggregatorRepository.fetchEbookProgress(book)
-                else -> continue
             }
             result.getOrNull()?.let { snapshots += it }
         }
 
+        if (!serverSync.accepts(syncStartedAt)) return null
         return ProgressResolutionPolicy.bestSnapshot(snapshots)
     }
 
@@ -237,48 +199,22 @@ class SyncCoordinator @Inject constructor(
         progressFraction: Float,
         forceImmediate: Boolean = false,
     ) {
+        val requestedAt = System.currentTimeMillis()
         val syncKey = progressSyncKey(book)
         if (forceImmediate) {
-            scope.launch { performPush(book, currentTimeSec, progressFraction) }
+            scope.launch { performPush(book, currentTimeSec, progressFraction, requestedAt) }
             return
         }
         debounceJobs[syncKey]?.cancel()
         debounceJobs[syncKey] = scope.launch {
             delay(2_000)
-            performPush(book, currentTimeSec, progressFraction)
+            performPush(book, currentTimeSec, progressFraction, requestedAt)
         }
     }
 
     fun pushFinished(book: Book) {
-        scope.launch { performPush(book, book.currentTime, 1f) }
-    }
-
-    enum class ProgressResolution { NONE, PULL, PUSH }
-
-    fun resolveProgress(
-        localPercentage: Float,
-        localUpdatedAt: Long?,
-        remote: SyncSnapshot,
-    ): ProgressResolution {
-        return when (ProgressResolutionPolicy.resolve(localPercentage, localUpdatedAt, remote)) {
-            ProgressResolutionPolicy.Decision.NONE,
-            ProgressResolutionPolicy.Decision.CONFLICT -> ProgressResolution.NONE
-            ProgressResolutionPolicy.Decision.PULL -> ProgressResolution.PULL
-            ProgressResolutionPolicy.Decision.PUSH -> ProgressResolution.PUSH
-        }
-    }
-
-    suspend fun applySnapshot(
-        book: Book,
-        snapshot: SyncSnapshot,
-        localPercentage: Float,
-    ): Long? {
-        val localUpdatedAt = book.lastReadTime.takeIf { it > 0 }
-        return when (resolveProgress(localPercentage, localUpdatedAt, snapshot)) {
-            ProgressResolution.NONE, ProgressResolution.PUSH -> null
-            ProgressResolution.PULL -> snapshot.positionMs
-                ?: (book.duration * snapshot.percentage * 1000).toLong().takeIf { book.duration > 0 }
-        }
+        val requestedAt = System.currentTimeMillis()
+        scope.launch { performPush(book, book.currentTime, 1f, requestedAt) }
     }
 
     sealed class OpenSyncResult {
@@ -321,6 +257,7 @@ class SyncCoordinator @Inject constructor(
         localUpdatedAt: Long?,
         localLocatorJson: String? = null,
     ): OpenSyncResult {
+        if (!serverSync.isEnabled) return OpenSyncResult.Apply(null, useRemote = false, allowRemoteCheckpoint = false)
         if (snapshot == null) return OpenSyncResult.Apply(null, useRemote = false)
         return when (ProgressResolutionPolicy.resolve(localPercentage, localUpdatedAt, snapshot, localLocatorJson)) {
             ProgressResolutionPolicy.Decision.NONE -> OpenSyncResult.Apply(snapshot, useRemote = false)
@@ -370,13 +307,13 @@ class SyncCoordinator @Inject constructor(
         rewindTracker.recordUserResolution(RemoteProgressScope.of(book, remoteSource), acceptedRemote)
     }
 
-    private suspend fun performPush(book: Book, currentTimeSec: Long, progressFraction: Float) {
+    private suspend fun performPush(book: Book, currentTimeSec: Long, progressFraction: Float, requestedAt: Long) {
         val mutex = bookMutexes.getOrPut(progressSyncKey(book)) { Mutex() }
         mutex.withLock {
             try {
                 val normalizedProgress = progressFraction.coerceIn(0f, 1f)
 
-                try {
+                if (book.mediaType !in setOf(AppMediaType.AUDIOBOOK, AppMediaType.PODCAST)) try {
                     bookCacheDao.updateUnifiedProgress(
                         bookId = book.id,
                         connectionId = book.connectionId,
@@ -390,7 +327,8 @@ class SyncCoordinator @Inject constructor(
                 } catch (_: Exception) {
 
                 }
-                if (normalizedProgress <= 0.001f && !book.isFinished) {
+                if (!serverSync.accepts(requestedAt)) return@withLock
+                if (book.mediaType !in setOf(AppMediaType.AUDIOBOOK, AppMediaType.PODCAST) && normalizedProgress <= 0.001f && !book.isFinished) {
                     return@withLock
                 }
                 val ebookLocator = if (book.mediaType == AppMediaType.EBOOK) {
@@ -408,7 +346,7 @@ class SyncCoordinator @Inject constructor(
                 val adapter = adapters.firstOrNull { it.source == book.source }
                 if (adapter != null && adapter.syncCapability.supports(SyncCapabilityFlag.PUSH_PROGRESS)) {
                     val result = when (book.mediaType) {
-                        AppMediaType.AUDIOBOOK -> aggregatorRepository.syncAudiobookProgress(
+                        AppMediaType.AUDIOBOOK, AppMediaType.PODCAST -> aggregatorRepository.syncAudiobookProgress(
                             book = book,
                             currentTimeSec = currentTimeSec,
                             progressFraction = normalizedProgress,
@@ -420,7 +358,6 @@ class SyncCoordinator @Inject constructor(
                             locator = ebookLocator,
                             connectionId = book.connectionId,
                         )
-                        else -> Result.success(Unit)
                     }
                     result.getOrThrow()
                     remoteWritten = true
@@ -447,20 +384,18 @@ class SyncCoordinator @Inject constructor(
                     }
                 }
 
-                if (remoteWritten) {
+                if (remoteWritten && book.mediaType !in setOf(AppMediaType.AUDIOBOOK, AppMediaType.PODCAST)) {
                     rewindTracker.recordOutboundWrite(
                         key = RemoteProgressWriteKey.of(book),
                         percentage = normalizedProgress,
-                        positionMs = (currentTimeSec * 1000L).takeIf { book.mediaType == AppMediaType.AUDIOBOOK && it > 0L },
+                        positionMs = null,
                         locatorJson = ebookLocator,
                     )
                 }
-                _events.emit(SyncEvent.Synced(book.id, normalizedProgress, book.source.name))
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "performPush failed for ${book.id}", e)
-                _events.emit(SyncEvent.Failed(book.id, e))
             }
         }
     }

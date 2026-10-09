@@ -2,11 +2,19 @@ import SwiftUI
 
 struct LibraryDisplayScreen: View {
     @Environment(\.hearth) private var hearth
+    @Environment(\.profileSession) private var profileSession
 
-    @State private var prefs = LibraryDisplayPreferencesStore.shared.loadPreferences()
-    @State private var cardStyle = LibraryDisplayPreferencesStore.shared.loadBookCardStyle()
+    @State private var prefs: UserPreferences
+    @State private var cardStyle: BookCardStyle
     @State private var isRededuping = false
     @State private var rededupDone = false
+
+    init(profileSession: ProfileSession = .owner) {
+        _prefs = State(initialValue: profileSession.preferences.loadPreferences())
+        _cardStyle = State(initialValue: profileSession.preferences.loadBookCardStyle())
+    }
+
+    private var session: ProfileSession { profileSession ?? .owner }
 
     var body: some View {
         SettingsScaffold(
@@ -24,7 +32,7 @@ struct LibraryDisplayScreen: View {
                     title: "Show advanced settings",
                     isOn: Binding(
                         get: { prefs.showAdvancedLibrarySettings },
-                        set: { value in prefs = SettingsPrefs.mutate { $0.showAdvancedLibrarySettings = value } }
+                        set: { value in prefs = SettingsPrefs.mutate(in: session.preferences) { $0.showAdvancedLibrarySettings = value } }
                     )
                 )
             }
@@ -54,7 +62,7 @@ struct LibraryDisplayScreen: View {
                     isSelected: cardStyle == style
                 ) {
                     cardStyle = style
-                    LibraryDisplayPreferencesStore.shared.saveBookCardStyle(style)
+                    session.preferences.saveBookCardStyle(style)
                     PlatformHaptics.selection()
                 }
             }
@@ -71,7 +79,7 @@ struct LibraryDisplayScreen: View {
                     systemImage: mode.iconName,
                     isSelected: prefs.titleDisplayMode == mode
                 ) {
-                    prefs = SettingsPrefs.mutate { $0.titleDisplayMode = mode }
+                    prefs = SettingsPrefs.mutate(in: session.preferences) { $0.titleDisplayMode = mode }
                     LibraryDisplayFormatter.clearCache()
                     PlatformHaptics.selection()
                 }
@@ -91,7 +99,7 @@ struct LibraryDisplayScreen: View {
                     systemImage: handling == .keep ? "text.quote" : "scissors",
                     isSelected: prefs.subtitleHandling == handling
                 ) {
-                    prefs = SettingsPrefs.mutate { $0.subtitleHandling = handling }
+                    prefs = SettingsPrefs.mutate(in: session.preferences) { $0.subtitleHandling = handling }
                     LibraryDisplayFormatter.clearCache()
                     PlatformHaptics.selection()
                 }
@@ -140,7 +148,7 @@ struct LibraryDisplayScreen: View {
                     systemImage: level.iconName,
                     isSelected: prefs.mergeAggressiveness == level
                 ) {
-                    prefs = SettingsPrefs.mutate { $0.mergeAggressiveness = level }
+                    prefs = SettingsPrefs.mutate(in: session.preferences) { $0.mergeAggressiveness = level }
                     PlatformHaptics.selection()
                 }
             }
@@ -159,7 +167,7 @@ struct LibraryDisplayScreen: View {
             Slider(
                 value: Binding(
                     get: { prefs.authorGroupingThreshold },
-                    set: { value in prefs = SettingsPrefs.mutate { $0.authorGroupingThreshold = value } }
+                    set: { value in prefs = SettingsPrefs.mutate(in: session.preferences) { $0.authorGroupingThreshold = value } }
                 ),
                 in: 0.70...1.0,
                 step: 0.05
@@ -174,7 +182,7 @@ struct LibraryDisplayScreen: View {
     private var mergeCacheCard: some View {
         SourcesCard {
             Overline("Merge cache")
-            if let cache = LocalLibraryStorageStore.shared.loadMergeCache() {
+            if let cache = session.localLibrary.loadMergeCache() {
                 Text("Last merged \(cache.lastDedupDate.formatted(.relative(presentation: .named))) · \(cache.bookCount) books cached")
                     .font(.hearthCaption)
                     .foregroundStyle(hearth.textSecondary)
@@ -189,7 +197,7 @@ struct LibraryDisplayScreen: View {
             ) {
                 guard !isRededuping else { return }
                 isRededuping = true
-                LocalLibraryStorageStore.shared.clearMergeCache()
+                session.localLibrary.clearMergeCache()
                 isRededuping = false
                 rededupDone = true
                 PlatformHaptics.notification(.success)

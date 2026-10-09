@@ -1,12 +1,10 @@
 package com.enve.app.viewmodel
 
-import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.enve.app.data.offline.ComicOfflineService
 import com.enve.app.data.offline.OfflineDownloadManager
 import dagger.hilt.android.lifecycle.HiltViewModel
-import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -22,6 +20,7 @@ data class StorageHubState(
     val cacheSizeMb: String = "0.0",
     val appDataSizeMb: String = "0.0",
     val downloadedSizeMb: String = "0.0",
+    val sharedDownloadsSizeMb: String = "0.0",
     val downloadedItems: Int = 0,
     val isLoading: Boolean = false,
     val isClearingCache: Boolean = false,
@@ -31,7 +30,7 @@ data class StorageHubState(
 
 @HiltViewModel
 class StorageHubViewModel @Inject constructor(
-    @ApplicationContext private val context: Context,
+    private val locations: com.enve.core.data.local.ProfileStorageLocations,
     private val offlineDownloadManager: OfflineDownloadManager,
     private val comicOfflineService: ComicOfflineService,
 ) : ViewModel() {
@@ -53,18 +52,20 @@ class StorageHubViewModel @Inject constructor(
                 }
                 val comicCount = comicOfflineService.downloadedBookIds.value.size
                 val downloadedCount = audioCount + comicCount
-                val cacheBytes = withContext(Dispatchers.IO) { directorySize(context.cacheDir) }
+                val cacheBytes = withContext(Dispatchers.IO) { directorySize(locations.cacheDirectory) }
                 val downloadedBytes = withContext(Dispatchers.IO) {
-                    directorySize(java.io.File(context.filesDir, "offline-audio")) +
-                        directorySize(java.io.File(context.filesDir, "offline-comics"))
+                    directorySize(java.io.File(locations.filesDirectory, "offline-audio")) +
+                        directorySize(java.io.File(locations.filesDirectory, "offline-comics"))
                 }
                 val appDataBytes = withContext(Dispatchers.IO) {
-                    (directorySize(context.filesDir) - downloadedBytes).coerceAtLeast(0L)
+                    (directorySize(locations.filesDirectory) - downloadedBytes).coerceAtLeast(0L)
                 }
 
+                val sharedBytes = withContext(Dispatchers.IO) { offlineDownloadManager.sharedStorageBytes() }
                 _state.update {
                     it.copy(
                         isLoading = false,
+                        sharedDownloadsSizeMb = bytesToMb(sharedBytes),
                         downloadedItems = downloadedCount,
                         cacheSizeMb = bytesToMb(cacheBytes),
                         appDataSizeMb = bytesToMb(appDataBytes),
@@ -89,8 +90,8 @@ class StorageHubViewModel @Inject constructor(
             _state.update { it.copy(isClearingCache = true, error = null) }
             try {
                 withContext(Dispatchers.IO) {
-                    context.cacheDir.deleteRecursively()
-                    context.cacheDir.mkdirs()
+                    privateChildren(locations.cacheDirectory).forEach { check(it.deleteRecursively()) }
+                    check(locations.cacheDirectory.isDirectory || locations.cacheDirectory.mkdirs())
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -123,9 +124,15 @@ class StorageHubViewModel @Inject constructor(
     }
 
     private fun directorySize(file: java.io.File?): Long {
-        if (file == null || !file.exists()) return 0L
+        if (file == null || !file.exists() || java.nio.file.Files.isSymbolicLink(file.toPath())) return 0L
         if (file.isFile) return file.length()
-        return file.listFiles()?.sumOf { child -> directorySize(child) } ?: 0L
+        return privateChildren(file).sumOf { child -> directorySize(child) }
+    }
+
+    private fun privateChildren(directory: java.io.File): List<java.io.File> = directory.listFiles().orEmpty().filterNot {
+        locations.profileId == com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID &&
+            ((directory == locations.filesDirectory && it.name in setOf("profiles", "shared-downloads")) ||
+                (directory == locations.cacheDirectory && it.name == "profiles"))
     }
 
     private fun bytesToMb(bytes: Long): String {

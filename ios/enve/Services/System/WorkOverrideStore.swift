@@ -3,7 +3,11 @@ import Foundation
 @MainActor
 final class WorkOverrideStore {
     static let shared = WorkOverrideStore()
-    private init() {}
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
 
     enum Override: Equatable {
         case mergeInto(String)
@@ -13,8 +17,8 @@ final class WorkOverrideStore {
     private static let key = "imagine.workOverrides.v1"
 
     private var raw: [String: String] {
-        get { (UserDefaults.standard.dictionary(forKey: Self.key) as? [String: String]) ?? [:] }
-        set { UserDefaults.standard.set(newValue, forKey: Self.key) }
+        get { (defaults.dictionary(forKey: Self.key) as? [String: String]) ?? [:] }
+        set { defaults.set(newValue, forKey: Self.key) }
     }
 
     var isEmpty: Bool { raw.isEmpty }
@@ -61,8 +65,8 @@ final class WorkOverrideStore {
     private static let dismissedKey = "imagine.workSuggestionsDismissed.v1"
 
     private var dismissed: Set<String> {
-        get { Set(UserDefaults.standard.stringArray(forKey: Self.dismissedKey) ?? []) }
-        set { UserDefaults.standard.set(Array(newValue), forKey: Self.dismissedKey) }
+        get { Set(defaults.stringArray(forKey: Self.dismissedKey) ?? []) }
+        set { defaults.set(Array(newValue), forKey: Self.dismissedKey) }
     }
 
     func isDismissed(suggestionId id: String) -> Bool { dismissed.contains(id) }

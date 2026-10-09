@@ -90,7 +90,7 @@ public final class AudiobookshelfService: @unchecked Sendable {
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
 
-    private static let persistedDeviceId: String = {
+    static let persistedDeviceId: String = {
         let key = "absDeviceId"
         if let existing = UserDefaults.standard.string(forKey: key) { return existing }
         let newId = UUID().uuidString

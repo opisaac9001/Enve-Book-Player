@@ -1,5 +1,6 @@
 package com.enve.app.data.sync
 
+import com.enve.core.data.util.runSuspendCatching
 import android.util.Log
 import com.enve.core.data.local.BookCacheDao
 import com.enve.core.data.local.toBook
@@ -32,7 +33,7 @@ class GrimmoryAudiobookSyncStrategy @Inject constructor(
         lastSyncAtMs = now
 
         val limit = if (launchOptimized) 12 else 40
-        val cached = runCatching { bookCacheDao.getInProgressOnce(limit = limit) }
+        val cached = runSuspendCatching { bookCacheDao.getInProgressOnce(limit = limit) }
             .getOrDefault(emptyList())
             .filter { it.source == BookSource.GRIMMORY.name && it.mediaType == AppMediaType.AUDIOBOOK.name }
 
@@ -51,14 +52,14 @@ class GrimmoryAudiobookSyncStrategy @Inject constructor(
         if (cached.isEmpty() && serverOnly.isEmpty()) return ProviderSyncResult.ZERO
 
         val candidates = LinkedHashMap<String, com.enve.core.data.model.Book>()
-        cached.forEach { candidates[it.id] = it.toBook() }
-        serverOnly.forEach { candidates.putIfAbsent(it.id, it) }
+        cached.map { it.toBook() }.forEach { candidates[it.uniqueKey] = it }
+        serverOnly.forEach { candidates.putIfAbsent(it.uniqueKey, it) }
 
         var pulled = 0
         for (book in candidates.values) {
             val snapshot = aggregatorRepository.fetchAudiobookProgress(book).getOrNull() ?: continue
 
-            val localRow = bookCacheDao.getById(book.id)
+            val localRow = bookCacheDao.getByIdAndConnection(book.id, book.connectionId)
             val decision = ProgressResolutionPolicy.resolve(
                 localPercentage = localRow?.readProgress ?: 0f,
                 localUpdatedAt = localRow?.lastReadTime?.takeIf { it > 0L },
@@ -67,14 +68,20 @@ class GrimmoryAudiobookSyncStrategy @Inject constructor(
             if (!snapshot.finished && decision != ProgressResolutionPolicy.Decision.PULL) continue
             if (snapshot.finished && decision == ProgressResolutionPolicy.Decision.PUSH) continue
 
-            runCatching {
+            runSuspendCatching {
                 val nowMs = System.currentTimeMillis()
 
                 if (snapshot.finished) {
-                    bookCacheDao.updateFinishedStatusById(bookId = book.id, finished = true, nowMs = nowMs)
-                } else {
-                    bookCacheDao.updateUnifiedProgressById(
+                    bookCacheDao.updateFinishedStatus(
                         bookId = book.id,
+                        connectionId = book.connectionId,
+                        finished = true,
+                        nowMs = nowMs,
+                    )
+                } else {
+                    bookCacheDao.updateUnifiedProgress(
+                        bookId = book.id,
+                        connectionId = book.connectionId,
                         progress = snapshot.percentage,
                         currentTimeSec = snapshot.positionMs?.let { it / 1000 } ?: -1L,
                         locatorJson = null,

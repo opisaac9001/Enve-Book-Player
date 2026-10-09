@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct AdminGrimmoryScreen: View {
+    private let profileSession: ProfileSession
     let connection: ServerConnection
     @State private var model: AdminGrimmoryModel
 
@@ -8,9 +9,10 @@ struct AdminGrimmoryScreen: View {
     @Environment(\.mantelInset) private var mantelInset
     @State private var showingAddUser = false
 
-    init(connection: ServerConnection) {
+    init(connection: ServerConnection, profileSession: ProfileSession = .owner) {
+        self.profileSession = profileSession
         self.connection = connection
-        _model = State(initialValue: AdminGrimmoryModel(connection: connection))
+        _model = State(initialValue: AdminGrimmoryModel(connection: connection, profileSession: profileSession))
     }
 
     var body: some View {
@@ -126,7 +128,7 @@ struct AdminGrimmoryScreen: View {
                 title: "Your reading",
                 caption: "Trends, hours, favorites"
             ) {
-                AdminGrimmoryStatsScreen(connection: connection)
+                AdminGrimmoryStatsScreen(connection: connection, profileSession: profileSession)
             }
             AdminLinkRow(
                 systemImage: "tray.full",

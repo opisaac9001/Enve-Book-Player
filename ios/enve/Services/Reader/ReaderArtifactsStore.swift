@@ -136,6 +136,10 @@ final class ReaderArtifactsStore {
         }
     }
 
+    func clearAnnotations(bookId: String) {
+        userDefaults.removeObject(forKey: Self.annotationsPrefix + bookId)
+    }
+
     func loadAnnotations(bookId: String) -> [ReaderAnnotation] {
         guard let data = userDefaults.data(forKey: Self.annotationsPrefix + bookId),
             let annotations = try? JSONDecoder().decode([ReaderAnnotation].self, from: data)

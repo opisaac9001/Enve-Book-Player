@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.6 — 2026-10-09
+
+- Added separate user profiles with isolated settings, history, downloads, and sync state.
+- Fixed stale sync work and profile switches affecting the wrong user.
+- Improved provider integrations, reader interactions, and streamed-comic handling.
+- Removed unused services and simplified shared ownership of playback and downloads.
+- Expanded regression tests and contributor setup checks.
+
 ## 1.2.5 — 2026-09-28
 
 Changes since the iOS 1.2.3 public snapshot.
@@ -13,9 +21,19 @@ Changes since the iOS 1.2.3 public snapshot.
 - KOReader links now detect replaced EPUB files and update their hashes.
 - Expanded OPDS browsing, downloads, sign-in, and reading-progress support.
 - Fixed provider metadata and progress handling for Komga, Kavita, Grimmory, Jellyfin, Emby, and TorBox.
+- Listening on downloaded or offline Audiobookshelf books now counts in Audiobookshelf's listening stats, and listening time is no longer lost when a sync fails.
+- Jellyfin, Emby, Plex, and Silo show Enve in Now Playing and record listening in their play history. Jellyfin no longer resets positions early in an audiobook, and other apps resume multi-file books on the right file.
+- Kavita reading statistics load again, and finishing a book reaches its last page so Kavita counts it.
+- Grimmory receives one session per stretch of listening with active reading time and the correct file type. BookOrbit sessions also use active time.
+- Plex progress is saved per track on both platforms, so iOS and Android share positions.
 
 ### iOS
 
+- Added cards to Continue Reading and Continue Listening with progress, chapter, and time or page, plus a matching top card with Read and Listen buttons for paired books.
+- The Stats Hub loads quickly on large Grimmory libraries, shows your own stats while servers respond, and no longer counts listening twice.
+- Hardcover no longer creates a new read on every launch, keeps finish dates, and records audiobook time.
+- Fixed listening time reported at playback speed and the end of each session going unreported.
+- Fixed Journal days and best-day labels showing the previous day.
 - Added OneDrive connection support.
 - Fixed tvOS target membership and chapter handling for the new OneDrive source.
 - Quick Sync keeps the previous calibration when a new match scores worse. You can restore it from the match screen.

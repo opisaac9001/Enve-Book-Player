@@ -39,6 +39,8 @@ import com.enve.silo.dto.SiloLibrariesEnvelope
 import com.enve.silo.dto.SiloLibraryDto
 import com.enve.silo.dto.SiloPlaybackProgressRequest
 import com.enve.silo.dto.SiloPlaybackStartRequest
+import com.enve.silo.dto.SiloPlaybackStartResponse
+import com.enve.silo.dto.SiloPlaybackPlan
 import com.enve.silo.dto.SiloProgressStateDto
 import com.enve.silo.dto.SiloProgressSyncItem
 import com.enve.silo.dto.SiloProgressSyncRequest
@@ -63,6 +65,7 @@ import java.time.OffsetDateTime
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -97,6 +100,17 @@ internal fun siloNavigatorLocator(location: String?, progress: Double): String? 
     return """{"href":"","type":"application/xhtml+xml","locations":{"cfi":"$raw","progression":$bounded,"totalProgression":$bounded}}"""
 }
 
+internal fun SiloPlaybackStartResponse.audioPlan(): Pair<String, SiloPlaybackPlan> {
+    if (protocolVersion != 3) error("Silo returned an unsupported playback protocol")
+    if (outcome != "playable") error("Silo cannot play this audio: ${terminal?.reason ?: "no compatible route"}")
+    val plan = playbackPlan ?: error("Silo did not return a playback plan")
+    val id = sessionId?.takeIf { it.isNotBlank() } ?: error("Silo did not return a playback session")
+    if (plan.protocolVersion != 3 || plan.delivery != "original_http" || plan.stream.protocol != "http_progressive" || plan.stream.url.isBlank() || plan.timeline.timelineOffsetSeconds != 0.0) {
+        error("Silo returned an unsupported audio playback route")
+    }
+    return id to plan
+}
+
 @Singleton
 class SiloRepository @Inject constructor(
     private val api: SiloApi,
@@ -106,6 +120,7 @@ class SiloRepository @Inject constructor(
     private val json = Json { ignoreUnknownKeys = true; isLenient = true; encodeDefaults = true; explicitNulls = false }
     private val detailCache = ConcurrentHashMap<String, SiloItemDetailDto>()
     private val playbackSessions = ConcurrentHashMap<String, List<SiloPartSession>>()
+    private val pausedBooks = ConcurrentHashMap.newKeySet<String>()
 
     private data class SiloPartSession(
         val sessionId: String,
@@ -238,16 +253,16 @@ class SiloRepository @Inject constructor(
         val version = primaryVersion(detail) ?: error("No playable Silo file is available")
         val response = api.startPlayback(
             profileId = profileId,
-            request = SiloPlaybackStartRequest(fileId = version.fileId, profileId = profileId),
+            request = SiloPlaybackStartRequest(fileId = version.fileId, profileId = profileId, playbackAttemptId = UUID.randomUUID().toString()),
         )
-        val session = response.bodyOrThrow("Silo playback start failed")
-        val durationSec = (session.durationSeconds ?: version.duration?.toDouble() ?: detail.runtime?.toDouble() ?: 0.0)
+        val (sessionId, plan) = response.bodyOrThrow("Silo playback start failed").audioPlan()
+        val durationSec = (plan.source.durationSeconds ?: version.duration?.toDouble() ?: detail.runtime?.toDouble() ?: 0.0)
             .roundToLong()
             .coerceAtLeast(0L)
         playbackSessions[sessionKey(book)] = listOf(
-            SiloPartSession(session.sessionId, version.fileId, startOffsetSec = 0L, durationSec = durationSec),
+            SiloPartSession(sessionId, version.fileId, startOffsetSec = 0L, durationSec = durationSec),
         )
-        val streamUrl = absoluteUrl(session.streamUrl, addTokenForStream = true)
+        val streamUrl = absoluteUrl(plan.stream.url, addTokenForStream = true)
         val track = AudioTrack(
             index = 0,
             fileName = version.fileName ?: book.title,
@@ -259,10 +274,10 @@ class SiloRepository @Inject constructor(
             contentUrl = streamUrl,
         )
         ProviderPlaybackSession(
-            sessionId = session.sessionId,
+            sessionId = sessionId,
             audioTracks = listOf(track),
             chapters = chaptersFrom(version, durationSec, isAudiobook = true),
-            serverCurrentTimeSec = session.position?.roundToLong(),
+            serverCurrentTimeSec = plan.timeline.sourceStartSeconds.roundToLong(),
         )
     }
 
@@ -277,15 +292,17 @@ class SiloRepository @Inject constructor(
         var offsetSec = 0L
 
         parts.forEachIndexed { index, part ->
-            val session = api.startPlayback(
+            val (sessionId, plan) = api.startPlayback(
                 profileId = profileId,
                 request = SiloPlaybackStartRequest(
                     fileId = part.fileId,
                     profileId = profileId,
-                    disableProgressPersistence = true,
+                    playbackAttemptId = UUID.randomUUID().toString(),
+                    progressPersistence = "client",
+                    startPosition = 0.0,
                 ),
-            ).bodyOrThrow("Silo playback start failed")
-            val partDurationSec = (session.durationSeconds ?: part.duration?.toDouble() ?: 0.0)
+            ).bodyOrThrow("Silo playback start failed").audioPlan()
+            val partDurationSec = (plan.source.durationSeconds ?: part.duration?.toDouble() ?: 0.0)
                 .roundToLong()
                 .coerceAtLeast(0L)
             tracks += AudioTrack(
@@ -296,10 +313,10 @@ class SiloRepository @Inject constructor(
                 fileSizeBytes = part.fileSize ?: 0L,
                 cumulativeStartMs = offsetSec * 1000L,
                 fileId = part.fileId.toString(),
-                contentUrl = absoluteUrl(session.streamUrl, addTokenForStream = true),
+                contentUrl = absoluteUrl(plan.stream.url, addTokenForStream = true),
             )
-            sessions += SiloPartSession(session.sessionId, part.fileId, offsetSec, partDurationSec)
-            if (index == 0) serverPositionSec = session.position?.roundToLong()
+            sessions += SiloPartSession(sessionId, part.fileId, offsetSec, partDurationSec)
+            if (index == 0) serverPositionSec = 0L
             offsetSec += partDurationSec
         }
 
@@ -312,11 +329,24 @@ class SiloRepository @Inject constructor(
         )
     }
 
-    suspend fun syncAudiobookProgress(book: Book, currentTimeSec: Long, progressFraction: Float): Result<Unit> = runSuspendCatching {
+    suspend fun setPlaybackPaused(book: Book, positionSec: Long, paused: Boolean): Result<Unit> = runSuspendCatching {
+        if (paused) pausedBooks += sessionKey(book) else pausedBooks -= sessionKey(book)
         val sessions = playbackSessions[sessionKey(book)] ?: return@runSuspendCatching
+        val position = positionSec.coerceAtLeast(0L)
+        val active = sessions.lastOrNull { position >= it.startOffsetSec } ?: sessions.first()
+        val localPosition = if (sessions.size > 1) (position - active.startOffsetSec).coerceIn(0L, active.durationSec) else position
+        api.updatePlaybackProgress(ensureProfile(), active.sessionId, SiloPlaybackProgressRequest(localPosition.toDouble(), paused))
+    }
+
+    suspend fun syncAudiobookProgress(book: Book, currentTimeSec: Long, progressFraction: Float): Result<Unit> = runSuspendCatching {
         val profileId = ensureProfile()
         val position = currentTimeSec.coerceAtLeast(0L)
-        val isPaused = progressFraction >= FINISHED_PROGRESS_THRESHOLD
+        val sessions = playbackSessions[sessionKey(book)]
+        if (sessions == null) {
+            syncProgressWithoutSession(profileId, book, position)
+            return@runSuspendCatching
+        }
+        val isPaused = sessionKey(book) in pausedBooks
 
         if (sessions.size > 1) {
 
@@ -332,23 +362,7 @@ class SiloRepository @Inject constructor(
                 throw e
             } catch (_: Exception) {
             }
-            val duration = maxOf(book.duration, position)
-            val result = api.syncProgress(
-                profileId = profileId,
-                request = SiloProgressSyncRequest(
-                    items = listOf(
-                        SiloProgressSyncItem(
-                            mediaItemId = book.id,
-                            position = position.toDouble(),
-                            duration = duration.toDouble(),
-                            updatedAt = Instant.now().toString(),
-                        ),
-                    ),
-                ),
-            ).bodyOrThrow("Silo audiobook progress sync failed")
-            if (result.results.none { it.mediaItemId == book.id && it.status == "ok" }) {
-                error("Silo rejected the progress update")
-            }
+            syncProgressWithoutSession(profileId, book, position)
             return@runSuspendCatching
         }
 
@@ -356,18 +370,50 @@ class SiloRepository @Inject constructor(
         val request = SiloPlaybackProgressRequest(position.toDouble(), isPaused)
         var response = api.updatePlaybackProgress(profileId, single.sessionId, request)
         if (response.code() == 404) {
-
-            val restarted = api.startPlayback(
-                profileId = profileId,
-                request = SiloPlaybackStartRequest(fileId = single.fileId, profileId = profileId),
-            ).bodyOrThrow("Silo playback session restart failed")
-            playbackSessions[sessionKey(book)] = listOf(single.copy(sessionId = restarted.sessionId))
-            response = api.updatePlaybackProgress(profileId, restarted.sessionId, request)
+            try {
+                val restarted = api.startPlayback(
+                    profileId = profileId,
+                    request = SiloPlaybackStartRequest(fileId = single.fileId, profileId = profileId, playbackAttemptId = UUID.randomUUID().toString(), startPosition = position.toDouble()),
+                ).bodyOrThrow("Silo playback session restart failed")
+                val (restartedId, _) = restarted.audioPlan()
+                playbackSessions[sessionKey(book)] = listOf(single.copy(sessionId = restartedId))
+                response = api.updatePlaybackProgress(profileId, restartedId, request)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                syncProgressWithoutSession(profileId, book, position)
+                return@runSuspendCatching
+            }
+        }
+        if (response.code() == 404) {
+            syncProgressWithoutSession(profileId, book, position)
+            return@runSuspendCatching
         }
         if (!response.isSuccessful) error(httpMessage("Silo audiobook progress sync failed", response))
     }
 
+    // Used for multi-part books and when no playback session is held (after a restart or offline start).
+    private suspend fun syncProgressWithoutSession(profileId: String, book: Book, positionSec: Long) {
+        val result = api.syncProgress(
+            profileId = profileId,
+            request = SiloProgressSyncRequest(
+                items = listOf(
+                    SiloProgressSyncItem(
+                        mediaItemId = book.id,
+                        position = positionSec.toDouble(),
+                        duration = maxOf(book.duration, positionSec).toDouble(),
+                        updatedAt = Instant.now().toString(),
+                    ),
+                ),
+            ),
+        ).bodyOrThrow("Silo audiobook progress sync failed")
+        if (result.results.none { it.mediaItemId == book.id && it.status == "ok" }) {
+            error("Silo rejected the progress update")
+        }
+    }
+
     suspend fun stopPlaybackSession(book: Book): Result<Unit> = runSuspendCatching {
+        pausedBooks -= sessionKey(book)
         val sessions = playbackSessions.remove(sessionKey(book)) ?: return@runSuspendCatching
         val profileId = ensureProfile()
         sessions.forEach { session ->
@@ -759,7 +805,10 @@ class SiloRepository @Inject constructor(
             "${serverUrl().trimEnd('/')}${if (value.startsWith("/")) value else "/$value"}"
         }
         if (!addTokenForStream) return absolute
-        val path = runCatching { URI(absolute).path }.getOrNull().orEmpty()
+        val streamUri = runCatching { URI(absolute) }.getOrNull() ?: return absolute
+        val serverUri = runCatching { URI(serverUrl()) }.getOrNull() ?: return absolute
+        if (streamUri.scheme != serverUri.scheme || streamUri.authority != serverUri.authority) return absolute
+        val path = streamUri.path.orEmpty()
         if (!path.contains("/stream/") && path != "/api/v1/stream") return absolute
         if (absolute.contains("token=")) return absolute
         val token = currentConnection()?.id?.let { vault.get(CredentialVault.accessTokenKey(it)) }

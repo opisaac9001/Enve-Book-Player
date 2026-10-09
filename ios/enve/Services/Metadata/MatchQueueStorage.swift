@@ -4,11 +4,13 @@ import Logging
 final class MatchQueueStorage: @unchecked Sendable {
     static let shared = MatchQueueStorage()
 
-    private let userDefaults = UserDefaults.standard
+    private let userDefaults: UserDefaults
     private let matchQueueKey = "matchQueue"
     private let queue = DispatchQueue(label: "com.enve.matchQueueStorage")
 
-    private init() {}
+    init(defaults: UserDefaults = .standard) {
+        userDefaults = defaults
+    }
 
     func readMatchQueue() -> MatchQueue {
         queue.sync {

@@ -4,11 +4,13 @@ import CryptoKit
 import SwiftUI
 
 final class ValidatedConnectionLoginDelegate: UnifiedLoginDelegate {
+    private unowned let profileSession: ProfileSession
     private let appState: AppState
     private let providerType: ProviderType
     private let defaultName: String
 
-    init(appState: AppState, providerType: ProviderType, defaultName: String) {
+    init(appState: AppState, providerType: ProviderType, defaultName: String, profileSession: ProfileSession = .owner) {
+        self.profileSession = profileSession
         self.appState = appState
         self.providerType = providerType
         self.defaultName = defaultName
@@ -66,7 +68,7 @@ final class ValidatedConnectionLoginDelegate: UnifiedLoginDelegate {
     }
 
     func fetchLibraries(connection: ServerConnection) async throws -> [LibraryMetadata] {
-        guard let provider = PluginRegistry.shared.makeLibraryProvider(for: connection) else {
+        guard let provider = profileSession.registry.makeLibraryProvider(for: connection) else {
             return []
         }
         return try await provider.fetchLibraries().map { library in
@@ -122,10 +124,11 @@ final class ValidatedConnectionLoginDelegate: UnifiedLoginDelegate {
 }
 
 final class GrimmoryLoginDelegate: UnifiedLoginDelegate {
+    private unowned let profileSession: ProfileSession
     private let appState: AppState
-    @MainActor private var grimmoryAuthSession: ASWebAuthenticationSession?
 
-    init(appState: AppState) {
+    init(appState: AppState, profileSession: ProfileSession = .owner) {
+        self.profileSession = profileSession
         self.appState = appState
     }
 
@@ -235,7 +238,7 @@ final class GrimmoryLoginDelegate: UnifiedLoginDelegate {
         let finalConnection = try await validatedConnection(from: tempConnection)
 
         if let refreshToken = response.refreshToken, !refreshToken.isEmpty {
-            KeychainHelper.shared.set(refreshToken, key: "booklore_refresh_\(finalConnection.id.uuidString)")
+            profileSession.legacyKeychain.set(refreshToken, key: "booklore_refresh_\(finalConnection.id.uuidString)")
         }
 
         return finalConnection
@@ -275,31 +278,7 @@ final class GrimmoryLoginDelegate: UnifiedLoginDelegate {
 
     @MainActor
     private func presentGrimmoryAuthentication(url: URL, callbackScheme: String) async throws -> URL {
-        try await withCheckedThrowingContinuation { continuation in
-            let session = ASWebAuthenticationSession(url: url, callbackURLScheme: callbackScheme) { callbackURL, error in
-                if let error {
-                    let authErr = error as? ASWebAuthenticationSessionError
-                    if authErr?.code == .canceledLogin {
-                        continuation.resume(throwing: OAuthError.userCancelled)
-                    } else {
-                        continuation.resume(throwing: OAuthError.networkError(error))
-                    }
-                    return
-                }
-                guard let callbackURL else {
-                    continuation.resume(throwing: OAuthError.invalidResponse)
-                    return
-                }
-                continuation.resume(returning: callbackURL)
-            }
-            session.presentationContextProvider = OAuthManager.shared
-            session.prefersEphemeralWebBrowserSession = false
-            if session.start() {
-                grimmoryAuthSession = session
-            } else {
-                continuation.resume(throwing: OAuthError.authorizationFailed("Failed to start authentication session"))
-            }
-        }
+        try await profileSession.oauth.browserCallback(authURL: url, callbackScheme: callbackScheme)
     }
 
     private func fetchGrimmoryPublicSettings(serverURL: String, customHeaders: [String: String]?) async throws -> GrimmoryPublicSettings {
@@ -311,7 +290,7 @@ final class GrimmoryLoginDelegate: UnifiedLoginDelegate {
         request.timeoutInterval = 30
         applyHeaders(customHeaders, to: &request)
 
-        let (data, response) = try await InsecureURLSession.shared.data(for: request)
+        let (data, response) = try await profileSession.networkSession.data(for: request)
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             throw OAuthError.authorizationFailed("Failed to fetch Grimmory OIDC settings.")
         }
@@ -328,7 +307,7 @@ final class GrimmoryLoginDelegate: UnifiedLoginDelegate {
         request.timeoutInterval = 30
         applyHeaders(customHeaders, to: &request)
 
-        let (data, response) = try await InsecureURLSession.shared.data(for: request)
+        let (data, response) = try await profileSession.networkSession.data(for: request)
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             throw OAuthError.authorizationFailed("Failed to start Grimmory OIDC login.")
         }
@@ -353,7 +332,7 @@ final class GrimmoryLoginDelegate: UnifiedLoginDelegate {
         }
 
         let discoveryURL = URL(string: "\(issuer)/.well-known/openid-configuration")!
-        let (discoveryData, _) = try await InsecureURLSession.shared.data(for: URLRequest(url: discoveryURL))
+        let (discoveryData, _) = try await profileSession.networkSession.data(for: URLRequest(url: discoveryURL))
         let discovery = try JSONDecoder().decode(GrimmoryOIDCDiscoveryDocument.self, from: discoveryData)
 
         guard var components = URLComponents(string: discovery.authorizationEndpoint) else {
@@ -408,7 +387,7 @@ final class GrimmoryLoginDelegate: UnifiedLoginDelegate {
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await InsecureURLSession.shared.data(for: request)
+        let (data, response) = try await profileSession.networkSession.data(for: request)
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             let message = String(data: data, encoding: .utf8) ?? "Authentication failed"
             throw OAuthError.authorizationFailed(message)
@@ -428,7 +407,7 @@ final class GrimmoryLoginDelegate: UnifiedLoginDelegate {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         applyHeaders(customHeaders, to: &request)
 
-        let (data, response) = try await InsecureURLSession.shared.data(for: request)
+        let (data, response) = try await profileSession.networkSession.data(for: request)
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             return nil
         }
@@ -506,10 +485,11 @@ private enum GrimmoryLoginError: LocalizedError {
 }
 
 final class BookOrbitLoginDelegate: UnifiedLoginDelegate {
+    private unowned let profileSession: ProfileSession
     private let appState: AppState
-    @MainActor private var bookOrbitAuthSession: ASWebAuthenticationSession?
 
-    init(appState: AppState) {
+    init(appState: AppState, profileSession: ProfileSession = .owner) {
+        self.profileSession = profileSession
         self.appState = appState
     }
 
@@ -545,7 +525,7 @@ final class BookOrbitLoginDelegate: UnifiedLoginDelegate {
         let codeVerifier = randomPKCEVerifier()
         let codeChallenge = pkceChallenge(from: codeVerifier)
         let nonce = randomPKCEVerifier(length: 32)
-        let redirectURI = oidcRedirectURI(for: normalized)
+        let redirectURI = AppAuthRedirectURI.bookOrbit
         let authURL = try buildOIDCAuthURL(
             authorizationEndpoint: stateResponse.authorizationEndpoint,
             provider: provider,
@@ -555,14 +535,23 @@ final class BookOrbitLoginDelegate: UnifiedLoginDelegate {
             nonce: nonce
         )
 
-        let callbackURL = try await presentAuthentication(url: authURL, callbackScheme: URL(string: redirectURI)?.scheme ?? "https")
+        let callbackURL = try await presentAuthentication(
+            url: authURL,
+            callbackScheme: AppAuthRedirectURI.bookOrbitScheme
+        )
         guard let callbackComponents = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false) else {
+            throw OAuthError.invalidResponse
+        }
+        guard callbackComponents.scheme == AppAuthRedirectURI.bookOrbitScheme,
+            callbackComponents.host == "oauth2-callback",
+            callbackComponents.path.isEmpty
+        else {
             throw OAuthError.invalidResponse
         }
         if let authError = callbackComponents.queryItems?.first(where: { $0.name == "error" })?.value {
             throw OAuthError.authorizationFailed(authError)
         }
-        guard callbackURL.absoluteString.hasPrefix(redirectURI),
+        guard callbackComponents.queryItems?.first(where: { $0.name == "state" })?.value == stateResponse.state,
             let code = callbackComponents.queryItems?.first(where: { $0.name == "code" })?.value
         else {
             throw OAuthError.invalidResponse
@@ -592,7 +581,7 @@ final class BookOrbitLoginDelegate: UnifiedLoginDelegate {
         let finalConnection = try await validatedConnection(from: tempConnection)
 
         if let refreshToken = exchanged.refreshToken, !refreshToken.isEmpty {
-            KeychainHelper.shared.set(refreshToken, key: "bookorbit_refresh_\(finalConnection.id.uuidString)")
+            profileSession.legacyKeychain.set(refreshToken, key: "bookorbit_refresh_\(finalConnection.id.uuidString)")
         }
 
         return finalConnection
@@ -624,10 +613,6 @@ final class BookOrbitLoginDelegate: UnifiedLoginDelegate {
         return value
     }
 
-    private func oidcRedirectURI(for serverURL: String) -> String {
-        serverURL + AppAuthRedirectURI.bookOrbitCallbackPath
-    }
-
     private func fetchPublicOIDCProvider(serverURL: String, customHeaders: [String: String]?) async throws -> BookOrbitOIDCProvider {
         guard let url = URL(string: "\(serverURL)/api/v1/app-settings/oidc/providers/public") else {
             throw ProviderError.invalidURL
@@ -638,7 +623,7 @@ final class BookOrbitLoginDelegate: UnifiedLoginDelegate {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         applyHeaders(customHeaders, to: &request)
 
-        let (data, response) = try await InsecureURLSession.shared.data(for: request)
+        let (data, response) = try await profileSession.networkSession.data(for: request)
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             throw OAuthError.authorizationFailed("Failed to fetch BookOrbit SSO providers.")
         }
@@ -667,7 +652,7 @@ final class BookOrbitLoginDelegate: UnifiedLoginDelegate {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         applyHeaders(customHeaders, to: &request)
 
-        let (data, response) = try await InsecureURLSession.shared.data(for: request)
+        let (data, response) = try await profileSession.networkSession.data(for: request)
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             throw OAuthError.authorizationFailed("Failed to start BookOrbit SSO login.")
         }
@@ -706,31 +691,7 @@ final class BookOrbitLoginDelegate: UnifiedLoginDelegate {
 
     @MainActor
     private func presentAuthentication(url: URL, callbackScheme: String) async throws -> URL {
-        try await withCheckedThrowingContinuation { continuation in
-            let session = ASWebAuthenticationSession(url: url, callbackURLScheme: callbackScheme) { callbackURL, error in
-                if let error {
-                    let authErr = error as? ASWebAuthenticationSessionError
-                    if authErr?.code == .canceledLogin {
-                        continuation.resume(throwing: OAuthError.userCancelled)
-                    } else {
-                        continuation.resume(throwing: OAuthError.networkError(error))
-                    }
-                    return
-                }
-                guard let callbackURL else {
-                    continuation.resume(throwing: OAuthError.invalidResponse)
-                    return
-                }
-                continuation.resume(returning: callbackURL)
-            }
-            session.presentationContextProvider = OAuthManager.shared
-            session.prefersEphemeralWebBrowserSession = false
-            if session.start() {
-                bookOrbitAuthSession = session
-            } else {
-                continuation.resume(throwing: OAuthError.authorizationFailed("Failed to start authentication session"))
-            }
-        }
+        try await profileSession.oauth.browserCallback(authURL: url, callbackScheme: callbackScheme)
     }
 
     private func exchangeOIDCCode(
@@ -762,7 +723,7 @@ final class BookOrbitLoginDelegate: UnifiedLoginDelegate {
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await InsecureURLSession.shared.data(for: request)
+        let (data, response) = try await profileSession.networkSession.data(for: request)
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             let message = String(data: data, encoding: .utf8) ?? "Authentication failed"
             throw OAuthError.authorizationFailed(message)
@@ -827,6 +788,11 @@ final class BookOrbitLoginDelegate: UnifiedLoginDelegate {
 }
 
 final class EmbyLoginDelegate: UnifiedLoginDelegate {
+    private unowned let profileSession: ProfileSession
+    init(profileSession: ProfileSession = .owner) {
+        self.profileSession = profileSession
+    }
+
     func authenticate(
         serverURL: String,
         username: String,
@@ -835,7 +801,7 @@ final class EmbyLoginDelegate: UnifiedLoginDelegate {
     ) async throws -> ServerConnection {
         let normalizedURL = EmbyProvider.normalizeServerURL(serverURL)
 
-        let token = try await EmbyProvider.shared.authenticate(
+        let token = try await profileSession.embyProvider.authenticate(
             serverURL: normalizedURL,
             username: username,
             password: password
@@ -854,7 +820,7 @@ final class EmbyLoginDelegate: UnifiedLoginDelegate {
             selectedLibraryIds: nil
         )
 
-        let embyService = EmbyService.shared
+        let embyService = profileSession.embyService
         _ = try await embyService.validateToken(backend: backend)
         let currentUser = try await embyService.getCurrentUser(backend: backend)
 
@@ -886,13 +852,18 @@ final class EmbyLoginDelegate: UnifiedLoginDelegate {
             selectedLibraryIds: nil
         )
         let userId = connection.userId ?? ""
-        let libraries = try await EmbyService.shared.getLibraries(backend: backend, userId: userId)
+        let libraries = try await profileSession.embyService.getLibraries(backend: backend, userId: userId)
         let audioLibraries = libraries.filter { $0.type == .audiobooks || $0.type == .books }
         return audioLibraries.isEmpty ? libraries : audioLibraries
     }
 }
 
 final class JellyfinLoginDelegate: UnifiedLoginDelegate {
+    private unowned let profileSession: ProfileSession
+    init(profileSession: ProfileSession = .owner) {
+        self.profileSession = profileSession
+    }
+
     func authenticate(
         serverURL: String,
         username: String,
@@ -925,7 +896,7 @@ final class JellyfinLoginDelegate: UnifiedLoginDelegate {
         let normalizedURL = normalizeURL(serverURL)
         let headers = customHeaders ?? [:]
 
-        let enabled = try await JellyfinQuickConnectService.shared.isQuickConnectEnabled(
+        let enabled = try await profileSession.jellyfinQuickConnect.isQuickConnectEnabled(
             serverURL: normalizedURL,
             customHeaders: headers
         )
@@ -937,7 +908,7 @@ final class JellyfinLoginDelegate: UnifiedLoginDelegate {
             )
         }
 
-        let result = try await JellyfinQuickConnectService.shared.initiateQuickConnect(
+        let result = try await profileSession.jellyfinQuickConnect.initiateQuickConnect(
             serverURL: normalizedURL,
             customHeaders: headers
         )
@@ -948,14 +919,14 @@ final class JellyfinLoginDelegate: UnifiedLoginDelegate {
         let normalizedURL = normalizeURL(serverURL)
         let headers = customHeaders ?? [:]
 
-        let approvedSecret = try await JellyfinQuickConnectService.shared.pollForAuthentication(
+        let approvedSecret = try await profileSession.jellyfinQuickConnect.pollForAuthentication(
             secret: secret,
             serverURL: normalizedURL,
             customHeaders: headers,
             cancellationCheck: { Task.isCancelled }
         )
 
-        let authResult = try await JellyfinQuickConnectService.shared.authenticateWithQuickConnect(
+        let authResult = try await profileSession.jellyfinQuickConnect.authenticateWithQuickConnect(
             secret: approvedSecret,
             serverURL: normalizedURL,
             customHeaders: headers
@@ -998,7 +969,7 @@ final class JellyfinLoginDelegate: UnifiedLoginDelegate {
         request.setValue(authHeader, forHTTPHeaderField: "X-Emby-Authorization")
         request.setValue(token, forHTTPHeaderField: "X-Emby-Token")
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await profileSession.networkSession.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             throw NSError(domain: "Jellyfin", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to fetch libraries"])
         }
@@ -1068,7 +1039,7 @@ final class JellyfinLoginDelegate: UnifiedLoginDelegate {
 
         request.httpBody = try JSONSerialization.data(withJSONObject: ["Username": username, "Pw": password])
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await profileSession.networkSession.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw NSError(domain: "Jellyfin", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])
         }
@@ -1108,7 +1079,11 @@ final class JellyfinLoginDelegate: UnifiedLoginDelegate {
 }
 
 final class AudiobookshelfLoginDelegate: UnifiedLoginDelegate {
-    @MainActor private var absAuthSession: ASWebAuthenticationSession?
+    private unowned let profileSession: ProfileSession
+    init(profileSession: ProfileSession = .owner) {
+        self.profileSession = profileSession
+    }
+
 
     func authenticate(
         serverURL: String,
@@ -1116,7 +1091,7 @@ final class AudiobookshelfLoginDelegate: UnifiedLoginDelegate {
         password: String,
         customHeaders: [String: String]?
     ) async throws -> ServerConnection {
-        let user = try await AudiobookshelfService.shared.login(
+        let user = try await profileSession.absService.login(
             username: username,
             password: password,
             serverURL: serverURL,
@@ -1155,7 +1130,7 @@ final class AudiobookshelfLoginDelegate: UnifiedLoginDelegate {
         let callbackScheme = AppAuthRedirectURI.absScheme
         let redirectURI = AppAuthRedirectURI.audiobookshelf
 
-        let preflight = try await AudiobookshelfService.shared.preflightOIDC(
+        let preflight = try await profileSession.absService.preflightOIDC(
             serverURL: serverURL,
             challenge: challenge,
             redirectURI: redirectURI,
@@ -1179,7 +1154,7 @@ final class AudiobookshelfLoginDelegate: UnifiedLoginDelegate {
         }
         let returnedState = cb.queryItems?.first(where: { $0.name == "state" })?.value
 
-        let user = try await AudiobookshelfService.shared.loginWithOIDC(
+        let user = try await profileSession.absService.loginWithOIDC(
             serverURL: serverURL,
             code: code,
             verifier: verifier,
@@ -1227,7 +1202,7 @@ final class AudiobookshelfLoginDelegate: UnifiedLoginDelegate {
         )
 
         if let refreshToken, !refreshToken.isEmpty {
-            KeychainHelper.shared.set(refreshToken, key: "abs_refresh_\(connection.id.uuidString)")
+            profileSession.legacyKeychain.set(refreshToken, key: "abs_refresh_\(connection.id.uuidString)")
         }
 
         return connection
@@ -1235,31 +1210,7 @@ final class AudiobookshelfLoginDelegate: UnifiedLoginDelegate {
 
     @MainActor
     private func presentOIDCAuth(url: URL, callbackScheme: String) async throws -> URL {
-        try await withCheckedThrowingContinuation { continuation in
-            let session = ASWebAuthenticationSession(url: url, callbackURLScheme: callbackScheme) { callbackURL, error in
-                if let error {
-                    let authErr = error as? ASWebAuthenticationSessionError
-                    if authErr?.code == .canceledLogin {
-                        continuation.resume(throwing: OAuthError.userCancelled)
-                    } else {
-                        continuation.resume(throwing: OAuthError.networkError(error))
-                    }
-                    return
-                }
-                guard let callbackURL else {
-                    continuation.resume(throwing: OAuthError.invalidResponse)
-                    return
-                }
-                continuation.resume(returning: callbackURL)
-            }
-            session.presentationContextProvider = OAuthManager.shared
-            session.prefersEphemeralWebBrowserSession = false
-            if session.start() {
-                absAuthSession = session
-            } else {
-                continuation.resume(throwing: OAuthError.authorizationFailed("Failed to start auth session"))
-            }
-        }
+        try await profileSession.oauth.browserCallback(authURL: url, callbackScheme: callbackScheme)
     }
 
     private func randomPKCEVerifier(length: Int = 64) -> String {
@@ -1281,7 +1232,11 @@ final class AudiobookshelfLoginDelegate: UnifiedLoginDelegate {
 }
 
 final class StorytellerLoginDelegate: UnifiedLoginDelegate {
-    @MainActor private var storytellerAuthSession: ASWebAuthenticationSession?
+    private unowned let profileSession: ProfileSession
+    init(profileSession: ProfileSession = .owner) {
+        self.profileSession = profileSession
+    }
+
 
     func authenticate(
         serverURL: String,
@@ -1290,12 +1245,12 @@ final class StorytellerLoginDelegate: UnifiedLoginDelegate {
         customHeaders: [String: String]?
     ) async throws -> ServerConnection {
         let conn = ServerConnection(name: "Storyteller", url: serverURL, type: .storyteller, username: username, password: password)
-        let provider = StorytellerProvider(connection: conn)
+        let provider = StorytellerProvider(connection: conn, profileSession: profileSession)
         let token = try await provider.loginWithCredentials(usernameOrEmail: username, password: password)
 
         var authedConn = conn
         authedConn.token = token
-        let authedProvider = StorytellerProvider(connection: authedConn)
+        let authedProvider = StorytellerProvider(connection: authedConn, profileSession: profileSession)
         let user = try await authedProvider.fetchCurrentUser()
 
         return ServerConnection(
@@ -1326,12 +1281,12 @@ final class StorytellerLoginDelegate: UnifiedLoginDelegate {
         }
 
         let conn = ServerConnection(name: "Storyteller", url: serverURL, type: .storyteller)
-        let provider = StorytellerProvider(connection: conn)
+        let provider = StorytellerProvider(connection: conn, profileSession: profileSession)
         let longToken = try await provider.exchangeAppToken(shortToken)
 
         var authedConn = conn
         authedConn.token = longToken
-        let authedProvider = StorytellerProvider(connection: authedConn)
+        let authedProvider = StorytellerProvider(connection: authedConn, profileSession: profileSession)
         let user = try await authedProvider.fetchCurrentUser()
 
         return ServerConnection(
@@ -1349,30 +1304,6 @@ final class StorytellerLoginDelegate: UnifiedLoginDelegate {
 
     @MainActor
     private func presentWebAuth(url: URL, callbackScheme: String) async throws -> URL {
-        try await withCheckedThrowingContinuation { continuation in
-            let session = ASWebAuthenticationSession(url: url, callbackURLScheme: callbackScheme) { callbackURL, error in
-                if let error {
-                    let authErr = error as? ASWebAuthenticationSessionError
-                    if authErr?.code == .canceledLogin {
-                        continuation.resume(throwing: OAuthError.userCancelled)
-                    } else {
-                        continuation.resume(throwing: OAuthError.networkError(error))
-                    }
-                    return
-                }
-                guard let callbackURL else {
-                    continuation.resume(throwing: OAuthError.invalidResponse)
-                    return
-                }
-                continuation.resume(returning: callbackURL)
-            }
-            session.presentationContextProvider = OAuthManager.shared
-            session.prefersEphemeralWebBrowserSession = false
-            if session.start() {
-                storytellerAuthSession = session
-            } else {
-                continuation.resume(throwing: OAuthError.authorizationFailed("Failed to start authentication session"))
-            }
-        }
+        try await profileSession.oauth.browserCallback(authURL: url, callbackScheme: callbackScheme)
     }
 }

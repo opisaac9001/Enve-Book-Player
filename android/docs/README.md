@@ -11,6 +11,7 @@ Reference material for the Android app. Start with the root files for anything t
 
 ## Architecture
 
+- [architecture/profiles-plan.md](architecture/profiles-plan.md) — proposed adult and child profiles, storage isolation, migration, switching, and verification
 - [architecture/module-boundaries.md](architecture/module-boundaries.md) — Gradle module layout, the UI/backend dependency wall, and the boot contract
 - [architecture/engine-api.md](architecture/engine-api.md) — the facade contract the Compose UI is allowed to call
 - [architecture/eink.md](architecture/eink.md) — e-ink detection, refresh policy, and how the design system degrades on EPD panels

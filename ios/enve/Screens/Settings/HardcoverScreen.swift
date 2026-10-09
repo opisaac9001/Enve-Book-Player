@@ -55,6 +55,7 @@ struct HardcoverScreen: View {
         .background(HearthBackground())
         .toolbar(.hidden, for: .navigationBar)
         .navigationBarBackButtonHidden(true)
+        .hearthInteractiveBack()
         .alert("Disconnect Hardcover?", isPresented: $confirmDisconnect) {
             Button("Disconnect", role: .destructive) {
                 disconnect()
@@ -134,7 +135,7 @@ struct HardcoverScreen: View {
                         false
                     }
                 if isAuthFailure {
-                    SettingsManager.shared.clearHardcoverAccess(reason: "authenticationFailed")
+                    SettingsManager.shared.hardcoverApiKey = nil
                     errorMessage = "Hardcover didn't accept that key."
                 } else {
                     errorMessage = "Couldn't verify the key: \(error.localizedDescription)"

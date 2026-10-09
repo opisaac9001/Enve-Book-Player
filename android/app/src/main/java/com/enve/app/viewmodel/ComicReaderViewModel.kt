@@ -126,6 +126,8 @@ class ComicReaderViewModel @Inject constructor(
     private val bookCacheDao: BookCacheDao,
     private val pageStreamingService: ServerPageStreamingService,
     private val directionOverrides: ComicReadingDirectionOverrideStore,
+    private val storageLocations: com.enve.core.data.local.ProfileStorageLocations,
+    private val database: com.enve.app.data.local.ReaderDatabase,
 ) : ViewModel() {
 
     private var bookDirectionOverride: ComicReadingDirection? = null
@@ -335,6 +337,26 @@ class ComicReaderViewModel @Inject constructor(
     fun openSettingsSheet() = _state.update { it.copy(showSettingsSheet = true) }
     fun closeSettingsSheet() = _state.update { it.copy(showSettingsSheet = false) }
 
+    suspend fun checkpointForProfileSwitch() {
+        val current = _state.value
+        if (bookId.isNotBlank() && current.pages.isNotEmpty()) {
+            val progress = (current.currentPage + 1).toFloat() / current.pages.size
+            val locator = buildPageLocator(format, current.currentPage)
+            val now = System.currentTimeMillis()
+            bookCacheDao.updateUnifiedProgress(bookId, bookConnectionId, progress, -1L, locator, now)
+            if (aggregatorRepository.serverSyncEnabled) database.pendingProgressPushDao().upsert(com.enve.core.data.local.PendingProgressPush(
+                bookId = bookId,
+                source = bookSource.name,
+                connectionKey = bookConnectionId.orEmpty(),
+                mediaType = com.enve.core.data.model.AppMediaType.EBOOK.name,
+                percentage = progress,
+                isFinished = progress >= 1f,
+                createdAt = now,
+            ))
+        }
+        endStreamingSession()
+    }
+
     fun syncProgress() {
         val current = _state.value
         if (bookId.isBlank() || current.pages.isEmpty()) return
@@ -413,7 +435,7 @@ class ComicReaderViewModel @Inject constructor(
         if (offlineFile != null && offlineFile.exists() && offlineFile.length() > 0L) {
             val pages = try {
                 loadOrExtractComicPages(
-                    cacheDir = appContext.cacheDir,
+                    cacheDir = storageLocations.cacheDirectory,
                     archive = offlineFile,
                     format = format,
                     onStatus = { status ->
@@ -485,7 +507,7 @@ class ComicReaderViewModel @Inject constructor(
 
         val pages = try {
             loadOrExtractComicPages(
-                cacheDir = appContext.cacheDir,
+                cacheDir = storageLocations.cacheDirectory,
                 archive = archive,
                 format = format,
                 onStatus = { status -> _state.update { it.copy(loadingText = status) } },
@@ -630,14 +652,14 @@ class ComicReaderViewModel @Inject constructor(
             primaryFileType = format.name,
         )
 
-        directionOverrides.direction(book.uniqueKey)
+        directionOverrides.direction(book.uniqueKey) {
+            aggregatorRepository.getComicReadingDirection(book)
+                .getOrNull()
+                ?.let(::mapProviderReadingDirection)
+                ?.name
+        }
             ?.let(::mapProviderReadingDirection)
             ?.let { return it }
-
-        val providerDirection = aggregatorRepository.getComicReadingDirection(book)
-            .getOrNull()
-            ?.let(::mapProviderReadingDirection)
-        if (providerDirection != null) return providerDirection
 
         return inferComicReadingDirection(book)
     }

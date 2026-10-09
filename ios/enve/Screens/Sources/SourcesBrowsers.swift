@@ -4,6 +4,8 @@ struct SourcesWebDAVBrowser: View {
     let server: WebDAVServerConfig
     let onSelectPaths: ([String]) -> Void
 
+    @Environment(\.profileSession) private var capturedSession
+    private var profileSession: ProfileSession { capturedSession ?? .owner }
     @Environment(\.hearth) private var hearth
     @Environment(\.dismiss) private var dismiss
 
@@ -167,7 +169,7 @@ struct SourcesWebDAVBrowser: View {
         error = nil
         Task {
             do {
-                let result = try await RemoteImportService.shared.listWebDAVDirectory(server: server, path: currentPath)
+                let result = try await profileSession.remoteImport.listWebDAVDirectory(server: server, path: currentPath)
                 entries = result.sorted {
                     if $0.isDirectory != $1.isDirectory { return $0.isDirectory }
                     return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending

@@ -38,7 +38,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.hilt.navigation.compose.hiltViewModel
+import com.enve.hearth.shell.profileViewModel
 import com.enve.app.ui.components.BookSourceIcon
 import com.enve.hearth.design.hearthDisplay
 import com.enve.app.ui.components.ScreenBackButton
@@ -64,7 +64,7 @@ private val SiloTint = Color(0xFF6F8F6A)
 fun SiloAdminHubScreen(
     onBack: () -> Unit,
     onConnectSilo: () -> Unit,
-    viewModel: SiloAdminViewModel = hiltViewModel(),
+    viewModel: SiloAdminViewModel = profileViewModel(),
 ) {
     val state by viewModel.state.collectAsState()
     val colors = EnveTheme.colors

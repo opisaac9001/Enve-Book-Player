@@ -9,7 +9,7 @@ import UIKit
 
 @Observable
 final class CloudKitProgressSync {
-    static let shared = CloudKitProgressSync()
+    static var shared: CloudKitProgressSync { ProfileSession.owner.cloudKit }
 
     @ObservationIgnored private let container: CKContainer
     @ObservationIgnored private let privateDatabase: CKDatabase
@@ -33,7 +33,22 @@ final class CloudKitProgressSync {
 
     private let cacheValidityDuration: TimeInterval = 300
 
-    private init() {
+    let isSyncEnabled: @MainActor () -> Bool
+
+    let isSyncAvailable: @MainActor () -> Bool
+    let userProgress: UserProgressStore
+    let bookProgress: BookProgressStore
+
+    init(
+        isSyncEnabled: @escaping @MainActor () -> Bool = { SyncCoordinator.shared.syncEnabled },
+        isSyncAvailable: @escaping @MainActor () -> Bool = { SyncCoordinator.shared.isCloudKitAvailable },
+        userProgress: UserProgressStore = .shared,
+        bookProgress: BookProgressStore = .shared
+    ) {
+        self.isSyncEnabled = isSyncEnabled
+        self.isSyncAvailable = isSyncAvailable
+        self.userProgress = userProgress
+        self.bookProgress = bookProgress
         self.container = CKContainer(identifier: "iCloud.com.enve.enve")
         self.privateDatabase = container.privateCloudDatabase
     }
@@ -686,7 +701,7 @@ final class CloudKitProgressSync {
     }
 
     func handlePushNotification() async {
-        guard SyncCoordinator.shared.syncEnabled else { return }
+        guard isSyncEnabled() else { return }
         guard await isAvailable() else { return }
 
         AppLogger.sync.info("Processing push notification...")

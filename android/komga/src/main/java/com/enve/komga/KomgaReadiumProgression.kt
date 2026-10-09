@@ -25,7 +25,6 @@ import java.time.OffsetDateTime
 
 internal object KomgaReadiumProgression {
     private const val XHTML = "application/xhtml+xml"
-    private val device = KomgaR2Device(id = "enve-android", name = "Enve")
     private val json = Json {
         ignoreUnknownKeys = true
         explicitNulls = false
@@ -88,11 +87,11 @@ internal object KomgaReadiumProgression {
         )
     }
 
-    fun encode(locator: KomgaR2Locator, modifiedAtMs: Long): String =
+    fun encode(locator: KomgaR2Locator, modifiedAtMs: Long, deviceId: String): String =
         json.encodeToString(
             KomgaR2Progression(
                 modified = Instant.ofEpochMilli(modifiedAtMs).toString(),
-                device = device,
+                device = KomgaR2Device(id = deviceId, name = "Enve"),
                 locator = locator,
             ),
         )

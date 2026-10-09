@@ -46,7 +46,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
-import androidx.hilt.navigation.compose.hiltViewModel
+import com.enve.hearth.shell.profileViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.enve.core.data.model.Book
 import com.enve.engine.opds.OpdsAcquisitionAction
@@ -78,7 +78,7 @@ fun HearthOpdsCatalogScreen(
     onAuthorize: (connectionId: String, methodType: String, authorizeUrl: String) -> Unit,
     onOpenExternal: (String) -> Unit,
 ) {
-    val vm: HearthOpdsCatalogViewModel = hiltViewModel()
+    val vm: HearthOpdsCatalogViewModel = profileViewModel()
     val state by vm.state.collectAsStateWithLifecycle()
     val palette = Hearth.palette
 

@@ -3,12 +3,13 @@ package com.enve.app.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.enve.core.data.model.AppMediaType
-import com.enve.core.data.model.Book
 import com.enve.core.data.local.PreferencesManager
+import com.enve.app.data.history.HistorySessionStore
 import com.enve.app.data.repository.GrimmoryRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlin.math.floor
 import kotlin.math.pow
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -50,6 +51,7 @@ data class Achievement(
 class StatsViewModel @Inject constructor(
     private val repository: GrimmoryRepository,
     private val prefs: PreferencesManager,
+    private val history: HistorySessionStore,
 ) : ViewModel() {
 
     private var hasLoaded = false
@@ -104,10 +106,12 @@ class StatsViewModel @Inject constructor(
     private suspend fun loadStats() {
         _state.update { it.copy(isLoading = true, error = null) }
 
-        runCatching {
+        try {
             val mediaType = _state.value.mediaType
             val fullLibrary = repository.getBooks(size = 500).getOrDefault(emptyList())
             val stats = repository.getUserStats().getOrNull()
+            val recorded = history.sessions.value.filter { it.mediaType == mediaType }
+            val weekAgoMs = System.currentTimeMillis() - 7L * 24 * 3_600_000
 
             val scopedBooks = when (mediaType) {
                 AppMediaType.AUDIOBOOK -> fullLibrary.filter { it.mediaType == AppMediaType.AUDIOBOOK }
@@ -115,13 +119,14 @@ class StatsViewModel @Inject constructor(
                 AppMediaType.PODCAST -> fullLibrary.filter { it.mediaType == AppMediaType.PODCAST }
             }
 
-            val computedHours = computeHours(scopedBooks, mediaType)
+            // Time comes from the sessions Enve recorded, not from how far into each book you are.
+            val recordedHours = recorded.sumOf { it.activeDurationSeconds } / 3_600.0
             val totalHours = when (mediaType) {
                 AppMediaType.AUDIOBOOK -> {
                     val serverHours = (stats?.totalListeningTimeMs ?: 0L) / 3_600_000.0
-                    if (serverHours > 0.0) serverHours else computedHours
+                    if (serverHours > 0.0) serverHours else recordedHours
                 }
-                else -> computedHours
+                else -> recordedHours
             }
 
             val booksFinished = when (mediaType) {
@@ -129,17 +134,14 @@ class StatsViewModel @Inject constructor(
                 else -> scopedBooks.count { it.isFinished }
             }
 
-            val sessions = when (mediaType) {
-                AppMediaType.AUDIOBOOK -> stats?.sessionsCount ?: scopedBooks.count { it.progress > 0f }
-                else -> scopedBooks.count { it.progress > 0f }
-            }
+            val sessions = stats?.sessionsCount?.takeIf { mediaType == AppMediaType.AUDIOBOOK } ?: recorded.size
 
             val uniqueAuthors = scopedBooks.mapNotNull { it.author }.toSet().size
             val streak = stats?.currentStreak ?: 0
             val longestStreak = stats?.longestStreak ?: streak
             val weeklyActivityHours = stats?.weeklyActivityTimeMs
                 ?.let { it / 3_600_000.0 }
-                ?: totalHours
+                ?: (recorded.filter { it.endTimeMs >= weekAgoMs }.sumOf { it.activeDurationSeconds } / 3_600.0)
 
             val totalXP = (totalHours * 10).toInt() + (booksFinished * 35) + (uniqueAuthors * 6)
             val leveling = statsRunescapeLeveling(totalXP)
@@ -162,26 +164,10 @@ class StatsViewModel @Inject constructor(
                     error = null,
                 )
             }
-        }.onFailure { error ->
-            _state.update { it.copy(isLoading = false, error = error.message) }
-        }
-    }
-
-    private fun computeHours(books: List<Book>, mediaType: AppMediaType): Double {
-        return when (mediaType) {
-            AppMediaType.AUDIOBOOK, AppMediaType.PODCAST ->
-                books.sumOf { (it.currentTime.coerceAtLeast(0L) / 3600.0) }
-
-            AppMediaType.EBOOK ->
-                books.sumOf { book ->
-                    val pages = book.pageCount
-                    val estimatedBookHours = when {
-                        book.duration > 0L -> book.duration / 3600.0
-                        pages != null && pages > 0 -> pages / 45.0
-                        else -> 0.0
-                    }
-                    estimatedBookHours * book.progress.coerceIn(0f, 1f)
-                }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            _state.update { it.copy(isLoading = false, error = e.message) }
         }
     }
 

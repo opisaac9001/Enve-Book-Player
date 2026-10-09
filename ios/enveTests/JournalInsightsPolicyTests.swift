@@ -59,6 +59,33 @@ struct JournalInsightsPolicyTests {
         #expect(snapshot.availableYears == [2026, 2025])
     }
 
+    @Test func remoteSessionDeduplicationRequiresTheSameGrimmoryBook() {
+        let start = date("2026-07-29T12:00:00Z")
+        let end = start.addingTimeInterval(300)
+        func local(_ id: String) -> HistorySession {
+            HistorySession(
+                id: id,
+                bookId: id,
+                mediaType: "audiobook",
+                startTime: start,
+                endTime: end,
+                durationSeconds: 300,
+                startProgress: nil,
+                endProgress: nil,
+                progressDelta: nil,
+                startLocation: nil,
+                endLocation: nil,
+                pagesRead: nil,
+                source: .local
+            )
+        }
+
+        #expect(!JournalEngine.isCoveredByLocal(start: start, end: end, bookId: 42, local: [local("audiobookshelf:host:42")]))
+        #expect(!JournalEngine.isCoveredByLocal(start: start, end: end, bookId: 42, local: [local("grimmory:host:43")]))
+        #expect(JournalEngine.isCoveredByLocal(start: start, end: end, bookId: 42, local: [local("grimmory:host:42")]))
+        #expect(JournalEngine.isCoveredByLocal(start: start, end: end, bookId: 42, local: [local("grimmory:host:grimmory-ab-42")]))
+    }
+
     private func makeBook(_ id: String, author: String, narrator: String) -> Book {
         Book(
             id: id,

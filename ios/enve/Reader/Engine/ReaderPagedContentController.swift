@@ -89,12 +89,20 @@ final class ReaderPagedContentController {
     private var comicMetadataDirection: ReaderComicLayoutOption?
     private var comicLayoutAtMetadataApply: ReaderComicLayoutOption?
 
+    private let streamingPages: ServerPageStreamingService
+    private let comicArchive: ComicArchiveService
+    private let profileSession: ProfileSession
+
     init(
         book: Book,
         providerResolver: any LibraryProviderResolving,
         libraryCache: LibraryBookCache,
-        appearanceController: ReaderAppearanceController
+        appearanceController: ReaderAppearanceController,
+        profileSession: ProfileSession = .owner
     ) {
+        self.profileSession = profileSession
+        streamingPages = ServerPageStreamingService(cachesDirectory: profileSession.storage.cachesDirectory)
+        comicArchive = ComicArchiveService(cachesDirectory: profileSession.storage.cachesDirectory)
         self.book = book
         self.providerResolver = providerResolver
         self.libraryCache = libraryCache
@@ -106,8 +114,9 @@ final class ReaderPagedContentController {
     private var visiblePageRange: ClosedRange<Int>? { host?.pagedVisiblePageRange }
 
     var isComicBook: Bool {
+        if !comicPages.isEmpty { return true }
         if isImageFolderBook { return true }
-        if [book.ebookFormat, serverEbookFormat].contains(where: ReaderPagedPagePolicy.isComicFormat) {
+        if ReaderPagedPagePolicy.isComicFormat(serverEbookFormat ?? book.ebookFormat) {
             return true
         }
         return ReaderPagedPagePolicy.hasComicExtension([
@@ -180,14 +189,15 @@ final class ReaderPagedContentController {
     }
 
     func refreshServerFormatIfNeeded() async {
-        guard book.ebookFormat == nil,
-            let provider = providerResolver.provider(for: book.providerId),
+        guard let provider = providerResolver.provider(for: book.providerId),
             provider.capabilities.contains(.serverPageStreaming),
             let refreshed = try? await provider.fetchFullBookDetails(bookId: book.id, libraryId: book.libraryId),
             let format = refreshed.ebookFormat
         else { return }
         serverEbookFormat = format
-        libraryCache.mutateBook(uniqueId: book.uniqueId) { $0.ebookFormat = format }
+        if format != book.ebookFormat {
+            libraryCache.mutateBook(uniqueId: book.uniqueId) { $0.ebookFormat = format }
+        }
     }
 
     func openServerStreamedComicIfAvailable() async -> Bool {
@@ -196,7 +206,7 @@ final class ReaderPagedContentController {
             isEligibleForServerPageStreaming
         else { return false }
         do {
-            let pages = try await ServerPageStreamingService.shared.streamedPages(
+            let pages = try await streamingPages.streamedPages(
                 for: book,
                 provider: provider,
                 mode: appearance.comicPageLoadingMode
@@ -219,7 +229,7 @@ final class ReaderPagedContentController {
     func openComicArchive(at fileURL: URL, initialSelection: EbookReaderInitialSelection?) async throws {
         let stableId = book.stableId
         let pages = try await Task.detached(priority: .userInitiated) {
-            try await ComicArchiveService.shared.extractedPages(from: fileURL, bookId: stableId)
+            try await self.comicArchive.extractedPages(from: fileURL, bookId: stableId)
         }.value
         guard !pages.isEmpty else {
             throw ClassicReaderError.invalidComicArchive(fileURL.path)
@@ -296,7 +306,7 @@ final class ReaderPagedContentController {
 
         updatePDFPageState(initialPageIndex, shouldRecordStats: false)
 
-        await ReadingStatsTracker.shared.updateBookTotalPages(bookId: book.id, totalPages: totalPages)
+        await profileSession.readingStats.updateBookTotalPages(bookId: book.id, totalPages: totalPages)
 
         let pdfChapters = (0..<pageCount).map {
             Chapter(
@@ -307,14 +317,14 @@ final class ReaderPagedContentController {
                 index: $0
             )
         }
-        ReaderArtifactsStore.shared.saveCachedChapters(bookId: book.id, chapters: pdfChapters)
+        profileSession.readerArtifacts.saveCachedChapters(bookId: book.id, chapters: pdfChapters)
 
         host?.pagedReaderState = .readyPDF(document)
     }
 
     private func applyComicReadingDirectionFromMetadata(archiveURL: URL) async {
         let direction = await Task.detached(priority: .userInitiated) {
-            await ComicArchiveService.shared.readingDirection(from: archiveURL)
+            await self.comicArchive.readingDirection(from: archiveURL)
         }.value
 
         host?.pagedWillChange()
@@ -368,7 +378,7 @@ final class ReaderPagedContentController {
             sectionTitle: "Page \(boundedIndex + 1)"
         )
         Task {
-            await ServerPageStreamingService.shared.preparePageWindow(around: comicPages[boundedIndex])
+            await streamingPages.preparePageWindow(around: comicPages[boundedIndex])
         }
 
         guard shouldRecordStats else { return }
@@ -410,7 +420,7 @@ final class ReaderPagedContentController {
     }
 
     func endServerPageStreamingSession() {
-        ServerPageStreamingService.shared.endSession(for: book)
+        streamingPages.endSession(for: book)
     }
 
     private func requestPDFPage(_ index: Int, shouldRecordStats: Bool = true) {
@@ -441,9 +451,9 @@ final class ReaderPagedContentController {
     private func recordStatsTick() {
         let progression = host?.pagedCurrentProgress ?? 0
         Task {
-            await ReadingStatsTracker.shared.recordTick(bookId: book.stableId, positionProgression: progression, isReading: true)
+            await profileSession.readingStats.recordTick(bookId: book.stableId, positionProgression: progression, isReading: true)
             if progression >= Book.finishedProgressThreshold {
-                await ReadingStatsTracker.shared.markBookAsFinished(bookId: book.stableId)
+                await profileSession.readingStats.markBookAsFinished(bookId: book.stableId)
             }
         }
     }

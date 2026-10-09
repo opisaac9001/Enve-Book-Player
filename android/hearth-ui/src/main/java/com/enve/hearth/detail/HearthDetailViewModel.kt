@@ -12,10 +12,13 @@ import com.enve.engine.annotations.AnnotationsFacade
 import com.enve.engine.bookorbit.BookOrbitFacade
 import com.enve.engine.bookorbit.BookOrbitRelated
 import com.enve.engine.library.LibraryFacade
+import com.enve.engine.library.SavedBookList
+import com.enve.engine.library.SavedBooksFacade
 import com.enve.engine.servertools.ServerToolsFacade
 import com.enve.engine.library.LibraryDownloadState
 import com.enve.engine.library.LibraryDownloadStatus
 import com.enve.engine.library.LibraryLinkCandidate
+import com.enve.engine.library.AudiobookshelfHistoryCandidate
 import com.enve.engine.library.LibraryMetadataEdit
 import com.enve.engine.library.LibraryMetadataMatch
 import com.enve.engine.library.BookOrbitCollectionMembership
@@ -31,10 +34,19 @@ import javax.inject.Inject
 @HiltViewModel
 class HearthDetailViewModel @Inject constructor(
     private val library: LibraryFacade,
+    private val savedBooks: SavedBooksFacade,
     private val annotationsFacade: AnnotationsFacade,
     private val bookOrbit: BookOrbitFacade,
     private val serverTools: ServerToolsFacade,
 ) : ViewModel() {
+    val saved = savedBooks.saved
+    val savedSyncErrors = savedBooks.syncErrors
+
+    fun isSaved(book: Book, list: SavedBookList): Boolean = savedBooks.contains(book, list)
+
+    fun toggleSaved(book: Book, list: SavedBookList) {
+        viewModelScope.launch { savedBooks.toggle(book, list) }
+    }
     private val _book = MutableStateFlow<Book?>(null)
     val book: StateFlow<Book?> = _book
 
@@ -43,6 +55,8 @@ class HearthDetailViewModel @Inject constructor(
     val linkedAudiobook: StateFlow<Book?> = _linkedAudiobook
     private val _linkedEbook = MutableStateFlow<Book?>(null)
     val linkedEbook: StateFlow<Book?> = _linkedEbook
+    private val _counterpartDownloadState = MutableStateFlow(LibraryDownloadState())
+    val counterpartDownloadState: StateFlow<LibraryDownloadState> = _counterpartDownloadState
     private val _inSeries = MutableStateFlow<List<Book>>(emptyList())
     val inSeries: StateFlow<List<Book>> = _inSeries
     private val _chapters = MutableStateFlow<List<Chapter>>(emptyList())
@@ -87,20 +101,38 @@ class HearthDetailViewModel @Inject constructor(
     private var loadedKey: String? = null
     private var watchJob: Job? = null
     private var downloadJob: Job? = null
+    private var counterpartDownloadJob: Job? = null
     private var chaptersJob: Job? = null
     private var annotationsJob: Job? = null
     private var tagsJob: Job? = null
     private var linkCandidatesJob: Job? = null
+    private var historyCandidatesJob: Job? = null
+    private val _historyTarget = MutableStateFlow<Book?>(null)
+    val historyTarget: StateFlow<Book?> = _historyTarget
+    private val _historyQuery = MutableStateFlow("")
+    val historyQuery: StateFlow<String> = _historyQuery
+    private val _historyCandidates = MutableStateFlow<List<AudiobookshelfHistoryCandidate>>(emptyList())
+    val historyCandidates: StateFlow<List<AudiobookshelfHistoryCandidate>> = _historyCandidates
+    private val _historyCandidatesLoading = MutableStateFlow(false)
+    val historyCandidatesLoading: StateFlow<Boolean> = _historyCandidatesLoading
 
     fun load(initial: Book) {
+        viewModelScope.launch { savedBooks.refresh() }
         if (loadedKey == initial.uniqueKey) return
         loadedKey = initial.uniqueKey
         _book.value = initial
         _linkedAudiobook.value = null
         _linkedEbook.value = null
+        counterpartDownloadJob?.cancel()
+        _counterpartDownloadState.value = LibraryDownloadState()
         _linkCandidateQuery.value = ""
         _linkCandidates.value = emptyList()
         _linkCandidatesLoading.value = false
+        historyCandidatesJob?.cancel()
+        _historyTarget.value = null
+        _historyQuery.value = ""
+        _historyCandidates.value = emptyList()
+        _historyCandidatesLoading.value = false
         _inSeries.value = emptyList()
         chaptersJob?.cancel()
         linkCandidatesJob?.cancel()
@@ -314,6 +346,15 @@ class HearthDetailViewModel @Inject constructor(
     fun toggleDownload() {
         val b = _book.value ?: return
         val state = _downloadState.value
+        toggleDownload(b, state)
+    }
+
+    fun toggleCounterpartDownload() {
+        val counterpart = _linkedAudiobook.value ?: _linkedEbook.value ?: return
+        toggleDownload(counterpart, _counterpartDownloadState.value)
+    }
+
+    private fun toggleDownload(b: Book, state: LibraryDownloadState) {
         if (b.isDownloaded || state.status == LibraryDownloadStatus.COMPLETED) return
         viewModelScope.launch {
             try {
@@ -334,6 +375,15 @@ class HearthDetailViewModel @Inject constructor(
 
     fun removeDownload() {
         val b = _book.value ?: return
+        removeDownload(b)
+    }
+
+    fun removeCounterpartDownload() {
+        val counterpart = _linkedAudiobook.value ?: _linkedEbook.value ?: return
+        removeDownload(counterpart)
+    }
+
+    private fun removeDownload(b: Book) {
         viewModelScope.launch {
             try {
                 library.removeDownload(b)
@@ -413,6 +463,66 @@ class HearthDetailViewModel @Inject constructor(
                 _notice.value = "Applied metadata match for \"${updated.title}\"."
             } else {
                 _notice.value = "Couldn't apply that metadata match."
+            }
+        }
+    }
+
+    fun prepareAudiobookshelfHistory() {
+        val source = _book.value ?: return
+        if (source.source != BookSource.GRIMMORY || source.mediaType != AppMediaType.AUDIOBOOK) return
+        _historyQuery.value = ""
+        viewModelScope.launch {
+            _historyTarget.value = library.linkedAudiobookshelfHistoryTarget(source)
+        }
+        loadHistoryCandidates(source, "")
+    }
+
+    fun updateAudiobookshelfHistoryQuery(query: String) {
+        val source = _book.value ?: return
+        _historyQuery.value = query
+        loadHistoryCandidates(source, query)
+    }
+
+    fun linkAudiobookshelfHistory(target: Book, includePast: Boolean) {
+        val source = _book.value ?: return
+        viewModelScope.launch {
+            try {
+                val linked = library.linkAudiobookshelfHistory(source, target, includePast)
+                if (loadedKey == source.uniqueKey) {
+                    _historyTarget.value = if (linked) target else _historyTarget.value
+                    _notice.value = if (linked) "Listening history linked to ${target.title}." else "Couldn't verify the Audiobookshelf account and book."
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                _notice.value = "Couldn't link listening history right now."
+            }
+        }
+    }
+
+    fun unlinkAudiobookshelfHistory() {
+        val source = _book.value ?: return
+        viewModelScope.launch {
+            if (library.unlinkAudiobookshelfHistory(source)) {
+                _historyTarget.value = null
+                _notice.value = "Stopped sharing this book's listening history."
+            }
+        }
+    }
+
+    private fun loadHistoryCandidates(source: Book, query: String) {
+        historyCandidatesJob?.cancel()
+        historyCandidatesJob = viewModelScope.launch {
+            _historyCandidatesLoading.value = true
+            try {
+                val matches = library.audiobookshelfHistoryCandidates(source, query)
+                if (loadedKey == source.uniqueKey) _historyCandidates.value = matches
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                if (loadedKey == source.uniqueKey) _notice.value = "Couldn't load Audiobookshelf books."
+            } finally {
+                if (loadedKey == source.uniqueKey) _historyCandidatesLoading.value = false
             }
         }
     }
@@ -524,6 +634,14 @@ class HearthDetailViewModel @Inject constructor(
             if (loadedKey == book.uniqueKey) {
                 _linkedAudiobook.value = linkedAudiobook
                 _linkedEbook.value = linkedEbook
+                counterpartDownloadJob?.cancel()
+                val counterpart = linkedAudiobook ?: linkedEbook
+                _counterpartDownloadState.value = LibraryDownloadState()
+                if (counterpart != null) {
+                    counterpartDownloadJob = viewModelScope.launch {
+                        library.downloadState(counterpart.id).collect { _counterpartDownloadState.value = it }
+                    }
+                }
             }
         }
     }
@@ -571,5 +689,6 @@ internal fun mergeBookDetail(base: Book, detail: Book?): Book {
         personalRating = base.personalRating ?: detail.personalRating,
         hasAudio = base.hasAudio || detail.hasAudio,
         hasEbook = base.hasEbook || detail.hasEbook,
+        readAlongAvailable = base.readAlongAvailable || detail.readAlongAvailable,
     )
 }

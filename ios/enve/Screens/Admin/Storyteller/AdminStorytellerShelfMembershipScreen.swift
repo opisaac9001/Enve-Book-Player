@@ -19,7 +19,7 @@ struct AdminStorytellerShelfMembershipScreen: View {
         self.connection = connection
         self.parent = parent
         self.shelf = shelf
-        _model = State(initialValue: AdminStorytellerShelfMembershipModel(shelf: shelf))
+        _model = State(initialValue: AdminStorytellerShelfMembershipModel(shelf: shelf, profileSession: parent.profileSession))
     }
 
     private var selectedIds: Set<String> {

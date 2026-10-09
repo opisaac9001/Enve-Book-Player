@@ -105,9 +105,13 @@ enum ABSPodcastEpisodeMerge {
 }
 
 class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvider, AudiobookProgressProvider,
-    EbookProgressProvider, EbookDownloadProvider, @unchecked Sendable
+    EbookProgressProvider, EbookDownloadProvider, SavedBooksProvider, @unchecked Sendable
 {
     var connection: ServerConnection
+    private let historyUploadAllowed: (Date) -> Bool
+    private let serverSyncEnabled: () -> Bool
+    private let isolatesCredentials: Bool
+    private let certificateTransport: InsecureURLSession
 
     var capabilities: ProviderCapabilities {
         [
@@ -120,15 +124,62 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
 
     var onTokenUpdated: ((ServerConnection) -> Void)?
 
-    private let absService = AudiobookshelfService.shared
+    private let absService: AudiobookshelfService
+    private let keychain: KeychainHelper
+    private let session: URLSession
+    private let appState: AppState
+    private let rejectedContent: RejectedContentStore
+    private let ebookImporter: LocalEbookImporter
+    private let narratedPositions: NarratedAudioPositionStore
+    private let listeningStore: ABSLocalListeningStore
+    private let storageService: StorageService
+    private let downloads: () -> UnifiedDownloadService
+    #if os(iOS)
+    private let mediaOverlay: () -> MediaOverlayPlaybackService
+    #endif
 
     private var libraryMediaTypes: [String: String] = [:]
     private var itemAudioDurations: [String: TimeInterval] = [:]
 
     private lazy var credentialsActor = ABSCredentialsActor(provider: self)
 
-    init(connection: ServerConnection) {
+    init(connection: ServerConnection, profileSession: ProfileSession? = nil) {
         self.connection = connection
+        if let profileSession {
+            serverSyncEnabled = { [unowned profileSession] in profileSession.serverSyncEnabled }
+            historyUploadAllowed = { [defaults = profileSession.defaults, isOwner = profileSession.isOwner] in
+                ProfileServerSyncPreferences(defaults: defaults, isOwner: isOwner).allowsHistoryUpload(startedAt: $0)
+            }
+        } else {
+            serverSyncEnabled = { true }
+            historyUploadAllowed = { _ in true }
+        }
+        isolatesCredentials = profileSession?.isOwner == false
+        certificateTransport = profileSession?.transport ?? .delegateInstance
+        absService = profileSession?.absService ?? .shared
+        keychain = profileSession?.legacyKeychain ?? .shared
+        session = profileSession?.networkSession ?? InsecureURLSession.shared
+        appState = profileSession?.appState ?? .shared
+        rejectedContent = profileSession?.rejectedContent ?? .shared
+        ebookImporter = profileSession?.ebooks ?? .shared
+        narratedPositions = profileSession?.narratedPositions ?? .shared
+        listeningStore = profileSession?.listeningStore ?? .shared
+        storageService = profileSession?.storageService ?? .shared
+        if let profileSession {
+            downloads = { [unowned profileSession] in profileSession.downloads }
+            #if os(iOS)
+            mediaOverlay = { [unowned profileSession] in profileSession.playback.mediaOverlay }
+            #endif
+        } else {
+            downloads = { .shared }
+            #if os(iOS)
+            mediaOverlay = { .shared }
+            #endif
+        }
+    }
+
+    func retire() async {
+        await credentialsActor.retire()
     }
 
     var tokenSnapshot: ABSTokenSnapshot {
@@ -140,17 +191,17 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
     }
 
     private func storedRefreshToken() -> String? {
-        KeychainHelper.shared.get(refreshTokenKey)
+        keychain.get(refreshTokenKey)
     }
 
     private func saveRefreshToken(_ refreshToken: String?) {
         guard let refreshToken, !refreshToken.isEmpty else { return }
-        KeychainHelper.shared.set(refreshToken, key: refreshTokenKey)
+        keychain.set(refreshToken, key: refreshTokenKey)
     }
 
     private func resolvedPassword() -> String? {
         if let pw = connection.password, !pw.isEmpty { return pw }
-        return KeychainHelper.shared.get("abs_password_\(connection.id.uuidString)")
+        return keychain.get("abs_password_\(connection.id.uuidString)")
     }
 
     func performTokenRefresh() async throws -> ABSCredentials {
@@ -214,7 +265,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         let body = ["username": username, "password": password]
         loginRequest.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await InsecureURLSession.shared.data(for: loginRequest)
+        let (data, response) = try await session.data(for: loginRequest)
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ProviderError.invalidResponse
@@ -275,7 +326,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
 
         validateRequest.setValue(creds.authorizationHeader, forHTTPHeaderField: "Authorization")
 
-        let (_, validateResponse) = try await InsecureURLSession.shared.data(for: validateRequest)
+        let (_, validateResponse) = try await session.data(for: validateRequest)
         guard let validationHTTP = validateResponse as? HTTPURLResponse else {
             throw ProviderError.invalidResponse
         }
@@ -289,7 +340,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         let freshCreds = try await credentialsActor.forceRefresh()
         connection.token = freshCreds.accessToken
         validateRequest.setValue(freshCreds.authorizationHeader, forHTTPHeaderField: "Authorization")
-        let (_, retryResponse) = try await InsecureURLSession.shared.data(for: validateRequest)
+        let (_, retryResponse) = try await session.data(for: validateRequest)
         guard let retryHTTP = retryResponse as? HTTPURLResponse else {
             throw ProviderError.invalidResponse
         }
@@ -331,7 +382,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             }
         }
 
-        let (data, response) = try await InsecureURLSession.shared.data(for: mutableRequest)
+        let (data, response) = try await session.data(for: mutableRequest)
 
         if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 401 {
             AppLogger.network.info("[ABS Provider] Got 401 despite proactive refresh - forcing token refresh...")
@@ -341,7 +392,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
                 retryRequest.setValue(freshCreds.authorizationHeader, forHTTPHeaderField: "Authorization")
                 connection.token = freshCreds.accessToken
                 connection.isConnected = true
-                return try await InsecureURLSession.shared.data(for: retryRequest)
+                return try await session.data(for: retryRequest)
             } catch {
                 AppLogger.network.error("[ABS Provider] Force refresh after 401 failed: \(error.localizedDescription)")
                 connection.isConnected = false
@@ -1103,8 +1154,8 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
 
     private func publishImportProgress(libraryId: String, loadedCount: Int, totalCount: Int) {
         Task { @MainActor in
-            let existing = AppState.shared.presentation.libraryImportProgress
-            AppState.shared.presentation.libraryImportProgress = LibraryImportProgress(
+            let existing = appState.presentation.libraryImportProgress
+            appState.presentation.libraryImportProgress = LibraryImportProgress(
                 libraryId: libraryId,
                 libraryName: existing?.libraryName ?? "Library",
                 providerName: existing?.providerName ?? "",
@@ -1527,7 +1578,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
     }
 
     private func updateRejectedContent(_ page: PageResponse<ABSItem>, libraryId: String) {
-        RejectedContentStore.shared.update(
+        rejectedContent.update(
             connection: connection,
             libraryId: libraryId,
             acceptedItemIdentifiers: Set(page.results.map(\.id)),
@@ -1580,6 +1631,76 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
                 color: "blue",
                 providerId: connection.id
             )
+        }
+    }
+
+    func canSyncSavedBooks() async throws -> Bool { true }
+
+    func fetchSavedBookIDs(libraryIds: Set<String>) async throws -> [SavedBookList: Set<String>] {
+        guard let baseURL = URL(string: connection.url) else { throw ProviderError.invalidURL }
+        var snapshot: [SavedBookList: Set<String>] = [.favorites: [], .later: []]
+        for libraryId in libraryIds.sorted() {
+            guard var components = URLComponents(
+                url: baseURL.appendingPathComponent("api/libraries/\(libraryId)/collections"),
+                resolvingAgainstBaseURL: false
+            ) else { throw ProviderError.invalidURL }
+            components.queryItems = [URLQueryItem(name: "limit", value: "500")]
+            guard let url = components.url else { throw ProviderError.invalidURL }
+            let (data, response) = try await performRequest(URLRequest(url: url))
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                throw ProviderError.invalidResponse
+            }
+            let decoded = try Self.absDecoder.decode(CollectionsResponse.self, from: data)
+            guard decoded.results != nil || decoded.collections != nil,
+                  decoded.items.count < 500
+            else { throw ProviderError.invalidResponse }
+
+            for list in SavedBookList.allCases {
+                let name = list == .favorites ? "Enve Favorites" : "Enve For Later"
+                guard let collection = decoded.items.first(where: {
+                    $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame
+                }) else { continue }
+                guard let books = collection.books else { throw ProviderError.invalidResponse }
+                snapshot[list, default: []].formUnion(books.map(\.id))
+            }
+        }
+        return snapshot
+    }
+
+    func setSavedBook(_ book: Book, list: SavedBookList, saved: Bool) async throws {
+        guard let baseURL = URL(string: connection.url) else { throw ProviderError.invalidURL }
+        let name = list == .favorites ? "Enve Favorites" : "Enve For Later"
+        let collection = try await fetchCollections(libraryId: book.libraryId).first {
+            $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame
+        }
+
+        let path: String
+        let method: String
+        let body: [String: Any]?
+        if let collection {
+            guard collection.books.contains(book.id) != saved else { return }
+            path = saved
+                ? "api/collections/\(collection.id)/book"
+                : "api/collections/\(collection.id)/book/\(book.id)"
+            method = saved ? "POST" : "DELETE"
+            body = saved ? ["id": book.id] : nil
+        } else if saved {
+            path = "api/collections"
+            method = "POST"
+            body = ["libraryId": book.libraryId, "name": name, "books": [book.id]]
+        } else {
+            return
+        }
+
+        var request = URLRequest(url: baseURL.appendingPathComponent(path))
+        request.httpMethod = method
+        if let body {
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
+        let (_, response) = try await performRequest(request)
+        guard let http = response as? HTTPURLResponse, (200...204).contains(http.statusCode) else {
+            throw ProviderError.invalidResponse
         }
     }
 
@@ -1651,6 +1772,60 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
                 providerId: connection.id
             )
         }
+    }
+
+    func fetchListeningStats() async throws -> AudiobookshelfListeningStats {
+        try JSONDecoder().decode(AudiobookshelfListeningStats.self, from: try await meData("api/me/listening-stats"))
+    }
+
+    func currentAccountId() async throws -> String {
+        struct Account: Decodable { let id: String }
+        let account = try JSONDecoder().decode(Account.self, from: try await meData("api/me"))
+        guard !account.id.isEmpty else { throw ProviderError.invalidResponse }
+        return account.id
+    }
+
+    func flushHistorySessions(listeningStore: ABSLocalListeningStore? = nil) async -> Set<String> {
+        let listeningStore = listeningStore ?? self.listeningStore
+        guard let baseURL = URL(string: connection.url) else { return [] }
+        return await uploadLocalListening(baseURL: baseURL, listeningStore: listeningStore)
+    }
+
+    func fetchListeningSessions(page: Int, itemsPerPage: Int) async throws -> [AudiobookshelfListeningStats.AudiobookshelfSession] {
+        struct SessionsResponse: Decodable {
+            let sessions: [AudiobookshelfListeningStats.AudiobookshelfSession]
+        }
+        let data = try await meData(
+            "api/me/listening-sessions",
+            queryItems: [
+                URLQueryItem(name: "page", value: String(page)),
+                URLQueryItem(name: "itemsPerPage", value: String(itemsPerPage)),
+            ]
+        )
+        return try JSONDecoder().decode(SessionsResponse.self, from: data).sessions
+    }
+
+    func fetchAllListeningSessions(maxPages: Int = 20) async throws -> [AudiobookshelfListeningStats.AudiobookshelfSession] {
+        var sessions: [AudiobookshelfListeningStats.AudiobookshelfSession] = []
+        for page in 0..<maxPages {
+            let batch = try await fetchListeningSessions(page: page, itemsPerPage: 500)
+            sessions += batch
+            if batch.count < 500 { break }
+        }
+        return sessions
+    }
+
+    private func meData(_ path: String, queryItems: [URLQueryItem] = []) async throws -> Data {
+        guard let baseURL = URL(string: connection.url),
+            var components = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)
+        else { throw ProviderError.invalidURL }
+        components.queryItems = queryItems.isEmpty ? nil : queryItems
+        guard let url = components.url else { throw ProviderError.invalidURL }
+        let (data, response) = try await performRequest(URLRequest(url: url))
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw ProviderError.serverError("Audiobookshelf \(path) failed (HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0))")
+        }
+        return data
     }
 
     func fetchUserMediaProgress(libraryId: String) async throws -> [UserMediaProgress] {
@@ -1735,7 +1910,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         var progress: UserMediaProgress?
         let progressURL = baseURL.appendingPathComponent("api/me/progress/\(itemId)")
         let progressRequest = URLRequest(url: progressURL)
-        if let (pData, pResp) = try? await performRequest(progressRequest),
+        if serverSyncEnabled(), let (pData, pResp) = try? await performRequest(progressRequest),
             (pResp as? HTTPURLResponse)?.statusCode == 200,
             let p = try? Self.absDecoder.decode(ABSProgressItem.self, from: pData)
         {
@@ -2055,7 +2230,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             throw ProviderError.unauthorized
         }
 
-        if let sessionId = sessionId {
+        if let sessionId, !sessionId.hasPrefix("local-") {
             let url = baseURL.appendingPathComponent("api/session/\(sessionId)/sync")
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
@@ -2068,14 +2243,22 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             ]
             request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
-            let (_, response) = try await performRequest(request)
-            let sessionStatus = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let sessionStatus: Int
+            do {
+                let (_, response) = try await performRequest(request)
+                sessionStatus = (response as? HTTPURLResponse)?.statusCode ?? 0
+            } catch {
+                recordLocalListening(book: book, currentTime: currentTime, timeListened: timeListened)
+                throw error
+            }
             // ABS keeps sessions in memory; after a server restart the session is gone but the progress PATCH still lands.
             if sessionStatus == 404 {
                 AppLogger.network.info("ABS no longer holds the playback session; saving progress without it")
+                recordLocalListening(book: book, currentTime: currentTime, timeListened: timeListened)
             } else if (200...299).contains(sessionStatus) {
                 AppLogger.network.info("Synced session \(sessionId) to \(currentTime)s (listened: \(timeListened)s)")
             } else {
+                recordLocalListening(book: book, currentTime: currentTime, timeListened: timeListened)
                 throw ProviderError.invalidResponse
             }
 
@@ -2107,6 +2290,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
                 "Synced progress bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId)) position=\(Int(currentTime))s"
             )
         } else {
+            recordLocalListening(book: book, currentTime: currentTime, timeListened: timeListened)
             var progressPath = "api/me/progress/\(Self.libraryItemId(for: book))"
             if book.isPodcastEpisode, let epId = book.episodeId {
                 progressPath += "/\(epId)"
@@ -2133,15 +2317,180 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
                 "Synced progress bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId)) position=\(Int(currentTime))s"
             )
         }
+        await uploadLocalListening(baseURL: baseURL)
         if book.hasAlternateFormat, !book.isPodcastEpisode {
-            NarratedAudioPositionStore.shared.recordPush(
+            narratedPositions.recordPush(
                 audioTime: currentTime,
                 forItem: NarratedAudioPositionStore.itemKey(connectionId: connection.id, itemId: Self.libraryItemId(for: book))
             )
         }
     }
 
+    static var clientDeviceId: String {
+        #if canImport(UIKit)
+        UIDevice.current.identifierForVendor?.uuidString ?? StorageService.shared.loadDeviceUUID()
+        #else
+        StorageService.shared.loadDeviceUUID()
+        #endif
+    }
+
+    // An empty body closes without syncing; the final listening chunk goes through /sync first.
+    func reportPlayback(_ event: ServerPlaybackEvent, book: Book, sessionId: String, position: TimeInterval) async {
+        guard event == .stopped, !sessionId.hasPrefix("local-"), let baseURL = URL(string: connection.url) else { return }
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/session/\(sessionId)/close"))
+        request.httpMethod = "POST"
+        _ = try? await performRequest(request)
+    }
+
+    private static var deviceInfo: [String: String] {
+        #if canImport(UIKit)
+        ["clientName": "Enve", "deviceId": clientDeviceId, "deviceName": UIDevice.current.name]
+        #else
+        ["clientName": "Enve", "deviceId": clientDeviceId, "deviceName": Host.current().localizedName ?? "Mac"]
+        #endif
+    }
+
+    private func recordLocalListening(book: Book, currentTime: TimeInterval, timeListened: TimeInterval) {
+        listeningStore.record(
+            connectionId: connection.id,
+            libraryItemId: Self.libraryItemId(for: book),
+            episodeId: book.isPodcastEpisode ? book.episodeId : nil,
+            displayTitle: book.title,
+            displayAuthor: book.author,
+            duration: book.duration ?? 0,
+            currentTime: currentTime,
+            listened: timeListened
+        )
+    }
+
+    static func prepareHistoryUploads(
+        _ sessions: [ABSLocalListeningStore.Session],
+        currentPosition: (String) async throws -> TimeInterval?
+    ) async throws -> [ABSLocalListeningStore.Session] {
+        try Task.checkCancellation()
+        var prepared: [ABSLocalListeningStore.Session] = []
+        for var session in sessions {
+            if session.accountId != nil {
+                do {
+                    session.currentTime = try await currentPosition(session.libraryItemId) ?? 0
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch let error as URLError where error.code == .cancelled {
+                    throw CancellationError()
+                } catch {
+                    try Task.checkCancellation()
+                    continue
+                }
+            }
+            try Task.checkCancellation()
+            prepared.append(session)
+        }
+        return prepared
+    }
+
+    private func currentHistoryPosition(itemId: String, baseURL: URL) async throws -> TimeInterval? {
+        let url = baseURL.appendingPathComponent("api/me/progress/\(itemId)")
+        let (data, response) = try await performRequest(URLRequest(url: url))
+        guard let http = response as? HTTPURLResponse else { throw ProviderError.invalidResponse }
+        if http.statusCode == 404 { return nil }
+        guard http.statusCode == 200 else { throw ProviderError.invalidResponse }
+        return try Self.absDecoder.decode(ABSProgressItem.self, from: data).currentTime
+    }
+
+    @discardableResult
+    private func uploadLocalListening(
+        baseURL: URL, listeningStore: ABSLocalListeningStore? = nil
+    ) async -> Set<String> {
+        guard serverSyncEnabled() else { return [] }
+        let listeningStore = listeningStore ?? self.listeningStore
+        let allQueued = listeningStore.pendingUploads(connectionId: connection.id)
+        let ineligible = allQueued.filter { !historyUploadAllowed(Date(timeIntervalSince1970: Double($0.startedAt) / 1000)) }
+        listeningStore.discard(ids: Set(ineligible.map(\.id)))
+        let queued = listeningStore.pendingUploads(connectionId: connection.id)
+        guard !queued.isEmpty else { return [] }
+        // Native sessions predate account binding. Cross-provider sessions require the verified ABS account.
+        let accountId: String?
+        if queued.contains(where: { $0.accountId != nil }) {
+            do {
+                accountId = try await currentAccountId()
+            } catch is CancellationError {
+                return []
+            } catch let error as URLError where error.code == .cancelled {
+                return []
+            } catch {
+                accountId = nil
+            }
+        } else {
+            accountId = nil
+        }
+        let eligible = listeningStore.pendingUploads(
+            connectionId: connection.id, verifiedAccountId: accountId
+        )
+        let pending: [ABSLocalListeningStore.Session]
+        do {
+            pending = try await Self.prepareHistoryUploads(eligible) { [self] itemId in
+                try await currentHistoryPosition(itemId: itemId, baseURL: baseURL)
+            }
+        } catch {
+            return []
+        }
+        guard serverSyncEnabled(), !pending.isEmpty, !Task.isCancelled else { return [] }
+
+        let sessions: [[String: Any]] = pending.map { session in
+            var json: [String: Any] = [
+                "id": session.id,
+                "libraryItemId": session.libraryItemId,
+                "mediaType": session.episodeId == nil ? "book" : "podcast",
+                "displayTitle": session.displayTitle,
+                "duration": session.duration,
+                "playMethod": 3,
+                "mediaPlayer": "AVPlayer",
+                "date": session.day,
+                "dayOfWeek": session.dayOfWeek,
+                "timeListening": session.timeListening,
+                "currentTime": session.currentTime,
+                "startedAt": session.startedAt,
+                "updatedAt": session.updatedAt,
+            ]
+            if let episodeId = session.episodeId { json["episodeId"] = episodeId }
+            if let author = session.displayAuthor { json["displayAuthor"] = author }
+            return json
+        }
+
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/session/local-all"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["sessions": sessions, "deviceInfo": Self.deviceInfo])
+        guard serverSyncEnabled(), !Task.isCancelled else { return [] }
+
+        struct UploadResponse: Decodable {
+            struct Result: Decodable {
+                let id: String
+                let success: Bool
+                let error: String?
+            }
+            let results: [Result]
+        }
+        guard let (data, response) = try? await performRequest(request),
+            (response as? HTTPURLResponse).map({ (200...299).contains($0.statusCode) }) == true,
+            let decoded = try? JSONDecoder().decode(UploadResponse.self, from: data)
+        else {
+            AppLogger.network.info("ABS local listening upload deferred; \(pending.count) session(s) kept for retry")
+            return []
+        }
+
+        let succeeded = Set(decoded.results.filter(\.success).map(\.id))
+        let rejected = Set(decoded.results.filter { !$0.success && $0.error != nil }.map(\.id))
+        listeningStore.markUploaded(pending.filter { succeeded.contains($0.id) })
+        if !rejected.isEmpty {
+            listeningStore.discard(ids: rejected)
+        }
+        AppLogger.network.info("ABS local listening uploaded \(succeeded.count) session(s), rejected \(rejected.count)")
+        return succeeded
+    }
+
     func getAudioURL(for book: Book) -> URL? {
+        if !serverSyncEnabled() { return chapterExtractionURL(for: book) }
         guard let baseURL = URL(string: connection.url),
             let token = connection.token
         else {
@@ -2196,7 +2545,45 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         return headers
     }
 
+    private func directPlayback(for book: Book) async throws -> PlaybackSessionInfo {
+        guard let baseURL = URL(string: connection.url), let token = connection.token else { throw ProviderError.unauthorized }
+        if book.isPodcastEpisode, let url = chapterExtractionURL(for: book) {
+            return PlaybackSessionInfo(sessionId: "local-\(UUID().uuidString)", audioTracks: [
+                AudioTrackInfo(index: 0, startOffset: 0, duration: book.duration ?? 0,
+                    contentUrl: url.absoluteString, mimeType: "audio/mpeg")
+            ], chapters: book.chapters ?? [])
+        }
+        let itemID = Self.libraryItemId(for: book)
+        guard let url = Self.expandedItemURL(baseURL: baseURL, itemId: itemID) else { throw ProviderError.invalidURL }
+        let (data, response) = try await performRequest(URLRequest(url: url))
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw ProviderError.invalidResponse }
+        let item = try Self.absDecoder.decode(ABSItem.self, from: data)
+        let files = (item.media.audioFiles ?? []).sorted { ($0.index ?? 0) < ($1.index ?? 0) }
+        var tracks: [AudioTrackInfo] = []
+        var offset: TimeInterval = 0
+        for file in files {
+            guard let ino = file.ino else { throw ProviderError.invalidResponse }
+            var components = URLComponents(url: baseURL.appendingPathComponent("api/items/\(itemID)/file/\(ino)/download"), resolvingAgainstBaseURL: false)
+            components?.queryItems = [URLQueryItem(name: "token", value: token)]
+            guard let url = components?.url else { throw ProviderError.invalidURL }
+            let duration = file.duration ?? 0
+            let mimeType = switch URL(fileURLWithPath: file.metadata?.filename ?? "").pathExtension.lowercased() {
+            case "mp3": "audio/mpeg"
+            case "flac": "audio/flac"
+            case "ogg", "opus": "audio/ogg"
+            case "wav": "audio/wav"
+            default: "audio/mp4"
+            }
+            tracks.append(AudioTrackInfo(index: tracks.count, startOffset: offset, duration: duration,
+                contentUrl: url.absoluteString, mimeType: mimeType, title: file.metadata?.filename))
+            offset += duration
+        }
+        guard !tracks.isEmpty else { throw ProviderError.invalidResponse }
+        return PlaybackSessionInfo(sessionId: "local-\(UUID().uuidString)", audioTracks: tracks, chapters: chapters(from: item.media))
+    }
+
     func startPlaybackSession(for book: Book) async throws -> PlaybackSessionInfo {
+        if !serverSyncEnabled() { return try await directPlayback(for: book) }
 
         guard let baseURL = URL(string: connection.url),
             connection.token != nil
@@ -2214,23 +2601,8 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        var deviceId = "unknown"
-        var deviceName = "Enve Client"
-
-        #if canImport(UIKit)
-        deviceId = UIDevice.current.identifierForVendor?.uuidString ?? StorageService.shared.loadDeviceUUID()
-        deviceName = UIDevice.current.name
-        #else
-        deviceId = StorageService.shared.loadDeviceUUID()
-        deviceName = Host.current().localizedName ?? "Mac"
-        #endif
-
         let body: [String: Any] = [
-            "deviceInfo": [
-                "clientName": "Enve",
-                "deviceId": deviceId,
-                "deviceName": deviceName,
-            ],
+            "deviceInfo": Self.deviceInfo,
             "supportedMimeTypes": ["audio/mpeg", "audio/mp4", "audio/x-m4a", "audio/aac", "audio/flac", "audio/ogg"],
             "mediaPlayer": "AVPlayer",
         ]
@@ -2295,7 +2667,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
     }
 
     func downloadEbook(for book: Book, onProgress: (@Sendable (Double) -> Void)? = nil) async throws -> URL {
-        if let cached = LocalEbookImporter.shared.cachedEbook(forBookId: book.id) {
+        if let cached = ebookImporter.cachedEbook(forBookId: book.id) {
             onProgress?(1)
             return cached
         }
@@ -2315,8 +2687,8 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         let tempURL: URL
         if let onProgress {
 
-            let delegate = URLSessionDownloadProgressDelegate(progressHandler: onProgress)
-            let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+            let delegate = URLSessionDownloadProgressDelegate(progressHandler: onProgress, certificateTransport: certificateTransport)
+            let session = URLSession(configuration: isolatesCredentials ? .ephemeral : .default, delegate: delegate, delegateQueue: nil)
             defer { session.finishTasksAndInvalidate() }
             let (url, http) = try await delegate.awaitResult {
                 session.downloadTask(with: request)
@@ -2324,7 +2696,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             tempURL = url
             response = http
         } else {
-            (tempURL, response) = try await URLSession.shared.download(for: request)
+            (tempURL, response) = try await session.download(for: request)
         }
 
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
@@ -2333,7 +2705,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         }
 
         let fileExtension = book.ebookFormat?.lowercased() ?? EbookFormat.epub.rawValue
-        return try LocalEbookImporter.shared.cacheRemoteEbook(
+        return try ebookImporter.cacheRemoteEbook(
             tempURL: tempURL,
             preferredFilename: "\(book.title.replacingOccurrences(of: "/", with: "-")).\(fileExtension)",
             bookIdentifier: book.id
@@ -2356,7 +2728,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         var ebookLocation: String?
         var audioPosition: (currentTime: TimeInterval, duration: TimeInterval)?
         #if os(iOS)
-        if let epubLocator, let epubURL = UnifiedDownloadService.shared.existingReaderAsset(for: book) {
+        if let epubLocator, let epubURL = downloads().existingReaderAsset(for: book) {
             ebookLocation = await EpubCFI.providerCFI(forLocatorJSON: epubLocator, epubFileURL: epubURL)
             if ebookLocation == nil {
                 AppLogger.network.info("ABS ebook position did not round-trip as a CFI; sending progress only")
@@ -2378,7 +2750,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             throw ProviderError.serverError("Failed to sync ABS ebook progress (HTTP \(httpResponse.statusCode))")
         }
         if book.hasAlternateFormat {
-            NarratedAudioPositionStore.shared.recordPush(
+            narratedPositions.recordPush(
                 audioTime: audioPosition?.currentTime,
                 forItem: NarratedAudioPositionStore.itemKey(connectionId: connection.id, itemId: book.partKey ?? book.id)
             )
@@ -2410,7 +2782,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             locator = json
         case .cfi(let cfi):
             #if os(iOS)
-            if let epubURL = UnifiedDownloadService.shared.existingReaderAsset(for: book) {
+            if let epubURL = downloads().existingReaderAsset(for: book) {
                 locator = await EpubCFI.readiumLocatorJSON(forCFI: cfi, totalProgression: progress ?? 0, epubFileURL: epubURL)
             }
             #endif
@@ -2499,8 +2871,8 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         locator: String?
     ) async -> (currentTime: TimeInterval, duration: TimeInterval)? {
         guard book.hasAlternateFormat, let locator,
-            let narrationTime = NarratedAudioPositionStore.shared.narrationAudioTime(for: book),
-            let timeline = MediaOverlayPlaybackService.shared.narrationTimeline(for: book),
+            let narrationTime = narratedPositions.narrationAudioTime(for: book),
+            let timeline = mediaOverlay().narrationTimeline(for: book),
             let resolved = timeline.resolveEPUB3Locator(locatorJSON: locator),
             resolved.source == .fragment,
             let itemDuration = await itemAudioDuration(itemId: book.partKey ?? book.id)
@@ -2537,11 +2909,11 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         let itemId = book.partKey ?? book.id
         guard book.hasAlternateFormat, let audioTime = record.currentTime else { return nil }
         let itemKey = NarratedAudioPositionStore.itemKey(connectionId: connection.id, itemId: itemId)
-        NarratedAudioPositionStore.shared.noteServerAudioTime(audioTime, forItem: itemKey)
+        narratedPositions.noteServerAudioTime(audioTime, forItem: itemKey)
         guard book.hasEPUB3MediaOverlay, audioTime > 0,
-            NarratedAudioPositionStore.shared.isServerAudioNewer(audioTime, forItem: itemKey),
+            narratedPositions.isServerAudioNewer(audioTime, forItem: itemKey),
             let itemDuration = await itemAudioDuration(itemId: itemId),
-            let timeline = await MediaOverlayPlaybackService.shared.overlayTimeline(forLocalBook: book),
+            let timeline = await mediaOverlay().overlayTimeline(forLocalBook: book),
             LinkedBookProgressCoordinator.narrationMatchesAudio(
                 narrationDuration: timeline.totalAudioDuration,
                 audioDuration: itemDuration

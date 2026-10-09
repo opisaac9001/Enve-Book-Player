@@ -56,7 +56,10 @@ final class ReaderCompanionController {
     private let session = ReaderCompanionSnapshot()
     private let book: Book
 
-    init(book: Book) {
+    private let broadcaster: CompanionBroadcasterService
+
+    init(book: Book, profileSession: ProfileSession = .owner) {
+        broadcaster = profileSession.isOwner ? .shared : CompanionBroadcasterService()
         self.book = book
         session.onChange = { [weak self] in
             self?.host?.companionDidChange()
@@ -64,9 +67,10 @@ final class ReaderCompanionController {
     }
 
     deinit {
+        let broadcaster = broadcaster
         Task { @MainActor in
-            if CompanionBroadcasterService.shared.isBroadcasting {
-                await CompanionBroadcasterService.shared.stop(reason: .userClosedReader)
+            if broadcaster.isBroadcasting {
+                await broadcaster.stop(reason: .userClosedReader)
             }
         }
     }
@@ -86,7 +90,7 @@ final class ReaderCompanionController {
             let host,
             !host.companionIsFixedLayoutBook,
             !host.companionScrollEnabled,
-            let viewport = CompanionBroadcasterService.shared.receiverViewport
+            let viewport = broadcaster.receiverViewport
         else { return nil }
         return ReaderCompanionLayoutPolicy.canvasSize(forAspectRatio: viewport.aspectRatio)
     }
@@ -94,14 +98,14 @@ final class ReaderCompanionController {
     func start() async {
         guard !session.isActive else { return }
         do {
-            try await CompanionBroadcasterService.shared.start(
+            try await broadcaster.start(
                 bookTitle: book.title,
                 bookStableId: book.stableId,
                 hasMediaOverlay: host?.companionHasMediaOverlay ?? false
             )
             session.isActive = true
 
-            CompanionBroadcasterService.shared.pageCommandHandler = { [weak self] direction in
+            broadcaster.pageCommandHandler = { [weak self] direction in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     switch direction {
@@ -111,19 +115,19 @@ final class ReaderCompanionController {
                 }
             }
 
-            CompanionBroadcasterService.shared.viewportInfoHandler = { [weak self] viewport in
+            broadcaster.viewportInfoHandler = { [weak self] viewport in
                 Task { @MainActor [weak self] in
                     self?.applyViewport(viewport)
                 }
             }
 
-            CompanionBroadcasterService.shared.readAloudCommandHandler = { [weak self] action in
+            broadcaster.readAloudCommandHandler = { [weak self] action in
                 Task { @MainActor [weak self] in
                     await self?.handleReadAloudCommand(action)
                 }
             }
 
-            CompanionBroadcasterService.shared.receiverConnectedHandler = { [weak self] in
+            broadcaster.receiverConnectedHandler = { [weak self] in
                 Task { @MainActor [weak self] in
                     await self?.broadcastCurrentPageIfActive()
                     await self?.broadcastReadAloudState()
@@ -143,17 +147,17 @@ final class ReaderCompanionController {
 
     func stop() async {
         guard session.isActive else { return }
-        CompanionBroadcasterService.shared.pageCommandHandler = nil
-        CompanionBroadcasterService.shared.viewportInfoHandler = nil
-        CompanionBroadcasterService.shared.readAloudCommandHandler = nil
-        CompanionBroadcasterService.shared.receiverConnectedHandler = nil
+        broadcaster.pageCommandHandler = nil
+        broadcaster.viewportInfoHandler = nil
+        broadcaster.readAloudCommandHandler = nil
+        broadcaster.receiverConnectedHandler = nil
         if let capture = session.screenCapture {
             capture.stop()
             session.screenCapture = nil
             session.videoStreamStarted = false
-            await CompanionBroadcasterService.shared.stopVideoStream()
+            await broadcaster.stopVideoStream()
         }
-        await CompanionBroadcasterService.shared.stop(reason: .userClosedReader)
+        await broadcaster.stop(reason: .userClosedReader)
         session.isActive = false
 
         if session.columnOverride != nil {
@@ -178,7 +182,7 @@ final class ReaderCompanionController {
 
     private func broadcastReadAloudState() async {
         guard session.isActive else { return }
-        await CompanionBroadcasterService.shared.sendMediaOverlayState(
+        await broadcaster.sendMediaOverlayState(
             isPlaying: overlayPlayer?.isPlaying ?? false,
             speed: overlayPlayer?.playbackRate
         )
@@ -187,7 +191,7 @@ final class ReaderCompanionController {
     private func broadcastCurrentPageIfActive() async {
         guard session.isActive else { return }
 
-        guard !CompanionBroadcasterService.shared.isVideoStreaming else { return }
+        guard !broadcaster.isVideoStreaming else { return }
         try? await Task.sleep(nanoseconds: 150_000_000)
         guard session.isActive else {
             AppLogger.network.info("[Companion] broadcast skipped. Session ended")
@@ -204,7 +208,7 @@ final class ReaderCompanionController {
 
         let pageIndex = ReaderCompanionLayoutPolicy.pageIndex(progress: progress, totalPages: totalPages)
         AppLogger.network.info("[Companion] Sending page \(pageIndex) (\(Int(image.size.width))×\(Int(image.size.height)))")
-        await CompanionBroadcasterService.shared.sendPage(
+        await broadcaster.sendPage(
             image: image,
             pageIndex: pageIndex,
             totalPages: ReaderCompanionLayoutPolicy.broadcastTotalPages(totalPages),
@@ -215,13 +219,13 @@ final class ReaderCompanionController {
     func broadcastHighlightFrameIfActive() async {
         guard session.isActive else { return }
 
-        guard !CompanionBroadcasterService.shared.isVideoStreaming else { return }
+        guard !broadcaster.isVideoStreaming else { return }
         guard session.shouldBroadcastHighlight() else { return }
         guard let navigatorController = host?.companionHighlightSourceViewController,
             let image = await Self.renderSnapshot(of: navigatorController)
         else { return }
         let pageIndex = ReaderCompanionLayoutPolicy.pageIndex(progress: progress, totalPages: totalPages)
-        await CompanionBroadcasterService.shared.sendPage(
+        await broadcaster.sendPage(
             image: image,
             pageIndex: pageIndex,
             totalPages: ReaderCompanionLayoutPolicy.broadcastTotalPages(totalPages),
@@ -240,11 +244,11 @@ final class ReaderCompanionController {
                 let width = CVPixelBufferGetWidth(pixelBuffer)
                 let height = CVPixelBufferGetHeight(pixelBuffer)
                 Task { @MainActor in
-                    await CompanionBroadcasterService.shared.startVideoStream(width: width, height: height)
-                    CompanionBroadcasterService.shared.encodeVideoFrame(pixelBuffer, presentationTime: pts)
+                    await broadcaster.startVideoStream(width: width, height: height)
+                    broadcaster.encodeVideoFrame(pixelBuffer, presentationTime: pts)
                 }
             } else {
-                CompanionBroadcasterService.shared.encodeVideoFrame(pixelBuffer, presentationTime: pts)
+                broadcaster.encodeVideoFrame(pixelBuffer, presentationTime: pts)
             }
         }
         let started = await capture.start()

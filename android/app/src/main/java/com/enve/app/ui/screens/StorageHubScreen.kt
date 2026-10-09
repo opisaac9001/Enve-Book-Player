@@ -95,7 +95,8 @@ fun StorageHubScreen(
                 val cache = state.cacheSizeMb.toFloatOrNull() ?: 0f
                 val appData = state.appDataSizeMb.toFloatOrNull() ?: 0f
                 val downloaded = state.downloadedSizeMb.toFloatOrNull() ?: 0f
-                val total = cache + appData + downloaded + 100f
+                val shared = state.sharedDownloadsSizeMb.toFloatOrNull() ?: 0f
+                val total = cache + appData + downloaded + shared
 
                 SettingsCard(modifier = Modifier.padding(horizontal = DS.Spacing.LG.scaled(metrics))) {
                     Column(
@@ -109,6 +110,7 @@ fun StorageHubScreen(
                                 StorageSegment("Cache", cache, Color(0xFFF5921A)),
                                 StorageSegment("App Data", appData, Color(0xFF64748B)),
                                 StorageSegment("Downloads", downloaded, Color(0xFF6F8F6A)),
+                                StorageSegment("Shared Files", shared, Color(0xFF8B6FA8)),
                             ),
                             totalMb = total,
                         )
@@ -118,6 +120,7 @@ fun StorageHubScreen(
                                 StorageSegment("Cache", cache, Color(0xFFF5921A)),
                                 StorageSegment("App Data", appData, Color(0xFF64748B)),
                                 StorageSegment("Downloads (${state.downloadedItems} items)", downloaded, Color(0xFF6F8F6A)),
+                                StorageSegment("Shared Files", shared, Color(0xFF8B6FA8)),
                             ),
                         )
                     }
@@ -146,8 +149,15 @@ fun StorageHubScreen(
                         HorizontalDivider(color = colors.separator.copy(alpha = 0.3f))
                         StorageStatRow(
                             icon = Icons.Default.Download,
-                            label = "Downloaded Items",
+                            label = "Private Downloads",
                             value = "${state.downloadedItems} · ${state.downloadedSizeMb} MB",
+                            color = Color(0xFF6F8F6A),
+                        )
+                        HorizontalDivider(color = colors.separator.copy(alpha = 0.3f))
+                        StorageStatRow(
+                            icon = Icons.Default.Storage,
+                            label = "Shared Files on This Device",
+                            value = "${state.sharedDownloadsSizeMb} MB",
                             color = Color(0xFF6F8F6A),
                         )
                     }

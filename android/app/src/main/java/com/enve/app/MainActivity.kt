@@ -1,13 +1,14 @@
 package com.enve.app
 
+import com.enve.app.profiles.ProfileActivityBinding
 import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
-import androidx.activity.viewModels
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.core.view.WindowInsetsControllerCompat
+import com.enve.hearth.shell.profileViewModel
 import com.enve.app.eink.EpdRefreshManager
 import com.enve.app.ui.EnveApp
 import com.enve.app.ui.Routes
@@ -30,10 +31,7 @@ import com.enve.app.viewmodel.ThemeViewModel
 import com.enve.app.viewmodel.ProgressConflictPrompt
 import com.enve.app.playback.PlaybackOpenProgressResolver
 import com.enve.app.playback.PlaybackProgressConflictChoice
-import com.enve.app.playback.PlayerSessionService
 import androidx.lifecycle.lifecycleScope
-import com.enve.app.data.sync.RecentlyPlayedSyncService
-import com.enve.core.data.local.PreferencesManager
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -49,26 +47,19 @@ import com.enve.app.ui.components.CastButton
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
-    private val authViewModel: AuthViewModel by viewModels()
+    private var runtimeHost: RuntimeHost? = null
+    private class RuntimeHost(val runtime: com.enve.app.profiles.ActiveProfileRuntime) : androidx.lifecycle.ViewModelStoreOwner {
+        override val viewModelStore = androidx.lifecycle.ViewModelStore()
+        val factory = com.enve.app.profiles.ProfileViewModelFactory(runtime.component)
+        val auth: AuthViewModel get() = androidx.lifecycle.ViewModelProvider(viewModelStore, factory)[AuthViewModel::class.java]
+    }
     private val openPlayerFromWidget = kotlinx.coroutines.flow.MutableStateFlow(false)
 
     @Inject
-    lateinit var epdRefreshManager: EpdRefreshManager
+    lateinit var profiles: com.enve.app.profiles.ProfileSwitchCoordinator
 
     @Inject
-    lateinit var recentlyPlayedSyncService: RecentlyPlayedSyncService
-
-    @Inject
-    lateinit var preferencesManager: PreferencesManager
-
-    @Inject
-    lateinit var hearthPreferences: com.enve.engine.prefs.PreferencesFacade
-
-    @Inject
-    lateinit var playbackOpenProgress: PlaybackOpenProgressResolver
-
-    @Inject
-    lateinit var playerSessionService: PlayerSessionService
+    lateinit var profileLifecycle: com.enve.app.profiles.ProfileLifecycleRegistry
 
     private var skipNextResumeRefresh: Boolean = true
     private var lastRefreshAtMs: Long = 0L
@@ -77,36 +68,78 @@ class MainActivity : ComponentActivity() {
         val splashScreen = installSplashScreen()
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        handleAuthCallbackIntent(intent)
         readWidgetIntent(intent)
 
-        if (savedInstanceState == null) {
-            lifecycleScope.launch {
-                delay(5_000)
-                try {
-                    if (preferencesManager.autoSyncOnLaunch.first()) {
-                        recentlyPlayedSyncService.syncOnLaunch()
-                    }
-                } catch (e: kotlinx.coroutines.CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                }
-            }
+        lifecycleScope.launch {
+            profiles.initialize()
         }
 
         setContent {
-
+            val profileState by profiles.state.collectAsState()
+            val active by profiles.activeRuntime.collectAsState()
+            val runtime = active
+            if (runtime == null || profileState.locked || profileState.switching) {
+                com.enve.hearth.design.HearthTheme {
+                    if (!profileState.switching) {
+                        com.enve.hearth.profiles.HearthProfilePickerScreen(profiles, onSelected = {})
+                    }
+                }
+                return@setContent
+            }
+            key(runtime.generation) {
+                val host = remember(runtime.generation) { RuntimeHost(runtime) }
+                DisposableEffect(host) {
+                    runtimeHost = host
+                    runtime.component.einkManager().initialize()
+                    val registration = profileLifecycle.register(runtime.profileId) {
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
+                            host.viewModelStore.clear()
+                            host.factory.retire()
+                            if (runtimeHost === host) runtimeHost = null
+                        }
+                    }
+                    handleAuthCallbackIntent(intent)
+                    onDispose {
+                        host.viewModelStore.clear()
+                        lifecycleScope.launch(kotlinx.coroutines.NonCancellable + kotlinx.coroutines.Dispatchers.Main.immediate) {
+                            try {
+                                host.factory.retire()
+                            } finally {
+                                registration.close()
+                            }
+                        }
+                        if (runtimeHost === host) runtimeHost = null
+                    }
+                }
+                LaunchedEffect(host) {
+                    delay(5_000)
+                    if (runtime.component.preferences().autoSyncOnLaunch.first()) runtime.component.recentlyPlayedSyncService().syncOnLaunch()
+                }
+                CompositionLocalProvider(
+                    com.enve.hearth.shell.LocalProfileViewModelFactory provides host.factory,
+                    androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner provides host,
+                ) {
+            val hearthPreferences = runtime.component.preferencesFacade()
+            val playbackOpenProgress = runtime.component.playbackOpenProgressResolver()
+            val epdRefreshManager = runtime.component.epdRefreshManager()
             val uiTextScale by hearthPreferences.uiTextScale.collectAsState(initial = 1f)
             val hearthMode by hearthPreferences.themeMode.collectAsState(initial = HearthThemeMode.SYSTEM)
             val hearthOled by hearthPreferences.oledEnabled.collectAsState(initial = false)
             val hearthAccentHex by hearthPreferences.accentHex.collectAsState(initial = "#F5921A")
-            val themeViewModel: ThemeViewModel = hiltViewModel()
+            val themeViewModel: ThemeViewModel = profileViewModel()
             val themeState by themeViewModel.themeState.collectAsState()
             val playbackConflict by playbackOpenProgress.pendingConflict.collectAsState()
             val hearthDark = when (hearthMode) {
                 HearthThemeMode.SYSTEM -> isSystemInDarkTheme()
                 HearthThemeMode.INK -> true
                 HearthThemeMode.PAPER -> false
+            }
+            val lightSystemBars = themeState.einkProfile.monochrome || !hearthDark
+            SideEffect {
+                WindowInsetsControllerCompat(window, window.decorView).apply {
+                    isAppearanceLightStatusBars = lightSystemBars
+                    isAppearanceLightNavigationBars = lightSystemBars
+                }
             }
             val bridgedTheme = when {
                 themeState.einkProfile.monochrome -> themeState.effectiveAppTheme
@@ -117,15 +150,20 @@ class MainActivity : ComponentActivity() {
             val bridgedAccent = remember(hearthAccentHex) { parseHexColor(hearthAccentHex) ?: EmberAccent }
 
             var classicInitialRoute by remember { mutableStateOf<String?>(null) }
+            var downloadedBookRequest by remember { mutableStateOf<Book?>(null) }
 
             var resumeHearthInSettings by remember { mutableStateOf(false) }
             if (classicInitialRoute == null) {
                 val widgetPlayerRequest by openPlayerFromWidget.collectAsState()
                 HearthRoot(
-                    imageLoader = runCatching { (application as EnveApplication).imageLoader }.getOrNull(),
+                    imageLoader = runtime.component.imageLoader(),
+                    onOpenProfiles = if (profileState.enabled) ({ classicInitialRoute = Routes.PROFILES }) else null,
+                    profileName = profileState.profiles.firstOrNull { it.id == runtime.profileId }?.name,
                     initialShowSettings = resumeHearthInSettings,
                     showPlayerRequest = widgetPlayerRequest,
                     onPlayerRequestConsumed = { openPlayerFromWidget.value = false },
+                    openBookRequest = downloadedBookRequest,
+                    onBookRequestConsumed = { downloadedBookRequest = null },
                     playerTopAction = { CastButton(Modifier.size(48.dp)) },
                     onOpdsAuthorize = { connectionId, methodType, authorizeUrl ->
                         startActivity(
@@ -199,16 +237,25 @@ class MainActivity : ComponentActivity() {
                     ) {
                         EnveApp(
                             epdRefreshManager = epdRefreshManager,
+                            profilesFacade = profiles,
                             initialRoute = classicInitialRoute,
                             onExitInitialRoute = { classicInitialRoute = null },
+                            onOpenDownloadedBook = { book ->
+                                downloadedBookRequest = book
+                                resumeHearthInSettings = false
+                                classicInitialRoute = null
+                            },
                         )
                     }
+                }
+            }
                 }
             }
         }
     }
 
     private fun HearthSettingsDestination.toRoute(): String = when (this) {
+        HearthSettingsDestination.Profiles -> Routes.PROFILES
         HearthSettingsDestination.Sources -> Routes.QUICK_CONNECT
         HearthSettingsDestination.ServerManagement -> Routes.SERVER_MANAGEMENT
         HearthSettingsDestination.LibraryHub -> Routes.LIBRARY_HUB
@@ -295,12 +342,12 @@ class MainActivity : ComponentActivity() {
         val now = System.currentTimeMillis()
         if (now - lastRefreshAtMs < 500) return
         lastRefreshAtMs = now
-        epdRefreshManager.requestTransitionRefresh(window.decorView)
+        runtimeHost?.runtime?.component?.epdRefreshManager()?.requestTransitionRefresh(window.decorView)
     }
 
     override fun onStop() {
         super.onStop()
-        if (!isChangingConfigurations) playerSessionService.flush()
+        if (!isChangingConfigurations) runtimeHost?.runtime?.component?.sessions()?.flush()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -320,6 +367,15 @@ class MainActivity : ComponentActivity() {
 
     private fun handleAuthCallbackIntent(intent: Intent?) {
         val uri = intent?.data ?: return
-        authViewModel.handleAuthCallbackUri(uri)
+        val host = runtimeHost ?: return
+        if (profiles.state.value.locked || profiles.state.value.switching) return
+        val profileId = intent.getStringExtra(ProfileActivityBinding.EXTRA_PROFILE_ID)
+        val generation = intent.getLongExtra(ProfileActivityBinding.EXTRA_GENERATION, -1L)
+        if (profileId != null) {
+            if (profileId != host.runtime.profileId || generation != host.runtime.generation) return
+        } else if (profiles.state.value.enabled) {
+            return
+        }
+        host.auth.handleAuthCallbackUri(uri)
     }
 }

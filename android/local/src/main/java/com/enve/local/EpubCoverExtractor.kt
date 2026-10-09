@@ -14,7 +14,7 @@ object EpubCoverExtractor {
 
     data class Metadata(val coverUrl: String? = null, val readAlongAvailable: Boolean = false)
 
-    fun extractMetadata(context: Context, epubUri: Uri): Metadata? {
+    fun extractMetadata(context: Context, epubUri: Uri, cacheDirectory: File = context.cacheDir): Metadata? {
         val containerBytes = readZipEntry(context, epubUri) { it == "META-INF/container.xml" }
             ?: return null
         val opfPath = parseOpfPath(containerBytes) ?: return null
@@ -33,7 +33,7 @@ object EpubCoverExtractor {
         val extension = coverHref.substringAfterLast('.', "jpg").lowercase()
             .let { if (it.matches(Regex("[a-z0-9]{1,5}"))) it else "jpg" }
 
-        val coversDir = File(context.cacheDir, COVERS_DIR).apply { mkdirs() }
+        val coversDir = File(cacheDirectory, COVERS_DIR).apply { mkdirs() }
         val filename = "${uriHash(epubUri)}.$extension"
         val coverFile = File(coversDir, filename)
         coverFile.writeBytes(coverBytes)

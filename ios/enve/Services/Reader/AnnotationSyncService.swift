@@ -22,11 +22,23 @@ final class AnnotationSyncService {
         case createBookNote(bookId: String, annotationId: String)
     }
 
+    private let defaults: UserDefaults
+    private let providerResolver: any LibraryProviderResolving
+    private let readerArtifacts: ReaderArtifactsStore
     private var pendingQueue: [SyncOperation] = []
 
-    private init() {
+    var pendingOperationCount: Int { pendingQueue.count }
+
+    init(
+        defaults: UserDefaults = .standard,
+        providerResolver: any LibraryProviderResolving = AppState.shared.providerConnections,
+        readerArtifacts: ReaderArtifactsStore = .shared
+    ) {
+        self.defaults = defaults
+        self.providerResolver = providerResolver
+        self.readerArtifacts = readerArtifacts
         loadPendingQueue()
-        if let ts = UserDefaults.standard.object(forKey: Self.lastSyncKey) as? Date {
+        if let ts = defaults.object(forKey: Self.lastSyncKey) as? Date {
             lastSyncDate = ts
         }
     }
@@ -38,7 +50,7 @@ final class AnnotationSyncService {
     }
 
     private func loadPendingQueue() {
-        guard let data = UserDefaults.standard.data(forKey: Self.pendingQueueKey),
+        guard let data = defaults.data(forKey: Self.pendingQueueKey),
             let queue = try? JSONDecoder().decode([SyncOperation].self, from: data)
         else {
             pendingQueue = []
@@ -49,13 +61,13 @@ final class AnnotationSyncService {
 
     private func savePendingQueue() {
         if let data = try? JSONEncoder().encode(pendingQueue) {
-            UserDefaults.standard.set(data, forKey: Self.pendingQueueKey)
+            defaults.set(data, forKey: Self.pendingQueueKey)
         }
     }
 
     func flushPending(for book: Book) async {
         guard !isSyncing else { return }
-        guard let provider = AppState.shared.getProvider(book.providerId) as? BookloreProvider else { return }
+        guard let provider = providerResolver.provider(for: book.providerId) as? BookloreProvider else { return }
         isSyncing = true
         defer { isSyncing = false }
         await pushPendingOperations(for: book, provider: provider)
@@ -92,7 +104,7 @@ final class AnnotationSyncService {
                 switch op {
                 case .createAnnotation(let bookId, let annotationId):
                     guard bookId == book.stableId else { remaining.append(op); continue }
-                    let annotations = ReaderArtifactsStore.shared.loadAnnotations(bookId: bookId)
+                    let annotations = readerArtifacts.loadAnnotations(bookId: bookId)
                     guard let annotation = annotations.first(where: { $0.id == annotationId }) else { continue }
                     guard annotation.remoteID == nil else { continue }
                     let record: BookloreProvider.RemoteAnnotationRecord
@@ -118,12 +130,12 @@ final class AnnotationSyncService {
                             remoteID: record.id,
                             isRemotePlaceholder: false
                         )
-                        ReaderArtifactsStore.shared.saveAnnotations(bookId: bookId, annotations: updated)
+                        readerArtifacts.saveAnnotations(bookId: bookId, annotations: updated)
                     }
 
                 case .updateAnnotation(let bookId, let annotationId):
                     guard bookId == book.stableId else { remaining.append(op); continue }
-                    let annotations = ReaderArtifactsStore.shared.loadAnnotations(bookId: bookId)
+                    let annotations = readerArtifacts.loadAnnotations(bookId: bookId)
                     guard let annotation = annotations.first(where: { $0.id == annotationId }),
                         let remoteId = annotation.remoteID
                     else { continue }
@@ -134,7 +146,7 @@ final class AnnotationSyncService {
 
                 case .createBookmark(let bookId, let bookmarkId):
                     guard bookId == book.stableId else { remaining.append(op); continue }
-                    let bookmarks = ReaderArtifactsStore.shared.loadBookmarks(bookId: bookId)
+                    let bookmarks = readerArtifacts.loadBookmarks(bookId: bookId)
                     guard let bookmark = bookmarks.first(where: { $0.id == bookmarkId }) else { continue }
                     guard bookmark.remoteID == nil else { continue }
                     let posMs: Int? = bookmark.mediaType == .audiobook ? Int(bookmark.position * 1000) : nil
@@ -160,7 +172,7 @@ final class AnnotationSyncService {
                             remoteID: record.id,
                             isRemotePlaceholder: false
                         )
-                        ReaderArtifactsStore.shared.saveBookmarks(bookId: bookId, bookmarks: updated)
+                        readerArtifacts.saveBookmarks(bookId: bookId, bookmarks: updated)
                     }
 
                 case .deleteBookmark(let remoteId):
@@ -168,7 +180,7 @@ final class AnnotationSyncService {
 
                 case .createBookNote(let bookId, let annotationId):
                     guard bookId == book.stableId else { remaining.append(op); continue }
-                    let annotations = ReaderArtifactsStore.shared.loadAnnotations(bookId: bookId)
+                    let annotations = readerArtifacts.loadAnnotations(bookId: bookId)
                     guard let annotation = annotations.first(where: { $0.id == annotationId }),
                         let noteContent = annotation.note, !noteContent.isEmpty
                     else { continue }

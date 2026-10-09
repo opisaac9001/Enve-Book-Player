@@ -23,14 +23,24 @@ import kotlinx.serialization.json.Json
 class StoryAlignWorker @AssistedInject constructor(
     @Assisted appContext: Context,
     @Assisted params: WorkerParameters,
-    private val repo: StoryAlignJobRepository,
-    private val generator: StoryAlignGenerator,
+    private val runtimes: com.enve.app.profiles.ProfileRuntimeRegistry,
 ) : CoroutineWorker(appContext, params) {
 
     private val json = Json { ignoreUnknownKeys = true }
 
     override suspend fun doWork(): Result {
         val jobId = inputData.getString(KEY_JOB_ID) ?: return Result.failure()
+        val profileId = inputData.getString(KEY_PROFILE_ID) ?: com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
+        return runtimes.withProfile(profileId) { runtime ->
+            runtime.storyAlignJobScheduler().runCaptured {
+                runJob(runtime, jobId)
+            }
+        }
+    }
+
+    private suspend fun runJob(runtime: com.enve.app.profiles.ProfileRuntimeComponent, jobId: String): Result {
+        val repo = runtime.storyAlignJobRepository()
+        val generator = runtime.storyAlignGenerator()
         val job = repo.get(jobId) ?: return Result.failure()
         val status = runCatching { StoryAlignStatus.valueOf(job.status) }.getOrNull()
         if (status == StoryAlignStatus.DONE || status == StoryAlignStatus.CANCELLED) return Result.success()
@@ -93,6 +103,7 @@ class StoryAlignWorker @AssistedInject constructor(
     companion object {
         const val CHANNEL_ID = "enve_storyalign"
         const val KEY_JOB_ID = "job_id"
+        const val KEY_PROFILE_ID = "profile_id"
         const val WORK_TAG = "storyalign"
         private const val NOTIFICATION_ID = 0xD1
     }

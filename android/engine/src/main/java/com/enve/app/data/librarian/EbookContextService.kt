@@ -1,6 +1,8 @@
 package com.enve.app.data.librarian
 
 import android.content.Context
+import com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
+import com.enve.core.data.local.ProfileStorageLocations
 import com.enve.app.data.repository.AggregatorRepository
 import com.enve.app.data.repository.GrimmoryRepository
 import com.enve.app.readium.ReadiumManager
@@ -35,6 +37,7 @@ class EbookContextService @Inject constructor(
     private val grimmoryRepository: GrimmoryRepository,
     private val store: EbookContextStore,
     private val readiumManager: ReadiumManager,
+    private val locations: ProfileStorageLocations = ProfileStorageLocations.forProfile(context, DEFAULT_ADULT_PROFILE_ID),
 ) {
     private val _buildingBookIds = MutableStateFlow<Set<String>>(emptySet())
     val buildingBookIds: StateFlow<Set<String>> = _buildingBookIds.asStateFlow()
@@ -111,7 +114,7 @@ class EbookContextService @Inject constructor(
         ).normalizeToEpub(
             source = sourceFile,
             format = book.sourceFormat,
-            outputDir = File(context.cacheDir, "librarian-normalized-ebooks"),
+            outputDir = File(locations.cacheDirectory, "librarian-normalized-ebooks"),
             outputName = fileSafeName(book.stableId),
         )
     }
@@ -119,7 +122,7 @@ class EbookContextService @Inject constructor(
     private suspend fun downloadSource(book: LibrarianBookRef): File = withContext(Dispatchers.IO) {
         val downloadUrl = aggregatorRepository.getEbookDownloadUrl(book.bookId, book.source, book.connectionId)
             ?: grimmoryRepository.getEbookDownloadUrl(book.bookId)
-        val dir = File(context.cacheDir, "librarian-ebook-sources").also { it.mkdirs() }
+        val dir = File(locations.cacheDirectory, "librarian-ebook-sources").also { it.mkdirs() }
         val safeName = fileSafeName(book.stableId)
         val cached = File(dir, "$safeName.${book.sourceFormat.extension}")
         if (cached.exists() && cached.length() > 0L) return@withContext cached

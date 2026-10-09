@@ -88,12 +88,15 @@ final class LibraryEngine {
     private let progressStore: UserProgressStore
     private let recovery: LibraryRecoveryCoordinator
 
-    init(
+    private unowned let profileSession: ProfileSession?
+
+    init(profileSession: ProfileSession? = nil,
         appState: AppState = .shared,
         catalog: LibraryCatalogCoordinator = .shared,
         progressStore: UserProgressStore = .shared,
         recovery: LibraryRecoveryCoordinator = .shared
     ) {
+        self.profileSession = profileSession
         self.appState = appState
         self.catalog = catalog
         self.progressStore = progressStore
@@ -120,9 +123,9 @@ final class LibraryEngine {
         let counterpart: Book?
         switch fresh.mediaType {
         case .ebook:
-            counterpart = await EbookAudiobookLinker.shared.linkedAudiobookAsync(for: fresh)
+            counterpart = await (profileSession?.ebookLinker ?? EbookAudiobookLinker.shared).linkedAudiobookAsync(for: fresh)
         case .audiobook:
-            counterpart = await EbookAudiobookLinker.shared.linkedEbookAsync(for: fresh)
+            counterpart = await (profileSession?.ebookLinker ?? EbookAudiobookLinker.shared).linkedEbookAsync(for: fresh)
         case .podcast:
             counterpart = nil
         }
@@ -196,6 +199,119 @@ final class LibraryEngine {
         return updated
     }
 
+    func isSaved(_ book: Book, in list: SavedBooksStore.List) -> Bool {
+        let provider = appState.providerConnections.capability(SavedBooksProvider.self, for: book)
+        return (provider?.relatedSavedBookIDs(for: book) ?? [book.uniqueId])
+            .contains { (profileSession?.savedBooks ?? SavedBooksStore.shared).contains($0, in: list) }
+    }
+
+    func toggleSaved(_ book: Book, in list: SavedBooksStore.List) async {
+        let store = (profileSession?.savedBooks ?? SavedBooksStore.shared)
+        guard !store.isUpdating(book.uniqueId, in: list) else { return }
+        store.setUpdating(true, id: book.uniqueId, in: list)
+        defer { store.setUpdating(false, id: book.uniqueId, in: list) }
+
+        let provider = appState.providerConnections.capability(SavedBooksProvider.self, for: book)
+        let relatedIDs = provider?.relatedSavedBookIDs(for: book) ?? [book.uniqueId]
+        let saved = !relatedIDs.contains { store.contains($0, in: list) }
+        for id in relatedIDs where id != book.uniqueId {
+            store.set(id, in: list, saved: false, enqueue: false)
+        }
+        store.set(book.uniqueId, in: list, saved: saved, enqueue: provider != nil)
+        store.setSyncError(nil, for: book.uniqueId)
+        guard let provider else { return }
+
+        do {
+            guard try await provider.canSyncSavedBooks() else {
+                store.set(book.uniqueId, in: list, saved: saved, enqueue: false)
+                return
+            }
+            let refreshed = await syncSavedBooks(providerId: book.providerId, provider: provider)
+            if !refreshed {
+                let source = sourceConnection(for: book)?.name ?? "the server"
+                store.setSyncError("Saved on this device, but couldn’t confirm it with \(source).", for: book.uniqueId)
+            }
+        } catch {
+            let source = sourceConnection(for: book)?.name ?? "the server"
+            store.setSyncError("Saved on this device, but couldn’t update \(source).", for: book.uniqueId)
+        }
+    }
+
+    func refreshSavedBooks() async -> [String] {
+        var failedSources: [String] = []
+        for connection in appState.providerConnections.connections where connection.isConnected && !connection.isArchived {
+            guard let provider = appState.providerConnections.provider(for: connection.id) as? SavedBooksProvider else {
+                continue
+            }
+            do {
+                guard try await provider.canSyncSavedBooks() else { continue }
+                if !(await syncSavedBooks(providerId: connection.id, provider: provider)) {
+                    failedSources.append(connection.name)
+                }
+            } catch {
+                failedSources.append(connection.name)
+            }
+        }
+        return failedSources
+    }
+
+    private func syncSavedBooks(providerId: UUID, provider: SavedBooksProvider) async -> Bool {
+        let store = (profileSession?.savedBooks ?? SavedBooksStore.shared)
+        guard store.beginSync(providerId: providerId) else { return true }
+        defer { store.endSync(providerId: providerId) }
+        store.prepareFirstSync(providerId: providerId)
+
+        var attempted = Set<UUID>()
+        var hadWriteFailure = false
+        repeat {
+            let mutations = store.pendingMutations(for: providerId).filter { !attempted.contains($0.revision) }
+            let books = await appState.bookStore.booksByUniqueIds(Set(mutations.map(\.uniqueId)))
+            for mutation in mutations {
+                attempted.insert(mutation.revision)
+                guard let book = books[mutation.uniqueId] else {
+                    hadWriteFailure = true
+                    continue
+                }
+                do {
+                    try await provider.setSavedBook(book, list: mutation.list, saved: mutation.saved)
+                } catch {
+                    hadWriteFailure = true
+                    let source = sourceConnection(for: book)?.name ?? "the server"
+                    store.setSyncError("Saved on this device, but couldn’t update \(source).", for: book.uniqueId)
+                }
+            }
+
+            do {
+                let allBooks = await appState.bookStore.allBooks()
+                let libraryIds = Set(allBooks.filter { $0.providerId == providerId }.map(\.libraryId))
+                    .union(provider.connection.selectedLibraryIds ?? [])
+                let serverSnapshot = try await provider.fetchSavedBookIDs(libraryIds: libraryIds)
+                guard !Task.isCancelled else { return false }
+                let prefix = "\(providerId)_"
+                let availableIDs = Set(allBooks.filter { $0.providerId == providerId }.map(\.id))
+                var snapshot: [SavedBookList: Set<String>] = [:]
+                for list in SavedBookList.allCases {
+                    guard let serverIDs = serverSnapshot[list] else { return false }
+                    let existingIDs = Set(store.ids(in: list)
+                        .filter { $0.hasPrefix(prefix) }
+                        .map { String($0.dropFirst(prefix.count)) })
+                        .union(store.pendingMutations(for: providerId)
+                            .filter { $0.list == list }
+                            .map { String($0.uniqueId.dropFirst(prefix.count)) })
+                    snapshot[list] = provider.localSavedBookIDs(
+                        serverIDs,
+                        existingIDs: existingIDs,
+                        availableIDs: availableIDs
+                    )
+                }
+                store.reconcile(providerId: providerId, snapshot: snapshot)
+            } catch {
+                return false
+            }
+        } while store.pendingMutations(for: providerId).contains { !attempted.contains($0.revision) }
+        return !hadWriteFailure
+    }
+
     func updateBook(uniqueId: String, _ transform: (inout Book) -> Void) -> Book? {
         appState.mutateBook(uniqueId: uniqueId, transform)
     }
@@ -211,7 +327,7 @@ final class LibraryEngine {
         }
 
         let sourceId = book.libraryId
-        AudiobookGroupingOverrideStore.shared.forceStandalone(
+        (profileSession?.groupingOverrides ?? AudiobookGroupingOverrideStore.shared).forceStandalone(
             source: book.source,
             sourceId: sourceId,
             filePath: filePath
@@ -220,14 +336,15 @@ final class LibraryEngine {
         do {
             switch book.source {
             case .local:
-                guard let library = LocalLibraryStorageStore.shared.loadLibraries().first(where: { $0.id == sourceId }) else {
+                guard let library = (profileSession?.localLibrary ?? LocalLibraryStorageStore.shared).loadLibraries().first(where: { $0.id == sourceId }) else {
                     throw AudiobookSeparationError.sourceUnavailable
                 }
-                let result = try await LocalLibraryService.shared.scanLibrary(library)
-                LocalLibraryStorageStore.shared.saveScanResult(result)
+                let result = try await (profileSession?.localLibraryService ?? LocalLibraryService.shared).scanLibrary(library)
+                (profileSession?.localLibrary ?? LocalLibraryStorageStore.shared).saveScanResult(result)
                 catalog.forceNextLocalRefresh = true
                 await catalog.refreshLocalLibrariesFromUI()
             case .smb:
+                guard profileSession?.isOwner ?? true else { throw AudiobookSeparationError.sourceUnavailable }
                 guard let source = await SMBLibraryService.shared.getSources().first(where: { $0.id == sourceId }) else {
                     throw AudiobookSeparationError.sourceUnavailable
                 }
@@ -244,7 +361,7 @@ final class LibraryEngine {
                 throw AudiobookSeparationError.unsupported
             }
         } catch {
-            AudiobookGroupingOverrideStore.shared.removeForcedStandalone(
+            (profileSession?.groupingOverrides ?? AudiobookGroupingOverrideStore.shared).removeForcedStandalone(
                 source: book.source,
                 sourceId: sourceId,
                 filePath: filePath
@@ -255,12 +372,26 @@ final class LibraryEngine {
 
     @discardableResult
     func resolveReadAloudIfUnknown(for book: Book) async -> Book? {
-        guard book.mediaType == .ebook, book.epub3Features == nil,
-            let provider = appState.getProvider(book.providerId) as? BookloreProvider,
-            let features = await provider.fetchEPUB3Features(bookId: book.id)
-        else { return nil }
-
-        var updated = updateBook(uniqueId: book.uniqueId) { $0.epub3Features = features } ?? book
+        guard book.mediaType == .ebook, book.epub3Features?.hasMediaOverlay != true,
+            profileSession?.isRetired != true else { return nil }
+        var features: EPUB3Features?
+        #if os(iOS)
+        let downloads = profileSession?.downloads ?? UnifiedDownloadService.shared
+        if let fileURL = downloads.existingReaderAsset(for: book),
+            fileURL.pathExtension.caseInsensitiveCompare("epub") == .orderedSame
+        {
+            features = await EPUB3SMILParser.detectFeatures(epubFileURL: fileURL)
+        }
+        #endif
+        if features?.hasMediaOverlay != true,
+            let provider = appState.getProvider(book.providerId) as? BookloreProvider
+        {
+            features = await provider.fetchEPUB3Features(bookId: book.id) ?? features
+        }
+        guard let features, profileSession?.isRetired != true, !Task.isCancelled else { return nil }
+        let current = await appState.bookStore.book(uniqueId: book.uniqueId) ?? book
+        guard profileSession?.isRetired != true, !Task.isCancelled else { return nil }
+        var updated = updateBook(uniqueId: book.uniqueId) { $0.epub3Features = features } ?? current
         updated.epub3Features = features
         await appState.bookStore.upsertBooks([updated])
         notifyLibraryChanged()
@@ -275,7 +406,7 @@ final class LibraryEngine {
             persistedBook = updated
         } else {
             Task(priority: .background) {
-                await AppState.shared.bookStore.upsertBooks([persistedBook])
+                await appState.bookStore.upsertBooks([persistedBook])
             }
         }
 
@@ -291,7 +422,7 @@ final class LibraryEngine {
 
         ActivePlayback.composition.bookMetadataUpdater.updateChapters(chapters, for: book)
 
-        PlayerViewModel.shared.refreshFromCurrentPlayback()
+        (profileSession?.playback.player ?? PlayerViewModel.shared).refreshFromCurrentPlayback()
     }
 
     private func isSameBook(_ lhs: Book, _ rhs: Book) -> Bool {
@@ -314,7 +445,7 @@ final class LibraryEngine {
         }
         updated.lastUpdate = observedAt
         Task {
-            await LinkedBookProgressCoordinator.shared.setPairFinished(
+            await (profileSession?.linkedProgress ?? LinkedBookProgressCoordinator.shared).setPairFinished(
                 from: updated,
                 finished: updated.isFinished,
                 observedAt: observedAt
@@ -326,7 +457,7 @@ final class LibraryEngine {
     func resetProgressToBeginning(for book: Book) {
         progressStore.resetToBeginning(for: book)
         Task {
-            await LinkedBookProgressCoordinator.shared.resetPair(from: book)
+            await (profileSession?.linkedProgress ?? LinkedBookProgressCoordinator.shared).resetPair(from: book)
         }
     }
 
@@ -339,12 +470,12 @@ final class LibraryEngine {
         guard !books.isEmpty else { return }
         recovery.removeBooks(books)
 
-        var preferences = LibraryDisplayPreferencesStore.shared.loadPreferences()
+        var preferences = (profileSession?.preferences ?? LibraryDisplayPreferencesStore.shared).loadPreferences()
         for book in books {
             preferences.hiddenBookIds.insert(book.stableId)
             preferences.hiddenBookNames[book.stableId] = book.title
         }
-        LibraryDisplayPreferencesStore.shared.savePreferences(preferences)
+        (profileSession?.preferences ?? LibraryDisplayPreferencesStore.shared).savePreferences(preferences)
 
         for stableId in books.map(\.stableId) {
             await appState.bookStore.setHidden(true, stableId: stableId)
@@ -360,7 +491,7 @@ final class LibraryEngine {
     }
 
     func recentlyDeletedEntries() -> [RecentlyDeletedBookEntry] {
-        DeletedBooksTombstoneStore.shared.allEntries.map {
+        (profileSession?.deletedBooks ?? DeletedBooksTombstoneStore.shared).allEntries.map {
             RecentlyDeletedBookEntry(stableId: $0.stableId, title: $0.title, deletedAt: $0.deletedAt)
         }
     }
@@ -370,18 +501,18 @@ final class LibraryEngine {
     }
 
     func unlinkAudiobook(from ebook: Book) -> Book {
-        if EbookAudiobookLinker.shared.linkedAudiobook(for: ebook) != nil {
-            if #available(iOS 26.0, *) {
-                StoryAlignService.shared.deleteConversions(involving: ebook)
+        if (profileSession?.ebookLinker ?? EbookAudiobookLinker.shared).linkedAudiobook(for: ebook) != nil {
+            if profileSession?.isOwner ?? true, #available(iOS 26.0, *) {
+                (profileSession?.storyAlignService ?? StoryAlignService.shared).deleteConversions(involving: ebook)
             }
         }
         appState.mutateBook(uniqueId: ebook.uniqueId) {
             $0.linkedAudiobookStableId = nil
             $0.linkedAudiobookChapterOffset = 0
         }
-        EbookLinkStore.shared.saveLinks()
-        EbookAudiobookLinker.shared.invalidateCache()
-        LinkedBookProgressCoordinator.shared.removeMapping(ebookStableId: ebook.stableId)
+        (profileSession?.ebookLinks ?? EbookLinkStore.shared).saveLinks()
+        (profileSession?.ebookLinker ?? EbookAudiobookLinker.shared).invalidateCache()
+        (profileSession?.linkedProgress ?? LinkedBookProgressCoordinator.shared).removeMapping(ebookStableId: ebook.stableId)
         Task {
             guard appState.bookInMemory(stableId: ebook.stableId)?.linkedAudiobookStableId == nil else {
                 return
@@ -400,14 +531,14 @@ final class LibraryEngine {
             $0.linkedAudiobookChapterOffset = 0
         }
         guard updated != nil else { return false }
-        EbookLinkStore.shared.saveLinks()
+        (profileSession?.ebookLinks ?? EbookLinkStore.shared).saveLinks()
         await appState.bookStore.upsertLink(
             ebookStableId: ebook.stableId,
             audiobookStableId: audiobook.stableId,
             chapterOffset: 0
         )
-        EbookAudiobookLinker.shared.invalidateCache()
-        LinkedBookProgressCoordinator.shared.removeMapping(ebookStableId: ebook.stableId)
+        (profileSession?.ebookLinker ?? EbookAudiobookLinker.shared).invalidateCache()
+        (profileSession?.linkedProgress ?? LinkedBookProgressCoordinator.shared).removeMapping(ebookStableId: ebook.stableId)
 
         var linkedAudiobook = audiobook
         if linkedAudiobook.chapters?.isEmpty != false {
@@ -416,9 +547,9 @@ final class LibraryEngine {
         }
 
         guard let linkedEbook = appState.bookInMemory(uniqueId: ebook.uniqueId) else { return true }
-        if let ebookChapters = await EbookChapterSyncService.shared.extractEbookChapters(for: linkedEbook) {
+        if let ebookChapters = await (profileSession?.ebookChapters ?? EbookChapterSyncService.shared).extractEbookChapters(for: linkedEbook) {
             let offset =
-                EbookChapterSyncService.shared.recommendedOffset(
+                (profileSession?.ebookChapters ?? EbookChapterSyncService.shared).recommendedOffset(
                     ebookChapters: ebookChapters,
                     audiobookChapters: linkedAudiobook.chapters
                 ) ?? 0
@@ -426,29 +557,29 @@ final class LibraryEngine {
                 appState.mutateBook(uniqueId: ebook.uniqueId) {
                     $0.linkedAudiobookChapterOffset = offset
                 }
-                EbookLinkStore.shared.saveLinks()
+                (profileSession?.ebookLinks ?? EbookLinkStore.shared).saveLinks()
                 await appState.bookStore.upsertLink(
                     ebookStableId: ebook.stableId,
                     audiobookStableId: audiobook.stableId,
                     chapterOffset: offset
                 )
-                EbookAudiobookLinker.shared.invalidateCache()
+                (profileSession?.ebookLinker ?? EbookAudiobookLinker.shared).invalidateCache()
             }
 
-            if let synced = EbookChapterSyncService.shared.syncChaptersIfPossible(
+            if let synced = (profileSession?.ebookChapters ?? EbookChapterSyncService.shared).syncChaptersIfPossible(
                 ebookChapters: ebookChapters,
                 audiobookChapters: linkedAudiobook.chapters,
                 offset: offset
             ) {
                 appState.mutateBook(uniqueId: ebook.uniqueId) { $0.chapters = synced }
-                ReaderArtifactsStore.shared.saveCachedChapters(bookId: linkedEbook.stableId, chapters: synced)
+                (profileSession?.readerArtifacts ?? ReaderArtifactsStore.shared).saveCachedChapters(bookId: linkedEbook.stableId, chapters: synced)
                 if linkedEbook.id != linkedEbook.stableId {
-                    ReaderArtifactsStore.shared.saveCachedChapters(bookId: linkedEbook.id, chapters: synced)
+                    (profileSession?.readerArtifacts ?? ReaderArtifactsStore.shared).saveCachedChapters(bookId: linkedEbook.id, chapters: synced)
                 }
             }
         }
 
-        await LinkedBookProgressCoordinator.shared.reconcilePair(for: linkedEbook)
+        await (profileSession?.linkedProgress ?? LinkedBookProgressCoordinator.shared).reconcilePair(for: linkedEbook)
         return true
     }
 
@@ -481,7 +612,7 @@ final class LibraryEngine {
         if mediaType == nil, let remote = remoteBrowse(sourceFilter),
             let count = try? await remote.provider.remoteBookCount(libraryId: remote.libraryId)
         {
-            RemoteLibraryBrowseStore.shared.record(
+            (profileSession?.remoteLibraryBrowse ?? RemoteLibraryBrowseStore.shared).record(
                 providerId: remote.provider.connection.id,
                 libraryId: remote.libraryId,
                 bookCount: count
@@ -522,7 +653,7 @@ final class LibraryEngine {
 
     private func remoteBrowse(_ sourceFilter: LibrarySourceFilter) -> (provider: BookloreProvider, libraryId: String)? {
         guard case let .library(providerId, libraryId) = sourceFilter,
-            RemoteLibraryBrowseStore.shared.isRemoteBrowsed(providerId: providerId, libraryId: libraryId),
+            (profileSession?.remoteLibraryBrowse ?? RemoteLibraryBrowseStore.shared).isRemoteBrowsed(providerId: providerId, libraryId: libraryId),
             let provider = appState.getProvider(providerId) as? BookloreProvider,
             provider.supportsRemoteBrowsing
         else { return nil }
@@ -531,13 +662,18 @@ final class LibraryEngine {
 
     private func mergingStoredRecords(_ remote: [Book]) async -> [Book] {
         guard !remote.isEmpty else { return [] }
-        let suppressed = DeletedBooksTombstoneStore.shared.allDeleted
-            .union(LibraryDisplayPreferencesStore.shared.loadPreferences().hiddenBookIds)
+        let suppressed = (profileSession?.deletedBooks ?? DeletedBooksTombstoneStore.shared).allDeleted
+            .union((profileSession?.preferences ?? LibraryDisplayPreferencesStore.shared).loadPreferences().hiddenBookIds)
         let stored = await appState.bookStore.booksByUniqueIds(Set(remote.map(\.uniqueId)))
         return remote.compactMap { book in
             guard !suppressed.contains(book.stableId) else { return nil }
             return stored[book.uniqueId] ?? book
         }
+    }
+
+    func savedBooks(withUniqueIds ids: [String]) async -> [Book] {
+        let stored = await appState.bookStore.booksByUniqueIds(Set(ids))
+        return ids.compactMap { stored[$0] }
     }
 
     private static func remoteSort(for sort: [BookStoreSortDescriptor]) -> (field: GrimmoryRemoteSort, descending: Bool)? {
@@ -569,10 +705,10 @@ final class LibraryEngine {
             return book.isFinished
         case .downloaded:
             if book.mediaType == .ebook {
-                return LibraryBookActions.hasPermanentEbookDownload(book)
+                return (profileSession?.engine ?? EnveEngine.shared).downloads.hasPermanentEbookDownload(book)
             }
             return downloadedIds.contains(book.stableId)
-                && EnveEngine.shared.downloads.isAudiobookDownloaded(book)
+                && (profileSession?.engine ?? EnveEngine.shared).downloads.isAudiobookDownloaded(book)
         }
     }
 
@@ -828,7 +964,7 @@ final class LibraryEngine {
     func continueListeningBooks(limit: Int) async -> [Book] {
         let persisted = await appState.bookStore.continueListeningBooks(limit: limit)
         let recentStableIds = Set(
-            BookProgressStore.shared.loadSnapshots()
+            (profileSession?.bookProgress ?? BookProgressStore.shared).loadSnapshots()
                 .filter { $0.book.mediaType == .audiobook }
                 .map(\.stableId)
         )
@@ -836,7 +972,7 @@ final class LibraryEngine {
 
         let recentBooks = await appState.bookStore.booksByStableIds(recentStableIds).values.compactMap { book -> Book? in
             guard !book.isFinished, !book.hideFromContinue,
-                let progress = BookProgressStore.shared.loadProgress(for: book),
+                let progress = (profileSession?.bookProgress ?? BookProgressStore.shared).loadProgress(for: book),
                 progress.progress > 0,
                 book.duration.map({ progress.progress < $0 * Book.finishedProgressThreshold }) ?? true
             else {
@@ -925,7 +1061,7 @@ final class LibraryEngine {
     }
 
     func currentCollection(for seed: Collection) -> Collection {
-        UserCollectionStore.shared.collections.first { $0.id == seed.id }
+        (profileSession?.userCollections ?? UserCollectionStore.shared).collections.first { $0.id == seed.id }
             ?? catalog.collections.first { $0.id == seed.id && $0.providerId == seed.providerId }
             ?? seed
     }
@@ -941,7 +1077,7 @@ final class LibraryEngine {
         guard !additions.isEmpty else { return 0 }
         memberIDs.append(contentsOf: additions)
 
-        UserCollectionStore.shared.save(
+        (profileSession?.userCollections ?? UserCollectionStore.shared).save(
             Collection(
                 id: current.id,
                 name: current.name,
@@ -981,17 +1117,17 @@ final class LibraryEngine {
             providerId: nil,
             isUserGenerated: true
         )
-        UserCollectionStore.shared.save(collection)
+        (profileSession?.userCollections ?? UserCollectionStore.shared).save(collection)
         return collection
     }
 
     func currentSmartCollection(for seed: SmartCollection) -> SmartCollection {
-        SmartCollectionStore.shared.merged.first { $0.id == seed.id } ?? seed
+        (profileSession?.smartCollections ?? SmartCollectionStore.shared).merged.first { $0.id == seed.id } ?? seed
     }
 
     func collectionsOverview() async -> LibraryCollectionsOverview {
-        let smart = SmartCollectionStore.shared.merged
-        let mine = UserCollectionStore.shared.collections
+        let smart = (profileSession?.smartCollections ?? SmartCollectionStore.shared).merged
+        let mine = (profileSession?.userCollections ?? UserCollectionStore.shared).collections
         let server = catalog.collections.filter { !$0.isUserGenerated }
 
         var smartPreviews: [String: (count: Int, book: Book?)] = [:]
@@ -1054,7 +1190,7 @@ final class LibraryEngine {
                 parentID: smartCollection?.parentID,
                 customCoverPath: coverPath
             )
-            SmartCollectionStore.shared.save(updated)
+            (profileSession?.smartCollections ?? SmartCollectionStore.shared).save(updated)
         } else {
             let updated = Collection(
                 id: id,
@@ -1070,15 +1206,15 @@ final class LibraryEngine {
                 isSystem: collection?.isSystem ?? false,
                 isUserGenerated: true
             )
-            UserCollectionStore.shared.save(updated)
+            (profileSession?.userCollections ?? UserCollectionStore.shared).save(updated)
         }
     }
 
     func deleteCollection(collection: Collection?, smartCollection: SmartCollection?) {
         if let smartCollection {
-            SmartCollectionStore.shared.delete(smartCollection)
+            (profileSession?.smartCollections ?? SmartCollectionStore.shared).delete(smartCollection)
         } else if let collection {
-            UserCollectionStore.shared.delete(collection)
+            (profileSession?.userCollections ?? UserCollectionStore.shared).delete(collection)
         }
     }
 
@@ -1316,7 +1452,7 @@ final class LibraryEngine {
 
     func homeDownloadedBooks(limit: Int) async -> [Book] {
         let ebooks = await appState.bookStore.downloadedEbooks(limit: limit)
-        let storage = LocalStorageManager.shared
+        let storage = (profileSession?.localStorage ?? LocalStorageManager.shared)
         let downloadedIds = await Task.detached(priority: .userInitiated) {
             Set(storage.downloadedAudiobookIds())
         }.value
@@ -1362,7 +1498,7 @@ final class LibraryEngine {
     }
 
     func workView(workKey key: String) async -> WorkView? {
-        let overrides = WorkOverrideStore.shared
+        let overrides = (profileSession?.workOverrides ?? WorkOverrideStore.shared)
         var members = await appState.bookStore.books(workKey: key)
         for id in overrides.stableIdsMerged(into: key) {
             if let extra = await appState.bookStore.book(stableId: id) {
@@ -1379,7 +1515,7 @@ final class LibraryEngine {
     }
 
     func splitWorkSource(stableId: String) {
-        WorkOverrideStore.shared.split(stableId: stableId)
+        (profileSession?.workOverrides ?? WorkOverrideStore.shared).split(stableId: stableId)
         NotificationCenter.default.post(name: .bookStoreDidChange, object: nil)
     }
 
@@ -1389,12 +1525,12 @@ final class LibraryEngine {
     }
 
     func confirmWorkMergeSuggestion(_ suggestion: WorkMergeSuggestion) {
-        WorkOverrideStore.shared.merge(stableIds: suggestion.stableIds, intoComputedWorkKey: suggestion.targetWorkKey)
+        (profileSession?.workOverrides ?? WorkOverrideStore.shared).merge(stableIds: suggestion.stableIds, intoComputedWorkKey: suggestion.targetWorkKey)
         NotificationCenter.default.post(name: .bookStoreDidChange, object: nil)
     }
 
     func dismissWorkMergeSuggestion(_ suggestion: WorkMergeSuggestion) {
-        WorkOverrideStore.shared.dismissSuggestion(id: suggestion.id)
+        (profileSession?.workOverrides ?? WorkOverrideStore.shared).dismissSuggestion(id: suggestion.id)
     }
 
     func seriesAggregates(mediaScope: [String], providerId: UUID? = nil, libraryId: String? = nil) async -> [BrowseSeriesAggregate] {

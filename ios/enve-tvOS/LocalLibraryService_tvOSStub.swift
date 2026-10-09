@@ -5,6 +5,8 @@ actor LocalLibraryService {
 
     init() {}
 
+    init(storage: ProfileStorageLocations, localLibrary: LocalLibraryStorageStore, ebooks: LocalEbookImporter, groupingOverrides: AudiobookGroupingOverrideStore) {}
+
     nonisolated static let fileSharingLibraryId = "file-sharing"
 
     nonisolated static var fileSharingRootURL: URL {

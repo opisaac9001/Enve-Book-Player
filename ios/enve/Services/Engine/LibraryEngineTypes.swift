@@ -82,17 +82,3 @@ enum DetailSeriesOrder {
             ?? .greatestFiniteMagnitude
     }
 }
-
-enum LibraryBookActions {
-    static func isDownloaded(_ book: Book) -> Bool {
-        EnveEngine.shared.downloads.isLibraryDownloaded(book)
-    }
-
-    static func hasPermanentEbookDownload(_ book: Book) -> Bool {
-        EnveEngine.shared.downloads.hasPermanentEbookDownload(book)
-    }
-
-    static func removeDownload(_ book: Book) {
-        Task { await EnveEngine.shared.downloads.removeLibraryDownload(for: book) }
-    }
-}

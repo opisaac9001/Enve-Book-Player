@@ -4,12 +4,14 @@ import Logging
 final class EbookChapterSyncService: @unchecked Sendable {
     static let shared = EbookChapterSyncService()
 
-    private init() {}
+    private let importer: LocalEbookImporter
+
+    init(importer: LocalEbookImporter = .shared) { self.importer = importer }
 
     func resolvedFileURL(for ebook: Book) -> URL? {
         guard ebook.mediaType == .ebook else { return nil }
 
-        return LocalEbookImporter.shared.resolveExistingLocalEbookURL(
+        return importer.resolveExistingLocalEbookURL(
             bookIdentifier: ebook.id,
             ebookFileURL: ebook.ebookFileURL,
             filePath: ebook.filePath
@@ -21,7 +23,7 @@ final class EbookChapterSyncService: @unchecked Sendable {
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
 
         do {
-            let localChapters = try await LocalEbookImporter.shared.extractChapters(from: fileURL)
+            let localChapters = try await importer.extractChapters(from: fileURL)
             guard !localChapters.isEmpty else { return nil }
 
             return localChapters.enumerated().map { index, chapter in

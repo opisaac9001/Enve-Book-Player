@@ -42,7 +42,7 @@ import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.hilt.navigation.compose.hiltViewModel
+import com.enve.hearth.shell.profileViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.enve.core.data.model.Book
 import com.enve.hearth.design.CoverTile
@@ -63,7 +63,7 @@ fun HearthJournalScreen(
     onOpenSleep: () -> Unit,
     onOpenSettings: () -> Unit = {},
 ) {
-    val vm: HearthJournalViewModel = hiltViewModel()
+    val vm: HearthJournalViewModel = profileViewModel()
     val stats by vm.stats.collectAsStateWithLifecycle()
     val mantel by vm.mantel.collectAsStateWithLifecycle()
     val heatmap by vm.heatmap.collectAsStateWithLifecycle()

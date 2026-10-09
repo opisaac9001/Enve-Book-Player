@@ -8,6 +8,7 @@ import com.enve.core.data.model.PodcastShow
 import com.enve.engine.playback.PlaybackFacade
 import com.enve.engine.playback.PlaybackTransport
 import com.enve.engine.podcasts.PodcastsFacade
+import com.enve.engine.podcasts.PodcastDirectoryShow
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -46,6 +47,15 @@ class PodcastShowViewModel @Inject constructor(
     private val podcasts: PodcastsFacade,
     private val playback: PlaybackFacade,
 ) : ViewModel() {
+    val subscriptions = podcasts.subscriptions
+
+    fun toggleSubscription(show: PodcastShow) {
+        val feedUrl = show.feedUrl ?: return
+        viewModelScope.launch {
+            if (subscriptions.value.any { it.feedUrl == feedUrl }) podcasts.unsubscribe(feedUrl)
+            else podcasts.subscribe(PodcastDirectoryShow(show.id, show.title, show.author, feedUrl, show.coverUrl, show.genres, show.episodes.size))
+        }
+    }
     private val load = MutableStateFlow<PodcastShowLoad>(PodcastShowLoad.Loading)
     private val query = MutableStateFlow("")
     private val newestFirst = MutableStateFlow(true)

@@ -5,6 +5,7 @@ import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.ProviderConnection
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class AggregatorConnectionSelectionTest {
@@ -21,7 +22,7 @@ class AggregatorConnectionSelectionTest {
             connectionId = audiobookshelf.id,
         )
 
-        assertEquals(storyteller, selectConnectionForBook(book, listOf(audiobookshelf, storyteller)))
+        assertNull(selectConnectionForBook(book, listOf(audiobookshelf, storyteller)))
     }
 
     @Test
@@ -45,14 +46,22 @@ class AggregatorConnectionSelectionTest {
         val storyteller = connection("storyteller", BookSource.STORYTELLER)
         val audiobookshelf = connection("abs", BookSource.AUDIOBOOKSHELF)
 
-        assertEquals(
-            storyteller,
+        assertNull(
             selectConnectionForSource(
                 source = BookSource.STORYTELLER,
                 connectionId = audiobookshelf.id,
                 connections = listOf(audiobookshelf, storyteller),
             ),
         )
+    }
+
+    @Test
+    fun explicitDisabledOrRemovedConnectionCannotSelectAnotherAccount() {
+        val a = connection("a", BookSource.AUDIOBOOKSHELF).copy(enabled = false)
+        val b = connection("b", BookSource.AUDIOBOOKSHELF)
+        assertNull(selectConnectionForSource(BookSource.AUDIOBOOKSHELF, a.id, listOf(a, b)))
+        assertNull(selectConnectionForSource(BookSource.AUDIOBOOKSHELF, a.id, listOf(b)))
+        assertEquals(b, selectConnectionForSource(BookSource.AUDIOBOOKSHELF, null, listOf(a, b)))
     }
 
     private fun connection(id: String, source: BookSource) = ProviderConnection(

@@ -1,6 +1,8 @@
 package com.enve.app.data.sync
 
 import android.content.Context
+import com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
+import com.enve.core.data.local.ProfileStorageLocations
 import android.util.Log
 import com.enve.core.data.local.BookCacheDao
 import com.enve.core.auth.CredentialVault
@@ -34,7 +36,11 @@ class KOReaderHubService @Inject constructor(
     private val deviceIdentity: DeviceIdentity,
     private val bookCacheDao: BookCacheDao,
     @ApplicationContext private val context: Context,
+    private val locations: ProfileStorageLocations = ProfileStorageLocations.forProfile(context, DEFAULT_ADULT_PROFILE_ID),
+    private val serverSync: com.enve.core.data.local.ProfileServerSyncStore = com.enve.core.data.local.ProfileServerSyncStore(context, locations),
 ) {
+    private val linksLock = Any()
+    private var linksGeneration = 0L
     private val json = Json { ignoreUnknownKeys = true }
 
     val config: KOReaderHubConfig
@@ -60,7 +66,10 @@ class KOReaderHubService @Inject constructor(
     suspend fun clearConfig() {
         prefs.clearKosyncHubConfig()
         vault.remove(CredentialVault.KOSYNC_HUB_PASSWORD_HASH)
-        vault.remove(CredentialVault.KOSYNC_HUB_LINKS_JSON)
+        synchronized(linksLock) {
+            linksGeneration++
+            vault.remove(CredentialVault.KOSYNC_HUB_LINKS_JSON)
+        }
     }
 
     suspend fun authorize(): Result<Unit> {
@@ -81,9 +90,9 @@ class KOReaderHubService @Inject constructor(
         return client.authorize(base, username, md5Hash(plaintextPassword))
     }
 
-    private fun loadLinks(): MutableMap<String, KOReaderBookLink> {
-        val raw = vault.get(CredentialVault.KOSYNC_HUB_LINKS_JSON) ?: return mutableMapOf()
-        return runCatching {
+    private fun loadLinks(): MutableMap<String, KOReaderBookLink> = synchronized(linksLock) {
+        val raw = vault.get(CredentialVault.KOSYNC_HUB_LINKS_JSON) ?: return@synchronized mutableMapOf()
+        runCatching {
             json.decodeFromString(ListSerializer(KOReaderBookLink.serializer()), raw)
                 .associateBy { it.bookStableId }
                 .toMutableMap()
@@ -107,56 +116,64 @@ class KOReaderHubService @Inject constructor(
         isAutomatic: Boolean,
         fileIdentity: KOReaderFileIdentity? = null,
     ) {
-        val trimmed = documentHash.trim().lowercase()
-        if (trimmed.length != 32 || !trimmed.all { it.isDigit() || it in 'a'..'f' }) return
-        val links = loadLinks()
-        links[book.uniqueKey] = repairedLink(
-            previous = links[book.uniqueKey],
-            bookStableId = book.uniqueKey,
-            documentHash = trimmed,
-            isAutomatic = isAutomatic,
-            fileIdentity = fileIdentity,
-        )
-        saveLinks(links)
+        synchronized(linksLock) {
+            val trimmed = documentHash.trim().lowercase()
+            if (trimmed.length != 32 || !trimmed.all { it.isDigit() || it in 'a'..'f' }) return
+            val links = loadLinks()
+            links[book.uniqueKey] = repairedLink(
+                previous = links[book.uniqueKey],
+                bookStableId = book.uniqueKey,
+                documentHash = trimmed,
+                isAutomatic = isAutomatic,
+                fileIdentity = fileIdentity,
+            )
+            saveLinks(links)
+        }
     }
 
     fun linkFilename(book: Book, filename: String?) {
-        val trimmed = filename?.trim()?.takeIf { it.isNotEmpty() }
-        val links = loadLinks()
-        val existing = links[book.uniqueKey]
-        when {
-            existing != null -> {
-                if (existing.filename == trimmed) return
-                if (trimmed == null && existing.documentHash.isBlank()) links.remove(book.uniqueKey)
-                else links[book.uniqueKey] = existing.copy(filename = trimmed)
+        synchronized(linksLock) {
+            val trimmed = filename?.trim()?.takeIf { it.isNotEmpty() }
+            val links = loadLinks()
+            val existing = links[book.uniqueKey]
+            when {
+                existing != null -> {
+                    if (existing.filename == trimmed) return
+                    if (trimmed == null && existing.documentHash.isBlank()) links.remove(book.uniqueKey)
+                    else links[book.uniqueKey] = existing.copy(filename = trimmed)
+                }
+                trimmed != null -> links[book.uniqueKey] = KOReaderBookLink(
+                    bookStableId = book.uniqueKey,
+                    isAutomatic = true,
+                    filename = trimmed,
+                )
+                else -> return
             }
-            trimmed != null -> links[book.uniqueKey] = KOReaderBookLink(
-                bookStableId = book.uniqueKey,
-                isAutomatic = true,
-                filename = trimmed,
-            )
-            else -> return
+            saveLinks(links)
         }
-        saveLinks(links)
     }
 
     fun unlink(bookStableId: String) {
-        val links = loadLinks()
-        if (links.remove(bookStableId) != null) saveLinks(links)
+        synchronized(linksLock) {
+            val links = loadLinks()
+            if (links.remove(bookStableId) != null) saveLinks(links)
+        }
     }
 
     private fun updateLinkSyncStatus(bookStableId: String, percentage: Double) {
-        val links = loadLinks()
-        val link = links[bookStableId] ?: return
-        links[bookStableId] = link.copy(
-            lastSyncedAt = System.currentTimeMillis(),
-            lastSyncedPercentage = percentage,
-        )
-        saveLinks(links)
+        synchronized(linksLock) {
+            val links = loadLinks()
+            val link = links[bookStableId] ?: return
+            links[bookStableId] = link.copy(
+                lastSyncedAt = System.currentTimeMillis(),
+                lastSyncedPercentage = percentage,
+            )
+            saveLinks(links)
+        }
     }
 
     private suspend fun ensureDocumentHash(book: Book): String? {
-        val existing = loadLinks()[book.uniqueKey]
+        val (existing, generation) = synchronized(linksLock) { loadLinks()[book.uniqueKey] to linksGeneration }
         val pinned = existing?.documentHash?.takeIf { it.isNotBlank() }
         if (existing != null && !existing.isAutomatic) return pinned
         if (book.mediaType != AppMediaType.EBOOK) return pinned
@@ -166,10 +183,14 @@ class KOReaderHubService @Inject constructor(
         val hash = computePartialMd5(file) ?: return pinned
         if (KOReaderFileIdentity.read(file) != identity) return pinned
 
-        val current = loadLinks()[book.uniqueKey]
-        if (current != existing) return current?.documentHash?.takeIf { it.isNotBlank() }
-        link(book, hash, isAutomatic = true, fileIdentity = identity)
-        return hash
+        return synchronized(linksLock) {
+            val current = loadLinks()[book.uniqueKey]
+            if (linksGeneration != generation || current != existing) {
+                return@synchronized current?.documentHash?.takeIf { it.isNotBlank() }
+            }
+            link(book, hash, isAutomatic = true, fileIdentity = identity)
+            hash
+        }
     }
 
     fun suggestedFilename(book: Book): String? =
@@ -181,7 +202,7 @@ class KOReaderHubService @Inject constructor(
     )
 
     fun resolveEbookFile(book: Book): File? {
-        val dir = File(context.cacheDir, "ebooks")
+        val dir = File(locations.cacheDirectory, "ebooks")
         if (!dir.isDirectory) return null
         val safeName = book.id.replace(Regex("[^a-zA-Z0-9_-]"), "_")
         return dir.listFiles()
@@ -195,6 +216,8 @@ class KOReaderHubService @Inject constructor(
         withContext(Dispatchers.IO) { runCatching { PartialMd5.compute(file) }.getOrNull() }
 
     suspend fun pushIfConfigured(book: Book, percentage: Float, locatorJson: String?) {
+        val syncStartedAt = System.currentTimeMillis()
+        if (!serverSync.isEnabled) return
         val c = config
         if (!c.isConfigured || !c.autoSyncEnabled) return
         if (book.mediaType != AppMediaType.EBOOK) return
@@ -208,6 +231,7 @@ class KOReaderHubService @Inject constructor(
         val progressStr = xpointer ?: String.format(java.util.Locale.US, "%.6f", percentage)
 
         try {
+            if (!serverSync.accepts(syncStartedAt)) return
             client.pushProgress(
                 baseUrl = base,
                 username = c.username,
@@ -228,6 +252,8 @@ class KOReaderHubService @Inject constructor(
     }
 
     suspend fun snapshotFor(book: Book): SyncSnapshot? {
+        val syncStartedAt = System.currentTimeMillis()
+        if (!serverSync.isEnabled) return null
         val c = config
         if (!c.isConfigured) return null
         if (book.mediaType != AppMediaType.EBOOK) return null
@@ -248,6 +274,7 @@ class KOReaderHubService @Inject constructor(
             KOReaderHubXPointerConverter.locatorJson(remote.progress, pct, file)
         } else null
 
+        if (!serverSync.accepts(syncStartedAt)) return null
         return SyncSnapshot(
             percentage = pct.toFloat(),
             locatorJson = locatorJson,
@@ -257,6 +284,8 @@ class KOReaderHubService @Inject constructor(
     }
 
     suspend fun pullAllAndMerge(): Int {
+        val syncStartedAt = System.currentTimeMillis()
+        if (!serverSync.isEnabled) return 0
         val c = config
         if (!c.isConfigured) return 0
         val ebooks = bookCacheDao.observeAll().first()
@@ -269,6 +298,7 @@ class KOReaderHubService @Inject constructor(
                 val snapshot = snapshotFor(book) ?: continue
                 val local = book.epubProgress ?: 0f
                 if (snapshot.percentage <= local + 0.005f) continue
+                if (!serverSync.accepts(syncStartedAt)) return applied
                 bookCacheDao.updateUnifiedProgress(
                     bookId = book.id,
                     connectionId = book.connectionId,

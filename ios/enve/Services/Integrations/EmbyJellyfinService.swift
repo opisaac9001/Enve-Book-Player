@@ -4,11 +4,13 @@ import SwiftUI
 
 class EmbyService {
     static let shared = EmbyService()
-    private init() {}
+    private unowned let profileSession: ProfileSession?
+    init(profileSession: ProfileSession? = nil) { self.profileSession = profileSession }
+    private var provider: EmbyProvider { profileSession?.embyProvider ?? .shared }
 
     func authenticate(serverUrl: String, username: String, password: String) async throws {
         let normalizedURL = MediaBrowserClient.normalizeServerURL(serverUrl)
-        try await EmbyProvider.shared.authenticate(serverURL: normalizedURL, username: username, password: password)
+        try await provider.authenticate(serverURL: normalizedURL, username: username, password: password)
         AppLogger.network.info("[EmbyService] Authentication successful")
     }
 
@@ -22,7 +24,7 @@ class EmbyService {
         mutableConnection.token = backend.token
         mutableConnection.userId = backend.username
 
-        let provider = EmbyProvider(connection: mutableConnection)
+        let provider = EmbyProvider(connection: mutableConnection, profileSession: profileSession)
         return try await provider.validateConnection()
     }
 
@@ -36,7 +38,7 @@ class EmbyService {
             return EmbyUser(Id: userId, Name: backend.name)
         }
 
-        if let userId = EmbyProvider.shared.connection.userId, !userId.isEmpty {
+        if let userId = provider.connection.userId, !userId.isEmpty {
             return EmbyUser(Id: userId, Name: backend.name)
         }
         throw ProviderError.unauthorized
@@ -52,7 +54,7 @@ class EmbyService {
         mutableConnection.token = backend.token
         mutableConnection.userId = userId
 
-        let provider = EmbyProvider(connection: mutableConnection)
+        let provider = EmbyProvider(connection: mutableConnection, profileSession: profileSession)
         let libraries = try await provider.fetchLibraries()
 
         return libraries.map { lib in

@@ -22,14 +22,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
-import androidx.hilt.navigation.compose.hiltViewModel
+import com.enve.hearth.shell.profileViewModel
 import com.enve.hearth.design.Hearth
 import com.enve.hearth.design.HearthText
 import com.enve.hearth.design.Overline
 
 @Composable
 fun HearthSleepInsightsScreen(onBack: () -> Unit) {
-    val vm: HearthPlayerViewModel = hiltViewModel()
+    val vm: HearthPlayerViewModel = profileViewModel()
     val palette = Hearth.palette
 
     Column(Modifier.fillMaxSize().background(palette.bg).navigationBarsPadding()) {

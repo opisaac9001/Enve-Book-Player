@@ -136,7 +136,7 @@ extension KavitaProvider {
     }
 
     func fetchProfileBar(userId: Int, days: Int) async throws -> ProfileBar {
-        try await insightsJSON("/api/Stats/user-stats", queryItems: statsFilter(days: days, userId: userId))
+        try await insightsJSON("/api/Stats/user-stats", queryItems: try await statsFilter(days: days, userId: userId))
     }
 
     func fetchReadTotals(userId: Int) async throws -> ReadTotals {
@@ -146,7 +146,7 @@ extension KavitaProvider {
     func fetchReadingPace(userId: Int, days: Int, booksOnly: Bool) async throws -> ReadingPace {
         try await insightsJSON(
             "/api/Stats/reading-pace",
-            queryItems: statsFilter(days: days, userId: userId) + [
+            queryItems: try await statsFilter(days: days, userId: userId) + [
                 URLQueryItem(name: "year", value: String(Calendar.current.component(.year, from: .now))),
                 URLQueryItem(name: "booksOnly", value: booksOnly ? "true" : "false"),
             ]
@@ -160,7 +160,7 @@ extension KavitaProvider {
                 URLQueryItem(name: "userId", value: String(userId)),
                 URLQueryItem(name: "year", value: String(year)),
                 URLQueryItem(name: "TimeZoneId", value: TimeZone.current.identifier),
-            ]
+            ] + (try await statsLibraryIDs()).map { URLQueryItem(name: "libraries", value: String($0)) }
         )
         return raw.compactMapValues { $0.totalTimeReadingSeconds > 0 ? TimeInterval($0.totalTimeReadingSeconds) : nil }
     }
@@ -172,7 +172,7 @@ extension KavitaProvider {
     func fetchHourBreakdown(userId: Int, days: Int) async throws -> [IntCount] {
         let breakdown: HourBreakdown = try await insightsJSON(
             "/api/Stats/avg-time-by-hour",
-            queryItems: statsFilter(days: days, userId: userId)
+            queryItems: try await statsFilter(days: days, userId: userId)
         )
         return breakdown.stats ?? []
     }
@@ -180,13 +180,13 @@ extension KavitaProvider {
     func fetchGenreBreakdown(userId: Int, days: Int) async throws -> [StringCount] {
         let breakdown: Breakdown = try await insightsJSON(
             "/api/Stats/genre-breakdown",
-            queryItems: statsFilter(days: days, userId: userId)
+            queryItems: try await statsFilter(days: days, userId: userId)
         )
         return (breakdown.data ?? []).filter { ($0.value?.isEmpty == false) && $0.count > 0 }
     }
 
     func fetchFavoriteAuthors(userId: Int, days: Int) async throws -> [FavoriteAuthor] {
-        try await insightsJSON("/api/Stats/favorite-authors", queryItems: statsFilter(days: days, userId: userId))
+        try await insightsJSON("/api/Stats/favorite-authors", queryItems: try await statsFilter(days: days, userId: userId))
     }
 
     func fetchTotalReads(userId: Int) async throws -> Int {
@@ -196,7 +196,7 @@ extension KavitaProvider {
     func fetchReadingHistory(page: Int, pageSize: Int, days: Int) async throws -> [HistoryEntry] {
         try await insightsJSON(
             "/api/Stats/reading-history",
-            queryItems: statsFilter(days: days, userId: nil) + [
+            queryItems: try await statsFilter(days: days, userId: nil) + [
                 URLQueryItem(name: "PageNumber", value: String(max(1, page))),
                 URLQueryItem(name: "PageSize", value: String(min(max(1, pageSize), 100))),
             ]
@@ -231,8 +231,10 @@ extension KavitaProvider {
         )
     }
 
-    private func statsFilter(days: Int, userId: Int?) -> [URLQueryItem] {
+    // Kavita's stats filter drops every library not listed, so an empty list returns zeros.
+    private func statsFilter(days: Int, userId: Int?) async throws -> [URLQueryItem] {
         var items = [URLQueryItem(name: "TimeZoneId", value: TimeZone.current.identifier)]
+        items += try await statsLibraryIDs().map { URLQueryItem(name: "libraries", value: String($0)) }
         if let start = Calendar.current.date(byAdding: .day, value: -max(1, days), to: .now) {
             items.append(URLQueryItem(name: "StartDate", value: KavitaDate.request(start)))
         }
@@ -240,6 +242,13 @@ extension KavitaProvider {
             items.append(URLQueryItem(name: "userId", value: String(userId)))
         }
         return items
+    }
+
+    private func statsLibraryIDs() async throws -> [Int] {
+        if let statsLibraries { return statsLibraries }
+        let ids = try await fetchLibraries().compactMap { Int($0.id) }
+        statsLibraries = ids
+        return ids
     }
 
     private func insightsJSON<T: Decodable>(_ path: String, queryItems: [URLQueryItem] = []) async throws -> T {

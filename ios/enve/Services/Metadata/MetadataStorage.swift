@@ -6,8 +6,16 @@ actor MetadataStorage {
 
     private let fileManager = FileManager.default
 
+    nonisolated private let storage: ProfileStorageLocations
+
     private init() {
-        try? Self.createMetadataDirectoryIfNeeded(using: fileManager)
+        storage = .owner
+        try? createMetadataDirectoryIfNeeded()
+    }
+
+    init(storage: ProfileStorageLocations) throws {
+        self.storage = storage
+        try createMetadataDirectoryIfNeeded()
     }
 
     nonisolated private static func decodeMetadata(_ data: Data) throws -> BookMetadata {
@@ -23,79 +31,59 @@ actor MetadataStorage {
         return try encoder.encode(metadata)
     }
 
-    private nonisolated static func metadataDirectoryURL(using fileManager: FileManager) throws -> URL {
-        let documentsURL = try fileManager.url(
-            for: .documentDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        return documentsURL.appendingPathComponent("Metadata", isDirectory: true)
+    private nonisolated var metadataDirectory: URL {
+        storage.documentsDirectory.appendingPathComponent("Metadata", isDirectory: true)
     }
 
-    private nonisolated static func createMetadataDirectoryIfNeeded(using fileManager: FileManager) throws {
-        let metadataURL = try metadataDirectoryURL(using: fileManager)
-
-        if !fileManager.fileExists(atPath: metadataURL.path) {
-            try fileManager.createDirectory(
-                at: metadataURL,
-                withIntermediateDirectories: true,
-                attributes: nil
-            )
-            AppLogger.network.debug(
-                "Created metadata directory pathId=\(DiagnosticLogSanitizer.identifier(for: metadataURL.standardizedFileURL.path))"
-            )
-        }
+    private nonisolated func createMetadataDirectoryIfNeeded() throws {
+        try FileManager.default.createDirectory(at: metadataDirectory, withIntermediateDirectories: true)
     }
 
     nonisolated func recoverMisplacedMetadataDirectory() {
+        guard storage.profileID == FamilyProfile.ownerID else { return }
         let fm = FileManager.default
-        do {
-            let metadataURL = try Self.metadataDirectoryURL(using: fm)
-            if fm.fileExists(atPath: metadataURL.path) { return }
+        let metadataURL = metadataDirectory
+        if fm.fileExists(atPath: metadataURL.path) { return }
 
-            let documentsURL = metadataURL.deletingLastPathComponent()
-            let canonicalRoot = documentsURL.appendingPathComponent("Individual_Audiobooks", isDirectory: true)
-            guard fm.fileExists(atPath: canonicalRoot.path) else { return }
+        let documentsURL = metadataURL.deletingLastPathComponent()
+        let canonicalRoot = documentsURL.appendingPathComponent("Individual_Audiobooks", isDirectory: true)
+        guard fm.fileExists(atPath: canonicalRoot.path) else { return }
 
-            let candidates =
+        let candidates =
+            (try? fm.contentsOfDirectory(
+                at: canonicalRoot,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            )) ?? []
+
+        for candidate in candidates {
+            let isDir = (try? candidate.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            guard isDir, candidate.lastPathComponent.hasPrefix("Metadata") else { continue }
+
+            let jsonFiles =
                 (try? fm.contentsOfDirectory(
-                    at: canonicalRoot,
-                    includingPropertiesForKeys: [.isDirectoryKey],
+                    at: candidate,
+                    includingPropertiesForKeys: nil,
                     options: [.skipsHiddenFiles]
-                )) ?? []
+                ).filter { $0.pathExtension == "json" }) ?? []
 
-            for candidate in candidates {
-                let isDir = (try? candidate.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-                guard isDir, candidate.lastPathComponent.hasPrefix("Metadata") else { continue }
+            guard !jsonFiles.isEmpty else { continue }
 
-                let jsonFiles =
-                    (try? fm.contentsOfDirectory(
-                        at: candidate,
-                        includingPropertiesForKeys: nil,
-                        options: [.skipsHiddenFiles]
-                    ).filter { $0.pathExtension == "json" }) ?? []
-
-                guard !jsonFiles.isEmpty else { continue }
-
-                AppLogger.network.warning(
-                    "Recovering misplaced metadata \(DiagnosticLogSanitizer.fileDescriptor(for: candidate))"
-                )
-                do {
-                    try fm.moveItem(at: candidate, to: metadataURL)
-                    AppLogger.network.info("Recovered \(jsonFiles.count) metadata files to Documents/Metadata/")
-                    return
-                } catch {
-                    AppLogger.network.error("Recovery move failed: \(error) - will recreate directory")
-                }
+            AppLogger.network.warning(
+                "Recovering misplaced metadata \(DiagnosticLogSanitizer.fileDescriptor(for: candidate))"
+            )
+            do {
+                try fm.moveItem(at: candidate, to: metadataURL)
+                AppLogger.network.info("Recovered \(jsonFiles.count) metadata files to Documents/Metadata/")
+                return
+            } catch {
+                AppLogger.network.error("Recovery move failed: \(error) - will recreate directory")
             }
-        } catch {
-            AppLogger.network.error("Could not check for misplaced Metadata directory: \(error)")
         }
     }
 
-    private nonisolated static func metadataFileURL(bookId: String, using fileManager: FileManager) throws -> URL {
-        let metadataDir = try metadataDirectoryURL(using: fileManager)
+    private nonisolated func metadataFileURL(bookId: String) -> URL {
+        let metadataDir = metadataDirectory
         var sanitizedId =
             bookId
             .replacingOccurrences(of: "/", with: "_")
@@ -142,7 +130,7 @@ actor MetadataStorage {
     }
 
     func loadMetadata(bookId: String) async throws -> BookMetadata? {
-        let fileURL = try Self.metadataFileURL(bookId: bookId, using: fileManager)
+        let fileURL = metadataFileURL(bookId: bookId)
 
         if fileManager.fileExists(atPath: fileURL.path) {
             let data = try Data(contentsOf: fileURL)
@@ -150,7 +138,7 @@ actor MetadataStorage {
         }
 
         for alternateId in Self.alternateBookIds(for: bookId) {
-            let alternateURL = try Self.metadataFileURL(bookId: alternateId, using: fileManager)
+            let alternateURL = metadataFileURL(bookId: alternateId)
             if fileManager.fileExists(atPath: alternateURL.path) {
                 AppLogger.network.debug(
                     "Found alternate metadata sourceId=\(DiagnosticLogSanitizer.identifier(for: alternateId)) bookId=\(DiagnosticLogSanitizer.identifier(for: bookId))"
@@ -177,9 +165,9 @@ actor MetadataStorage {
         let bookId = updated.bookId
         let data = try Self.encodeMetadata(updated)
 
-        try Self.createMetadataDirectoryIfNeeded(using: fileManager)
+        try createMetadataDirectoryIfNeeded()
 
-        let fileURL = try Self.metadataFileURL(bookId: bookId, using: fileManager)
+        let fileURL = metadataFileURL(bookId: bookId)
 
         try data.write(to: fileURL, options: [.atomic])
 
@@ -189,8 +177,8 @@ actor MetadataStorage {
     }
 
     func bookIdsWithStoredMetadata() -> Set<String> {
-        guard let metadataDir = try? Self.metadataDirectoryURL(using: fileManager),
-            fileManager.fileExists(atPath: metadataDir.path)
+        let metadataDir = metadataDirectory
+        guard fileManager.fileExists(atPath: metadataDir.path)
         else {
             return []
         }
@@ -253,11 +241,11 @@ actor MetadataStorage {
     }
 
     func clearAllMetadata() throws {
-        let metadataDir = try Self.metadataDirectoryURL(using: fileManager)
+        let metadataDir = metadataDirectory
 
         if fileManager.fileExists(atPath: metadataDir.path) {
             try fileManager.removeItem(at: metadataDir)
-            try Self.createMetadataDirectoryIfNeeded(using: fileManager)
+            try createMetadataDirectoryIfNeeded()
             AppLogger.network.info("Cleared all metadata")
         }
     }

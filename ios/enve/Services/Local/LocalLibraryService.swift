@@ -5,21 +5,38 @@ import Logging
 import MediaPlayer
 
 public actor LocalLibraryService {
-    public static let shared = LocalLibraryService()
+    @MainActor public static let shared = LocalLibraryService()
     nonisolated static let fileSharingLibraryId = "file-sharing"
     nonisolated static var fileSharingRootURL: URL {
         let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         return documentsURL
     }
     private var fileSharingAudiobooksFolder: URL {
-        LocalLibraryService.fileSharingRootURL.appendingPathComponent("Individual_Audiobooks", isDirectory: true)
+        storage.documentsDirectory.appendingPathComponent("Individual_Audiobooks", isDirectory: true)
     }
 
     let fileManager = FileManager.default
     let metadataExtractor = FileMetadataExtractor()
     let audioMetadataEmbedder = AudioMetadataEmbedder()
 
-    public init() {}
+    private let storage: ProfileStorageLocations
+    private let localLibrary: LocalLibraryStorageStore
+    private let ebooks: LocalEbookImporter
+    private let groupingOverrides: AudiobookGroupingOverrideStore
+
+    @MainActor public init() {
+        storage = .owner
+        localLibrary = .shared
+        ebooks = .shared
+        groupingOverrides = .shared
+    }
+
+    init(storage: ProfileStorageLocations, localLibrary: LocalLibraryStorageStore, ebooks: LocalEbookImporter, groupingOverrides: AudiobookGroupingOverrideStore) {
+        self.storage = storage
+        self.localLibrary = localLibrary
+        self.ebooks = ebooks
+        self.groupingOverrides = groupingOverrides
+    }
 
     func loadMetadataForDownloadedAudio(at filePath: String) async throws -> LocalBookMetadata {
         let fileName = URL(fileURLWithPath: filePath).lastPathComponent
@@ -109,6 +126,10 @@ public actor LocalLibraryService {
 
         var errors: [Error] = []
         for target in targets {
+            if storage.profileID != FamilyProfile.ownerID {
+                let root = storage.documentsDirectory.resolvingSymlinksInPath().path + "/"
+                guard target.resolvingSymlinksInPath().path.hasPrefix(root) else { throw ProfileDownloadImportError.invalidMediaPath }
+            }
             var companionFiles: [URL] = []
             var isDirectory: ObjCBool = false
             if fileManager.fileExists(atPath: target.path, isDirectory: &isDirectory), !isDirectory.boolValue {
@@ -146,7 +167,7 @@ public actor LocalLibraryService {
 
     func removeBookFromScanCache(bookId: String, libraryId: String, filePath: String? = nil) async {
         await MainActor.run {
-            var books = LocalLibraryStorageStore.shared.loadBooks(libraryId: libraryId)
+            var books = localLibrary.loadBooks(libraryId: libraryId)
             let beforeCount = books.count
             books.removeAll { localBook in
                 if localBook.id == bookId {
@@ -165,7 +186,7 @@ public actor LocalLibraryService {
                     scanDuration: 0,
                     scannedAt: Date()
                 )
-                LocalLibraryStorageStore.shared.saveScanResult(result)
+                localLibrary.saveScanResult(result)
                 AppLogger.network.info(
                     "Removed bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: bookId)) from libraryDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: libraryId)); count=\(beforeCount)->\(books.count)"
                 )
@@ -195,7 +216,7 @@ public actor LocalLibraryService {
 
         var bookmarkURL: URL?
 
-        if let bookmarkData = LocalLibraryStorageStore.shared.loadBookmark(for: library.id) {
+        if let bookmarkData = localLibrary.loadBookmark(for: library.id) {
             AppLogger.network.info("Found security bookmark for library")
             var isStale = false
             do {
@@ -234,7 +255,7 @@ public actor LocalLibraryService {
                             #endif
                             let libId = library.id
                             Task { @MainActor in
-                                LocalLibraryStorageStore.shared.saveBookmark(newBookmarkData, for: libId)
+                                localLibrary.saveBookmark(newBookmarkData, for: libId)
                             }
                             AppLogger.network.info("Bookmark re-created successfully")
                         } catch {
@@ -463,7 +484,7 @@ public actor LocalLibraryService {
         AppLogger.network.info("Total audio files found: \(filesToProcess.count)")
 
         let forcedStandalonePaths = await MainActor.run {
-            AudiobookGroupingOverrideStore.shared.forcedStandalonePaths(source: .local, sourceId: library.id)
+            groupingOverrides.forcedStandalonePaths(source: .local, sourceId: library.id)
         }
         let audiobooks = groupFilesIntoBooks(
             files: filesToProcess,
@@ -660,7 +681,7 @@ public actor LocalLibraryService {
         }
 
         let forcedStandalonePaths = await MainActor.run {
-            AudiobookGroupingOverrideStore.shared.forcedStandalonePaths(source: .local, sourceId: library.id)
+            groupingOverrides.forcedStandalonePaths(source: .local, sourceId: library.id)
         }
         let audiobooks = groupFilesIntoBooks(
             files: filesToProcess,
@@ -849,7 +870,7 @@ public actor LocalLibraryService {
             return try await work()
         }
 
-        guard let bookmarkData = LocalLibraryStorageStore.shared.loadBookmark(for: libraryId) else {
+        guard let bookmarkData = localLibrary.loadBookmark(for: libraryId) else {
             return try await work()
         }
 
@@ -994,7 +1015,7 @@ public actor LocalLibraryService {
     func ingestFileSharingPendingItems() async throws -> FileSharingIngestResult {
         var result = FileSharingIngestResult()
 
-        let documentsURL = LocalLibraryService.fileSharingRootURL
+        let documentsURL = storage.documentsDirectory
         let canonicalRoot = canonicalLibraryRoot
         let inboxURL = documentsURL.appendingPathComponent("Inbox", isDirectory: true)
 
@@ -1127,7 +1148,7 @@ public actor LocalLibraryService {
         result: inout FileSharingIngestResult,
         budget: inout ImportScanBudget
     ) throws {
-        try budget.record(url: item, root: LocalLibraryService.fileSharingRootURL)
+        try budget.record(url: item, root: storage.documentsDirectory)
         let isDirectory = (try? item.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
 
         if isDirectory {
@@ -1254,13 +1275,11 @@ public actor LocalLibraryService {
     }
 
     private nonisolated var canonicalEbooksRoot: URL {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        return docs.appendingPathComponent("Ebooks/local", isDirectory: true)
+        storage.documentsDirectory.appendingPathComponent("Ebooks/local", isDirectory: true)
     }
 
     private nonisolated var serverDownloadedEbooksRoot: URL {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        return docs.appendingPathComponent("Ebooks", isDirectory: true)
+        storage.documentsDirectory.appendingPathComponent("Ebooks", isDirectory: true)
     }
 
     private nonisolated func fileSpecificSidecarCandidates(forAudioURL audioURL: URL) -> [String] {
@@ -1322,7 +1341,7 @@ public actor LocalLibraryService {
     func scanCanonicalLibrary(libraryId: String = LocalLibraryService.fileSharingLibraryId) async throws -> LocalLibraryScanResult {
         let startTime = Date()
 
-        let documentsRoot = LocalLibraryService.fileSharingRootURL
+        let documentsRoot = storage.documentsDirectory
         AppLogger.network.info("Scanning file-sharing library...")
         AppLogger.network.info(
             "Scanning file-sharing roots documentsDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: documentsRoot.standardizedFileURL.path)) canonicalDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: canonicalLibraryRoot.standardizedFileURL.path))"
@@ -1570,7 +1589,7 @@ public actor LocalLibraryService {
 
         let scanDuration = Date().timeIntervalSince(startTime)
 
-        let legacyAudiobooksURL = LocalLibraryService.fileSharingRootURL.appendingPathComponent("Audiobooks", isDirectory: true)
+        let legacyAudiobooksURL = storage.documentsDirectory.appendingPathComponent("Audiobooks", isDirectory: true)
         if fileManager.fileExists(atPath: legacyAudiobooksURL.path) {
             AppLogger.network.info("Scanning legacy Audiobooks folder for backward compat…")
             if let legacyContents = try? fileManager.contentsOfDirectory(
@@ -1768,7 +1787,7 @@ public actor LocalLibraryService {
 
         if localMetadata == nil {
             do {
-                localMetadata = try await LocalEbookImporter.shared.extractMetadata(from: ebookURL)
+                localMetadata = try await ebooks.extractMetadata(from: ebookURL)
                 AppLogger.network.info(
                     "Extracted Readium metadata \(DiagnosticLogSanitizer.fileDescriptor(for: ebookURL))"
                 )
@@ -1790,7 +1809,7 @@ public actor LocalLibraryService {
             if fileManager.fileExists(atPath: coverURL.path) {
                 localMetadata?.coverImagePath = coverURL.path
             } else {
-                let extracted = try? await LocalEbookImporter.shared.extractMetadata(from: ebookURL)
+                let extracted = try? await ebooks.extractMetadata(from: ebookURL)
                 if let extractedCover = extracted?.coverImagePath, fileManager.fileExists(atPath: extractedCover) {
                     localMetadata?.coverImagePath = extractedCover
                     if localMetadata?.title == ebookURL.deletingPathExtension().lastPathComponent,

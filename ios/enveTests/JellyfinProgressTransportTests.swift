@@ -21,13 +21,18 @@ struct JellyfinProgressTransportTests {
         let provider = makeProvider()
         let book = Book(id: "book", title: "Fixture", source: .jellyfin, providerId: provider.connection.id)
         try await provider.updatePlaybackProgress(book: book, sessionId: nil, currentTime: 23, isFinished: false, timeListened: 0)
-        let request = try #require(provider.requests.last)
-        #expect(request.url?.path == "/Users/user/Items/book/UserData")
+        let request = try #require(provider.requests.last { $0.url?.path == "/Users/user/Items/book/UserData" })
         let bodyData = try #require(request.httpBody)
         let body = try #require(JSONSerialization.jsonObject(with: bodyData) as? [String: Any])
         #expect(body["PlaybackPositionTicks"] as? Int == 230_000_000)
-        #expect(body["Played"] as? Bool == false)
+        #expect(body["Played"] == nil)
         #expect(body["LastPlayedDate"] as? String != nil)
+
+        try await provider.updatePlaybackProgress(book: book, sessionId: nil, currentTime: 0, isFinished: false, timeListened: 0)
+        let reset = try #require(provider.requests.last { $0.url?.path == "/Users/user/Items/book/UserData" })
+        let resetData = try #require(reset.httpBody)
+        let resetBody = try #require(JSONSerialization.jsonObject(with: resetData) as? [String: Any])
+        #expect(resetBody["Played"] as? Bool == false)
         provider.status = 500
         await #expect(throws: (any Error).self) {
             try await provider.updatePlaybackProgress(book: book, sessionId: nil, currentTime: 0, isFinished: false, timeListened: 0)

@@ -65,7 +65,7 @@ struct JournalBadge: Identifiable {
 }
 
 enum JournalStatsBookLookup {
-    static func build(ids: Set<String>, books: any BookQuerying = AppState.shared.bookStore) async -> [String: Book] {
+    static func build(ids: Set<String>, books: any BookQuerying = AppState.shared.bookStore, progressCache: BookProgressStore = .shared) async -> [String: Book] {
         var map: [String: Book] = [:]
         func insertAliases(for book: Book, preferredKey: String? = nil) {
             if let preferredKey, !preferredKey.isEmpty { map[preferredKey] = book }
@@ -75,7 +75,7 @@ enum JournalStatsBookLookup {
             map[book.downloadKey] = book
             map[book.uniqueId] = book
         }
-        for snap in BookProgressStore.shared.loadSnapshots() {
+        for snap in progressCache.loadSnapshots() {
             insertAliases(for: snap.book, preferredKey: snap.stableId)
         }
         let unresolved = ids.subtracting(map.keys)
@@ -90,6 +90,10 @@ enum JournalStatsBookLookup {
 @MainActor
 @Observable
 final class JournalListeningStatsModel {
+    private unowned let profileSession: ProfileSession?
+
+    init(profileSession: ProfileSession? = nil) { self.profileSession = profileSession }
+
     private(set) var snapshot: ListeningStatsSnapshot = .empty
     private(set) var bookLookup: [String: Book] = [:]
     private(set) var recentSessions: [HistorySession] = []
@@ -117,21 +121,21 @@ final class JournalListeningStatsModel {
         guard !isLoading else { return }
         isLoading = true
         defer { isLoading = false }
-        snapshot = await ListeningStatsTracker.shared.currentSnapshot()
-        bookLookup = await JournalStatsBookLookup.build(ids: Set(snapshot.perBook.keys))
-        recentSessions = Array(await HistorySessionStore.shared.loadListeningSessions().prefix(12))
-        weeklyGoalHours = PlayerStateStore.shared.loadWeeklyGoal()
-        monthlyBookGoal = PlayerStateStore.shared.loadMonthlyBookGoal()
+        snapshot = await (profileSession?.listeningStats ?? ListeningStatsTracker.shared).currentSnapshot()
+        bookLookup = await JournalStatsBookLookup.build(ids: Set(snapshot.perBook.keys), books: profileSession?.bookStore ?? AppState.shared.bookStore, progressCache: profileSession?.bookProgress ?? .shared)
+        recentSessions = Array(await (profileSession?.historyStore ?? HistorySessionStore.shared).loadListeningSessions().prefix(12))
+        weeklyGoalHours = (profileSession?.playerState ?? PlayerStateStore.shared).loadWeeklyGoal()
+        monthlyBookGoal = (profileSession?.playerState ?? PlayerStateStore.shared).loadMonthlyBookGoal()
     }
 
     func setWeeklyGoal(hours: Double) {
         weeklyGoalHours = hours
-        PlayerStateStore.shared.saveWeeklyGoal(hours: hours)
+        (profileSession?.playerState ?? PlayerStateStore.shared).saveWeeklyGoal(hours: hours)
     }
 
     func setMonthlyBookGoal(count: Int) {
         monthlyBookGoal = count
-        PlayerStateStore.shared.saveMonthlyBookGoal(count: count)
+        (profileSession?.playerState ?? PlayerStateStore.shared).saveMonthlyBookGoal(count: count)
     }
 
     func weeklyHours() -> Double { journalHours(in: snapshot.dailySeconds, lastDays: 7) }
@@ -202,6 +206,10 @@ final class JournalListeningStatsModel {
 @MainActor
 @Observable
 final class JournalReadingStatsModel {
+    private unowned let profileSession: ProfileSession?
+
+    init(profileSession: ProfileSession? = nil) { self.profileSession = profileSession }
+
     private(set) var snapshot: ReadingStatsSnapshot = .empty
     private(set) var bookLookup: [String: Book] = [:]
     private(set) var recentSessions: [HistorySession] = []
@@ -229,13 +237,13 @@ final class JournalReadingStatsModel {
         guard !isLoading else { return }
         isLoading = true
         defer { isLoading = false }
-        snapshot = await ReadingStatsTracker.shared.currentSnapshot()
-        bookLookup = await JournalStatsBookLookup.build(ids: Set(snapshot.perBook.keys))
-        recentSessions = Array(await HistorySessionStore.shared.loadReadingSessions().prefix(12))
+        snapshot = await (profileSession?.readingStats ?? ReadingStatsTracker.shared).currentSnapshot()
+        bookLookup = await JournalStatsBookLookup.build(ids: Set(snapshot.perBook.keys), books: profileSession?.bookStore ?? AppState.shared.bookStore, progressCache: profileSession?.bookProgress ?? .shared)
+        recentSessions = Array(await (profileSession?.historyStore ?? HistorySessionStore.shared).loadReadingSessions().prefix(12))
 
-        let listening = await ListeningStatsTracker.shared.currentSnapshot()
+        let listening = await (profileSession?.listeningStats ?? ListeningStatsTracker.shared).currentSnapshot()
         averageWordsPerMinute = listening.averageReadingProgressPerMinute.map { Int($0 * 250) }
-        weeklyGoalHours = PlayerStateStore.shared.loadWeeklyGoal()
+        weeklyGoalHours = (profileSession?.playerState ?? PlayerStateStore.shared).loadWeeklyGoal()
     }
 
     func weeklyHours() -> Double { journalHours(in: snapshot.dailySecondsRead, lastDays: 7) }

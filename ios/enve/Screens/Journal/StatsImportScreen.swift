@@ -1,10 +1,11 @@
 import SwiftUI
 
 struct StatsImportScreen: View {
+    @Environment(\.profileSession) private var profileSession
     @Environment(\.hearth) private var hearth
     @Environment(\.mantelInset) private var mantelInset
 
-    @State private var model = JournalListeningStatsModel()
+    @Environment(JournalListeningStatsModel.self) private var model
     @State private var loaded = false
     @State private var importing = false
     @State private var confirmation: String?
@@ -118,7 +119,7 @@ struct StatsImportScreen: View {
 
         importing = true
         Task {
-            await ListeningStatsTracker.shared.addManualListeningTime(
+            await (profileSession?.listeningStats ?? ListeningStatsTracker.shared).addManualListeningTime(
                 seconds: totalHours * 3600,
                 booksFinished: booksValue
             )

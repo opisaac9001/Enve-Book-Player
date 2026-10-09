@@ -39,15 +39,34 @@ final class OPDSAuthenticationService: NSObject {
     /// The trailing slash is part of the redirect URI the specification registers.
     static let callbackURL = URL(string: "\(EnveBookLink.scheme)://opds-auth/")!
 
+    private let certificateTransport: InsecureURLSession
+    private let ephemeralBrowser: Bool
+    private var isRetired = false
     private let store: OPDSAuthenticationStore
     private var browserSession: ASWebAuthenticationSession?
     private var pendingBrowserFlow: CheckedContinuation<URL, Error>?
     /// One refresh per connection at a time, so a sync pass and a catalog load do not race for the token.
     private var refreshTasks: [UUID: Task<OAuthToken?, Never>] = [:]
 
-    init(store: OPDSAuthenticationStore = .shared) {
+    init(store: OPDSAuthenticationStore = .shared, certificateTransport: InsecureURLSession = .delegateInstance, ephemeralBrowser: Bool = false) {
+        self.certificateTransport = certificateTransport
+        self.ephemeralBrowser = ephemeralBrowser
         self.store = store
         super.init()
+    }
+
+    func retire() async {
+        isRetired = true
+        pendingBrowserFlow?.resume(throwing: OPDSAuthenticationError.cancelled)
+        pendingBrowserFlow = nil
+        #if !os(tvOS)
+        browserSession?.cancel()
+        #endif
+        browserSession = nil
+        let tasks = Array(refreshTasks.values)
+        tasks.forEach { $0.cancel() }
+        for task in tasks { _ = await task.value }
+        refreshTasks.removeAll()
     }
 
     // MARK: Credential flows
@@ -101,6 +120,7 @@ final class OPDSAuthenticationService: NSObject {
     ) async throws -> OAuthToken {
         guard flow.kind == .oauthImplicit else { throw OPDSAuthenticationError.flowNotSupported(flow.type) }
         guard let endpoint = flow.authenticateURL else { throw OPDSAuthenticationError.missingEndpoint }
+        guard !isRetired else { throw OPDSAuthenticationError.cancelled }
         guard OPDSCredentialTransport.isPostable(endpoint, feedURL: feedURL) else {
             throw OPDSAuthenticationError.untrustedEndpoint(endpoint.host ?? "that server")
         }
@@ -214,6 +234,7 @@ final class OPDSAuthenticationService: NSObject {
         at endpoint: URL,
         feedURL: URL
     ) async throws -> OAuthToken {
+        guard !isRetired else { throw OPDSAuthenticationError.cancelled }
         guard OPDSCredentialTransport.isPostable(endpoint, feedURL: feedURL) else {
             throw OPDSAuthenticationError.untrustedEndpoint(endpoint.host ?? "that server")
         }
@@ -224,7 +245,7 @@ final class OPDSAuthenticationService: NSObject {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.httpBody = OAuthManager.formEncodedBody(parameters)
 
-        let (data, http) = try await OPDSCredentialTransport.send(request)
+        let (data, http) = try await OPDSCredentialTransport.send(request, certificateTransport: certificateTransport)
         guard http.statusCode == 200 || http.statusCode == 201 else {
             throw OPDSAuthenticationError.rejected(Self.failureMessage(status: http.statusCode, data: data))
         }
@@ -254,7 +275,7 @@ final class OPDSAuthenticationService: NSObject {
             }
             #if os(iOS)
             session.presentationContextProvider = self
-            session.prefersEphemeralWebBrowserSession = false
+            session.prefersEphemeralWebBrowserSession = ephemeralBrowser
             #endif
             browserSession = session
 

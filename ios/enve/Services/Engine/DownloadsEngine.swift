@@ -24,10 +24,14 @@ final class DownloadsEngine {
     private var cancellables: Set<AnyCancellable> = []
     private var revision = 0
 
-    init(
+    private unowned let profileSession: ProfileSession?
+    private var importer: LocalEbookImporter { profileSession?.ebooks ?? .shared }
+
+    init(profileSession: ProfileSession? = nil,
         service: UnifiedDownloadService = .shared,
         appState: AppState = .shared
     ) {
+        self.profileSession = profileSession
         self.service = service
         self.appState = appState
         service.objectWillChange
@@ -66,7 +70,7 @@ final class DownloadsEngine {
 
     var completedDownloadBookIds: Set<String> {
         var ids = Set(service.completedTasks.map(\.bookId))
-        ids.formUnion(BookDownloadManager.shared.completedBookIds)
+        if profileSession == nil { ids.formUnion(BookDownloadManager.shared.completedBookIds) }
         return ids
     }
 
@@ -84,32 +88,31 @@ final class DownloadsEngine {
 
     func isDownloaded(_ book: Book) -> Bool {
         if usesReaderDownload(book) {
-            return LocalEbookImporter.shared.persistedRemoteEbook(forBookId: book.id) != nil
-                || LocalEbookImporter.shared.cachedReadaloudEpub(forBookId: book.id) != nil
+            return importer.persistedRemoteEbook(forBookId: book.id) != nil
+                || importer.cachedReadaloudEpub(forBookId: book.id) != nil
                 || book.ebookFileURL.map { FileManager.default.fileExists(atPath: $0.path) } == true
         }
-        return LocalStorageManager.shared.isAudiobookDownloaded(book)
+        return (profileSession?.localStorage ?? LocalStorageManager.shared).isAudiobookDownloaded(book)
     }
 
     func isLibraryDownloaded(_ book: Book) -> Bool {
         book.mediaType == .ebook
             ? hasPermanentEbookDownload(book)
-            : LocalStorageManager.shared.isAudiobookDownloaded(book)
+            : (profileSession?.localStorage ?? LocalStorageManager.shared).isAudiobookDownloaded(book)
     }
 
     func isAudiobookDownloaded(_ book: Book) -> Bool {
         _ = revision
-        return LocalStorageManager.shared.isAudiobookDownloaded(book)
+        return (profileSession?.localStorage ?? LocalStorageManager.shared).isAudiobookDownloaded(book)
     }
 
     func isAudiobookDownloaded(downloadKey: String) -> Bool {
         _ = revision
-        return LocalStorageManager.shared.isAudiobookDownloaded(downloadKey)
+        return (profileSession?.localStorage ?? LocalStorageManager.shared).isAudiobookDownloaded(downloadKey)
     }
 
     func hasPermanentEbookDownload(_ book: Book) -> Bool {
         guard book.mediaType == .ebook else { return false }
-        let importer = LocalEbookImporter.shared
 
         if book.source == .local {
             return importer.resolveExistingLocalEbookURL(
@@ -126,8 +129,8 @@ final class DownloadsEngine {
         guard let url = book.ebookFileURL, FileManager.default.fileExists(atPath: url.path) else {
             return false
         }
-        return url.path.hasPrefix(importer.serverEbooksRoot.path)
-            || url.path.hasPrefix(importer.readaloudCacheRoot.path)
+        return Self.isContained(url, in: importer.serverEbooksRoot)
+            || Self.isContained(url, in: importer.readaloudCacheRoot)
     }
 
     func usesReaderDownload(_ book: Book) -> Bool {
@@ -170,18 +173,18 @@ final class DownloadsEngine {
         let signpost = PerfSignpost.begin("downloaded-storage-items")
         defer { PerfSignpost.end(signpost) }
 
-        let storage = LocalStorageManager.shared
+        let storage = (profileSession?.localStorage ?? LocalStorageManager.shared)
         let downloadedIds = storage.downloadedAudiobookIds()
         async let liveBooksRequest = appState.bookStore.downloadedAudiobooks(storageKeys: Set(downloadedIds))
         async let ebookCountRequest = appState.bookStore.bookCount(mediaType: AppMediaType.ebook.rawValue)
         let liveBooks = await liveBooksRequest
         let downloadedEbooks = await appState.bookStore.downloadedEbooks(limit: max(await ebookCountRequest, 1))
         let liveByKey = Dictionary(
-            liveBooks.map { (Self.sanitizeDownloadKey($0.downloadKey), $0) },
+            liveBooks.map { (LocalStorageManager.sanitizedId(for: $0.downloadKey), $0) },
             uniquingKeysWith: { _, new in new }
         )
         let recentByKey = Dictionary(
-            BookProgressStore.shared.loadRecentlyPlayed().map { (Self.sanitizeDownloadKey($0.downloadKey), $0) },
+            (profileSession?.bookProgress ?? BookProgressStore.shared).loadRecentlyPlayed().map { (LocalStorageManager.sanitizedId(for: $0.downloadKey), $0) },
             uniquingKeysWith: { _, new in new }
         )
 
@@ -200,7 +203,6 @@ final class DownloadsEngine {
             )
         }
 
-        let importer = LocalEbookImporter.shared
         var seenPaths = Set<String>()
         let ebookSeeds = downloadedEbooks.compactMap { book -> (Book, URL)? in
             guard book.mediaType == .ebook, book.source != .local else { return nil }
@@ -240,7 +242,7 @@ final class DownloadsEngine {
     func deleteStorageItem(_ item: DownloadedStorageItem) async {
         switch item.kind {
         case .audiobook:
-            _ = LocalStorageManager.shared.deleteAudiobook(item.storageKey)
+            _ = (profileSession?.localStorage ?? LocalStorageManager.shared).deleteAudiobook(item.storageKey)
             revision &+= 1
         case .ebook:
             guard let book = item.book else { return }
@@ -269,15 +271,15 @@ final class DownloadsEngine {
 
     func removeDownload(for book: Book) async {
         if usesReaderDownload(book) {
-            try? LocalEbookImporter.shared.deleteRemoteEbookArtifacts(forBookId: book.id)
-            LocalEbookImporter.shared.removeReadaloudCache(forBookId: book.id, stableId: book.stableId)
-            if let url = AppState.shared.bookInMemory(uniqueId: book.uniqueId)?.ebookFileURL {
+            try? importer.deleteRemoteEbookArtifacts(forBookId: book.id)
+            importer.removeReadaloudCache(forBookId: book.id, stableId: book.stableId)
+            if let url = appState.bookInMemory(uniqueId: book.uniqueId)?.ebookFileURL {
                 let managed =
-                    url.path.hasPrefix(LocalEbookImporter.shared.serverEbooksRoot.path)
-                    || url.path.hasPrefix(LocalEbookImporter.shared.remoteReaderCacheRoot.path)
-                    || url.path.hasPrefix(LocalEbookImporter.shared.readaloudCacheRoot.path)
+                    Self.isContained(url, in: importer.serverEbooksRoot)
+                    || Self.isContained(url, in: importer.remoteReaderCacheRoot)
+                    || Self.isContained(url, in: importer.readaloudCacheRoot)
                 if managed {
-                    AppState.shared.mutateBook(uniqueId: book.uniqueId) { $0.ebookFileURL = nil }
+                    appState.mutateBook(uniqueId: book.uniqueId) { $0.ebookFileURL = nil }
                 }
             }
             NotificationCenter.default.post(name: .bookStoreDidChange, object: nil)
@@ -290,14 +292,14 @@ final class DownloadsEngine {
     func removeLibraryDownload(for book: Book) async {
         if book.mediaType == .ebook {
             guard book.source != .local else { return }
-            try? LocalEbookImporter.shared.deleteRemoteEbookArtifacts(forBookId: book.id)
-            LocalEbookImporter.shared.removeReadaloudCache(forBookId: book.id, stableId: book.stableId)
-            if let url = AppState.shared.bookInMemory(uniqueId: book.uniqueId)?.ebookFileURL ?? book.ebookFileURL {
+            try? importer.deleteRemoteEbookArtifacts(forBookId: book.id)
+            importer.removeReadaloudCache(forBookId: book.id, stableId: book.stableId)
+            if let url = appState.bookInMemory(uniqueId: book.uniqueId)?.ebookFileURL ?? book.ebookFileURL {
                 let managed =
-                    url.path.hasPrefix(LocalEbookImporter.shared.serverEbooksRoot.path)
-                    || url.path.hasPrefix(LocalEbookImporter.shared.remoteReaderCacheRoot.path)
+                    Self.isContained(url, in: importer.serverEbooksRoot)
+                    || Self.isContained(url, in: importer.remoteReaderCacheRoot)
                 if managed {
-                    AppState.shared.mutateBook(uniqueId: book.uniqueId) { $0.ebookFileURL = nil }
+                    appState.mutateBook(uniqueId: book.uniqueId) { $0.ebookFileURL = nil }
                 }
             }
             NotificationCenter.default.post(name: .bookStoreDidChange, object: nil)
@@ -305,16 +307,6 @@ final class DownloadsEngine {
         } else {
             await service.deleteDownload(book: book)
         }
-    }
-
-    private static func sanitizeDownloadKey(_ key: String) -> String {
-        key
-            .replacingOccurrences(of: "/", with: "-")
-            .replacingOccurrences(of: "\\", with: "-")
-            .replacingOccurrences(of: ":", with: "-")
-            .replacingOccurrences(of: "?", with: "-")
-            .replacingOccurrences(of: "&", with: "-")
-            .replacingOccurrences(of: "=", with: "-")
     }
 
     nonisolated private static func isContained(_ url: URL, in root: URL) -> Bool {

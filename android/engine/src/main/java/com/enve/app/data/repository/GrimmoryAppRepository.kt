@@ -637,7 +637,9 @@ class GrimmoryAppRepository @Inject constructor(
                 password = null,
             )
         }
-        return withContext(ConnectionScope.asContextElement(conn.id)) { block() }
+        return withContext(ConnectionScope.asContextElement(conn.id)) {
+            runSuspendCatching { block() }.getOrElse { Result.failure(it) }
+        }
     }
 
     private fun AppLibrarySummaryDto.toModel() = GrimmoryLibrary(

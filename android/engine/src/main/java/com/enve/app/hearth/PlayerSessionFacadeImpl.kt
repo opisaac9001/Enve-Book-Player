@@ -1,5 +1,6 @@
 package com.enve.app.hearth
 
+import com.enve.core.di.ApplicationScope
 import com.enve.app.playback.AudioPlaybackManager
 import com.enve.app.playback.PlaybackChapterStore
 import com.enve.app.playback.PlayerBookmarkService
@@ -9,6 +10,9 @@ import com.enve.app.data.sync.SyncCoordinator
 import com.enve.core.data.local.BookCacheDao
 import com.enve.core.data.local.BookExtrasDao
 import com.enve.core.data.local.decodeChapters
+import com.enve.core.data.local.decodeAudioTracks
+import com.enve.app.readium.PlayerReadAloudService
+import com.enve.app.readium.playerReadAloudActiveLine
 import com.enve.core.data.local.toBook
 import com.enve.core.data.model.AnnotationKind
 import com.enve.core.data.model.AnnotationMedia
@@ -18,6 +22,11 @@ import com.enve.core.data.model.AudiobookBookmark
 import com.enve.core.data.model.Chapter
 import com.enve.core.data.model.ReaderAnnotation
 import com.enve.engine.playback.PlayerSessionFacade
+import com.enve.engine.playback.PlayerReadAloudState
+import com.enve.engine.playback.ReadAloudLyricLine
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -28,6 +37,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -45,8 +56,19 @@ class PlayerSessionFacadeImpl @Inject constructor(
     private val audioManager: AudioPlaybackManager,
     private val bookCache: BookCacheDao,
     private val bookExtras: BookExtrasDao,
+    private val readAloudService: PlayerReadAloudService,
+    @ApplicationScope parentScope: CoroutineScope =
+        CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) : PlayerSessionFacade {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob(parentScope.coroutineContext[Job]) + Dispatchers.Default)
+    private val _readAloud = MutableStateFlow(PlayerReadAloudState())
+    override val readAloud: StateFlow<PlayerReadAloudState> = _readAloud.asStateFlow()
+
+    override fun seekToReadAloudLine(line: ReadAloudLyricLine) {
+        val state = _readAloud.value
+        if (state.bookKey != chapterStore.snapshot.value.cacheKey || line !in state.lines) return
+        audioManager.seekTo(line.startMs)
+    }
 
     override val chapters: StateFlow<List<Chapter>> =
         chapterStore.snapshot.map { it.chapters }
@@ -70,6 +92,41 @@ class PlayerSessionFacadeImpl @Inject constructor(
     private var sleepJob: Job? = null
 
     init {
+        scope.launch {
+            chapterStore.snapshot.map { it.cacheKey }.distinctUntilChanged().collectLatest { key ->
+                _readAloud.value = PlayerReadAloudState(bookKey = key, loading = key != null)
+                if (key == null) return@collectLatest
+                try {
+                    val book = bookCache.getByCacheKey(key)?.toBook()
+                    if (book == null) {
+                        _readAloud.value = PlayerReadAloudState(bookKey = key)
+                        return@collectLatest
+                    }
+                    val document = readAloudService.document(book)
+                    currentCoroutineContext().ensureActive()
+                    if (document == null) {
+                        _readAloud.value = PlayerReadAloudState(bookKey = key)
+                        return@collectLatest
+                    }
+                    val tracks = book.audioTracks.ifEmpty { bookExtras.get(key)?.decodeAudioTracks().orEmpty() }
+                    val timeline = audioManager.state.map { it.durationMs.takeIf { duration -> duration > 0L } ?: book.duration * 1000L }
+                        .distinctUntilChanged().map { duration ->
+                            val lines = document.lines(tracks, duration)
+                            lines to lines.groupBy { document.timeline.clips[it.clipIndex].textHref }
+                        }
+                    combine(timeline, audioManager.state) { (lines, chapters), playback ->
+                        val active = playerReadAloudActiveLine(lines, playback.currentPositionMs)
+                        val href = active?.let { document.timeline.clips[it.clipIndex].textHref }
+                        PlayerReadAloudState(key, lines.isNotEmpty(), lines = href?.let(chapters::get).orEmpty(), activeLineId = active?.id)
+                    }.collect { _readAloud.value = it }
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (_: Exception) {
+                    currentCoroutineContext().ensureActive()
+                    _readAloud.value = PlayerReadAloudState(bookKey = key, error = "Couldn't load read-aloud text. Check the source connection and try again.")
+                }
+            }
+        }
         scope.launch {
             audioManager.currentBookIdFlow.collectLatest { bookId ->
                 if (bookId == null) {

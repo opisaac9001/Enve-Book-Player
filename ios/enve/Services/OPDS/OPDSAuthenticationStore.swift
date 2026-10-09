@@ -112,18 +112,24 @@ protocol OPDSTokenStoring {
 
 @MainActor
 struct KeychainOPDSTokenStore: OPDSTokenStoring {
+    private let storage: SecureTokenStorage
+
+    init(storage: SecureTokenStorage = .shared) {
+        self.storage = storage
+    }
+
     private func provider(_ connectionId: UUID) -> String { "opds-\(connectionId.uuidString)" }
 
     func token(forConnectionId connectionId: UUID) -> OAuthToken? {
-        try? SecureTokenStorage.shared.loadToken(forProvider: provider(connectionId))
+        try? storage.loadToken(forProvider: provider(connectionId))
     }
 
     func setToken(_ token: OAuthToken?, forConnectionId connectionId: UUID) {
         do {
             if let token {
-                try SecureTokenStorage.shared.saveToken(token, forProvider: provider(connectionId))
+                try storage.saveToken(token, forProvider: provider(connectionId))
             } else {
-                try SecureTokenStorage.shared.deleteToken(forProvider: provider(connectionId))
+                try storage.deleteToken(forProvider: provider(connectionId))
             }
         } catch {
             AppLogger.network.error("[OPDS] Could not update the stored sign-in for a connection")

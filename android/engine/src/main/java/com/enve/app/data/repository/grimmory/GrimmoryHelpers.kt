@@ -15,6 +15,7 @@ import com.enve.app.data.remote.dto.BookFileDto
 import com.enve.app.data.remote.dto.BookSummaryDto
 import com.enve.app.data.remote.dto.GrimmoryAppBookProgressDto
 import com.enve.app.data.remote.dto.LibraryDto
+import com.enve.app.data.remote.dto.LegacyBookloreBookDto
 import com.enve.core.data.sync.SyncSnapshot
 import com.enve.core.data.util.FINISHED_PROGRESS_THRESHOLD
 import com.enve.core.data.util.parseServerDate
@@ -62,6 +63,25 @@ internal fun BookDetailDto.selectedFile(): BookFileDto? = primaryFile
 internal fun BookFileDto.isPrimaryFile(): Boolean = isPrimary == true || primary == true
 
 internal fun BookFileDto.resolvedType(): String? = bookType ?: fileExtension
+
+internal fun BookSummaryDto.withFormatInventory(inventory: LegacyBookloreBookDto): BookSummaryDto {
+    val files = listOfNotNull(inventory.primaryFile) + inventory.alternativeFormats.orEmpty()
+    val ebook = files.firstOrNull { isGrimmoryEbookType(it.resolvedType()) }
+    val hasAudio = files.any { isGrimmoryAudioType(it.resolvedType()) }
+    return if (ebook != null && hasAudio) {
+        copy(
+            primaryFile = ebook,
+            primaryFileType = ebook.resolvedType(),
+            primaryFileName = ebook.fileName,
+            alternativeFormats = files.filterNot { it == ebook },
+        )
+    } else {
+        copy(
+            primaryFile = inventory.primaryFile ?: primaryFile,
+            alternativeFormats = inventory.alternativeFormats ?: alternativeFormats,
+        )
+    }
+}
 
 private val audioTypes = setOf("AUDIOBOOK", "MP3", "M4A", "M4B", "FLAC", "OGG", "OPUS", "WAV", "AAC")
 private val ebookTypes = setOf("EPUB", "PDF", "CBX", "CBR", "CBZ", "FB2", "MOBI", "AZW", "AZW3")

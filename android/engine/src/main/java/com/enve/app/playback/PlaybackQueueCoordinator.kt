@@ -1,5 +1,7 @@
 package com.enve.app.playback
 
+import com.enve.core.di.ApplicationScope
+import kotlinx.coroutines.Job
 import android.util.Log
 import com.enve.app.data.offline.BookCompletionHandler
 import com.enve.core.data.local.BookCacheDao
@@ -72,8 +74,10 @@ class PlaybackQueueCoordinator @Inject constructor(
     private val sessionService: PlayerSessionService,
     private val completionHandler: BookCompletionHandler,
     private val preferences: PreferencesManager,
+    @ApplicationScope parentScope: CoroutineScope =
+        CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob(parentScope.coroutineContext[Job]) + Dispatchers.IO)
     private val mutex = Mutex()
     private var completedBookKey: String? = null
 
@@ -234,16 +238,14 @@ class PlaybackQueueCoordinator @Inject constructor(
 
     private suspend fun finalizeCurrent(): Book? {
         val state = audioManager.state.value
-        val cacheKey = state.mediaId?.let(AutoMediaBrowserHelper::cacheKeyFrom)
-        val current = cacheKey?.let { bookCache.getByCacheKey(it) }
-            ?: audioManager.currentBookId?.let { bookCache.getById(it) }
-        val persisted = progressService.persistPlayback(
+        val checkpoint = progressService.capturePlayback(
             mediaId = state.mediaId,
             bookId = audioManager.currentBookId,
             positionMs = state.currentPositionMs,
             durationMs = state.durationMs,
-            force = true,
         )
+        val result = checkpoint?.let { progressService.persistCheckpoint(it, force = true) }
+        val persisted = (result as? PlayerProgressService.SaveResult.Saved)?.progress
         if (persisted != null) {
             progressService.syncImmediate(
                 book = persisted.book,
@@ -251,6 +253,8 @@ class PlaybackQueueCoordinator @Inject constructor(
                 progressFraction = persisted.progressFraction,
             )
         }
+        val current = checkpoint?.key?.let { bookCache.getByCacheKey(it) }
+            ?: audioManager.currentBookId?.let { bookCache.getById(it) }
         sessionService.close(
             positionSec = state.currentPositionMs.coerceAtLeast(0L) / 1000L,
             durationSec = state.durationMs.coerceAtLeast(0L) / 1000L,

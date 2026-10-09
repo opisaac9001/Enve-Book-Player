@@ -126,22 +126,67 @@ class PlexRepository @Inject constructor(
     ): Result<Unit> = withContext(Dispatchers.IO) {
         runSuspendCatching {
             if (progressFraction >= FINISHED_PROGRESS_THRESHOLD) {
-
                 val resp = api.scrobble(ratingKey = book.id)
                 if (!resp.isSuccessful) error("Plex scrobble HTTP ${resp.code()}")
             } else {
-                val resp = api.reportProgress(
-                    ratingKey = book.id,
-                    timeMs = currentTimeSec * 1000L,
-                    state = "stopped",
-                )
+                val target = progressTarget(book, currentTimeSec * 1000L)
+                val resp = api.reportProgress(ratingKey = target.ratingKey, timeMs = target.timeMs, state = "stopped")
                 if (!resp.isSuccessful) error("Plex progress HTTP ${resp.code()}")
             }
         }
     }
 
+    suspend fun reportPlayback(book: Book, state: String, sessionId: String, positionSec: Long): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            runSuspendCatching {
+                val target = progressTarget(book, positionSec * 1000L)
+                val resp = api.reportTimeline(
+                    ratingKey = target.ratingKey,
+                    key = "/library/metadata/${target.ratingKey}",
+                    state = state,
+                    timeMs = target.timeMs,
+                    durationMs = target.durationMs,
+                    sessionId = sessionId,
+                )
+                if (!resp.isSuccessful) error("Plex timeline HTTP ${resp.code()}")
+            }
+        }
+
+    private data class PlexTrackSpan(val ratingKey: String, val startMs: Long, val durationMs: Long)
+    private data class PlexProgressTarget(val ratingKey: String, val timeMs: Long, val durationMs: Long)
+
+    private val trackSpans = java.util.concurrent.ConcurrentHashMap<String, List<PlexTrackSpan>>()
+
+    // Plex keeps resume points per track (as iOS writes them), so multi-file books report against the track playing.
+    private suspend fun trackSpans(book: Book): List<PlexTrackSpan> {
+        trackSpans[book.uniqueKey]?.let { return it }
+        val root = api.getMetadata(book.id).body()?.mediaContainer?.metadata?.firstOrNull() ?: return emptyList()
+        val tracks = if (root.type == "album" || root.media.isEmpty()) {
+            api.getMetadataChildren(book.id).body()?.mediaContainer?.metadata.orEmpty().sortedWith(plexTrackOrder)
+        } else {
+            emptyList()
+        }
+        var start = 0L
+        return tracks.map { track ->
+            val duration = track.duration ?: track.media.firstOrNull()?.part?.firstOrNull()?.duration ?: 0L
+            PlexTrackSpan(track.ratingKey, start, duration).also { start += duration }
+        }.also { trackSpans[book.uniqueKey] = it }
+    }
+
+    private suspend fun progressTarget(book: Book, positionMs: Long): PlexProgressTarget {
+        val spans = trackSpans(book)
+        val span = spans.lastOrNull { positionMs >= it.startMs } ?: spans.firstOrNull()
+            ?: return PlexProgressTarget(book.id, positionMs.coerceAtLeast(0L), book.duration * 1000L)
+        return PlexProgressTarget(
+            ratingKey = span.ratingKey,
+            timeMs = (positionMs - span.startMs).coerceIn(0L, span.durationMs.coerceAtLeast(0L)),
+            durationMs = span.durationMs,
+        )
+    }
+
     suspend fun fetchAudiobookProgress(book: Book): Result<SyncSnapshot?> = withContext(Dispatchers.IO) {
         runSuspendCatching {
+            trackProgress(book)?.let { return@runSuspendCatching it }
             val resp = api.getMetadata(book.id)
             if (!resp.isSuccessful) error("Plex metadata HTTP ${resp.code()}")
             val metadata = resp.body()?.mediaContainer?.metadata?.firstOrNull()
@@ -157,6 +202,32 @@ class PlexRepository @Inject constructor(
                 updatedAt = (metadata.lastViewedAt ?: 0L) * 1000L,
             )
         }
+    }
+
+    private suspend fun trackProgress(book: Book): SyncSnapshot? {
+        val spans = trackSpans(book).takeIf { it.isNotEmpty() } ?: return null
+        var latest: Pair<Long, Long>? = null
+        var allFinished = true
+        for (span in spans) {
+            val meta = api.getMetadata(span.ratingKey).body()?.mediaContainer?.metadata?.firstOrNull() ?: return null
+            val offset = meta.viewOffset ?: 0L
+            val finished = (meta.viewCount ?: 0) > 0 && offset <= 0L
+            allFinished = allFinished && finished
+            val viewedAt = meta.lastViewedAt ?: continue
+            if (offset > 0L || finished) {
+                val position = span.startMs + if (finished) span.durationMs else offset
+                if (viewedAt > (latest?.second ?: Long.MIN_VALUE)) latest = position to viewedAt
+            }
+        }
+        val totalMs = spans.sumOf { it.durationMs }
+        val (positionMs, viewedAt) = latest ?: return null
+        val fraction = if (totalMs > 0) positionMs.toFloat() / totalMs else 0f
+        return SyncSnapshot(
+            percentage = if (allFinished) 1f else fraction.coerceIn(0f, 1f),
+            positionMs = positionMs,
+            source = "plex",
+            updatedAt = viewedAt * 1000L,
+        )
     }
 
     suspend fun resetBookProgress(book: Book): Result<Unit> = withContext(Dispatchers.IO) {

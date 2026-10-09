@@ -26,6 +26,10 @@ data class CustomSmartCollection(
     val query: String?,
     val createdAt: Long,
     val updatedAt: Long,
+    val rulesJson: String? = null,
+    val iconName: String = "folder",
+    val colorHex: String = "#F5921A",
+    val coverPath: String? = null,
 )
 
 @Dao

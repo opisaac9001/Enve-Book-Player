@@ -32,6 +32,7 @@ struct AdminSubScreen<Content: View>: View {
         .scrollIndicators(.hidden)
         .background(HearthBackground())
         .toolbar(.hidden, for: .navigationBar)
+        .hearthInteractiveBack()
     }
 }
 

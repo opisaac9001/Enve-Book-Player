@@ -84,9 +84,32 @@ final class FileSharingImportCoordinator {
     private let refreshThrottleSeconds: TimeInterval = 2
     private let watcherSuppressionSeconds: TimeInterval = 4
 
-    private init() {}
+    nonisolated private let storage: ProfileStorageLocations
+    private unowned let profileSession: ProfileSession?
+    private var isRetired = false
+
+    private init() {
+        storage = .owner
+        profileSession = nil
+    }
+
+    init(profileSession: ProfileSession) {
+        storage = profileSession.storage
+        self.profileSession = profileSession
+    }
+
+    func retire() async {
+        isRetired = true
+        let refresh = scheduledRefreshTask
+        let current = currentTask
+        stopWatching()
+        current?.cancel()
+        await refresh?.value
+        await current?.value
+    }
 
     func startWatching() {
+        guard !isRetired else { return }
         startWatchingDocumentsIfNeeded()
         startWatchingInboxIfNeeded()
     }
@@ -102,6 +125,7 @@ final class FileSharingImportCoordinator {
     }
 
     func scheduleRefresh(reason: String) {
+        guard !isRetired else { return }
         let now = Date()
 
         if now < suppressWatcherEventsUntil {
@@ -121,6 +145,7 @@ final class FileSharingImportCoordinator {
     }
 
     func refreshOnForeground(reason: String = "manual") {
+        guard !isRetired else { return }
         AppLogger.network.info("FileSharingImportCoordinator.refreshOnForeground() called (reason: \(reason))")
 
         if let lastRunAt, Date().timeIntervalSince(lastRunAt) < refreshThrottleSeconds {
@@ -139,14 +164,12 @@ final class FileSharingImportCoordinator {
         currentTask = Task { [weak self] in
             guard let self else { return }
             defer {
-                Task { @MainActor in
-                    self.lastRunAt = Date()
-                    self.currentTask = nil
-                    self.suppressWatcherEventsUntil = Date().addingTimeInterval(self.watcherSuppressionSeconds)
-                    if self.needsRefreshAfterCurrent {
-                        self.needsRefreshAfterCurrent = false
-                        self.refreshOnForeground(reason: "queued")
-                    }
+                self.lastRunAt = Date()
+                self.currentTask = nil
+                self.suppressWatcherEventsUntil = Date().addingTimeInterval(self.watcherSuppressionSeconds)
+                if self.needsRefreshAfterCurrent {
+                    self.needsRefreshAfterCurrent = false
+                    self.refreshOnForeground(reason: "queued")
                 }
             }
 
@@ -166,9 +189,9 @@ final class FileSharingImportCoordinator {
                 let fpMs = Int(Date().timeIntervalSince(fpStart) * 1000)
                 AppLogger.network.info("FileSharing fingerprint computed in \(fpMs)ms")
                 if let currentFingerprint = fingerprint,
-                    currentFingerprint == UserDefaults.standard.string(forKey: self.fingerprintKey)
+                    currentFingerprint == (profileSession?.defaults ?? UserDefaults.standard).string(forKey: self.fingerprintKey)
                 {
-                    let existingBooks = LocalLibraryStorageStore.shared.loadBooks(libraryId: LocalLibraryService.fileSharingLibraryId)
+                    let existingBooks = (profileSession?.localLibrary ?? LocalLibraryStorageStore.shared).loadBooks(libraryId: LocalLibraryService.fileSharingLibraryId)
                     if !existingBooks.isEmpty {
                         AppLogger.network.warning("No file-sharing folder changes detected, skipping scan")
                         return
@@ -182,12 +205,12 @@ final class FileSharingImportCoordinator {
 
             do {
                 AppLogger.network.debug(
-                    "Documents pathId=\(DiagnosticLogSanitizer.identifier(for: LocalLibraryService.fileSharingRootURL.standardizedFileURL.path))"
+                    "Documents pathId=\(DiagnosticLogSanitizer.identifier(for: storage.documentsDirectory.standardizedFileURL.path))"
                 )
 
                 let fm = FileManager.default
                 if let items = try? fm.contentsOfDirectory(
-                    at: LocalLibraryService.fileSharingRootURL,
+                    at: storage.documentsDirectory,
                     includingPropertiesForKeys: nil,
                     options: [.skipsHiddenFiles]
                 ) {
@@ -200,7 +223,7 @@ final class FileSharingImportCoordinator {
                 }
 
                 AppLogger.network.info("Ingesting pending file-sharing items...")
-                let ingestResult = try await LocalLibraryService.shared.ingestFileSharingPendingItems()
+                let ingestResult = try await (profileSession?.localLibraryService ?? LocalLibraryService.shared).ingestFileSharingPendingItems()
                 if ingestResult.movedItems > 0 {
                     AppLogger.network.info("Ingest moved \(ingestResult.movedItems) item(s) to Individual_Audiobooks")
                 } else {
@@ -210,7 +233,7 @@ final class FileSharingImportCoordinator {
                 let pendingZIPs = collectPendingZIPFiles()
                 if !pendingZIPs.isEmpty {
                     AppLogger.network.info("Found \(pendingZIPs.count) ZIP file(s) to extract...")
-                    let extracted = try await RemoteImportService.shared.importFromFilesApp(urls: pendingZIPs)
+                    let extracted = try await (profileSession?.remoteImport ?? RemoteImportService.shared).importFromFilesApp(urls: pendingZIPs)
                     AppLogger.network.info("Extracted \(extracted.count) book(s) from ZIP file(s)")
                     for zipURL in pendingZIPs {
                         try? FileManager.default.removeItem(at: zipURL)
@@ -220,17 +243,17 @@ final class FileSharingImportCoordinator {
                 let library = LocalLibrary(
                     id: LocalLibraryService.fileSharingLibraryId,
                     name: "Drag & Drop Books",
-                    folderPath: LocalLibraryService.fileSharingRootURL.path,
+                    folderPath: storage.documentsDirectory.path,
                     createdAt: Date(),
                     isEnabled: true,
                     type: .fileSharing
                 )
 
-                let existingBooks = LocalLibraryStorageStore.shared.loadBooks(libraryId: LocalLibraryService.fileSharingLibraryId)
+                let existingBooks = (profileSession?.localLibrary ?? LocalLibraryStorageStore.shared).loadBooks(libraryId: LocalLibraryService.fileSharingLibraryId)
                 let previousSignature = scanSignature(for: existingBooks)
 
                 AppLogger.network.info("Starting scan...")
-                let result = try await LocalLibraryService.shared.scanLibrary(library)
+                let result = try await (profileSession?.localLibraryService ?? LocalLibraryService.shared).scanLibrary(library)
                 AppLogger.network.info("Scan complete: found \(result.booksFound.count) books")
 
                 let updatedFingerprint: String? = await Task.detached(priority: .utility) { [weak self] in
@@ -244,12 +267,12 @@ final class FileSharingImportCoordinator {
                     }
                 }.value
                 if let updatedFingerprint {
-                    UserDefaults.standard.set(updatedFingerprint, forKey: self.fingerprintKey)
+                    (profileSession?.defaults ?? UserDefaults.standard).set(updatedFingerprint, forKey: self.fingerprintKey)
                 }
 
                 let newSignature = scanSignature(for: result.booksFound)
                 if newSignature != previousSignature {
-                    LocalLibraryStorageStore.shared.saveScanResult(result)
+                    (profileSession?.localLibrary ?? LocalLibraryStorageStore.shared).saveScanResult(result)
                     NotificationCenter.default.post(name: .localLibraryUpdated, object: LocalLibraryService.fileSharingLibraryId)
                     AppLogger.network.info("Posted .localLibraryUpdated notification")
                 } else {
@@ -272,7 +295,7 @@ final class FileSharingImportCoordinator {
     }
 
     nonisolated private func computeFolderFingerprint() throws -> String? {
-        let rootURL = LocalLibraryService.fileSharingRootURL
+        let rootURL = storage.documentsDirectory
         let canonicalURL = rootURL.appendingPathComponent("Individual_Audiobooks", isDirectory: true)
         let inboxURL = rootURL.appendingPathComponent("Inbox", isDirectory: true)
         let ebooksURL = rootURL.appendingPathComponent("Ebooks/local", isDirectory: true)
@@ -329,7 +352,7 @@ final class FileSharingImportCoordinator {
             return
         }
 
-        let watchURL = LocalLibraryService.fileSharingRootURL.appendingPathComponent("Individual_Audiobooks", isDirectory: true)
+        let watchURL = storage.documentsDirectory.appendingPathComponent("Individual_Audiobooks", isDirectory: true)
         if !FileManager.default.fileExists(atPath: watchURL.path) {
             try? FileManager.default.createDirectory(at: watchURL, withIntermediateDirectories: true)
         }
@@ -337,9 +360,9 @@ final class FileSharingImportCoordinator {
             "Starting Documents watcher pathId=\(DiagnosticLogSanitizer.identifier(for: watchURL.standardizedFileURL.path))"
         )
 
-        let watcher = FileWatcher(path: watchURL.path, label: "Documents") {
-            Task { @MainActor in
-                FileSharingImportCoordinator.shared.scheduleRefresh(reason: "watcher")
+        let watcher = FileWatcher(path: watchURL.path, label: "Documents") { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.scheduleRefresh(reason: "watcher")
             }
         }
 
@@ -351,15 +374,15 @@ final class FileSharingImportCoordinator {
     private func startWatchingInboxIfNeeded() {
         guard inboxWatcher == nil else { return }
 
-        let inboxURL = LocalLibraryService.fileSharingRootURL.appendingPathComponent("Inbox", isDirectory: true)
+        let inboxURL = storage.documentsDirectory.appendingPathComponent("Inbox", isDirectory: true)
         if !FileManager.default.fileExists(atPath: inboxURL.path) {
             try? FileManager.default.createDirectory(at: inboxURL, withIntermediateDirectories: true)
         }
         guard FileManager.default.fileExists(atPath: inboxURL.path) else { return }
 
-        let watcher = FileWatcher(path: inboxURL.path, label: "Inbox") {
-            Task { @MainActor in
-                FileSharingImportCoordinator.shared.scheduleRefresh(reason: "watcher")
+        let watcher = FileWatcher(path: inboxURL.path, label: "Inbox") { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.scheduleRefresh(reason: "watcher")
             }
         }
 
@@ -369,7 +392,7 @@ final class FileSharingImportCoordinator {
     }
 
     private func seedFileSharingLibraryIfNeeded() {
-        let existing = LocalLibraryStorageStore.shared.loadLibraries()
+        let existing = (profileSession?.localLibrary ?? LocalLibraryStorageStore.shared).loadLibraries()
 
         if existing.contains(where: { $0.id == LocalLibraryService.fileSharingLibraryId }) {
             return
@@ -378,18 +401,18 @@ final class FileSharingImportCoordinator {
         let library = LocalLibrary(
             id: LocalLibraryService.fileSharingLibraryId,
             name: "Drag & Drop Books",
-            folderPath: LocalLibraryService.fileSharingRootURL.path,
+            folderPath: storage.documentsDirectory.path,
             createdAt: Date(),
             isEnabled: true,
             type: .fileSharing
         )
 
-        LocalLibraryStorageStore.shared.saveLibrary(library)
+        (profileSession?.localLibrary ?? LocalLibraryStorageStore.shared).saveLibrary(library)
     }
 
     private func collectPendingZIPFiles() -> [URL] {
         let fm = FileManager.default
-        let root = LocalLibraryService.fileSharingRootURL
+        let root = storage.documentsDirectory
         let inbox = root.appendingPathComponent("Inbox", isDirectory: true)
         let canonical = root.appendingPathComponent("Individual_Audiobooks", isDirectory: true)
 

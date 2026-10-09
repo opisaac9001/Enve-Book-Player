@@ -24,6 +24,7 @@ import javax.inject.Singleton
 class LocalLibraryRepository @Inject constructor(
     private @ApplicationContext val context: Context,
     private val groupingOverrides: AudiobookGroupingOverrideStore,
+    private val locations: com.enve.core.data.local.ProfileStorageLocations,
 ) {
     suspend fun scanDirectory(uriString: String, sourceId: String): List<Book> = withContext(Dispatchers.IO) {
         val rootUri = uriString.toUri()
@@ -120,7 +121,7 @@ class LocalLibraryRepository @Inject constructor(
         val id = file.uri.toString()
         val audioMetadata = if (mediaType == AppMediaType.AUDIOBOOK) readAudioMetadata(file) else null
         val epubMetadata = if (extension == "epub") {
-            runCatching { EpubCoverExtractor.extractMetadata(context, file.uri) }.getOrNull()
+            runCatching { EpubCoverExtractor.extractMetadata(context, file.uri, locations.cacheDirectory) }.getOrNull()
         } else null
         val coverUrl = when {
             extension == "epub" -> epubMetadata?.coverUrl
@@ -129,7 +130,7 @@ class LocalLibraryRepository @Inject constructor(
                     !it.isDirectory && it.extension() in coverExtensions &&
                         it.name.orEmpty().substringBeforeLast(".").equals(name.substringBeforeLast("."), ignoreCase = true)
                 }?.uri?.toString()
-                namedCover ?: LocalAudioCoverExtractor.extract(context, file.uri)
+                namedCover ?: LocalAudioCoverExtractor.extract(context, locations.filesDirectory, file.uri)
                     ?: if (allowFolderCover) folderCoverUri(directory) else null
             }
             else -> null

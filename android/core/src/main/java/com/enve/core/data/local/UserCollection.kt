@@ -8,6 +8,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.PrimaryKey
 import androidx.room.Query
+import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
 
 @Entity(
@@ -25,6 +26,7 @@ data class UserCollection(
     val colorHex: String,
     val createdAt: Long,
     val updatedAt: Long,
+    val coverPath: String? = null,
 )
 
 @Entity(
@@ -58,6 +60,7 @@ data class UserCollectionSummary(
     val createdAt: Long,
     val updatedAt: Long,
     val bookCount: Int,
+    val coverPath: String?,
 )
 
 data class UserCollectionMembership(
@@ -70,11 +73,12 @@ data class UserCollectionMembership(
     val updatedAt: Long,
     val bookCount: Int,
     val containsBook: Boolean,
+    val coverPath: String?,
 )
 
 @Dao
 interface UserCollectionDao {
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Upsert
     suspend fun upsertCollection(collection: UserCollection)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -98,7 +102,7 @@ interface UserCollectionDao {
     suspend fun deleteCollection(collectionId: String)
 
     @Query("""
-        SELECT c.id, c.name, c.description, c.iconName, c.colorHex, c.createdAt, c.updatedAt,
+        SELECT c.id, c.name, c.description, c.iconName, c.colorHex, c.createdAt, c.updatedAt, c.coverPath,
                COUNT(m.bookKey) AS bookCount
         FROM user_collections c
         LEFT JOIN user_collection_books m ON m.collectionId = c.id
@@ -108,7 +112,7 @@ interface UserCollectionDao {
     fun observeSummaries(): Flow<List<UserCollectionSummary>>
 
     @Query("""
-        SELECT c.id, c.name, c.description, c.iconName, c.colorHex, c.createdAt, c.updatedAt,
+        SELECT c.id, c.name, c.description, c.iconName, c.colorHex, c.createdAt, c.updatedAt, c.coverPath,
                COUNT(m.bookKey) AS bookCount
         FROM user_collections c
         LEFT JOIN user_collection_books m ON m.collectionId = c.id
@@ -118,7 +122,7 @@ interface UserCollectionDao {
     suspend fun getSummaries(): List<UserCollectionSummary>
 
     @Query("""
-        SELECT c.id, c.name, c.description, c.iconName, c.colorHex, c.createdAt, c.updatedAt,
+        SELECT c.id, c.name, c.description, c.iconName, c.colorHex, c.createdAt, c.updatedAt, c.coverPath,
                COUNT(allBooks.bookKey) AS bookCount,
                CASE WHEN COUNT(bookMatch.bookKey) > 0 THEN 1 ELSE 0 END AS containsBook
         FROM user_collections c

@@ -10,10 +10,13 @@ final class PodcastsEngine {
     private(set) var subscriptionRevision = 0
     var pendingBrowseGenreRawValue: String?
 
-    init(
+    private unowned let profileSession: ProfileSession?
+
+    init(profileSession: ProfileSession? = nil,
         appState: AppState = .shared,
         subscriptionStore: PodcastSubscriptionStore = .shared
     ) {
+        self.profileSession = profileSession
         self.appState = appState
         self.subscriptionStore = subscriptionStore
     }
@@ -28,7 +31,7 @@ final class PodcastsEngine {
     }
 
     var includesAudiobookshelfPodcasts: Bool {
-        LibraryDisplayPreferencesStore.shared.loadPreferences().includeAudiobookshelfPodcasts
+        (profileSession?.preferences ?? LibraryDisplayPreferencesStore.shared).loadPreferences().includeAudiobookshelfPodcasts
     }
 
     func isSubscribed(feedURL: String) -> Bool {
@@ -70,7 +73,7 @@ final class PodcastsEngine {
         var sawFailure = false
 
         for connection in appState.providerConnections.connections {
-            guard let provider = PluginRegistry.shared.makeLibraryProvider(for: connection) as? AudiobookshelfProvider else { continue }
+            guard let provider = (profileSession?.registry ?? PluginRegistry.shared).makeLibraryProvider(for: connection) as? AudiobookshelfProvider else { continue }
             do {
                 let libraries = try await provider.fetchLibraries()
                 let selectedLibraryIds = connection.selectedLibraryIds ?? []

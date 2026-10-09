@@ -3,7 +3,7 @@ import Foundation
 @MainActor
 @Observable
 final class LastOpenedBookStore {
-    static let shared = LastOpenedBookStore()
+    static var shared: LastOpenedBookStore { ProfileSession.owner.lastOpened }
 
     private static let stableIdKey = "lastOpenedBookStableId"
     private static let openedAtKey = "lastOpenedBookDate"
@@ -13,7 +13,7 @@ final class LastOpenedBookStore {
     private(set) var stableId: String?
     private(set) var openedAt: Date?
 
-    private init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         stableId = defaults.string(forKey: Self.stableIdKey)
         if defaults.object(forKey: Self.openedAtKey) != nil {

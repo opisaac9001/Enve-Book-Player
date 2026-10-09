@@ -3,13 +3,17 @@ import Foundation
 @MainActor
 final class PlaybackSpeedMemory {
     static let shared = PlaybackSpeedMemory()
-    private init() {}
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
 
     private static let key = "imagine.perBookSpeed.v1"
 
     private var map: [String: Double] {
-        get { (UserDefaults.standard.dictionary(forKey: Self.key) as? [String: Double]) ?? [:] }
-        set { UserDefaults.standard.set(newValue, forKey: Self.key) }
+        get { (defaults.dictionary(forKey: Self.key) as? [String: Double]) ?? [:] }
+        set { defaults.set(newValue, forKey: Self.key) }
     }
 
     func speed(forStableId id: String) -> Double? {

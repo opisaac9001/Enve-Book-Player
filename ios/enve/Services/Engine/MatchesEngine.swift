@@ -35,7 +35,10 @@ final class MatchesEngine {
     private let appState: AppState
     private let recovery: LibraryRecoveryCoordinator
 
-    init(appState: AppState = .shared, recovery: LibraryRecoveryCoordinator = .shared) {
+    private unowned let profileSession: ProfileSession?
+
+    init(profileSession: ProfileSession? = nil, appState: AppState = .shared, recovery: LibraryRecoveryCoordinator = .shared) {
+        self.profileSession = profileSession
         self.appState = appState
         self.recovery = recovery
     }
@@ -82,7 +85,7 @@ final class MatchesEngine {
 
     func localPreviewFiles(for orphan: Book) -> [URL] {
         let keys = [orphan.partKey, orphan.downloadKey, orphan.id].compactMap { $0 }
-        let storage = LocalStorageManager.shared
+        let storage = (profileSession?.localStorage ?? LocalStorageManager.shared)
         for key in keys {
             if let files = storage.localAudiobookFilesIfExists(bookId: key), !files.isEmpty {
                 return files
@@ -93,7 +96,7 @@ final class MatchesEngine {
 
     func searchAudiobookshelfMetadata(title: String, author: String?, limit: Int) async throws -> MatchesAudiobookshelfSearchPayload? {
         guard let backend = audiobookshelfBackend() else { return nil }
-        let hits = try await AudiobookshelfService.shared.searchMetadata(
+        let hits = try await (profileSession?.absService ?? AudiobookshelfService.shared).searchMetadata(
             title: title,
             author: author,
             backend: backend,
@@ -106,13 +109,13 @@ final class MatchesEngine {
     func applyMetadataLayer(_ layer: Any, to book: Book) async {
         let previous = book
         await persistMetadataLayer(layer, bookIds: Array(Set([book.id, book.stableId])))
-        let enriched = await MetadataManager.shared.enrichBookWithStoredMetadata(book)
+        let enriched = await (profileSession?.metadataManager ?? MetadataManager.shared).enrichBookWithStoredMetadata(book)
 
         if previous.coverURL?.absoluteString != enriched.coverURL?.absoluteString {
-            await AppCache.shared.removeCoverData(for: previous)
-            DiskImageCache.shared.removeImage(for: previous.coverURL)
-            DiskImageCache.shared.removeImage(for: enriched.coverURL)
-            try? FileManager.default.removeItem(at: LocalStorageManager.shared.coverOverridePath(for: previous.downloadKey))
+            await (profileSession?.appCache ?? AppCache.shared).removeCoverData(for: previous)
+            (profileSession?.imageCache ?? DiskImageCache.shared).removeImage(for: previous.coverURL)
+            (profileSession?.imageCache ?? DiskImageCache.shared).removeImage(for: enriched.coverURL)
+            try? FileManager.default.removeItem(at: (profileSession?.localStorage ?? LocalStorageManager.shared).coverOverridePath(for: previous.downloadKey))
         }
 
         appState.updateBookWithMetadata(enriched)
@@ -122,10 +125,10 @@ final class MatchesEngine {
     }
 
     func metadata(for book: Book) async -> BookMetadata? {
-        if let byId = try? await MetadataStorage.shared.loadMetadata(bookId: book.id) {
+        if let byId = try? await (profileSession?.metadataStorage ?? MetadataStorage.shared).loadMetadata(bookId: book.id) {
             return byId
         }
-        return try? await MetadataStorage.shared.loadMetadata(bookId: book.stableId)
+        return try? await (profileSession?.metadataStorage ?? MetadataStorage.shared).loadMetadata(bookId: book.stableId)
     }
 
     func saveManualMetadataEdits(for book: Book, values: MatchesManualMetadataEditValues) async throws {
@@ -158,7 +161,7 @@ final class MatchesEngine {
         let existing = await metadata(for: book)
         let merged = matchesMergeOverrides(existing: existing?.userOverrides, new: overrides)
         for metadataID in Array(Set([book.id, book.stableId])) {
-            try await MetadataStorage.shared.updateUserOverrides(bookId: metadataID, overrides: merged)
+            try await (profileSession?.metadataStorage ?? MetadataStorage.shared).updateUserOverrides(bookId: metadataID, overrides: merged)
         }
 
         var updated = book
@@ -172,7 +175,7 @@ final class MatchesEngine {
         updated.publisher = values.publisher.nilIfEmptyMatchesEngine
         updated.genres = genresArray.isEmpty ? nil : genresArray
 
-        let enriched = await MetadataManager.shared.enrichBookWithStoredMetadata(updated)
+        let enriched = await (profileSession?.metadataManager ?? MetadataManager.shared).enrichBookWithStoredMetadata(updated)
         appState.updateBookWithMetadata(enriched)
         if appState.currentBook?.uniqueId == book.uniqueId {
             appState.currentBook = enriched
@@ -181,11 +184,11 @@ final class MatchesEngine {
 
     func pendingMatches() -> [MatchQueueEntry] {
         migratePendingMatchScoreFormat()
-        return MatchQueueStorage.shared.getPendingMatches()
+        return (profileSession?.matchQueue ?? MatchQueueStorage.shared).getPendingMatches()
     }
 
     func clearPendingMatches() {
-        MatchQueueStorage.shared.clearPendingMatches()
+        (profileSession?.matchQueue ?? MatchQueueStorage.shared).clearPendingMatches()
     }
 
     func preparedMetadata(for entry: MatchQueueEntry) -> PendingMatchPreparedMetadata {
@@ -249,26 +252,26 @@ final class MatchesEngine {
     func applyPendingMatchLayer(_ layer: Any, entry: MatchQueueEntry) async -> Bool {
         let result: Result<BookMetadata, Error>? = await withCheckedContinuation { continuation in
             if let itunes = layer as? iTunesMetadataLayer {
-                MetadataManager.shared.updateiTunesMetadata(bookId: entry.bookId, iTunes: itunes) { continuation.resume(returning: $0) }
+                (profileSession?.metadataManager ?? MetadataManager.shared).updateiTunesMetadata(bookId: entry.bookId, iTunes: itunes) { continuation.resume(returning: $0) }
             } else if let audible = layer as? AudibleMetadataLayer {
-                MetadataManager.shared.updateAudibleMetadata(bookId: entry.bookId, audible: audible) { continuation.resume(returning: $0) }
+                (profileSession?.metadataManager ?? MetadataManager.shared).updateAudibleMetadata(bookId: entry.bookId, audible: audible) { continuation.resume(returning: $0) }
             } else if let google = layer as? GoogleBooksMetadataLayer {
-                MetadataManager.shared.updateGoogleBooksMetadata(bookId: entry.bookId, google: google) {
+                (profileSession?.metadataManager ?? MetadataManager.shared).updateGoogleBooksMetadata(bookId: entry.bookId, google: google) {
                     continuation.resume(returning: $0)
                 }
             } else if let openLibrary = layer as? OpenLibraryMetadataLayer {
-                MetadataManager.shared.updateOpenLibraryMetadata(bookId: entry.bookId, openLibrary: openLibrary) {
+                (profileSession?.metadataManager ?? MetadataManager.shared).updateOpenLibraryMetadata(bookId: entry.bookId, openLibrary: openLibrary) {
                     continuation.resume(returning: $0)
                 }
             } else if let enve = layer as? EnveMetadataLayer {
-                MetadataManager.shared.updateEnveMetadata(bookId: entry.bookId, enve: enve) { continuation.resume(returning: $0) }
+                (profileSession?.metadataManager ?? MetadataManager.shared).updateEnveMetadata(bookId: entry.bookId, enve: enve) { continuation.resume(returning: $0) }
             } else {
                 continuation.resume(returning: nil)
             }
         }
 
         guard case .success = result else { return false }
-        MatchQueueStorage.shared.removeMatchQueueEntry(entryId: entry.id)
+        (profileSession?.matchQueue ?? MatchQueueStorage.shared).removeMatchQueueEntry(entryId: entry.id)
         await appState.refreshBookAfterMetadataUpdate(bookId: entry.bookId)
         return true
     }
@@ -277,7 +280,7 @@ final class MatchesEngine {
         let backendOverride = book.source == .audiobookshelf ? audiobookshelfBackend : nil
         let url: URL
         do {
-            if let resolved = try await PlayerViewModel.shared.resolveStreamURL(for: book, backendOverride: backendOverride) {
+            if let resolved = try await (profileSession?.playback.player ?? PlayerViewModel.shared).resolveStreamURL(for: book, backendOverride: backendOverride) {
                 url = resolved
             } else if let fallback = try await previewFallbackURL(for: book) {
                 url = fallback
@@ -323,15 +326,15 @@ final class MatchesEngine {
         for bookId in bookIds {
             do {
                 if let itunes = layer as? iTunesMetadataLayer {
-                    try await MetadataStorage.shared.updateLayer(bookId: bookId, layer: .iTunes) { $0.iTunes = itunes }
+                    try await (profileSession?.metadataStorage ?? MetadataStorage.shared).updateLayer(bookId: bookId, layer: .iTunes) { $0.iTunes = itunes }
                 } else if let audible = layer as? AudibleMetadataLayer {
-                    try await MetadataStorage.shared.updateLayer(bookId: bookId, layer: .audible) { $0.audible = audible }
+                    try await (profileSession?.metadataStorage ?? MetadataStorage.shared).updateLayer(bookId: bookId, layer: .audible) { $0.audible = audible }
                 } else if let enve = layer as? EnveMetadataLayer {
-                    try await MetadataStorage.shared.updateLayer(bookId: bookId, layer: .enve) { $0.enve = enve }
+                    try await (profileSession?.metadataStorage ?? MetadataStorage.shared).updateLayer(bookId: bookId, layer: .enve) { $0.enve = enve }
                 } else if let google = layer as? GoogleBooksMetadataLayer {
-                    try await MetadataStorage.shared.updateLayer(bookId: bookId, layer: .googleBooks) { $0.googleBooks = google }
+                    try await (profileSession?.metadataStorage ?? MetadataStorage.shared).updateLayer(bookId: bookId, layer: .googleBooks) { $0.googleBooks = google }
                 } else if let openLibrary = layer as? OpenLibraryMetadataLayer {
-                    let existing = try await MetadataStorage.shared.loadMetadata(bookId: bookId)?.userOverrides
+                    let existing = try await (profileSession?.metadataStorage ?? MetadataStorage.shared).loadMetadata(bookId: bookId)?.userOverrides
                     let merged = matchesMergeOverrides(
                         existing: existing,
                         new: UserOverridesLayer(
@@ -346,9 +349,9 @@ final class MatchesEngine {
                             customGenres: openLibrary.subjects
                         )
                     )
-                    try await MetadataStorage.shared.updateUserOverrides(bookId: bookId, overrides: merged)
+                    try await (profileSession?.metadataStorage ?? MetadataStorage.shared).updateUserOverrides(bookId: bookId, overrides: merged)
                 } else if let comicVine = layer as? ComicVineMetadataLayer {
-                    let existing = try await MetadataStorage.shared.loadMetadata(bookId: bookId)?.userOverrides
+                    let existing = try await (profileSession?.metadataStorage ?? MetadataStorage.shared).loadMetadata(bookId: bookId)?.userOverrides
                     let merged = matchesMergeOverrides(
                         existing: existing,
                         new: UserOverridesLayer(
@@ -359,7 +362,7 @@ final class MatchesEngine {
                             customPublisher: comicVine.publisher
                         )
                     )
-                    try await MetadataStorage.shared.updateUserOverrides(bookId: bookId, overrides: merged)
+                    try await (profileSession?.metadataStorage ?? MetadataStorage.shared).updateUserOverrides(bookId: bookId, overrides: merged)
                 }
                 NotificationCenter.default.post(name: .metadataUpdated, object: bookId)
             } catch {
@@ -369,7 +372,7 @@ final class MatchesEngine {
     }
 
     private func migratePendingMatchScoreFormat() {
-        let queue = MatchQueueStorage.shared.readMatchQueue()
+        let queue = (profileSession?.matchQueue ?? MatchQueueStorage.shared).readMatchQueue()
         var needsUpdate = false
         let updated = queue.entries.map { entry -> MatchQueueEntry in
             guard entry.matchCandidates.contains(where: { $0.confidence > 1.0 }) else { return entry }
@@ -414,7 +417,7 @@ final class MatchesEngine {
             )
         }
         if needsUpdate {
-            MatchQueueStorage.shared.writeMatchQueue(
+            (profileSession?.matchQueue ?? MatchQueueStorage.shared).writeMatchQueue(
                 MatchQueue(
                     entries: updated,
                     version: queue.version,

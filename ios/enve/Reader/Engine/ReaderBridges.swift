@@ -133,6 +133,7 @@ final class AnnotationResponderBridge: UIViewController {
         }
 
         let selectionDismissTap = UITapGestureRecognizer(target: self, action: #selector(handleSelectionDismissTap(_:)))
+        selectionDismissTap.cancelsTouchesInView = false
         selectionDismissTap.delegate = self
         selectionDismissTap.require(toFail: doubleTap)
         view.addGestureRecognizer(selectionDismissTap)
@@ -292,10 +293,9 @@ extension AnnotationResponderBridge: UIGestureRecognizerDelegate {
                 || other is UIPanGestureRecognizer
         }
         if gestureRecognizer === selectionDismissTapGesture || other === selectionDismissTapGesture {
-            if gestureRecognizer is UIPanGestureRecognizer || other is UIPanGestureRecognizer {
-                return true
-            }
-            return false
+            // WebKit also handles taps that collapse its native selection. Keep the
+            // annotation snapshot in sync instead of letting its recognizer win alone.
+            return true
         }
         return true
     }
@@ -824,3 +824,4 @@ private final class SelectionPageHold {
         isRestoring = false
     }
 }
+

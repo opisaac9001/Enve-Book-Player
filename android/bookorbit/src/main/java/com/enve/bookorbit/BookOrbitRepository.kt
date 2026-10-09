@@ -74,6 +74,7 @@ data class BookOrbitReadingSessionRecord(
 class BookOrbitRepository @Inject constructor(
     private val api: BookOrbitApi,
     private val endpoints: BookOrbitEndpoints,
+    private val serverSync: com.enve.core.data.local.ProfileServerSyncStore,
 ) {
     suspend fun isCurrentUserAdmin(): Result<Boolean> = runSuspendCatching {
         val response = api.me()
@@ -312,6 +313,8 @@ class BookOrbitRepository @Inject constructor(
         currentTimeSec: Long,
         progressFraction: Float,
     ): Result<Unit> = runSuspendCatching {
+        val syncStartedAt = System.currentTimeMillis()
+        if (!serverSync.isEnabled) return@runSuspendCatching
         val bookId = book.id.toIntOrNull() ?: return@runSuspendCatching
         val manifest = fetchAudiobookManifest(bookId)
         val assets = manifest.assets.sortedBy { it.sequence }
@@ -322,6 +325,7 @@ class BookOrbitRepository @Inject constructor(
             else if (response.isSuccessful) response.body()
             else error(bookOrbitHttpMessage("BookOrbit audio progress pull failed", response))
         }
+        if (!serverSync.accepts(syncStartedAt)) return@runSuspendCatching
         val response = api.updateAudiobookPlaybackState(
             bookId = bookId,
             request = BookOrbitAudiobookPlaybackStateRequest(
@@ -337,6 +341,7 @@ class BookOrbitRepository @Inject constructor(
     }
 
     suspend fun fetchAudiobookProgress(book: Book): Result<SyncSnapshot?> = runSuspendCatching {
+        if (!serverSync.isEnabled) return@runSuspendCatching null
         fetchDirectAudiobookProgress(book) ?: fetchCurrentlyReadingAudiobookProgress(book)
     }
 
@@ -448,7 +453,10 @@ class BookOrbitRepository @Inject constructor(
         percentage: Float,
         locator: String?,
     ): Result<Unit> = runSuspendCatching {
+        val syncStartedAt = System.currentTimeMillis()
+        if (!serverSync.isEnabled) return@runSuspendCatching
         val fileId = primaryEbookFileId(bookId) ?: error("BookOrbit ebook file unavailable")
+        if (!serverSync.accepts(syncStartedAt)) return@runSuspendCatching
         val response = api.updateEbookProgress(
             fileId = fileId,
             request = BookOrbitEbookProgressRequest(
@@ -460,6 +468,7 @@ class BookOrbitRepository @Inject constructor(
     }
 
     suspend fun fetchEbookProgress(book: Book): Result<SyncSnapshot?> = runSuspendCatching {
+        if (!serverSync.isEnabled) return@runSuspendCatching null
         val fileId = primaryEbookFileId(book.id) ?: return@runSuspendCatching null
         fetchDirectEbookProgress(fileId)
     }
@@ -473,6 +482,7 @@ class BookOrbitRepository @Inject constructor(
     }
 
     suspend fun updateBookStatus(bookId: String, status: String): Result<Unit> = runSuspendCatching {
+        if (!serverSync.isEnabled) return@runSuspendCatching
         val id = bookId.toIntOrNull() ?: error("Invalid BookOrbit book id")
         val mapped = when (status.uppercase()) {
             "READ", "COMPLETED" -> "read"
@@ -610,6 +620,8 @@ class BookOrbitRepository @Inject constructor(
         endProgress: Double?,
         positionSec: Long? = null,
     ): Result<Unit> = runSuspendCatching {
+        val syncStartedAt = System.currentTimeMillis()
+        if (!serverSync.accepts(startedAt.toEpochMilli())) return@runSuspendCatching
         if (durationSeconds < 10) return@runSuspendCatching
         val detailed = getBook(book.id, book.libraryId).getOrElse { book }
         val fileId = if (book.mediaType == AppMediaType.AUDIOBOOK && positionSec != null) {
@@ -618,6 +630,7 @@ class BookOrbitRepository @Inject constructor(
             detailed.audioTracks.firstOrNull()?.fileId?.toIntOrNull()
                 ?: primaryEbookFileId(book.id)
         } ?: error("BookOrbit reading-session file unavailable")
+        if (!serverSync.accepts(syncStartedAt)) return@runSuspendCatching
         val response = api.saveReadingSession(
             fileId,
             BookOrbitReadingSessionRequest(
@@ -633,10 +646,13 @@ class BookOrbitRepository @Inject constructor(
     }
 
     suspend fun fetchReadingSessions(book: Book): Result<List<BookOrbitReadingSessionRecord>> = runSuspendCatching {
+        val syncStartedAt = System.currentTimeMillis()
+        if (!serverSync.isEnabled) return@runSuspendCatching emptyList()
         val bookId = book.id.toIntOrNull() ?: error("Invalid BookOrbit book id")
         val records = mutableListOf<BookOrbitReadingSessionRecord>()
         var page = 1
         while (true) {
+            if (!serverSync.accepts(syncStartedAt)) return@runSuspendCatching emptyList()
             val response = api.readingSessions(bookId, page = page, pageSize = 100)
             if (!response.isSuccessful) error(bookOrbitHttpMessage("BookOrbit reading sessions failed", response))
             val body = response.body() ?: break

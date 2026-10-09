@@ -70,7 +70,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.hilt.navigation.compose.hiltViewModel
+import com.enve.hearth.shell.profileViewModel
 import coil.compose.AsyncImage
 import com.enve.app.data.export.AnnotationExporter
 import com.enve.app.ui.components.AnnotationEditSheet
@@ -93,7 +93,7 @@ import kotlin.math.roundToInt
 fun AnnotationsScreen(
     onBack: () -> Unit = {},
     onOpenAnnotation: (Book, ReaderAnnotation) -> Unit = { _, _ -> },
-    vm: AnnotationsViewModel = hiltViewModel(),
+    vm: AnnotationsViewModel = profileViewModel(),
 ) {
     val colors = EnveTheme.colors
     val state by vm.state.collectAsState()

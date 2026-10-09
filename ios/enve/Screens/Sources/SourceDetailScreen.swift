@@ -7,6 +7,9 @@ struct SourceDetailScreen: View {
     let connectionId: UUID
 
     @Environment(AppState.self) private var appState
+    @Environment(\.profileSession) private var capturedSession
+    private var profileSession: ProfileSession { capturedSession ?? .owner }
+    @Environment(ProfileSwitchCoordinator.self) private var profiles
     @Environment(\.hearth) private var hearth
     @Environment(\.mantelInset) private var mantelInset
     @Environment(\.dismiss) private var dismiss
@@ -80,7 +83,7 @@ struct SourceDetailScreen: View {
                     }
                     if isWebDAVLike(connection) { webdavCard }
                     if connection.type == .plex { plexCard(connection) }
-                    if connection.type == .booklore { koreaderCard }
+                    if profileSession.isOwner && connection.type == .booklore { koreaderCard }
                     if connection.type == .oneDrive {
                         SourcesCard {
                             Overline("Library folders")
@@ -135,7 +138,7 @@ struct SourceDetailScreen: View {
                     webdavRootPath = webdavIndexedPaths.first ?? "/"
                     persistWebDAVServerChanges()
                     mutateConnection { $0.rootPath = webdavRootPath }
-                    Task { await LibraryCatalogCoordinator.shared.refreshConnectionLibraries(providerId: connectionId) }
+                    Task { await profileSession.catalog.refreshConnectionLibraries(providerId: connectionId) }
                 }
                 .enveEnvironment()
             }
@@ -146,7 +149,7 @@ struct SourceDetailScreen: View {
                     mutateConnection { $0.selectedLibraryIds = selectedIds }
                     draftSelectedLibraryIds = selectedIds
                     Task {
-                        await LibraryCatalogCoordinator.shared.refreshConnectionLibraries(
+                        await profileSession.catalog.refreshConnectionLibraries(
                             providerId: connectionId,
                             forceFullReconciliation: true
                         )
@@ -160,7 +163,7 @@ struct SourceDetailScreen: View {
             if let connection {
                 SourcesPlexUserPicker(
                     users: plexHomeUsers,
-                    ownerToken: connection.plexOwnerToken ?? PlexAuthStore.shared.loadToken() ?? connection.token ?? "",
+                    ownerToken: connection.plexOwnerToken ?? profileSession.plexAuth.loadToken() ?? connection.token ?? "",
                     onSelect: { user, effectiveToken in
                         showingPlexUserPicker = false
                         applyPlexUserSwitch(user: user, effectiveToken: effectiveToken)
@@ -509,7 +512,7 @@ struct SourceDetailScreen: View {
         SourcesCard {
             if connection.isArchived {
                 Button {
-                    let requiresReauthentication = AuthenticationFailureStore.shared.isBlocked(
+                    let requiresReauthentication = profileSession.authenticationFailures.isBlocked(
                         connectionId: connectionId
                     )
                     mutateConnection { $0.isArchived = false }
@@ -540,7 +543,7 @@ struct SourceDetailScreen: View {
         username = isTorBoxConnection(connection) ? "" : (connection.username ?? "")
         webdavRootPath = connection.rootPath ?? "/"
         if isWebDAVLike(connection) {
-            let existing = RemoteImportService.shared.webDAVServers.first { $0.id == connection.id.uuidString }
+            let existing = profileSession.remoteImport.webDAVServers.first { $0.id == connection.id.uuidString }
             webdavIndexedPaths = normalizedWebDAVPaths(
                 existing?.indexedPaths.isEmpty == false ? existing?.indexedPaths ?? [] : [webdavRootPath]
             )
@@ -567,12 +570,12 @@ struct SourceDetailScreen: View {
 
         mtlsEnabled = connection.mtlsEnabled
         if connection.mtlsEnabled,
-            let certData = KeychainHelper.shared.getData(MTLSManager.certKey(for: connection.id))
+            let certData = profileSession.legacyKeychain.getData(MTLSManager.certKey(for: connection.id))
         {
-            let storedPassword = KeychainHelper.shared.get(MTLSManager.certPassKey(for: connection.id)) ?? ""
+            let storedPassword = profileSession.legacyKeychain.get(MTLSManager.certPassKey(for: connection.id)) ?? ""
             if storedPassword == "__keychain_identity__" {
                 mtlsCertName = "Keychain identity"
-            } else if let name = try? MTLSManager.shared.validatePKCS12(certData, password: storedPassword) {
+            } else if let name = try? profileSession.mtls.validatePKCS12(certData, password: storedPassword) {
                 mtlsCertName = name
             } else {
                 mtlsCertName = "Certificate installed"
@@ -580,7 +583,7 @@ struct SourceDetailScreen: View {
         }
 
         if connection.type == .booklore,
-            let creds = BookloreKoreaderSink.shared.credentials(for: connection.id)
+            let creds = profileSession.isOwner ? BookloreKoreaderSink.shared.credentials(for: connection.id) : nil
         {
             koreaderUsername = creds.username
             koreaderEnabled = creds.enabled
@@ -599,10 +602,10 @@ struct SourceDetailScreen: View {
             defer { url.stopAccessingSecurityScopedResource() }
             do {
                 let data = try Data(contentsOf: url)
-                let certName = try MTLSManager.shared.validatePKCS12(data, password: mtlsCertPassword)
-                KeychainHelper.shared.set(data, key: MTLSManager.certKey(for: connectionId))
+                let certName = try profileSession.mtls.validatePKCS12(data, password: mtlsCertPassword)
+                profileSession.legacyKeychain.set(data, key: MTLSManager.certKey(for: connectionId))
                 if !mtlsCertPassword.isEmpty {
-                    KeychainHelper.shared.set(mtlsCertPassword, key: MTLSManager.certPassKey(for: connectionId))
+                    profileSession.legacyKeychain.set(mtlsCertPassword, key: MTLSManager.certPassKey(for: connectionId))
                 }
                 mtlsCertName = certName
                 mtlsCertError = nil
@@ -617,6 +620,8 @@ struct SourceDetailScreen: View {
     }
 
     private func saveKoreaderCredentials() {
+        guard (try? profiles.authorizeChanges(in: profileSession)) != nil else { return }
+        guard profileSession.isOwner else { return }
         let passwordMD5 =
             koreaderPassword.isEmpty
             ? (BookloreKoreaderSink.shared.credentials(for: connectionId)?.passwordMD5 ?? "")
@@ -630,6 +635,7 @@ struct SourceDetailScreen: View {
     }
 
     private func testKoreaderAuth() {
+        guard profileSession.isOwner else { return }
         guard let baseURL = URL(string: normalizedURL()) else { return }
         isTestingKoreaderAuth = true
         let creds = BookloreKoreaderCredentials(
@@ -717,7 +723,7 @@ struct SourceDetailScreen: View {
         if let conn = connection, conn.type == .booklore,
             conn.url != previousURL || conn.username != previousUsername
         {
-            UserDefaults.standard.removeObject(forKey: "BookloreTier-\(connectionId.uuidString)")
+            profileSession.defaults.removeObject(forKey: "BookloreTier-\(connectionId.uuidString)")
         }
         if let connection, isWebDAVLike(connection) {
             persistWebDAVServerChanges()
@@ -726,6 +732,7 @@ struct SourceDetailScreen: View {
     }
 
     private func verify() {
+        guard (try? profiles.authorizeChanges(in: profileSession)) != nil else { return }
         guard let connection else { return }
         isVerifying = true
         errorMessage = nil
@@ -748,7 +755,7 @@ struct SourceDetailScreen: View {
                             $0.isConnected = true
                             $0.lastVerified = Date()
                         }
-                        AuthenticationFailureStore.shared.clear(connectionId: connection.id)
+                        profileSession.authenticationFailures.clear(connectionId: connection.id)
                         appState.providerConnections.clearReauthentication(connectionId: connection.id)
                     }
                     statusMessage = "Connection looks good."
@@ -764,6 +771,7 @@ struct SourceDetailScreen: View {
     }
 
     private func reauthenticateSSO(_ connection: ServerConnection) {
+        guard (try? profiles.authorizeChanges(in: profileSession)) != nil else { return }
         isReauthenticating = true
         errorMessage = nil
         Task {
@@ -778,7 +786,7 @@ struct SourceDetailScreen: View {
                         $0.isConnected = true
                         $0.lastVerified = Date()
                     }
-                    AuthenticationFailureStore.shared.clear(connectionId: connection.id)
+                    profileSession.authenticationFailures.clear(connectionId: connection.id)
                     appState.providerConnections.clearReauthentication(connectionId: connection.id)
                     username = account.displayName
                     statusMessage = "Signed in again."
@@ -789,28 +797,28 @@ struct SourceDetailScreen: View {
                 let fresh: ServerConnection
                 let refreshKeyPrefix: String
                 if connection.type == .audiobookshelf {
-                    fresh = try await AudiobookshelfLoginDelegate().authenticateWithOIDC(
+                    fresh = try await AudiobookshelfLoginDelegate(profileSession: profileSession).authenticateWithOIDC(
                         serverURL: connection.url,
                         redirectURIOverride: nil,
                         customHeaders: connection.customHeaders
                     )
                     refreshKeyPrefix = "abs_refresh_"
                 } else if connection.type == .bookOrbit {
-                    fresh = try await BookOrbitLoginDelegate(appState: appState).authenticateWithOIDC(
+                    fresh = try await BookOrbitLoginDelegate(appState: appState, profileSession: profileSession).authenticateWithOIDC(
                         serverURL: connection.url,
                         redirectURIOverride: nil,
                         customHeaders: connection.customHeaders
                     )
                     refreshKeyPrefix = "bookorbit_refresh_"
                 } else if connection.type == .komga {
-                    fresh = try await KomgaLoginDelegate(appState: appState).authenticateWithOIDC(
+                    fresh = try await KomgaLoginDelegate(appState: appState, profileSession: profileSession).authenticateWithOIDC(
                         serverURL: connection.url,
                         preferredProviderId: connection.komgaOAuthProviderId,
                         customHeaders: connection.customHeaders
                     )
                     refreshKeyPrefix = ""
                 } else {
-                    fresh = try await GrimmoryLoginDelegate(appState: appState).authenticateWithOIDC(
+                    fresh = try await GrimmoryLoginDelegate(appState: appState, profileSession: profileSession).authenticateWithOIDC(
                         serverURL: connection.url,
                         redirectURIOverride: connection.grimmoryOIDCRedirectURI,
                         customHeaders: connection.customHeaders
@@ -819,10 +827,10 @@ struct SourceDetailScreen: View {
                 }
 
                 if !refreshKeyPrefix.isEmpty,
-                    let refresh = KeychainHelper.shared.get(refreshKeyPrefix + fresh.id.uuidString)
+                    let refresh = profileSession.legacyKeychain.get(refreshKeyPrefix + fresh.id.uuidString)
                 {
-                    KeychainHelper.shared.set(refresh, key: refreshKeyPrefix + connection.id.uuidString)
-                    KeychainHelper.shared.delete(refreshKeyPrefix + fresh.id.uuidString)
+                    profileSession.legacyKeychain.set(refresh, key: refreshKeyPrefix + connection.id.uuidString)
+                    profileSession.legacyKeychain.delete(refreshKeyPrefix + fresh.id.uuidString)
                 }
 
                 mutateConnection {
@@ -835,7 +843,7 @@ struct SourceDetailScreen: View {
                     $0.isConnected = true
                     $0.lastVerified = Date()
                 }
-                AuthenticationFailureStore.shared.clear(connectionId: connection.id)
+                profileSession.authenticationFailures.clear(connectionId: connection.id)
                 appState.providerConnections.clearReauthentication(connectionId: connection.id)
                 secret = fresh.token ?? ""
                 let detectedBrowserHeaders = CloudflareAccessHeaders.detectedBrowserHeaders(from: fresh.customHeaders)
@@ -961,6 +969,7 @@ struct SourceDetailScreen: View {
     }
 
     private func applyLibrarySelection() {
+        guard (try? profiles.authorizeChanges(in: profileSession)) != nil else { return }
         mutateConnection {
             $0.selectedLibraryIds = draftSelectedLibraryIds
         }
@@ -976,7 +985,7 @@ struct SourceDetailScreen: View {
     }
 
     private func restoreCachedLibraries() {
-        let cached = LibraryCatalogCoordinator.shared.libraries
+        let cached = profileSession.catalog.libraries
             .filter { $0.providerId == connectionId }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         if !cached.isEmpty { availableLibraries = cached }
@@ -1016,7 +1025,7 @@ struct SourceDetailScreen: View {
         errorMessage = nil
         Task {
             do {
-                let ownerToken = connection.plexOwnerToken ?? PlexAuthStore.shared.loadToken() ?? ""
+                let ownerToken = connection.plexOwnerToken ?? profileSession.plexAuth.loadToken() ?? ""
                 plexHomeUsers = try await PlexService().getPlexHomeUsers(token: ownerToken)
                 isLoadingPlexUsers = false
                 showingPlexUserPicker = true
@@ -1030,7 +1039,7 @@ struct SourceDetailScreen: View {
     private func applyPlexUserSwitch(user: PlexHomeUser, effectiveToken: String) {
         guard let connection else { return }
         Task {
-            let ownerToken = connection.plexOwnerToken ?? PlexAuthStore.shared.loadToken() ?? connection.token ?? ""
+            let ownerToken = connection.plexOwnerToken ?? profileSession.plexAuth.loadToken() ?? connection.token ?? ""
             let resolvedServerToken: String? =
                 user.isAdmin
                 ? nil
@@ -1058,7 +1067,7 @@ struct SourceDetailScreen: View {
                 }
             }
             availableLibraries = []
-            await LibraryCatalogCoordinator.shared.refreshConnectionLibraries(providerId: connectionId)
+            await profileSession.catalog.refreshConnectionLibraries(providerId: connectionId)
             loadLibraries()
         }
     }
@@ -1072,7 +1081,7 @@ struct SourceDetailScreen: View {
             guard let resolved = URL(string: normalizedURL()) else { return nil }
             baseURL = resolved
         }
-        let existing = RemoteImportService.shared.webDAVServers.first { $0.id == connectionId.uuidString }
+        let existing = profileSession.remoteImport.webDAVServers.first { $0.id == connectionId.uuidString }
         return WebDAVServerConfig(
             id: existing?.id ?? connectionId.uuidString,
             name: name.isEmpty ? (isTorBoxConnection(connection) ? "TorBox" : "WebDAV Server") : name,
@@ -1085,10 +1094,11 @@ struct SourceDetailScreen: View {
     }
 
     private func persistWebDAVServerChanges() {
+        guard (try? profiles.authorizeChanges(in: profileSession)) != nil else { return }
         guard let connection, isWebDAVLike(connection), var server = webdavBrowseServer() else { return }
         server.rootPath = webdavRootPath
         server.indexedPaths = webdavIndexedPaths
-        RemoteImportService.shared.saveWebDAVServer(server)
+        profileSession.remoteImport.saveWebDAVServer(server)
     }
 
     private func isTorBoxConnection(_ connection: ServerConnection) -> Bool {
@@ -1117,30 +1127,33 @@ struct SourceDetailScreen: View {
     }
 
     private func archive() {
+        guard (try? profiles.authorizeChanges(in: profileSession)) != nil else { return }
         mutateConnection { $0.isArchived = true }
         dismiss()
     }
 
     private func delete() {
+        guard (try? profiles.authorizeChanges(in: profileSession)) != nil else { return }
         guard let connection else { return }
         if connection.type == .plex {
-            PlexAuthStore.shared.saveServerUrl("")
+            profileSession.plexAuth.saveServerUrl("")
         }
         if connection.mtlsEnabled {
-            MTLSManager.shared.deleteCert(for: connection.id)
+            profileSession.mtls.deleteCert(for: connection.id)
         }
         if connection.type == .oneDrive {
-            OneDriveProvider.deleteCredentials(connectionId: connection.id)
+            try? profileSession.tokenStorage.deleteToken(forProvider: OneDriveProvider.tokenStorageKey(connectionId: connection.id))
         }
         if let index = appState.providerConnections.connections.firstIndex(where: { $0.id == connectionId }) {
             appState.providerConnections.connections.remove(at: index)
         }
-        AuthenticationFailureStore.shared.clear(connectionId: connectionId)
+        profileSession.authenticationFailures.clear(connectionId: connectionId)
         appState.providerConnections.clearReauthentication(connectionId: connectionId)
         dismiss()
     }
 
     private func mutateConnection(_ mutate: (inout ServerConnection) -> Void) {
+        guard (try? profiles.authorizeChanges(in: profileSession)) != nil else { return }
         guard let index = appState.providerConnections.connections.firstIndex(where: { $0.id == connectionId }) else { return }
         var updated = appState.providerConnections.connections[index]
         mutate(&updated)

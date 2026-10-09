@@ -18,6 +18,12 @@ struct JournalGrimmoryStatsPayload {
     let insights: GrimmoryStatsSnapshot
 }
 
+struct JournalAudiobookshelfStatsPayload {
+    let stats: AudiobookshelfListeningStats
+    let sessions: [AudiobookshelfListeningStats.AudiobookshelfSession]
+    let progress: [UserMediaProgress]
+}
+
 struct JournalCompletionEntry: Identifiable {
     let book: Book
     let completedAt: Date
@@ -36,7 +42,10 @@ struct JournalCompletionSnapshot {
 final class JournalEngine {
     private let appState: AppState
 
-    init(appState: AppState = .shared) {
+    private unowned let profileSession: ProfileSession?
+
+    init(profileSession: ProfileSession? = nil, appState: AppState = .shared) {
+        self.profileSession = profileSession
         self.appState = appState
     }
 
@@ -45,9 +54,9 @@ final class JournalEngine {
         var result: [(entry: JournalMarginaliaEntry, lastUpdated: Date)] = []
 
         for book in ebooks {
-            var annotations = ReaderArtifactsStore.shared.loadAnnotations(bookId: book.stableId)
+            var annotations = (profileSession?.readerArtifacts ?? ReaderArtifactsStore.shared).loadAnnotations(bookId: book.stableId)
             if book.stableId != book.id {
-                let legacy = ReaderArtifactsStore.shared.loadAnnotations(bookId: book.id)
+                let legacy = (profileSession?.readerArtifacts ?? ReaderArtifactsStore.shared).loadAnnotations(bookId: book.id)
                 if !legacy.isEmpty {
                     let existing = Set(annotations.map(\.id))
                     annotations += legacy.filter { !existing.contains($0.id) }
@@ -149,39 +158,63 @@ final class JournalEngine {
 
         _ = try await provider.validateConnection()
         async let books = (try? await provider.fetchAllBooksForStats()) ?? []
-        async let sessions = (try? await provider.fetchReadingSessions(limit: 200)) ?? []
+        async let sessions = (try? await provider.fetchReadingSessions(limit: 2_000, recentBooks: 100)) ?? []
         async let insights = provider.fetchGrimmoryStats()
         return await JournalGrimmoryStatsPayload(books: books, sessions: sessions, insights: insights)
     }
 
-    func audiobookshelfListeningStats() async throws -> AudiobookshelfListeningStats? {
-        let backends = appState.providerConnections.allBackends()
-            .filter { $0.type == .audiobookshelf && $0.enabled }
-        guard !backends.isEmpty else { return nil }
-
-        return try await AudiobookshelfProgressSync().fetchListeningStats()
+    static func isThisDevice(_ session: AudiobookshelfListeningStats.AudiobookshelfSession) -> Bool {
+        guard let deviceId = session.deviceInfo?.deviceId else { return false }
+        return deviceId == AudiobookshelfProvider.clientDeviceId || deviceId == AudiobookshelfService.persistedDeviceId
     }
 
-    func remoteHistorySessions() async -> [HistorySession] {
+    private var audiobookshelfProvider: AudiobookshelfProvider? {
+        appState.providerConnections.connections
+            .first { $0.type == .audiobookshelf && !$0.isArchived }
+            .flatMap { appState.getProvider($0.id) as? AudiobookshelfProvider }
+    }
+
+    func audiobookshelfListeningStats() async throws -> JournalAudiobookshelfStatsPayload? {
+        guard let provider = audiobookshelfProvider else { return nil }
+        async let stats = provider.fetchListeningStats()
+        async let sessions = provider.fetchAllListeningSessions()
+        async let progress = (try? provider.fetchUserMediaProgress(libraryId: "")) ?? []
+        return try await JournalAudiobookshelfStatsPayload(stats: stats, sessions: sessions, progress: progress)
+    }
+
+    // Grimmory does not record the device, so match both the book and the time when removing Enve uploads.
+    static func isCoveredByLocal(start: Date, end: Date, bookId: Int, local: [HistorySession]) -> Bool {
+        local.contains {
+            $0.bookId.hasPrefix("grimmory:")
+                && ($0.bookId.hasSuffix(":\(bookId)") || $0.bookId.hasSuffix(":grimmory-ab-\(bookId)"))
+                && start >= $0.startTime.addingTimeInterval(-60)
+                && end <= $0.endTime.addingTimeInterval(60)
+        }
+    }
+
+    func remoteHistorySessions(excludingCoveredBy local: [HistorySession]) async -> [HistorySession] {
         var remote: [HistorySession] = []
 
         if let connection = appState.providerConnections.connections.first(where: { $0.type == .booklore && !$0.isArchived }),
             let provider = appState.getProvider(connection.id) as? BookloreProvider,
-            let sessions = try? await provider.fetchReadingSessions(limit: 200)
+            let sessions = try? await provider.fetchReadingSessions(limit: 2_000, recentBooks: 100)
         {
-            remote += sessions.map { entry in
+            remote += sessions.compactMap { entry -> HistorySession? in
                 let start = ISO8601Timestamp.parse(entry.startTime) ?? Date()
                 let fallbackEnd = start.addingTimeInterval(TimeInterval(entry.durationSeconds ?? 0))
+                let end = ISO8601Timestamp.parse(entry.endTime) ?? fallbackEnd
+                guard !Self.isCoveredByLocal(start: start, end: end, bookId: entry.bookId, local: local) else { return nil }
+                // Grimmory reports progress as 0-100.
                 return HistorySession(
                     id: entry.id,
                     bookId: String(entry.bookId),
                     mediaType: entry.bookType?.lowercased() == "audiobook" ? "audiobook" : "ebook",
                     startTime: start,
-                    endTime: ISO8601Timestamp.parse(entry.endTime) ?? fallbackEnd,
+                    endTime: end,
                     durationSeconds: entry.durationSeconds ?? 0,
-                    startProgress: entry.startProgress,
-                    endProgress: entry.endProgress,
-                    progressDelta: entry.progressDelta,
+                    startProgress: entry.startProgress.map { $0 / 100 },
+                    endProgress: entry.endProgress.map { $0 / 100 },
+                    progressDelta: entry.progressDelta.map { $0 / 100 },
                     startLocation: nil,
                     endLocation: nil,
                     pagesRead: nil,
@@ -190,19 +223,16 @@ final class JournalEngine {
             }
         }
 
-        if let backend = appState.providerConnections.allBackends()
-            .first(where: { $0.type == .audiobookshelf && $0.enabled })
-        {
-            let syncer = AudiobookshelfProgressSync()
-            syncer.backend = backend
-            if let sessions = try? await syncer.fetchListeningSessions(page: 0, itemsPerPage: 100) {
-                remote += sessions.compactMap { session -> HistorySession? in
+        if let provider = audiobookshelfProvider {
+            if let sessions = try? await provider.fetchListeningSessions(page: 0, itemsPerPage: 100) {
+                // This device's ABS sessions already exist locally.
+                remote += sessions.filter { !Self.isThisDevice($0) }.compactMap { session -> HistorySession? in
                     let duration = Int(session.timeListening)
                     guard duration > 0 else { return nil }
                     let start = session.startedAt.map { Date(timeIntervalSince1970: $0 / 1000) } ?? Date()
                     return HistorySession(
                         id: session.id,
-                        bookId: "",
+                        bookId: session.libraryItemId ?? "",
                         mediaType: "audiobook",
                         startTime: start,
                         endTime: session.updatedAt.map { Date(timeIntervalSince1970: $0 / 1000) }

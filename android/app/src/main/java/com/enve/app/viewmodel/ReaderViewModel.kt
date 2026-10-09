@@ -59,7 +59,6 @@ import com.enve.hearth.design.parseHexColor
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -328,6 +327,7 @@ class ReaderViewModel @Inject constructor(
     private val ebookSearch: EbookSearchService,
     private val searchPreferences: ReaderSearchPreferences,
     @ApplicationScope private val applicationScope: CoroutineScope,
+    database: ReaderDatabase,
 ) : ViewModel() {
 
     private val einkBoldActive: Boolean
@@ -355,7 +355,7 @@ class ReaderViewModel @Inject constructor(
     val customFonts: StateFlow<List<com.enve.app.data.reader.CustomFont>> = customFontRepository.observeFonts()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    private var db: ReaderDatabase? = null
+    private val db: ReaderDatabase? = database
     private var navigator: EpubNavigatorFragment? = null
     private var engineNavigator: ReaderEngineNavigator? = null
     private var epubCheckpointLease: ReaderCheckpointLease? = null
@@ -629,7 +629,6 @@ class ReaderViewModel @Inject constructor(
         this.bookId = bookId
         this.bookSource = source
         this.bookConnectionId = connectionId
-        db = ReaderDatabase.getInstance(appContext)
         viewModelScope.launch {
             searchPreferences.wholeWords.collect { wholeWords ->
                 _state.update { it.copy(searchWholeWords = wholeWords) }
@@ -1129,6 +1128,11 @@ class ReaderViewModel @Inject constructor(
         val engine = buildMediaOverlayEngine(pub, epubFile, checkpointToken)
         mediaOverlayEngine = engine
         val supportsReadAlong = engine.detectsSmil()
+        if (supportsReadAlong) {
+            viewModelScope.launch(Dispatchers.IO) {
+                db?.bookCacheDao()?.markReadAlongAvailable("${bookConnectionId ?: bookSource.name}:$bookId")
+            }
+        }
         Log.i(TAG, "ReadAlong detection: $supportsReadAlong for bookId=$bookId")
         _state.update {
             it.copy(
@@ -2877,7 +2881,7 @@ class ReaderViewModel @Inject constructor(
     private val progressPushMutex = Mutex()
 
     private suspend fun runProgressPush(push: suspend () -> Unit) {
-        progressPushMutex.withLock { withContext(NonCancellable) { push() } }
+        progressPushMutex.withLock { push() }
     }
 
     private val progressPushWindow = ProgressPushWindow(PROGRESS_PUSH_DEBOUNCE_MS, PROGRESS_PUSH_MAX_WAIT_MS)
@@ -2903,6 +2907,44 @@ class ReaderViewModel @Inject constructor(
 
     private fun scheduleReadiumCheckpointSync(nav: EpubNavigatorFragment) =
         scheduleProgressPush { persistCurrentReadiumCheckpoint(nav) }
+
+    suspend fun checkpointForProfileSwitch() {
+        progressPushesHeld = true
+        cancelScheduledProgressPush()
+        syncJob?.join()
+        savePrefsJob?.cancel()
+        savePrefsJob?.join()
+        stopAutoScroll()
+        stopTts()
+        pauseReadingSession()
+        if (preferencesLoaded) persistPreferences(_state.value.prefs)
+        if (_state.value.readAlongActive) {
+            submitCurrentReadAloudCheckpoint()
+            readAloudCheckpoints.flush(bookId, bookSource, bookConnectionId)
+        } else if (engineNavigator != null) {
+            persistFoliateCheckpoint()
+        } else {
+            navigator?.let { persistCurrentReadiumCheckpoint(it) }
+        }
+        if (bookId.isNotBlank()) {
+            val checkpoint = latestEpubCheckpoint
+            val locator = checkpoint?.let(EpubBridgeCheckpointCodec::encode)
+                ?: navigator?.currentLocator?.value?.toJSONOrNull()
+            val progress = currentReadingProgress().toFloat().coerceIn(0f, 1f)
+            val now = System.currentTimeMillis()
+            db?.bookCacheDao()?.updateUnifiedProgress(bookId, bookConnectionId, progress, -1L, locator, now)
+            if (aggregatorRepository.serverSyncEnabled) db?.pendingProgressPushDao()?.upsert(com.enve.core.data.local.PendingProgressPush(
+                bookId = bookId,
+                source = bookSource.name,
+                connectionKey = bookConnectionId.orEmpty(),
+                mediaType = com.enve.core.data.model.AppMediaType.EBOOK.name,
+                percentage = progress,
+                isFinished = progress >= 1f,
+                createdAt = now,
+            ))
+        }
+        takeReadingSession()?.let { history.append(it) }
+    }
 
     fun flushProgress() {
         if (_state.value.readAlongActive) {
@@ -3040,7 +3082,7 @@ class ReaderViewModel @Inject constructor(
         if (readAlongActive) {
             readAloudCheckpoints.flush(bookId, bookSource, bookConnectionId)
         } else if (!isLikelyInitialEmit) {
-            runCatching {
+            runSuspendCatching {
                 db?.bookCacheDao()?.updateUnifiedProgress(
                     bookId = bookId,
                     connectionId = bookConnectionId,
@@ -3101,17 +3143,11 @@ class ReaderViewModel @Inject constructor(
             return
         }
 
-        try {
-            syncManager.pushEbookProgress(
-                bookId = bookId,
-                percentage = pct,
-                cfi = json,
-            )
-        } catch (_: Exception) {
-            try {
-                repository.syncEbookProgress(bookId, pct, json)
-            } catch (_: Exception) {}
-        }
+        syncManager.pushEbookProgress(
+            bookId = bookId,
+            percentage = pct,
+            cfi = json,
+        )
     }
 
     private fun loadLayoutPresets() {
@@ -3176,8 +3212,8 @@ class ReaderViewModel @Inject constructor(
         sessionResumedAtMs = System.currentTimeMillis()
     }
 
-    private fun closeReadingSession() {
-        val startedAt = sessionStartedAtMs ?: return
+    private fun takeReadingSession(): HistorySession? {
+        val startedAt = sessionStartedAtMs ?: return null
         pauseReadingSession()
         val durationMs = sessionAccumulatedMs
         val endAt = System.currentTimeMillis()
@@ -3185,7 +3221,7 @@ class ReaderViewModel @Inject constructor(
         sessionResumedAtMs = null
         sessionAccumulatedMs = 0
 
-        if (durationMs < 5_000L) return
+        if (durationMs < 5_000L) return null
         val capturedBookId = bookId
         val capturedSource = bookSource
         val capturedConnectionId = bookConnectionId
@@ -3201,27 +3237,41 @@ class ReaderViewModel @Inject constructor(
             }
         }
         sessionStartProgress = null
+        return HistorySession(
+            id = UUID.randomUUID().toString(),
+            bookId = capturedBookId,
+            bookKey = "${capturedConnectionId ?: capturedSource.name}:$capturedBookId",
+            connectionId = capturedConnectionId,
+            source = capturedSource,
+            mediaType = com.enve.core.data.model.AppMediaType.EBOOK,
+            startTimeMs = startedAt,
+            endTimeMs = endAt,
+            activeDurationSeconds = durationMs / 1_000L,
+            startProgress = startProgress,
+            endProgress = endProgress,
+            pagesRead = pagesRead,
+        )
+    }
+
+    private fun closeReadingSession() {
+        val historySession = takeReadingSession() ?: return
+        val capturedBookId = historySession.bookId
+        val capturedSource = historySession.source
+        val capturedConnectionId = historySession.connectionId
+        val startedAt = historySession.startTimeMs
+        val endAt = historySession.endTimeMs
+        val durationMs = historySession.activeDurationSeconds * 1_000L
+        val startProgress = historySession.startProgress
+        val endProgress = historySession.endProgress
         applicationScope.launch(Dispatchers.IO) {
-            val historySession = HistorySession(
-                id = UUID.randomUUID().toString(),
-                bookId = capturedBookId,
-                bookKey = "${capturedConnectionId ?: capturedSource.name}:$capturedBookId",
-                connectionId = capturedConnectionId,
-                source = capturedSource,
-                mediaType = com.enve.core.data.model.AppMediaType.EBOOK,
-                startTimeMs = startedAt,
-                endTimeMs = endAt,
-                activeDurationSeconds = durationMs / 1_000L,
-                startProgress = startProgress,
-                endProgress = endProgress,
-                pagesRead = pagesRead,
-            )
             history.append(historySession)
             try {
                 when (capturedSource) {
                     BookSource.GRIMMORY -> {
+                        val fileType = db?.bookCacheDao()?.getById(capturedBookId)?.primaryFileType
                         val block: suspend () -> Unit = {
                             repository.createReadingSession(
+                                fileType = fileType,
                                 bookId = capturedBookId,
                                 startTime = java.time.Instant.ofEpochMilli(startedAt),
                                 endTime = java.time.Instant.ofEpochMilli(endAt),

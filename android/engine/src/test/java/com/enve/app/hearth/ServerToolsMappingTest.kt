@@ -135,7 +135,12 @@ class ServerToolsMappingTest {
 
         val stats = groups.single().stats
         assertEquals("2h 5m", stats.single { it.label == "Total listened" }.value)
-        assertEquals("2025-08-10", stats.single { it.label == "Best day" }.detail)
+        assertEquals(
+            java.time.LocalDate.of(2025, 8, 10).format(
+                java.time.format.DateTimeFormatter.ofLocalizedDate(java.time.format.FormatStyle.MEDIUM),
+            ),
+            stats.single { it.label == "Best day" }.detail,
+        )
         assertTrue(stats.none { it.label == "Today" })
     }
 

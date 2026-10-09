@@ -118,6 +118,8 @@ public enum ConnectionAuthMode: String, Codable, CaseIterable {
 }
 
 struct ServerConnection: Identifiable, Codable, Hashable {
+    static let keychainUserInfoKey = CodingUserInfoKey(rawValue: "enve.connectionKeychain")!
+
     var id = UUID()
     var name: String
     var url: String
@@ -243,7 +245,7 @@ struct ServerConnection: Identifiable, Codable, Hashable {
         plexHomeUserIsManaged = try container.decodeIfPresent(Bool.self, forKey: .plexHomeUserIsManaged)
         plexOwnerToken = try container.decodeIfPresent(String.self, forKey: .plexOwnerToken)
 
-        hydrateSecretsFromSharedKeychain()
+        hydrateSecretsFromSharedKeychain(using: decoder.userInfo[Self.keychainUserInfoKey] as? SharedKeychainStore ?? .shared)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -255,7 +257,8 @@ struct ServerConnection: Identifiable, Codable, Hashable {
             || (plexOwnerToken?.isEmpty == false)
             || secretHeaderNames.contains { Self.headerValue(in: customHeaders, for: $0)?.isEmpty == false }
 
-        if hasPersistableSecrets && !persistSecretsToSharedKeychain() {
+        let keychain = encoder.userInfo[Self.keychainUserInfoKey] as? SharedKeychainStore ?? .shared
+        if hasPersistableSecrets && !persistSecretsToSharedKeychain(using: keychain) {
             throw EncodingError.invalidValue(
                 id,
                 EncodingError.Context(
@@ -292,9 +295,8 @@ struct ServerConnection: Identifiable, Codable, Hashable {
     }
 
     @discardableResult
-    func persistSecretsToSharedKeychain() -> Bool {
+    func persistSecretsToSharedKeychain(using keychain: SharedKeychainStore = .shared) -> Bool {
         let connectionId = id.uuidString
-        let keychain = SharedKeychainStore.shared
         var success = true
 
         if let token, !token.isEmpty {
@@ -319,9 +321,8 @@ struct ServerConnection: Identifiable, Codable, Hashable {
         return success
     }
 
-    mutating func hydrateSecretsFromSharedKeychain() {
+    mutating func hydrateSecretsFromSharedKeychain(using keychain: SharedKeychainStore = .shared) {
         let connectionId = id.uuidString
-        let keychain = SharedKeychainStore.shared
 
         if let storedToken = keychain.token(forConnectionId: connectionId) {
             token = storedToken

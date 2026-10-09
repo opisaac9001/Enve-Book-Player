@@ -105,6 +105,7 @@ struct CollectionsScreen: View {
     @State private var loaded = false
     @State private var previewLoadGeneration = 0
     @State private var isRefreshing = false
+    private let savedBooks = SavedBooksStore.shared
 
     var body: some View {
         GeometryReader { geo in
@@ -140,6 +141,7 @@ struct CollectionsScreen: View {
                     if !smart.isEmpty {
                         smartSection(width: contentWidth)
                     }
+                    savedSection(width: contentWidth)
                     if loaded {
                         mySection(width: contentWidth)
                     }
@@ -171,6 +173,9 @@ struct CollectionsScreen: View {
             ) {
                 await collectionsLoadPreviews()
             }
+        }
+        .task {
+            _ = await engine.library.refreshSavedBooks()
         }
         .onChange(of: newSmartShown) { _, shown in
             if !shown { Task { await collectionsLoadPreviews() } }
@@ -226,6 +231,28 @@ struct CollectionsScreen: View {
                             customCoverPath: collection.customCoverPath,
                             previewBook: smartPreviews[collection.id]?.book,
                             badge: collection.isSystem ? nil : "by rule"
+                        )
+                    }
+                    .buttonStyle(PressableStyle())
+                }
+            }
+            .padding(.horizontal, 24)
+        }
+    }
+
+    private func savedSection(width: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            ShelfHeader(title: "Saved books")
+            LazyVGrid(columns: HearthAdaptive.gridColumns(width: width, minimum: 220, maximum: 4, compactFallback: 2), spacing: 14) {
+                ForEach(SavedBooksStore.List.allCases) { list in
+                    NavigationLink {
+                        SavedBooksDetailScreen(list: list)
+                    } label: {
+                        CollectionsCard(
+                            name: list.title,
+                            count: savedBooks.ids(in: list).count,
+                            iconName: list.symbol,
+                            colorName: list == .favorites ? "orange" : "blue"
                         )
                     }
                     .buttonStyle(PressableStyle())
@@ -378,6 +405,7 @@ struct CollectionsScreen: View {
 
         async let minimumDisplay: Void = Task.sleep(for: .milliseconds(750))
         await engine.sources.refreshServerCollections()
+        _ = await engine.library.refreshSavedBooks()
         await collectionsLoadPreviews()
         try? await minimumDisplay
     }

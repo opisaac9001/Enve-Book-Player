@@ -66,6 +66,9 @@ class HearthJournalViewModel @Inject constructor(
     private val _loadingServerStats = MutableStateFlow<Set<BookSource>>(emptySet())
     val loadingServerStats = _loadingServerStats.asStateFlow()
 
+    private val _serverStatsFailures = MutableStateFlow<Set<BookSource>>(emptySet())
+    val serverStatsFailures = _serverStatsFailures.asStateFlow()
+
     fun loadServerStats(source: BookSource) {
         if (source in _serverStats.value || source in _loadingServerStats.value) return
         val target = statsTargets.value.firstOrNull {
@@ -73,12 +76,13 @@ class HearthJournalViewModel @Inject constructor(
         } ?: return
         viewModelScope.launch {
             _loadingServerStats.update { it + source }
+            _serverStatsFailures.update { it - source }
             try {
                 _serverStats.update { it + (source to serverTools.stats(target.connectionId)) }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                _serverStats.update { it + (source to emptyList()) }
+                _serverStatsFailures.update { it + source }
             } finally {
                 _loadingServerStats.update { it - source }
             }

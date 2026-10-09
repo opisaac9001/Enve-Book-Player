@@ -26,9 +26,28 @@ final class SessionManager {
     @ObservationIgnored var onSessionWarning: (() -> Void)?
     @ObservationIgnored var onSessionTimeout: (() -> Void)?
 
-    private init() {
+    @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private var isObserving = false
+
+    init(defaults: UserDefaults = .standard, startAutomatically: Bool = true) {
+        self.defaults = defaults
+        if startAutomatically { start() }
+    }
+
+    func start() {
+        guard !isObserving else { return }
+        isObserving = true
         setupObservers()
         restoreSession()
+    }
+
+    func retire() {
+        persistSession()
+        invalidateTimers()
+        NotificationCenter.default.removeObserver(self)
+        isObserving = false
+        onSessionWarning = nil
+        onSessionTimeout = nil
     }
 
     func startSession(bookId: String) {
@@ -176,12 +195,12 @@ final class SessionManager {
         )
 
         if let encoded = try? JSONEncoder().encode(session) {
-            UserDefaults.standard.set(encoded, forKey: persistenceKey)
+            defaults.set(encoded, forKey: persistenceKey)
         }
     }
 
     private func restoreSession() {
-        guard let data = UserDefaults.standard.data(forKey: persistenceKey),
+        guard let data = defaults.data(forKey: persistenceKey),
             let session = try? JSONDecoder().decode(PersistedSession.self, from: data)
         else {
             return
@@ -208,6 +227,6 @@ final class SessionManager {
     }
 
     private func clearPersistedSession() {
-        UserDefaults.standard.removeObject(forKey: persistenceKey)
+        defaults.removeObject(forKey: persistenceKey)
     }
 }

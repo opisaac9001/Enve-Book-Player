@@ -2,6 +2,8 @@
 import SwiftUI
 
 struct DetailDebugSection: View {
+    @Environment(\.profileSession) private var capturedSession
+    private var profileSession: ProfileSession { capturedSession ?? .owner }
     let book: Book
 
     @Environment(\.hearth) private var hearth
@@ -44,7 +46,7 @@ struct DetailDebugSection: View {
                     if let coverURL = book.coverURL {
                         row("Cover URL", coverURL.absoluteString)
                     }
-                    let audioDir = LocalStorageManager.shared.bookAudioDirectory(for: book.downloadKey)
+                    let audioDir = profileSession.localStorage.bookAudioDirectory(for: book.downloadKey)
                     row("Audio dir", audioDir.path)
                     let exists = FileManager.default.fileExists(atPath: audioDir.path)
                     row("Dir exists", exists ? "yes" : "no")

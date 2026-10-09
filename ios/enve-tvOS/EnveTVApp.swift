@@ -83,6 +83,7 @@ struct EnveTVApp: App {
             providerConnections: AppState.shared.providerConnections,
             bookStore: AppState.shared.bookStore
         )
+        SyncCoordinator.shared.startAppIntegration()
         Task { @MainActor in
             AppState.shared.providerConnections.syncProviders()
         }

@@ -7,6 +7,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.PrimaryKey
 import androidx.room.Query
+import kotlinx.coroutines.flow.Flow
 
 @Entity(
     tableName = "matched_book_metadata",
@@ -45,6 +46,9 @@ data class MatchedBookMetadata(
 
 @Dao
 interface MatchedBookMetadataDao {
+    @Query("SELECT metadataKey FROM matched_book_metadata")
+    fun observeKeys(): Flow<List<String>>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(metadata: MatchedBookMetadata)
 

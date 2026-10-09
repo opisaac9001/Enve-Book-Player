@@ -20,7 +20,9 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSourceBitmapLoader
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
-import com.enve.core.di.RefreshClient
+import com.enve.app.profiles.ProfileLifecycleRegistry
+import com.enve.app.profiles.ProfileSwitchCoordinator
+import com.enve.app.profiles.ActiveProfileRuntime
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.CacheBitmapLoader
@@ -55,10 +57,12 @@ import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
@@ -76,6 +80,11 @@ import okhttp3.OkHttpClient
 @androidx.annotation.OptIn(UnstableApi::class)
 class PlaybackService : MediaLibraryService() {
 
+    private val initializationScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var capturedRuntime: ActiveProfileRuntime? = null
+    private var profileCoordinator: ProfileSwitchCoordinator? = null
+    private var profileLifecycleRegistration: AutoCloseable? = null
+    private var closedForProfileSwitch = false
     private var mediaSession: MediaLibrarySession? = null
     private var audioEffectsManager: AudioEffectsManager? = null
     private var localPlayer: ExoPlayer? = null
@@ -89,6 +98,7 @@ class PlaybackService : MediaLibraryService() {
     private var castStreamResolver: CastStreamResolver? = null
     private var localCastServer: LocalCastServer? = null
     private var progressService: PlayerProgressService? = null
+    private val checkpointBuffer = PlaybackCheckpointBuffer()
     private var preferences: PreferencesManager? = null
     private var playerSessionService: PlayerSessionService? = null
     private var playerSessionFacade: PlayerSessionFacade? = null
@@ -140,39 +150,42 @@ class PlaybackService : MediaLibraryService() {
     @EntryPoint
     @InstallIn(SingletonComponent::class)
     interface PlaybackServiceEntryPoint {
-        fun audioEffectsManager(): AudioEffectsManager
-        fun audioPlaybackManager(): AudioPlaybackManager
-        fun okHttpClient(): OkHttpClient
-        @RefreshClient fun unauthenticatedHttpClient(): OkHttpClient
-        fun chapterStore(): PlaybackChapterStore
-        fun autoBrowserHelper(): AutoMediaBrowserHelper
-        fun castStreamResolver(): CastStreamResolver
-        fun localCastServer(): LocalCastServer
-        fun progressService(): PlayerProgressService
-        fun playerSessionService(): PlayerSessionService
-        fun playerSessionFacade(): PlayerSessionFacade
-        fun lastOpenedBookStore(): LastOpenedBookStore
-        fun playbackQueueCoordinator(): PlaybackQueueCoordinator
-        fun readAloudPlayback(): ReadAloudPlaybackCoordinator
-        fun readAloudCheckpoints(): ReadAloudCheckpointRepository
-        fun preferencesManager(): PreferencesManager
+        fun profileCoordinator(): ProfileSwitchCoordinator
+        fun profileLifecycle(): ProfileLifecycleRegistry
     }
 
     override fun onCreate() {
         super.onCreate()
 
-        val entryPoint = try {
-            EntryPointAccessors.fromApplication(
-                applicationContext,
-                PlaybackServiceEntryPoint::class.java,
-            )
-        } catch (e: Exception) {
-            Log.w("PlaybackService", "Playback dependencies unavailable", e)
-            null
+        val device = EntryPointAccessors.fromApplication(applicationContext, PlaybackServiceEntryPoint::class.java)
+        val coordinator = device.profileCoordinator()
+        profileCoordinator = coordinator
+        val runtime = coordinator.activeRuntime.value
+        if (runtime != null) {
+            initializeSession(runtime, device)
+        } else {
+            initializationScope.launch {
+                coordinator.initialize()
+                val initialized = coordinator.activeRuntime.value
+                if (initialized == null) stopSelf() else initializeSession(initialized, device)
+            }
+        }
+    }
+
+    private fun initializeSession(runtime: ActiveProfileRuntime, device: PlaybackServiceEntryPoint) {
+        val coordinator = checkNotNull(profileCoordinator)
+        if (coordinator.state.value.locked || coordinator.state.value.switching || coordinator.activeRuntime.value !== runtime) {
+            stopSelf()
+            return
+        }
+        capturedRuntime = runtime
+        val entryPoint = runtime.component
+        profileLifecycleRegistration = device.profileLifecycle().register(runtime.profileId) {
+            checkpointForProfileSwitch()
         }
 
-        val dataSourceFactory = entryPoint?.let { entry ->
-            val playbackClient = entry.okHttpClient().newBuilder()
+        val dataSourceFactory = entryPoint.let { entry ->
+            val playbackClient = entry.httpClient().newBuilder()
                 .addInterceptor { chain ->
                     val request = chain.request()
                     val url = request.url
@@ -203,14 +216,13 @@ class PlaybackService : MediaLibraryService() {
             .setSeekForwardIncrementMs(30_000)
             .setHandleAudioBecomingNoisy(true)
             .setAudioAttributes(audioAttributes,  true)
-        if (dataSourceFactory != null) {
-            playerBuilder.setMediaSourceFactory(
-                DefaultMediaSourceFactory(this).setDataSourceFactory(dataSourceFactory)
-            )
-        }
+        playerBuilder.setMediaSourceFactory(
+            DefaultMediaSourceFactory(this).setDataSourceFactory(dataSourceFactory),
+        )
 
         val exoPlayer = playerBuilder.build()
         exoPlayer.addListener(autoPrepareListener(exoPlayer))
+        exoPlayer.addListener(progressCheckpointListener(exoPlayer))
         localPlayer = exoPlayer
 
         val sharedCastContext = runCatching { CastContext.getSharedInstance(this) }.getOrNull()
@@ -225,20 +237,21 @@ class PlaybackService : MediaLibraryService() {
             }.getOrNull()
         }
         castPlayer = cast
+        cast?.addListener(progressCheckpointListener(cast))
 
-        chapterStore = entryPoint?.chapterStore()
-        audioPlaybackManager = entryPoint?.audioPlaybackManager()
-        autoBrowserHelper = entryPoint?.autoBrowserHelper()
-        castStreamResolver = entryPoint?.castStreamResolver()
-        localCastServer = entryPoint?.localCastServer()
-        progressService = entryPoint?.progressService()
-        preferences = entryPoint?.preferencesManager()
-        playerSessionService = entryPoint?.playerSessionService()
-        playerSessionFacade = entryPoint?.playerSessionFacade()
-        lastOpenedBookStore = entryPoint?.lastOpenedBookStore()
-        playbackQueueCoordinator = entryPoint?.playbackQueueCoordinator()
-        readAloudPlayback = entryPoint?.readAloudPlayback()
-        readAloudCheckpoints = entryPoint?.readAloudCheckpoints()
+        chapterStore = entryPoint.chapterStore()
+        audioPlaybackManager = entryPoint.audioPlayback()
+        autoBrowserHelper = entryPoint.autoBrowserHelper()
+        castStreamResolver = entryPoint.castStreamResolver()
+        localCastServer = entryPoint.localCastServer()
+        progressService = entryPoint.progressService()
+        preferences = entryPoint.preferences()
+        playerSessionService = entryPoint.sessions()
+        playerSessionFacade = entryPoint.playerSession()
+        lastOpenedBookStore = entryPoint.lastOpenedBookStore()
+        playbackQueueCoordinator = entryPoint.playbackQueue()
+        readAloudPlayback = entryPoint.readAloud()
+        readAloudCheckpoints = entryPoint.readAloudCheckpoints()
 
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main).also { serviceScope = it }
         val initialPlayer: Player = if (cast != null && cast.isCastSessionAvailable) cast else exoPlayer
@@ -259,16 +272,14 @@ class PlaybackService : MediaLibraryService() {
             )
         }
 
-        if (dataSourceFactory != null) {
-            sessionBuilder.setBitmapLoader(
-                CacheBitmapLoader(
-                    DataSourceBitmapLoader(
-                        DataSourceBitmapLoader.DEFAULT_EXECUTOR_SERVICE.get(),
-                        dataSourceFactory,
-                    )
-                )
-            )
-        }
+        sessionBuilder.setBitmapLoader(
+            CacheBitmapLoader(
+                DataSourceBitmapLoader(
+                    DataSourceBitmapLoader.DEFAULT_EXECUTOR_SERVICE.get(),
+                    dataSourceFactory,
+                ),
+            ),
+        )
         mediaSession = sessionBuilder.build()
 
         setMediaNotificationProvider(
@@ -330,7 +341,7 @@ class PlaybackService : MediaLibraryService() {
             }
         })
 
-        audioEffectsManager = entryPoint?.audioEffectsManager()
+        audioEffectsManager = entryPoint.audioEffectsManager()
         audioEffectsManager?.let { effects ->
             exoPlayer.addListener(object : Player.Listener {
                 override fun onAudioSessionIdChanged(audioSessionId: Int) {
@@ -344,6 +355,7 @@ class PlaybackService : MediaLibraryService() {
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? {
+        if (!ownsActiveProfile()) return null
         Log.i(
             "PlaybackService",
             "onGetSession pkg=${controllerInfo.packageName} uid=${controllerInfo.uid} trusted=${controllerInfo.isTrusted} sessionPresent=${mediaSession != null}",
@@ -351,27 +363,63 @@ class PlaybackService : MediaLibraryService() {
         return mediaSession
     }
 
+    private fun ownsActiveProfile(): Boolean {
+        val coordinator = profileCoordinator ?: return false
+        return !closedForProfileSwitch && !coordinator.state.value.switching && !coordinator.state.value.locked &&
+            coordinator.activeRuntime.value?.generation == capturedRuntime?.generation
+    }
+
+    private suspend fun checkpointForProfileSwitch() = withContext(Dispatchers.Main.immediate) {
+        if (closedForProfileSwitch) return@withContext
+        serviceScope?.coroutineContext?.get(Job)?.cancelAndJoin()
+        val player = mediaSession?.player
+        if (player != null) {
+            player.pause()
+            val positionMs = absolutePositionMs(player)
+            val durationMs = absoluteDurationMs(player)
+            progressService?.persistPlayback(player.currentMediaItem?.mediaId, null, positionMs, durationMs, force = true)
+            playerSessionService?.closeLocally(positionMs / 1_000L, durationMs / 1_000L)
+            player.stop()
+            player.clearMediaItems()
+        }
+        flushCheckpointBuffer()
+        closedForProfileSwitch = true
+        mediaSession?.release()
+        mediaSession = null
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        activePlaybackTarget()?.let(::checkpointPlayback)
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
+        initializationScope.cancel()
         progressWatchJob?.cancel()
         progressWatchJob = null
         chapterWatchJob?.cancel()
         chapterWatchJob = null
         restorePendingHandoffForShutdown()
-        runCatching {
+        if (!closedForProfileSwitch) runCatching {
             runBlocking {
-                persistServiceProgress(force = true, handleCompletion = false)
                 val player = mediaSession?.player
+                val shutdownCheckpoint = player?.let(::captureCheckpoint) ?: checkpointBuffer.latestSnapshot()
+                flushCheckpointBuffer()
                 if (pendingCastHandoff == null &&
                     player != null &&
                     player.currentMediaItem?.let(::isReadAloudItem) != true
                 ) {
-                    playerSessionService?.close(
-                        positionSec = absolutePositionSec(player),
-                        durationSec = absoluteDurationMs(player) / 1000L,
+                    playerSessionService?.closeLocally(
+                        positionSec = (shutdownCheckpoint?.positionMs ?: absolutePositionMs(player)) / 1000L,
+                        durationSec = (shutdownCheckpoint?.durationMs ?: absoluteDurationMs(player)) / 1000L,
                     )
                 }
             }
         }
+        profileLifecycleRegistration?.close()
+        profileLifecycleRegistration = null
         serviceScope?.cancel()
         serviceScope = null
         audioEffectsManager?.release()
@@ -1090,13 +1138,74 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
+    private fun progressCheckpointListener(player: Player): Player.Listener = object : Player.Listener {
+        override fun onIsPlayingChanged(isPlaying: Boolean) {
+            if (activePlaybackTarget() !== player) return
+            if (isPlaying) wasServicePlaying = true
+            else if (wasServicePlaying) checkpointPlayback(player)
+        }
+
+        override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+            if (reason == Player.DISCONTINUITY_REASON_SEEK || reason == Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT) {
+                checkpointPlayback(player)
+            }
+        }
+    }
+
+    private fun captureCheckpoint(player: Player): PlayerProgressService.Checkpoint? {
+        val item = player.currentMediaItem ?: return null
+        if (isReadAloudItem(item)) return null
+        val snapshot = progressService?.capturePlayback(item.mediaId, positionMs = absolutePositionMs(player), durationMs = absoluteDurationMs(player))
+            ?: return null
+        return checkpointBuffer.retain(snapshot)
+    }
+
+    private fun reportCheckpointRetry(result: PlayerProgressService.SaveResult) {
+        if (result is PlayerProgressService.SaveResult.Retry && result.error != null) {
+            Log.e(TAG, "Unable to save playback checkpoint", result.error)
+        }
+    }
+
+    private suspend fun flushCheckpointBuffer() {
+        val service = progressService ?: return
+        checkpointBuffer.flush { snapshot ->
+            service.persistCheckpoint(snapshot, force = true).also(::reportCheckpointRetry)
+        }
+    }
+
+    private fun checkpointPlayback(player: Player) {
+        if (activePlaybackTarget() !== player || pendingCastHandoff != null) return
+        val snapshot = captureCheckpoint(player) ?: return
+        serviceScope?.launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                val service = progressService ?: return@launch
+                val result = checkpointBuffer.persistCaptured(snapshot) { service.persistCheckpoint(it, force = true) }
+                reportCheckpointRetry(result)
+                if (result is PlayerProgressService.SaveResult.Saved) {
+                    val persisted = result.progress
+                    service.syncImmediate(persisted.book, persisted.currentTimeSec, persisted.progressFraction)
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                Log.e(TAG, "Unable to save playback checkpoint", error)
+            }
+        }
+    }
+
     private fun startWatchingProgress() {
         val scope = serviceScope ?: return
         if (progressService == null) return
         progressWatchJob?.cancel()
         progressWatchJob = scope.launch {
             while (isActive) {
-                persistServiceProgress(force = false)
+                try {
+                    persistServiceProgress(force = false)
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    Log.e(TAG, "Unable to save playback progress", error)
+                }
                 delay(1_000)
             }
         }
@@ -1116,37 +1225,44 @@ class PlaybackService : MediaLibraryService() {
         val positionMs = absolutePositionMs(player)
         val durationMs = absoluteDurationMs(player)
 
-        playerSessionService?.markPlaybackChanged(
-            isPlaying = isPlaying,
-            positionSec = positionMs / 1000L,
-            durationSec = durationMs / 1000L,
-        )
         if (!ended) lastHandledEndedMediaId = null
         val justEnded = ended && mediaId != lastHandledEndedMediaId
-        if (!force && !isPlaying && !justStopped && !justEnded) return
-
-        val persisted = service.persistPlayback(
-            mediaId = mediaId,
-            bookId = null,
-            positionMs = positionMs,
-            durationMs = durationMs,
-            force = force || justStopped || justEnded,
-        )
-        if ((force || justStopped || justEnded) && persisted != null) {
-            service.syncImmediate(
-                book = persisted.book,
-                currentTimeSec = persisted.currentTimeSec,
-                progressFraction = persisted.progressFraction,
-            )
-        }
-        if (justEnded && handleCompletion) {
-            lastHandledEndedMediaId = mediaId
-            playerSessionService?.close(
+        val shouldPersist = force || isPlaying || justStopped || justEnded
+        val checkpoint = if (shouldPersist) {
+            service.capturePlayback(mediaId, positionMs = positionMs, durationMs = durationMs)?.let(checkpointBuffer::retain)
+        } else null
+        val markPlayback = suspend {
+            playerSessionService?.markPlaybackChanged(
+                isPlaying = isPlaying,
                 positionSec = positionMs / 1000L,
                 durationSec = durationMs / 1000L,
+                bookKey = checkpoint?.key ?: AutoMediaBrowserHelper.cacheKeyFrom(mediaItem.mediaId),
+            )
+            Unit
+        }
+        if (checkpoint == null) {
+            markPlayback()
+            return
+        }
+        val forced = force || justStopped || justEnded
+        val result = checkpointBuffer.persistCaptured(checkpoint, beforePersist = markPlayback) {
+            service.persistCheckpoint(it, force = forced)
+        }
+        reportCheckpointRetry(result)
+        if (forced && result is PlayerProgressService.SaveResult.Saved) {
+            val persisted = result.progress
+            service.syncImmediate(persisted.book, persisted.currentTimeSec, persisted.progressFraction)
+        }
+        if (justEnded && handleCompletion && result is PlayerProgressService.SaveResult.Saved &&
+            player.currentMediaItem?.mediaId == checkpoint.mediaId && player.playbackState == Player.STATE_ENDED
+        ) {
+            lastHandledEndedMediaId = checkpoint.mediaId
+            playerSessionService?.close(
+                positionSec = checkpoint.positionMs / 1000L,
+                durationSec = checkpoint.durationMs / 1000L,
                 finished = true,
             )
-            playbackQueueCoordinator?.onPlaybackCompleted(mediaId)
+            playbackQueueCoordinator?.onPlaybackCompleted(checkpoint.mediaId)
         }
     }
 
@@ -1281,6 +1397,11 @@ class PlaybackService : MediaLibraryService() {
     private inner class LibraryCallback(
         private val scope: CoroutineScope,
     ) : MediaLibrarySession.Callback {
+        override fun onDisconnected(session: MediaSession, controller: MediaSession.ControllerInfo) {
+            activePlaybackTarget()?.let(::checkpointPlayback)
+            super.onDisconnected(session, controller)
+        }
+
 
         override fun onConnect(
             session: MediaSession,
@@ -1586,6 +1707,7 @@ class PlaybackService : MediaLibraryService() {
                         startPositionMs,
                     )
                 }
+                withContext(Dispatchers.Main.immediate) { persistServiceProgress(force = true, handleCompletion = false) }
                 val resolved = resolveQueue(helper, mediaItems)
                 resolved.primary?.let { adoptResolvedPlayback(it) }
                 val callerSpecifiedPosition = startPositionMs != C.TIME_UNSET && startPositionMs > 0L
@@ -1737,6 +1859,7 @@ class PlaybackService : MediaLibraryService() {
         }
 
         override fun stop() {
+            checkpointPlayback(underlying)
             if (underlying === castPlayer) {
                 pendingCastHandoff?.let { pending ->
                     castReceiverState()?.let { receiverState ->
@@ -1751,6 +1874,7 @@ class PlaybackService : MediaLibraryService() {
         }
 
         override fun clearMediaItems() {
+            checkpointPlayback(underlying)
             if (underlying === castPlayer && pendingCastHandoff != null) {
                 cancelPendingCastHandoff()
                 localCastServer?.stop()

@@ -10,76 +10,92 @@ struct StoryAlignPickerPage {
 @MainActor
 @Observable
 final class StoryAlignEngine {
-    static let shared = StoryAlignEngine()
-
+    private unowned let profileSession: ProfileSession?
     private let appState: AppState
     private let catalog: LibraryCatalogCoordinator
-    private let service: StoryAlignService
+    private let suppliedService: StoryAlignService?
+    let isAvailable: Bool
+    private var service: StoryAlignService { suppliedService ?? .shared }
 
     init(
         appState: AppState = .shared,
         catalog: LibraryCatalogCoordinator = .shared,
-        service: StoryAlignService = .shared
+        service: StoryAlignService? = nil,
+        isAvailable: Bool = true,
+        profileSession: ProfileSession? = nil
     ) {
+        self.profileSession = profileSession
         self.appState = appState
         self.catalog = catalog
-        self.service = service
+        self.suppliedService = service
+        self.isAvailable = isAvailable
     }
 
     var activeConversion: StoryAlignService.ConversionState? {
-        service.activeConversion
+        guard isAvailable else { return nil }
+        return service.activeConversion
     }
 
     var pausedConversion: StoryAlignService.PausedConversion? {
-        service.pausedConversion
+        guard isAvailable else { return nil }
+        return service.pausedConversion
     }
 
     func canStart(ebook: Book?, audiobook: Book?) -> Bool {
-        ebook != nil && audiobook != nil && service.activeConversion == nil
+        isAvailable && ebook != nil && audiobook != nil && service.activeConversion == nil
     }
 
     func isConverted(ebook: Book, audiobook: Book) -> Bool {
-        service.isConverted(ebook: ebook, audiobook: audiobook)
+        isAvailable && service.isConverted(ebook: ebook, audiobook: audiobook)
     }
 
     func needsDownload(ebook: Book, audiobook: Book) -> (ebook: Bool, audiobook: Bool) {
-        service.needsDownload(ebook: ebook, audiobook: audiobook)
+        guard isAvailable else { return (false, false) }
+        return service.needsDownload(ebook: ebook, audiobook: audiobook)
     }
 
-    func startConversion(ebook: Book, audiobook: Book) {
+    func startConversion(ebook: Book, audiobook: Book) throws {
+        guard isAvailable else { throw ProfileAccessError.parentAuthorizationRequired }
         service.downloadAndConvert(ebook: ebook, audiobook: audiobook)
     }
 
-    func resumeConversion(ebook: Book, audiobook: Book) {
+    func resumeConversion(ebook: Book, audiobook: Book) throws {
+        guard isAvailable else { throw ProfileAccessError.parentAuthorizationRequired }
         service.resumeConversion(ebook: ebook, audiobook: audiobook)
     }
 
-    func cancelConversion() {
+    func cancelConversion() throws {
+        guard isAvailable else { throw ProfileAccessError.parentAuthorizationRequired }
         service.cancelConversion()
     }
 
-    func dismissConversion() {
+    func dismissConversion() throws {
+        guard isAvailable else { throw ProfileAccessError.parentAuthorizationRequired }
         service.dismissConversion()
     }
 
-    func deleteConversion(ebook: Book, audiobook: Book) {
+    func deleteConversion(ebook: Book, audiobook: Book) throws {
+        guard isAvailable else { throw ProfileAccessError.parentAuthorizationRequired }
         service.deleteConversion(ebook: ebook, audiobook: audiobook)
     }
 
     func books(for paused: StoryAlignService.PausedConversion) -> (ebook: Book?, audiobook: Book?) {
-        (
+        guard isAvailable else { return (nil, nil) }
+        return (
             ebook: appState.bookInMemory(stableId: paused.ebookStableId),
             audiobook: appState.bookInMemory(stableId: paused.audiobookStableId)
         )
     }
 
     func completedConversions() -> AsyncStream<[StoryAlignService.CompletedConversion]> {
+        guard isAvailable else { return AsyncStream { $0.finish() } }
         let store = appState.bookStore
         let service = service
         return store.observe { await service.completedConversions() }
     }
 
     func pickerPage(mediaType: String, query: String, after cursor: Book? = nil, limit: Int = 100) async -> StoryAlignPickerPage {
+        guard isAvailable else { return StoryAlignPickerPage(books: [], canLoadMore: false) }
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             let page = await appState.bookStore.pagedBooks(after: cursor, limit: limit, mediaType: mediaType)
@@ -91,20 +107,21 @@ final class StoryAlignEngine {
     }
 
     func importFilesForPicker(urls: [URL], mediaType: String) async throws -> Book? {
+        guard isAvailable else { throw ProfileAccessError.parentAuthorizationRequired }
         let knownUniqueIds = await appState.bookStore.allBookUniqueIds()
-        let imported = try await RemoteImportService.shared.importFromFilesApp(urls: urls)
+        let imported = try await (profileSession?.remoteImport ?? RemoteImportService.shared).importFromFilesApp(urls: urls)
 
         let library = LocalLibrary(
             id: LocalLibraryService.fileSharingLibraryId,
             name: "Drag & Drop Books",
-            folderPath: LocalLibraryService.fileSharingRootURL.path,
+            folderPath: (profileSession?.storage.documentsDirectory ?? LocalLibraryService.fileSharingRootURL).path,
             createdAt: Date(),
             isEnabled: true,
             type: .fileSharing
         )
-        LocalLibraryStorageStore.shared.saveLibrary(library)
-        let scanResult = try await LocalLibraryService.shared.scanLibrary(library)
-        LocalLibraryStorageStore.shared.saveScanResult(scanResult)
+        (profileSession?.localLibrary ?? LocalLibraryStorageStore.shared).saveLibrary(library)
+        let scanResult = try await (profileSession?.localLibraryService ?? LocalLibraryService.shared).scanLibrary(library)
+        (profileSession?.localLibrary ?? LocalLibraryStorageStore.shared).saveScanResult(scanResult)
 
         for bookFile in imported {
             guard let coverPath = bookFile.metadata?.coverImagePath,
@@ -114,7 +131,7 @@ final class StoryAlignEngine {
                 continue
             }
             let book = bookFile.toBook(libraryId: LocalLibraryService.fileSharingLibraryId)
-            await AppCache.shared.setCoverData(data, for: book)
+            await (profileSession?.appCache ?? AppCache.shared).setCoverData(data, for: book)
         }
 
         catalog.forceNextLocalRefresh = true

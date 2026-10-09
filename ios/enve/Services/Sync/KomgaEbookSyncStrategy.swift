@@ -8,19 +8,30 @@ final class KomgaEbookSyncStrategy: ProviderSyncStrategy {
 
     private let minimumServerSyncInterval: TimeInterval = 60
     private var lastSyncTime: Date?
-    private let playbackState: any PlaybackStateProvider = ActivePlayback.controller
+    private let playbackState: any PlaybackStateProvider
     private let providerConnections: any ProviderConnectionAccessing
     private let books: any BookQuerying
     private let bookWriter: any BookWriting
+    private let libraryCache: any RecentlyPlayedLibraryCaching
+    private let bookProgress: BookProgressStore
+    private let pendingSync: PendingSyncQueueStore
 
     init(
         providerConnections: any ProviderConnectionAccessing,
         books: any BookQuerying,
-        bookWriter: any BookWriting
+        bookWriter: any BookWriting,
+        libraryCache: any RecentlyPlayedLibraryCaching,
+        playbackState: any PlaybackStateProvider,
+        bookProgress: BookProgressStore,
+        pendingSync: PendingSyncQueueStore
     ) {
         self.providerConnections = providerConnections
         self.books = books
         self.bookWriter = bookWriter
+        self.libraryCache = libraryCache
+        self.playbackState = playbackState
+        self.bookProgress = bookProgress
+        self.pendingSync = pendingSync
     }
 
     func sync(force: Bool, launchOptimized: Bool) async -> ProviderSyncResult {
@@ -59,7 +70,7 @@ final class KomgaEbookSyncStrategy: ProviderSyncStrategy {
                 for progress in progressItems {
                     guard let book = localBooksById[progress.libraryItemId],
                         book.stableId != activeBookId,
-                        PendingSyncQueueStore.shared.entries[book.stableId] == nil,
+                        pendingSync.entries[book.stableId] == nil,
                         let serverProgress = progress.ebookProgress
                     else { continue }
 
@@ -79,7 +90,7 @@ final class KomgaEbookSyncStrategy: ProviderSyncStrategy {
                     persistedBook.serverReadStatus = isFinished ? "READ" : "IN_PROGRESS"
                     persistedBook.hideFromContinue = false
                     persistedBook.lastUpdate = progress.lastUpdate
-                    if AppState.shared.mutateBook(
+                    if libraryCache.mutateBook(
                         stableId: book.stableId,
                         {
                             $0 = persistedBook
@@ -87,7 +98,7 @@ final class KomgaEbookSyncStrategy: ProviderSyncStrategy {
                     ) == nil {
                         await bookWriter.upsertBooks([persistedBook])
                     }
-                    BookProgressStore.shared.saveRecentlyPlayed(book, date: progress.lastUpdate)
+                    bookProgress.saveRecentlyPlayed(book, date: progress.lastUpdate)
                     AppLogger.sync.debug(
                         "Pulled Komga ebook progress bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId)) progress=\(Int(serverProgress * 100))%"
                     )
@@ -96,7 +107,7 @@ final class KomgaEbookSyncStrategy: ProviderSyncStrategy {
 
                 for book in localBooks
                 where
-                    book.stableId != activeBookId && PendingSyncQueueStore.shared.entries[book.stableId] == nil
+                    book.stableId != activeBookId && pendingSync.entries[book.stableId] == nil
                     && (force || book.canonicalEbookProgress > 0.001) && progressByBookId[book.id] == nil
                 {
                     if let remote = try await provider.fetchEbookProgress(for: book) {
@@ -108,7 +119,7 @@ final class KomgaEbookSyncStrategy: ProviderSyncStrategy {
                         updated.hideFromContinue = false
                         updated.lastUpdate = remote.updatedAt ?? book.lastUpdate
                         updated.epubLocator = nil
-                        if AppState.shared.mutateBook(stableId: book.stableId, { $0 = updated }) == nil {
+                        if libraryCache.mutateBook(stableId: book.stableId, { $0 = updated }) == nil {
                             await bookWriter.upsertBooks([updated])
                         }
                         pulled += 1
@@ -124,7 +135,7 @@ final class KomgaEbookSyncStrategy: ProviderSyncStrategy {
                     resetBook.serverReadStatus = nil
                     resetBook.hideFromContinue = true
                     resetBook.lastUpdate = resetDate
-                    if AppState.shared.mutateBook(
+                    if libraryCache.mutateBook(
                         stableId: book.stableId,
                         {
                             $0 = resetBook
@@ -132,7 +143,7 @@ final class KomgaEbookSyncStrategy: ProviderSyncStrategy {
                     ) == nil {
                         await bookWriter.upsertBooks([resetBook])
                     }
-                    BookProgressStore.shared.remove(stableId: book.stableId)
+                    bookProgress.remove(stableId: book.stableId)
                     pulled += 1
                 }
             } catch {

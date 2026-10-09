@@ -78,7 +78,7 @@ class ServerToolsViewModel @Inject constructor(
                 .orEmpty()
             val result = try {
                 coroutineScope {
-                    val stats = async { if (ServerFeature.STATS in features) serverTools.stats(connectionId) else emptyList() }
+                    val stats = async { if (ServerFeature.STATS in features) statsOrEmpty(connectionId) else emptyList() }
                     val achievements = async {
                         if (ServerFeature.ACHIEVEMENTS in features) serverTools.achievements(connectionId) else null
                     }
@@ -108,4 +108,13 @@ class ServerToolsViewModel @Inject constructor(
             loaded.value = result
         }
     }
+
+    private suspend fun statsOrEmpty(connectionId: String): List<ServerStatGroup> =
+        try {
+            serverTools.stats(connectionId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            emptyList()
+        }
 }

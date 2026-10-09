@@ -2,8 +2,15 @@ import SwiftUI
 
 struct AccessibilityScreen: View {
     @Environment(\.hearth) private var hearth
+    @Environment(\.profileSession) private var profileSession
 
-    @State private var prefs = LibraryDisplayPreferencesStore.shared.loadPreferences()
+    @State private var prefs: UserPreferences
+
+    init(profileSession: ProfileSession = .owner) {
+        _prefs = State(initialValue: profileSession.preferences.loadPreferences())
+    }
+
+    private var session: ProfileSession { profileSession ?? .owner }
 
     var body: some View {
         SettingsScaffold(
@@ -63,8 +70,8 @@ struct AccessibilityScreen: View {
     }
 
     private func setVisionMode(_ enabled: Bool) {
-        prefs = SettingsPrefs.mutate { $0.visionImpairedModeEnabled = enabled }
-        ThemeManager.shared.isVisionMode = enabled
+        prefs = SettingsPrefs.mutate(in: session.preferences) { $0.visionImpairedModeEnabled = enabled }
+        session.theme.isVisionMode = enabled
         NotificationCenter.default.post(name: .init("VisionImpairedModeChanged"), object: nil)
         PlatformHaptics.selection()
     }

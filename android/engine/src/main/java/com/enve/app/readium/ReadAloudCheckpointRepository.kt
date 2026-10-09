@@ -1,5 +1,7 @@
 package com.enve.app.readium
 
+import com.enve.core.di.ApplicationScope
+import kotlinx.coroutines.Job
 import android.util.Log
 import com.enve.core.data.local.BookCacheDao
 import com.enve.core.data.model.BookSource
@@ -33,12 +35,14 @@ object ReadAloudBookKey {
 @Singleton
 class ReadAloudCheckpointRepository @Inject constructor(
     private val bookCache: BookCacheDao,
+    @ApplicationScope parentScope: CoroutineScope =
+        CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) {
     companion object {
         private const val TAG = "ReadAloudCheckpoint"
     }
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob(parentScope.coroutineContext[Job]) + Dispatchers.IO)
     private val sequencer = ReadAloudCheckpointSequencer<ReadAloudCheckpoint> { checkpoint ->
         bookCache.updateUnifiedProgress(
             bookId = checkpoint.bookId,

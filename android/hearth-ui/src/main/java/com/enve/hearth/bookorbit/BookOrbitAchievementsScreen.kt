@@ -27,7 +27,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.hilt.navigation.compose.hiltViewModel
+import com.enve.hearth.shell.profileViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.enve.engine.bookorbit.BookOrbitAchievement
 import com.enve.engine.bookorbit.BookOrbitAchievements
@@ -40,7 +40,7 @@ import java.util.Date
 
 @Composable
 fun BookOrbitAchievementsScreen(onBack: () -> Unit) {
-    val vm: BookOrbitAchievementsViewModel = hiltViewModel()
+    val vm: BookOrbitAchievementsViewModel = profileViewModel()
     val accounts by vm.accounts.collectAsStateWithLifecycle()
     val accountId by vm.activeAccountId.collectAsStateWithLifecycle()
     val earnedOnly by vm.showEarnedOnly.collectAsStateWithLifecycle()

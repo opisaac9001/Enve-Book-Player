@@ -5,6 +5,8 @@ struct SettingsScreen: View {
     @Environment(\.hearth) private var hearth
     @Environment(\.mantelInset) private var mantelInset
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.profileSession) private var profileSession
+    @Environment(ProfileSwitchCoordinator.self) private var profiles
 
     @State private var showTour = false
     @State private var bookCounts: [UUID: Int] = [:]
@@ -14,10 +16,16 @@ struct SettingsScreen: View {
     @State private var hardcoverDetail: String?
     @State private var syncDetail: String?
     @State private var metadataKeysDetailText: String?
-    @State private var rejectedContentStore = RejectedContentStore.shared
+    @State private var rejectedContentStore: RejectedContentStore
     @State private var searchText = ""
     @State private var isSearchPresented = false
     @FocusState private var isSearchFocused: Bool
+
+    init(profileSession: ProfileSession = .owner) {
+        _rejectedContentStore = State(initialValue: profileSession.rejectedContent)
+    }
+
+    private var session: ProfileSession { profileSession ?? .owner }
 
     var body: some View {
         ScrollView {
@@ -39,6 +47,7 @@ struct SettingsScreen: View {
         .scrollDismissesKeyboard(.interactively)
         .background(HearthBackground())
         .toolbar(.hidden, for: .navigationBar)
+        .hearthInteractiveBack()
         .safeAreaInset(edge: .bottom, spacing: 0) {
             searchDock
                 .padding(.horizontal, 24)
@@ -58,6 +67,7 @@ struct SettingsScreen: View {
             await loadBookCounts()
         }
         .task {
+            guard session.isOwner else { return }
             smbSources = await SMBLibraryService.shared.getSources()
         }
     }
@@ -91,6 +101,15 @@ struct SettingsScreen: View {
         VStack(alignment: .leading, spacing: 12) {
             Overline("Browse")
             SourcesCard {
+                NavigationLink {
+                    ProfilesScreen()
+                } label: {
+                    SettingsLinkRow(
+                        title: "Profiles",
+                        subtitle: "Separate libraries and positions for each person",
+                        systemImage: "person.2.fill"
+                    )
+                }
                 settingsNav(
                     settingsCategory(
                         title: "Imports & companion apps",
@@ -153,10 +172,12 @@ struct SettingsScreen: View {
                     )
                 }
                 settingsNav(
-                    settingsCategory(
-                        title: "Advanced",
-                        subtitle: "Server administration, API keys, and recovery tools"
-                    ) { adminGroup }
+                    SettingsParentGate {
+                        settingsCategory(
+                            title: "Advanced",
+                            subtitle: "Server administration, API keys, and recovery tools"
+                        ) { adminGroup }
+                    }
                 ) {
                     SettingsLinkRow(
                         title: "Advanced",
@@ -308,6 +329,7 @@ struct SettingsScreen: View {
             .split(whereSeparator: \.isWhitespace)
         guard !words.isEmpty else { return [] }
         return SettingsSearchItem.all.filter { item in
+            guard session.isOwner || !item.destination.isOwnerOnly else { return false }
             let haystack = item.searchableText.folding(
                 options: [.diacriticInsensitive, .caseInsensitive],
                 locale: .current
@@ -321,9 +343,9 @@ struct SettingsScreen: View {
         switch destination {
         case .sources:
             settingsCategory(title: "Sources & servers", subtitle: "Connections, imports, and server libraries") { sourcesGroup }
-        case .opds: SourcesOPDSBrowseScreen()
+        case .opds: SettingsParentGate { SourcesOPDSBrowseScreen() }
         case .video: VideoPromoScreen()
-        case .libraryDisplay: LibraryDisplayScreen()
+        case .libraryDisplay: LibraryDisplayScreen(profileSession: session)
         case .metadataMatching: MetadataBatchScreen()
         case .pendingMatches: PendingMatchesScreen()
         case .collections: CollectionsScreen()
@@ -336,25 +358,28 @@ struct SettingsScreen: View {
         case .dictionaries: DictionariesScreen()
         case .obsidian: ObsidianScreen()
         case .dragAndDrop: DragAndDropScreen()
-        case .hiddenBooks: HiddenBooksScreen()
+        case .hiddenBooks: HiddenBooksScreen(profileSession: session)
         case .recentlyDeleted: RecentlyDeletedScreen()
-        case .rejectedContent: RejectedContentScreen()
-        case .home: HomePreferencesScreen()
+        case .rejectedContent: RejectedContentScreen(profileSession: session)
+        case .home: HomePreferencesScreen(profileSession: session)
         case .comicReader: ComicReaderSettingsScreen()
         case .restReminder: StoredRestReminderSettingsScreen()
-        case .playback: PlaybackScreen()
-        case .appearance: AppearanceScreen()
-        case .accessibility: AccessibilityScreen()
+        case .playback: PlaybackScreen(profileSession: session)
+        case .appearance: AppearanceScreen(profileSession: session)
+        case .accessibility: AccessibilityScreen(profileSession: session)
         case .downloads: DownloadsScreen()
-        case .storage: StorageScreen()
-        case .dataManagement: DataManagementScreen()
+        case .storage: SettingsParentGate { StorageScreen(profileSession: session) }
+        case .dataManagement: SettingsParentGate { DataManagementScreen() }
         case .sync: SyncScreen()
         case .achievements: AchievementsScreen()
         case .statsImport: StatsImportScreen()
         case .advanced:
-            settingsCategory(title: "Advanced", subtitle: "Server administration, API keys, and recovery tools") { adminGroup }
-        case .metadataKeys: MetadataKeysScreen()
-        case .orphanedBooks: OrphanedBookMatcherScreen()
+            SettingsParentGate {
+                settingsCategory(title: "Advanced", subtitle: "Server administration, API keys, and recovery tools") { adminGroup }
+            }
+        case .metadataKeys:
+            if session.isOwner { SettingsParentGate { MetadataKeysScreen() } }
+        case .orphanedBooks: SettingsParentGate { OrphanedBookMatcherScreen() }
         case .news: NewsScreen()
         case .tipJar: TipJarScreen()
         case .reportIssue: ReportIssueScreen()
@@ -379,7 +404,7 @@ struct SettingsScreen: View {
 
     private var sourceUtilitiesGroup: some View {
         SourcesCard {
-            settingsNav(SourcesOPDSBrowseScreen()) {
+            settingsNav(SettingsParentGate { SourcesOPDSBrowseScreen() }) {
                 SettingsLinkRow(
                     title: "OPDS catalogue",
                     subtitle: "Browse a feed, search it, and download",
@@ -417,7 +442,7 @@ struct SettingsScreen: View {
 
             ForEach(activeConnections) { connection in
                 NavigationLink {
-                    SourceDetailScreen(connectionId: connection.id)
+                    SettingsParentGate { SourceDetailScreen(connectionId: connection.id) }
                 } label: {
                     SettingsSourceRow(
                         connection: connection,
@@ -430,6 +455,7 @@ struct SettingsScreen: View {
 
             ForEach(smbSources) { source in
                 SettingsSMBRow(source: source) {
+                    guard (try? profiles.authorizeChanges(in: session)) != nil else { return }
                     Task {
                         await SMBLibraryService.shared.deleteSource(id: source.id)
                         smbSources = await SMBLibraryService.shared.getSources()
@@ -453,7 +479,7 @@ struct SettingsScreen: View {
                 if showArchived {
                     ForEach(archivedConnections) { connection in
                         NavigationLink {
-                            SourceDetailScreen(connectionId: connection.id)
+                            SettingsParentGate { SourceDetailScreen(connectionId: connection.id) }
                         } label: {
                             SettingsSourceRow(connection: connection, needsReauth: false, bookCount: nil)
                                 .opacity(0.55)
@@ -464,7 +490,7 @@ struct SettingsScreen: View {
             }
 
             NavigationLink {
-                SourcesQuickConnectScreen()
+                SettingsParentGate { SourcesQuickConnectScreen() }
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "plus")
@@ -485,7 +511,7 @@ struct SettingsScreen: View {
     private var libraryGroup: some View {
         VStack(alignment: .leading, spacing: 12) {
             SourcesCard {
-                settingsNav(LibraryDisplayScreen()) {
+                settingsNav(LibraryDisplayScreen(profileSession: session)) {
                     SettingsLinkRow(title: "Library display", subtitle: "Cards, titles, grouping", systemImage: "text.book.closed.fill")
                 }
                 settingsNav(MetadataBatchScreen()) {
@@ -514,21 +540,23 @@ struct SettingsScreen: View {
                 settingsNav(StoryAlignScreen()) {
                     SettingsLinkRow(title: "StoryAlign", subtitle: "Make read-aloud EPUBs", systemImage: "waveform")
                 }
-                settingsNav(KOReaderScreen()) {
-                    SettingsLinkRow(
-                        title: "KOReader",
-                        subtitle: "Share positions with your e-reader",
-                        detail: koReaderDetail,
-                        systemImage: "book.pages"
-                    )
-                }
-                settingsNav(HardcoverHubScreen()) {
-                    SettingsLinkRow(
-                        title: "Hardcover",
-                        subtitle: "Profile, goals, friends, trending",
-                        detail: hardcoverDetail,
-                        systemImage: "book.closed.fill"
-                    )
+                if session.isOwner {
+                    settingsNav(KOReaderScreen()) {
+                        SettingsLinkRow(
+                            title: "KOReader",
+                            subtitle: "Share positions with your e-reader",
+                            detail: koReaderDetail,
+                            systemImage: "book.pages"
+                        )
+                    }
+                    settingsNav(HardcoverHubScreen()) {
+                        SettingsLinkRow(
+                            title: "Hardcover",
+                            subtitle: "Profile, goals, friends, trending",
+                            detail: hardcoverDetail,
+                            systemImage: "book.closed.fill"
+                        )
+                    }
                 }
             }
             SourcesCard {
@@ -538,19 +566,21 @@ struct SettingsScreen: View {
                 settingsNav(DictionariesScreen()) {
                     SettingsLinkRow(title: "Dictionaries", subtitle: "Offline StarDict lookups", systemImage: "character.book.closed")
                 }
-                settingsNav(ObsidianScreen()) {
-                    SettingsLinkRow(title: "Obsidian", subtitle: "Notes as Markdown, into your vault", systemImage: "doc.text.fill")
+                if session.isOwner {
+                    settingsNav(ObsidianScreen()) {
+                        SettingsLinkRow(title: "Obsidian", subtitle: "Notes as Markdown, into your vault", systemImage: "doc.text.fill")
+                    }
                 }
                 settingsNav(DragAndDropScreen()) {
                     SettingsLinkRow(title: "Drag & drop", subtitle: "Files dropped in from a computer", systemImage: "arrow.down.doc.fill")
                 }
-                settingsNav(HiddenBooksScreen()) {
+                settingsNav(HiddenBooksScreen(profileSession: session)) {
                     SettingsLinkRow(title: "Hidden books", systemImage: "eye.slash")
                 }
                 settingsNav(RecentlyDeletedScreen()) {
                     SettingsLinkRow(title: "Recently deleted", systemImage: "trash")
                 }
-                settingsNav(RejectedContentScreen()) {
+                settingsNav(RejectedContentScreen(profileSession: session)) {
                     SettingsLinkRow(
                         title: "Rejected content",
                         subtitle: "Items a source couldn't import",
@@ -565,7 +595,7 @@ struct SettingsScreen: View {
     private var experienceGroup: some View {
         VStack(alignment: .leading, spacing: 12) {
             SourcesCard {
-                settingsNav(HomePreferencesScreen()) {
+                settingsNav(HomePreferencesScreen(profileSession: session)) {
                     SettingsLinkRow(title: "Home & startup", subtitle: "Start tab and Hearth shelf order", systemImage: "house.fill")
                 }
                 settingsNav(ComicReaderSettingsScreen()) {
@@ -578,13 +608,13 @@ struct SettingsScreen: View {
                 settingsNav(StoredRestReminderSettingsScreen()) {
                     SettingsLinkRow(title: "Rest your eyes", subtitle: "Reading break reminders", systemImage: "eye")
                 }
-                settingsNav(PlaybackScreen()) {
+                settingsNav(PlaybackScreen(profileSession: session)) {
                     SettingsLinkRow(title: "Playback", subtitle: "Speed, skips, smart rewind, sleep timer", systemImage: "play.circle.fill")
                 }
-                settingsNav(AppearanceScreen()) {
+                settingsNav(AppearanceScreen(profileSession: session)) {
                     SettingsLinkRow(title: "Appearance", subtitle: "Theme, accent, navigation", systemImage: "paintbrush.fill")
                 }
-                settingsNav(AccessibilityScreen()) {
+                settingsNav(AccessibilityScreen(profileSession: session)) {
                     SettingsLinkRow(title: "Accessibility", subtitle: "Vision-impaired mode, VoiceOver", systemImage: "accessibility")
                 }
             }
@@ -594,7 +624,7 @@ struct SettingsScreen: View {
     private var storageGroup: some View {
         VStack(alignment: .leading, spacing: 12) {
             SourcesCard {
-                settingsNav(LibraryHealthScreen()) {
+                settingsNav(LibraryHealthScreen(profileSession: session)) {
                     SettingsLinkRow(
                         title: "Library health",
                         subtitle: "Sources, sync, downloads, and this phone",
@@ -609,27 +639,29 @@ struct SettingsScreen: View {
                         systemImage: "arrow.down.circle.fill"
                     )
                 }
-                settingsNav(StorageScreen()) {
+                settingsNav(SettingsParentGate { StorageScreen(profileSession: session) }) {
                     SettingsLinkRow(
                         title: "Storage",
                         subtitle: "What's on the phone, and the cleanup rules",
                         systemImage: "internaldrive.fill"
                     )
                 }
-                settingsNav(DataManagementScreen()) {
+                settingsNav(SettingsParentGate { DataManagementScreen() }) {
                     SettingsLinkRow(
                         title: "Data management",
-                        subtitle: "Clear caches, metadata, or reset Enve",
+                        subtitle: session.isOwner ? "Clear caches, metadata, or reset Enve" : "Clear caches, metadata, or downloads",
                         systemImage: "trash.circle.fill"
                     )
                 }
-                settingsNav(SyncScreen()) {
-                    SettingsLinkRow(
-                        title: "Sync",
-                        subtitle: "iCloud progress and Apple TV servers",
-                        detail: syncDetail,
-                        systemImage: "icloud.and.arrow.up.fill"
-                    )
+                if session.isOwner {
+                    settingsNav(SyncScreen()) {
+                        SettingsLinkRow(
+                            title: "Sync",
+                            subtitle: "iCloud progress and Apple TV servers",
+                            detail: syncDetail,
+                            systemImage: "icloud.and.arrow.up.fill"
+                        )
+                    }
                 }
             }
         }
@@ -686,13 +718,15 @@ struct SettingsScreen: View {
 
                 Divider().overlay(hearth.hairline)
 
-                settingsNav(MetadataKeysScreen()) {
-                    SettingsLinkRow(
-                        title: "Metadata API keys",
-                        subtitle: "Google Books and ComicVine",
-                        detail: metadataKeysDetailText,
-                        systemImage: "key.fill"
-                    )
+                if session.isOwner {
+                    settingsNav(MetadataKeysScreen()) {
+                        SettingsLinkRow(
+                            title: "Metadata API keys",
+                            subtitle: "Google Books and ComicVine",
+                            detail: metadataKeysDetailText,
+                            systemImage: "key.fill"
+                        )
+                    }
                 }
                 settingsNav(OrphanedBookMatcherScreen()) {
                     SettingsLinkRow(
@@ -702,8 +736,10 @@ struct SettingsScreen: View {
                     )
                 }
                 #if DEBUG
-                settingsNav(DiagnosticsScreen()) {
-                    SettingsLinkRow(title: "Diagnostics", subtitle: "Synthetic library tooling", systemImage: "ladybug.fill")
+                if session.isOwner {
+                    settingsNav(DiagnosticsScreen()) {
+                        SettingsLinkRow(title: "Diagnostics", subtitle: "Synthetic library tooling", systemImage: "ladybug.fill")
+                    }
                 }
                 #endif
             }
@@ -781,10 +817,12 @@ struct SettingsScreen: View {
     }
 
     private func refreshDetailChips() {
-        koReaderDetail = KOReaderSyncService.shared.config.isConfigured ? "Connected" : nil
-        hardcoverDetail = SettingsManager.shared.hardcoverApiKey == nil ? nil : "Connected"
-        syncDetail = engine.sync.syncEnabled ? "On" : "Off"
-        metadataKeysDetailText = metadataKeysDetail
+        if session.isOwner {
+            koReaderDetail = KOReaderSyncService.shared.config.isConfigured ? "Connected" : nil
+            hardcoverDetail = SettingsManager.shared.hardcoverApiKey == nil ? nil : "Connected"
+            syncDetail = engine.sync.syncEnabled ? "On" : "Off"
+        }
+        metadataKeysDetailText = session.isOwner ? metadataKeysDetail : nil
     }
 
     private func settingsNav<Destination: View, Label: View>(
@@ -820,6 +858,10 @@ private enum SettingsSearchDestination: String {
     case hiddenBooks, recentlyDeleted, rejectedContent, home, comicReader, restReminder, playback, appearance, accessibility
     case downloads, storage, dataManagement, sync, achievements, statsImport, advanced, metadataKeys
     case orphanedBooks, news, tipJar, reportIssue, tour
+
+    var isOwnerOnly: Bool {
+        [.koReader, .hardcover, .obsidian, .sync, .metadataKeys].contains(self)
+    }
 }
 
 private struct SettingsSearchItem: Identifiable {

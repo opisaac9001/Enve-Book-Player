@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct ChapterEditorScreen: View {
+    @Environment(\.profileSession) private var capturedSession
+    private var profileSession: ProfileSession { capturedSession ?? .owner }
     let book: Book
 
     @Environment(EnveEngine.self) private var engine
@@ -101,8 +103,8 @@ struct ChapterEditorScreen: View {
             var chapters = book.chapters ?? []
             if chapters.isEmpty {
                 chapters =
-                    ReaderArtifactsStore.shared.loadCachedChapters(bookId: book.stableId)
-                    ?? ReaderArtifactsStore.shared.loadCachedChapters(bookId: book.id)
+                    profileSession.readerArtifacts.loadCachedChapters(bookId: book.stableId)
+                    ?? profileSession.readerArtifacts.loadCachedChapters(bookId: book.id)
                     ?? []
             }
             chapters.sort { $0.start < $1.start }
@@ -157,7 +159,7 @@ struct ChapterEditorScreen: View {
             )
         }
 
-        guard let provider = AppState.shared.getProvider(book.providerId) as? AudiobookshelfProvider else {
+        guard let provider = profileSession.appState.getProvider(book.providerId) as? AudiobookshelfProvider else {
             errorMessage = "This book's Audiobookshelf connection is unavailable."
             return
         }
@@ -166,15 +168,15 @@ struct ChapterEditorScreen: View {
         defer { isSaving = false }
         do {
             try await provider.updateChapters(itemId: book.id, chapters: chapters)
-            ReaderArtifactsStore.shared.saveCachedChapters(bookId: book.stableId, chapters: chapters)
+            profileSession.readerArtifacts.saveCachedChapters(bookId: book.stableId, chapters: chapters)
             if book.id != book.stableId {
-                ReaderArtifactsStore.shared.saveCachedChapters(bookId: book.id, chapters: chapters)
+                profileSession.readerArtifacts.saveCachedChapters(bookId: book.id, chapters: chapters)
             }
-            AppState.shared.mutateBook(uniqueId: book.uniqueId) { $0.chapters = chapters }
-            if ActivePlayback.controller.snapshot.currentBook?.uniqueId == book.uniqueId {
-                ActivePlayback.composition.bookMetadataUpdater.updateChapters(chapters, for: book)
-                AppState.shared.currentBook?.chapters = chapters
-                ActivePlayback.composition.nowPlayingUpdater.refreshNowPlayingInfo()
+            profileSession.appState.mutateBook(uniqueId: book.uniqueId) { $0.chapters = chapters }
+            if profileSession.playback.composition.controller.snapshot.currentBook?.uniqueId == book.uniqueId {
+                profileSession.playback.composition.bookMetadataUpdater.updateChapters(chapters, for: book)
+                profileSession.appState.currentBook?.chapters = chapters
+                profileSession.playback.composition.nowPlayingUpdater.refreshNowPlayingInfo()
             }
             dismiss()
         } catch {
@@ -200,7 +202,7 @@ struct ChapterEditorScreen: View {
         isLookingUp = true
         defer { isLookingUp = false }
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, _) = try await URLSession(configuration: .ephemeral).data(from: url)
             let decoded = try JSONDecoder().decode(AudnexusChapters.self, from: data)
             guard !decoded.chapters.isEmpty else {
                 errorMessage = "Audnexus has no chapters for \(trimmed)."

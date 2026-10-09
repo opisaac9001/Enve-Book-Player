@@ -24,7 +24,8 @@ struct MetadataMatchScreen: View {
             onGoogleBooks: { apply($0) },
             onOpenLibrary: { apply($0) },
             onComicVine: { apply($0) },
-            onEnve: { apply($0) }
+            onEnve: { apply($0) },
+            matches: engine.matches
         )
     }
 
@@ -60,7 +61,8 @@ struct MatchesSearchView: View {
         onGoogleBooks: @escaping (GoogleBooksMetadataLayer) -> Void,
         onOpenLibrary: @escaping (OpenLibraryMetadataLayer) -> Void,
         onComicVine: @escaping (ComicVineMetadataLayer) -> Void,
-        onEnve: @escaping (EnveMetadataLayer) -> Void
+        onEnve: @escaping (EnveMetadataLayer) -> Void,
+        matches: MatchesEngine = EnveEngine.shared.matches
     ) {
         self.book = book
         self.oniTunes = oniTunes
@@ -73,7 +75,8 @@ struct MatchesSearchView: View {
             initialValue: MatchesSearchModel(
                 fileMetadata: fileMetadata,
                 initialQuery: initialQuery,
-                mediaType: book.mediaType
+                mediaType: book.mediaType,
+                matches: matches
             )
         )
     }

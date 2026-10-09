@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct DetailSourceRecommendations: View {
+    @Environment(\.profileSession) private var capturedSession
+    private var profileSession: ProfileSession { capturedSession ?? .owner }
     let book: Book
 
     @Environment(\.hearth) private var hearth
@@ -48,12 +50,12 @@ struct DetailSourceRecommendations: View {
         let remoteIds: [String]
         switch book.source {
         case .booklore:
-            guard let provider = AppState.shared.getProvider(book.providerId) as? BookloreProvider,
+            guard let provider = profileSession.appState.getProvider(book.providerId) as? BookloreProvider,
                 let recommendations = try? await provider.fetchRecommendations(bookId: book.id)
             else { return }
             remoteIds = recommendations.map { String($0.book.id) }
         case .silo:
-            guard let provider = AppState.shared.getProvider(book.providerId) as? SiloProvider,
+            guard let provider = profileSession.appState.getProvider(book.providerId) as? SiloProvider,
                 let similar = try? await provider.fetchSimilarItems(bookId: book.id)
             else { return }
             remoteIds = similar.map(\.mediaItemID)
@@ -67,7 +69,7 @@ struct DetailSourceRecommendations: View {
             return
         }
 
-        let lookup = await AppState.shared.bookStore.booksByAnyIds(
+        let lookup = await profileSession.appState.bookStore.booksByAnyIds(
             Set(candidates.map { "\(book.providerId)_\($0)" })
         )
         guard !Task.isCancelled else { return }

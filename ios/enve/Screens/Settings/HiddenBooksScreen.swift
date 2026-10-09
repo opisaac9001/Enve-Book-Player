@@ -3,9 +3,16 @@ import SwiftUI
 struct HiddenBooksScreen: View {
     @Environment(EnveEngine.self) private var engine
     @Environment(\.hearth) private var hearth
+    @Environment(\.profileSession) private var profileSession
 
-    @State private var prefs = LibraryDisplayPreferencesStore.shared.loadPreferences()
+    @State private var prefs: UserPreferences
     @State private var showingClearAll = false
+
+    init(profileSession: ProfileSession = .owner) {
+        _prefs = State(initialValue: profileSession.preferences.loadPreferences())
+    }
+
+    private var session: ProfileSession { profileSession ?? .owner }
 
     private var hiddenIds: [String] { prefs.hiddenBookIds.sorted() }
 
@@ -62,7 +69,7 @@ struct HiddenBooksScreen: View {
     }
 
     private func unhide(_ stableIds: [String]) {
-        prefs = SettingsPrefs.mutate { prefs in
+        prefs = SettingsPrefs.mutate(in: session.preferences) { prefs in
             for id in stableIds {
                 prefs.hiddenBookIds.remove(id)
                 prefs.hiddenBookNames.removeValue(forKey: id)

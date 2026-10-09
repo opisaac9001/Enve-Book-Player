@@ -1,5 +1,7 @@
 package com.enve.app.data.provider
 
+import com.enve.core.di.ApplicationScope
+import kotlinx.coroutines.Job
 import android.media.MediaMetadataRetriever
 import com.enve.core.data.local.BookExtras
 import com.enve.core.data.local.BookExtrasDao
@@ -25,8 +27,10 @@ import javax.inject.Singleton
 @Singleton
 class CloudTrackDurationService @Inject constructor(
     private val bookExtras: BookExtrasDao,
+    @ApplicationScope parentScope: CoroutineScope =
+        CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob(parentScope.coroutineContext[Job]) + Dispatchers.IO)
     private val activeProbes = ConcurrentHashMap.newKeySet<String>()
 
     suspend fun resolveDurations(book: Book, tracks: List<AudioTrack>): List<AudioTrack> {

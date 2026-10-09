@@ -5,6 +5,8 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
     EbookDownloadProvider, @unchecked Sendable
 {
     var connection: ServerConnection
+    private let isolatesCredentials: Bool
+    private let certificateTransport: InsecureURLSession
 
     var capabilities: ProviderCapabilities {
         [
@@ -15,6 +17,9 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
     }
 
     private let session: URLSession
+    private let ebooks: LocalEbookImporter
+    private let rejectedContent: RejectedContentStore
+    private let tokenStorage: SecureTokenStorage
 
     static var shared: EmbyProvider = {
         let defaultConnection = ServerConnection(
@@ -25,9 +30,14 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         return EmbyProvider(connection: defaultConnection)
     }()
 
-    init(connection: ServerConnection, session: URLSession = .shared) {
+    init(connection: ServerConnection, session: URLSession = .shared, profileSession: ProfileSession? = nil) {
         self.connection = connection
-        self.session = session
+        isolatesCredentials = profileSession?.isOwner == false
+        certificateTransport = profileSession?.transport ?? .delegateInstance
+        self.session = profileSession?.networkSession ?? session
+        ebooks = profileSession?.ebooks ?? .shared
+        rejectedContent = profileSession?.rejectedContent ?? .shared
+        tokenStorage = profileSession?.tokenStorage ?? .shared
     }
 
     @discardableResult
@@ -141,7 +151,7 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         self.connection.username = username
 
         do {
-            try SecureTokenStorage.shared.saveCredentials(
+            try tokenStorage.saveCredentials(
                 serverUrl: base,
                 username: username,
                 token: result.AccessToken,
@@ -224,7 +234,7 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
             }
             let result = try JSONDecoder().decode(EmbyItemsResponse.self, from: data)
             let pageItems = result.Items
-            RejectedContentStore.shared.update(
+            rejectedContent.update(
                 connection: connection,
                 libraryId: libraryId,
                 acceptedItemIdentifiers: Set(pageItems.map(\.Id)),
@@ -381,7 +391,7 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
             throw ProviderError.invalidResponse
         }
         let result = try JSONDecoder().decode(EmbyItemsResponse.self, from: data)
-        RejectedContentStore.shared.update(
+        rejectedContent.update(
             connection: connection,
             libraryId: libraryId,
             acceptedItemIdentifiers: Set(result.Items.map(\.Id)),
@@ -419,7 +429,7 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
     }
 
     func downloadEbook(for book: Book, onProgress: (@Sendable (Double) -> Void)? = nil) async throws -> URL {
-        if let cached = LocalEbookImporter.shared.cachedEbook(forBookId: book.id) {
+        if let cached = ebooks.cachedEbook(forBookId: book.id) {
             onProgress?(1)
             return cached
         }
@@ -440,8 +450,8 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         let response: URLResponse
         let tempURL: URL
         if let onProgress {
-            let delegate = URLSessionDownloadProgressDelegate(progressHandler: onProgress)
-            let downloadSession = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+            let delegate = URLSessionDownloadProgressDelegate(progressHandler: onProgress, certificateTransport: certificateTransport)
+            let downloadSession = URLSession(configuration: isolatesCredentials ? .ephemeral : .default, delegate: delegate, delegateQueue: nil)
             defer { downloadSession.finishTasksAndInvalidate() }
             let (url, http) = try await delegate.awaitResult {
                 downloadSession.downloadTask(with: request)
@@ -477,7 +487,7 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         }
 
         let filename = ebookDownloadFilename(for: book, response: http)
-        return try LocalEbookImporter.shared.cacheRemoteEbook(
+        return try ebooks.cacheRemoteEbook(
             tempURL: tempURL,
             preferredFilename: filename,
             bookIdentifier: book.id
@@ -746,6 +756,66 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         )
     }
 
+    func reportPlayback(_ event: ServerPlaybackEvent, book: Book, sessionId: String, position: TimeInterval) async {
+        await sendPlaystate(event, itemId: book.id, sessionId: sessionId, position: position)
+        if event != .started {
+            await savePosition(itemId: book.id, position: position)
+        }
+    }
+
+    private struct ChildSpan {
+        let id: String
+        let start: TimeInterval
+        let duration: TimeInterval
+    }
+    private var childSpans: [String: [ChildSpan]] = [:]
+
+    // Other clients resume multi-file books from the file playing, so its own resume point is kept too.
+    private func saveChildPosition(bookId: String, position: TimeInterval) async {
+        if childSpans[bookId] == nil, let children = try? await fetchChildAudioItems(parentId: bookId) {
+            var start: TimeInterval = 0
+            childSpans[bookId] = children.map { item in
+                let duration = Double(item.RunTimeTicks ?? 0) / 10_000_000
+                defer { start += duration }
+                return ChildSpan(id: item.Id, start: start, duration: duration)
+            }
+        }
+        guard let spans = childSpans[bookId], spans.count > 1,
+            let span = spans.last(where: { position >= $0.start }) ?? spans.first
+        else { return }
+        await savePosition(itemId: span.id, position: min(max(0, position - span.start), span.duration))
+    }
+
+    // Playstate reports apply the server's resume rules (e.g. positions in an audiobook's first minutes reset to 0), so restore Enve's position.
+    private func savePosition(itemId: String, position: TimeInterval) async {
+        guard let userId = connection.userId,
+            let url = URL(string: "\(MediaBrowserClient.normalizeServerURL(connection.url))/Users/\(userId)/Items/\(itemId)/UserData")
+        else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        addAuthHeaders(&request)
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "PlaybackPositionTicks": Int64(max(0, position) * 10_000_000),
+            "LastPlayedDate": ISO8601DateFormatter().string(from: Date()),
+        ])
+        _ = try? await session.data(for: request)
+    }
+
+    private func sendPlaystate(_ event: ServerPlaybackEvent?, itemId: String, sessionId: String, position: TimeInterval) async {
+        guard
+            var request = MediaBrowserClient.playstateRequest(
+                baseURL: MediaBrowserClient.normalizeServerURL(connection.url),
+                event: event,
+                itemId: itemId,
+                sessionId: sessionId,
+                position: position
+            )
+        else { return }
+        addAuthHeaders(&request)
+        _ = try? await session.data(for: request)
+    }
+
     func updatePlaybackProgress(
         book: Book,
         sessionId: String?,
@@ -753,6 +823,9 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         isFinished: Bool,
         timeListened: TimeInterval
     ) async throws {
+        if let sessionId {
+            await sendPlaystate(nil, itemId: book.id, sessionId: sessionId, position: currentTime)
+        }
         guard let userId = connection.userId else { throw ProviderError.unauthorized }
         let base = MediaBrowserClient.normalizeServerURL(connection.url)
 
@@ -763,12 +836,13 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         addAuthHeaders(&request)
 
-        let ticks = Int64(currentTime * 10_000_000)
-        let body: [String: Any] = [
+        let ticks = Int64(max(0, currentTime) * 10_000_000)
+        var body: [String: Any] = [
             "PlaybackPositionTicks": ticks,
-            "Played": isFinished,
             "LastPlayedDate": ISO8601DateFormatter().string(from: Date()),
         ]
+        // Only finishing or resetting changes the played flag, so a played mark set elsewhere isn't cleared mid-listen.
+        if isFinished || currentTime <= 1 { body["Played"] = isFinished }
 
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
@@ -776,6 +850,7 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             throw ProviderError.invalidResponse
         }
+        await saveChildPosition(bookId: book.id, position: currentTime)
     }
 
     func getAudioURL(for book: Book) -> URL? {

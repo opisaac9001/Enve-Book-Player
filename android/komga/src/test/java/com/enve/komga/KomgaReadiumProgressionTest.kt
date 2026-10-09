@@ -32,13 +32,13 @@ class KomgaReadiumProgressionTest {
     @Test
     fun encodesReaderLocatorAsKomgaProgression() {
         val locator = KomgaReadiumProgression.locatorFrom(readiumLocator, 0.195f)!!
-        val payload = KomgaReadiumProgression.encode(locator, Instant.parse("2026-09-26T11:22:10.500Z").toEpochMilli())
+        val payload = KomgaReadiumProgression.encode(locator, Instant.parse("2026-09-26T11:22:10.500Z").toEpochMilli(), "device-1")
 
         assertEquals(
             wire.parseToJsonElement(
                 """
                 {"modified":"2026-09-26T11:22:10.500Z",
-                 "device":{"id":"enve-android","name":"Enve"},
+                 "device":{"id":"device-1","name":"Enve"},
                  "locator":{"href":"EPUB/chapter-010.xhtml","type":"application/xhtml+xml","title":"Chapter 10",
                   "locations":{"fragment":["p3"],"progression":0.7,"position":20,"totalProgression":0.19499999284744263},
                   "text":{"before":"abc ","highlight":"Hello world","after":" def"}}}

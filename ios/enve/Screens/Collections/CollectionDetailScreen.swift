@@ -324,7 +324,12 @@ struct CollectionsSmartDetailScreen: View {
 }
 
 @ViewBuilder
-func collectionsBookGrid(_ books: [Book], width: CGFloat, onRemove: ((Book) -> Void)? = nil) -> some View {
+func collectionsBookGrid(
+    _ books: [Book],
+    width: CGFloat,
+    onRemove: ((Book) -> Void)? = nil,
+    removeLabel: String = "Remove from collection"
+) -> some View {
     let cellWidth = max(1, (width - 32) / 3)
     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 16, alignment: .top), count: 3), spacing: 16) {
         ForEach(books, id: \.stableId) { book in
@@ -339,7 +344,7 @@ func collectionsBookGrid(_ books: [Book], width: CGFloat, onRemove: ((Book) -> V
                     Button(role: .destructive) {
                         onRemove(book)
                     } label: {
-                        Label("Remove from collection", systemImage: "minus.circle")
+                        Label(removeLabel, systemImage: "minus.circle")
                     }
                 }
             }

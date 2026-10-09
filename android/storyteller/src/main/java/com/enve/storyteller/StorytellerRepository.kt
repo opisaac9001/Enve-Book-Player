@@ -73,6 +73,7 @@ class StorytellerRepository @Inject constructor(
     private val prefs: PreferencesManager,
     private val connectionRegistry: ConnectionRegistry,
     private val vault: CredentialVault,
+    private val serverSync: com.enve.core.data.local.ProfileServerSyncStore,
 ) {
 
     private fun pendingConnectionId(serverUrl: String, username: String): String {
@@ -484,6 +485,7 @@ class StorytellerRepository @Inject constructor(
     }
 
     suspend fun syncAudiobookProgress(book: Book, currentTimeSec: Long, progressFraction: Float): Result<Unit> {
+        if (!serverSync.isEnabled) return Result.success(Unit)
         val locator = JsonObject(
             mapOf(
                 "href" to JsonPrimitive(""),
@@ -500,6 +502,7 @@ class StorytellerRepository @Inject constructor(
     }
 
     suspend fun syncEbookProgress(bookId: String, percentage: Float, locator: String?): Result<Unit> {
+        if (!serverSync.isEnabled) return Result.success(Unit)
         val locatorJson = locator?.takeIf { it.isNotBlank() }?.let { raw ->
             runCatching { json.parseToJsonElement(raw) }.getOrNull()
         } ?: JsonObject(
@@ -513,6 +516,7 @@ class StorytellerRepository @Inject constructor(
     }
 
     suspend fun fetchAudiobookProgress(book: Book): Result<SyncSnapshot?> {
+        if (!serverSync.isEnabled) return Result.success(null)
         val serverId = storytellerServerBookIdOrNull(book.id) ?: return Result.success(null)
         return fetchPosition(serverId).map { position ->
             val pct = position?.totalProgression()?.toFloat() ?: return@map null
@@ -526,6 +530,7 @@ class StorytellerRepository @Inject constructor(
     }
 
     suspend fun fetchEbookProgress(book: Book): Result<SyncSnapshot?> {
+        if (!serverSync.isEnabled) return Result.success(null)
         val serverId = storytellerServerBookIdOrNull(book.id) ?: return Result.success(null)
         return fetchPosition(serverId).map { it?.toEbookSnapshot() }
     }
@@ -533,6 +538,7 @@ class StorytellerRepository @Inject constructor(
     fun invalidateListCaches() = Unit
 
     private suspend fun fetchPosition(bookId: String): Result<StorytellerPositionResponse?> = runSuspendCatching {
+        if (!serverSync.isEnabled) return@runSuspendCatching null
         val response = api.getPosition(bookId)
         if (response.code() == 404 || response.code() == 204) return@runSuspendCatching null
         if (!response.isSuccessful) error("Storyteller position fetch failed: HTTP ${response.code()}")
@@ -540,13 +546,15 @@ class StorytellerRepository @Inject constructor(
     }
 
     private suspend fun updatePositionWithReconcile(book: Book, locator: JsonElement, localProgress: Float): Result<Unit> = runSuspendCatching {
+        val syncStartedAt = System.currentTimeMillis()
         val serverId = serverBookId(book.id)
         val timestamp = System.currentTimeMillis()
+        if (!serverSync.accepts(syncStartedAt)) return@runSuspendCatching
         val response = api.updatePosition(serverId, StorytellerPositionRequest(locator, timestamp))
         if (response.code() == 409) {
 
             if (localProgress <= 0.005f) {
-                forcePositionUpdate(serverId, locator)
+                forcePositionUpdate(serverId, locator, timestamp)
             } else {
                 reconcilePositionConflict(serverId, localProgress, timestamp, locator)
             }
@@ -558,6 +566,7 @@ class StorytellerRepository @Inject constructor(
     }
 
     private suspend fun reconcilePositionConflict(serverId: String, localProgress: Float, localTimestamp: Long, locator: JsonElement) {
+        val syncStartedAt = localTimestamp
         val server = fetchPosition(serverId).getOrThrow() ?: return
         val serverProgress = server.totalProgression()?.toFloat() ?: 0f
         val serverIsFurther = serverProgress > localProgress + 0.005f
@@ -565,12 +574,14 @@ class StorytellerRepository @Inject constructor(
         val serverIsNewerByTime = progressEqual && server.timestamp >= localTimestamp
         if (serverIsFurther || serverIsNewerByTime) return
         val freshTimestamp = maxOf(server.timestamp + 1L, System.currentTimeMillis())
+        if (!serverSync.accepts(syncStartedAt)) return
         api.updatePosition(serverId, StorytellerPositionRequest(locator, freshTimestamp))
     }
 
-    private suspend fun forcePositionUpdate(serverId: String, locator: JsonElement) {
+    private suspend fun forcePositionUpdate(serverId: String, locator: JsonElement, syncStartedAt: Long) {
         val server = fetchPosition(serverId).getOrThrow()
         val freshTimestamp = maxOf((server?.timestamp ?: 0L) + 1L, System.currentTimeMillis())
+        if (!serverSync.accepts(syncStartedAt)) return
         api.updatePosition(serverId, StorytellerPositionRequest(locator, freshTimestamp))
     }
 

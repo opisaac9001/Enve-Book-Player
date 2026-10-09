@@ -179,14 +179,19 @@ final class ReaderProgressController {
     // Storyteller positions persist only on deliberate activity, so nil also gates the save.
     var storytellerPositionActivityAt: Date?
 
+    private var isRetired = false
+    private let profileSession: ProfileSession
+
     init(
         book: Book,
         providerResolver: any LibraryProviderResolving,
         libraryCache: LibraryBookCache,
         bookStore: BookStoreRepository,
         locatorProgress: ReaderLocatorProgress,
-        readAloud: ReaderReadAloudController
+        readAloud: ReaderReadAloudController,
+        profileSession: ProfileSession = .owner
     ) {
+        self.profileSession = profileSession
         self.book = book
         self.providerResolver = providerResolver
         self.libraryCache = libraryCache
@@ -236,6 +241,7 @@ final class ReaderProgressController {
     }
 
     private func hydrateServerPositionIfNeeded() async -> String? {
+        guard profileSession.serverSyncEnabled else { return nil }
         guard let provider = providerResolver.provider(for: book.providerId),
             provider.syncCapability.contains(.pullProgress)
         else { return nil }
@@ -248,6 +254,7 @@ final class ReaderProgressController {
             let result = try? await progressProvider.fetchEbookProgress(for: book)
         else { return nil }
 
+        guard profileSession.serverSyncEnabled else { return nil }
         let serverProgress = result.progress
         let serverLocator = result.locator
         let serverDate = result.updatedAt ?? .distantPast
@@ -275,7 +282,7 @@ final class ReaderProgressController {
             if direction == .conflict {
                 // A backward server position only hydrates once the tracker has seen the server advance
                 // from it on its own. Otherwise SyncCoordinator's conflict prompt owns the decision.
-                let verdict = RemoteRewindTracker.shared.assess(
+                let verdict = profileSession.rewindTracker.assess(
                     scope: RemoteProgressScope(book: current, domain: .ebook, source: sourceName),
                     observation: RemoteProgressObservation(
                         progress: serverProgress,
@@ -299,7 +306,7 @@ final class ReaderProgressController {
             syncBook.ebookProgress = local.progress
             syncBook.epubLocator = local.locator
             syncBook.lastUpdate = local.book.lastUpdate
-            await SyncCoordinator.shared.pushProgress(
+            await profileSession.sync.pushProgress(
                 book: syncBook,
                 forceImmediate: true,
                 domain: .ebook
@@ -324,14 +331,14 @@ final class ReaderProgressController {
                     }
                 )
             else { return nil }
-            EbookLinkStore.shared.saveLinks()
+            profileSession.ebookLinks.saveLinks()
 
             AppLogger.sync.debug("Hydrated server position bookDiagnosticID=\(bookDiagnosticID) percent=\(Int(serverProgress * 100))")
             return updated
         }
         guard let hydratedBook else { return nil }
         includeUnmovedPosition(progression: serverProgress, locatorJSON: hydratedBook.epubLocator)
-        await LinkedBookProgressCoordinator.shared.recordEbookProgress(
+        await profileSession.linkedProgress.recordEbookProgress(
             book: hydratedBook,
             progression: serverProgress,
             observedAt: serverDate,
@@ -344,7 +351,7 @@ final class ReaderProgressController {
         through provider: StorytellerProvider
     ) async -> String? {
         guard
-            let authoritative = await StorytellerPositionSyncService.shared.authoritativePosition(
+            let authoritative = await profileSession.playback.storytellerPositions.authoritativePosition(
                 for: book,
                 through: provider
             )
@@ -356,9 +363,9 @@ final class ReaderProgressController {
             updated.lastUpdate = position.observedAt
             updated.isFinished = position.progression >= Book.finishedProgressThreshold
         }
-        guard let updatedBook else { return nil }
+        guard profileSession.serverSyncEnabled, let updatedBook else { return nil }
         includeUnmovedPosition(progression: position.progression, locatorJSON: position.locatorJSON)
-        EbookLinkStore.shared.saveLinks()
+        profileSession.ebookLinks.saveLinks()
         await bookStore.updateEbookProgress(
             uniqueId: updatedBook.uniqueId,
             ebookProgress: position.progression,
@@ -366,7 +373,7 @@ final class ReaderProgressController {
             isFinished: updatedBook.isFinished,
             lastUpdate: position.observedAt
         )
-        await LinkedBookProgressCoordinator.shared.recordEbookProgress(
+        await profileSession.linkedProgress.recordEbookProgress(
             book: updatedBook,
             progression: position.progression,
             observedAt: position.observedAt,
@@ -390,7 +397,7 @@ final class ReaderProgressController {
                 )
             }
         }
-        guard let serverLocatorJSON = await hydrateTask?.value else { return }
+        guard let serverLocatorJSON = await hydrateTask?.value, profileSession.serverSyncEnabled else { return }
 
         var adapter: (any ReaderEngineAdapter)?
         for _ in 0..<50 {
@@ -400,7 +407,7 @@ final class ReaderProgressController {
             }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
-        guard let adapter else { return }
+        guard profileSession.serverSyncEnabled, let adapter else { return }
         let usesMediaOverlayPosition = book.hasEPUB3MediaOverlay || readAloud.hasMediaOverlay
 
         let currentLocation = adapter.currentLocatorJSON.flatMap {
@@ -447,6 +454,7 @@ final class ReaderProgressController {
             }
             targetJSON = try? targetLocator.jsonString()
         }
+        guard profileSession.serverSyncEnabled else { return }
         bridgeSession?.setRestoreTarget(
             locatorJSON: targetJSON,
             fallbackProgression: fallbackProgression
@@ -654,7 +662,7 @@ final class ReaderProgressController {
                 self.saveProgress()
 
                 if let progress = self.observedProgression ?? self.currentProgress {
-                    await ReadingStatsTracker.shared.recordTick(
+                    await self.profileSession.readingStats.recordTick(
                         bookId: self.book.id,
                         positionProgression: progress,
                         isReading: true,
@@ -791,7 +799,7 @@ final class ReaderProgressController {
             updated.lastUpdate = now
         }
         if didMutate != nil {
-            EbookLinkStore.shared.saveLinks()
+            profileSession.ebookLinks.saveLinks()
         }
         mirrorToReadAloudSourceBook(
             progression: progression,
@@ -800,12 +808,12 @@ final class ReaderProgressController {
             clearsMissingLocator: false
         )
         if effectiveDuration > 0 {
-            BookProgressStore.shared.saveProgress(
+            profileSession.bookProgress.saveProgress(
                 for: book,
                 progress: mirroredCurrentTime,
                 duration: effectiveDuration
             )
-            UserProgressStore.shared.update(
+            profileSession.progress.update(
                 UserMediaProgress(
                     id: UUID().uuidString,
                     libraryItemId: book.id,
@@ -821,13 +829,14 @@ final class ReaderProgressController {
             )
         }
 
+        guard !isRetired else { return }
         serverSyncTask?.cancel()
         let capturedProgression = progression
         let capturedLocator = locatorJSON
         let capturedBook = book
         let capturedSourceEngine = sourceEngine
         Task {
-            await LinkedBookProgressCoordinator.shared.recordEbookProgress(
+            await profileSession.linkedProgress.recordEbookProgress(
                 book: capturedBook,
                 progression: capturedProgression,
                 observedAt: now
@@ -849,7 +858,7 @@ final class ReaderProgressController {
             if capturedBook.isStorytellerReadAloud {
                 do {
                     guard let capturedLocator else { return }
-                    try await StorytellerPositionSyncService.shared.submit(
+                    try await profileSession.playback.storytellerPositions.submit(
                         book: capturedBook,
                         locatorJSON: capturedLocator,
                         observedAt: now
@@ -868,7 +877,7 @@ final class ReaderProgressController {
             ebookForPush.epubLocator = capturedLocator
             ebookForPush.isFinished = capturedProgression >= Book.finishedProgressThreshold
             ebookForPush.lastUpdate = now
-            await SyncCoordinator.shared.pushProgress(
+            await profileSession.sync.pushProgress(
                 book: ebookForPush,
                 forceImmediate: true,
                 sourceEngine: capturedSourceEngine,
@@ -879,6 +888,7 @@ final class ReaderProgressController {
     }
 
     func flushProgressToServer(reason: String = "close") {
+        guard !isRetired else { return }
         guard hasResolvedInitialHydration else { return }
 
         let isReadAloudFlush = readAloud.isPlaybackActive
@@ -957,7 +967,7 @@ final class ReaderProgressController {
                     UIApplication.shared.endBackgroundTask(bgTaskId)
                 }
             }
-            await LinkedBookProgressCoordinator.shared.recordEbookProgress(
+            await profileSession.linkedProgress.recordEbookProgress(
                 book: capturedBook,
                 progression: progression,
                 exactAudioTime: capturedOverlayAudioTime,
@@ -977,7 +987,7 @@ final class ReaderProgressController {
             if capturedBook.isStorytellerReadAloud {
                 do {
                     guard let locator else { return }
-                    try await StorytellerPositionSyncService.shared.submit(
+                    try await profileSession.playback.storytellerPositions.submit(
                         book: capturedBook,
                         locatorJSON: locator,
                         observedAt: capturedAt
@@ -994,18 +1004,18 @@ final class ReaderProgressController {
             ebookForPush.epubLocator = locator
             ebookForPush.isFinished = progression >= Book.finishedProgressThreshold
             ebookForPush.lastUpdate = capturedAt
-            await SyncCoordinator.shared.pushProgress(
+            await profileSession.sync.pushProgress(
                 book: ebookForPush,
                 forceImmediate: true,
                 sourceEngine: capturedSourceEngine,
                 domain: .ebook
             )
 
-            await WorkProgressSync.shared.fanOut(from: ebookForPush, fraction: progression, isFinished: progression >= Book.finishedProgressThreshold, force: true)
+            await profileSession.playback.workProgress.fanOut(from: ebookForPush, fraction: progression, isFinished: progression >= Book.finishedProgressThreshold, force: true)
         }
 
         Task {
-            await KOReaderSyncService.shared.pushIfLinked(book: capturedBook, progress: progression, locator: locator)
+            if profileSession.isOwner { await KOReaderSyncService.shared.pushIfLinked(book: capturedBook, progress: progression, locator: locator) }
         }
     }
 
@@ -1018,7 +1028,7 @@ final class ReaderProgressController {
             locatorJSON: commit.locatorJSON
         )
         savedPosition = reachedPosition
-        NarratedAudioPositionStore.shared.recordNarration(audioTime: commit.audioTime, for: book)
+        profileSession.narratedPositions.recordNarration(audioTime: commit.audioTime, for: book)
         currentProgress = commit.progression
         locatorProgress.updateLocatorJSON(commit.locatorJSON)
         locatorProgress.markSaved(progression: commit.progression)
@@ -1029,7 +1039,7 @@ final class ReaderProgressController {
             updated.duration = commit.audioDuration
         }
         if mutated != nil {
-            EbookLinkStore.shared.saveLinks()
+            profileSession.ebookLinks.saveLinks()
         }
         mirrorToReadAloudSourceBook(
             progression: commit.progression,
@@ -1040,7 +1050,7 @@ final class ReaderProgressController {
 
         if commit.audioDuration > 0 {
             let mirroredCurrentTime = min(max(commit.audioTime, 0), commit.audioDuration)
-            BookProgressStore.shared.saveProgress(
+            profileSession.bookProgress.saveProgress(
                 for: book,
                 progress: mirroredCurrentTime,
                 duration: commit.audioDuration,
@@ -1059,11 +1069,11 @@ final class ReaderProgressController {
                 ebookProgress: commit.progression,
                 epubLocator: commit.locatorJSON
             )
-            UserProgressStore.shared.update(mirroredProgress)
+            profileSession.progress.update(mirroredProgress)
         }
 
         Task {
-            await LinkedBookProgressCoordinator.shared.recordEbookProgress(
+            await profileSession.linkedProgress.recordEbookProgress(
                 book: book,
                 progression: commit.progression,
                 exactAudioTime: commit.audioTime,
@@ -1091,7 +1101,7 @@ final class ReaderProgressController {
                 lastUpdate: capturedAt
             )
             guard !Task.isCancelled else { return }
-            await SyncCoordinator.shared.pushProgress(
+            await profileSession.sync.pushProgress(
                 book: syncBook,
                 forceImmediate: true,
                 sourceEngine: EpubLocationBridge.sourceEngine(from: capturedLocator),
@@ -1130,6 +1140,22 @@ final class ReaderProgressController {
             sourceUpdated.ebookProgress = progression
             sourceUpdated.lastUpdate = observedAt
         }
+    }
+
+    func retire() async {
+        isRetired = true
+        stopAutoSaveTimer()
+        saveProgress()
+        if let current = libraryCache.bookInMemory(uniqueId: book.uniqueId) {
+            await bookStore.upsertBooks([current])
+        }
+        let jobs = [locatorEnrichmentTask, progressSaveTask, hydrationApplyTask, readiumBridgeRestoreTask, serverSyncTask]
+        let hydration = hydrateTask
+        jobs.forEach { $0?.cancel() }
+        hydration?.cancel()
+        for task in jobs { await task?.value }
+        _ = await hydration?.value
+        cleanup()
     }
 
     func cleanup() {

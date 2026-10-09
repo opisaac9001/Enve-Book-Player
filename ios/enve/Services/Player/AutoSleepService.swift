@@ -21,19 +21,32 @@ enum AutoSleepPolicy {
 
 @MainActor
 final class AutoSleepService {
-    static let shared = AutoSleepService()
+    static let shared = AutoSleepService(playback: ActivePlayback.controller,
+        preferences: .shared, player: { PlayerViewModel.shared })
 
     private let playback: any PlaybackControlling
+    private let preferences: LibraryDisplayPreferencesStore
+    private let player: @MainActor () -> PlayerViewModel
+    private var isRetired = false
     private var cancellables = Set<AnyCancellable>()
     private var armedWindowStart: Date?
     private var hasStarted = false
 
-    private init(playback: any PlaybackControlling = ActivePlayback.controller) {
+    init(playback: any PlaybackControlling, preferences: LibraryDisplayPreferencesStore,
+        player: @escaping @MainActor () -> PlayerViewModel) {
         self.playback = playback
+        self.preferences = preferences
+        self.player = player
+    }
+
+    func retire() {
+        isRetired = true
+        cancellables.removeAll()
+        armedWindowStart = nil
     }
 
     func start() {
-        guard !hasStarted else { return }
+        guard !isRetired, !hasStarted else { return }
         hasStarted = true
 
         playback.snapshots
@@ -51,7 +64,8 @@ final class AutoSleepService {
     }
 
     private func evaluate() {
-        let preferences = LibraryDisplayPreferencesStore.shared.loadPreferences()
+        guard !isRetired else { return }
+        let preferences = preferences.loadPreferences()
         guard preferences.autoSleepEnabled, playback.snapshot.isPlaying else { return }
 
         let calendar = Calendar.current
@@ -77,7 +91,7 @@ final class AutoSleepService {
         guard armedWindowStart != windowStart else { return }
         armedWindowStart = windowStart
 
-        let player = PlayerViewModel.shared
+        let player = player()
         guard player.sleepTimer == nil else { return }
         player.startSleepTimer(minutes: preferences.autoSleepTimerMinutes)
         AppLogger.player.info("Auto-sleep armed for \(preferences.autoSleepTimerMinutes) min")

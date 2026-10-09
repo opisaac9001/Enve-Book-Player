@@ -3,11 +3,12 @@ import SwiftUI
 
 struct PlaybackScreen: View {
     @Environment(\.hearth) private var hearth
+    @Environment(\.profileSession) private var profileSession
 
-    @State private var prefs = LibraryDisplayPreferencesStore.shared.loadPreferences()
-    @State private var intelligence = BookIntelligenceSettingsStore.shared
+    @State private var prefs: UserPreferences
+    private var intelligence: BookIntelligenceSettingsStore { BookIntelligenceSettingsStore.shared }
 
-    @State private var healthAuthorized = SleepDataService.shared.hasRequestedAuthorization
+    @State private var healthAuthorized: Bool
     @State private var healthUnavailable = !HKHealthStore.isHealthDataAvailable()
     @State private var isRequestingHealth = false
     @State private var showHealthExplainer = false
@@ -25,6 +26,13 @@ struct PlaybackScreen: View {
     private static let snoozeMinutes = [5, 10, 15, 20, 30]
     private static let fadeSeconds: [TimeInterval] = [10, 15, 20, 30, 45, 60]
 
+    init(profileSession: ProfileSession = .owner) {
+        _prefs = State(initialValue: profileSession.preferences.loadPreferences())
+        _healthAuthorized = State(initialValue: profileSession.isOwner && SleepDataService.shared.hasRequestedAuthorization)
+    }
+
+    private var session: ProfileSession { profileSession ?? .owner }
+
     var body: some View {
         SettingsScaffold(
             overline: "Playback & experience",
@@ -36,7 +44,7 @@ struct PlaybackScreen: View {
             smartRewindCard
             sleepTimerCard
             playerDisplayCard
-            librarianCard
+            if session.isOwner { librarianCard }
             screenCard
         }
         .alert("Apple Health access", isPresented: $showHealthExplainer) {
@@ -62,7 +70,7 @@ struct PlaybackScreen: View {
             LazyVGrid(columns: columns, spacing: 8) {
                 ForEach(Self.speeds, id: \.self) { speed in
                     HearthChip(title: playbackSpeedLabel(speed), isSelected: abs(prefs.playbackSpeed - speed) < 0.01) {
-                        prefs = SettingsPrefs.mutate {
+                        prefs = SettingsPrefs.mutate(in: session.preferences) {
                             $0.playbackSpeed = min(
                                 max(speed, Double(AppConstants.Playback.minSpeed)),
                                 Double(AppConstants.Playback.maxSpeed)
@@ -81,14 +89,14 @@ struct PlaybackScreen: View {
             SettingsMenuRow(title: "Skip back", value: "\(Int(prefs.skipBackwardAmount))s") {
                 ForEach(Self.skipOptions, id: \.self) { seconds in
                     Button("\(seconds) seconds") {
-                        prefs = SettingsPrefs.mutate { $0.skipBackwardAmount = TimeInterval(seconds) }
+                        prefs = SettingsPrefs.mutate(in: session.preferences) { $0.skipBackwardAmount = TimeInterval(seconds) }
                     }
                 }
             }
             SettingsMenuRow(title: "Skip forward", value: "\(Int(prefs.skipForwardAmount))s") {
                 ForEach(Self.skipOptions, id: \.self) { seconds in
                     Button("\(seconds) seconds") {
-                        prefs = SettingsPrefs.mutate { $0.skipForwardAmount = TimeInterval(seconds) }
+                        prefs = SettingsPrefs.mutate(in: session.preferences) { $0.skipForwardAmount = TimeInterval(seconds) }
                     }
                 }
             }
@@ -103,35 +111,35 @@ struct PlaybackScreen: View {
                 subtitle: "Step back after time away so you don't lose the thread",
                 isOn: Binding(
                     get: { prefs.smartRewindEnabled },
-                    set: { value in prefs = SettingsPrefs.mutate { $0.smartRewindEnabled = value } }
+                    set: { value in prefs = SettingsPrefs.mutate(in: session.preferences) { $0.smartRewindEnabled = value } }
                 )
             )
             if prefs.smartRewindEnabled {
                 SettingsMenuRow(title: "Short pause is under", value: "\(Int(prefs.smartRewindShortPauseThreshold))s") {
                     ForEach(Self.rewindThresholds, id: \.self) { seconds in
                         Button("\(seconds) seconds") {
-                            prefs = SettingsPrefs.mutate { $0.smartRewindShortPauseThreshold = TimeInterval(seconds) }
+                            prefs = SettingsPrefs.mutate(in: session.preferences) { $0.smartRewindShortPauseThreshold = TimeInterval(seconds) }
                         }
                     }
                 }
                 SettingsMenuRow(title: "Then rewind", value: "\(Int(prefs.smartRewindShortAmount))s") {
                     ForEach(Self.rewindShortAmounts, id: \.self) { seconds in
                         Button("\(seconds) seconds") {
-                            prefs = SettingsPrefs.mutate { $0.smartRewindShortAmount = TimeInterval(seconds) }
+                            prefs = SettingsPrefs.mutate(in: session.preferences) { $0.smartRewindShortAmount = TimeInterval(seconds) }
                         }
                     }
                 }
                 SettingsMenuRow(title: "Long pause is over", value: "\(Int(prefs.smartRewindLongPauseThreshold))s") {
                     ForEach(Self.rewindThresholds, id: \.self) { seconds in
                         Button("\(seconds) seconds") {
-                            prefs = SettingsPrefs.mutate { $0.smartRewindLongPauseThreshold = TimeInterval(seconds) }
+                            prefs = SettingsPrefs.mutate(in: session.preferences) { $0.smartRewindLongPauseThreshold = TimeInterval(seconds) }
                         }
                     }
                 }
                 SettingsMenuRow(title: "Then rewind", value: "\(Int(prefs.smartRewindLongAmount))s") {
                     ForEach(Self.rewindLongAmounts, id: \.self) { seconds in
                         Button("\(seconds) seconds") {
-                            prefs = SettingsPrefs.mutate { $0.smartRewindLongAmount = TimeInterval(seconds) }
+                            prefs = SettingsPrefs.mutate(in: session.preferences) { $0.smartRewindLongAmount = TimeInterval(seconds) }
                         }
                     }
                 }
@@ -151,7 +159,7 @@ struct PlaybackScreen: View {
             set: { date in
                 let components = Calendar.current.dateComponents([.hour, .minute], from: date)
                 let minutes = (components.hour ?? 0) * 60 + (components.minute ?? 0)
-                prefs = SettingsPrefs.mutate { set(&$0, minutes) }
+                prefs = SettingsPrefs.mutate(in: session.preferences) { set(&$0, minutes) }
             }
         )
     }
@@ -164,14 +172,14 @@ struct PlaybackScreen: View {
                 subtitle: "Lower the volume gently before stopping",
                 isOn: Binding(
                     get: { prefs.sleepTimerFadeOutEnabled },
-                    set: { value in prefs = SettingsPrefs.mutate { $0.sleepTimerFadeOutEnabled = value } }
+                    set: { value in prefs = SettingsPrefs.mutate(in: session.preferences) { $0.sleepTimerFadeOutEnabled = value } }
                 )
             )
             if prefs.sleepTimerFadeOutEnabled {
                 SettingsMenuRow(title: "Fade over", value: "\(Int(prefs.sleepTimerFadeOutDuration))s") {
                     ForEach(Self.fadeSeconds, id: \.self) { seconds in
                         Button("\(Int(seconds)) seconds") {
-                            prefs = SettingsPrefs.mutate { $0.sleepTimerFadeOutDuration = seconds }
+                            prefs = SettingsPrefs.mutate(in: session.preferences) { $0.sleepTimerFadeOutDuration = seconds }
                         }
                     }
                 }
@@ -184,14 +192,14 @@ struct PlaybackScreen: View {
                 subtitle: "Shake the phone while the audio fades to keep listening",
                 isOn: Binding(
                     get: { prefs.sleepTimerShakeToSnoozeEnabled },
-                    set: { value in prefs = SettingsPrefs.mutate { $0.sleepTimerShakeToSnoozeEnabled = value } }
+                    set: { value in prefs = SettingsPrefs.mutate(in: session.preferences) { $0.sleepTimerShakeToSnoozeEnabled = value } }
                 )
             )
             if prefs.sleepTimerShakeToSnoozeEnabled {
                 SettingsMenuRow(title: "Snooze for", value: "\(prefs.sleepTimerSnoozeDuration) min") {
                     ForEach(Self.snoozeMinutes, id: \.self) { minutes in
                         Button("\(minutes) minutes") {
-                            prefs = SettingsPrefs.mutate { $0.sleepTimerSnoozeDuration = minutes }
+                            prefs = SettingsPrefs.mutate(in: session.preferences) { $0.sleepTimerSnoozeDuration = minutes }
                         }
                     }
                 }
@@ -204,7 +212,7 @@ struct PlaybackScreen: View {
                 subtitle: "Arm the sleep timer automatically when you listen during these hours",
                 isOn: Binding(
                     get: { prefs.autoSleepEnabled },
-                    set: { value in prefs = SettingsPrefs.mutate { $0.autoSleepEnabled = value } }
+                    set: { value in prefs = SettingsPrefs.mutate(in: session.preferences) { $0.autoSleepEnabled = value } }
                 )
             )
             if prefs.autoSleepEnabled {
@@ -232,7 +240,7 @@ struct PlaybackScreen: View {
                 SettingsMenuRow(title: "Timer length", value: "\(prefs.autoSleepTimerMinutes) min") {
                     ForEach([15, 20, 30, 45, 60, 90], id: \.self) { minutes in
                         Button("\(minutes) minutes") {
-                            prefs = SettingsPrefs.mutate { $0.autoSleepTimerMinutes = minutes }
+                            prefs = SettingsPrefs.mutate(in: session.preferences) { $0.autoSleepTimerMinutes = minutes }
                         }
                     }
                 }
@@ -240,34 +248,36 @@ struct PlaybackScreen: View {
 
             Divider().overlay(hearth.hairline)
 
-            if healthUnavailable {
-                Text("Apple Health isn't available on this device, so sleep-aware rewind can't be offered.")
-                    .font(.hearthCaption)
-                    .foregroundStyle(hearth.textSecondary)
-            } else {
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Sleep-aware rewind")
-                            .font(.hearthBody)
-                            .foregroundStyle(hearth.text)
-                        Text(
-                            healthAuthorized
-                                ? "Connected to Apple Health"
-                                : "Use Apple Watch sleep data to rewind to where you dozed off"
-                        )
+            if session.isOwner {
+                if healthUnavailable {
+                    Text("Apple Health isn't available on this device, so sleep-aware rewind can't be offered.")
                         .font(.hearthCaption)
                         .foregroundStyle(hearth.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    }
-                    Spacer()
-                    if isRequestingHealth {
-                        ProgressView().tint(hearth.ember)
-                    } else if healthAuthorized {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(hearth.statusOK)
-                    } else {
-                        QuietButton(title: "Connect", systemImage: nil) {
-                            showHealthExplainer = true
+                } else {
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Sleep-aware rewind")
+                                .font(.hearthBody)
+                                .foregroundStyle(hearth.text)
+                            Text(
+                                healthAuthorized
+                                    ? "Connected to Apple Health"
+                                    : "Use Apple Watch sleep data to rewind to where you dozed off"
+                            )
+                            .font(.hearthCaption)
+                            .foregroundStyle(hearth.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer()
+                        if isRequestingHealth {
+                            ProgressView().tint(hearth.ember)
+                        } else if healthAuthorized {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(hearth.statusOK)
+                        } else {
+                            QuietButton(title: "Connect", systemImage: nil) {
+                                showHealthExplainer = true
+                            }
                         }
                     }
                 }
@@ -283,7 +293,7 @@ struct PlaybackScreen: View {
                 subtitle: "Show the full player whenever playback starts",
                 isOn: Binding(
                     get: { prefs.showPlayerAutomatically },
-                    set: { value in prefs = SettingsPrefs.mutate { $0.showPlayerAutomatically = value } }
+                    set: { value in prefs = SettingsPrefs.mutate(in: session.preferences) { $0.showPlayerAutomatically = value } }
                 )
             )
             SourcesToggleRow(
@@ -291,7 +301,7 @@ struct PlaybackScreen: View {
                 subtitle: "Start the next queued book or episode when the current one ends",
                 isOn: Binding(
                     get: { prefs.continuousPlaybackEnabled },
-                    set: { value in prefs = SettingsPrefs.mutate { $0.continuousPlaybackEnabled = value } }
+                    set: { value in prefs = SettingsPrefs.mutate(in: session.preferences) { $0.continuousPlaybackEnabled = value } }
                 )
             )
             SourcesToggleRow(
@@ -299,14 +309,14 @@ struct PlaybackScreen: View {
                 subtitle: "When a book ends with nothing queued, start the next book in its series",
                 isOn: Binding(
                     get: { prefs.autoPlayNextInSeries },
-                    set: { value in prefs = SettingsPrefs.mutate { $0.autoPlayNextInSeries = value } }
+                    set: { value in prefs = SettingsPrefs.mutate(in: session.preferences) { $0.autoPlayNextInSeries = value } }
                 )
             )
             SourcesToggleRow(
                 title: "Blurred cover behind the player",
                 isOn: Binding(
                     get: { prefs.useBlurredPlayerBackground },
-                    set: { value in prefs = SettingsPrefs.mutate { $0.useBlurredPlayerBackground = value } }
+                    set: { value in prefs = SettingsPrefs.mutate(in: session.preferences) { $0.useBlurredPlayerBackground = value } }
                 )
             )
             SourcesToggleRow(
@@ -314,7 +324,7 @@ struct PlaybackScreen: View {
                 subtitle: "Allow seeking from the Lock Screen and Control Center",
                 isOn: Binding(
                     get: { prefs.showLockScreenProgressBar },
-                    set: { value in prefs = SettingsPrefs.mutate { $0.showLockScreenProgressBar = value } }
+                    set: { value in prefs = SettingsPrefs.mutate(in: session.preferences) { $0.showLockScreenProgressBar = value } }
                 )
             )
         }
@@ -431,7 +441,7 @@ struct PlaybackScreen: View {
                 subtitle: "Prevent auto-lock while audio is playing",
                 isOn: Binding(
                     get: { prefs.disableAutoLockWhilePlaying },
-                    set: { value in prefs = SettingsPrefs.mutate { $0.disableAutoLockWhilePlaying = value } }
+                    set: { value in prefs = SettingsPrefs.mutate(in: session.preferences) { $0.disableAutoLockWhilePlaying = value } }
                 )
             )
         }

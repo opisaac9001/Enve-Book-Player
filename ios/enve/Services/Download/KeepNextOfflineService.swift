@@ -78,11 +78,15 @@ final class KeepNextOfflineService {
     private var cancellables: Set<AnyCancellable> = []
     private var reconcileTask: Task<Void, Never>?
 
-    init(
+    private unowned let profileSession: ProfileSession?
+    private var isRetired = false
+
+    init(profileSession: ProfileSession? = nil,
         downloads: DownloadsEngine,
         appState: AppState = .shared,
         playback: any PlaybackControlling = ActivePlayback.controller
     ) {
+        self.profileSession = profileSession
         self.downloads = downloads
         self.appState = appState
         self.playback = playback
@@ -105,11 +109,20 @@ final class KeepNextOfflineService {
             .store(in: &cancellables)
     }
 
+    func retire() async {
+        isRetired = true
+        cancellables.removeAll()
+        let pending = reconcileTask
+        pending?.cancel()
+        await pending?.value
+    }
+
     func reconcile() {
         scheduleReconcile()
     }
 
     private func scheduleReconcile() {
+        guard !isRetired else { return }
         reconcileTask?.cancel()
         reconcileTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(400))
@@ -122,7 +135,7 @@ final class KeepNextOfflineService {
         let signpost = PerfSignpost.begin("keep-next-offline")
         defer { PerfSignpost.end(signpost) }
 
-        let preferences = LibraryDisplayPreferencesStore.shared.loadPreferences()
+        let preferences = (profileSession?.preferences ?? LibraryDisplayPreferencesStore.shared).loadPreferences()
         guard preferences.keepNextItemsOfflineEnabled,
             downloads.isNetworkAvailable,
             !downloads.isCellularWithDownloadsDisabled,
@@ -154,9 +167,8 @@ final class KeepNextOfflineService {
             "Keeping \(missing.count) upcoming item(s) offline after bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: current.stableId))"
         )
         for book in missing {
-            Task { @MainActor [downloads] in
-                await downloads.download(book)
-            }
+            guard !Task.isCancelled, !isRetired else { return }
+            await downloads.download(book)
         }
     }
 
@@ -164,12 +176,12 @@ final class KeepNextOfflineService {
         #if os(tvOS)
         return []
         #else
-        await PodcastsModel.shared.loadIfNeeded()
+        await (profileSession?.podcastsModel ?? PodcastsModel.shared).loadIfNeeded()
         guard !Task.isCancelled else { return [] }
 
         let parentKey = current.podcastLibraryItemId
         guard
-            let show = PodcastsModel.shared.allShows.first(where: { show in
+            let show = (profileSession?.podcastsModel ?? PodcastsModel.shared).allShows.first(where: { show in
                 (parentKey != nil && (show.feedURL ?? show.id) == parentKey)
                     || show.episodes.contains(where: { KeepNextOfflinePolicy.matches($0, current) })
             })
@@ -177,7 +189,7 @@ final class KeepNextOfflineService {
             return []
         }
 
-        let newestFirst = UserDefaults.standard.object(forKey: "imagine.podcasts.show.newestFirst") as? Bool ?? true
+        let newestFirst = (profileSession?.defaults ?? UserDefaults.standard).object(forKey: "imagine.podcasts.show.newestFirst") as? Bool ?? true
         return KeepNextOfflinePolicy.podcastCandidates(
             current: current,
             episodes: show.episodes,

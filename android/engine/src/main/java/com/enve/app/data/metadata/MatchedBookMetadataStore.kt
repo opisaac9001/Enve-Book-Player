@@ -1,6 +1,8 @@
 package com.enve.app.data.metadata
 
 import com.enve.core.data.model.Book
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
@@ -10,6 +12,7 @@ import javax.inject.Singleton
 class MatchedBookMetadataStore @Inject constructor(
     private val dao: MatchedBookMetadataDao,
 ) {
+    val matchedKeys: Flow<Set<String>> = dao.observeKeys().map { it.toSet() }
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
     suspend fun saveMatch(book: Book, candidate: MetadataMatchCandidate): Book {

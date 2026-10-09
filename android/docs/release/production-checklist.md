@@ -4,7 +4,7 @@ Use this checklist for Enve 1.2 build 52. A production release is ready only whe
 
 ## Repository gate
 
-- [x] App and Wear version codes match at 52.
+- [ ] Phone version code is 52; provisional Wear version code is 1,000,052. Confirm in Play Console that the Wear code is unused across all form factors and higher than every previously released Wear code before signing or uploading. The build cannot check Console history.
 - [x] Target SDK is 36 and native libraries satisfy 16 KB page alignment.
 - [x] Privacy and website links use `https://envemedia.com`.
 - [x] In-app acknowledgements include the resolved release inventory and bundled legal documents.

@@ -2,7 +2,8 @@ import SwiftUI
 
 struct SyncScreen: View {
     @Environment(\.hearth) private var hearth
-    private var coordinator: SyncCoordinator { .shared }
+    @Environment(\.profileSession) private var profileSession
+    private var coordinator: SyncCoordinator { (profileSession ?? .owner).sync }
     @State private var isManualSyncing = false
 
     var body: some View {

@@ -1,5 +1,6 @@
 package com.enve.core.data.local
 
+import kotlinx.coroutines.flow.Flow
 import androidx.room.Dao
 import androidx.room.Entity
 import androidx.room.Insert
@@ -26,6 +27,9 @@ data class PendingProgressPush(
 
 @Dao
 interface PendingProgressPushDao {
+    @Query("SELECT COUNT(*) FROM pending_progress_push")
+    fun observeCount(): Flow<Int>
+
     @Query("SELECT * FROM pending_progress_push ORDER BY createdAt ASC")
     suspend fun getAll(): List<PendingProgressPush>
 
@@ -37,6 +41,9 @@ interface PendingProgressPushDao {
 
     @Query("DELETE FROM pending_progress_push WHERE bookId = :bookId AND source = :source AND connectionKey = :connectionKey")
     suspend fun delete(bookId: String, source: String, connectionKey: String)
+
+    @Query("DELETE FROM pending_progress_push WHERE bookId = :bookId AND source = :source AND connectionKey = :connectionKey AND createdAt = :createdAt AND percentage = :percentage")
+    suspend fun deleteIfUnchanged(bookId: String, source: String, connectionKey: String, createdAt: Long, percentage: Float): Int
 
     @Query("DELETE FROM pending_progress_push WHERE createdAt < :cutoffEpochMs")
     suspend fun pruneOlderThan(cutoffEpochMs: Long)

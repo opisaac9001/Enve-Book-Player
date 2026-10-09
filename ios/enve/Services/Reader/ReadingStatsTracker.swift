@@ -2,7 +2,7 @@ import Foundation
 import Logging
 
 public actor ReadingStatsTracker {
-    public static let shared = ReadingStatsTracker()
+    @MainActor public static let shared = ReadingStatsTracker()
 
     private struct ActiveSession {
         var bookId: String
@@ -11,11 +11,15 @@ public actor ReadingStatsTracker {
         var sessionStartedAt: Date
         var startProgression: Double
         var startLocation: String?
+        var secondsRead: TimeInterval = 0
     }
 
     private var snapshot: ReadingStatsSnapshot
     private var activeSession: ActiveSession?
     private let statsURL: URL
+    private let historyStore: HistorySessionStore
+    private let historySync: ProviderHistorySessionSync
+    private let rejectsUnreadableStorage: Bool
     private let calendar = Calendar.current
     private let maxSampleInterval: TimeInterval = 600
     private var hasLoadedFromDisk = false
@@ -30,19 +34,39 @@ public actor ReadingStatsTracker {
         await loadFromDisk()
     }
 
-    init() {
+    @MainActor private init() {
         let fm = FileManager.default
         let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         let dir = appSupport.appendingPathComponent("Enve/ReadingState", isDirectory: true)
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
         statsURL = dir.appendingPathComponent("reading_stats.json")
         snapshot = ReadingStatsSnapshot.empty
+        historyStore = .shared
+        historySync = .shared
+        rejectsUnreadableStorage = false
+    }
+
+    @MainActor init(
+        storage: ProfileStorageLocations,
+        historyStore: HistorySessionStore,
+        historySync: ProviderHistorySessionSync
+    ) throws {
+        let directory = storage.applicationSupportDirectory.appendingPathComponent("Enve/ReadingState", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        statsURL = directory.appendingPathComponent("reading_stats.json")
+        self.historyStore = historyStore
+        self.historySync = historySync
+        rejectsUnreadableStorage = storage.profileID != FamilyProfile.ownerID
+        if rejectsUnreadableStorage, FileManager.default.fileExists(atPath: statsURL.path) {
+            _ = try Self.decoder.decode(ReadingStatsSnapshot.self, from: Data(contentsOf: statsURL))
+        }
+        snapshot = .empty
     }
 
     func startSession(bookId: String, positionProgression: Double, location: String? = nil) async {
         await ensureLoaded()
         if let active = activeSession, active.bookId != bookId {
-            endSessionSync(bookId: active.bookId, finalProgression: active.lastPositionProgression)
+            await endActiveSession(bookId: active.bookId, finalProgression: active.lastPositionProgression)
         }
         guard activeSession?.bookId != bookId else { return }
 
@@ -105,20 +129,28 @@ public actor ReadingStatsTracker {
 
         await apply(secondsRead: timeRead, for: active.bookId, at: now, positionProgression: positionProgression)
 
+        active.secondsRead += timeRead
         active.lastTimestamp = now
         active.lastPositionProgression = positionProgression
         activeSession = active
     }
 
-    func endSession(bookId: String? = nil, finalProgression: Double? = nil, location: String? = nil) async {
+    @discardableResult
+    func endSession(bookId: String? = nil, finalProgression: Double? = nil, location: String? = nil, uploadToServer: Bool = true) async -> HistorySession? {
         await ensureLoaded()
-        endSessionSync(bookId: bookId, finalProgression: finalProgression, location: location)
+        return await endActiveSession(bookId: bookId, finalProgression: finalProgression, location: location, uploadToServer: uploadToServer)
+    }
+
+    public func flush() async {
+        await ensureLoaded()
+        await cancelPendingPersist()
+        await persistNow()
     }
 
     public func currentSnapshot() async -> ReadingStatsSnapshot {
         await ensureLoaded()
         var merged = snapshot
-        let remoteSessions = await HistorySessionStore.shared.loadReadingSessions().filter { $0.source == .bookOrbit }
+        let remoteSessions = await historyStore.loadReadingSessions().filter { $0.source == .bookOrbit }
         let remotelyCompleted = Set(
             remoteSessions.compactMap { session in
                 session.endProgress.map { $0 >= Book.finishedProgressThreshold ? session.bookId : nil } ?? nil
@@ -185,22 +217,24 @@ public actor ReadingStatsTracker {
         await loadFromDisk()
     }
 
-    private func endSessionSync(bookId: String? = nil, finalProgression: Double? = nil, location: String? = nil) {
-        guard let active = activeSession else { return }
-        if let bookId, bookId != active.bookId { return }
+    @discardableResult
+    private func endActiveSession(bookId: String? = nil, finalProgression: Double? = nil, location: String? = nil, uploadToServer: Bool = true) async -> HistorySession? {
+        guard let active = activeSession else { return nil }
+        if let bookId, bookId != active.bookId { return nil }
+        activeSession = nil
 
         let now = Date()
         let progression = finalProgression ?? active.lastPositionProgression
         let timeRead = min(max(0, now.timeIntervalSince(active.lastTimestamp)), maxSampleInterval)
 
         if timeRead > 0 {
-            Task {
-                await apply(secondsRead: timeRead, for: active.bookId, at: now, positionProgression: progression, forcePersist: true)
-            }
+            await apply(secondsRead: timeRead, for: active.bookId, at: now, positionProgression: progression, forcePersist: true)
         }
 
-        let totalDuration = Int(now.timeIntervalSince(active.sessionStartedAt))
-        if totalDuration >= 2 {
+        // Active reading time: gaps between page turns are capped, so an idle open reader doesn't count.
+        let activeDuration = Int((active.secondsRead + timeRead).rounded())
+        var endedSession: HistorySession?
+        if activeDuration >= 2 {
             let progressDelta = progression - active.startProgression
 
             let pagesRead: Int? = {
@@ -216,7 +250,7 @@ public actor ReadingStatsTracker {
                 mediaType: "ebook",
                 startTime: active.sessionStartedAt,
                 endTime: now,
-                durationSeconds: totalDuration,
+                durationSeconds: activeDuration,
                 startProgress: active.startProgression,
                 endProgress: progression,
                 progressDelta: progressDelta > 0 ? progressDelta : (progressDelta < -0.001 ? progressDelta : nil),
@@ -225,13 +259,14 @@ public actor ReadingStatsTracker {
                 pagesRead: pagesRead,
                 source: .local
             )
-            Task {
-                await HistorySessionStore.shared.appendReadingSession(session)
-                _ = await ProviderHistorySessionSync.shared.submit(session)
+            endedSession = session
+            await historyStore.appendReadingSession(session)
+            if uploadToServer {
+                _ = await historySync.submit(session)
             }
         }
 
-        activeSession = nil
+        return endedSession
     }
 
     private func apply(
@@ -270,8 +305,7 @@ public actor ReadingStatsTracker {
 
     private func schedulePersist(force: Bool = false) async {
         if force {
-            pendingPersistTask?.cancel()
-            pendingPersistTask = nil
+            await cancelPendingPersist()
             await persistNow()
             return
         }
@@ -287,9 +321,25 @@ public actor ReadingStatsTracker {
         let delay = minimumPersistInterval - elapsed
         pendingPersistTask = Task { [weak self] in
             guard let self else { return }
-            try? await Task.sleep(nanoseconds: UInt64(max(0, delay) * 1_000_000_000))
-            await self.persistNow()
+            do {
+                try await Task.sleep(nanoseconds: UInt64(max(0, delay) * 1_000_000_000))
+            } catch {
+                return
+            }
+            await self.persistPending()
         }
+    }
+
+    private func persistPending() async {
+        await persistNow()
+        pendingPersistTask = nil
+    }
+
+    private func cancelPendingPersist() async {
+        let pending = pendingPersistTask
+        pending?.cancel()
+        await pending?.value
+        pendingPersistTask = nil
     }
 
     private func updateStreakIfNeeded(dayKey: String) {
@@ -312,7 +362,6 @@ public actor ReadingStatsTracker {
     }
 
     private func persistNow() async {
-        pendingPersistTask = nil
         let snap = snapshot
         lastPersistDate = Date()
         let shouldNotify = Date().timeIntervalSince(lastStatsNotificationDate) >= statsNotificationMinimumInterval
@@ -321,6 +370,9 @@ public actor ReadingStatsTracker {
         }
         await MainActor.run {
             do {
+                if rejectsUnreadableStorage, FileManager.default.fileExists(atPath: statsURL.path) {
+                    _ = try Self.decoder.decode(ReadingStatsSnapshot.self, from: Data(contentsOf: statsURL))
+                }
                 let data = try Self.encoder.encode(snap)
                 try data.write(to: statsURL, options: [.atomic])
                 if Int(snap.totalSecondsRead) % 10 == 0 {
@@ -371,7 +423,7 @@ public actor ReadingStatsTracker {
     private nonisolated static let dayFormatter: DateFormatter = {
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy-MM-dd"
-        fmt.timeZone = TimeZone(secondsFromGMT: 0)
+        fmt.locale = Locale(identifier: "en_US_POSIX")
         return fmt
     }()
 

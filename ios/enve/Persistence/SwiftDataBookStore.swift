@@ -821,6 +821,24 @@ final class SwiftDataBookStore: BookStoreRepository, @unchecked Sendable {
             return try modelContext.fetchCount(descriptor)
         }
 
+        private func fetchContinueBooks(_ descriptor: FetchDescriptor<BookRecord>, limit: Int) throws -> [Book] {
+            guard limit > 0 else { return [] }
+            var page = descriptor
+            page.fetchLimit = limit
+            var books: [Book] = []
+            while books.count < limit {
+                let records = try modelContext.fetch(page)
+                guard !records.isEmpty else { break }
+                books += records.compactMap { $0.toBook() }.filter { book in
+                    book.source != .booklore || book.serverReadStatus == nil
+                        || ["READING", "RE_READING", "IN_PROGRESS"].contains(book.serverReadStatus ?? "")
+                }
+                if records.count < limit { break }
+                page.fetchOffset = (page.fetchOffset ?? 0) + records.count
+            }
+            return Array(books.prefix(limit))
+        }
+
         func fetchContinueListening(limit: Int) throws -> [Book] {
             let audioType = "audiobook"
             let readStatus = "READ"
@@ -839,7 +857,7 @@ final class SwiftDataBookStore: BookStoreRepository, @unchecked Sendable {
             )
             audioDescriptor.fetchLimit = limit
 
-            return try modelContext.fetch(audioDescriptor).compactMap { $0.toBook() }
+            return try fetchContinueBooks(audioDescriptor, limit: limit)
         }
 
         func fetchContinueReading(limit: Int) throws -> [Book] {
@@ -853,7 +871,7 @@ final class SwiftDataBookStore: BookStoreRepository, @unchecked Sendable {
                         && !$0.isDeleted
                         && !$0.isHidden
                         && !$0.hideFromContinue
-                        && $0.ebookProgress != nil
+                        && ($0.ebookProgress ?? 0) > 0.001
                         && ($0.serverReadStatus == nil || $0.serverReadStatus != readStatus)
                 },
                 sortBy: [SortDescriptor(\.lastUpdate, order: .reverse)]
@@ -905,12 +923,10 @@ final class SwiftDataBookStore: BookStoreRepository, @unchecked Sendable {
             )
             mediaOverlayDescriptor.fetchLimit = limit
 
-            let progressBooks = try modelContext.fetch(progressDescriptor).compactMap { $0.toBook() }.filter {
-                ($0.ebookProgress ?? 0) > 0.001
-            }
-            let linkedBooks = try modelContext.fetch(linkedAudiobookDescriptor).compactMap { $0.toBook() }
-            let readAloudBooks = try modelContext.fetch(readAloudDescriptor).compactMap { $0.toBook() }
-            let mediaOverlayBooks = try modelContext.fetch(mediaOverlayDescriptor).compactMap { $0.toBook() }
+            let progressBooks = try fetchContinueBooks(progressDescriptor, limit: limit)
+            let linkedBooks = try fetchContinueBooks(linkedAudiobookDescriptor, limit: limit)
+            let readAloudBooks = try fetchContinueBooks(readAloudDescriptor, limit: limit)
+            let mediaOverlayBooks = try fetchContinueBooks(mediaOverlayDescriptor, limit: limit)
             var seen = Set<String>()
             return (progressBooks + linkedBooks + readAloudBooks + mediaOverlayBooks)
                 .filter { seen.insert($0.stableId).inserted }

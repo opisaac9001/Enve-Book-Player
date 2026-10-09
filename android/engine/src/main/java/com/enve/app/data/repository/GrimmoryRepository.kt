@@ -1,6 +1,10 @@
 package com.enve.app.data.repository
 
+import com.enve.core.di.ApplicationScope
+import kotlinx.coroutines.Job
 import android.content.Context
+import com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
+import com.enve.core.data.local.ProfileStorageLocations
 import android.util.Log
 import com.enve.core.data.model.*
 import com.enve.core.data.model.BookSource
@@ -62,6 +66,7 @@ import java.time.OffsetDateTime
 import java.time.ZoneOffset
 import java.net.URI
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.round
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
@@ -184,13 +189,24 @@ internal fun grimmoryEbookFileProgress(
 @Singleton
 class GrimmoryRepository @Inject constructor(
     private val api: GrimmoryApi,
+    private val readingSessionUploader: com.enve.app.data.grimmory.GrimmoryReadingSessionUploader,
     private val komgaRepository: KomgaRepository,
     private val prefs: PreferencesManager,
     private val vault: CredentialVault,
     private val connectionRegistry: com.enve.core.data.local.ConnectionRegistry,
     private val listProgress: GrimmoryListProgressResolver,
     @ApplicationContext private val context: Context,
+    @ApplicationScope parentScope: CoroutineScope =
+        CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    private val locations: ProfileStorageLocations = ProfileStorageLocations.forProfile(context, DEFAULT_ADULT_PROFILE_ID),
+    private val serverSync: com.enve.core.data.local.ProfileServerSyncStore = com.enve.core.data.local.ProfileServerSyncStore(context, locations),
 ) {
+
+    suspend fun currentUserId(): Result<String> = runSuspendCatching {
+        val response = api.getCurrentUser()
+        if (!response.isSuccessful) error("Grimmory current user failed: HTTP ${response.code()}")
+        response.body()?.id?.takeIf(String::isNotBlank) ?: error("Grimmory account has no stable ID")
+    }
 
     private data class ScopedContext(
         val source: BookSource,
@@ -257,16 +273,30 @@ class GrimmoryRepository @Inject constructor(
         )
     }
 
-    private val audiobookTitleOverrideCache = mutableMapOf<String, String>()
+    private data class CacheScope(
+        val source: BookSource,
+        val serverUrl: String,
+        val connectionId: String?,
+        val username: String,
+    )
 
-    private val audiobookDurationOverrideCache = mutableMapOf<String, Long>()
+    private data class BookCacheKey(val scope: CacheScope, val bookId: String)
 
-    private val detailedBookCache = androidx.collection.LruCache<String, Book>(200)
+    private val ScopedContext.cacheScope: CacheScope
+        get() = CacheScope(source, serverUrl, connectionId, username)
 
-    private val audiobookInfoCache = androidx.collection.LruCache<String, AudiobookInfoDto>(200)
+    private val titleOverrides = ConcurrentHashMap<CacheScope, MutableMap<String, String>>()
+    private val durationOverrides = ConcurrentHashMap<CacheScope, MutableMap<String, Long>>()
+    private val audiobookTitleOverrideCache: MutableMap<String, String>
+        get() = titleOverrides.getOrPut(resolveScopedContext().cacheScope) { mutableMapOf() }
+    private val audiobookDurationOverrideCache: MutableMap<String, Long>
+        get() = durationOverrides.getOrPut(resolveScopedContext().cacheScope) { mutableMapOf() }
+
+    private val detailedBookCache = androidx.collection.LruCache<BookCacheKey, Book>(200)
+    private val audiobookInfoCache = androidx.collection.LruCache<BookCacheKey, AudiobookInfoDto>(200)
     private var skipPersistentBookCacheNextFetch = false
 
-    private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val backgroundScope = CoroutineScope(SupervisorJob(parentScope.coroutineContext[Job]) + Dispatchers.IO)
 
     private data class CacheEntry<T>(val data: T, val timestamp: Long = System.currentTimeMillis())
     private val cacheTtlMs = 5 * 60 * 1000L
@@ -288,6 +318,7 @@ class GrimmoryRepository @Inject constructor(
         val savedAt: Long,
         val libraryId: String? = null,
         val summaries: List<BookSummaryDto> = emptyList(),
+        val formatInventoryVersion: Int = 0,
 
         val titleOverrides: Map<String, String> = emptyMap(),
 
@@ -320,13 +351,9 @@ class GrimmoryRepository @Inject constructor(
         val books: List<Book> = emptyList(),
     )
 
-    private var booksCache: CacheEntry<Pair<String?, List<Book>>>? = null
-    private var librariesCache: CacheEntry<List<Library>>? = null
-    private var continueListeningCache: CacheEntry<List<Book>>? = null
-    private var continueReadingCache: CacheEntry<List<Book>>? = null
-    private var recentlyAddedCache: CacheEntry<List<Book>>? = null
-
-    private var cacheSource: String? = null
+    private val booksCache = ConcurrentHashMap<CacheScope, CacheEntry<Pair<String?, List<Book>>>>()
+    private val librariesCache = ConcurrentHashMap<CacheScope, CacheEntry<List<Library>>>()
+    private val recentlyAddedCache = ConcurrentHashMap<CacheScope, CacheEntry<List<Book>>>()
 
     private val booksFetchMutexes = mutableMapOf<String, Mutex>()
     private fun mutexForBooksKey(key: String): Mutex = synchronized(booksFetchMutexes) {
@@ -337,43 +364,47 @@ class GrimmoryRepository @Inject constructor(
         (System.currentTimeMillis() - this.timestamp) < cacheTtlMs
 
     fun invalidateListCaches() {
-        booksCache = null
-        librariesCache = null
-        continueListeningCache = null
-        continueReadingCache = null
-        recentlyAddedCache = null
-        cacheSource = null
+        booksCache.clear()
+        librariesCache.clear()
+        recentlyAddedCache.clear()
         clearTorBoxBookIndexCache()
 
         skipPersistentBookCacheNextFetch = true
     }
 
+    private fun accountCacheKey(): String {
+        val ctx = resolveScopedContext()
+        val account = "${ctx.connectionId.orEmpty()}::${ctx.username}"
+        return MessageDigest.getInstance("SHA-256").digest(account.toByteArray())
+            .joinToString("") { "%02x".format(it) }
+    }
+
     private fun cacheFileForBooks(source: BookSource, serverUrl: String, libraryId: String?): java.io.File {
-        val cacheDir = java.io.File(context.cacheDir, "book-index-cache").also { it.mkdirs() }
+        val cacheDir = java.io.File(locations.cacheDirectory, "book-index-cache").also { it.mkdirs() }
         val safeServer = serverUrl.lowercase().replace(Regex("[^a-z0-9._-]"), "_")
         val safeLibrary = (libraryId ?: "all").replace(Regex("[^a-zA-Z0-9._-]"), "_")
-        val name = "books_${source.name.lowercase()}_${safeServer}_${safeLibrary}.json"
+        val name = "books_${source.name.lowercase()}_${safeServer}_${accountCacheKey()}_${safeLibrary}.json"
         return java.io.File(cacheDir, name)
     }
 
     private fun cacheFileForLibraries(source: BookSource, serverUrl: String): java.io.File {
-        val cacheDir = java.io.File(context.cacheDir, "book-index-cache").also { it.mkdirs() }
+        val cacheDir = java.io.File(locations.cacheDirectory, "book-index-cache").also { it.mkdirs() }
         val safeServer = serverUrl.lowercase().replace(Regex("[^a-z0-9._-]"), "_")
-        val name = "libraries_${source.name.lowercase()}_${safeServer}.json"
+        val name = "libraries_${source.name.lowercase()}_${safeServer}_${accountCacheKey()}.json"
         return java.io.File(cacheDir, name)
     }
 
     private fun cacheFileForHomeLane(source: BookSource, serverUrl: String, lane: String): java.io.File {
-        val cacheDir = java.io.File(context.cacheDir, "book-index-cache").also { it.mkdirs() }
+        val cacheDir = java.io.File(locations.cacheDirectory, "book-index-cache").also { it.mkdirs() }
         val safeServer = serverUrl.lowercase().replace(Regex("[^a-z0-9._-]"), "_")
         val safeLane = lane.lowercase().replace(Regex("[^a-z0-9._-]"), "_")
-        val name = "lane_${source.name.lowercase()}_${safeServer}_${safeLane}.json"
+        val name = "lane_${source.name.lowercase()}_${safeServer}_${accountCacheKey()}_${safeLane}.json"
         return java.io.File(cacheDir, name)
     }
 
     private fun clearTorBoxBookIndexCache() {
         runCatching {
-            java.io.File(context.cacheDir, "book-index-cache")
+            java.io.File(locations.cacheDirectory, "book-index-cache")
                 .listFiles { file -> file.name.startsWith("books_torbox_") }
                 ?.forEach { it.delete() }
         }
@@ -391,6 +422,7 @@ class GrimmoryRepository @Inject constructor(
             if (payload.source != source.name || payload.serverUrl != serverUrl || payload.libraryId != libraryId) {
                 return@runCatching null
             }
+            if (source == BookSource.GRIMMORY && payload.formatInventoryVersion != 1) return@runCatching null
 
             if (System.currentTimeMillis() - payload.savedAt > BOOK_INDEX_MAX_AGE_MS) {
                 return@runCatching null
@@ -437,6 +469,7 @@ class GrimmoryRepository @Inject constructor(
                 libraryId = libraryId,
                 savedAt = System.currentTimeMillis(),
                 summaries = summaries,
+                formatInventoryVersion = if (source == BookSource.GRIMMORY) 1 else 0,
                 titleOverrides = titleSnapshot,
                 durationOverrides = durationSnapshot,
             )
@@ -538,20 +571,6 @@ class GrimmoryRepository @Inject constructor(
                 summaries = summaries,
             )
             cacheFileForHomeLane(source, serverUrl, lane).writeText(jsonSerializer.encodeToString(payload))
-        }
-    }
-
-    private suspend fun ensureCacheSource() {
-        val ctx = resolveScopedContext()
-
-        val key = "${ctx.source.name}::${ctx.serverUrl}"
-        if (cacheSource != key) {
-            booksCache = null
-            librariesCache = null
-            continueListeningCache = null
-            continueReadingCache = null
-            recentlyAddedCache = null
-            cacheSource = key
         }
     }
 
@@ -658,10 +677,9 @@ class GrimmoryRepository @Inject constructor(
     }
 
     suspend fun getLibraries(): Result<List<Library>> {
-        ensureCacheSource()
-        librariesCache?.takeIf { it.isValid() }?.let { return Result.success(it.data) }
+        val ctx = resolveScopedContext()
+        librariesCache[ctx.cacheScope]?.takeIf { it.isValid() }?.let { return Result.success(it.data) }
         return try {
-            val ctx = resolveScopedContext()
             val source = ctx.source
             val serverUrl = ctx.serverUrl
             if (source.requiresConfiguredServer && serverUrl.isBlank()) {
@@ -672,7 +690,7 @@ class GrimmoryRepository @Inject constructor(
                 val cached = loadLibrariesFromDisk(source, serverUrl)
                 if (!cached.isNullOrEmpty()) {
                     val mapped = cached.map { it.toLibrary() }
-                    librariesCache = CacheEntry(mapped)
+                    librariesCache[ctx.cacheScope] = CacheEntry(mapped)
                     return Result.success(mapped)
                 }
             }
@@ -713,20 +731,19 @@ class GrimmoryRepository @Inject constructor(
                 else -> emptyList()
             }
             skipPersistentBookCacheNextFetch = false
-            librariesCache = CacheEntry(libs)
+            librariesCache[ctx.cacheScope] = CacheEntry(libs)
             Result.success(libs)
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
             skipPersistentBookCacheNextFetch = false
-            val ctx = resolveScopedContext()
             val source = ctx.source
             if (source == BookSource.GRIMMORY) {
                 val serverUrl = ctx.serverUrl
                 val cached = loadLibrariesFromDisk(source, serverUrl)
                 if (!cached.isNullOrEmpty()) {
                     val mapped = cached.map { it.toLibrary() }
-                    librariesCache = CacheEntry(mapped)
+                    librariesCache[ctx.cacheScope] = CacheEntry(mapped)
                     return Result.success(mapped)
                 }
             }
@@ -741,12 +758,11 @@ class GrimmoryRepository @Inject constructor(
         sort: String = "addedOn",
         dir: String = "desc"
     ): Result<List<Book>> {
-        ensureCacheSource()
-        booksCache?.takeIf { it.isValid() && it.data.first == libraryId }?.let { return Result.success(it.data.second) }
         val ctx = resolveScopedContext()
-        val coalesceKey = "${ctx.source.name}|${ctx.serverUrl}|${libraryId ?: ""}"
+        booksCache[ctx.cacheScope]?.takeIf { it.isValid() && it.data.first == libraryId }?.let { return Result.success(it.data.second) }
+        val coalesceKey = "${ctx.source.name}|${ctx.serverUrl}|${accountCacheKey()}|${libraryId ?: ""}"
         return mutexForBooksKey(coalesceKey).withLock {
-            booksCache?.takeIf { it.isValid() && it.data.first == libraryId }?.let { return@withLock Result.success(it.data.second) }
+            booksCache[ctx.cacheScope]?.takeIf { it.isValid() && it.data.first == libraryId }?.let { return@withLock Result.success(it.data.second) }
             doFetchBooks(libraryId, page, size, sort, dir, ctx)
         }
     }
@@ -772,7 +788,7 @@ class GrimmoryRepository @Inject constructor(
                 if (!cachedSummaries.isNullOrEmpty()) {
                     val cachedMapped = appendCompanionAudiobooks(cachedSummaries.toBooks(serverUrl, token), serverUrl, token)
                     val withOverrides = applyCachedTitleOverrides(cachedMapped)
-                    booksCache = CacheEntry(Pair(libraryId, withOverrides))
+                    booksCache[ctx.cacheScope] = CacheEntry(Pair(libraryId, withOverrides))
                     resolveAmbiguousAudiobookTitlesInBackground(
                         books = cachedMapped,
                         source = source,
@@ -785,7 +801,7 @@ class GrimmoryRepository @Inject constructor(
             } else if (source != BookSource.GRIMMORY && source != BookSource.TORBOX && !skipPersistentBookCacheNextFetch) {
                 val cached = loadGenericBooksFromDisk(source, serverUrl, libraryId)
                 if (!cached.isNullOrEmpty()) {
-                    booksCache = CacheEntry(Pair(libraryId, cached))
+                    booksCache[ctx.cacheScope] = CacheEntry(Pair(libraryId, cached))
                     return Result.success(cached)
                 }
             }
@@ -816,7 +832,7 @@ class GrimmoryRepository @Inject constructor(
             }
 
             skipPersistentBookCacheNextFetch = false
-            booksCache = CacheEntry(Pair(libraryId, resolved))
+            booksCache[ctx.cacheScope] = CacheEntry(Pair(libraryId, resolved))
             Result.success(resolved)
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
@@ -827,7 +843,7 @@ class GrimmoryRepository @Inject constructor(
                 if (!cachedSummaries.isNullOrEmpty()) {
                     val cachedMapped = appendCompanionAudiobooks(cachedSummaries.toBooks(ctx.serverUrl, ctx.token), ctx.serverUrl, ctx.token)
                     val resolved = resolveAndEnrichAudiobooks(cachedMapped, ctx.serverUrl, ctx.token)
-                    booksCache = CacheEntry(Pair(libraryId, resolved))
+                    booksCache[ctx.cacheScope] = CacheEntry(Pair(libraryId, resolved))
                     return Result.success(resolved)
                 }
             }
@@ -840,14 +856,15 @@ class GrimmoryRepository @Inject constructor(
             val ctx = resolveScopedContext()
             val source = ctx.source
             val rawBookId = if (source == BookSource.GRIMMORY) bookId.grimmoryServerBookId() else bookId
+            val cacheKey = BookCacheKey(ctx.cacheScope, bookId)
             if (!forceRefresh) {
-                detailedBookCache.get(bookId)?.let { return Result.success(it) }
+                detailedBookCache.get(cacheKey)?.let { return Result.success(serverSync.catalogBook(it)) }
             }
 
             if (source != BookSource.GRIMMORY) {
                 val fromList = getBooks().getOrNull()?.firstOrNull { it.id == bookId }
                 if (fromList != null) {
-                    detailedBookCache.put(bookId, fromList)
+                    detailedBookCache.put(cacheKey, fromList)
                     return Result.success(fromList)
                 }
                 return Result.failure(Exception("Book not found for ${source.displayName}"))
@@ -865,8 +882,9 @@ class GrimmoryRepository @Inject constructor(
                 } else {
                     mergeListedEbook(mapped, detail, serverUrl, token)
                 }
-                detailedBookCache.put(bookId, book)
-                Result.success(book)
+                val sanitized = serverSync.catalogBook(book)
+                detailedBookCache.put(cacheKey, sanitized)
+                Result.success(sanitized)
             } else {
                 Result.failure(Exception("Failed to fetch book detail"))
             }
@@ -879,6 +897,7 @@ class GrimmoryRepository @Inject constructor(
 
     suspend fun hydrateHomeShelfBooks(books: List<Book>): List<Book> = coroutineScope {
         if (books.isEmpty()) return@coroutineScope books
+        val cacheScope = resolveScopedContext().cacheScope
 
         val candidates = books
             .filter { it.mediaType == AppMediaType.AUDIOBOOK }
@@ -901,7 +920,7 @@ class GrimmoryRepository @Inject constructor(
         }.awaitAll()
 
         books.map { book ->
-            detailedBookCache.get(book.id) ?: book
+            detailedBookCache.get(BookCacheKey(cacheScope, book.id)) ?: book
         }
     }
 
@@ -935,13 +954,11 @@ class GrimmoryRepository @Inject constructor(
                     .takeIf { it.isNotEmpty() }
                     ?: deriveContinueListeningFromLibrary()
                 skipPersistentBookCacheNextFetch = false
-                continueListeningCache = CacheEntry(lane)
                 Result.success(lane)
             } else {
                 val fallback = deriveContinueListeningFromLibrary()
                 if (fallback.isNotEmpty()) {
                     skipPersistentBookCacheNextFetch = false
-                    continueListeningCache = CacheEntry(fallback)
                     Result.success(fallback)
                 } else {
                     Result.failure(Exception("Failed to fetch continue listening"))
@@ -957,14 +974,12 @@ class GrimmoryRepository @Inject constructor(
                 .orEmpty()
             if (diskFallback.isNotEmpty()) {
                 val resolved = resolveAndEnrichAudiobooks(diskFallback, serverUrl, token)
-                continueListeningCache = CacheEntry(resolved)
                 skipPersistentBookCacheNextFetch = false
                 return Result.success(resolved.filter { it.mediaType == AppMediaType.AUDIOBOOK && it.isEligibleForGrimmoryContinue() })
             }
             val fallback = runSuspendCatching { deriveContinueListeningFromLibrary() }.getOrDefault(emptyList())
             if (fallback.isNotEmpty()) {
                 skipPersistentBookCacheNextFetch = false
-                continueListeningCache = CacheEntry(fallback)
                 Result.success(fallback)
             } else {
                 Result.failure(e)
@@ -1017,13 +1032,11 @@ class GrimmoryRepository @Inject constructor(
                     .takeIf { it.isNotEmpty() }
                     ?: deriveContinueReadingFromLibrary()
                 skipPersistentBookCacheNextFetch = false
-                continueReadingCache = CacheEntry(lane)
                 Result.success(lane)
             } else {
                 val fallback = deriveContinueReadingFromLibrary()
                 if (fallback.isNotEmpty()) {
                     skipPersistentBookCacheNextFetch = false
-                    continueReadingCache = CacheEntry(fallback)
                     Result.success(fallback)
                 } else {
                     Result.failure(Exception("Failed to fetch continue reading"))
@@ -1039,14 +1052,12 @@ class GrimmoryRepository @Inject constructor(
                 .orEmpty()
             if (diskFallback.isNotEmpty()) {
                 val resolved = resolveAndEnrichAudiobooks(diskFallback, serverUrl, token)
-                continueReadingCache = CacheEntry(resolved)
                 skipPersistentBookCacheNextFetch = false
                 return Result.success(resolved.filter { it.mediaType == AppMediaType.EBOOK && it.isEligibleForGrimmoryContinue() })
             }
             val fallback = runSuspendCatching { deriveContinueReadingFromLibrary() }.getOrDefault(emptyList())
             if (fallback.isNotEmpty()) {
                 skipPersistentBookCacheNextFetch = false
-                continueReadingCache = CacheEntry(fallback)
                 Result.success(fallback)
             } else {
                 Result.failure(e)
@@ -1083,7 +1094,7 @@ class GrimmoryRepository @Inject constructor(
             return Result.success(lane)
         }
 
-        recentlyAddedCache?.takeIf { it.isValid() }?.let { return Result.success(it.data) }
+        recentlyAddedCache[ctx.cacheScope]?.takeIf { it.isValid() }?.let { return Result.success(it.data) }
         return try {
             val serverUrl = ctx.serverUrl
             val token = ctx.token
@@ -1092,7 +1103,7 @@ class GrimmoryRepository @Inject constructor(
                 val cachedSummaries = loadHomeLaneFromDisk(source, serverUrl, "recently-added")
                 if (!cachedSummaries.isNullOrEmpty()) {
                     val cached = resolveAndEnrichAudiobooks(cachedSummaries.toBooks(serverUrl, token), serverUrl, token)
-                    recentlyAddedCache = CacheEntry(cached)
+                    recentlyAddedCache[ctx.cacheScope] = CacheEntry(cached)
                     return Result.success(cached)
                 }
             }
@@ -1105,13 +1116,13 @@ class GrimmoryRepository @Inject constructor(
                 val resolved = resolveAndEnrichAudiobooks(books, serverUrl, token)
                 val lane = resolved.takeIf { it.isNotEmpty() } ?: deriveRecentlyAddedFromLibrary()
                 skipPersistentBookCacheNextFetch = false
-                recentlyAddedCache = CacheEntry(lane)
+                recentlyAddedCache[ctx.cacheScope] = CacheEntry(lane)
                 Result.success(lane)
             } else {
                 val fallback = deriveRecentlyAddedFromLibrary()
                 if (fallback.isNotEmpty()) {
                     skipPersistentBookCacheNextFetch = false
-                    recentlyAddedCache = CacheEntry(fallback)
+                    recentlyAddedCache[ctx.cacheScope] = CacheEntry(fallback)
                     Result.success(fallback)
                 } else {
                     Result.failure(Exception("Failed to fetch recently added"))
@@ -1127,14 +1138,14 @@ class GrimmoryRepository @Inject constructor(
                 .orEmpty()
             if (diskFallback.isNotEmpty()) {
                 val resolved = resolveAndEnrichAudiobooks(diskFallback, serverUrl, token)
-                recentlyAddedCache = CacheEntry(resolved)
+                recentlyAddedCache[ctx.cacheScope] = CacheEntry(resolved)
                 skipPersistentBookCacheNextFetch = false
                 return Result.success(resolved)
             }
             val fallback = runSuspendCatching { deriveRecentlyAddedFromLibrary() }.getOrDefault(emptyList())
             if (fallback.isNotEmpty()) {
                 skipPersistentBookCacheNextFetch = false
-                recentlyAddedCache = CacheEntry(fallback)
+                recentlyAddedCache[ctx.cacheScope] = CacheEntry(fallback)
                 Result.success(fallback)
             } else {
                 Result.failure(e)
@@ -1491,6 +1502,7 @@ class GrimmoryRepository @Inject constructor(
     }
 
     suspend fun updateBookStatus(bookId: String, status: String): Result<Unit> {
+        if (!serverSync.isEnabled) return Result.success(Unit)
         return try {
             val response = api.updateBookStatus(bookId.grimmoryServerBookId(), UpdateStatusRequest(status))
             if (response.isSuccessful) Result.success(Unit)
@@ -1632,9 +1644,11 @@ class GrimmoryRepository @Inject constructor(
         }
     }
 
-    private suspend fun resolveAudiobookInfo(bookId: String): AudiobookInfoDto? =
-        audiobookInfoCache.get(bookId)
-            ?: getAudiobookInfo(bookId).getOrNull()?.also { audiobookInfoCache.put(bookId, it) }
+    private suspend fun resolveAudiobookInfo(bookId: String): AudiobookInfoDto? {
+        val key = BookCacheKey(resolveScopedContext().cacheScope, bookId)
+        return audiobookInfoCache.get(key)
+            ?: getAudiobookInfo(bookId).getOrNull()?.also { audiobookInfoCache.put(key, it) }
+    }
 
     suspend fun getStreamUrl(bookId: String): String {
         val ctx = resolveScopedContext()
@@ -1665,6 +1679,7 @@ class GrimmoryRepository @Inject constructor(
                 resolveAgainst(ctx.serverUrl, bookId)
             }
 
+            BookSource.GRIMMORY -> getEbookResource(bookId).url
             else -> grimmoryBookContentUrl(ctx.serverUrl, bookId.grimmoryServerBookId())
         }
     }
@@ -1733,7 +1748,36 @@ class GrimmoryRepository @Inject constructor(
         }
     }
 
+    suspend fun savedShelfBookIds(name: String): Result<Set<String>> = runSuspendCatching {
+        val shelf = getShelves().getOrThrow().firstOrNull { it.name.equals(name, ignoreCase = true) }
+            ?: return@runSuspendCatching emptySet()
+        val books = getShelfBooks(shelf.id).getOrThrow()
+        if (books.size < shelf.bookCount) error("Saved shelf response is incomplete")
+        books.mapTo(mutableSetOf()) { it.id.grimmoryServerBookId() }
+    }
+
+    suspend fun setSavedShelfBook(book: Book, name: String, saved: Boolean): Result<Unit> = runSuspendCatching {
+        val shelf = getShelves().getOrThrow().firstOrNull { it.name.equals(name, ignoreCase = true) }
+        val shelfId = if (shelf != null) shelf.id.toLongOrNull() ?: error("Shelf ID is invalid")
+        else if (saved) {
+            val icon = if (name == "Favorites") "heart" else "bookmark"
+            val response = api.createShelf(GrimmoryCreateShelfRequest(name, icon))
+            if (!response.isSuccessful) error("Create shelf failed: HTTP ${response.code()}")
+            response.body()?.id?.toLongOrNull() ?: error("Create shelf returned no ID")
+        } else return@runSuspendCatching
+        val bookId = book.id.grimmoryServerBookId().toLongOrNull() ?: error("Book ID is invalid")
+        val response = api.assignShelf(
+            GrimmoryShelfAssignmentRequest(
+                bookIds = listOf(bookId),
+                shelvesToAssign = if (saved) listOf(shelfId) else emptyList(),
+                shelvesToUnassign = if (saved) emptyList() else listOf(shelfId),
+            ),
+        )
+        if (!response.isSuccessful) error("Update shelf failed: HTTP ${response.code()}")
+    }
+
     suspend fun fetchAudiobookProgress(book: com.enve.core.data.model.Book): Result<com.enve.core.data.sync.SyncSnapshot?> {
+        if (!serverSync.isEnabled) return Result.success(null)
         return try {
             val response = api.getAppBookProgress(book.id.grimmoryServerBookId())
             val body = response.body() ?: return Result.success(null)
@@ -1754,6 +1798,7 @@ class GrimmoryRepository @Inject constructor(
     }
 
     suspend fun fetchEbookProgress(book: com.enve.core.data.model.Book): Result<com.enve.core.data.sync.SyncSnapshot?> {
+        if (!serverSync.isEnabled) return Result.success(null)
         return try {
             val rawBookId = book.id.grimmoryServerBookId()
             val response = api.getAppBookProgress(rawBookId)
@@ -1788,6 +1833,8 @@ class GrimmoryRepository @Inject constructor(
     }
 
     suspend fun syncAudiobookProgress(book: Book, currentTimeSec: Long, progressFraction: Float): Result<Unit> {
+        val syncStartedAt = System.currentTimeMillis()
+        if (!serverSync.isEnabled) return Result.success(Unit)
         return try {
             if (resolveScopedContext().source != BookSource.GRIMMORY) return Result.success(Unit)
             val numericBookId = book.id.grimmoryServerBookId().toLongOrNull()
@@ -1808,6 +1855,7 @@ class GrimmoryRepository @Inject constructor(
                 trackStartsByIndex = info.trackStartsByIndex(),
             )
 
+            if (!serverSync.accepts(syncStartedAt)) return Result.success(Unit)
             val response = api.postBookProgress(
                 GrimmoryProgressRequest(
                     bookId = numericBookId,
@@ -1837,7 +1885,9 @@ class GrimmoryRepository @Inject constructor(
         startProgress: Float? = null,
         endProgress: Float? = null,
         endLocation: String? = null,
+        fileType: String? = null,
     ): Result<Unit> {
+        if (!serverSync.accepts(startTime.toEpochMilli())) return Result.success(Unit)
         return try {
             val source = resolveScopedContext().source
             if (source != BookSource.GRIMMORY) return Result.success(Unit)
@@ -1855,10 +1905,10 @@ class GrimmoryRepository @Inject constructor(
             } else {
                 null
             }
-            val response = api.createReadingSession(
+            readingSessionUploader.upload(
                 ReadingSessionRequest(
                     bookId = numericBookId,
-                    bookType = if (mediaType == AppMediaType.AUDIOBOOK) "AUDIOBOOK" else "EPUB",
+                    bookType = if (mediaType == AppMediaType.AUDIOBOOK) "AUDIOBOOK" else grimmoryBookType(fileType),
                     startTime = startTime.toString(),
                     endTime = endTime.toString(),
                     durationSeconds = durationSeconds,
@@ -1870,8 +1920,6 @@ class GrimmoryRepository @Inject constructor(
                     endLocation = endLocation,
                 )
             )
-            if (response.isSuccessful) Result.success(Unit)
-            else Result.failure(Exception("Reading session create failed: HTTP ${response.code()}"))
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -1891,10 +1939,13 @@ class GrimmoryRepository @Inject constructor(
     }
 
     suspend fun getReadingSessions(bookId: String, page: Int = 0, size: Int = 20): Result<List<ReadingSessionResponseDto>> {
+        val syncStartedAt = System.currentTimeMillis()
+        if (!serverSync.isEnabled) return Result.success(emptyList())
         return try {
             val source = resolveScopedContext().source
             if (source != BookSource.GRIMMORY) return Result.success(emptyList())
             val response = api.getReadingSessionsForBook(bookId = bookId.grimmoryServerBookId(), page = page, size = size)
+            if (!serverSync.accepts(syncStartedAt)) return Result.success(emptyList())
             if (response.isSuccessful) Result.success(response.body()?.content.orEmpty())
             else Result.failure(Exception("Failed to fetch reading sessions: HTTP ${response.code()}"))
         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -1963,6 +2014,8 @@ class GrimmoryRepository @Inject constructor(
         locator: String?,
         page: Int? = null,
     ): Result<Unit> {
+        val syncStartedAt = System.currentTimeMillis()
+        if (!serverSync.isEnabled) return Result.success(Unit)
         return try {
             val source = resolveScopedContext().source
             when (source) {
@@ -1976,6 +2029,7 @@ class GrimmoryRepository @Inject constructor(
                         ?: return Result.failure(Exception("Grimmory ebook file id was unavailable: $bookId"))
                     val bookFileId = progressFile.id?.toLongOrNull()
                         ?: return Result.failure(Exception("Grimmory ebook file id was invalid: $bookId"))
+                    if (!serverSync.accepts(syncStartedAt)) return Result.success(Unit)
                     val response = api.putAppBookProgress(
                         bookId = rawBookId,
                         request = GrimmoryUpdateProgressRequest(
@@ -2059,7 +2113,7 @@ class GrimmoryRepository @Inject constructor(
             val totalPages = firstPage.totalPages ?: 1
             val serverPageSize = firstPage.size?.takeIf { it > 0 } ?: effectiveSize
             if (totalPages <= page + 1 || firstPage.content.isEmpty()) {
-                return@coroutineScope firstPage.content
+                return@coroutineScope resolveCatalogFormats(firstPage.content, libraryId)
             }
 
             val semaphore = Semaphore(8)
@@ -2072,7 +2126,7 @@ class GrimmoryRepository @Inject constructor(
                 }
             }.awaitAll().flatten()
 
-            return@coroutineScope firstPage.content + rest
+            return@coroutineScope resolveCatalogFormats(firstPage.content + rest, libraryId)
         }
 
         android.util.Log.i(
@@ -2080,6 +2134,27 @@ class GrimmoryRepository @Inject constructor(
             "/app/books HTTP ${firstResponse.code()} with ${firstPage?.content?.size ?: 0} books for lib=$libraryId; falling back to legacy /libraries/{id}/book",
         )
         fetchAllBooksLegacy(libraryId)
+    }
+
+    private suspend fun resolveCatalogFormats(
+        summaries: List<BookSummaryDto>,
+        libraryId: String?,
+    ): List<BookSummaryDto> {
+        val resolved = ArrayList<BookSummaryDto>(summaries.size)
+        for (group in summaries.chunked(100)) {
+            val response = api.getBooksBatch(group.joinToString(",") { it.id })
+            if (resolved.isEmpty() && response.code() in listOf(404, 405)) {
+                return fetchAllBooksLegacy(libraryId)
+            }
+            if (!response.isSuccessful) error("Grimmory format inventory failed (HTTP ${response.code()})")
+            val byId = response.body().orEmpty().associateBy { it.id }
+            for (summary in group) {
+                val inventory = byId[summary.id]
+                    ?: error("Grimmory format inventory omitted book ${summary.id}")
+                resolved += summary.withFormatInventory(inventory)
+            }
+        }
+        return resolved
     }
 
     private suspend fun fetchAllBooksLegacy(libraryId: String?): List<BookSummaryDto> {
@@ -2198,7 +2273,7 @@ class GrimmoryRepository @Inject constructor(
         }
         if (!needsResolve) return
 
-        val connectionId = prefs.getActiveConnectionIdSync()
+        val connectionId = resolveScopedContext().connectionId
         backgroundScope.launch(ConnectionScope.asContextElement(connectionId)) {
             try {
                 val titleSizeBefore = synchronized(audiobookTitleOverrideCache) { audiobookTitleOverrideCache.size }
@@ -3217,4 +3292,14 @@ class GrimmoryRepository @Inject constructor(
         private const val TORBOX_WEBDAV_MAX_DIRS = 2_000
     }
 
+}
+
+// Grimmory rejects any bookType outside its BookFileType enum with a 400.
+private fun grimmoryBookType(fileType: String?): String = when (fileType?.lowercase()?.removePrefix(".")) {
+    "pdf" -> "PDF"
+    "cbz", "cbr", "cb7", "cbt", "cbx", "comic" -> "CBX"
+    "fb2" -> "FB2"
+    "mobi" -> "MOBI"
+    "azw", "azw3", "kfx" -> "AZW3"
+    else -> "EPUB"
 }

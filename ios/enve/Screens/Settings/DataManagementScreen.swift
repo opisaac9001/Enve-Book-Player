@@ -4,6 +4,8 @@ import UniformTypeIdentifiers
 struct DataManagementScreen: View {
     @Environment(EnveEngine.self) private var engine
     @Environment(\.hearth) private var hearth
+    @Environment(\.profileSession) private var profileSession
+    @Environment(ProfileSwitchCoordinator.self) private var profiles
 
     @State private var pending: DataAction?
     @State private var status: String?
@@ -11,6 +13,12 @@ struct DataManagementScreen: View {
     @State private var isResetting = false
     @State private var settingsExportURL: URL?
     @State private var isImportingSettings = false
+
+    private var session: ProfileSession { profileSession ?? .owner }
+
+    private var isAuthorized: Bool {
+        (try? profiles.authorizeChanges(in: session)) != nil
+    }
 
     private func settingsBackupLabel(title: String, subtitle: String, systemImage: String) -> some View {
         HStack(spacing: 12) {
@@ -55,36 +63,42 @@ struct DataManagementScreen: View {
                 actionRow(.clearDownloads)
             }
 
-            SourcesCard {
-                Overline("Settings backup")
-                if let settingsExportURL {
-                    ShareLink(item: settingsExportURL) {
+            if session.isOwner {
+                SourcesCard {
+                    Overline("Settings backup")
+                    if let settingsExportURL {
+                        ShareLink(item: settingsExportURL) {
+                            settingsBackupLabel(
+                                title: "Export settings",
+                                subtitle: "Save speeds, skips, sleep and display preferences to a file",
+                                systemImage: "square.and.arrow.up"
+                            )
+                        }
+                    }
+                    Divider().overlay(hearth.hairline)
+                    Button {
+                        isImportingSettings = isAuthorized
+                    } label: {
                         settingsBackupLabel(
-                            title: "Export settings",
-                            subtitle: "Save speeds, skips, sleep and display preferences to a file",
-                            systemImage: "square.and.arrow.up"
+                            title: "Import settings",
+                            subtitle: "Restore preferences from an exported file",
+                            systemImage: "square.and.arrow.down"
                         )
                     }
+                    .buttonStyle(.plain)
                 }
-                Divider().overlay(hearth.hairline)
-                Button {
-                    isImportingSettings = true
-                } label: {
-                    settingsBackupLabel(
-                        title: "Import settings",
-                        subtitle: "Restore preferences from an exported file",
-                        systemImage: "square.and.arrow.down"
-                    )
-                }
-                .buttonStyle(.plain)
-            }
 
-            SourcesCard {
-                actionRow(.resetApp)
+                SourcesCard {
+                    actionRow(.resetApp)
+                }
             }
         }
         .task {
+            guard session.isOwner, isAuthorized else { return }
             settingsExportURL = try? SettingsBackupService.shared.exportBackup()
+        }
+        .onChange(of: profiles.isParentAuthorized) { _, _ in
+            if !isAuthorized { settingsExportURL = nil }
         }
         .fileImporter(
             isPresented: $isImportingSettings,
@@ -93,6 +107,7 @@ struct DataManagementScreen: View {
             switch result {
             case .success(let url):
                 do {
+                    try profiles.authorizeChanges(in: session)
                     try SettingsBackupService.shared.importBackup(from: url)
                     status = "Settings restored."
                     settingsExportURL = try? SettingsBackupService.shared.exportBackup()
@@ -162,6 +177,7 @@ struct DataManagementScreen: View {
     }
 
     private func perform(_ action: DataAction) {
+        guard isAuthorized, session.isOwner || action != .resetApp else { return }
         switch action {
         case .clearCache:
             isWorking = true

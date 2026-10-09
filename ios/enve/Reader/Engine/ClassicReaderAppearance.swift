@@ -531,8 +531,8 @@ struct ClassicReaderAppearance: Codable, Equatable {
         }
     }
 
-    private static func migratedFromLegacyIfAvailable() -> ClassicReaderAppearance? {
-        guard let data = UserDefaults.standard.data(forKey: legacyStorageKey),
+    private static func migratedFromLegacyIfAvailable(defaults: UserDefaults) -> ClassicReaderAppearance? {
+        guard let data = defaults.data(forKey: legacyStorageKey),
             let legacy = try? JSONDecoder().decode(ReaderAppearance.self, from: data)
         else {
             return nil
@@ -563,24 +563,24 @@ struct ClassicReaderAppearance: Codable, Equatable {
         return migrated
     }
 
-    static func load() -> ClassicReaderAppearance {
-        guard let data = UserDefaults.standard.data(forKey: storageKey),
+    static func load(defaults: UserDefaults = .standard) -> ClassicReaderAppearance {
+        guard let data = defaults.data(forKey: storageKey),
             let value = try? JSONDecoder().decode(ClassicReaderAppearance.self, from: data)
         else {
-            if let migrated = migratedFromLegacyIfAvailable() {
-                migrated.persist()
-                UserDefaults.standard.removeObject(forKey: legacyStorageKey)
+            if let migrated = migratedFromLegacyIfAvailable(defaults: defaults) {
+                migrated.persist(defaults: defaults)
+                defaults.removeObject(forKey: legacyStorageKey)
                 return migrated
             }
             return ClassicReaderAppearance()
         }
-        UserDefaults.standard.removeObject(forKey: legacyStorageKey)
+        defaults.removeObject(forKey: legacyStorageKey)
         return value
     }
 
-    func persist() {
+    func persist(defaults: UserDefaults = .standard) {
         guard let data = try? JSONEncoder().encode(self) else { return }
-        UserDefaults.standard.set(data, forKey: Self.storageKey)
+        defaults.set(data, forKey: Self.storageKey)
     }
 
     func resolved(for colorScheme: ColorScheme) -> ClassicReaderAppearance {

@@ -66,7 +66,12 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
         get { tocIndex.entries }
         set { tocIndex.entries = newValue }
     }
-    @Published var pendingSelection: ReaderSelectionSnapshot?
+    @Published var pendingSelection: ReaderSelectionSnapshot? {
+        didSet {
+            guard (pendingSelection != nil) != (oldValue != nil) else { return }
+            readAloud.selectionDidChange()
+        }
+    }
 
     let annotationController: ReaderAnnotationController
     private let locatorProgress: ReaderLocatorProgress
@@ -329,16 +334,23 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
         }
     }
 
+    private let profileSession: ProfileSession
+
     init(
         book: Book,
         initialChapterSelection: EbookReaderInitialSelection? = nil,
         readerEngineOverride: ReaderEngineKind? = nil,
         providerResolver: any LibraryProviderResolving,
-        libraryCache: LibraryBookCache = AppState.shared.libraryCache,
-        presentation: AppPresentationState = AppState.shared.presentation,
-        bookStore: BookStoreRepository = AppState.shared.bookStore
+        libraryCache: LibraryBookCache? = nil,
+        presentation: AppPresentationState? = nil,
+        bookStore: BookStoreRepository? = nil,
+        profileSession: ProfileSession = .owner
     ) {
-        let notebookSync = ProviderReaderNotebookSync(book: book, providerResolver: providerResolver)
+        self.profileSession = profileSession
+        let libraryCache = libraryCache ?? profileSession.appState.libraryCache
+        let presentation = presentation ?? profileSession.appState.presentation
+        let bookStore = bookStore ?? profileSession.bookStore
+        let notebookSync = ProviderReaderNotebookSync(book: book, providerResolver: providerResolver, siloIDMap: profileSession.siloReaderArtifacts, bookOrbitQueue: profileSession.isOwner ? .shared : nil, allowsExternalSync: profileSession.isOwner)
         self.book = book
         self.readerEngineOverride = readerEngineOverride
         self.providerResolver = providerResolver
@@ -346,11 +358,11 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
         self.presentation = presentation
         self.annotationController = ReaderAnnotationController(
             book: book,
-            store: ReaderArtifactsAdapter(book: book),
+            store: ReaderArtifactsAdapter(book: book, store: profileSession.readerArtifacts, profileSession: profileSession),
             sync: notebookSync,
             persistVocab: { await bookStore.upsertVocabEntry($0) }
         )
-        let appearanceController = ReaderAppearanceController()
+        let appearanceController = ReaderAppearanceController(appearance: .load(defaults: profileSession.defaults), persist: { $0.persist(defaults: profileSession.defaults) })
         let locatorProgress = ReaderLocatorProgress()
         self.appearanceController = appearanceController
         self.locatorProgress = locatorProgress
@@ -358,7 +370,8 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
             book: book,
             libraryCache: libraryCache,
             appearanceController: appearanceController,
-            locatorProgress: locatorProgress
+            locatorProgress: locatorProgress,
+            profileSession: profileSession
         )
         self.readAloud = readAloud
         let tocIndex = ReaderTOCIndex()
@@ -367,7 +380,8 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
             book: book,
             libraryCache: libraryCache,
             tocIndex: tocIndex,
-            readAloud: readAloud
+            readAloud: readAloud,
+            profileSession: profileSession
         )
         self.progress = ReaderProgressController(
             book: book,
@@ -375,21 +389,25 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
             libraryCache: libraryCache,
             bookStore: bookStore,
             locatorProgress: locatorProgress,
-            readAloud: readAloud
+            readAloud: readAloud,
+            profileSession: profileSession
         )
-        self.companion = ReaderCompanionController(book: book)
+        self.companion = ReaderCompanionController(book: book, profileSession: profileSession)
         self.pagedContent = ReaderPagedContentController(
             book: book,
             providerResolver: providerResolver,
             libraryCache: libraryCache,
-            appearanceController: appearanceController
+            appearanceController: appearanceController,
+            profileSession: profileSession
         )
         self.pendingInitialChapterSelection = initialChapterSelection
         self.publicationSession = ReaderPublicationSession(
             book: book,
-            providerResolver: providerResolver
+            providerResolver: providerResolver,
+            profileSession: profileSession
         )
         super.init()
+        profileSession.playback.registerReader(self)
         notebookSync.bookOrbitSpineHrefs = { [weak self] in
             guard let publication = self?.publicationSession.publication else { return [:] }
             return Dictionary(uniqueKeysWithValues: publication.readingOrder.enumerated().map { index, link in
@@ -491,7 +509,29 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
         if let foregroundObserver { NotificationCenter.default.removeObserver(foregroundObserver) }
     }
 
+    private var isRetired = false
+
+    func retire() async {
+        guard !isRetired else { return }
+        isRetired = true
+        let tasks = [ttsStartTask, ttsRetargetTask, ttsNavigationTask, foliateSearchTask, pendingSingleTapTask]
+        tasks.forEach { $0?.cancel() }
+        if let seekObserver { NotificationCenter.default.removeObserver(seekObserver) }
+        if let backgroundObserver { NotificationCenter.default.removeObserver(backgroundObserver) }
+        if let foregroundObserver { NotificationCenter.default.removeObserver(foregroundObserver) }
+        await publicationSession.retire()
+        await readAloud.retire()
+        await progress.retire()
+        await companion.stop()
+        endServerPageStreamingSession()
+        for task in tasks { await task?.value }
+        await profileSession.readingStats.endSession(bookId: book.stableId, uploadToServer: false)
+        await profileSession.readingStats.flush()
+        await profileSession.listeningStats.flush()
+    }
+
     func startIfNeeded() {
+        guard !isRetired else { return }
         guard !hasStarted else { return }
         hasStarted = true
         progress.beginHydration()
@@ -594,7 +634,7 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
 
         if EbookFormat.mobiExtensions.contains(ext) {
             do {
-                let epubURL = try await LocalEbookImporter.shared.convertMobiToEpub(fileURL)
+                let epubURL = try await profileSession.ebooks.convertMobiToEpub(fileURL)
                 try await openPublication(at: epubURL)
             } catch is CancellationError {
                 return
@@ -640,7 +680,7 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
             return
         } catch {
             if book.source == .local,
-                let stagedURL = try? LocalEbookImporter.shared.copyToCanonicalLocation(fileURL),
+                let stagedURL = try? profileSession.ebooks.copyToCanonicalLocation(fileURL),
                 stagedURL != fileURL
             {
                 do {
@@ -743,7 +783,7 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
             tocIndex.loadPageMarkers(await ReaderTOCIndex.resolvePageMarkers(in: publication))
             tocIndex.loadAnchorFractions(await ReaderTOCIndex.resolveAnchorFractions(for: tocIndex.entries, in: publication))
             totalPages = tocIndex.pageCount
-            await ReadingStatsTracker.shared.updateBookTotalPages(bookId: book.id, totalPages: totalPages)
+            await profileSession.readingStats.updateBookTotalPages(bookId: book.id, totalPages: totalPages)
             buildTOCProgressionTable(readingOrderPositions: positionsByReadingOrder)
             updateEPUBPageState(using: lastKnownLocator)
         }
@@ -812,7 +852,7 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
             tocIndex.loadAnchorFractions(await ReaderTOCIndex.resolveAnchorFractions(for: tocIndex.entries, in: publication))
             totalPages = tocIndex.pageCount
 
-            await ReadingStatsTracker.shared.updateBookTotalPages(bookId: book.id, totalPages: totalPages)
+            await profileSession.readingStats.updateBookTotalPages(bookId: book.id, totalPages: totalPages)
 
             buildTOCProgressionTable(readingOrderPositions: positionsByReadingOrder)
             updateEPUBPageState(using: lastKnownLocator)
@@ -821,7 +861,7 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
         // A dual item's audiobook shares this cache key, and untimed contents would replace its chapters.
         if !hasOverlayResources, book.mediaType == .ebook, !tocEntries.isEmpty {
             let bookChapters = tocEntries.map { Chapter(id: $0.id, start: 0, end: 0, title: $0.displayTitle) }
-            ReaderArtifactsStore.shared.saveCachedChapters(bookId: book.id, chapters: bookChapters)
+            profileSession.readerArtifacts.saveCachedChapters(bookId: book.id, chapters: bookChapters)
         }
 
         let initial = await initialLocationResolver.resolve(
@@ -1783,7 +1823,7 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
             )
         else { return }
 
-        LinkedBookProgressCoordinator.shared.recordChapterLandmarks(
+        profileSession.linkedProgress.recordChapterLandmarks(
             for: book,
             landmarks: progressions.map {
                 LinkedBookChapterLandmark(
@@ -1906,10 +1946,10 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
         if !readAloud.isActive {
             readAloud.clearVisibleClipCache()
         }
-        if let readiumNavigator {
+        // Narration can update the locator while the user is still selecting text.
+        // Explicit reader navigation already clears the selection before moving.
+        if !readAloud.isActive || pendingSelection == nil || relocation.isUserInitiated {
             clearPendingSelectionForNavigation(navigator: readiumNavigator)
-        } else {
-            clearPendingSelectionForNavigation()
         }
 
         let update = locationPipeline.observe(
@@ -1951,9 +1991,9 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
 
         if locationPipeline.shouldRecordStats(progression: update.progression) {
             Task {
-                await ReadingStatsTracker.shared.recordTick(bookId: book.stableId, positionProgression: update.progression, isReading: true)
+                await profileSession.readingStats.recordTick(bookId: book.stableId, positionProgression: update.progression, isReading: true)
                 if update.progression >= Book.finishedProgressThreshold {
-                    await ReadingStatsTracker.shared.markBookAsFinished(bookId: book.stableId)
+                    await profileSession.readingStats.markBookAsFinished(bookId: book.stableId)
                     if book.source == .storyteller {
                         var finishedBook = book
                         finishedBook.isFinished = true
@@ -2028,7 +2068,7 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
                 totalReadingSeconds: totals.seconds,
                 lastUpdated: Date()
             )
-            ListeningStatsTracker.shared.recordReadingSession(bookId: book.stableId, record: record)
+            await profileSession.listeningStats.recordReadingSession(bookId: book.stableId, record: record)
         }
     }
 
@@ -2298,6 +2338,8 @@ extension ClassicReaderModel: ReaderReadAloudHosting {
     var readAloudObservedProgression: Double? { locationPipeline.latestObservedProgression }
 
     var readAloudProgress: Double? { currentProgress }
+
+    var readAloudHasActiveSelection: Bool { pendingSelection != nil }
 
     var readAloudStorytellerActivityAt: Date? {
         get { progress.storytellerPositionActivityAt }

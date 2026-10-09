@@ -51,6 +51,7 @@ private val Ember = Color(0xFFF5921A)
 
 class MainActivity : ComponentActivity() {
     private val viewModel by viewModels<WearViewModel>()
+    private val listening by viewModels<com.enve.wear.listening.WatchListeningViewModel>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -58,7 +59,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val state by viewModel.state.collectAsStateWithLifecycle()
             EnveWearTheme {
-                CompanionScreen(state, viewModel)
+                com.enve.wear.listening.WatchListeningScreen(listening) { CompanionScreen(state, viewModel) }
             }
         }
     }

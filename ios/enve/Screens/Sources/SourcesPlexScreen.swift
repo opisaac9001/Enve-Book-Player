@@ -13,6 +13,8 @@ struct SourcesPlexScreen: View {
     let onAdded: () -> Void
 
     @Environment(AppState.self) private var appState
+    @Environment(\.profileSession) private var capturedSession
+    private var profileSession: ProfileSession { capturedSession ?? .owner }
     @Environment(\.hearth) private var hearth
     @Environment(\.dismiss) private var dismiss
 
@@ -30,9 +32,9 @@ struct SourcesPlexScreen: View {
     @State private var showManualToken = false
     @State private var authSession: ASWebAuthenticationSession?
 
-    private let clientId: String = {
-        UIDevice.current.identifierForVendor?.uuidString ?? StorageService.shared.loadDeviceUUID()
-    }()
+    private var clientId: String {
+        UIDevice.current.identifierForVendor?.uuidString ?? profileSession.storageService.loadDeviceUUID()
+    }
 
     var body: some View {
         NavigationStack {
@@ -135,7 +137,7 @@ struct SourcesPlexScreen: View {
                     guard !token.isEmpty else { return }
                     ownerToken = token
                     authToken = token
-                    PlexAuthStore.shared.saveToken(token)
+                    profileSession.plexAuth.saveToken(token)
                     fetchHomeUsers(token: token)
                 }
             }
@@ -258,7 +260,7 @@ struct SourcesPlexScreen: View {
                 request.setValue(clientId, forHTTPHeaderField: "X-Plex-Client-Identifier")
                 request.setValue("application/json", forHTTPHeaderField: "Accept")
 
-                let (data, _) = try await URLSession.shared.data(for: request)
+                let (data, _) = try await profileSession.networkSession.data(for: request)
                 let pinResponse = try JSONDecoder().decode(SourcesPlexPin.self, from: data)
 
                 pin = pinResponse
@@ -285,11 +287,11 @@ struct SourcesPlexScreen: View {
         guard let url = URL(string: urlString) else { return }
 
         let session = ASWebAuthenticationSession(url: url, callbackURLScheme: nil) { _, _ in }
-        session.presentationContextProvider = OAuthManager.shared
-        session.prefersEphemeralWebBrowserSession = false
+        session.presentationContextProvider = profileSession.oauth
+        session.prefersEphemeralWebBrowserSession = !profileSession.isOwner
         if session.start() {
             authSession = session
-        } else {
+        } else if profileSession.isOwner {
             UIApplication.shared.open(url)
         }
     }
@@ -316,14 +318,14 @@ struct SourcesPlexScreen: View {
             request.setValue("1.0", forHTTPHeaderField: "X-Plex-Version")
             request.setValue("application/json", forHTTPHeaderField: "Accept")
 
-            let (data, _) = try await URLSession.shared.data(for: request)
+            let (data, _) = try await profileSession.networkSession.data(for: request)
             let status = try JSONDecoder().decode(SourcesPlexPin.self, from: data)
 
             if let token = status.authToken {
                 ownerToken = token
                 authToken = token
                 isPollingPin = false
-                PlexAuthStore.shared.saveToken(token)
+                profileSession.plexAuth.saveToken(token)
                 fetchHomeUsers(token: token)
                 return
             }

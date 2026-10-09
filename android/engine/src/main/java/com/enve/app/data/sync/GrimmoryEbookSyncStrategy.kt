@@ -1,5 +1,6 @@
 package com.enve.app.data.sync
 
+import com.enve.core.data.util.runSuspendCatching
 import android.util.Log
 import com.enve.core.data.local.BookCacheDao
 import com.enve.core.data.local.toBook
@@ -32,7 +33,7 @@ class GrimmoryEbookSyncStrategy @Inject constructor(
         lastSyncAtMs = now
 
         val limit = if (launchOptimized) 12 else 40
-        val cached = runCatching { bookCacheDao.getInProgressOnce(limit = limit) }
+        val cached = runSuspendCatching { bookCacheDao.getInProgressOnce(limit = limit) }
             .getOrDefault(emptyList())
             .filter { it.source == BookSource.GRIMMORY.name && it.mediaType == AppMediaType.EBOOK.name }
 
@@ -47,7 +48,7 @@ class GrimmoryEbookSyncStrategy @Inject constructor(
             val progressAdvanced = snapshot.percentage > localPercentage + 0.005f
             if (!snapshot.finished && !progressAdvanced) continue
 
-            runCatching {
+            runSuspendCatching {
                 val nowMs = System.currentTimeMillis()
                 if (snapshot.finished) {
                     bookCacheDao.updateFinishedStatus(

@@ -4,7 +4,7 @@ struct JournalServicesScreen: View {
     @Environment(\.hearth) private var hearth
     @Environment(\.mantelInset) private var mantelInset
 
-    @State private var model = JournalHubModel()
+    @Environment(JournalHubModel.self) private var model
     @State private var loaded = false
     @State private var selectedSource: JournalStatsSource?
     @State private var showingBookOrbit = false
@@ -18,6 +18,9 @@ struct JournalServicesScreen: View {
                     JournalLoadingNote(text: "Calling on the services…")
                 } else {
                     sourcePicker
+                    if model.isLoading {
+                        JournalLoadingNote(text: "Still hearing from your servers…")
+                    }
                     if let source = selectedSource, let stat = model.serviceStats[source] {
                         serviceDashboard(stat)
                     } else {
@@ -39,6 +42,7 @@ struct JournalServicesScreen: View {
                     }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 24)
             .padding(.top, 8)
             .padding(.bottom, mantelInset + 16)
@@ -53,8 +57,9 @@ struct JournalServicesScreen: View {
         }
         .refreshable { await model.refresh() }
         .task {
-            await model.refresh()
+            await model.refreshLocal()
             loaded = true
+            await model.refresh()
         }
         .onAppear { model.startLiveUpdates() }
         .onDisappear { model.stopLiveUpdates() }
@@ -272,7 +277,7 @@ struct JournalServicesScreen: View {
     private func journalDayLabel(_ dayKey: String) -> String {
         let input = DateFormatter()
         input.dateFormat = "yyyy-MM-dd"
-        input.timeZone = TimeZone(secondsFromGMT: 0)
+        input.locale = Locale(identifier: "en_US_POSIX")
         guard let date = input.date(from: dayKey) else { return dayKey }
         return date.formatted(.dateTime.month(.abbreviated).day())
     }

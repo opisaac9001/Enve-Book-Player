@@ -2,7 +2,7 @@ import Foundation
 import Logging
 
 public actor ListeningStatsTracker {
-    public static let shared = ListeningStatsTracker()
+    @MainActor public static let shared = ListeningStatsTracker()
 
     private struct ActiveSession {
         var bookId: String
@@ -13,11 +13,15 @@ public actor ListeningStatsTracker {
         var startPosition: TimeInterval
         var duration: TimeInterval?
         var startProgress: Double?
+        var secondsListened: TimeInterval = 0
     }
 
     private var snapshot: ListeningStatsSnapshot
     private var activeSession: ActiveSession?
     private let statsURL: URL
+    private let historyStore: HistorySessionStore
+    private let historySync: ProviderHistorySessionSync
+    private let rejectsUnreadableStorage: Bool
     private let calendar = Calendar.current
     private let maxSampleInterval: TimeInterval = 600
     private var hasLoadedFromDisk = false
@@ -32,19 +36,39 @@ public actor ListeningStatsTracker {
         await loadFromDisk()
     }
 
-    init() {
+    @MainActor private init() {
         let fm = FileManager.default
         let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         let dir = appSupport.appendingPathComponent("Enve/PlaybackState", isDirectory: true)
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
         statsURL = dir.appendingPathComponent("listening_stats.json")
         snapshot = ListeningStatsSnapshot.empty
+        historyStore = .shared
+        historySync = .shared
+        rejectsUnreadableStorage = false
+    }
+
+    @MainActor init(
+        storage: ProfileStorageLocations,
+        historyStore: HistorySessionStore,
+        historySync: ProviderHistorySessionSync
+    ) throws {
+        let directory = storage.applicationSupportDirectory.appendingPathComponent("Enve/PlaybackState", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        statsURL = directory.appendingPathComponent("listening_stats.json")
+        self.historyStore = historyStore
+        self.historySync = historySync
+        rejectsUnreadableStorage = storage.profileID != FamilyProfile.ownerID
+        if rejectsUnreadableStorage, FileManager.default.fileExists(atPath: statsURL.path) {
+            _ = try Self.decoder.decode(ListeningStatsSnapshot.self, from: Data(contentsOf: statsURL))
+        }
+        snapshot = .empty
     }
 
     func startSession(bookId: String, position: TimeInterval, playbackRate: Double, duration: TimeInterval? = nil) async {
         await ensureLoaded()
         if let active = activeSession, active.bookId != bookId {
-            endSessionSync(bookId: active.bookId, finalPosition: active.lastPosition)
+            await endActiveSession(bookId: active.bookId, finalPosition: active.lastPosition)
         }
         guard activeSession?.bookId != bookId else { return }
 
@@ -114,21 +138,28 @@ public actor ListeningStatsTracker {
 
         await apply(listenedSeconds: listened, for: active.bookId, at: now, position: position)
 
+        active.secondsListened += listened
         active.lastTimestamp = now
         active.lastPosition = position
         active.playbackRate = playbackRate
         activeSession = active
     }
 
-    func endSession(bookId: String? = nil, finalPosition: TimeInterval? = nil, duration: TimeInterval? = nil) async {
+    func endSession(bookId: String? = nil, finalPosition: TimeInterval? = nil, duration: TimeInterval? = nil, uploadToServer: Bool = true) async {
         await ensureLoaded()
-        endSessionSync(bookId: bookId, finalPosition: finalPosition, duration: duration)
+        await endActiveSession(bookId: bookId, finalPosition: finalPosition, duration: duration, uploadToServer: uploadToServer)
+    }
+
+    public func flush() async {
+        await ensureLoaded()
+        await cancelPendingPersist()
+        await persistNow()
     }
 
     public func currentSnapshot() async -> ListeningStatsSnapshot {
         await ensureLoaded()
         var merged = snapshot
-        let remoteSessions = await HistorySessionStore.shared.loadListeningSessions().filter { $0.source == .bookOrbit }
+        let remoteSessions = await historyStore.loadListeningSessions().filter { $0.source == .bookOrbit }
         let remotelyCompleted = Set(
             remoteSessions.compactMap { session in
                 session.endProgress.map { $0 >= Book.finishedProgressThreshold ? session.bookId : nil } ?? nil
@@ -189,13 +220,7 @@ public actor ListeningStatsTracker {
         await schedulePersist(force: true)
     }
 
-    public nonisolated func recordReadingSession(bookId: String, record: ReadingSpeedRecord) {
-        Task {
-            await _recordReadingSession(bookId: bookId, record: record)
-        }
-    }
-
-    private func _recordReadingSession(bookId: String, record: ReadingSpeedRecord) async {
+    public func recordReadingSession(bookId: String, record: ReadingSpeedRecord) async {
         await ensureLoaded()
         if var existing = snapshot.readingStats[bookId] {
 
@@ -220,9 +245,10 @@ public actor ListeningStatsTracker {
         await loadFromDisk()
     }
 
-    private func endSessionSync(bookId: String? = nil, finalPosition: TimeInterval? = nil, duration: TimeInterval? = nil) {
+    private func endActiveSession(bookId: String? = nil, finalPosition: TimeInterval? = nil, duration: TimeInterval? = nil, uploadToServer: Bool = true) async {
         guard let active = activeSession else { return }
         if let bookId, bookId != active.bookId { return }
+        activeSession = nil
 
         let now = Date()
         let position = finalPosition ?? active.lastPosition
@@ -231,13 +257,11 @@ public actor ListeningStatsTracker {
         let expectedFromProgress = deltaPosition / max(active.playbackRate, 0.1)
         let listened = max(0, min(deltaWall, expectedFromProgress > 0 ? expectedFromProgress : deltaWall))
         if listened > 0 {
-            Task {
-                await apply(listenedSeconds: listened, for: active.bookId, at: now, position: position, forcePersist: true)
-            }
+            await apply(listenedSeconds: listened, for: active.bookId, at: now, position: position, forcePersist: true)
         }
 
-        let totalDuration = Int(now.timeIntervalSince(active.sessionStartedAt))
-        if totalDuration > 5 {
+        let listenedDuration = Int((active.secondsListened + listened).rounded())
+        if listenedDuration > 5 {
             let effectiveDuration = duration ?? active.duration
             let startProgress = active.startProgress
             let endProgress = effectiveDuration.flatMap { $0 > 0 ? (position / $0) : nil }
@@ -254,7 +278,7 @@ public actor ListeningStatsTracker {
                 mediaType: "audiobook",
                 startTime: active.sessionStartedAt,
                 endTime: now,
-                durationSeconds: totalDuration,
+                durationSeconds: listenedDuration,
                 startProgress: startProgress,
                 endProgress: endProgress,
                 progressDelta: delta,
@@ -263,13 +287,11 @@ public actor ListeningStatsTracker {
                 pagesRead: nil,
                 source: .local
             )
-            Task {
-                await HistorySessionStore.shared.appendListeningSession(session)
-                _ = await ProviderHistorySessionSync.shared.submit(session)
+            await historyStore.appendListeningSession(session)
+            if uploadToServer {
+                _ = await historySync.submit(session)
             }
         }
-
-        activeSession = nil
     }
 
     private func apply(
@@ -308,8 +330,7 @@ public actor ListeningStatsTracker {
 
     private func schedulePersist(force: Bool = false) async {
         if force {
-            pendingPersistTask?.cancel()
-            pendingPersistTask = nil
+            await cancelPendingPersist()
             await persistNow()
             return
         }
@@ -325,9 +346,25 @@ public actor ListeningStatsTracker {
         let delay = minimumPersistInterval - elapsed
         pendingPersistTask = Task { [weak self] in
             guard let self else { return }
-            try? await Task.sleep(nanoseconds: UInt64(max(0, delay) * 1_000_000_000))
-            await self.persistNow()
+            do {
+                try await Task.sleep(nanoseconds: UInt64(max(0, delay) * 1_000_000_000))
+            } catch {
+                return
+            }
+            await self.persistPending()
         }
+    }
+
+    private func persistPending() async {
+        await persistNow()
+        pendingPersistTask = nil
+    }
+
+    private func cancelPendingPersist() async {
+        let pending = pendingPersistTask
+        pending?.cancel()
+        await pending?.value
+        pendingPersistTask = nil
     }
 
     private func updateStreakIfNeeded(dayKey: String) {
@@ -350,7 +387,6 @@ public actor ListeningStatsTracker {
     }
 
     private func persistNow() async {
-        pendingPersistTask = nil
         let snap = snapshot
         lastPersistDate = Date()
         let shouldNotify = Date().timeIntervalSince(lastStatsNotificationDate) >= statsNotificationMinimumInterval
@@ -359,6 +395,9 @@ public actor ListeningStatsTracker {
         }
         await MainActor.run {
             do {
+                if rejectsUnreadableStorage, FileManager.default.fileExists(atPath: statsURL.path) {
+                    _ = try Self.decoder.decode(ListeningStatsSnapshot.self, from: Data(contentsOf: statsURL))
+                }
                 let data = try Self.encoder.encode(snap)
                 try data.write(to: statsURL, options: [.atomic])
                 if Int(snap.totalSeconds) % 10 == 0 {
@@ -400,7 +439,7 @@ public actor ListeningStatsTracker {
             }
             if repaired {
                 snapshot.totalSessions = max(0, snapshot.totalSessions)
-                Task { await schedulePersist(force: true) }
+                await schedulePersist(force: true)
             }
 
             lastPersistDate = Date()
@@ -426,7 +465,7 @@ public actor ListeningStatsTracker {
     private nonisolated static let dayFormatter: DateFormatter = {
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy-MM-dd"
-        fmt.timeZone = TimeZone(secondsFromGMT: 0)
+        fmt.locale = Locale(identifier: "en_US_POSIX")
         return fmt
     }()
 

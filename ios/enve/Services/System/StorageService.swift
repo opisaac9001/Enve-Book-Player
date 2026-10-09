@@ -16,12 +16,20 @@ extension Notification.Name {
 
 public final class StorageService {
 
-    private let userDefaults = UserDefaults.standard
-    private var keychain: KeychainHelper { KeychainHelper.shared }
+    nonisolated(unsafe) private let userDefaults: UserDefaults
+    nonisolated private let preferencesDomain: String
 
     static let shared = StorageService()
 
-    public nonisolated init() {}
+    public nonisolated init() {
+        userDefaults = .standard
+        preferencesDomain = Bundle.main.bundleIdentifier!
+    }
+
+    nonisolated init(defaults: UserDefaults, preferencesDomain: String) {
+        userDefaults = defaults
+        self.preferencesDomain = preferencesDomain
+    }
 
     func loadDeviceUUID() -> String {
         if let uuid = userDefaults.string(forKey: "enve_device_uuid") {
@@ -52,8 +60,7 @@ public final class StorageService {
     }
 
     func clearAll() {
-        let domain = Bundle.main.bundleIdentifier!
-        userDefaults.removePersistentDomain(forName: domain)
+        userDefaults.removePersistentDomain(forName: preferencesDomain)
     }
 
 }

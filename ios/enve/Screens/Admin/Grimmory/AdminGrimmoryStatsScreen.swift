@@ -1,14 +1,16 @@
 import SwiftUI
 
 struct AdminGrimmoryStatsScreen: View {
+    private let profileSession: ProfileSession
     let connection: ServerConnection
     @State private var model: AdminGrimmoryStatsModel
 
     @Environment(\.hearth) private var hearth
 
-    init(connection: ServerConnection) {
+    init(connection: ServerConnection, profileSession: ProfileSession = .owner) {
+        self.profileSession = profileSession
         self.connection = connection
-        _model = State(initialValue: AdminGrimmoryStatsModel(connection: connection))
+        _model = State(initialValue: AdminGrimmoryStatsModel(connection: connection, profileSession: profileSession))
     }
 
     var body: some View {

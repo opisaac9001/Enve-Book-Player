@@ -2,10 +2,12 @@ import SwiftUI
 
 struct StorageScreen: View {
     @Environment(EnveEngine.self) private var engine
+    @Environment(ProfileSwitchCoordinator.self) private var profiles
     @Environment(\.hearth) private var hearth
+    @Environment(\.profileSession) private var profileSession
 
-    @State private var prefs = LibraryDisplayPreferencesStore.shared.loadPreferences()
-    @State private var cacheToICloud = LibraryDisplayPreferencesStore.shared.loadCacheScope() == .iCloudIfAvailable
+    @State private var prefs: UserPreferences
+    @State private var cacheToICloud: Bool
 
     @State private var coversBytes: Int64 = 0
     @State private var metadataBytes: Int64 = 0
@@ -18,6 +20,12 @@ struct StorageScreen: View {
     @State private var pendingAction: StorageAction?
     @State private var resultMessage: String?
 
+    init(profileSession: ProfileSession = .owner) {
+        _prefs = State(initialValue: profileSession.preferences.loadPreferences())
+        _cacheToICloud = State(initialValue: profileSession.preferences.loadCacheScope() == .iCloudIfAvailable)
+    }
+
+    private var session: ProfileSession { profileSession ?? .owner }
     private var totalBytes: Int64 { coversBytes + metadataBytes + downloadsBytes + otherCacheBytes }
 
     private enum StorageAction: String, Identifiable {
@@ -95,7 +103,7 @@ struct StorageScreen: View {
                 isOn: Binding(
                     get: { prefs.keepNextItemsOfflineEnabled },
                     set: { value in
-                        prefs = SettingsPrefs.mutate { $0.keepNextItemsOfflineEnabled = value }
+                        prefs = SettingsPrefs.mutate(in: session.preferences) { $0.keepNextItemsOfflineEnabled = value }
                     }
                 )
             )
@@ -106,7 +114,7 @@ struct StorageScreen: View {
                 ) {
                     ForEach(KeepNextOfflineService.allowedCounts, id: \.self) { count in
                         Button(count == 1 ? "1 item" : "\(count) items") {
-                            prefs = SettingsPrefs.mutate { $0.keepNextItemsOfflineCount = count }
+                            prefs = SettingsPrefs.mutate(in: session.preferences) { $0.keepNextItemsOfflineCount = count }
                         }
                     }
                 }
@@ -185,14 +193,14 @@ struct StorageScreen: View {
                 title: "Tidy caches automatically",
                 isOn: Binding(
                     get: { prefs.autoClearCacheEnabled },
-                    set: { value in prefs = SettingsPrefs.mutate { $0.autoClearCacheEnabled = value } }
+                    set: { value in prefs = SettingsPrefs.mutate(in: session.preferences) { $0.autoClearCacheEnabled = value } }
                 )
             )
             SourcesToggleRow(
                 title: "Expire old metadata",
                 isOn: Binding(
                     get: { prefs.expireOldMetadataEnabled },
-                    set: { value in prefs = SettingsPrefs.mutate { $0.expireOldMetadataEnabled = value } }
+                    set: { value in prefs = SettingsPrefs.mutate(in: session.preferences) { $0.expireOldMetadataEnabled = value } }
                 )
             )
             SourcesToggleRow(
@@ -200,17 +208,19 @@ struct StorageScreen: View {
                 subtitle: "Store covers as JPEG to save space",
                 isOn: Binding(
                     get: { prefs.compressCoversEnabled },
-                    set: { value in prefs = SettingsPrefs.mutate { $0.compressCoversEnabled = value } }
+                    set: { value in prefs = SettingsPrefs.mutate(in: session.preferences) { $0.compressCoversEnabled = value } }
                 )
             )
-            SourcesToggleRow(
-                title: "Keep the cover cache in iCloud",
-                subtitle: "Uses iCloud Drive when it's available",
-                isOn: Binding(
-                    get: { cacheToICloud },
-                    set: { setCacheScope($0) }
+            if session.isOwner {
+                SourcesToggleRow(
+                    title: "Keep the cover cache in iCloud",
+                    subtitle: "Uses iCloud Drive when it's available",
+                    isOn: Binding(
+                        get: { cacheToICloud },
+                        set: { setCacheScope($0) }
+                    )
                 )
-            )
+            }
         }
     }
 
@@ -222,7 +232,7 @@ struct StorageScreen: View {
                 subtitle: "Delete a download once the book is done",
                 isOn: Binding(
                     get: { prefs.autoDeleteFinishedBooks },
-                    set: { value in prefs = SettingsPrefs.mutate { $0.autoDeleteFinishedBooks = value } }
+                    set: { value in prefs = SettingsPrefs.mutate(in: session.preferences) { $0.autoDeleteFinishedBooks = value } }
                 )
             )
             SourcesToggleRow(
@@ -230,7 +240,7 @@ struct StorageScreen: View {
                 subtitle: "Remove failures automatically after a week",
                 isOn: Binding(
                     get: { prefs.autoDeleteFailedDownloads },
-                    set: { value in prefs = SettingsPrefs.mutate { $0.autoDeleteFailedDownloads = value } }
+                    set: { value in prefs = SettingsPrefs.mutate(in: session.preferences) { $0.autoDeleteFailedDownloads = value } }
                 )
             )
             SourcesToggleRow(
@@ -239,7 +249,7 @@ struct StorageScreen: View {
                 isOn: Binding(
                     get: { prefs.storageLimitEnabled },
                     set: { value in
-                        prefs = SettingsPrefs.mutate { $0.storageLimitEnabled = value }
+                        prefs = SettingsPrefs.mutate(in: session.preferences) { $0.storageLimitEnabled = value }
                         if value {
                             Task { await engine.downloads.checkStorageLimit() }
                         }
@@ -255,7 +265,7 @@ struct StorageScreen: View {
                     Slider(
                         value: Binding(
                             get: { Double(prefs.storageLimitGB) },
-                            set: { value in prefs = SettingsPrefs.mutate { $0.storageLimitGB = Int(value) } }
+                            set: { value in prefs = SettingsPrefs.mutate(in: session.preferences) { $0.storageLimitGB = Int(value) } }
                         ),
                         in: 1...50,
                         step: 1
@@ -267,26 +277,44 @@ struct StorageScreen: View {
     }
 
     private func setCacheScope(_ toICloud: Bool) {
+        guard (try? profiles.authorizeChanges(in: session)) != nil, session.isOwner else { return }
         cacheToICloud = toICloud
         let scope: CacheScope = toICloud ? .iCloudIfAvailable : .local
-        LibraryDisplayPreferencesStore.shared.saveCacheScope(scope)
-        Task { await AppCache.shared.setPreferredScope(scope) }
+        session.preferences.saveCacheScope(scope)
+        Task { await session.appCache.setPreferredScope(scope) }
+    }
+
+    private var legacyCoversDirectory: URL {
+        session.storage.documentsDirectory.appendingPathComponent("Covers")
+    }
+
+    // The owner's caches root also holds every other profile's caches under Profiles/.
+    private var otherProfilesCachesDirectory: URL? {
+        session.isOwner ? session.storage.cachesDirectory.appendingPathComponent("Profiles", isDirectory: true) : nil
     }
 
     private func loadSizes() async {
-        async let appCacheSizesRequest = AppCache.shared.activeCacheSizes()
-        async let diskCoverBytesRequest = DiskImageCache.shared.diskBytes()
-        async let coverOverrideBytesRequest = LocalStorageManager.shared.coverOverridesDiskBytes()
-        async let legacyCoverBytesRequest = SourcesCacheMetrics.directorySize(named: "Covers")
+        async let appCacheSizesRequest = session.appCache.activeCacheSizes()
+        async let diskCoverBytesRequest = session.imageCache.diskBytes()
+        async let coverOverrideBytesRequest = session.localStorage.coverOverridesDiskBytes()
+        async let legacyCoverBytesRequest = SourcesCacheMetrics.size(at: legacyCoversDirectory)
         async let downloadsBytesRequest = engine.downloads.downloadedStorageBytes()
-        async let cachesDirectoryBytesRequest = SourcesCacheMetrics.size(at: URL.cachesDirectory)
+        async let cachesDirectoryBytesRequest = SourcesCacheMetrics.size(at: session.storage.cachesDirectory)
+        var otherProfilesBytes: Int64 = 0
+        if let otherProfilesCachesDirectory {
+            otherProfilesBytes = await SourcesCacheMetrics.size(at: otherProfilesCachesDirectory)
+        }
 
+        var downloadedCacheBytes: Int64 = 0
+        for name in ["ReaderEbooks", "StreamedEpubs"] {
+            downloadedCacheBytes += await SourcesCacheMetrics.size(at: session.storage.cachesDirectory.appendingPathComponent(name))
+        }
         let appCacheSizes = await appCacheSizesRequest
         let diskCoverBytes = await diskCoverBytesRequest
         coversBytes = appCacheSizes.coversBytes + diskCoverBytes + (await coverOverrideBytesRequest) + (await legacyCoverBytesRequest)
         metadataBytes = appCacheSizes.metadataBytes
         downloadsBytes = await downloadsBytesRequest
-        otherCacheBytes = max((await cachesDirectoryBytesRequest) - diskCoverBytes, 0)
+        otherCacheBytes = max((await cachesDirectoryBytesRequest) - otherProfilesBytes - diskCoverBytes - downloadedCacheBytes, 0)
         if let attrs = try? FileManager.default.attributesOfFileSystem(forPath: NSHomeDirectory()),
             let free = attrs[.systemFreeSize] as? NSNumber
         {
@@ -296,40 +324,44 @@ struct StorageScreen: View {
     }
 
     private func perform(_ action: StorageAction) async {
+        guard (try? profiles.authorizeChanges(in: session)) != nil else { return }
         isWorking = true
+        defer { isWorking = false }
         pendingAction = nil
         switch action {
         case .clearCovers:
-            await DiskImageCache.shared.clearAllCache()
-            await AppCache.shared.clearCoverCache()
-            await LocalStorageManager.shared.clearCoverOverrides()
-            try? FileManager.default.removeItem(at: URL.documentsDirectory.appendingPathComponent("Covers"))
+            await session.imageCache.clearAllCache()
+            guard (try? profiles.authorizeChanges(in: session)) != nil else { return }
+            await session.appCache.clearCoverCache()
+            guard (try? profiles.authorizeChanges(in: session)) != nil else { return }
+            await session.localStorage.clearCoverOverrides()
+            guard (try? profiles.authorizeChanges(in: session)) != nil else { return }
+            try? FileManager.default.removeItem(at: legacyCoversDirectory)
             resultMessage = "Cover cache cleared."
         case .clearMetadata:
-            await AppCache.shared.clearMetadataCache()
+            await session.appCache.clearMetadataCache()
             resultMessage = "Metadata cache cleared."
         case .clearCache:
-            await DiskImageCache.shared.clearAllCache()
-            await AppCache.shared.clearActiveCaches()
-            await LocalStorageManager.shared.clearCoverOverrides()
-            if let contents = try? FileManager.default.contentsOfDirectory(at: URL.cachesDirectory, includingPropertiesForKeys: nil) {
-                for item in contents {
+            await session.imageCache.clearAllCache()
+            guard (try? profiles.authorizeChanges(in: session)) != nil else { return }
+            await session.appCache.clearActiveCaches()
+            guard (try? profiles.authorizeChanges(in: session)) != nil else { return }
+            await session.localStorage.clearCoverOverrides()
+            guard (try? profiles.authorizeChanges(in: session)) != nil else { return }
+            let preservedDirectories: Set<String> = ["Profiles", "ReaderEbooks", "StreamedEpubs", "ConvertedEbooks"]
+            if let contents = try? FileManager.default.contentsOfDirectory(at: session.storage.cachesDirectory, includingPropertiesForKeys: nil) {
+                for item in contents where !preservedDirectories.contains(item.lastPathComponent) {
                     try? FileManager.default.removeItem(at: item)
                 }
             }
             resultMessage = "Caches cleared."
         }
         await loadSizes()
-        isWorking = false
         PlatformHaptics.notification(.success)
     }
 }
 
 enum SourcesCacheMetrics {
-    static func directorySize(named name: String) async -> Int64 {
-        await size(at: URL.documentsDirectory.appendingPathComponent(name))
-    }
-
     static func size(at url: URL) async -> Int64 {
         let path = url
         return await Task.detached(priority: .utility) {

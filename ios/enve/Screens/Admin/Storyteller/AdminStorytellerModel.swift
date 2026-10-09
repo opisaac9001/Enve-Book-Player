@@ -4,6 +4,7 @@ import Observation
 @MainActor
 @Observable
 final class AdminStorytellerModel {
+    let profileSession: ProfileSession
     let connection: ServerConnection
 
     var currentUser: StorytellerUser?
@@ -20,12 +21,13 @@ final class AdminStorytellerModel {
     var error: String?
     var successMessage: String?
 
-    init(connection: ServerConnection) {
+    init(connection: ServerConnection, profileSession: ProfileSession = .owner) {
+        self.profileSession = profileSession
         self.connection = connection
     }
 
     private var provider: StorytellerProvider? {
-        AppState.shared.getProvider(connection.id) as? StorytellerProvider
+        profileSession.appState.getProvider(connection.id) as? StorytellerProvider
     }
 
     func refreshAll() async {
@@ -233,7 +235,10 @@ final class AdminStorytellerShelfMembershipModel {
     var error: String?
     var successMessage: String?
 
-    init(shelf: StorytellerShelf) {
+    private let profileSession: ProfileSession
+
+    init(shelf: StorytellerShelf, profileSession: ProfileSession = .owner) {
+        self.profileSession = profileSession
         self.shelf = shelf
         let ids = shelf.books.map(\.bookUuid)
         orderedBookIds = ids
@@ -250,7 +255,7 @@ final class AdminStorytellerShelfMembershipModel {
 
     func load(connection: ServerConnection) async {
         guard !isLoading, !hasLoaded else { return }
-        guard let provider = AppState.shared.getProvider(connection.id) as? StorytellerProvider else {
+        guard let provider = profileSession.appState.getProvider(connection.id) as? StorytellerProvider else {
             error = "This source has no live connection."
             hasLoaded = true
             return
@@ -286,7 +291,7 @@ final class AdminStorytellerShelfMembershipModel {
 
     func save(connection: ServerConnection, parent: AdminStorytellerModel) async {
         guard hasChanges, !isSaving else { return }
-        guard let provider = AppState.shared.getProvider(connection.id) as? StorytellerProvider else {
+        guard let provider = profileSession.appState.getProvider(connection.id) as? StorytellerProvider else {
             error = "This source has no live connection."
             return
         }
@@ -309,13 +314,15 @@ final class AdminStorytellerShelfMembershipModel {
 @MainActor
 @Observable
 final class AdminStorytellerReportModel {
+    private let profileSession: ProfileSession
+    init(profileSession: ProfileSession = .owner) { self.profileSession = profileSession }
     var report: StorytellerAlignmentReport?
     var isLoading = false
     var hasLoaded = false
     var error: String?
 
     func load(connection: ServerConnection, bookId: String) async {
-        guard let provider = AppState.shared.getProvider(connection.id) as? StorytellerProvider else {
+        guard let provider = profileSession.appState.getProvider(connection.id) as? StorytellerProvider else {
             error = "This source has no live connection."
             hasLoaded = true
             return

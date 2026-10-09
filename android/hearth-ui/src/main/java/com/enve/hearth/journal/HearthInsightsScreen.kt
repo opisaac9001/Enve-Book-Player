@@ -35,7 +35,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.hilt.navigation.compose.hiltViewModel
+import com.enve.hearth.shell.profileViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.enve.core.data.model.Book
 import com.enve.hearth.design.CoverTile
@@ -51,7 +51,7 @@ fun HearthInsightsScreen(
     onBack: () -> Unit,
     onSelectBook: (Book) -> Unit,
 ) {
-    val vm: HearthInsightsViewModel = hiltViewModel()
+    val vm: HearthInsightsViewModel = profileViewModel()
     val insights by vm.insights.collectAsStateWithLifecycle()
     val palette = Hearth.palette
 

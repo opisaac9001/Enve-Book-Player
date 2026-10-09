@@ -1,5 +1,8 @@
 package com.enve.audiobookshelf
 
+import com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
+import com.enve.core.data.local.ProfileStorageLocations
+
 import android.util.Log
 import com.enve.core.data.local.PreferencesManager
 import com.enve.core.data.provider.LibraryAccessRevocations
@@ -19,6 +22,10 @@ import com.enve.core.data.util.FINISHED_PROGRESS_THRESHOLD
 import com.enve.core.data.util.runSuspendCatching
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import com.enve.audiobookshelf.dto.*
+import com.enve.audiobookshelf.listening.AbsCrossProviderHistory
+import com.enve.audiobookshelf.listening.AbsListeningEntry
+import com.enve.audiobookshelf.listening.AbsLocalListeningStore
+import com.enve.core.data.remote.ConnectionScope
 import com.enve.core.data.remote.dto.AbsLoginRequest
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -58,7 +65,37 @@ class AudiobookshelfRepository @Inject constructor(
     @ApplicationContext private val context: android.content.Context,
     private val ebookPositions: AbsEbookPositionResolver,
     private val libraryRevocations: LibraryAccessRevocations,
+    private val localListening: AbsLocalListeningStore,
+    private val progressWrites: com.enve.core.data.sync.AudiobookProgressWriteCoordinator,
+    private val bookCache: com.enve.core.data.local.BookCacheDao,
+    private val pendingProgress: com.enve.core.data.local.PendingProgressPushDao,
+    private val locations: ProfileStorageLocations = ProfileStorageLocations.forProfile(context, DEFAULT_ADULT_PROFILE_ID),
+    private val serverSync: com.enve.core.data.local.ProfileServerSyncStore = com.enve.core.data.local.ProfileServerSyncStore(context, locations),
 ) {
+    suspend fun getCollections(libraryId: String): Result<List<AbsCollectionDto>> = runSuspendCatching {
+        val response = api.getCollections(libraryId)
+        if (!response.isSuccessful) error("Collections request failed: HTTP ${response.code()}")
+        val body = response.body() ?: error("Collections response is empty")
+        if (body.results == null && body.collections == null) error("Collections response has no list")
+        if (body.items.size >= 500) error("Collections response may be incomplete")
+        body.items
+    }
+
+    suspend fun setCollectionBook(book: Book, name: String, saved: Boolean): Result<Unit> = runSuspendCatching {
+        val libraryId = book.libraryId ?: error("Book has no Audiobookshelf library")
+        val collection = getCollections(libraryId).getOrThrow().firstOrNull { it.name.equals(name, ignoreCase = true) }
+        if (collection == null) {
+            if (!saved) return@runSuspendCatching
+            val created = api.createCollection(AbsCreateCollectionRequest(libraryId, name, listOf(book.id)))
+            if (!created.isSuccessful) error("Create collection failed: HTTP ${created.code()}")
+            return@runSuspendCatching
+        }
+        val ids = collection.books?.map(AbsCollectionBookDto::id) ?: error("Collection membership is missing")
+        if ((book.id in ids) == saved) return@runSuspendCatching
+        val response = if (saved) api.addCollectionBook(collection.id, AbsCollectionBookRequest(book.id))
+        else api.removeCollectionBook(collection.id, book.id)
+        if (!response.isSuccessful) error("Update collection failed: HTTP ${response.code()}")
+    }
 
     private fun scopedServerUrlAndToken(): Pair<String, String?> {
         connectionRegistry.getScopedConnectionSync()?.let { connection ->
@@ -93,14 +130,14 @@ class AudiobookshelfRepository @Inject constructor(
     )
 
     private fun cacheFileForLibraries(serverUrl: String): java.io.File {
-        val cacheDir = java.io.File(context.cacheDir, "book-index-cache").also { it.mkdirs() }
+        val cacheDir = java.io.File(locations.cacheDirectory, "book-index-cache").also { it.mkdirs() }
         val safeServer = serverUrl.lowercase().replace(Regex("[^a-z0-9._-]"), "_")
         val name = "libraries_abs_${safeServer}.json"
         return java.io.File(cacheDir, name)
     }
 
     private fun cacheFileForLane(serverUrl: String, lane: String): java.io.File {
-        val cacheDir = java.io.File(context.cacheDir, "book-index-cache").also { it.mkdirs() }
+        val cacheDir = java.io.File(locations.cacheDirectory, "book-index-cache").also { it.mkdirs() }
         val safeServer = serverUrl.lowercase().replace(Regex("[^a-z0-9._-]"), "_")
         val name = "lane_abs_v2_${safeServer}_${lane}.json"
         return java.io.File(cacheDir, name)
@@ -648,27 +685,21 @@ class AudiobookshelfRepository @Inject constructor(
     }
 
     suspend fun startPlaybackSession(book: Book): Result<ProviderPlaybackSession> = runSuspendCatching {
+        if (!serverSync.isEnabled) return@runSuspendCatching ProviderPlaybackSession("", getAudioTracks(book).getOrThrow(), fetchChapters(book).getOrThrow())
         val serverUrl = scopedServerUrlAndToken().first.trimEnd('/')
 
         val episodeId = book.episodeId
         val sessionResponse = if (episodeId != null) {
-            api.startEpisodePlaybackSession(book.absItemId, episodeId, AbsPlaybackStartRequest())
+            api.startEpisodePlaybackSession(book.absItemId, episodeId, AbsPlaybackStartRequest(localListening.deviceInfo))
         } else {
-            api.startPlaybackSession(book.id, AbsPlaybackStartRequest())
+            api.startPlaybackSession(book.id, AbsPlaybackStartRequest(localListening.deviceInfo))
         }
         if (!sessionResponse.isSuccessful) error("Failed to start Audiobookshelf playback: HTTP ${sessionResponse.code()}")
         val session = sessionResponse.body() ?: error("Audiobookshelf playback session returned an empty response")
         val sessionTracks = session.audioTracks
             .mapNotNull { mapPlaybackTrackToTrack(it, serverUrl) }
             .sortedBy { it.index }
-        val chapters = session.chapters.mapIndexed { index, chapter ->
-            Chapter(
-                index = index,
-                title = chapter.title ?: "Chapter ${index + 1}",
-                startTime = (chapter.start ?: chapter.startOffset ?: 0.0).toLong(),
-                endTime = (chapter.end ?: chapter.start ?: 0.0).toLong(),
-            )
-        }.filter { it.endTime > it.startTime }
+        val chapters = session.chapters.toChapters()
         ProviderPlaybackSession(
             sessionId = session.id,
             audioTracks = sessionTracks,
@@ -718,54 +749,193 @@ class AudiobookshelfRepository @Inject constructor(
         timeListenedMs: Long,
         durationSec: Long,
         close: Boolean,
-    ): Result<Unit> = runSuspendCatching {
-        val request = AbsPlaybackSessionUpdateRequest(
-            currentTime = currentTimeSec.coerceAtLeast(0).toDouble(),
-            timeListened = (timeListenedMs.coerceAtLeast(0) / 1000.0),
-            duration = durationSec.coerceAtLeast(0).toDouble(),
-        )
-        val response = if (close) {
-            api.closePlaybackSession(sessionId, request)
-        } else {
-            api.syncPlaybackSession(sessionId, request)
-        }
-        if (!response.isSuccessful) {
-            val action = if (close) "close" else "sync"
-            error("Audiobookshelf playback session $action failed: HTTP ${response.code()}")
-        }
-    }
-
-    suspend fun getAudioTracks(book: Book): Result<List<AudioTrack>> {
-        return startPlaybackSession(book).mapCatching { session ->
-            session.audioTracks.ifEmpty {
-                val serverUrl = scopedServerUrlAndToken().first.trimEnd('/')
-                api.getItemDetail(book.id).body()?.media?.audioFiles.orEmpty()
-                    .mapNotNull { mapAudioFileToTrack(book.id, it, serverUrl) }
-                    .sortedBy { it.index }
+    ): Result<Unit> = progressWrites.ordered(BookSource.AUDIOBOOKSHELF, ConnectionScope.getConnectionId()) {
+        runSuspendCatching {
+            requireProgressConnection(ConnectionScope.getConnectionId())
+            val syncStartedAt = System.currentTimeMillis()
+            if (!serverSync.isEnabled) return@runSuspendCatching
+            val request = AbsPlaybackSessionUpdateRequest(
+                currentTime = currentTimeSec.coerceAtLeast(0).toDouble(),
+                timeListened = (timeListenedMs.coerceAtLeast(0) / 1000.0),
+                duration = durationSec.coerceAtLeast(0).toDouble(),
+            )
+            if (!serverSync.accepts(syncStartedAt)) return@runSuspendCatching
+            val response = if (close) {
+                api.closePlaybackSession(sessionId, request)
+            } else {
+                api.syncPlaybackSession(sessionId, request)
+            }
+            if (!response.isSuccessful) {
+                val action = if (close) "close" else "sync"
+                error("Audiobookshelf playback session $action failed: HTTP ${response.code()}")
             }
         }
     }
 
-    suspend fun fetchChapters(book: Book): Result<List<Chapter>> = startPlaybackSession(book).map { it.chapters }
-
-    suspend fun syncAudiobookProgress(book: Book, currentTimeSec: Long, progressFraction: Float): Result<Unit> = runSuspendCatching {
-        val finished = progressFraction >= FINISHED_PROGRESS_THRESHOLD
-        val request = AbsProgressUpdateRequest(
-            currentTime = currentTimeSec.toDouble().coerceAtLeast(0.0),
-            duration = book.duration.takeIf { it > 0 }?.toDouble(),
-            progress = progressFraction.coerceIn(0f, 1f),
-            isFinished = finished.takeIf { it || currentTimeSec <= 0 },
+    suspend fun recordLocalListening(book: Book, currentTimeSec: Long, durationSec: Long, listenedMs: Long) {
+        if (!serverSync.isEnabled) return
+        localListening.record(
+            AbsListeningEntry(
+                connectionId = ConnectionScope.getConnectionId().orEmpty(),
+                libraryItemId = book.absItemId,
+                episodeId = book.episodeId,
+                displayTitle = book.title,
+                displayAuthor = book.author,
+                durationSec = durationSec.toDouble(),
+                currentTimeSec = currentTimeSec.toDouble(),
+                listenedMs = listenedMs,
+            ),
         )
-        val episodeId = book.episodeId
-        val response = if (episodeId != null) {
-            api.updateEpisodeProgress(book.absItemId, episodeId, request)
-        } else {
-            api.updateProgress(book.id, request)
+    }
+
+    suspend fun verifiedHistoryAccountAndItem(book: Book): Result<String> = runSuspendCatching {
+        require(book.source == BookSource.AUDIOBOOKSHELF && book.mediaType == AppMediaType.AUDIOBOOK && book.episodeId == null)
+        val accountId = getMe().getOrThrow().id?.takeIf(String::isNotBlank)
+            ?: error("Audiobookshelf account has no stable ID")
+        itemMedia(book)
+        accountId
+    }
+
+    suspend fun removePendingCrossProviderHistory(sourceBookKey: String) {
+        localListening.removeCrossProviderHistory(sourceBookKey)
+    }
+
+    suspend fun historyProgress(itemId: String): Result<AbsMediaProgressDto?> = runSuspendCatching {
+        if (!serverSync.isEnabled) return@runSuspendCatching null
+        val response = api.getProgress(itemId)
+        if (response.code() == 404) return@runSuspendCatching null
+        if (!response.isSuccessful) error("Audiobookshelf history progress failed: HTTP ${response.code()}")
+        response.body()
+    }
+
+    suspend fun enqueueCrossProviderHistory(session: com.enve.audiobookshelf.listening.AbsLocalListeningSession) {
+        if (!serverSync.accepts(session.startedAtMs)) return
+        localListening.enqueueHistory(session)
+    }
+
+    private suspend fun requireProgressConnection(connectionId: String?) {
+        if (connectionId == null) return
+        check(connectionRegistry.connections.first().any { it.id == connectionId && it.source == BookSource.AUDIOBOOKSHELF && it.enabled }) {
+            "Requested provider connection is unavailable"
         }
-        if (!response.isSuccessful) error("Audiobookshelf progress sync failed: HTTP ${response.code()}")
+    }
+
+    suspend fun uploadLocalListening(): Result<Int> = progressWrites.ordered(BookSource.AUDIOBOOKSHELF, ConnectionScope.getConnectionId()) {
+        runSuspendCatching {
+            requireProgressConnection(ConnectionScope.getConnectionId())
+            val syncStartedAt = System.currentTimeMillis()
+            if (!serverSync.isEnabled) return@runSuspendCatching 0
+            val accountId = getMe().getOrNull()?.id?.takeIf(String::isNotBlank)
+            val pending = localListening.pending(ConnectionScope.getConnectionId().orEmpty(), accountId)
+                .filter { serverSync.accepts(it.startedAtMs) }
+            if (pending.isEmpty()) return@runSuspendCatching 0
+            val progressByItem = pending
+                .map { it.libraryItemId }.distinct()
+                .associateWith { historyProgress(it) }
+            val episodeProgress = pending.filter { it.episodeId != null }.associate { session ->
+                "${session.libraryItemId}:${session.episodeId}" to runSuspendCatching {
+                    val response = api.getEpisodeProgress(session.libraryItemId, checkNotNull(session.episodeId))
+                    if (!response.isSuccessful && response.code() != 404) error("Episode history progress is unavailable")
+                    response.body()
+                }
+            }
+            val ready = AbsCrossProviderHistory.readyForUpload(pending, progressByItem).filter { session ->
+                if (session.episodeId == null) progressByItem[session.libraryItemId]?.isSuccess == true
+                else episodeProgress["${session.libraryItemId}:${session.episodeId}"]?.isSuccess == true
+            }
+            val dirtyPositionByItem = ready.filter { it.accountId == null && it.episodeId == null }
+                .map { it.libraryItemId }.distinct().associateWith { id ->
+                    val connectionId = ConnectionScope.getConnectionId()
+                    val dirty = pendingProgress.get(id, BookSource.AUDIOBOOKSHELF.name, connectionId.orEmpty())
+                    if (dirty?.mediaType == "AUDIOBOOK") {
+                        bookCache.getByCacheKey("${connectionId ?: BookSource.AUDIOBOOKSHELF.name}:$id")?.currentTime?.toDouble()
+                    } else null
+                }
+            if (ready.isEmpty()) return@runSuspendCatching 0
+            if (!serverSync.accepts(syncStartedAt)) return@runSuspendCatching 0
+            requireProgressConnection(ConnectionScope.getConnectionId())
+            val response = api.syncLocalSessions(
+                AbsLocalSessionsRequest(
+                    sessions = ready.map { session ->
+                        AbsLocalSessionDto(
+                            id = session.id,
+                            libraryItemId = session.libraryItemId,
+                            episodeId = session.episodeId,
+                            mediaType = if (session.episodeId != null) "podcast" else "book",
+                            displayTitle = session.displayTitle,
+                            displayAuthor = session.displayAuthor,
+                            duration = session.durationSec,
+                            date = session.day,
+                            dayOfWeek = session.dayOfWeek,
+                            timeListening = session.timeListeningSec,
+                            currentTime = AbsCrossProviderHistory.uploadPosition(
+                                session,
+                                if (session.episodeId != null) episodeProgress["${session.libraryItemId}:${session.episodeId}"]?.getOrNull()?.currentTime
+                                else progressByItem[session.libraryItemId]?.getOrNull()?.currentTime,
+                                dirtyPositionByItem[session.libraryItemId],
+                            ),
+                            startedAt = session.startedAtMs,
+                            updatedAt = session.updatedAtMs,
+                        )
+                    },
+                    deviceInfo = localListening.deviceInfo,
+                ),
+            )
+            if (!response.isSuccessful) error("Audiobookshelf local session upload failed: HTTP ${response.code()}")
+            val results = response.body()?.results.orEmpty()
+            val succeeded = results.filter { it.success }.mapTo(HashSet()) { it.id }
+            val rejected = results.filter { !it.success && it.error != null }.mapTo(HashSet()) { it.id }
+            localListening.markUploaded(ready.filter { it.id in succeeded }, rejected)
+            succeeded.size
+        }
+    }
+
+    suspend fun getAudioTracks(book: Book): Result<List<AudioTrack>> = runSuspendCatching {
+        val serverUrl = scopedServerUrlAndToken().first.trimEnd('/')
+        val media = itemMedia(book)
+        val files = book.episodeId?.let { episodeId ->
+            listOfNotNull(media.episodes?.firstOrNull { it.id == episodeId }?.audioFile)
+        } ?: media.audioFiles.orEmpty()
+        files.mapNotNull { mapAudioFileToTrack(book.absItemId, it, serverUrl) }.sortedBy { it.index }
+    }
+
+    suspend fun fetchChapters(book: Book): Result<List<Chapter>> = runSuspendCatching {
+        if (book.episodeId != null) return@runSuspendCatching emptyList()
+        itemMedia(book).chapters.orEmpty().toChapters()
+    }
+
+    // Reads the item instead of POSTing /play: ABS closes the device's open session on every /play.
+    private suspend fun itemMedia(book: Book): AbsMediaDto {
+        val response = api.getItemDetail(book.absItemId)
+        if (!response.isSuccessful) error("Audiobookshelf item lookup failed: HTTP ${response.code()}")
+        return response.body()?.media ?: error("Audiobookshelf item has no media")
+    }
+
+    suspend fun syncAudiobookProgress(book: Book, currentTimeSec: Long, progressFraction: Float): Result<Unit> = progressWrites.ordered(BookSource.AUDIOBOOKSHELF, ConnectionScope.getConnectionId() ?: book.connectionId) {
+        runSuspendCatching {
+            requireProgressConnection(ConnectionScope.getConnectionId() ?: book.connectionId)
+            val syncStartedAt = System.currentTimeMillis()
+            if (!serverSync.isEnabled) return@runSuspendCatching
+            val finished = progressFraction >= FINISHED_PROGRESS_THRESHOLD
+            val request = AbsProgressUpdateRequest(
+                currentTime = currentTimeSec.toDouble().coerceAtLeast(0.0),
+                duration = book.duration.takeIf { it > 0 }?.toDouble(),
+                progress = progressFraction.coerceIn(0f, 1f),
+                isFinished = finished.takeIf { it || currentTimeSec <= 0 },
+            )
+            val episodeId = book.episodeId
+            if (!serverSync.accepts(syncStartedAt)) return@runSuspendCatching
+            val response = if (episodeId != null) {
+                api.updateEpisodeProgress(book.absItemId, episodeId, request)
+            } else {
+                api.updateProgress(book.id, request)
+            }
+            if (!response.isSuccessful) error("Audiobookshelf progress sync failed: HTTP ${response.code()}")
+        }
     }
 
     suspend fun fetchAudiobookProgress(book: Book): Result<com.enve.core.data.sync.SyncSnapshot?> = runSuspendCatching {
+        if (!serverSync.isEnabled) return@runSuspendCatching null
         val episodeId = book.episodeId
         val response = if (episodeId != null) api.getEpisodeProgress(book.absItemId, episodeId) else api.getProgress(book.id)
         val progress = response.body()
@@ -779,6 +949,7 @@ class AudiobookshelfRepository @Inject constructor(
     }
 
     suspend fun fetchEbookProgress(book: Book): Result<com.enve.core.data.sync.SyncSnapshot?> = runSuspendCatching {
+        if (!serverSync.isEnabled) return@runSuspendCatching null
         val response = api.getProgress(book.id)
         val progress = response.body()
         if (!response.isSuccessful || progress == null) null else ebookPositions.ebookSnapshot(book, progress)
@@ -802,6 +973,7 @@ class AudiobookshelfRepository @Inject constructor(
     }
 
     suspend fun getProgressForBooks(books: List<Book>): List<Book> {
+        if (!serverSync.isEnabled) return books
         val response = api.getMe()
         check(response.isSuccessful) { "ABS user progress failed: HTTP ${response.code()}" }
         val progress = checkNotNull(response.body()) { "ABS user progress returned an empty body" }
@@ -835,10 +1007,14 @@ class AudiobookshelfRepository @Inject constructor(
     }
 
     suspend fun syncEbookProgress(bookId: String, percentage: Float, locator: String?): Result<Unit> = runSuspendCatching {
+        val syncStartedAt = System.currentTimeMillis()
+        if (!serverSync.isEnabled) return@runSuspendCatching
+        if (!serverSync.accepts(syncStartedAt)) return@runSuspendCatching
         ebookPositions.pushEbookProgress(bookId, percentage, locator)
     }
 
     suspend fun getBooksInProgress(allowCachedFallback: Boolean = true): Result<List<Book>> {
+        if (!serverSync.isEnabled) return Result.success(emptyList())
         val result = runSuspendCatching {
             val normalizedUrl = scopedServerUrlAndToken().first.trimEnd('/')
 
@@ -922,7 +1098,7 @@ class AudiobookshelfRepository @Inject constructor(
     }
 
     fun invalidateListCaches() {
-        val cacheDirectory = java.io.File(context.cacheDir, "book-index-cache")
+        val cacheDirectory = java.io.File(locations.cacheDirectory, "book-index-cache")
         cacheDirectory.listFiles()?.forEach { file ->
             if (file.name.startsWith("books_abs_") ||
                 file.name.startsWith("libraries_abs_") ||
@@ -981,6 +1157,15 @@ class AudiobookshelfRepository @Inject constructor(
 
 private val Book.absItemId: String
     get() = podcastLibraryItemId ?: id
+
+private fun List<AbsChapter>.toChapters(): List<Chapter> = mapIndexed { index, chapter ->
+    Chapter(
+        index = index,
+        title = chapter.title ?: "Chapter ${index + 1}",
+        startTime = (chapter.start ?: chapter.startOffset ?: 0.0).toLong(),
+        endTime = (chapter.end ?: chapter.start ?: 0.0).toLong(),
+    )
+}.filter { it.endTime > it.startTime }
 
 private fun absSortField(sort: String): String = when (sort.lowercase()) {
     "addedon", "addedat" -> "addedAt"

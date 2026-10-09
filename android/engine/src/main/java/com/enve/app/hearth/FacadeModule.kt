@@ -2,9 +2,14 @@ package com.enve.app.hearth
 
 import com.enve.app.sleep.HealthConnectSleepDataFacade
 import com.enve.engine.eink.EinkFacade
+import com.enve.engine.discover.DiscoverFacade
+import com.enve.engine.collections.CollectionsFacade
 import com.enve.engine.annotations.AnnotationsFacade
 import com.enve.engine.bookorbit.BookOrbitFacade
 import com.enve.engine.library.LibraryFacade
+import com.enve.engine.library.SavedBooksFacade
+import com.enve.engine.matching.BatchMatchingFacade
+import com.enve.engine.matching.DuplicateMatchingFacade
 import com.enve.engine.opds.OpdsCatalogFacade
 import com.enve.engine.playback.PlaybackFacade
 import com.enve.engine.playback.PlayerSessionFacade
@@ -34,6 +39,21 @@ abstract class FacadeModule {
 
     @Binds @Singleton
     abstract fun bindLibraryFacade(impl: LibraryFacadeImpl): LibraryFacade
+
+    @Binds
+    abstract fun bindDiscoverFacade(impl: DiscoverFacadeImpl): DiscoverFacade
+
+    @Binds
+    abstract fun bindSavedBooksFacade(impl: SavedBooksFacadeImpl): SavedBooksFacade
+
+    @Binds
+    abstract fun bindCollectionsFacade(impl: CollectionsFacadeImpl): CollectionsFacade
+
+    @Binds @Singleton
+    abstract fun bindBatchMatchingFacade(impl: BatchMatchingFacadeImpl): BatchMatchingFacade
+
+    @Binds
+    abstract fun bindDuplicateMatchingFacade(impl: DuplicateMatchingFacadeImpl): DuplicateMatchingFacade
 
     @Binds @Singleton
     abstract fun bindPlayerSessionFacade(impl: PlayerSessionFacadeImpl): PlayerSessionFacade

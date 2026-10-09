@@ -36,7 +36,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.hilt.navigation.compose.hiltViewModel
+import com.enve.hearth.shell.profileViewModel
 import com.enve.app.ui.components.ScreenBackButton
 import com.enve.app.ui.components.SettingsCard
 import com.enve.app.ui.components.SettingsScreenLayout
@@ -61,7 +61,7 @@ import java.util.Date
 fun ServerToolsScreen(
     onBack: () -> Unit,
     onOpenAdmin: (BookSource, String) -> Unit,
-    viewModel: ServerToolsViewModel = hiltViewModel(),
+    viewModel: ServerToolsViewModel = profileViewModel(),
 ) {
     val state by viewModel.state.collectAsState()
     val colors = EnveTheme.colors

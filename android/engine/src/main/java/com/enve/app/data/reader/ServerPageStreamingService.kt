@@ -1,7 +1,11 @@
 package com.enve.app.data.reader
 
+import com.enve.core.di.ApplicationScope
 import android.content.Context
+import com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
+import com.enve.core.data.local.ProfileStorageLocations
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -25,10 +29,13 @@ data class StreamedComicSession(
 @Singleton
 class ServerPageStreamingService @Inject constructor(
     @ApplicationContext context: Context,
+    @ApplicationScope parentScope: CoroutineScope =
+        CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    private val locations: ProfileStorageLocations = ProfileStorageLocations.forProfile(context, DEFAULT_ADULT_PROFILE_ID),
 ) {
-    private val root = File(context.cacheDir, "server-comic-pages")
+    private val root = File(locations.cacheDirectory, "server-comic-pages")
     private val pageLocks = ConcurrentHashMap<String, Mutex>()
-    private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val cleanupScope = CoroutineScope(SupervisorJob(parentScope.coroutineContext[Job]) + Dispatchers.IO)
     private val cleanupJobs = ConcurrentHashMap<String, Job>()
 
     suspend fun openSession(cacheKey: String, pageCount: Int): StreamedComicSession = withContext(Dispatchers.IO) {
@@ -68,7 +75,7 @@ class ServerPageStreamingService @Inject constructor(
                 temporary.delete()
                 try {
                     fetch(pageIndex, temporary)
-                    check(isUsable(temporary)) { "Komga returned an unreadable page" }
+                    check(isUsable(temporary)) { "Server returned an unreadable page" }
                     if (target.exists()) target.delete()
                     if (!temporary.renameTo(target)) {
                         temporary.copyTo(target, overwrite = true)
@@ -96,11 +103,19 @@ class ServerPageStreamingService @Inject constructor(
         }
 
     fun clear(session: StreamedComicSession) {
-        cleanupJobs[session.cacheKey]?.cancel()
-        cleanupJobs[session.cacheKey] = cleanupScope.launch {
-            session.directory.deleteRecursively()
-            pageLocks.keys.removeAll { it.startsWith(session.directory.absolutePath) }
-            cleanupJobs.remove(session.cacheKey)
+        synchronized(cleanupJobs) {
+            val previous = cleanupJobs[session.cacheKey]
+            val job = cleanupScope.launch(start = CoroutineStart.LAZY) {
+                try {
+                    previous?.join()
+                    session.directory.deleteRecursively()
+                    pageLocks.keys.removeAll { it.startsWith(session.directory.absolutePath + File.separator) }
+                } finally {
+                    cleanupJobs.remove(session.cacheKey, coroutineContext[Job])
+                }
+            }
+            cleanupJobs[session.cacheKey] = job
+            job.start()
         }
     }
 

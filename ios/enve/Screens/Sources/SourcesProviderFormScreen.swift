@@ -7,6 +7,9 @@ struct SourcesProviderFormScreen: View {
     let onAdded: () -> Void
 
     @Environment(EnveEngine.self) private var engine
+    @Environment(\.profileSession) private var capturedSession
+    private var profileSession: ProfileSession { capturedSession ?? .owner }
+    @Environment(ProfileSwitchCoordinator.self) private var profiles
     @Environment(\.hearth) private var hearth
     @Environment(\.dismiss) private var dismiss
 
@@ -381,9 +384,7 @@ struct SourcesProviderFormScreen: View {
     private var bookOrbitRedirectNote: some View {
         VStack(alignment: .leading, spacing: 8) {
             Overline("Redirect URI")
-            Text(
-                "Use your BookOrbit server URL plus \(AppAuthRedirectURI.bookOrbitCallbackPath) in Authentik, Authelia, or your OIDC provider."
-            )
+            Text("Allow \(AppAuthRedirectURI.bookOrbit) in your OIDC provider. BookOrbit 3.0 or newer is required.")
             .font(.hearthCaption)
             .foregroundStyle(hearth.textTertiary)
         }
@@ -635,11 +636,11 @@ struct SourcesProviderFormScreen: View {
         let url = normalizedURL
         let usesPendingMTLS = mtlsEnabled
         if usesPendingMTLS, let host = URL(string: url)?.host {
-            MTLSManager.shared.beginPendingAuthentication(forHost: host)
+            profileSession.mtls.beginPendingAuthentication(forHost: host)
         }
         defer {
             if usesPendingMTLS {
-                MTLSManager.shared.endPendingAuthentication()
+                profileSession.mtls.endPendingAuthentication()
             }
         }
 
@@ -706,7 +707,7 @@ struct SourcesProviderFormScreen: View {
             }
             connection.mtlsEnabled = mtlsEnabled
             if mtlsEnabled {
-                MTLSManager.shared.promotePendingCert(to: connection.id)
+                profileSession.mtls.promotePendingCert(to: connection.id)
             }
 
             if capability.supportsLibrarySelection {
@@ -765,7 +766,7 @@ struct SourcesProviderFormScreen: View {
             defer { fileURL.stopAccessingSecurityScopedResource() }
             do {
                 let data = try Data(contentsOf: fileURL)
-                MTLSManager.shared.storePendingCertData(data)
+                profileSession.mtls.storePendingCertData(data)
                 mtlsCertName = fileURL.lastPathComponent
                 mtlsCertValidated = false
                 mtlsCertError = nil
@@ -780,13 +781,13 @@ struct SourcesProviderFormScreen: View {
     }
 
     private func validatePendingCert() {
-        guard let data = KeychainHelper.shared.getData(MTLSManager.pendingCertKey) else {
+        guard let data = profileSession.legacyKeychain.getData(MTLSManager.pendingCertKey) else {
             mtlsCertError = "Choose a .p12 / .pfx file first."
             return
         }
         do {
-            let subject = try MTLSManager.shared.validatePKCS12(data, password: mtlsCertPassword)
-            MTLSManager.shared.storePendingCert(data: data, password: mtlsCertPassword)
+            let subject = try profileSession.mtls.validatePKCS12(data, password: mtlsCertPassword)
+            profileSession.mtls.storePendingCert(data: data, password: mtlsCertPassword)
             mtlsCertName = subject
             mtlsCertValidated = true
             mtlsCertError = nil

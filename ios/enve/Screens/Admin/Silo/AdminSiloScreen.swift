@@ -1,15 +1,17 @@
 import SwiftUI
 
 struct AdminSiloScreen: View {
+    private let profileSession: ProfileSession
     let connection: ServerConnection
     @State private var model: AdminSiloModel
 
     @Environment(\.hearth) private var hearth
     @Environment(\.mantelInset) private var mantelInset
 
-    init(connection: ServerConnection) {
+    init(connection: ServerConnection, profileSession: ProfileSession = .owner) {
+        self.profileSession = profileSession
         self.connection = connection
-        _model = State(initialValue: AdminSiloModel(connection: connection))
+        _model = State(initialValue: AdminSiloModel(connection: connection, profileSession: profileSession))
     }
 
     var body: some View {

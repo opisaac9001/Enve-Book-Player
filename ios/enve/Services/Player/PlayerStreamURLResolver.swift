@@ -13,15 +13,20 @@ final class PlayerStreamURLResolver {
     private let sessionService: PlayerSessionService
     private let progressService: PlayerProgressService
 
+    private let requestSession = URLSession(configuration: .ephemeral)
     private var currentSecurityScopedURL: URL?
+
+    private unowned let profileSession: ProfileSession
 
     init(
         plexService: PlexService = PlexService(),
         audiobookshelfService: AudiobookshelfService = AudiobookshelfService(),
         providerConnections: any ProviderConnectionAccessing,
         sessionService: PlayerSessionService = .shared,
-        progressService: PlayerProgressService = .shared
+        progressService: PlayerProgressService = .shared,
+        profileSession: ProfileSession = .owner
     ) {
+        self.profileSession = profileSession
         self.plexService = plexService
         self.audiobookshelfService = audiobookshelfService
         self.providerConnections = providerConnections
@@ -47,7 +52,7 @@ final class PlayerStreamURLResolver {
             "Checking downloaded file bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: downloadKey))"
         )
 
-        if let local = LocalStorageManager.shared.localAudiobookFileURLIfExists(bookId: downloadKey) {
+        if let local = profileSession.localStorage.localAudiobookFileURLIfExists(bookId: downloadKey) {
             AppLogger.player.debug(
                 "Found local download: \(DiagnosticLogSanitizer.fileDescriptor(for: local))"
             )
@@ -73,7 +78,7 @@ final class PlayerStreamURLResolver {
                 "No downloaded file bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: downloadKey))"
             )
 
-            if let localFiles = LocalStorageManager.shared.localAudiobookFilesIfExists(for: book),
+            if let localFiles = profileSession.localStorage.localAudiobookFilesIfExists(for: book),
                 let firstLocal = localFiles.first
             {
                 AppLogger.player.debug(
@@ -268,7 +273,7 @@ final class PlayerStreamURLResolver {
             }
 
             AppLogger.player.info("Falling back to legacy Plex authentication")
-            guard let discoveryToken = PlexAuthStore.shared.loadToken() else {
+            guard let discoveryToken = profileSession.plexAuth.loadToken() else {
                 throw NSError(
                     domain: "PlayerStreamURLResolver",
                     code: -1,
@@ -276,7 +281,7 @@ final class PlayerStreamURLResolver {
                 )
             }
 
-            guard let requestToken = PlexAuthStore.shared.tokenForServerRequests() else {
+            guard let requestToken = profileSession.plexAuth.tokenForServerRequests() else {
                 throw NSError(
                     domain: "PlayerStreamURLResolver",
                     code: -1,
@@ -427,6 +432,12 @@ final class PlayerStreamURLResolver {
             let libraryItemId = book.partKey ?? book.id
             let trackIndex = book.trackIndex ?? 0
 
+            if !profileSession.serverSyncEnabled {
+                let direct = try await audiobookshelfService.getStreamUrl(libraryItemId: libraryItemId,
+                    trackIndex: trackIndex, backend: backend)
+                return direct.map { Self.absStreamURLWithToken($0, backend: backend) }
+            }
+
             let playSession = try await sessionService.startABSSession(for: book, startTime: 0)
             progressService.absSessionActive = true
 
@@ -529,7 +540,7 @@ final class PlayerStreamURLResolver {
         case .local:
             if let filePath = book.filePath ?? book.partKey {
                 if let libraryId = book.backendId {
-                    if let bookmarkData = LocalLibraryStorageStore.shared.loadBookmark(for: libraryId) {
+                    if let bookmarkData = profileSession.localLibrary.loadBookmark(for: libraryId) {
                         var isStale = false
                         do {
                             #if os(macOS)
@@ -570,7 +581,7 @@ final class PlayerStreamURLResolver {
                             }
                             currentSecurityScopedURL = url
 
-                            if let localBook = LocalLibraryStorageStore.shared.loadBooks(libraryId: libraryId).first(where: {
+                            if let localBook = profileSession.localLibrary.loadBooks(libraryId: libraryId).first(where: {
                                 $0.id == book.id
                             }),
                                 let relative = localBook.relativePath,
@@ -609,7 +620,7 @@ final class PlayerStreamURLResolver {
                 userInfo: [NSLocalizedDescriptionKey: "No file path for local book"]
             )
         case .smb:
-            if let local = LocalStorageManager.shared.localAudiobookFileURLIfExists(bookId: book.downloadKey) {
+            if let local = profileSession.localStorage.localAudiobookFileURLIfExists(bookId: book.downloadKey) {
                 AppLogger.player.debug(
                     "Playing from local download: \(DiagnosticLogSanitizer.fileDescriptor(for: local))"
                 )
@@ -662,6 +673,7 @@ final class PlayerStreamURLResolver {
     }
 
     private func streamFromSMB(book: Book) async throws -> URL {
+        guard profileSession.isOwner else { throw URLError(.unsupportedURL) }
         guard let sourceId = book.backendId else {
             throw NSError(domain: "PlayerStreamURLResolver", code: -1, userInfo: [NSLocalizedDescriptionKey: "Missing SMB source id"])
         }
@@ -854,7 +866,7 @@ final class PlayerStreamURLResolver {
         request.setValue(token, forHTTPHeaderField: "X-Plex-Token")
         request.setValue("application/xml", forHTTPHeaderField: "Accept")
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await requestSession.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse,
             httpResponse.statusCode == 200

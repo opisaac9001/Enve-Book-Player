@@ -7,7 +7,11 @@ final class MTLSManager: @unchecked Sendable {
     static let shared = MTLSManager()
     private let pendingAuthenticationLock = NSLock()
     private var pendingAuthenticationHost: String?
-    private init() {}
+    private let keychain: KeychainHelper
+
+    init(keychain: KeychainHelper = .shared) {
+        self.keychain = keychain
+    }
 
     static func certKey(for connectionId: UUID) -> String {
         "mtls_cert_\(connectionId.uuidString)"
@@ -32,38 +36,38 @@ final class MTLSManager: @unchecked Sendable {
     }
 
     func storePendingCert(data: Data, password: String) {
-        KeychainHelper.shared.set(data, key: Self.pendingCertKey)
+        keychain.set(data, key: Self.pendingCertKey)
         if !password.isEmpty {
-            KeychainHelper.shared.set(password, key: Self.pendingCertPassKey)
+            keychain.set(password, key: Self.pendingCertPassKey)
         }
     }
 
     func storePendingCertData(_ data: Data) {
-        KeychainHelper.shared.set(data, key: Self.pendingCertKey)
+        keychain.set(data, key: Self.pendingCertKey)
     }
 
     var hasPendingCertData: Bool {
-        KeychainHelper.shared.getData(Self.pendingCertKey) != nil
+        keychain.getData(Self.pendingCertKey) != nil
     }
 
     func promotePendingCert(to connectionId: UUID) {
-        if let data = KeychainHelper.shared.getData(Self.pendingCertKey) {
-            KeychainHelper.shared.set(data, key: Self.certKey(for: connectionId))
+        if let data = keychain.getData(Self.pendingCertKey) {
+            keychain.set(data, key: Self.certKey(for: connectionId))
         }
-        if let pass = KeychainHelper.shared.get(Self.pendingCertPassKey) {
-            KeychainHelper.shared.set(pass, key: Self.certPassKey(for: connectionId))
+        if let pass = keychain.get(Self.pendingCertPassKey) {
+            keychain.set(pass, key: Self.certPassKey(for: connectionId))
         }
         clearPendingCert()
     }
 
     func clearPendingCert() {
-        KeychainHelper.shared.delete(Self.pendingCertKey)
-        KeychainHelper.shared.delete(Self.pendingCertPassKey)
+        keychain.delete(Self.pendingCertKey)
+        keychain.delete(Self.pendingCertPassKey)
     }
 
     func deleteCert(for connectionId: UUID) {
-        KeychainHelper.shared.delete(Self.certKey(for: connectionId))
-        KeychainHelper.shared.delete(Self.certPassKey(for: connectionId))
+        keychain.delete(Self.certKey(for: connectionId))
+        keychain.delete(Self.certPassKey(for: connectionId))
     }
 
     func identity(for connectionId: UUID) -> SecIdentity? {
@@ -71,7 +75,7 @@ final class MTLSManager: @unchecked Sendable {
     }
 
     func pendingIdentity(password: String) -> SecIdentity? {
-        guard let data = KeychainHelper.shared.getData(Self.pendingCertKey) else { return nil }
+        guard let data = keychain.getData(Self.pendingCertKey) else { return nil }
         return try? importPKCS12(data, password: password).identity
     }
 
@@ -93,10 +97,10 @@ final class MTLSManager: @unchecked Sendable {
         pendingAuthenticationLock.unlock()
 
         guard isExpectedHost,
-            let data = KeychainHelper.shared.getData(Self.pendingCertKey)
+            let data = keychain.getData(Self.pendingCertKey)
         else { return nil }
 
-        let password = KeychainHelper.shared.get(Self.pendingCertPassKey) ?? ""
+        let password = keychain.get(Self.pendingCertPassKey) ?? ""
         if password == "__keychain_identity__" {
             return findKeychainIdentity(matchingDER: data)
         }
@@ -156,27 +160,27 @@ final class MTLSManager: @unchecked Sendable {
         let summary = SecCertificateCopySubjectSummary(cert) as String? ?? "Client Certificate"
         let derData = SecCertificateCopyData(cert) as Data
 
-        KeychainHelper.shared.set(derData, key: Self.pendingCertKey)
-        KeychainHelper.shared.set("__keychain_identity__", key: Self.pendingCertPassKey)
+        keychain.set(derData, key: Self.pendingCertKey)
+        keychain.set("__keychain_identity__", key: Self.pendingCertPassKey)
         return summary
     }
 
     func promoteKeychainPendingCert(to connectionId: UUID) {
-        guard let pendingDER = KeychainHelper.shared.getData(Self.pendingCertKey),
-            KeychainHelper.shared.get(Self.pendingCertPassKey) == "__keychain_identity__"
+        guard let pendingDER = keychain.getData(Self.pendingCertKey),
+            keychain.get(Self.pendingCertPassKey) == "__keychain_identity__"
         else {
             promotePendingCert(to: connectionId)
             return
         }
 
-        KeychainHelper.shared.set(pendingDER, key: Self.certKey(for: connectionId))
-        KeychainHelper.shared.set("__keychain_identity__", key: Self.certPassKey(for: connectionId))
+        keychain.set(pendingDER, key: Self.certKey(for: connectionId))
+        keychain.set("__keychain_identity__", key: Self.certPassKey(for: connectionId))
         clearPendingCert()
     }
 
     func resolveIdentity(for connectionId: UUID) -> SecIdentity? {
-        guard let data = KeychainHelper.shared.getData(Self.certKey(for: connectionId)) else { return nil }
-        let password = KeychainHelper.shared.get(Self.certPassKey(for: connectionId)) ?? ""
+        guard let data = keychain.getData(Self.certKey(for: connectionId)) else { return nil }
+        let password = keychain.get(Self.certPassKey(for: connectionId)) ?? ""
 
         if password == "__keychain_identity__" {
             return findKeychainIdentity(matchingDER: data)

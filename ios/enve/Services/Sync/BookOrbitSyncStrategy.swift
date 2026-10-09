@@ -8,19 +8,48 @@ final class BookOrbitSyncStrategy: ProviderSyncStrategy {
 
     private let minimumServerSyncInterval: TimeInterval = 60
     private var lastSyncTime: Date?
-    private let playbackState: any PlaybackStateProvider = ActivePlayback.controller
+    private var lastFullArtifactPass: [UUID: Date] = [:]
+    private let fullArtifactPassInterval: TimeInterval = 24 * 60 * 60
+    private let playbackState: any PlaybackStateProvider
     private let providerConnections: any ProviderConnectionAccessing
     private let books: any BookQuerying
     private let bookWriter: any BookWriting
+    private let libraryCache: LibraryBookCache
+    private let pendingSync: PendingSyncQueueStore
+    private let mirrorCheckpoints: ServerMirrorCheckpointStore
+    private let lastOpened: LastOpenedBookStore
+    private let readerArtifacts: BookOrbitReaderArtifactSync
+    private let historySync: ProviderHistorySessionSync
+    private let isEbookReaderOpen: @MainActor () -> Bool
+    // Resolved on demand so registration does not construct the session's progress owner.
+    private let progressStore: @MainActor () -> UserProgressStore
 
     init(
         providerConnections: any ProviderConnectionAccessing,
         books: any BookQuerying,
-        bookWriter: any BookWriting
+        bookWriter: any BookWriting,
+        libraryCache: LibraryBookCache,
+        playbackState: any PlaybackStateProvider,
+        pendingSync: PendingSyncQueueStore,
+        mirrorCheckpoints: ServerMirrorCheckpointStore,
+        lastOpened: LastOpenedBookStore,
+        historySync: ProviderHistorySessionSync,
+        readerArtifacts: BookOrbitReaderArtifactSync,
+        isEbookReaderOpen: @escaping @MainActor () -> Bool,
+        progress: @escaping @MainActor () -> UserProgressStore
     ) {
         self.providerConnections = providerConnections
         self.books = books
         self.bookWriter = bookWriter
+        self.libraryCache = libraryCache
+        self.playbackState = playbackState
+        self.pendingSync = pendingSync
+        self.mirrorCheckpoints = mirrorCheckpoints
+        self.lastOpened = lastOpened
+        self.historySync = historySync
+        self.readerArtifacts = readerArtifacts
+        self.isEbookReaderOpen = isEbookReaderOpen
+        self.progressStore = progress
     }
 
     func sync(force: Bool, launchOptimized: Bool) async -> ProviderSyncResult {
@@ -47,10 +76,10 @@ final class BookOrbitSyncStrategy: ProviderSyncStrategy {
                         providerId: connection.id,
                         through: provider
                     )
-                    pushed += await ProviderHistorySessionSync.shared.retryPending(providerId: connection.id)
+                    pushed += await historySync.retryPending(providerId: connection.id)
                     let pendingBooks = await userDataBooks(records: [], providerId: connection.id)
                     for book in pendingBooks {
-                        let result = await BookOrbitReaderArtifactSync.shared.sync(book: book, provider: provider)
+                        let result = await readerArtifacts.sync(book: book, provider: provider)
                         pulled += result.pulled
                         pushed += result.pushed
                     }
@@ -65,10 +94,10 @@ final class BookOrbitSyncStrategy: ProviderSyncStrategy {
                         providerId: connection.id,
                         through: provider
                     )
-                    pushed += await ProviderHistorySessionSync.shared.retryPending(providerId: connection.id)
+                    pushed += await historySync.retryPending(providerId: connection.id)
                     let books = await userDataBooks(records: [], providerId: connection.id, includeAll: true)
                     for book in books {
-                        let result = await BookOrbitReaderArtifactSync.shared.sync(book: book, provider: provider)
+                        let result = await readerArtifacts.sync(book: book, provider: provider)
                         pulled += result.pulled
                         pushed += result.pushed
                     }
@@ -94,17 +123,23 @@ final class BookOrbitSyncStrategy: ProviderSyncStrategy {
                     return "\(record.bookId)|\(record.status.rawValue)|\(record.progress)|\(record.epubCFI ?? "")|\(rating)|\(record.updatedAt.timeIntervalSince1970)"
                 }
                 let fingerprint = ServerMirrorFingerprint.activity(fingerprintItems)
-                ServerMirrorCheckpointStore.shared.commitCompleteSnapshot(
+                mirrorCheckpoints.commitCompleteSnapshot(
                     scope: scope,
                     syncLevel: .fullSnapshot,
                     fingerprint: fingerprint,
                     itemCount: records.count
                 )
-                pushed += await ProviderHistorySessionSync.shared.retryPending(providerId: connection.id)
-                let books = await userDataBooks(records: records, providerId: connection.id, includeAll: true)
-                pulled += await ProviderHistorySessionSync.shared.pullBookOrbitSessions(provider: provider, books: books)
+                pushed += await historySync.retryPending(providerId: connection.id)
+                // Only books with reading activity can have sessions; walking the whole library each sync is too slow.
+                let activeBooks = await userDataBooks(records: records, providerId: connection.id)
+                pulled += await historySync.pullBookOrbitSessions(provider: provider, books: activeBooks)
+                let fullPassDue = lastFullArtifactPass[connection.id].map { now.timeIntervalSince($0) >= fullArtifactPassInterval } ?? true
+                let books = fullPassDue
+                    ? await userDataBooks(records: records, providerId: connection.id, includeAll: true)
+                    : activeBooks
+                if fullPassDue { lastFullArtifactPass[connection.id] = now }
                 for book in books {
-                    let result = await BookOrbitReaderArtifactSync.shared.sync(book: book, provider: provider)
+                    let result = await readerArtifacts.sync(book: book, provider: provider)
                     pulled += result.pulled
                     pushed += result.pushed
                 }
@@ -148,7 +183,7 @@ final class BookOrbitSyncStrategy: ProviderSyncStrategy {
             updates.append((remote, book))
         }
 
-        await UserProgressStore.shared.applyAuthoritativeServerProgress(updates)
+        await progressStore().applyAuthoritativeServerProgress(updates)
         return updates.count
     }
 
@@ -183,7 +218,7 @@ final class BookOrbitSyncStrategy: ProviderSyncStrategy {
             }
             if isActivelyReading(book) { return (false, 0) }
             if book.personalRating != record.rating,
-                let updated = AppState.shared.mutateBook(uniqueId: book.uniqueId, { $0.personalRating = record.rating })
+                let updated = libraryCache.mutateBook(uniqueId: book.uniqueId, { $0.personalRating = record.rating })
             {
                 ratingSnapshots.append(updated)
             }
@@ -236,7 +271,7 @@ final class BookOrbitSyncStrategy: ProviderSyncStrategy {
         if !ratingSnapshots.isEmpty {
             await bookWriter.upsertBooks(ratingSnapshots)
         }
-        await UserProgressStore.shared.applyAuthoritativeServerActivity(updates)
+        await progressStore().applyAuthoritativeServerActivity(updates)
         return (true, updates.count + ratingSnapshots.count)
     }
 
@@ -252,7 +287,7 @@ final class BookOrbitSyncStrategy: ProviderSyncStrategy {
             )
         }
         var ids = Set(records.map { "\(providerId)_\($0.bookId)" })
-        ids.formUnion(BookOrbitReaderArtifactSync.shared.pendingBookIds(providerId: providerId))
+        ids.formUnion(readerArtifacts.pendingBookIds(providerId: providerId))
         guard !ids.isEmpty else { return [] }
         let lookup = await books.booksByAnyIds(ids)
         var seen = Set<String>()
@@ -355,7 +390,7 @@ final class BookOrbitSyncStrategy: ProviderSyncStrategy {
 
     private func pendingBookIds(providerId: UUID) -> (uniqueIds: Set<String>, stableIds: Set<String>) {
         let stableIds = Set(
-            PendingSyncQueueStore.shared.entries.values
+            pendingSync.entries.values
                 .filter { $0.source == .bookOrbit }
                 .map(\.stableId)
         )
@@ -366,7 +401,7 @@ final class BookOrbitSyncStrategy: ProviderSyncStrategy {
         if playbackState.currentBook?.stableId == book.stableId {
             return true
         }
-        return SyncCoordinator.shared.isEbookReaderOpen
-            && LastOpenedBookStore.shared.stableId == book.stableId
+        return isEbookReaderOpen()
+            && lastOpened.stableId == book.stableId
     }
 }

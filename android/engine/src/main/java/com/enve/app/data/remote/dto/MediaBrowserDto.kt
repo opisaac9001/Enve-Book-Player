@@ -48,3 +48,21 @@ data class MediaBrowserPersonDto(
 data class MediaBrowserNamedItemDto(
     @SerialName("Name") val name: String,
 )
+
+@Serializable
+data class MediaBrowserUserDataUpdate(
+    val PlaybackPositionTicks: Long,
+    val LastPlayedDate: String,
+    val Played: Boolean? = null,
+)
+
+@Serializable
+data class MediaBrowserPlaybackReport(
+    val ItemId: String,
+    val PlaySessionId: String,
+    val PositionTicks: Long,
+    val IsPaused: Boolean = false,
+    val CanSeek: Boolean = true,
+    val PlayMethod: String = "DirectStream",
+    val EventName: String? = null,
+)

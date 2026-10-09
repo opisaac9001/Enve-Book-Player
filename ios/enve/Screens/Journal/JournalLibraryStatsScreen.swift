@@ -4,7 +4,7 @@ struct JournalLibraryStatsScreen: View {
     @Environment(\.hearth) private var hearth
     @Environment(\.mantelInset) private var mantelInset
 
-    @State private var model = JournalLibraryStatsModel()
+    @Environment(JournalLibraryStatsModel.self) private var model
 
     var body: some View {
         ScrollView {

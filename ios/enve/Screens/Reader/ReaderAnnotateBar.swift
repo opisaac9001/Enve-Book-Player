@@ -49,7 +49,7 @@ struct ReaderAnnotateBar: View {
             }
             .frame(maxWidth: .infinity, alignment: .center)
         }
-        .frame(height: 54)
+        .frame(height: ReaderAnnotationToolbarLayout.barHeight)
     }
 
     private func selectedColorButton(compact: Bool) -> some View {

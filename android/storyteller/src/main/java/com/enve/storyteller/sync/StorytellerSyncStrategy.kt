@@ -1,5 +1,6 @@
 package com.enve.storyteller.sync
 
+import com.enve.core.data.util.runSuspendCatching
 import android.util.Log
 import com.enve.core.data.local.BookCacheDao
 import com.enve.core.data.local.ConnectionRegistry
@@ -44,7 +45,7 @@ class StorytellerSyncStrategy @Inject constructor(
             .toSet()
         if (storytellerConnectionIds.isEmpty()) return ProviderSyncResult.ZERO
 
-        val cached = runCatching { bookCacheDao.getInProgressOnce(limit = 50) }
+        val cached = runSuspendCatching { bookCacheDao.getInProgressOnce(limit = 50) }
             .getOrDefault(emptyList())
             .filter { it.source == BookSource.STORYTELLER.name }
 
@@ -65,7 +66,7 @@ class StorytellerSyncStrategy @Inject constructor(
             val localPercentage = cachedBook.readProgress
             if (snapshot.percentage <= localPercentage + 0.005f) continue
 
-            runCatching {
+            runSuspendCatching {
                 bookCacheDao.updateUnifiedProgress(
                     bookId = book.id,
                     connectionId = book.connectionId,

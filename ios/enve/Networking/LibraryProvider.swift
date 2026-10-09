@@ -96,6 +96,11 @@ protocol PlaybackSessionProvider: ProviderConnectionHandling {
     func chapterExtractionURL(for book: Book) -> URL?
     func getStreamingHeaders() -> [String: String]
     func startPlaybackSession(for book: Book) async throws -> PlaybackSessionInfo
+    func reportPlayback(_ event: ServerPlaybackEvent, book: Book, sessionId: String, position: TimeInterval) async
+}
+
+enum ServerPlaybackEvent {
+    case started, paused, resumed, stopped
 }
 
 protocol AudiobookProgressPushing: ProviderConnectionHandling {
@@ -142,7 +147,29 @@ protocol PersonalRatingProvider: ProviderConnectionHandling {
     func updatePersonalRating(for book: Book, rating: Int) async throws
 }
 
-protocol LibraryProvider: LibraryCatalogProvider {}
+protocol SavedBooksProvider: ProviderConnectionHandling {
+    func canSyncSavedBooks() async throws -> Bool
+    func fetchSavedBookIDs(libraryIds: Set<String>) async throws -> [SavedBookList: Set<String>]
+    func setSavedBook(_ book: Book, list: SavedBookList, saved: Bool) async throws
+    func relatedSavedBookIDs(for book: Book) -> Set<String>
+    func localSavedBookIDs(_ serverIDs: Set<String>, existingIDs: Set<String>, availableIDs: Set<String>) -> Set<String>
+}
+
+extension SavedBooksProvider {
+    func relatedSavedBookIDs(for book: Book) -> Set<String> { [book.uniqueId] }
+
+    func localSavedBookIDs(_ serverIDs: Set<String>, existingIDs: Set<String>, availableIDs: Set<String>) -> Set<String> {
+        serverIDs
+    }
+}
+
+protocol LibraryProvider: LibraryCatalogProvider {
+    func retire() async
+}
+
+extension LibraryProvider {
+    func retire() async {}
+}
 
 @MainActor
 protocol LibraryProviderResolving: AnyObject {
@@ -433,6 +460,7 @@ extension ProviderConnectionHandling {
 
 extension PlaybackSessionProvider {
     func chapterExtractionURL(for book: Book) -> URL? { getAudioURL(for: book) }
+    func reportPlayback(_ event: ServerPlaybackEvent, book: Book, sessionId: String, position: TimeInterval) async {}
 }
 
 extension EbookProgressPulling {

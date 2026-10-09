@@ -18,10 +18,12 @@ import com.enve.engine.servertools.ServerStat
 import com.enve.engine.servertools.ServerStatGroup
 import com.enve.silo.SiloHistoryItem
 import java.time.Instant
+import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
 import kotlin.math.roundToLong
 
 internal object ServerToolsMapping {
@@ -306,7 +308,7 @@ internal object ServerToolsMapping {
 
         val pace = buildList {
             if (stats.hoursSpentReading > 0L) {
-                add(ServerStat("Time read", "${stats.hoursSpentReading} h", detail = "Estimated by Kavita"))
+                add(ServerStat("Time read", "${stats.hoursSpentReading} h", detail = "Rounded to the hour by Kavita"))
             }
             if (stats.averageHoursPerWeek > 0.0) {
                 add(ServerStat("Weekly average", "${round1(stats.averageHoursPerWeek)} h"))
@@ -334,7 +336,7 @@ internal object ServerToolsMapping {
             if (stats.todaySeconds > 0L) add(ServerStat("Today", duration(stats.todaySeconds)))
             if (stats.activeDays > 0) add(ServerStat("Active days", stats.activeDays.toString()))
             if (stats.bestDaySeconds > 0L) {
-                add(ServerStat("Best day", duration(stats.bestDaySeconds), detail = stats.bestDay))
+                add(ServerStat("Best day", duration(stats.bestDaySeconds), detail = stats.bestDay?.let(::dayLabel)))
             }
             stats.busiestWeekday?.let { add(ServerStat("Busiest weekday", it)) }
         }
@@ -361,6 +363,9 @@ internal object ServerToolsMapping {
             durationSeconds = item.runtimeSeconds.takeIf { it > 0L },
         )
     }
+
+    private fun dayLabel(day: String): String =
+        runCatching { LocalDate.parse(day).format(DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM)) }.getOrDefault(day)
 
     fun duration(seconds: Long): String {
         val safe = seconds.coerceAtLeast(0L)

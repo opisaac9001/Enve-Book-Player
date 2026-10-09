@@ -60,17 +60,28 @@ final class OPDSCatalogBrowser {
         providers: any OPDSProviderMaking = PluginRegistry.shared,
         authenticationStore: OPDSAuthenticationStore = .shared,
         connections: (any ProviderConnectionEditing)? = AppState.shared.providerConnections,
-        adoptSample: @escaping (URL) async throws -> Void = OPDSCatalogBrowser.importIntoLocalLibrary
+        adoptSample: ((URL) async throws -> Void)? = nil
     ) {
         self.providers = providers
         self.authenticationStore = authenticationStore
         self.connections = connections
-        self.adoptSample = adoptSample
+        if let adoptSample {
+            self.adoptSample = adoptSample
+        } else {
+            let session = ProfileSession.owner
+            self.adoptSample = { [session] url in
+                guard !session.isRetired else { throw CancellationError() }
+                _ = try await session.engine.sources.importFiles(urls: [url], mode: .splitSelectedBooks)
+            }
+        }
     }
 
-    /// Store samples as local books so catalog reconciliation cannot remove them.
-    private static func importIntoLocalLibrary(_ url: URL) async throws {
-        _ = try await EnveEngine.shared.sources.importFiles(urls: [url], mode: .splitSelectedBooks)
+    convenience init(profileSession: ProfileSession) {
+        self.init(providers: profileSession.registry, authenticationStore: profileSession.opdsAuthentication,
+            connections: profileSession.providerConnections, adoptSample: { [profileSession] url in
+                guard !profileSession.isRetired else { throw CancellationError() }
+                _ = try await profileSession.engine.sources.importFiles(urls: [url], mode: .splitSelectedBooks)
+            })
     }
 
     var activeConnection: ServerConnection? { connection }

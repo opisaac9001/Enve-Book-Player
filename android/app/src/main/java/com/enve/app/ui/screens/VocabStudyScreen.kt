@@ -41,7 +41,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.hilt.navigation.compose.hiltViewModel
+import com.enve.hearth.shell.profileViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.enve.app.ui.components.ScreenBackButton
 import com.enve.app.ui.components.SettingsScreenLayout
@@ -59,7 +59,7 @@ private val StudyWine = Color(0xFFA05252)
 @Composable
 fun VocabStudyScreen(
     onBack: () -> Unit,
-    viewModel: VocabViewModel = hiltViewModel(),
+    viewModel: VocabViewModel = profileViewModel(),
 ) {
     val s by viewModel.session.collectAsStateWithLifecycle()
     val colors = EnveTheme.colors

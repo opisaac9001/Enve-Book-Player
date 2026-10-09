@@ -2,6 +2,7 @@ import Combine
 import SwiftUI
 
 struct JournalScreen: View {
+    @Environment(\.profileSession) private var profileSession
 
     var isActive: Bool = true
 
@@ -93,7 +94,7 @@ struct JournalScreen: View {
             }
             Spacer()
             NavigationLink {
-                SettingsScreen()
+                SettingsScreen(profileSession: profileSession ?? .owner)
             } label: {
                 Image(systemName: "gearshape")
                     .font(.hearthUI(17, weight: .medium))
@@ -262,8 +263,8 @@ struct JournalScreen: View {
     }
 
     private func load() async {
-        let listening = await ListeningStatsTracker.shared.currentSnapshot()
-        let reading = await ReadingStatsTracker.shared.currentSnapshot()
+        let listening = await (profileSession?.listeningStats ?? ListeningStatsTracker.shared).currentSnapshot()
+        let reading = await (profileSession?.readingStats ?? ReadingStatsTracker.shared).currentSnapshot()
 
         weekListening = JournalStats.weekTotal(listening.dailySeconds)
         weekReading = JournalStats.weekTotal(reading.dailySecondsRead)
@@ -320,7 +321,7 @@ enum JournalStats {
     private static let dayFormatter: DateFormatter = {
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy-MM-dd"
-        fmt.timeZone = TimeZone(secondsFromGMT: 0)
+        fmt.locale = Locale(identifier: "en_US_POSIX")
         return fmt
     }()
 

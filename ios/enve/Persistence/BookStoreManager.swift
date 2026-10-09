@@ -9,6 +9,9 @@ final class BookStoreManager {
     let repository: BookStoreRepository
 
     private let container: ModelContainer
+    private let databaseURL: URL
+    private let defaults: UserDefaults
+    private let permitsLegacyImport: Bool
     private static let migrationVersionKey = "enve.bookstore.migrationVersion"
     private static let currentMigrationVersion = 1
 
@@ -21,10 +24,10 @@ final class BookStoreManager {
     }
 
     private static var storeURL: URL {
-        URL.documentsDirectory.appendingPathComponent("BookStore.sqlite")
+        ProfileStorageLocations.owner.bookStoreURL
     }
 
-    private static func removeStoreFiles() {
+    private static func removeStoreFiles(at storeURL: URL) {
         let fm = FileManager.default
         let basePath = storeURL.path
         let urls = [
@@ -45,22 +48,16 @@ final class BookStoreManager {
 
     private init() {
         let schema = Schema(versionedSchema: BookStoreSchemaV1.self)
-        let config = ModelConfiguration(
-            "BookStore",
-            schema: schema,
-            url: Self.storeURL,
-            cloudKitDatabase: .none
-        )
+        let config = Self.configuration(schema: schema, storeURL: Self.storeURL)
+        databaseURL = Self.storeURL
+        defaults = .standard
+        permitsLegacyImport = true
 
         var resolvedContainer: ModelContainer
         var outcome: StoreHealthState = .healthy
         var backupLocation: URL? = nil
         do {
-            resolvedContainer = try ModelContainer(
-                for: schema,
-                migrationPlan: BookStoreMigrationPlan.self,
-                configurations: [config]
-            )
+            resolvedContainer = try Self.openContainer(schema: schema, configuration: config)
         } catch {
             AppLogger.general.error("BookStore: persistent store failed: \(error)")
 
@@ -69,12 +66,8 @@ final class BookStoreManager {
                     throw error
                 }
                 backupLocation = backup
-                Self.removeStoreFiles()
-                resolvedContainer = try ModelContainer(
-                    for: schema,
-                    migrationPlan: BookStoreMigrationPlan.self,
-                    configurations: [config]
-                )
+                Self.removeStoreFiles(at: Self.storeURL)
+                resolvedContainer = try Self.openContainer(schema: schema, configuration: config)
                 outcome = .recoveredFromBackup
             } catch {
                 AppLogger.general.error("BookStore: fallback to in-memory: \(error)")
@@ -143,8 +136,39 @@ final class BookStoreManager {
         StoreHealth.shared.hasAcknowledged = false
     }
 
+    init(storage: ProfileStorageLocations, defaults: UserDefaults) throws {
+        databaseURL = storage.bookStoreURL
+        self.defaults = defaults
+        permitsLegacyImport = storage.profileID == FamilyProfile.ownerID
+        try FileManager.default.createDirectory(
+            at: databaseURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let schema = Schema(versionedSchema: BookStoreSchemaV1.self)
+        let configuration = Self.configuration(schema: schema, storeURL: databaseURL)
+        container = try Self.openContainer(schema: schema, configuration: configuration)
+        repository = SwiftDataBookStore(container: container)
+        _ = try BookStoreSQLTuner.apply(to: databaseURL)
+        defaults.set(Self.currentSchemaVersionString, forKey: Self.appliedSchemaVersionKey)
+    }
+
+    private static func configuration(schema: Schema, storeURL: URL) -> ModelConfiguration {
+        ModelConfiguration("BookStore", schema: schema, url: storeURL, cloudKitDatabase: .none)
+    }
+
+    private static func openContainer(
+        schema: Schema,
+        configuration: ModelConfiguration
+    ) throws -> ModelContainer {
+        try ModelContainer(
+            for: schema,
+            migrationPlan: BookStoreMigrationPlan.self,
+            configurations: [configuration]
+        )
+    }
+
     var needsLegacyImport: Bool {
-        UserDefaults.standard.integer(forKey: Self.migrationVersionKey) < Self.currentMigrationVersion
+        permitsLegacyImport && defaults.integer(forKey: Self.migrationVersionKey) < Self.currentMigrationVersion
     }
 
     func runLegacyImportIfNeeded(allBooks: [Book], hiddenStableIds: Set<String>, deletedStableIds: Set<String>) async {
@@ -153,12 +177,12 @@ final class BookStoreManager {
 
         AppLogger.general.info("BookStore: starting legacy import of \(allBooks.count) books")
         await repository.importLegacyBooks(allBooks, hiddenStableIds: hiddenStableIds, deletedStableIds: deletedStableIds)
-        UserDefaults.standard.set(Self.currentMigrationVersion, forKey: Self.migrationVersionKey)
+        defaults.set(Self.currentMigrationVersion, forKey: Self.migrationVersionKey)
         AppLogger.general.info("BookStore: legacy import complete, migration version set to \(Self.currentMigrationVersion)")
     }
 
     func resetStore() {
-        Self.removeStoreFiles()
-        UserDefaults.standard.removeObject(forKey: Self.migrationVersionKey)
+        Self.removeStoreFiles(at: databaseURL)
+        defaults.removeObject(forKey: Self.migrationVersionKey)
     }
 }

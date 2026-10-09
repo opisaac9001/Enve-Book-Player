@@ -3,20 +3,37 @@ import SwiftUI
 
 /// Browse catalog structure and acquisitions that library import cannot represent.
 struct SourcesOPDSBrowseScreen: View {
+    @Environment(\.profileSession) private var capturedSession
+    let connectionId: UUID?
+
+    init(connectionId: UUID? = nil) {
+        self.connectionId = connectionId
+    }
+
+    var body: some View {
+        let session = capturedSession ?? .owner
+        SourcesOPDSBrowseContent(connectionId: connectionId, profileSession: session)
+            .id(session.profile.id)
+    }
+}
+
+private struct SourcesOPDSBrowseContent: View {
     @Environment(EnveEngine.self) private var engine
     @Environment(\.hearth) private var hearth
     @Environment(\.openURL) private var openURL
 
-    @State private var browser = OPDSCatalogBrowser()
-    @StateObject private var importer = OPDSBulkImportService()
+    @State private var browser: OPDSCatalogBrowser
+    @StateObject private var importer: OPDSBulkImportService
 
     @State private var selectedConnectionId: UUID?
     @State private var collectionName = ""
     @State private var searchField = ""
     @State private var signIn: OPDSAuthenticationDocument?
 
-    init(connectionId: UUID? = nil) {
+    init(connectionId: UUID?, profileSession: ProfileSession) {
         _selectedConnectionId = State(initialValue: connectionId)
+        _browser = State(initialValue: OPDSCatalogBrowser(profileSession: profileSession))
+        _importer = StateObject(wrappedValue: profileSession.opdsBulkImport)
     }
 
     private var opdsConnections: [ServerConnection] {

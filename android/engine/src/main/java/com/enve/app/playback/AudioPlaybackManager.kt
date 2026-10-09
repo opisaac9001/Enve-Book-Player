@@ -1,5 +1,10 @@
 package com.enve.app.playback
 
+import com.enve.core.di.ApplicationScope
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import android.content.ComponentName
 import android.content.Context
 import android.os.Looper
@@ -134,6 +139,8 @@ data class PlaybackState(
 class AudioPlaybackManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val autoArtworkCache: AutoArtworkCache,
+    @ApplicationScope parentScope: CoroutineScope =
+        CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) {
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var controller: MediaController? = null
@@ -142,7 +149,7 @@ class AudioPlaybackManager @Inject constructor(
     val state: StateFlow<PlaybackState> = _state.asStateFlow()
 
     private var positionJob: Job? = null
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val scope = CoroutineScope(SupervisorJob(parentScope.coroutineContext[Job]) + Dispatchers.Main)
     private var activeTrackDurationsMs: List<Long> = emptyList()
     private var activeTrackOffsetsMs: List<Long> = emptyList()
     private var activeQueueKey: String? = null

@@ -195,8 +195,12 @@ final class LibraryModel {
         case sortedOffset
     }
 
-    init() {
-        let defaults = UserDefaults.standard
+    private unowned let profileSession: ProfileSession?
+    private var defaults: UserDefaults { profileSession?.defaults ?? .standard }
+
+    init(profileSession: ProfileSession? = nil) {
+        self.profileSession = profileSession
+        let defaults = profileSession?.defaults ?? .standard
         facet = LibraryFacet(rawValue: defaults.string(forKey: Self.facetKey) ?? "") ?? .books
         status = LibraryStatusFilter(rawValue: defaults.string(forKey: Self.statusKey) ?? "") ?? .all
         media = LibraryMediaFilter(rawValue: defaults.string(forKey: Self.mediaKey) ?? "") ?? .all
@@ -206,7 +210,7 @@ final class LibraryModel {
         sortDescriptors = descriptors
         sort = descriptors.first?.field ?? fallbackSort
         sortDirection = descriptors.first?.direction ?? fallbackDirection
-        layout = .persisted
+        layout = LibraryLayout(rawValue: defaults.string(forKey: LibraryLayout.defaultsKey) ?? "") ?? .list
         sourceFilter = LibrarySourceFilter(rawValue: defaults.string(forKey: Self.sourceKey) ?? "")
         advancedFilters =
             defaults.data(forKey: Self.advancedFiltersKey)
@@ -225,7 +229,7 @@ final class LibraryModel {
     func select(_ facet: LibraryFacet) {
         guard facet != self.facet else { return }
         self.facet = facet
-        UserDefaults.standard.set(facet.rawValue, forKey: Self.facetKey)
+        defaults.set(facet.rawValue, forKey: Self.facetKey)
         if facet != .books {
             libraryEndSelection()
         }
@@ -235,14 +239,14 @@ final class LibraryModel {
     func select(_ status: LibraryStatusFilter) {
         guard status != self.status else { return }
         self.status = status
-        UserDefaults.standard.set(status.rawValue, forKey: Self.statusKey)
+        defaults.set(status.rawValue, forKey: Self.statusKey)
         Task { await reload() }
     }
 
     func select(_ media: LibraryMediaFilter) {
         guard media != self.media else { return }
         self.media = media
-        UserDefaults.standard.set(media.rawValue, forKey: Self.mediaKey)
+        defaults.set(media.rawValue, forKey: Self.mediaKey)
         Task { await reload() }
     }
 
@@ -299,13 +303,13 @@ final class LibraryModel {
     func selectLayout(_ layout: LibraryLayout) {
         guard layout != self.layout else { return }
         self.layout = layout
-        UserDefaults.standard.set(layout.rawValue, forKey: LibraryLayout.defaultsKey)
+        defaults.set(layout.rawValue, forKey: LibraryLayout.defaultsKey)
     }
 
     func select(_ source: LibrarySourceFilter) {
         guard source != sourceFilter else { return }
         sourceFilter = source
-        UserDefaults.standard.set(source.rawValue, forKey: Self.sourceKey)
+        defaults.set(source.rawValue, forKey: Self.sourceKey)
         Task { await reload() }
     }
 
@@ -313,22 +317,22 @@ final class LibraryModel {
         var changed = false
         if self.status != status {
             self.status = status
-            UserDefaults.standard.set(status.rawValue, forKey: Self.statusKey)
+            defaults.set(status.rawValue, forKey: Self.statusKey)
             changed = true
         }
         if self.media != media {
             self.media = media
-            UserDefaults.standard.set(media.rawValue, forKey: Self.mediaKey)
+            defaults.set(media.rawValue, forKey: Self.mediaKey)
             changed = true
         }
         if sourceFilter != source {
             sourceFilter = source
-            UserDefaults.standard.set(source.rawValue, forKey: Self.sourceKey)
+            defaults.set(source.rawValue, forKey: Self.sourceKey)
             changed = true
         }
         if self.facet != facet {
             self.facet = facet
-            UserDefaults.standard.set(facet.rawValue, forKey: Self.facetKey)
+            defaults.set(facet.rawValue, forKey: Self.facetKey)
             changed = true
         }
         if changed {
@@ -370,10 +374,10 @@ final class LibraryModel {
         media = .all
         sourceFilter = .all
         advancedFilters = .empty
-        UserDefaults.standard.set(LibraryStatusFilter.all.rawValue, forKey: Self.statusKey)
-        UserDefaults.standard.set(LibraryMediaFilter.all.rawValue, forKey: Self.mediaKey)
-        UserDefaults.standard.set(LibrarySourceFilter.all.rawValue, forKey: Self.sourceKey)
-        UserDefaults.standard.removeObject(forKey: Self.advancedFiltersKey)
+        defaults.set(LibraryStatusFilter.all.rawValue, forKey: Self.statusKey)
+        defaults.set(LibraryMediaFilter.all.rawValue, forKey: Self.mediaKey)
+        defaults.set(LibrarySourceFilter.all.rawValue, forKey: Self.sourceKey)
+        defaults.removeObject(forKey: Self.advancedFiltersKey)
         Task { await reload() }
     }
 
@@ -409,7 +413,7 @@ final class LibraryModel {
         guard !isLoadingAdvancedFilterOptions else { return }
         isLoadingAdvancedFilterOptions = true
         defer { isLoadingAdvancedFilterOptions = false }
-        let library = EnveEngine.shared.library
+        let library = (profileSession?.engine ?? EnveEngine.shared).library
         let downloaded = status == .downloaded ? downloadedStableIdsFromTasks() : []
         let list = await sourceScopedBooks(library: library, mediaType: nil, boundedForSupportData: true)
             .filter { library.matchesStatus($0, status: status, downloadedIds: downloaded) }
@@ -420,9 +424,9 @@ final class LibraryModel {
         guard filters != advancedFilters else { return }
         advancedFilters = filters
         if filters.isActive, let data = try? JSONEncoder().encode(filters) {
-            UserDefaults.standard.set(data, forKey: Self.advancedFiltersKey)
+            defaults.set(data, forKey: Self.advancedFiltersKey)
         } else {
-            UserDefaults.standard.removeObject(forKey: Self.advancedFiltersKey)
+            defaults.removeObject(forKey: Self.advancedFiltersKey)
         }
         Task { await reload() }
     }
@@ -515,7 +519,7 @@ final class LibraryModel {
     }
 
     private func persistSortDescriptors() {
-        let defaults = UserDefaults.standard
+        let defaults = self.defaults
         if let data = try? JSONEncoder().encode(sortDescriptors) {
             defaults.set(data, forKey: Self.sortDescriptorsKey)
         }
@@ -588,21 +592,21 @@ final class LibraryModel {
 
     func downloadSelected() {
         let targets = selectedBooks.filter {
-            $0.source != .local && !LibraryBookActions.isDownloaded($0)
+            $0.source != .local && !(profileSession?.engine ?? EnveEngine.shared).downloads.isLibraryDownloaded($0)
         }
         libraryEndSelection()
         guard !targets.isEmpty else { return }
         PlatformHaptics.impact(.light)
         Task {
             for book in targets {
-                await EnveEngine.shared.downloads.download(book)
+                await (profileSession?.engine ?? EnveEngine.shared).downloads.download(book)
             }
         }
     }
 
     func playSelected() {
         let targets = selectedBooks
-        guard EnveEngine.shared.playback.playAll(targets, groupKey: "selection") else { return }
+        guard (profileSession?.engine ?? EnveEngine.shared).playback.playAll(targets, groupKey: "selection") else { return }
         libraryEndSelection()
         PlatformHaptics.impact(.medium)
     }
@@ -611,19 +615,19 @@ final class LibraryModel {
         let targets = selectedBooks.filter { $0.mediaType != .ebook }
         libraryEndSelection()
         guard !targets.isEmpty else { return }
-        EnveEngine.shared.playback.addLast(targets, groupKey: "selection")
+        (profileSession?.engine ?? EnveEngine.shared).playback.addLast(targets, groupKey: "selection")
         PlatformHaptics.impact(.light)
     }
 
     func removeSelectedDownloads() {
         let targets = selectedBooks.filter {
-            $0.source != .local && LibraryBookActions.isDownloaded($0)
+            $0.source != .local && (profileSession?.engine ?? EnveEngine.shared).downloads.isLibraryDownloaded($0)
         }
         libraryEndSelection()
         guard !targets.isEmpty else { return }
         PlatformHaptics.impact(.medium)
         for book in targets {
-            LibraryBookActions.removeDownload(book)
+            Task { await (profileSession?.engine ?? EnveEngine.shared).downloads.removeLibraryDownload(for: book) }
         }
     }
 
@@ -633,7 +637,7 @@ final class LibraryModel {
         guard !targets.isEmpty else { return }
         PlatformHaptics.impact(.light)
         for book in targets {
-            _ = EnveEngine.shared.library.toggleFinished(book)
+            _ = (profileSession?.engine ?? EnveEngine.shared).library.toggleFinished(book)
         }
     }
 
@@ -669,10 +673,10 @@ final class LibraryModel {
     func bootstrap() async {
         guard !hasLoaded else { return }
         if let id = sourceFilter.providerId,
-            !EnveEngine.shared.library.hasConnection(id: id)
+            !(profileSession?.engine ?? EnveEngine.shared).library.hasConnection(id: id)
         {
             sourceFilter = .all
-            UserDefaults.standard.set(LibrarySourceFilter.all.rawValue, forKey: Self.sourceKey)
+            defaults.set(LibrarySourceFilter.all.rawValue, forKey: Self.sourceKey)
         }
         await reload()
     }
@@ -680,7 +684,7 @@ final class LibraryModel {
     func reload() async {
         generation &+= 1
         let gen = generation
-        let library = EnveEngine.shared.library
+        let library = (profileSession?.engine ?? EnveEngine.shared).library
         excludedLibraryKeys = LibraryDisplayPreferencesStore.shared.loadPreferences().excludedLibraryIds
         totalLibraryCount = await library.totalBookCount()
         if facet == .books || isSearchActive {
@@ -892,7 +896,7 @@ final class LibraryModel {
         pageOffset = 0
         pagingMode = .none
         isPagedMode = false
-        books = EnveEngine.shared.library.applySort(kept, descriptors: sortDescriptors)
+        books = (profileSession?.engine ?? EnveEngine.shared).library.applySort(kept, descriptors: sortDescriptors)
         resultTotalCount = kept.count
     }
 
@@ -909,7 +913,7 @@ final class LibraryModel {
         let cursor = pageCursor
         let offset = pageOffset
         Task {
-            let library = EnveEngine.shared.library
+            let library = (profileSession?.engine ?? EnveEngine.shared).library
             let next: [Book]
             switch mode {
             case .recentKeyset:
@@ -992,7 +996,7 @@ final class LibraryModel {
     }
 
     private func rebuildWorkIndex() async {
-        let index = await EnveEngine.shared.library.workIndex()
+        let index = await (profileSession?.engine ?? EnveEngine.shared).library.workIndex()
         workHiddenIds = index.hiddenUniqueIds
         workRefByRep = index.representativeWorkKey.reduce(into: [:]) { result, entry in
             result[entry.key] = LibraryWorkRef(key: entry.value, count: index.representativeCount[entry.key] ?? 2)
@@ -1095,7 +1099,7 @@ final class LibraryModel {
     }
 
     func books(forGenre aggregate: BrowseGenreAggregate) async -> [Book] {
-        let library = EnveEngine.shared.library
+        let library = (profileSession?.engine ?? EnveEngine.shared).library
         if sourceFilter == .all, status == .all, !advancedFilters.isActive {
             return await library.books(forGenre: aggregate, mediaScope: mediaScope)
         }
@@ -1139,18 +1143,18 @@ final class LibraryModel {
         rawPages.removeAll { $0.uniqueId == book.uniqueId }
     }
 
-    static func markHidden(_ book: Book) {
-        markHidden([book])
+    static func markHidden(_ book: Book, profileSession: ProfileSession? = nil) {
+        markHidden([book], profileSession: profileSession)
     }
 
-    static func markHidden(_ booksToHide: [Book]) {
+    static func markHidden(_ booksToHide: [Book], profileSession: ProfileSession? = nil) {
         guard !booksToHide.isEmpty else { return }
-        Task { await EnveEngine.shared.library.hideFromLibrary(booksToHide) }
+        Task { await (profileSession?.engine ?? EnveEngine.shared).library.hideFromLibrary(booksToHide) }
         PlatformHaptics.impact(.light)
     }
 
     private func downloadedStableIdsFromTasks() -> Set<String> {
-        EnveEngine.shared.downloads.completedDownloadBookIds
+        (profileSession?.engine ?? EnveEngine.shared).downloads.completedDownloadBookIds
     }
 
     private static let finishedCollection = SmartCollection(

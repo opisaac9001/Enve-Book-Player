@@ -2,27 +2,18 @@ import Foundation
 
 @MainActor
 final class SiloAdminService {
+    private let profileSession: ProfileSession
     private let connectionId: UUID
     private let fallbackConnection: ServerConnection
     private let session: URLSession
     private let decoder: JSONDecoder
 
-    init(connection: ServerConnection) {
+    init(connection: ServerConnection, profileSession: ProfileSession = .owner) {
+        self.profileSession = profileSession
         self.connectionId = connection.id
         self.fallbackConnection = connection
 
-        let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 30
-        config.timeoutIntervalForResource = 120
-        config.waitsForConnectivity = false
-        if let customHeaders = connection.customHeaders {
-            config.httpAdditionalHeaders = customHeaders
-        }
-        if connection.mtlsEnabled {
-            self.session = MTLSManager.shared.makeSession(for: connection.id, configuration: config)
-        } else {
-            self.session = InsecureURLSession.shared
-        }
+        self.session = profileSession.networkSession
 
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom(Self.decodeDate)
@@ -30,7 +21,7 @@ final class SiloAdminService {
     }
 
     private var connection: ServerConnection {
-        AppState.shared.providerConnections.connections.first { $0.id == connectionId } ?? fallbackConnection
+        profileSession.appState.providerConnections.connections.first { $0.id == connectionId } ?? fallbackConnection
     }
 
     func fetchAdminUsers() async throws -> [SiloAdminUser] {
@@ -87,10 +78,11 @@ final class SiloAdminService {
     }
 
     private var profileID: String? {
-        UserDefaults.standard.string(forKey: "silo_profile_id_\(connectionId.uuidString)")
+        profileSession.defaults.string(forKey: "silo_profile_id_\(connectionId.uuidString)")
     }
 
     private func makeRequest(_ path: String, method: String, query: [URLQueryItem], body: Data?) throws -> URLRequest {
+        guard !profileSession.isRetired else { throw ProfileAccessError.profileUnavailable }
         guard var components = URLComponents(string: "\(baseURLString)/api/v1\(path)") else {
             throw SiloAdminError.invalidURL
         }

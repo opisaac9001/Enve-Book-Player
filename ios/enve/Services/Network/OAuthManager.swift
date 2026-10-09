@@ -41,7 +41,8 @@ enum AppAuthRedirectURI {
     static let grimmoryNewScheme = "grimmory"
 
     static let grimmoryEnveSpecific = "enveapp://oauth/grimmory"
-    static let bookOrbitCallbackPath = "/oauth2-callback"
+    static let bookOrbit = "bookorbit://oauth2-callback"
+    static let bookOrbitScheme = "bookorbit"
 
     static let grimmoryPresetOptions: [String] = [
         grimmory,
@@ -197,13 +198,34 @@ final class OAuthManager: NSObject, ObservableObject {
     @Published private(set) var isAuthenticating = false
 
     private var authSession: ASWebAuthenticationSession?
-    private let session = URLSession.shared
+    private var authContinuation: CheckedContinuation<URL, any Error>?
+    private var isRetired = false
+    private var authRequestID: UUID?
+    private let session: URLSession
+    private let ephemeralBrowser: Bool
 
-    private override init() {
+    init(session: URLSession = .shared, ephemeralBrowser: Bool = false) {
+        self.session = session
+        self.ephemeralBrowser = ephemeralBrowser
         super.init()
     }
 
+    func retire() {
+        isRetired = true
+        authRequestID = nil
+        let pending = authContinuation
+        authContinuation = nil
+        pending?.resume(throwing: CancellationError())
+        #if !os(tvOS)
+        authSession?.cancel()
+        #endif
+        authSession = nil
+        if session !== URLSession.shared { session.invalidateAndCancel() }
+    }
+
     func authorize(config: OAuthConfig) async throws -> OAuthToken {
+        guard !isRetired else { throw CancellationError() }
+        guard !isAuthenticating else { throw OAuthError.authorizationFailed("Authentication is already in progress") }
         isAuthenticating = true
         defer { isAuthenticating = false }
 
@@ -258,44 +280,69 @@ final class OAuthManager: NSObject, ObservableObject {
     }
 
     private func presentAuthenticationUI(authURL: URL, callbackScheme: String) async throws -> (code: String, state: String?) {
-        return try await withCheckedThrowingContinuation { continuation in
-            let session = ASWebAuthenticationSession(
-                url: authURL,
-                callbackURLScheme: callbackScheme
-            ) { callbackURL, error in
-                if let error = error {
-                    let asError = error as? ASWebAuthenticationSessionError
-                    if asError?.code == .canceledLogin {
-                        continuation.resume(throwing: OAuthError.userCancelled)
-                    } else {
-                        continuation.resume(throwing: OAuthError.networkError(error))
+        let callbackURL = try await browserCallback(authURL: authURL, callbackScheme: callbackScheme)
+        guard let components = URLComponents(url: callbackURL, resolvingAgainstBaseURL: true),
+            let code = components.queryItems?.first(where: { $0.name == "code" })?.value
+        else { throw OAuthError.invalidResponse }
+        return (code, components.queryItems?.first(where: { $0.name == "state" })?.value)
+    }
+
+    func browserCallback(authURL: URL, callbackScheme: String) async throws -> URL {
+        #if os(tvOS)
+        throw OAuthError.authorizationFailed("Browser sign-in is not available on Apple TV")
+        #else
+        guard !isRetired, authContinuation == nil else { throw CancellationError() }
+        try Task.checkCancellation()
+        let requestID = UUID()
+        authRequestID = requestID
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                authContinuation = continuation
+                let session = ASWebAuthenticationSession(url: authURL, callbackURLScheme: callbackScheme) { [weak self] callbackURL, error in
+                    Task { @MainActor in
+                        guard let self, self.authRequestID == requestID, let pending = self.authContinuation else { return }
+                        self.authRequestID = nil
+                        self.authContinuation = nil
+                        self.authSession = nil
+                        if let error {
+                            if (error as? ASWebAuthenticationSessionError)?.code == .canceledLogin {
+                                pending.resume(throwing: OAuthError.userCancelled)
+                            } else {
+                                pending.resume(throwing: OAuthError.networkError(error))
+                            }
+                            return
+                        }
+                        guard let callbackURL else {
+                            pending.resume(throwing: OAuthError.invalidResponse)
+                            return
+                        }
+                        pending.resume(returning: callbackURL)
                     }
-                    return
                 }
-
-                guard let callbackURL = callbackURL,
-                    let components = URLComponents(url: callbackURL, resolvingAgainstBaseURL: true),
-                    let code = components.queryItems?.first(where: { $0.name == "code" })?.value
-                else {
-                    continuation.resume(throwing: OAuthError.invalidResponse)
-                    return
+                #if os(iOS)
+                session.presentationContextProvider = self
+                session.prefersEphemeralWebBrowserSession = ephemeralBrowser
+                #endif
+                authSession = session
+                if !session.start() {
+                    authRequestID = nil
+                    authContinuation = nil
+                    authSession = nil
+                    continuation.resume(throwing: OAuthError.authorizationFailed("Failed to start authentication session"))
                 }
-
-                let state = components.queryItems?.first(where: { $0.name == "state" })?.value
-                continuation.resume(returning: (code: code, state: state))
             }
-
-            #if os(iOS)
-            session.presentationContextProvider = self
-            session.prefersEphemeralWebBrowserSession = false
-            #endif
-
-            if !session.start() {
-                continuation.resume(throwing: OAuthError.authorizationFailed("Failed to start authentication session"))
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                guard let self, self.authRequestID == requestID else { return }
+                self.authRequestID = nil
+                let pending = self.authContinuation
+                self.authContinuation = nil
+                self.authSession?.cancel()
+                self.authSession = nil
+                pending?.resume(throwing: CancellationError())
             }
-
-            self.authSession = session
         }
+        #endif
     }
 
     private func exchangeCodeForToken(
@@ -352,6 +399,7 @@ final class OAuthManager: NSObject, ObservableObject {
     }
 
     func refreshToken(refreshToken: String, config: OAuthConfig) async throws -> OAuthToken {
+        guard !isRetired else { throw CancellationError() }
         var request = URLRequest(url: config.tokenEndpoint)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")

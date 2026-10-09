@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct SourcesQuickConnectScreen: View {
+    @Environment(\.profileSession) private var capturedSession
+    private var profileSession: ProfileSession { capturedSession ?? .owner }
     @Environment(\.hearth) private var hearth
     @Environment(\.mantelInset) private var mantelInset
     @Environment(\.dismiss) private var dismiss
@@ -135,7 +137,7 @@ struct SourcesQuickConnectScreen: View {
             statusMessage = nil
         }
 
-        let outcome = await ServerProbe.detect(rawURL: address)
+        let outcome = await ServerProbe.detect(rawURL: address, session: profileSession.networkSession)
         guard !Task.isCancelled else { return }
 
         switch outcome {

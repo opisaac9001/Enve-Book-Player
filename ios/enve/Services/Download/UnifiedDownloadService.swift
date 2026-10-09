@@ -74,23 +74,46 @@ extension AppState: DownloadLibraryCaching {}
 
 @MainActor
 final class UnifiedDownloadService: NSObject, ObservableObject {
-    static let shared: UnifiedDownloadService = {
-        let appState = AppState.shared
-        return UnifiedDownloadService(
-            providerConnections: appState.providerConnections,
-            presentation: appState.presentation,
-            bookQuerying: appState.bookStore,
-            bookWriting: appState.bookStore,
-            libraryCache: appState
-        )
-    }()
+    static var shared: UnifiedDownloadService { ProfileSession.owner.downloads }
     static let backgroundSessionIdentifier = "com.narrator.downloads"
+
+    static func backgroundSessionIdentifier(for profileID: String) -> String {
+        profileID == FamilyProfile.ownerID
+            ? backgroundSessionIdentifier
+            : "\(backgroundSessionIdentifier).profile.\(profileID)"
+    }
+
+    static func profileID(forBackgroundSessionIdentifier identifier: String) -> String? {
+        if identifier == backgroundSessionIdentifier { return FamilyProfile.ownerID }
+        let prefix = "\(backgroundSessionIdentifier).profile."
+        guard identifier.hasPrefix(prefix) else { return nil }
+        let profileID = String(identifier.dropFirst(prefix.count))
+        return FamilyProfile.validID(profileID) ? profileID : nil
+    }
+
+    func handleBackgroundSession(identifier: String) {
+        guard !isRetired,
+            identifier == Self.backgroundSessionIdentifier(for: storageLocations.profileID)
+        else { return }
+        _ = urlSession
+    }
+
+    func recordCompletedImport(_ book: Book) {
+        guard !isRetired else { return }
+        tasks.removeAll { $0.bookId == book.downloadKey }
+        var task = BookDownloadTask.create(bookId: book.downloadKey, title: book.title, source: book.source)
+        task.status = .completed
+        task.progress = 1
+        tasks.append(task)
+        saveQueue()
+    }
 
     @Published private(set) var tasks: [BookDownloadTask] = [] {
         didSet {
 
             activeTaskBookIdsMirrorLock.lock()
             let activeTasks = tasks.filter { $0.isActive }
+            downloadManager.activity.unifiedBookIDs = Set(activeTasks.map { $0.bookId })
             activeTaskBookIdsMirror = Set(activeTasks.map { $0.bookId })
             activeTaskIdsMirror = Dictionary(uniqueKeysWithValues: activeTasks.map { ($0.id, $0.bookId) })
             activeTaskBookIdsMirrorLock.unlock()
@@ -121,7 +144,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
     }
 
     var allowCellularDownloads: Bool {
-        SettingsManager.shared.allowCellularBookDownloads
+        defaults.bool(forKey: "allowCellularBookDownloads")
     }
 
     var activeTasks: [BookDownloadTask] { tasks.filter { $0.isActive } }
@@ -157,7 +180,34 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         return path.isExpensive && !allowCellularDownloads
     }
 
-    private var urlSession: URLSession!
+    private var backgroundURLSession: URLSession?
+    private var urlSession: URLSession? {
+        if let backgroundURLSession { return backgroundURLSession }
+        guard !isRetired else { return nil }
+        let config = NetworkPolicyService.shared.makeBackgroundSessionConfiguration(
+            identifier: Self.backgroundSessionIdentifier(for: storageLocations.profileID), allowCellular: true,
+            isolatesCredentials: storageLocations.profileID != FamilyProfile.ownerID
+        )
+        config.isDiscretionary = false
+        config.sessionSendsLaunchEvents = true
+        config.allowsCellularAccess = true
+        let session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
+        backgroundURLSession = session
+        return session
+    }
+
+    func start() {
+        guard !isRetired, !hasStarted else { return }
+        hasStarted = true
+        setupNetworkMonitor()
+        if tasks.contains(where: { $0.isActive }) { _ = urlSession }
+        maintenanceTask = Task { [weak self] in
+            guard let self, !self.isRetired, !Task.isCancelled else { return }
+            await self.cleanupFailedDownloads()
+            guard !self.isRetired, !Task.isCancelled else { return }
+            await self.checkStorageLimit()
+        }
+    }
     private var foregroundURLSession: URLSession!
     private var activeURLTasks: [String: URLSessionDownloadTask] = [:]
     private var readerAssetOperations: [String: (id: UUID, task: Task<URL, Error>)] = [:]
@@ -167,16 +217,33 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
     private var lastProgressEmissionByTaskId: [String: (time: Date, progress: Double)] = [:]
     private let networkMonitor = NWPathMonitor()
     private let monitorQueue = DispatchQueue(label: "com.narrator.download.network")
-    private let storageManager = LocalStorageManager.shared
-    private let destinations = DownloadDestinationFileSystem(
-        audiobooksRoot: LocalStorageManager.shared.audiobooksDirectory
-    )
+    let storageManager: LocalStorageManager
+    private let storageLocations: ProfileStorageLocations
+    private let defaults: UserDefaults
+    private let ebookImporter: LocalEbookImporter
+    private let localLibrary: LocalLibraryStorageStore
+    private let preferences: LibraryDisplayPreferencesStore
+    private let readerArtifacts: ReaderArtifactsStore
+    private let downloadManager: BookDownloadManager
+    private let clientCertificate: @Sendable (String) async -> URLCredential?
+    let imageCache: DiskImageCache
+    let localMetadata = LocalLibraryService()
+    private let audiobookshelfService: AudiobookshelfService
+    private let smbLibrary: SMBLibraryService?
+    private let legacyABSBackend: BackendConfig?
+    private let downloadPlans = DownloadPlanRegistry.shared
+    private let destinations: DownloadDestinationFileSystem
+    private var isRetired = false
+    private var hasStarted = false
+    private var maintenanceTask: Task<Void, Never>?
+    private var runningDownloads: [String: Task<Void, Never>] = [:]
+    private var invalidationContinuations: [ObjectIdentifier: CheckedContinuation<Void, Never>] = [:]
     let providerConnections: any ProviderConnectionAccessing
     private let presentation: AppPresentationState
     private let bookQuerying: any BookQuerying
     private let bookWriting: any BookWriting
     private let libraryCache: any DownloadLibraryCaching
-    private let queueStore = UnifiedDownloadQueueStore()
+    private let queueStore: UnifiedDownloadQueueStore
     private let minProgressUpdateInterval: TimeInterval = 0.25
     private let minProgressDelta: Double = 0.005
 
@@ -188,38 +255,124 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         presentation: AppPresentationState,
         bookQuerying: any BookQuerying,
         bookWriting: any BookWriting,
-        libraryCache: any DownloadLibraryCaching
+        libraryCache: any DownloadLibraryCaching,
+        storageLocations: ProfileStorageLocations,
+        defaults: UserDefaults,
+        storageManager: LocalStorageManager,
+        ebookImporter: LocalEbookImporter,
+        localLibrary: LocalLibraryStorageStore,
+        preferences: LibraryDisplayPreferencesStore,
+        readerArtifacts: ReaderArtifactsStore,
+        downloadManager: BookDownloadManager,
+        queueStore: UnifiedDownloadQueueStore,
+        clientCertificate: @escaping @Sendable (String) async -> URLCredential?
     ) {
         self.providerConnections = providerConnections
         self.presentation = presentation
         self.bookQuerying = bookQuerying
         self.bookWriting = bookWriting
         self.libraryCache = libraryCache
+        self.storageLocations = storageLocations
+        self.defaults = defaults
+        self.storageManager = storageManager
+        self.ebookImporter = ebookImporter
+        self.localLibrary = localLibrary
+        self.preferences = preferences
+        self.readerArtifacts = readerArtifacts
+        self.downloadManager = downloadManager
+        self.queueStore = queueStore
+        self.clientCertificate = clientCertificate
+        smbLibrary = storageLocations.profileID == FamilyProfile.ownerID ? .shared : nil
+        if storageLocations.profileID == FamilyProfile.ownerID,
+            let credentials = try? SecureTokenStorage.shared.loadCredentials(forService: "audiobookshelf")
+        {
+            legacyABSBackend = BackendConfig(
+                id: "audiobookshelf_legacy", name: "Audiobookshelf", type: .audiobookshelf,
+                url: credentials.serverUrl, token: credentials.token, enabled: true,
+                username: credentials.username, password: nil, userId: nil, selectedLibraryIds: nil
+            )
+        } else {
+            legacyABSBackend = nil
+        }
+        imageCache = storageLocations.profileID == FamilyProfile.ownerID ? .shared : DiskImageCache(
+            cacheDirectory: storageLocations.cachesDirectory.appendingPathComponent("BookCovers", isDirectory: true)
+        )
+        audiobookshelfService = AudiobookshelfService(session: URLSession(configuration:
+            NetworkPolicyService.shared.makeSessionConfiguration(
+                allowCellular: true, isolatesCredentials: storageLocations.profileID != FamilyProfile.ownerID
+            )
+        ))
+        destinations = DownloadDestinationFileSystem(audiobooksRoot: storageManager.audiobooksDirectory)
         super.init()
 
         loadQueue()
 
-        let config = URLSessionConfiguration.background(withIdentifier: Self.backgroundSessionIdentifier)
-        config.isDiscretionary = false
-        config.sessionSendsLaunchEvents = true
-        config.allowsCellularAccess = true
-        urlSession = URLSession(configuration: config, delegate: self, delegateQueue: nil)
-
-        let foregroundConfig = URLSessionConfiguration.default
+        let foregroundConfig = NetworkPolicyService.shared.makeSessionConfiguration(
+            allowCellular: true, isolatesCredentials: storageLocations.profileID != FamilyProfile.ownerID
+        )
         foregroundConfig.allowsCellularAccess = true
         foregroundConfig.waitsForConnectivity = true
         foregroundConfig.timeoutIntervalForRequest = 600
         foregroundConfig.timeoutIntervalForResource = 7200
         foregroundURLSession = URLSession(configuration: foregroundConfig, delegate: self, delegateQueue: nil)
 
-        setupNetworkMonitor()
-
-        Task { [weak self] in
-            await self?.cleanupFailedDownloads()
-            await self?.checkStorageLimit()
-        }
-
         AppLogger.network.info("UnifiedDownloadService initialized")
+    }
+
+    convenience init(
+        storage: ProfileStorageLocations,
+        defaults: UserDefaults,
+        storageManager: LocalStorageManager,
+        ebookImporter: LocalEbookImporter,
+        localLibrary: LocalLibraryStorageStore,
+        preferences: LibraryDisplayPreferencesStore,
+        readerArtifacts: ReaderArtifactsStore,
+        downloadManager: BookDownloadManager,
+        providerConnections: any ProviderConnectionAccessing,
+        presentation: AppPresentationState,
+        bookQuerying: any BookQuerying,
+        bookWriting: any BookWriting,
+        libraryCache: any DownloadLibraryCaching,
+        clientCertificate: @escaping @Sendable (String) async -> URLCredential?
+    ) throws {
+        self.init(
+            providerConnections: providerConnections, presentation: presentation,
+            bookQuerying: bookQuerying, bookWriting: bookWriting, libraryCache: libraryCache,
+            storageLocations: storage, defaults: defaults, storageManager: storageManager,
+            ebookImporter: ebookImporter, localLibrary: localLibrary, preferences: preferences,
+            readerArtifacts: readerArtifacts, downloadManager: downloadManager,
+            queueStore: try UnifiedDownloadQueueStore(storage: storage), clientCertificate: clientCertificate
+        )
+    }
+
+    func retire() async {
+        guard !isRetired else { return }
+        isRetired = true
+        networkMonitor.cancel()
+        maintenanceTask?.cancel()
+        let downloads = Array(runningDownloads.values)
+        downloads.forEach { $0.cancel() }
+        let readerJobs = readerAssetOperations.values.map(\.task) + storytellerReadaloudCacheTasks.values.map(\.task)
+        readerJobs.forEach { $0.cancel() }
+        for index in tasks.indices where tasks[index].isActive {
+            tasks[index].status = .paused
+        }
+        saveQueue()
+        for session in [backgroundURLSession, foregroundURLSession].compactMap({ $0 }) {
+            await withCheckedContinuation { continuation in
+                invalidationContinuations[ObjectIdentifier(session)] = continuation
+                session.invalidateAndCancel()
+            }
+        }
+        await downloadManager.retire()
+        for job in downloads { await job.value }
+        for job in readerJobs { _ = try? await job.value }
+        await maintenanceTask?.value
+        activeURLTasks.removeAll()
+        runningDownloads.removeAll()
+        readerAssetOperations.removeAll()
+        storytellerReadaloudCacheTasks.removeAll()
+        saveQueue()
     }
 
     private func setupNetworkMonitor() {
@@ -227,8 +380,9 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
             let isAvailable = path.status == .satisfied
             let isExpensive = path.isExpensive
             Task { @MainActor [weak self] in
-                self?.isNetworkAvailable = isAvailable
-                self?.isOnCellular = isExpensive
+                guard let self, !self.isRetired else { return }
+                self.isNetworkAvailable = isAvailable
+                self.isOnCellular = isExpensive
                 AppLogger.network.info("Network: available=\(isAvailable), cellular=\(isExpensive)")
             }
         }
@@ -249,7 +403,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
     }
 
     private func updateTask(_ taskId: String, persist: Bool = true, update: (inout BookDownloadTask) -> Void) {
-        guard let index = tasks.firstIndex(where: { $0.id == taskId }) else { return }
+        guard !isRetired, let index = tasks.firstIndex(where: { $0.id == taskId }) else { return }
 
         var updatedTasks = tasks
         var task = updatedTasks[index]
@@ -277,6 +431,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
     }
 
     func download(book: Book, overrideCellular: Bool = false) async {
+        guard !isRetired else { return }
         lastError = nil
 
         let bookId = book.downloadKey
@@ -293,7 +448,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         let hasActiveTaskEntry = tasks.contains(where: { $0.bookId == bookId && $0.isActive })
         if hasActiveTaskEntry {
             let hasLiveURLTask = activeURLTasks[bookId] != nil
-            let hasLiveExternalTask = BookDownloadManager.shared.activeBookIds.contains(bookId)
+            let hasLiveExternalTask = downloadManager.activeBookIds.contains(bookId)
 
             if !hasLiveURLTask && !hasLiveExternalTask {
                 tasks.removeAll { $0.bookId == bookId && $0.isActive }
@@ -343,14 +498,14 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
 
     func existingReaderAsset(for book: Book) -> URL? {
         if book.source == .storyteller, book.epub3Features?.hasMediaOverlay == true {
-            return LocalEbookImporter.shared.resolveEbookForOverlay(book: book)
+            return ebookImporter.resolveEbookForOverlay(book: book)
         }
         if book.epub3Features?.hasMediaOverlay == true,
-            let readaloud = LocalEbookImporter.shared.resolveEbookForOverlay(book: book)
+            let readaloud = ebookImporter.resolveEbookForOverlay(book: book)
         {
             return readaloud
         }
-        return LocalEbookImporter.shared.resolveExistingLocalEbookURL(
+        return ebookImporter.resolveExistingLocalEbookURL(
             bookIdentifier: book.id,
             ebookFileURL: book.ebookFileURL,
             filePath: book.mediaType == .ebook ? book.filePath : nil
@@ -361,6 +516,13 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         for book: Book,
         onProgress: (@Sendable (Double) -> Void)? = nil
     ) async throws -> URL {
+        guard !isRetired else { throw CancellationError() }
+        if let sourceID = book.readAloudSourceStableId {
+            guard let source = await bookQuerying.book(stableId: sourceID),
+                source.mediaType == .ebook, source.readAloudSourceStableId == nil
+            else { throw ProfileDownloadImportError.missingMedia }
+            return try await prepareReaderAsset(for: source, onProgress: onProgress)
+        }
         if book.source == .storyteller, book.epub3Features?.hasMediaOverlay == true {
             return try await ensureStorytellerReadaloudCached(for: book, onProgress: onProgress)
         }
@@ -397,6 +559,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
 
         do {
             let assetURL = try await operation.value
+            guard !isRetired else { throw CancellationError() }
             if readerAssetOperations[book.uniqueId]?.id == operationId {
                 readerAssetOperations[book.uniqueId] = nil
             }
@@ -423,6 +586,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         onProgress: (@Sendable (Double) -> Void)? = nil,
         prepareForOfflinePlayback: Bool = false
     ) async throws -> URL {
+        guard !isRetired else { throw CancellationError() }
         guard book.source == .storyteller, book.epub3Features?.hasMediaOverlay == true else {
             throw NSError(
                 domain: "UnifiedDownloadService",
@@ -433,7 +597,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
             )
         }
 
-        let existingReadaloudURL = LocalEbookImporter.shared.resolveEbookForOverlay(book: book)
+        let existingReadaloudURL = ebookImporter.resolveEbookForOverlay(book: book)
         #if os(tvOS)
             let hasExistingReadaloud = existingReadaloudURL.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
         #else
@@ -477,6 +641,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         let offlineURL: URL
         do {
             offlineURL = try await cacheTask.value
+            guard !isRetired else { throw CancellationError() }
             if storytellerReadaloudCacheTasks[book.uniqueId]?.id == cacheTaskId {
                 storytellerReadaloudCacheTasks[book.uniqueId] = nil
             }
@@ -517,6 +682,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
     }
 
     func resume(taskId: String, book: Book) async {
+        guard !isRetired else { return }
         guard let task = tasks.first(where: { $0.id == taskId }),
             task.status == .paused
         else { return }
@@ -541,7 +707,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
             activeURLTasks.removeValue(forKey: task.bookId)
         }
 
-        BookDownloadManager.shared.cancelDownload(bookId: task.bookId)
+        downloadManager.cancelDownload(bookId: task.bookId)
 
         resumeData.removeValue(forKey: task.bookId)
 
@@ -587,6 +753,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
     }
 
     func retry(taskId: String, book: Book) async {
+        guard !isRetired else { return }
         guard let task = tasks.first(where: { $0.id == taskId }),
             task.status == .failed
         else { return }
@@ -605,6 +772,29 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
     }
 
     func deleteDownload(book: Book) async {
+        guard !isRetired else { return }
+        if book.mediaType == .ebook {
+            do {
+                if book.source == .local, book.backendId == "profile-imports" {
+                    let root = ebookImporter.localEbooksRoot
+                    let directory = root.appendingPathComponent(book.id, isDirectory: true)
+                    try LocalStorageManager.validateImportPath(directory, within: root)
+                    if FileManager.default.fileExists(atPath: directory.path) { try FileManager.default.removeItem(at: directory) }
+                } else if book.source != .local {
+                    try ebookImporter.deleteRemoteEbookArtifacts(forBookId: book.id)
+                    ebookImporter.removeReadaloudCache(forBookId: book.id, stableId: book.stableId)
+                } else { return }
+                var updated = book
+                updated.ebookFileURL = nil
+                await bookWriting.upsertBooks([updated])
+                libraryCache.mutateBook(uniqueId: book.uniqueId) {
+                    $0.ebookFileURL = nil
+                }
+            } catch {
+                lastError = error.localizedDescription
+                return
+            }
+        }
         await deleteDownloads(bookIds: storageManager.ownedCandidateBookIds(for: book))
     }
 
@@ -621,7 +811,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         tasks.removeAll { bookIds.contains($0.bookId) }
         saveQueue()
 
-        for session in [urlSession!, foregroundURLSession!] {
+        for session in [backgroundURLSession, foregroundURLSession].compactMap({ $0 }) {
             let sessionTasks = await session.allTasks
             for sessionTask in sessionTasks {
                 guard let description = sessionTask.taskDescription else { continue }
@@ -633,13 +823,13 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
 
         for bookId in bookIds {
             activeURLTasks.removeValue(forKey: bookId)?.cancel()
-            BookDownloadManager.shared.cancelDownload(bookId: bookId)
-            BookDownloadManager.shared.clearState(bookId: bookId)
+            downloadManager.cancelDownload(bookId: bookId)
+            downloadManager.clearState(bookId: bookId)
         }
 
-        await Task.detached(priority: .utility) {
+        await Task.detached(priority: .utility) { [storageManager] in
             for bookId in bookIds {
-                _ = await LocalStorageManager.shared.deleteAudiobook(bookId)
+                _ = await storageManager.deleteAudiobook(bookId)
             }
         }.value
 
@@ -649,6 +839,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
     }
 
     func downloadFileCopy(bookId: String, title: String, sourceURL: URL, securityScopedRootURL: URL? = nil) async {
+        guard !isRetired else { return }
         if storageManager.isAudiobookDownloaded(bookId) {
             return
         }
@@ -663,7 +854,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         saveQueue()
         updateTask(task.id) { $0.status = .downloading }
 
-        await BookDownloadManager.shared.startFileCopyDownload(
+        await downloadManager.startFileCopyDownload(
             bookId: bookId,
             sourceURL: sourceURL,
             securityScopedRootURL: securityScopedRootURL
@@ -672,7 +863,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
     }
 
     func cleanupFailedDownloads() async {
-        let prefs = LibraryDisplayPreferencesStore.shared.loadPreferences()
+        let prefs = preferences.loadPreferences()
         guard prefs.autoDeleteFailedDownloads else { return }
 
         let cutoff = Date().addingTimeInterval(-7 * 24 * 60 * 60)
@@ -688,43 +879,52 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
     }
 
     func checkStorageLimit() async {
-        let prefs = LibraryDisplayPreferencesStore.shared.loadPreferences()
+        let prefs = preferences.loadPreferences()
         guard prefs.storageLimitEnabled else { return }
 
         let limitBytes = Int64(prefs.storageLimitGB) * 1024 * 1024 * 1024
 
-        await Task.detached {
-            let currentUsage = await LocalStorageManager.shared.totalAudiobooksSize()
+        let currentUsage = storageManager.totalDownloadedMediaSize()
 
-            if currentUsage > limitBytes {
-                AppLogger.network.info(
-                    "Storage limit exceeded: \(ByteCountFormatter.string(fromByteCount: currentUsage, countStyle: .file)) > \(ByteCountFormatter.string(fromByteCount: limitBytes, countStyle: .file))"
-                )
+        if currentUsage > limitBytes {
+            AppLogger.network.info(
+                "Storage limit exceeded: \(ByteCountFormatter.string(fromByteCount: currentUsage, countStyle: .file)) > \(ByteCountFormatter.string(fromByteCount: limitBytes, countStyle: .file))"
+            )
 
-                let allBooks = await LocalStorageManager.shared.getOldestDownloadedBookIds()
-                var bytesToFre = currentUsage - limitBytes
+            let allBooks = storageManager.getOldestDownloadedBookIds()
+            var bytesToFre = currentUsage - limitBytes
 
-                for (bookId, _) in allBooks {
-                    if bytesToFre <= 0 { break }
+            for (bookId, _) in allBooks {
+                if bytesToFre <= 0 || isRetired || Task.isCancelled { break }
+                guard !openBookIds.contains(bookId), !downloadManager.activity.isActive(bookId) else { continue }
 
-                    let size = await LocalStorageManager.shared.sizeOfAudiobook(bookId)
-                    if await LocalStorageManager.shared.deleteAudiobook(bookId) {
-                        bytesToFre -= size
-                        AppLogger.network.info(
-                            "Storage limit auto-clean diagnosticID=\(DiagnosticLogSanitizer.identifier(for: bookId)) bytes=\(size)"
-                        )
+                let size = storageManager.sizeOfAudiobook(bookId)
+                if storageManager.deleteAudiobook(bookId) {
+                    bytesToFre -= size
+                    AppLogger.network.info(
+                        "Storage limit auto-clean diagnosticID=\(DiagnosticLogSanitizer.identifier(for: bookId)) bytes=\(size)"
+                    )
 
-                        await MainActor.run {
-                            UnifiedDownloadService.shared.removeTaskForBook(bookId)
-                        }
+                    await MainActor.run {
+                        self.removeTaskForBook(bookId)
                     }
                 }
+            }
 
-                await MainActor.run {
-                    NotificationCenter.default.post(name: .localLibraryUpdated, object: nil)
+            if bytesToFre > 0 {
+                let ebookBooks = await bookQuerying.allBooks().filter { book in
+                    book.mediaType == .ebook && completedTasks.contains { $0.bookId == book.downloadKey }
+                }.sorted { $0.lastUpdate < $1.lastUpdate }
+                for book in ebookBooks {
+                    if bytesToFre <= 0 || isRetired || Task.isCancelled { break }
+                    guard !storageManager.hasActiveDownload(for: book), !openBookIds.contains(book.downloadKey) else { continue }
+                    let before = storageManager.totalEbookSize()
+                    await deleteDownload(book: book)
+                    bytesToFre -= max(0, before - storageManager.totalEbookSize())
                 }
             }
-        }.value
+            NotificationCenter.default.post(name: .localLibraryUpdated, object: nil)
+        }
     }
 
     private func removeTaskForBook(_ bookId: String) {
@@ -736,21 +936,33 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
     private var openBookIds: Set<String> = []
 
     private func startDownload(task: inout BookDownloadTask, book: Book) async {
+        guard !isRetired else { return }
+        let downloadTask = task
+        let operation = Task { await executeDownload(task: downloadTask, book: book) }
+        runningDownloads[task.id] = operation
+        await operation.value
+        runningDownloads.removeValue(forKey: task.id)
+    }
+
+    private func executeDownload(task: BookDownloadTask, book: Book) async {
         updateTask(task.id) { $0.status = .downloading }
 
         do {
-            let plan = try DownloadPlanRegistry.shared.plan(for: book)
+            let plan = try downloadPlans.plan(for: book)
             try await plan.execute(using: self, task: task, book: book)
 
+            try Task.checkCancellation()
             await cacheAssetsForOffline(book: book)
 
         } catch is CancellationError {
+            guard !isRetired else { return }
             updateTask(task.id) {
                 $0.status = .cancelled
                 $0.errorMessage = nil
             }
             AppLogger.network.debug("Download cancelled diagnosticID=\(diagnosticID(book.stableId))")
         } catch {
+            guard !isRetired else { return }
             if Task.isCancelled || Self.isCancellationError(error) {
                 updateTask(task.id) {
                     $0.status = .cancelled
@@ -887,7 +1099,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         let itemId = book.partKey ?? book.id
 
         do {
-            let item = try await AudiobookshelfService.shared.getLibraryItem(id: itemId, backend: backend, expanded: true)
+            let item = try await audiobookshelfService.getLibraryItem(id: itemId, backend: backend, expanded: true)
 
             guard let audioFiles = item.media?.audioFiles, !audioFiles.isEmpty else {
                 throw DownloadError.fileNotFound
@@ -953,7 +1165,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
             var request = URLRequest(url: url)
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
-            let (tempURL, response) = try await URLSession.shared.download(for: request)
+            let (tempURL, response) = try await foregroundURLSession.download(for: request)
 
             guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
                 throw DownloadError.missingCredentials("Server returned error")
@@ -996,7 +1208,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
             $0.status = .completed
             $0.progress = 1.0
         }
-        BookDownloadManager.shared.markAsCompleted(bookId: task.bookId)
+        downloadManager.markAsCompleted(bookId: task.bookId)
         NotificationCenter.default.post(name: Self.downloadCompletedNotification, object: task.bookId)
         AppLogger.network.info("[ABS Download] Multi-file download completed: \(totalFiles) files")
     }
@@ -1067,7 +1279,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
 
             for backend in enabled {
                 do {
-                    let _ = try await AudiobookshelfService.shared.getLibraryItem(id: itemId, backend: backend)
+                    let _ = try await audiobookshelfService.getLibraryItem(id: itemId, backend: backend)
                     AppLogger.network.debug("[ABS Backend] Found item")
                     return backend
                 } catch {
@@ -1080,21 +1292,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
             return enabled.first
         }
 
-        if let creds = try? SecureTokenStorage.shared.loadCredentials(forService: "audiobookshelf") {
-            AppLogger.network.info("[ABS Backend] Found legacy credentials")
-            return BackendConfig(
-                id: "audiobookshelf_legacy",
-                name: "Audiobookshelf",
-                type: .audiobookshelf,
-                url: creds.serverUrl,
-                token: creds.token,
-                enabled: true,
-                username: creds.username,
-                password: nil,
-                userId: nil,
-                selectedLibraryIds: nil
-            )
-        }
+        if let legacyABSBackend { return legacyABSBackend }
 
         if let first = enabled.first {
             AppLogger.network.debug("[ABS Backend] Using first available backend")
@@ -1147,9 +1345,10 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         AppLogger.network.debug("Started raw HTTP download diagnosticID=\(diagnosticID(bookId))")
 
         let downloader = HTTP11FileDownloader(url: url, headers: headers, tempFileURL: tempURL)
+        defer { downloader.cancel() }
         downloader.start()
 
-        while true {
+        while !Task.isCancelled && !isRetired {
             try await Task.sleep(nanoseconds: 500_000_000)
 
             if let dlError = downloader.error {
@@ -1177,6 +1376,8 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
             }
         }
 
+        try Task.checkCancellation()
+        guard !isRetired else { throw CancellationError() }
         if let dlError = downloader.error {
             try? FileManager.default.removeItem(at: tempURL)
             throw dlError
@@ -1216,7 +1417,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
             }
             self?.activeURLTasks.removeValue(forKey: bookId)
             self?.expectedBytesByTaskId.removeValue(forKey: taskId)
-            BookDownloadManager.shared.markAsCompleted(bookId: bookId)
+            self?.downloadManager.markAsCompleted(bookId: bookId)
             NotificationCenter.default.post(name: UnifiedDownloadService.downloadCompletedNotification, object: bookId)
         }
     }
@@ -1241,7 +1442,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
                 guard !extracted.isEmpty else { continue }
 
                 AppLogger.network.debug("Routed \(extracted.count) extracted files diagnosticID=\(diagnosticID(bundleBook.stableId))")
-                BookDownloadManager.shared.markAsCompleted(bookId: bundleBook.downloadKey)
+                downloadManager.markAsCompleted(bookId: bundleBook.downloadKey)
                 NotificationCenter.default.post(name: Self.downloadCompletedNotification, object: bundleBook.downloadKey)
                 await refreshOfflineMetadataFromDownloadedFiles(book: bundleBook, bookId: bundleBook.downloadKey)
             } catch {
@@ -1383,26 +1584,29 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
             $0.status = .completed
             $0.progress = 1.0
         }
-        BookDownloadManager.shared.markAsCompleted(bookId: task.bookId)
+        downloadManager.markAsCompleted(bookId: task.bookId)
         NotificationCenter.default.post(name: Self.downloadCompletedNotification, object: task.bookId)
         AppLogger.network.info("[WebDAV Download] Multi-file download completed: \(totalFiles) files")
     }
 
     func downloadFromSMB(task: BookDownloadTask, book: Book) async throws {
+        guard let smbLibrary else {
+            throw DownloadError.missingCredentials("This SMB source is not configured for this profile")
+        }
         guard let sourceId = book.backendId else {
             throw DownloadError.missingCredentials("SMB source not found")
         }
 
-        let sources = await SMBLibraryService.shared.getSources()
+        let sources = await smbLibrary.getSources()
         guard let source = sources.first(where: { $0.id == sourceId }) else {
             throw DownloadError.missingCredentials("SMB source not configured")
         }
 
-        guard let password = await SMBLibraryService.shared.getPassword(for: sourceId) else {
+        guard let password = await smbLibrary.getPassword(for: sourceId) else {
             throw DownloadError.missingCredentials("SMB password not found")
         }
 
-        let smbBooks = await SMBLibraryService.shared.getBooks(for: sourceId)
+        let smbBooks = await smbLibrary.getBooks(for: sourceId)
         guard let smbBook = smbBooks.first(where: { $0.id == book.id }) else {
             throw DownloadError.fileNotFound
         }
@@ -1411,17 +1615,17 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         let bookId = task.bookId
 
         await MainActor.run {
-            BookDownloadManager.shared.clearCompletedState(bookId: bookId)
+            downloadManager.clearCompletedState(bookId: bookId)
         }
 
         AppLogger.network.debug("[SMB Download] Starting diagnosticID=\(diagnosticID(book.stableId))")
 
         let monitorTask = Task {
-            while true {
+            while !Task.isCancelled && !isRetired {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
 
                 let isCompleted = await MainActor.run {
-                    BookDownloadManager.shared.completedBookIds.contains(bookId)
+                    downloadManager.completedBookIds.contains(bookId)
                 }
                 if isCompleted {
                     self.updateTask(taskId) {
@@ -1434,10 +1638,10 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
                 }
 
                 let isActive = await MainActor.run {
-                    BookDownloadManager.shared.activeBookIds.contains(bookId)
+                    downloadManager.activeBookIds.contains(bookId)
                 }
                 if !isActive {
-                    if let error = await MainActor.run(body: { BookDownloadManager.shared.lastErrorByBookId[bookId] }) {
+                    if let error = await MainActor.run(body: { downloadManager.lastErrorByBookId[bookId] }) {
                         AppLogger.network.error("[SMB Download] Failed diagnosticID=\(diagnosticID(bookId)): \(error)")
                         self.updateTask(taskId) {
                             $0.status = .failed
@@ -1447,7 +1651,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
                     }
 
                     let finalCheck = await MainActor.run {
-                        BookDownloadManager.shared.completedBookIds.contains(bookId)
+                        downloadManager.completedBookIds.contains(bookId)
                     }
                     if finalCheck {
                         self.updateTask(taskId) {
@@ -1464,7 +1668,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
                 }
 
                 let progress = await MainActor.run {
-                    BookDownloadManager.shared.progressByBookId[bookId] ?? 0
+                    downloadManager.progressByBookId[bookId] ?? 0
                 }
                 if self.shouldEmitProgressUpdate(taskId: taskId, progress: progress) {
                     self.updateTask(taskId, persist: false) { $0.progress = progress }
@@ -1472,7 +1676,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
             }
         }
 
-        await BookDownloadManager.shared.startSMBDownload(
+        await downloadManager.startSMBDownload(
             bookId: bookId,
             smbBook: smbBook,
             source: source,
@@ -1501,18 +1705,33 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         try Task.checkCancellation()
         try Self.validateDownloadedEbook(downloadedURL)
 
-        let offlineURL = try LocalEbookImporter.shared.persistRemoteEbookForOffline(
+        let offlineURL = try ebookImporter.persistRemoteEbookForOffline(
             from: downloadedURL,
             preferredFilename: downloadedURL.lastPathComponent,
             bookIdentifier: book.id
         )
         try Task.checkCancellation()
 
-        libraryCache.mutateBook(uniqueId: book.uniqueId) { $0.ebookFileURL = offlineURL }
-        await bookWriting.updateEbookFileURL(
-            uniqueId: book.uniqueId,
-            url: offlineURL
-        )
+        #if os(iOS)
+        let features = offlineURL.pathExtension.caseInsensitiveCompare("epub") == .orderedSame
+            ? await EPUB3SMILParser.detectFeatures(epubFileURL: offlineURL) : nil
+        #else
+        let features: EPUB3Features? = nil
+        #endif
+        try Task.checkCancellation()
+        guard !isRetired else { throw CancellationError() }
+        var updated = await bookQuerying.book(uniqueId: book.uniqueId) ?? book
+        try Task.checkCancellation()
+        guard !isRetired else { throw CancellationError() }
+        updated = libraryCache.mutateBook(uniqueId: book.uniqueId) {
+            $0.ebookFileURL = offlineURL
+            if let features { $0.epub3Features = features }
+        } ?? updated
+        updated.ebookFileURL = offlineURL
+        if let features { updated.epub3Features = features }
+        await bookWriting.upsertBooks([updated])
+        try Task.checkCancellation()
+        guard !isRetired else { throw CancellationError() }
 
         updateTask(task.id) {
             $0.status = .completed
@@ -1557,7 +1776,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
             $0.status = .completed
             $0.progress = 1.0
         }
-        BookDownloadManager.shared.markAsCompleted(bookId: task.bookId)
+        downloadManager.markAsCompleted(bookId: task.bookId)
         NotificationCenter.default.post(name: Self.downloadCompletedNotification, object: task.bookId)
         #if !os(tvOS)
         AppLogger.network.debug("Read-aloud EPUB downloaded diagnosticID=\(diagnosticID(book.stableId)) extension=\(offlineURL.pathExtension)")
@@ -1597,10 +1816,10 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
     private func storytellerReadaloudNeedsPrep(book: Book) -> Bool {
         let hasChapters =
             book.chapters?.isEmpty == false
-            || ReaderArtifactsStore.shared.loadCachedChapters(bookId: book.stableId)?.isEmpty == false
-            || ReaderArtifactsStore.shared.loadCachedChapters(bookId: book.id)?.isEmpty == false
+            || readerArtifacts.loadCachedChapters(bookId: book.stableId)?.isEmpty == false
+            || readerArtifacts.loadCachedChapters(bookId: book.id)?.isEmpty == false
 
-        let audioDir = LocalStorageManager.shared.bookAudioDirectory(for: book.downloadKey)
+        let audioDir = storageManager.bookAudioDirectory(for: book.downloadKey)
         let extractedAudioExists =
             ((try? FileManager.default.contentsOfDirectory(
                 at: audioDir,
@@ -1639,9 +1858,9 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         guard !requests.isEmpty else { throw DownloadError.invalidURL }
 
         if requests.count > 1 {
-            await BookDownloadManager.shared.startMultiTrackHTTPDownload(bookId: downloadKey, requests: requests)
+            await downloadManager.startMultiTrackHTTPDownload(bookId: downloadKey, requests: requests)
         } else {
-            await BookDownloadManager.shared.startDownload(bookId: downloadKey, request: requests[0].request)
+            await downloadManager.startDownload(bookId: downloadKey, request: requests[0].request)
         }
 
         while true {
@@ -1649,7 +1868,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
             try await Task.sleep(nanoseconds: 500_000_000)
             try Task.checkCancellation()
 
-            let isComplete = await MainActor.run { BookDownloadManager.shared.completedBookIds.contains(downloadKey) }
+            let isComplete = await MainActor.run { downloadManager.completedBookIds.contains(downloadKey) }
             if isComplete {
                 updateTask(task.id) {
                     $0.status = .completed
@@ -1660,7 +1879,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
                 return
             }
 
-            if let errorMsg = await MainActor.run(body: { BookDownloadManager.shared.lastErrorByBookId[downloadKey] }) {
+            if let errorMsg = await MainActor.run(body: { downloadManager.lastErrorByBookId[downloadKey] }) {
                 throw NSError(
                     domain: "UnifiedDownloadService",
                     code: -1,
@@ -1710,9 +1929,9 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
 
         func scheduleDownload(_ trackRequests: [(request: URLRequest, mimeType: String?)]) async {
             if trackRequests.count > 1 {
-                await BookDownloadManager.shared.startMultiTrackHTTPDownload(bookId: downloadKey, requests: trackRequests)
+                await downloadManager.startMultiTrackHTTPDownload(bookId: downloadKey, requests: trackRequests)
             } else {
-                await BookDownloadManager.shared.startDownload(bookId: downloadKey, request: trackRequests[0].request)
+                await downloadManager.startDownload(bookId: downloadKey, request: trackRequests[0].request)
             }
         }
 
@@ -1727,7 +1946,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
             try await Task.sleep(nanoseconds: 500_000_000)
             try Task.checkCancellation()
 
-            let isComplete = await MainActor.run { BookDownloadManager.shared.completedBookIds.contains(downloadKey) }
+            let isComplete = await MainActor.run { downloadManager.completedBookIds.contains(downloadKey) }
             if isComplete {
                 updateTask(task.id) {
                     $0.status = .completed
@@ -1738,7 +1957,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
                 return
             }
 
-            let hasError = await MainActor.run { BookDownloadManager.shared.lastErrorByBookId[downloadKey] }
+            let hasError = await MainActor.run { downloadManager.lastErrorByBookId[downloadKey] }
             if let errorMsg = hasError {
                 let isAuthFailure = errorMsg.contains("401") || errorMsg.lowercased().contains("unauthorized")
                 if isAuthFailure && !didRetryOn401 {
@@ -1753,7 +1972,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
                         )
                     }
 
-                    BookDownloadManager.shared.cancelDownload(bookId: downloadKey)
+                    downloadManager.cancelDownload(bookId: downloadKey)
                     try await Task.sleep(nanoseconds: 100_000_000)
                     let retryRequests = try await buildTrackRequests()
                     guard !retryRequests.isEmpty else { throw DownloadError.invalidURL }
@@ -1775,7 +1994,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
                 throw CancellationError()
             }
 
-            let progress = await MainActor.run { BookDownloadManager.shared.progressByBookId[downloadKey] ?? 0 }
+            let progress = await MainActor.run { downloadManager.progressByBookId[downloadKey] ?? 0 }
             updateTask(task.id, persist: false) {
                 $0.progress = progress
             }
@@ -1789,9 +2008,9 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
 
         let rootURL: URL?
         if libraryId == LocalLibraryService.fileSharingLibraryId {
-            rootURL = LocalLibraryService.fileSharingRootURL
+            rootURL = storageLocations.documentsDirectory
         } else {
-            guard let bookmarkData = LocalLibraryStorageStore.shared.loadBookmark(for: libraryId) else {
+            guard let bookmarkData = localLibrary.loadBookmark(for: libraryId) else {
                 throw DownloadError.missingCredentials("Local library not configured")
             }
 
@@ -1799,7 +2018,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
             rootURL = try URL(resolvingBookmarkData: bookmarkData, options: .withoutUI, relativeTo: nil, bookmarkDataIsStale: &isStale)
         }
 
-        let localBook = LocalLibraryStorageStore.shared.loadBooks(libraryId: libraryId).first(where: { $0.id == book.id })
+        let localBook = localLibrary.loadBooks(libraryId: libraryId).first(where: { $0.id == book.id })
         let sourceURL: URL
 
         if let relative = localBook?.relativePath, !relative.isEmpty,
@@ -1816,15 +2035,12 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
 
         let taskId = task.id
         let bookId = task.bookId
-        Task {
-            await self.monitorExternalDownload(taskId: taskId, bookId: bookId)
-        }
-
-        await BookDownloadManager.shared.startFileCopyDownload(
+        await downloadManager.startFileCopyDownload(
             bookId: task.bookId,
             sourceURL: sourceURL,
             securityScopedRootURL: rootURL
         )
+        await monitorExternalDownload(taskId: taskId, bookId: bookId)
     }
 
     private func resolveRemotePodcastURL(for book: Book) -> URL? {
@@ -1861,6 +2077,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         preferForegroundSession: Bool = false,
         expectedBytes: Int64? = nil
     ) async {
+        guard !isRetired, !Task.isCancelled else { return }
         let downloadTask: URLSessionDownloadTask
         guard let selectedSession = preferForegroundSession ? foregroundURLSession : urlSession else {
             AppLogger.network.info("No URL session available for download")
@@ -1886,11 +2103,11 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
     }
 
     private func monitorExternalDownload(taskId: String, bookId: String) async {
-        let manager = BookDownloadManager.shared
+        let manager = downloadManager
 
         AppLogger.network.debug("Monitoring SMB download diagnosticID=\(diagnosticID(bookId))")
 
-        while true {
+        while !Task.isCancelled && !isRetired {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
 
             let isCompleted = await MainActor.run { manager.completedBookIds.contains(bookId) }
@@ -1962,6 +2179,12 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
 }
 
 extension UnifiedDownloadService: URLSessionDownloadDelegate {
+    nonisolated func urlSession(_ session: URLSession, didBecomeInvalidWithError error: Error?) {
+        Task { @MainActor in
+            invalidationContinuations.removeValue(forKey: ObjectIdentifier(session))?.resume()
+        }
+    }
+
     nonisolated func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
         guard let identifier = session.configuration.identifier else { return }
         Task { @MainActor in
@@ -1982,19 +2205,8 @@ extension UnifiedDownloadService: URLSessionDownloadDelegate {
         if method == NSURLAuthenticationMethodClientCertificate {
             let challengeHost = challenge.protectionSpace.host
             Task {
-                let connectionId = await MainActor.run {
-                    self.providerConnections.connections.first { conn in
-                        conn.mtlsEnabled && URL(string: conn.url)?.host == challengeHost
-                    }?.id
-                }
-                await MainActor.run {
-                    let identity = connectionId.flatMap { MTLSManager.shared.identity(for: $0) }
-                    if let identity {
-                        completionHandler(.useCredential, URLCredential(identity: identity, certificates: nil, persistence: .forSession))
-                    } else {
-                        completionHandler(.performDefaultHandling, nil)
-                    }
-                }
+                let credential = await clientCertificate(challengeHost)
+                completionHandler(credential == nil ? .performDefaultHandling : .useCredential, credential)
             }
             return
         }
@@ -2191,7 +2403,7 @@ extension UnifiedDownloadService: URLSessionDownloadDelegate {
                 self.activeURLTasks.removeValue(forKey: bookId)
                 self.expectedBytesByTaskId.removeValue(forKey: taskId)
                 self.resumeData.removeValue(forKey: bookId)
-                BookDownloadManager.shared.markAsCompleted(bookId: bookId)
+                self.downloadManager.markAsCompleted(bookId: bookId)
                 NotificationCenter.default.post(name: UnifiedDownloadService.downloadCompletedNotification, object: bookId)
                 AppLogger.network.debug("Download completed diagnosticID=\(diagnosticID(bookId))")
             }

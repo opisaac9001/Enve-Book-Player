@@ -13,37 +13,47 @@ final class LibrarianChatModel {
     var sendStatusText: String?
     var alertMessage: String?
 
-    @ObservationIgnored private let transcriptStore = BookTranscriptStore.shared
-    @ObservationIgnored private let ebookContextStore = EbookContextStore.shared
-    @ObservationIgnored private let conversationStore = LibrarianConversationStore.shared
-    @ObservationIgnored private let contextRetriever = BookContextRetriever.shared
-    @ObservationIgnored private let transcriptionService = AudiobookTranscriptionService.shared
-    @ObservationIgnored private let ebookContextService = EbookContextService.shared
-    @ObservationIgnored private let librarianService = EnveLibrarianService.shared
+    @ObservationIgnored private lazy var transcriptStore = BookTranscriptStore.shared
+    @ObservationIgnored private lazy var ebookContextStore = EbookContextStore.shared
+    @ObservationIgnored private lazy var conversationStore = LibrarianConversationStore.shared
+    @ObservationIgnored private lazy var contextRetriever = BookContextRetriever.shared
+    @ObservationIgnored private lazy var transcriptionService = AudiobookTranscriptionService.shared
+    @ObservationIgnored private lazy var ebookContextService = EbookContextService.shared
+    @ObservationIgnored private lazy var librarianService = EnveLibrarianService.shared
 
-    init(book: Book, initialEbookProgress: Double? = nil) {
+    @ObservationIgnored private let profileSession: ProfileSession
+    private var isAvailable: Bool { profileSession.isOwner && !profileSession.isRetired }
+
+    init(book: Book, initialEbookProgress: Double? = nil, profileSession: ProfileSession = .owner) {
+        self.profileSession = profileSession
         self.book = book
         self.initialEbookProgress = initialEbookProgress
-        self.messages = LibrarianConversationStore.shared.loadMessages(bookStableId: book.stableId)
+        self.messages = []
+        guard isAvailable else { return }
+        self.messages = conversationStore.loadMessages(bookStableId: book.stableId)
         reloadTranscript()
         reloadEbookContext()
     }
 
     var modelAvailabilityMessage: String? {
-        librarianService.availabilityMessage()
+        guard isAvailable else { return "The Librarian is available in the owner profile." }
+        return librarianService.availabilityMessage()
     }
 
     func reloadTranscript() {
+        guard isAvailable else { return }
         transcriptSegments = transcriptStore.loadTranscript(bookStableId: book.stableId)?.segments ?? []
     }
 
     func reloadEbookContext() {
+        guard isAvailable else { return }
         let context = ebookContextStore.loadContext(bookStableId: book.stableId)
         ebookChunks = context?.chunks ?? []
         ebookContextStatus = context?.manifest.status ?? .missing
     }
 
     func prepareEbookContextIfNeeded() async {
+        guard isAvailable else { return }
         guard book.mediaType == .ebook, ebookChunks.isEmpty else { return }
         do {
             try await ebookContextService.prepareContext(for: book)
@@ -54,6 +64,7 @@ final class LibrarianChatModel {
     }
 
     func clearConversation() {
+        guard isAvailable else { return }
         messages = []
         conversationStore.clear(bookStableId: book.stableId)
     }
@@ -65,7 +76,7 @@ final class LibrarianChatModel {
         contextRange: ClosedRange<TimeInterval>? = nil
     ) async {
         let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !isSending else { return }
+        guard isAvailable, !trimmed.isEmpty, !isSending else { return }
 
         isSending = true
         sendStatusText = "Preparing context"
@@ -86,6 +97,7 @@ final class LibrarianChatModel {
                 contextRange: contextRange
             )
             try await prepareContext(range: resolvedRange)
+            guard isAvailable, !Task.isCancelled else { return }
             sendStatusText = "Thinking"
             let answer = try await librarianService.answer(
                 question: trimmed,
@@ -95,6 +107,7 @@ final class LibrarianChatModel {
                 contextRange: resolvedRange,
                 history: history
             )
+            guard isAvailable, !Task.isCancelled else { return }
             messages.append(LibrarianMessage(role: .assistant, text: answer, scope: scope))
             conversationStore.saveMessages(messages, bookStableId: book.stableId)
         } catch {
@@ -104,6 +117,7 @@ final class LibrarianChatModel {
     }
 
     func sendCatchUp(currentTime: TimeInterval) async {
+        guard isAvailable else { return }
         let range = contextRetriever.catchUpRange(for: book, currentTime: currentTime)
         await send(
             question: "Catch me up.",

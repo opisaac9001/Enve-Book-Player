@@ -26,7 +26,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.hilt.navigation.compose.hiltViewModel
+import com.enve.hearth.shell.profileViewModel
 import com.enve.app.ui.components.*
 import com.enve.app.ui.components.ScreenBackButton
 import com.enve.app.ui.theme.DS
@@ -57,7 +57,7 @@ private enum class KOReaderServerPreset(val displayName: String, val url: String
 @Composable
 fun KOReaderHubScreen(
     onBack: () -> Unit,
-    viewModel: KOReaderHubViewModel = hiltViewModel(),
+    viewModel: KOReaderHubViewModel = profileViewModel(),
 ) {
     val state by viewModel.state.collectAsState()
     val colors = EnveTheme.colors

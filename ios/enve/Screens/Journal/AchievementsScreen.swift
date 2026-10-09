@@ -4,8 +4,8 @@ struct AchievementsScreen: View {
     @Environment(\.hearth) private var hearth
     @Environment(\.mantelInset) private var mantelInset
 
-    @State private var listening = JournalListeningStatsModel()
-    @State private var reading = JournalReadingStatsModel()
+    @Environment(JournalListeningStatsModel.self) private var listening
+    @Environment(JournalReadingStatsModel.self) private var reading
     @State private var loaded = false
     @State private var goalInput = ""
 

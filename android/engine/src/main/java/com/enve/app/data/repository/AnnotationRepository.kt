@@ -9,7 +9,6 @@ import kotlinx.coroutines.flow.Flow
 import org.json.JSONArray
 import org.readium.r2.shared.publication.Locator
 import java.util.UUID
-import java.util.concurrent.CopyOnWriteArraySet
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -58,14 +57,8 @@ class AnnotationRepository @Inject constructor(
     @Volatile
     private var primaryChangeListener: ((bookId: String) -> Unit)? = null
 
-    private val changeListeners = CopyOnWriteArraySet<(bookId: String) -> Unit>()
-
     fun setChangeListener(listener: ((bookId: String) -> Unit)?) {
         primaryChangeListener = listener
-    }
-
-    fun addChangeListener(listener: (bookId: String) -> Unit) {
-        changeListeners += listener
     }
 
     fun byBook(bookId: String): Flow<List<ReaderAnnotation>> = dao.flowByBook(bookId)
@@ -241,6 +234,5 @@ class AnnotationRepository @Inject constructor(
 
     private fun notifyChanged(bookId: String) {
         primaryChangeListener?.invoke(bookId)
-        changeListeners.forEach { it(bookId) }
     }
 }

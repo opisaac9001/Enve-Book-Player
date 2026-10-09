@@ -146,8 +146,10 @@ android {
         applicationId = "com.enve.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 52
-        versionName = "1.2 build 52"
+        val phoneReleaseNumber = providers.gradleProperty("enve.phoneReleaseNumber").get().toInt()
+        require(phoneReleaseNumber in 1..999_999) { "Phone release number must stay below Wear version-code range" }
+        versionCode = phoneReleaseNumber
+        versionName = "1.2 build $phoneReleaseNumber"
         buildConfigField(
             "String",
             "SOURCE_PROVENANCE",
@@ -252,6 +254,7 @@ dependencies {
 
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-process:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.core:core-splashscreen:1.0.1")
@@ -323,6 +326,7 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")

@@ -20,6 +20,8 @@ final class LibraryBookCache {
     weak var session: (any CurrentBookSession)?
 
     private let writer: any BookWriting
+    private var persistenceTasks: [UUID: Task<Void, Never>] = [:]
+    private var isRetired = false
 
     var suppressNotifications = false
     var skipsDeduplication = false
@@ -236,8 +238,17 @@ final class LibraryBookCache {
     }
 
     func persist(_ books: [Book]) {
-        guard !books.isEmpty else { return }
-        Task(priority: .background) { [writer] in await writer.upsertBooks(books) }
+        guard !isRetired, !books.isEmpty else { return }
+        let id = UUID()
+        persistenceTasks[id] = Task(priority: .background) { [writer] in
+            await writer.upsertBooks(books)
+            self.persistenceTasks[id] = nil
+        }
+    }
+
+    func retire() async {
+        isRetired = true
+        for task in Array(persistenceTasks.values) { await task.value }
     }
 
     private func commit(_ snapshots: [Book], matchingSession: ((Book) -> Bool)?) {

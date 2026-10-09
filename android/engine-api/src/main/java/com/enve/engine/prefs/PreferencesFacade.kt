@@ -7,14 +7,16 @@ import kotlinx.coroutines.flow.Flow
 enum class HearthStartTab(val label: String) {
     HEARTH("Hearth"),
     LIBRARY("Library"),
+    PODCASTS("Podcasts"),
     JOURNAL("Journal"),
 }
 
 enum class HearthHomeSection(val label: String) {
     CONTINUE_READING("Continue reading"),
     CONTINUE_LISTENING("Continue listening"),
-    RECENTLY_ADDED("Fresh ink"),
+    RECENTLY_ADDED("Recently Added"),
     DOWNLOADED("On this device"),
+    DOORWAYS("Doorways"),
 }
 
 enum class ReadNextPosition(val label: String) {

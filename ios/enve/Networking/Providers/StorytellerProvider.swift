@@ -10,6 +10,15 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
             clearMirrorSnapshotCache()
         }
     }
+    private let ebookImporter: LocalEbookImporter
+    private let rejectedContent: RejectedContentStore
+    private let positions: @MainActor () -> StorytellerPositionSyncService
+    private let streamingServer: StorytellerStreamingServer
+    private let isolatesCredentials: Bool
+    private let metadataLayering: MetadataLayeringManager
+    private var isRetired = false
+    private let downloadSessionsLock = NSLock()
+    private var downloadSessions: [ObjectIdentifier: URLSession] = [:]
     private let session: URLSession
     private let audioManifestCacheLock = NSLock()
     private var audioManifestCache: [String: (manifest: StorytellerAudioManifest, cachedAt: Date)] = [:]
@@ -37,7 +46,18 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
 
     var onTokenUpdated: ((ServerConnection) -> Void)?
 
-    init(connection: ServerConnection = ServerConnection(name: "Storyteller", url: "", type: .storyteller)) {
+    init(connection: ServerConnection = ServerConnection(name: "Storyteller", url: "", type: .storyteller), profileSession: ProfileSession? = nil) {
+        ebookImporter = profileSession?.ebooks ?? .shared
+        rejectedContent = profileSession?.rejectedContent ?? .shared
+        isolatesCredentials = profileSession != nil
+        streamingServer = StorytellerStreamingServer(isolatesCredentials: profileSession != nil)
+        if let profileSession {
+            positions = { [unowned profileSession] in profileSession.playback.storytellerPositions }
+            metadataLayering = MetadataLayeringManager(playbackStateManager: profileSession.playbackState, localStorage: profileSession.localStorage, providerConnections: profileSession.providerConnections)
+        } else {
+            positions = { .shared }
+            metadataLayering = .shared
+        }
         self.connection = connection
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 120
@@ -45,11 +65,16 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
         config.waitsForConnectivity = false
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.urlCache = nil
+        if profileSession != nil {
+            config.httpCookieStorage = nil
+            config.urlCredentialStorage = nil
+            config.httpShouldSetCookies = false
+        }
         if let customHeaders = connection.customHeaders {
             config.httpAdditionalHeaders = customHeaders
         }
         if connection.mtlsEnabled {
-            self.session = MTLSManager.shared.makeSession(for: connection.id, configuration: config)
+            self.session = (profileSession?.mtls ?? MTLSManager.shared).makeSession(for: connection.id, configuration: config)
         } else {
             self.session = URLSession(configuration: config)
         }
@@ -74,7 +99,37 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
         Date(timeIntervalSince1970: Double(ms) / 1000.0)
     }
 
+    private func trackDownloadSession(_ session: URLSession) {
+        downloadSessionsLock.lock()
+        downloadSessions[ObjectIdentifier(session)] = session
+        downloadSessionsLock.unlock()
+    }
+
+    private func untrackDownloadSession(_ session: URLSession) {
+        downloadSessionsLock.lock()
+        downloadSessions.removeValue(forKey: ObjectIdentifier(session))
+        downloadSessionsLock.unlock()
+    }
+
+    private func pendingDownloadSessions() -> [URLSession] {
+        downloadSessionsLock.lock()
+        defer { downloadSessionsLock.unlock() }
+        return Array(downloadSessions.values)
+    }
+
+    func retire() async {
+        isRetired = true
+        let sessions = pendingDownloadSessions() + [session]
+        for session in sessions { session.invalidateAndCancel() }
+        for session in sessions {
+            let tasks = await session.allTasks
+            for task in tasks { task.cancel() }
+        }
+        await streamingServer.retire()
+    }
+
     private func syncAuthCookie() {
+        guard !isolatesCredentials else { return }
         guard let token = connection.token, !token.isEmpty,
             let url = URL(string: baseURL()),
             let host = url.host
@@ -101,6 +156,7 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
         contentType: String? = nil,
         includeAuth: Bool = true
     ) throws -> URLRequest {
+        guard !isRetired else { throw CancellationError() }
         guard let url = URL(string: "\(baseURL())\(path)") else {
             throw ProviderError.invalidURL
         }
@@ -317,7 +373,7 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
             }
         }
         let rejectedItems = decoded.rejectedItems + mappingRejections
-        RejectedContentStore.shared.update(
+        rejectedContent.update(
             connection: connection,
             libraryId: "storyteller-library",
             acceptedItemIdentifiers: Set(books.map(\.id)),
@@ -430,7 +486,7 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
             if !assets.chapters.isEmpty {
                 book.chapters = assets.chapters
             } else if let trackURL = assets.tracks.first.flatMap({ URL(string: $0.contentUrl) }),
-                let embedded = await MetadataLayeringManager.shared.extractEmbeddedChapters(
+                let embedded = await metadataLayering.extractEmbeddedChapters(
                     from: trackURL,
                     headers: getStreamingHeaders()
                 ),
@@ -933,7 +989,7 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
     }
 
     func startPlaybackSession(for book: Book) async throws -> PlaybackSessionInfo {
-        let authoritative = await StorytellerPositionSyncService.shared.authoritativePosition(
+        let authoritative = await positions().authoritativePosition(
             for: book,
             through: self
         )
@@ -942,7 +998,7 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
             resolvedAudioPosition(from: $0.position.storytellerPosition, assets: assets)?.globalTime
         }
 
-        let proxiedTracks = try await StorytellerStreamingServer.shared.startStreaming(
+        let proxiedTracks = try await streamingServer.startStreaming(
             tracks: assets.tracks,
             headers: getStreamingHeaders()
         )
@@ -974,7 +1030,7 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
         currentTime: TimeInterval,
         observedAt: Date
     ) async throws {
-        _ = try await StorytellerPositionSyncService.shared.submitAudioPosition(
+        _ = try await positions().submitAudioPosition(
             book: book,
             currentTime: currentTime,
             observedAt: observedAt,
@@ -997,8 +1053,9 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
         let tempURL: URL
         if let onProgress {
             let delegate = URLSessionDownloadProgressDelegate(progressHandler: onProgress)
-            let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
-            defer { session.finishTasksAndInvalidate() }
+            let session = URLSession(configuration: isolatesCredentials ? .ephemeral : .default, delegate: delegate, delegateQueue: nil)
+            trackDownloadSession(session)
+            defer { untrackDownloadSession(session); session.finishTasksAndInvalidate() }
             let (url, http) = try await delegate.awaitResult {
                 session.downloadTask(with: request)
             }
@@ -1029,8 +1086,9 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
         let tempURL: URL
         if let onProgress {
             let delegate = URLSessionDownloadProgressDelegate(progressHandler: onProgress)
-            let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
-            defer { session.finishTasksAndInvalidate() }
+            let session = URLSession(configuration: isolatesCredentials ? .ephemeral : .default, delegate: delegate, delegateQueue: nil)
+            trackDownloadSession(session)
+            defer { untrackDownloadSession(session); session.finishTasksAndInvalidate() }
             let (url, http) = try await delegate.awaitResult {
                 session.downloadTask(with: request)
             }
@@ -1054,7 +1112,7 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
                 throw error
             }
         #endif
-        let cachedURL = try LocalEbookImporter.shared.cacheReadaloudEpub(
+        let cachedURL = try ebookImporter.cacheReadaloudEpub(
             tempURL: tempURL,
             bookId: book.id
         )
@@ -1097,7 +1155,7 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
         else {
             throw ProviderError.invalidResponse
         }
-        _ = try await StorytellerPositionSyncService.shared.submit(
+        _ = try await positions().submit(
             book: book,
             locatorJSON: locatorJSON,
             observedAt: observedAt,
@@ -1107,7 +1165,7 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
 
     func fetchEbookProgress(for book: Book) async throws -> (progress: Double, locator: String?, updatedAt: Date?, isFinished: Bool)? {
         guard
-            let authoritative = await StorytellerPositionSyncService.shared.authoritativePosition(
+            let authoritative = await positions().authoritativePosition(
                 for: book,
                 through: self
             )
@@ -1124,7 +1182,7 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
         for book: Book
     ) async throws -> (positionSeconds: TimeInterval, percentage: Double, trackIndex: Int?, updatedAt: Date?, isFinished: Bool)? {
         guard
-            let authoritative = await StorytellerPositionSyncService.shared.authoritativePosition(
+            let authoritative = await positions().authoritativePosition(
                 for: book,
                 through: self
             )

@@ -18,12 +18,15 @@ enum PlayerBookmarkNavigation {
 public class PlayerBookmarkService {
     private let storageService: StorageService
 
-    public init(storageService: StorageService = StorageService()) {
+    private let readerArtifacts: ReaderArtifactsStore
+
+    init(storageService: StorageService = StorageService(), readerArtifacts: ReaderArtifactsStore = .shared) {
+        self.readerArtifacts = readerArtifacts
         self.storageService = storageService
     }
 
     public func loadBookmarks(bookId: String) -> [Bookmark] {
-        return ReaderArtifactsStore.shared.loadBookmarks(bookId: bookId)
+        return readerArtifacts.loadBookmarks(bookId: bookId)
     }
 
     public func addBookmark(
@@ -59,9 +62,9 @@ public class PlayerBookmarkService {
             remoteID: remoteID,
             isRemotePlaceholder: isRemotePlaceholder
         )
-        var bookmarks = ReaderArtifactsStore.shared.loadBookmarks(bookId: bookId)
+        var bookmarks = readerArtifacts.loadBookmarks(bookId: bookId)
         bookmarks.append(bookmark)
-        ReaderArtifactsStore.shared.saveBookmarks(bookId: bookId, bookmarks: bookmarks)
+        readerArtifacts.saveBookmarks(bookId: bookId, bookmarks: bookmarks)
         return bookmark
     }
 
@@ -70,20 +73,20 @@ public class PlayerBookmarkService {
     }
 
     public func deleteBookmark(_ bookmark: Bookmark) {
-        var bookmarks = ReaderArtifactsStore.shared.loadBookmarks(bookId: bookmark.bookId)
+        var bookmarks = readerArtifacts.loadBookmarks(bookId: bookmark.bookId)
         bookmarks.removeAll { $0.id == bookmark.id }
-        ReaderArtifactsStore.shared.saveBookmarks(bookId: bookmark.bookId, bookmarks: bookmarks)
+        readerArtifacts.saveBookmarks(bookId: bookmark.bookId, bookmarks: bookmarks)
     }
 
     public func updateBookmark(_ bookmark: Bookmark) {
-        var bookmarks = ReaderArtifactsStore.shared.loadBookmarks(bookId: bookmark.bookId)
+        var bookmarks = readerArtifacts.loadBookmarks(bookId: bookmark.bookId)
         if let index = bookmarks.firstIndex(where: { $0.id == bookmark.id }) {
             bookmarks[index] = bookmark
         }
-        ReaderArtifactsStore.shared.saveBookmarks(bookId: bookmark.bookId, bookmarks: bookmarks)
+        readerArtifacts.saveBookmarks(bookId: bookmark.bookId, bookmarks: bookmarks)
     }
 
     public func replaceBookmarks(bookId: String, bookmarks: [Bookmark]) {
-        ReaderArtifactsStore.shared.saveBookmarks(bookId: bookId, bookmarks: bookmarks)
+        readerArtifacts.saveBookmarks(bookId: bookId, bookmarks: bookmarks)
     }
 }

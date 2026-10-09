@@ -1,6 +1,10 @@
 package com.enve.app.data.vocab
 
+import com.enve.core.di.ApplicationScope
+import kotlinx.coroutines.Job
 import android.content.Context
+import com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
+import com.enve.core.data.local.ProfileStorageLocations
 import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Deferred
@@ -24,8 +28,11 @@ import javax.inject.Singleton
 class DefinitionLookupService @Inject constructor(
     @ApplicationContext private val context: Context,
     private val installedDictionaries: InstalledDictionariesStore,
+    @ApplicationScope parentScope: CoroutineScope =
+        CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    private val locations: ProfileStorageLocations = ProfileStorageLocations.forProfile(context, DEFAULT_ADULT_PROFILE_ID),
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob(parentScope.coroutineContext[Job]) + Dispatchers.IO)
     private val memoryCache = mutableMapOf<String, String?>()
     private val inflight = mutableMapOf<String, Deferred<String?>>()
     private val mutex = Mutex()
@@ -40,7 +47,7 @@ class DefinitionLookupService @Inject constructor(
     private val json = Json { ignoreUnknownKeys = true }
 
     private val cacheRoot: File by lazy {
-        File(context.filesDir, "DefinitionCache").apply { mkdirs() }
+        File(locations.filesDirectory, "DefinitionCache").apply { mkdirs() }
     }
 
     suspend fun definition(rawWord: String, language: String? = null): String? {

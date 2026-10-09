@@ -6,6 +6,7 @@ struct LibraryBookContextMenu: View {
     var onDelete: ((Book) -> Void)?
 
     @Environment(EnveEngine.self) private var engine
+    private let savedBooks = SavedBooksStore.shared
 
     var body: some View {
         Button {
@@ -31,10 +32,32 @@ struct LibraryBookContextMenu: View {
                 Label("Add to Up Next", systemImage: "text.append")
             }
         }
-        if LibraryBookActions.isDownloaded(book) {
+        if book.mediaType == .audiobook || book.mediaType == .ebook {
+            Button {
+                PlatformHaptics.impact(.light)
+                Task { await engine.library.toggleSaved(book, in: .favorites) }
+            } label: {
+                Label(
+                    engine.library.isSaved(book, in: .favorites) ? "Remove from Favorites" : "Add to Favorites",
+                    systemImage: engine.library.isSaved(book, in: .favorites) ? "heart.slash" : "heart"
+                )
+            }
+            .disabled(savedBooks.isUpdating(book.uniqueId, in: .favorites))
+            Button {
+                PlatformHaptics.impact(.light)
+                Task { await engine.library.toggleSaved(book, in: .later) }
+            } label: {
+                Label(
+                    engine.library.isSaved(book, in: .later) ? "Remove from For Later" : (book.mediaType == .ebook ? "Read Later" : "Listen Later"),
+                    systemImage: engine.library.isSaved(book, in: .later) ? "bookmark.slash" : "bookmark"
+                )
+            }
+            .disabled(savedBooks.isUpdating(book.uniqueId, in: .later))
+        }
+        if engine.downloads.isLibraryDownloaded(book) {
             if book.source != .local {
                 Button(role: .destructive) {
-                    LibraryBookActions.removeDownload(book)
+                    Task { await engine.downloads.removeLibraryDownload(for: book) }
                 } label: {
                     Label("Remove download", systemImage: "arrow.down.circle.dotted")
                 }
@@ -256,6 +279,7 @@ struct LibraryBookRow: View {
                     .foregroundStyle(hearth.textTertiary)
             }
         }
+        .contentShape(Rectangle())
         .opacity(isSelecting && isSelected ? 0.85 : 1)
     }
 }

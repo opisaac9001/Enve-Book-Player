@@ -6,6 +6,7 @@ import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.Chapter
 import com.enve.core.data.model.Library
 import com.enve.core.data.model.ReaderAnnotation
+import com.enve.core.data.provider.PlaybackReportEvent
 import com.enve.core.data.provider.ProviderAdapter
 import com.enve.core.data.provider.ProviderEbookResource
 import com.enve.core.data.provider.ProviderPlaybackSession
@@ -55,6 +56,17 @@ class SiloProviderAdapter @Inject constructor(
         currentTimeSec: Long,
         progressFraction: Float,
     ): Result<Unit> = repository.syncAudiobookProgress(book, currentTimeSec, progressFraction)
+
+    override suspend fun reportPlayback(
+        book: Book,
+        event: PlaybackReportEvent,
+        sessionId: String,
+        positionSec: Long,
+    ): Result<Unit> = when (event) {
+        PlaybackReportEvent.PAUSED -> repository.setPlaybackPaused(book, positionSec, paused = true)
+        PlaybackReportEvent.RESUMED, PlaybackReportEvent.STARTED -> repository.setPlaybackPaused(book, positionSec, paused = false)
+        else -> Result.success(Unit)
+    }
 
     override suspend fun syncEbookProgress(
         bookId: String,

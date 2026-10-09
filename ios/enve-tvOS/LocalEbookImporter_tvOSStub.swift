@@ -2,7 +2,14 @@ import Foundation
 
 final class LocalEbookImporter: @unchecked Sendable {
     static let shared = LocalEbookImporter()
-    private init() {}
+    private let storage: ProfileStorageLocations
+
+    private init() { storage = .owner }
+
+    init(storage: ProfileStorageLocations) throws {
+        self.storage = storage
+        try FileManager.default.createDirectory(at: remoteReaderCacheRoot, withIntermediateDirectories: true)
+    }
 
     enum EbookImportError: LocalizedError {
         case notSupportedOnTVOS
@@ -13,27 +20,27 @@ final class LocalEbookImporter: @unchecked Sendable {
     }
 
     var localEbooksRoot: URL {
-        let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let documentsURL = storage.documentsDirectory
         return documentsURL.appendingPathComponent("Ebooks/local", isDirectory: true)
     }
 
     var serverEbooksRoot: URL {
-        let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let documentsURL = storage.documentsDirectory
         return documentsURL.appendingPathComponent("Ebooks", isDirectory: true)
     }
 
     var remoteReaderCacheRoot: URL {
-        let cachesURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        let cachesURL = storage.cachesDirectory
         return cachesURL.appendingPathComponent("ReaderEbooks", isDirectory: true)
     }
 
     var streamedEpubCacheRoot: URL {
-        let cachesURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        let cachesURL = storage.cachesDirectory
         return cachesURL.appendingPathComponent("StreamedEpubs", isDirectory: true)
     }
 
     var readaloudCacheRoot: URL {
-        let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let documentsURL = storage.documentsDirectory
         return documentsURL.appendingPathComponent("Ebooks/readaloud", isDirectory: true)
     }
 

@@ -271,7 +271,7 @@ actor DiskCodableCache {
 }
 
 actor AppCache {
-    static let shared = AppCache()
+    @MainActor static let shared = AppCache()
 
     private var preferredScope: CacheScope
 
@@ -280,49 +280,46 @@ actor AppCache {
 
     private var iCloudCovers: DiskDataCache?
 
-    init() {
-        let localBase =
-            AppCache.localBaseURL() ?? FileManager.default.temporaryDirectory.appendingPathComponent("EnveCache", isDirectory: true)
+    private let storage: ProfileStorageLocations
+    private let displayPreferences: LibraryDisplayPreferencesStore
+    nonisolated(unsafe) private let defaults: UserDefaults
+
+    @MainActor init() {
+        self.init(storage: .owner, defaults: .standard)
+    }
+
+    @MainActor init(storage: ProfileStorageLocations, defaults: UserDefaults) {
+        let scopePreference = defaults.string(forKey: "cacheScopePreference")
+        displayPreferences = LibraryDisplayPreferencesStore(defaults: defaults)
+        self.storage = storage
+        self.defaults = defaults
+        let localBase = storage.applicationSupportDirectory.appendingPathComponent("EnveCache", isDirectory: true)
         let localCoversDir = localBase.appendingPathComponent("covers", isDirectory: true)
         let localMetadataDir = localBase.appendingPathComponent("metadata", isDirectory: true)
-
-        self.localCovers = DiskDataCache(directory: localCoversDir)
-        self.localMetadata = DiskCodableCache(directory: localMetadataDir)
-        self.iCloudCovers = nil
-
-        let savedScopeRaw = UserDefaults.standard.string(forKey: "cacheScopePreference")
-        let isICloud = savedScopeRaw == "iCloudIfAvailable"
-        self.preferredScope = isICloud ? .iCloudIfAvailable : .local
-
+        localCovers = DiskDataCache(directory: localCoversDir)
+        localMetadata = DiskCodableCache(directory: localMetadataDir)
+        let isICloud = storage.profileID == FamilyProfile.ownerID
+            && scopePreference == "iCloudIfAvailable"
+        preferredScope = isICloud ? .iCloudIfAvailable : .local
         Task {
-            await migrateFromOldCacheLocation(to: localBase, coversDir: localCoversDir, metadataDir: localMetadataDir)
-            if isICloud {
-                await ensureICloudCachesIfNeeded()
+            if storage.profileID == FamilyProfile.ownerID {
+                await migrateFromOldCacheLocation(coversDir: localCoversDir, metadataDir: localMetadataDir)
             }
+            if isICloud { await ensureICloudCachesIfNeeded() }
         }
     }
 
-    private static func localBaseURL() -> URL? {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("EnveCache", isDirectory: true)
-    }
-
-    private static func oldCacheBaseURL() -> URL? {
-        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("EnveCache", isDirectory: true)
-    }
-
-    private func migrateFromOldCacheLocation(to newBase: URL, coversDir: URL, metadataDir: URL) async {
+    private func migrateFromOldCacheLocation(coversDir: URL, metadataDir: URL) async {
         let migrationKey = "AppCacheMigrationToApplicationSupport"
-        if UserDefaults.standard.bool(forKey: migrationKey) {
+        if defaults.bool(forKey: migrationKey) {
             return
         }
 
-        guard let oldBase = Self.oldCacheBaseURL() else { return }
+        let oldBase = storage.cachesDirectory.appendingPathComponent("EnveCache", isDirectory: true)
         let fileManager = FileManager.default
 
         guard fileManager.fileExists(atPath: oldBase.path) else {
-            UserDefaults.standard.set(true, forKey: migrationKey)
+            defaults.set(true, forKey: migrationKey)
             return
         }
 
@@ -366,7 +363,7 @@ actor AppCache {
             try? fileManager.removeItem(at: oldBase)
         }
 
-        UserDefaults.standard.set(true, forKey: migrationKey)
+        defaults.set(true, forKey: migrationKey)
 
         if migratedFiles > 0 {
             AppLogger.network.info("Migrated \(migratedFiles) cache files to Application Support directory")
@@ -388,7 +385,7 @@ actor AppCache {
     }
 
     private func ensureICloudCachesIfNeeded() async {
-        guard iCloudCovers == nil else { return }
+        guard storage.profileID == FamilyProfile.ownerID, iCloudCovers == nil else { return }
         guard let iCloudBase = await Self.iCloudBaseURLIfAvailable() else { return }
 
         let coversDir = iCloudBase.appendingPathComponent("covers", isDirectory: true)
@@ -396,8 +393,8 @@ actor AppCache {
     }
 
     func setPreferredScope(_ scope: CacheScope) async {
-        preferredScope = scope
-        if case .iCloudIfAvailable = scope {
+        preferredScope = storage.profileID == FamilyProfile.ownerID ? scope : .local
+        if case .iCloudIfAvailable = preferredScope {
             await ensureICloudCachesIfNeeded()
         }
     }
@@ -460,9 +457,7 @@ actor AppCache {
     }
 
     func setCoverData(_ data: Data, for book: Book) async {
-        let prefs = await Task { @MainActor in
-            LibraryDisplayPreferencesStore.shared.loadPreferences()
-        }.value
+        let prefs = await displayPreferences.loadPreferences()
         let finalData: Data
 
         if prefs.compressCoversEnabled {
@@ -535,9 +530,7 @@ actor AppCache {
     }
 
     func runMaintenance() async {
-        let prefs = await Task { @MainActor in
-            LibraryDisplayPreferencesStore.shared.loadPreferences()
-        }.value
+        let prefs = await displayPreferences.loadPreferences()
 
         if prefs.autoClearCacheEnabled {
             let thresholdBytes: Int64 = 1024 * 1024 * 1024

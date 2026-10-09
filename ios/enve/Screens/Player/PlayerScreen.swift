@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct PlayerScreen: View {
+    @Environment(\.profileSession) private var capturedSession
+    private var profileSession: ProfileSession { capturedSession ?? .owner }
     @Environment(EnveEngine.self) private var engine
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(\.hearth) private var hearth
@@ -69,6 +71,7 @@ struct PlayerScreen: View {
         }
         .onChange(of: playerVM.chapters) { rebuildChapters() }
         .onChange(of: playerVM.currentBook?.chapters) { rebuildChapters() }
+        .onChange(of: engine.playback.currentBook?.chapters) { rebuildChapters() }
         .onChange(of: playerVM.duration) {
             refreshReadAloudAvailability()
             rebuildChapters()
@@ -376,13 +379,9 @@ struct PlayerScreen: View {
     private func utilityRow(book: Book) -> some View {
         HStack(spacing: 8) {
             PlayerUtilityPill(glyph: "gauge.with.needle", label: speedLabel) { activeSheet = .speed }
-            PlayerUtilityPill(glyph: "moon.zzz", label: sleepLabel, tint: playerVM.sleepTimer != nil ? ambient : nil) {
-                activeSheet = .sleep
-            }
             PlayerUtilityPill(glyph: "list.bullet", label: "Chapters", disabled: sortedChapters.isEmpty) {
                 activeSheet = .chapters
             }
-            PlayerUtilityPill(glyph: "waveform", label: "Audio") { activeSheet = .audio }
             if isReadAloudBook {
                 PlayerUtilityPill(
                     glyph: nil,
@@ -396,6 +395,18 @@ struct PlayerScreen: View {
             }
             Menu {
                 Button {
+                    activeSheet = .sleep
+                } label: {
+                    Label(playerVM.sleepTimer != nil ? "Sleep · \(sleepLabel)" : "Sleep", systemImage: "moon.zzz")
+                }
+                Button("Audio", systemImage: "waveform") { activeSheet = .audio }
+                Button {
+                    activeSheet = .queue
+                } label: {
+                    let count = engine.playback.queue.entries.count
+                    Label(count == 0 ? "Up Next" : "Up Next (\(count))", systemImage: "text.line.first.and.arrowtriangle.forward")
+                }
+                Button {
                     activeSheet = .bookmarks
                 } label: {
                     Label("Bookmarks", systemImage: "bookmark")
@@ -405,7 +416,7 @@ struct PlayerScreen: View {
                 } label: {
                     Label("Ambient sound", systemImage: "water.waves")
                 }
-                if BookIntelligenceSettingsStore.shared.showPlayerButton && !book.isPodcastEpisode {
+                if profileSession.isOwner && !profileSession.isRetired && BookIntelligenceSettingsStore.shared.showPlayerButton && !book.isPodcastEpisode {
                     Button {
                         activeSheet = .librarian
                     } label: {
@@ -413,11 +424,11 @@ struct PlayerScreen: View {
                     }
                 }
             } label: {
-                PlayerUtilityPillLabel(glyph: "ellipsis", label: nil, tint: nil)
-                    .frame(width: 52, height: 44)
+                PlayerUtilityPillLabel(glyph: "ellipsis", label: nil, tint: playerVM.sleepTimer != nil ? ambient : nil)
                     .contentShape(Rectangle())
             }
             .accessibilityLabel("More player tools")
+            .accessibilityValue(playerVM.sleepTimer != nil ? "Sleep timer, \(sleepLabel)" : "")
         }
     }
 
@@ -441,7 +452,7 @@ struct PlayerScreen: View {
     private func refreshReadAloudAvailability() {
         // Check the book here. The overlay session may not be ready yet, which can hide the toggle.
         let available = engine.playback.currentBook?.epub3Features?.hasMediaOverlay == true
-            || MediaOverlayPlaybackService.shared.activeResult != nil
+            || profileSession.playback.mediaOverlay.activeResult != nil
         isReadAloudBook = available
         if !available { readModeOn = false }
     }
@@ -554,7 +565,9 @@ struct PlayerScreen: View {
 
     private func rebuildChapters() {
         let playbackChapters = playerVM.currentBook?.chapters ?? []
-        let sourceChapters = playbackChapters.isEmpty ? playerVM.chapters : playbackChapters
+        let presentedChapters = engine.playback.currentBook?.chapters ?? []
+        let sourceChapters = !playbackChapters.isEmpty ? playbackChapters
+            : !presentedChapters.isEmpty ? presentedChapters : playerVM.chapters
         let raw = sourceChapters.sorted {
             if $0.start == $1.start { return $0.end < $1.end }
             return $0.start < $1.start
@@ -690,7 +703,6 @@ private struct PlayerUtilityPill: View {
                 PlayerUtilityPillLabel(glyph: glyph, usesReadAloudMark: usesReadAloudMark, label: label, tint: tint)
                 PlayerUtilityPillLabel(glyph: glyph, usesReadAloudMark: usesReadAloudMark, label: nil, tint: tint)
             }
-                .frame(maxWidth: .infinity)
         }
         .buttonStyle(PressableStyle())
         .disabled(disabled)
@@ -725,6 +737,7 @@ private struct PlayerUtilityPillLabel: View {
         .foregroundStyle(tint ?? hearth.text)
         .padding(.vertical, 11)
         .padding(.horizontal, 6)
+        .frame(maxWidth: .infinity, minHeight: 44)
         .background {
             HearthChromeBackground(
                 shape: .capsule,

@@ -12,22 +12,29 @@ final class BookWidgetBridge {
     private var lastArtworkID: String?
     private var pendingArtworkID: String?
     private var hasStarted = false
+    private unowned let profileSession: ProfileSession?
+    private var artworkTask: Task<Void, Never>?
+    private var isRevoked = false
     private let playback: any PlaybackControlling
 
-    private init(playback: any PlaybackControlling = ActivePlayback.controller) {
+    init(playback: any PlaybackControlling = ActivePlayback.controller, profileSession: ProfileSession? = nil) {
+        self.profileSession = profileSession
         self.playback = playback
     }
 
     func start() {
         guard !hasStarted else { return }
+        isRevoked = false
         hasStarted = true
 
         let observer = Unmanaged.passUnretained(self).toOpaque()
         CFNotificationCenterAddObserver(
             CFNotificationCenterGetDarwinNotifyCenter(),
             observer,
-            { _, _, _, _, _ in
-                Task { @MainActor in BookWidgetBridge.shared.handleCommand() }
+            { _, observer, _, _, _ in
+                guard let observer else { return }
+                let bridge = Unmanaged<BookWidgetBridge>.fromOpaque(observer).takeUnretainedValue()
+                Task { @MainActor in bridge.handleCommand() }
             },
             BookWidgetShared.darwinCommandName as CFString,
             nil,
@@ -42,24 +49,50 @@ final class BookWidgetBridge {
         publish()
     }
 
+    func revoke() {
+        hasStarted = false
+        isRevoked = true
+        cancellables.removeAll()
+        artworkTask?.cancel()
+        CFNotificationCenterRemoveObserver(CFNotificationCenterGetDarwinNotifyCenter(), Unmanaged.passUnretained(self).toOpaque(), nil, nil)
+        lastSnapshot = nil
+        lastArtworkID = nil
+        pendingArtworkID = nil
+        Self.clearSharedSnapshot()
+    }
+
+    static func clearSharedSnapshot() {
+        BookWidgetShared.saveSnapshot(BookWidgetSnapshot(id: "", title: "", author: "", chapter: "", isPlaying: false,
+            hasBook: false, elapsed: 0, duration: 0, skipBackward: 30, skipForward: 30))
+        if let artwork = BookWidgetShared.artworkFileURL { try? FileManager.default.removeItem(at: artwork) }
+        _ = BookWidgetShared.takeCommand()
+        WidgetCenter.shared.reloadAllTimelines()
+    }
+
+    func retire() async {
+        revoke()
+        await artworkTask?.value
+    }
+
     private func handleCommand() {
-        guard let command = BookWidgetShared.takeCommand() else { return }
+        guard !isRevoked, let command = BookWidgetShared.takeCommand() else { return }
         switch command {
-        case "toggle": PlayerViewModel.shared.togglePlay()
+        case "toggle": (profileSession?.playback.player ?? PlayerViewModel.shared).togglePlay()
         case "tts.toggle": NowPlayingCoordinator.shared.toggleActivePlayback()
-        case "backward": PlayerViewModel.shared.skipBackward()
-        case "forward": PlayerViewModel.shared.skipForward()
+        case "backward": (profileSession?.playback.player ?? PlayerViewModel.shared).skipBackward()
+        case "forward": (profileSession?.playback.player ?? PlayerViewModel.shared).skipForward()
         default: break
         }
     }
 
     private func publish() {
+        guard !isRevoked else { return }
         let playback = playback.snapshot
-        let book = playback.currentBook ?? PlayerViewModel.shared.currentBook
-        let elapsed = playback.duration > 0 ? playback.position : PlayerViewModel.shared.progress
-        let duration = playback.duration > 0 ? playback.duration : (book?.duration ?? PlayerViewModel.shared.duration)
+        let book = playback.currentBook ?? (profileSession?.playback.player ?? PlayerViewModel.shared).currentBook
+        let elapsed = playback.duration > 0 ? playback.position : (profileSession?.playback.player ?? PlayerViewModel.shared).progress
+        let duration = playback.duration > 0 ? playback.duration : (book?.duration ?? (profileSession?.playback.player ?? PlayerViewModel.shared).duration)
         let chapter = book?.chapters?.last { elapsed >= $0.start && elapsed < $0.end }?.title ?? ""
-        let preferences = PlayerViewModel.shared.preferences
+        let preferences = (profileSession?.playback.player ?? PlayerViewModel.shared).preferences
         let snapshot = BookWidgetSnapshot(
             id: book?.stableId ?? "",
             title: book?.title ?? "",
@@ -92,20 +125,21 @@ final class BookWidgetBridge {
         guard artworkID != lastArtworkID, artworkID != pendingArtworkID else { return }
         pendingArtworkID = artworkID
 
-        Task(priority: .utility) {
+        artworkTask?.cancel()
+        artworkTask = Task(priority: .utility) { [self] in
             defer { pendingArtworkID = nil }
             let image: UIImage?
-            if let cached = await DiskImageCache.shared.image(for: coverURL) {
+            if let cached = await (profileSession?.imageCache ?? DiskImageCache.shared).image(for: coverURL) {
                 image = cached
             } else if coverURL.isFileURL {
                 image = UIImage(contentsOfFile: coverURL.path)
-            } else if let data = try? await URLSession.shared.data(from: coverURL).0 {
+            } else if let data = try? await (profileSession?.networkSession ?? URLSession.shared).data(from: coverURL).0 {
                 image = UIImage(data: data)
             } else {
                 image = nil
             }
 
-            guard let image else { return }
+            guard !Task.isCancelled, !isRevoked, let image else { return }
             let format = UIGraphicsImageRendererFormat()
             format.scale = 1
             let canvas = CGSize(width: 360, height: 540)

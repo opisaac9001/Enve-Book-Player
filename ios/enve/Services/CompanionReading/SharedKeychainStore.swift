@@ -6,10 +6,31 @@ import Security
 final class SharedKeychainStore: Sendable {
     static let shared = SharedKeychainStore()
 
-    private let service = "com.enve.enve.connections"
-    private let accessGroup = "group.com.enve.enve"
+    private let service: String
+    private let synchronizable: Bool
+    private let accessGroup: String?
+    private let accessibility: CFString
 
-    private init() {}
+    init(profileID: String = FamilyProfile.ownerID) {
+        let owner = profileID == FamilyProfile.ownerID
+        service = owner ? "com.enve.enve.connections" : "com.enve.enve.connections.profile.\(profileID)"
+        synchronizable = owner
+        accessGroup = owner ? "group.com.enve.enve" : nil
+        accessibility = owner ? kSecAttrAccessibleAfterFirstUnlock : kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+    }
+
+    func clearProfileCredentials() throws {
+        guard !synchronizable else { throw KeychainError.deleteFailed(errSecParam) }
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrSynchronizable as String: false,
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw KeychainError.deleteFailed(status)
+        }
+    }
 
     @discardableResult
     func setToken(_ token: String, forConnectionId connectionId: String) -> Bool {
@@ -124,7 +145,7 @@ final class SharedKeychainStore: Sendable {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: key,
-            kSecAttrSynchronizable as String: kCFBooleanTrue!,
+            kSecAttrSynchronizable as String: synchronizable,
         ]
         if let accessGroup {
             query[kSecAttrAccessGroup as String] = accessGroup
@@ -165,7 +186,7 @@ final class SharedKeychainStore: Sendable {
         var query = baseQuery(key: key, accessGroup: accessGroup)
         SecItemDelete(query as CFDictionary)
         query[kSecValueData as String] = data
-        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        query[kSecAttrAccessible as String] = accessibility
         return SecItemAdd(query as CFDictionary, nil)
     }
 

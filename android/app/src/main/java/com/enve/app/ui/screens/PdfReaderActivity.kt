@@ -36,7 +36,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import java.io.File
-import javax.inject.Inject
 
 internal data class PdfReaderUiState(
     val title: String = "",
@@ -53,16 +52,20 @@ internal data class PdfReaderUiState(
 
 @AndroidEntryPoint
 class PdfReaderActivity : ComponentActivity() {
+    @javax.inject.Inject lateinit var profileCoordinator: com.enve.app.profiles.ProfileSwitchCoordinator
+    @javax.inject.Inject lateinit var profileLifecycle: com.enve.app.profiles.ProfileLifecycleRegistry
+    private lateinit var profileBinding: com.enve.app.profiles.ProfileActivityBinding
 
-    @Inject lateinit var prefs: PreferencesManager
-    @Inject lateinit var okHttpClient: OkHttpClient
-    @Inject lateinit var repository: GrimmoryRepository
-    @Inject lateinit var aggregatorRepository: com.enve.app.data.repository.AggregatorRepository
-    @Inject lateinit var bookCacheDao: BookCacheDao
-    @Inject lateinit var epdRefreshManager: com.enve.app.eink.EpdRefreshManager
-    @Inject lateinit var lastOpenedBookStore: LastOpenedBookStore
-    @Inject lateinit var hearthPreferences: com.enve.engine.prefs.PreferencesFacade
-    @Inject lateinit var audioPlaybackManager: com.enve.app.playback.AudioPlaybackManager
+
+    private val prefs get() = profileBinding.runtime.component.preferences()
+    private val okHttpClient get() = profileBinding.runtime.component.unauthenticatedHttpClient()
+    private val repository get() = profileBinding.runtime.component.grimmoryRepository()
+    private val aggregatorRepository get() = profileBinding.runtime.component.aggregator()
+    private val bookCacheDao get() = profileBinding.runtime.component.bookCacheDao()
+    private val epdRefreshManager get() = profileBinding.runtime.component.epdRefreshManager()
+    private val lastOpenedBookStore get() = profileBinding.runtime.component.lastOpenedBookStore()
+    private val hearthPreferences get() = profileBinding.runtime.component.preferencesFacade()
+    private val audioPlaybackManager get() = profileBinding.runtime.component.audioPlayback()
 
     private var uiState by mutableStateOf(PdfReaderUiState())
     private var bookId: String = ""
@@ -71,7 +74,7 @@ class PdfReaderActivity : ComponentActivity() {
     private var renderer: PdfRenderer? = null
     private var descriptor: ParcelFileDescriptor? = null
     private var openedFile: File? = null
-    private val themeViewModel: ThemeViewModel by viewModels()
+    private val themeViewModel: ThemeViewModel by viewModels { profileBinding.factory }
 
     companion object {
         private const val EXTRA_BOOK_ID = "bookId"
@@ -90,6 +93,7 @@ class PdfReaderActivity : ComponentActivity() {
             author: String,
             locator: String?,
         ): Intent = Intent(context, PdfReaderActivity::class.java).apply {
+            com.enve.app.profiles.ProfileActivityBinding.capture(context, this)
             putExtra(EXTRA_BOOK_ID, bookId)
             putExtra(EXTRA_BOOK_SOURCE, bookSource.name)
             if (connectionId != null) putExtra(EXTRA_CONNECTION_ID, connectionId)
@@ -102,6 +106,10 @@ class PdfReaderActivity : ComponentActivity() {
     @Suppress("DEPRECATION")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        profileBinding = com.enve.app.profiles.ProfileActivityBinding.attach(this, profileCoordinator, profileLifecycle) {
+            checkpointForProfileSwitch()
+        } ?: run { finish(); return }
+
 
         WindowCompat.setDecorFitsSystemWindows(window, false)
 
@@ -168,7 +176,7 @@ class PdfReaderActivity : ComponentActivity() {
 
         val file = try {
             downloadReaderFile(
-                cacheDir = cacheDir,
+                cacheDir = profileBinding.runtime.component.storageLocations().cacheDirectory,
                 okHttpClient = okHttpClient,
                 bookId = bookId,
                 format = ReaderFormat.PDF,
@@ -272,7 +280,25 @@ class PdfReaderActivity : ComponentActivity() {
         }
     }
 
+    private suspend fun checkpointForProfileSwitch() {
+        if (uiState.pageCount <= 0 || bookId.isBlank()) return
+        val progress = (uiState.currentPage + 1).toFloat() / uiState.pageCount
+        val locator = buildPageLocator(ReaderFormat.PDF, uiState.currentPage)
+        val now = System.currentTimeMillis()
+        bookCacheDao.updateUnifiedProgress(bookId, bookConnectionId, progress, -1L, locator, now)
+        if (aggregatorRepository.serverSyncEnabled) profileBinding.runtime.component.database().pendingProgressPushDao().upsert(com.enve.core.data.local.PendingProgressPush(
+            bookId = bookId,
+            source = bookSource.name,
+            connectionKey = bookConnectionId.orEmpty(),
+            mediaType = com.enve.core.data.model.AppMediaType.EBOOK.name,
+            percentage = progress,
+            isFinished = progress >= 1f,
+            createdAt = now,
+        ))
+    }
+
     private fun syncProgress() {
+        if (!::profileBinding.isInitialized || profileBinding.retired) return
         val totalPages = uiState.pageCount.coerceAtLeast(1)
         val percentage = (uiState.currentPage + 1).toFloat() / totalPages.toFloat()
         val locator = buildPageLocator(ReaderFormat.PDF, uiState.currentPage)
@@ -297,6 +323,7 @@ class PdfReaderActivity : ComponentActivity() {
 
     override fun onPause() {
         super.onPause()
+        if (!::profileBinding.isInitialized || profileBinding.retired) return
         if (uiState.pageCount > 0) syncProgress()
     }
 

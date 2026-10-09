@@ -177,6 +177,42 @@ struct BookStoreRepositoryContractTests {
         #expect(library.map(\.name) == ["Austen"])
     }
 
+    @Test func continueShelvesExcludeGrimmoryUnreadAndAbandonedCachedProgress() async throws {
+        let store = try makeStore()
+        var books: [Book] = []
+        for mediaType in [AppMediaType.ebook, .audiobook] {
+            for status in ["UNREAD", "ABANDONED", "READ", "READING", "RE_READING", "IN_PROGRESS"] {
+                var book = makeBook(id: "\(mediaType.rawValue)-\(status)", source: .booklore)
+                book.mediaType = mediaType
+                book.ebookProgress = 0.3
+                book.currentTime = 30
+                book.serverReadStatus = status
+                books.append(book)
+            }
+        }
+        await store.upsertBooks(books)
+
+        let reading = await store.continueReadingBooks(limit: 20)
+        let listening = await store.continueListeningBooks(limit: 20)
+        #expect(Set(reading.compactMap(\.serverReadStatus)) == ["READING", "RE_READING", "IN_PROGRESS"])
+        #expect(Set(listening.compactMap(\.serverReadStatus)) == ["READING", "RE_READING", "IN_PROGRESS"])
+    }
+
+    @Test func zeroProgressDoesNotConsumeContinueReadingLimit() async throws {
+        let store = try makeStore()
+        var started = makeBook()
+        started.mediaType = .ebook
+        started.ebookProgress = 0.3
+        started.lastUpdate = Date(timeIntervalSince1970: 100)
+        var untouched = makeBook(id: "untouched")
+        untouched.mediaType = .ebook
+        untouched.ebookProgress = 0
+        untouched.lastUpdate = Date(timeIntervalSince1970: 200)
+        await store.upsertBooks([started, untouched])
+
+        #expect(await store.continueReadingBooks(limit: 1).map(\.id) == [started.id])
+    }
+
     private func makeStore() throws -> SwiftDataBookStore {
         let schema = Schema([
             BookRecord.self,
@@ -197,11 +233,11 @@ struct BookStoreRepositoryContractTests {
         )
     }
 
-    private func makeBook() -> Book {
+    private func makeBook(id: String = "book-1", source: Book.BookSource = .local) -> Book {
         Book(
-            id: "book-1",
+            id: id,
             title: "Repository Contract",
-            source: .local,
+            source: source,
             backendId: "unit",
             providerId: UUID(uuidString: "037F7AEC-8674-481B-AE53-8F93B92B9401")!,
             libraryId: "library-1"

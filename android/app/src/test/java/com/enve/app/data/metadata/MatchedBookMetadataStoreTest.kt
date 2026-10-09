@@ -58,9 +58,13 @@ class MatchedBookMetadataStoreTest {
 
     private class FakeMatchedBookMetadataDao : MatchedBookMetadataDao {
         private val rows = mutableMapOf<String, MatchedBookMetadata>()
+        private val keys = kotlinx.coroutines.flow.MutableStateFlow<List<String>>(emptyList())
+
+        override fun observeKeys(): kotlinx.coroutines.flow.Flow<List<String>> = keys
 
         override suspend fun upsert(metadata: MatchedBookMetadata) {
             rows[metadata.metadataKey] = metadata
+            keys.value = rows.keys.toList()
         }
 
         override suspend fun get(metadataKey: String): MatchedBookMetadata? = rows[metadataKey]
@@ -70,6 +74,7 @@ class MatchedBookMetadataStoreTest {
 
         override suspend fun delete(metadataKey: String) {
             rows.remove(metadataKey)
+            keys.value = rows.keys.toList()
         }
     }
 }

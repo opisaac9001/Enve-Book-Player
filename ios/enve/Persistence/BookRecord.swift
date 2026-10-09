@@ -346,17 +346,20 @@ final class BookRecord {
 
     nonisolated static func rebaseSandboxPath(_ storedPath: String) -> URL {
         let fm = FileManager.default
+        if fm.fileExists(atPath: storedPath) { return URL(fileURLWithPath: storedPath) }
         let markers: [(String, FileManager.SearchPathDirectory)] = [
             ("/Documents/", .documentDirectory),
             ("/Library/Caches/", .cachesDirectory),
             ("/Library/Application Support/", .applicationSupportDirectory),
         ]
-        for (marker, directory) in markers {
-            guard let range = storedPath.range(of: marker) else { continue }
+        let match = markers.compactMap { marker, directory in
+            storedPath.range(of: marker).map { (range: $0, directory: directory) }
+        }.min { $0.range.lowerBound < $1.range.lowerBound }
+        if let (range, directory) = match {
             let relative = String(storedPath[range.upperBound...])
             guard !relative.isEmpty,
                 let root = fm.urls(for: directory, in: .userDomainMask).first
-            else { continue }
+            else { return URL(fileURLWithPath: storedPath) }
             return root.appendingPathComponent(relative)
         }
         return URL(fileURLWithPath: storedPath)

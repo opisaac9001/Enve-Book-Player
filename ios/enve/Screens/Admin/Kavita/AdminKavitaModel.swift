@@ -20,6 +20,7 @@ enum AdminKavitaRange: String, CaseIterable, Identifiable {
 @MainActor
 @Observable
 final class AdminKavitaModel {
+    let profileSession: ProfileSession
     let connection: ServerConnection
 
     private(set) var account: KavitaProvider.Account?
@@ -42,12 +43,13 @@ final class AdminKavitaModel {
 
     @ObservationIgnored private var loadTask: Task<Void, Never>?
 
-    init(connection: ServerConnection) {
+    init(connection: ServerConnection, profileSession: ProfileSession = .owner) {
+        self.profileSession = profileSession
         self.connection = connection
     }
 
     var provider: KavitaProvider? {
-        AppState.shared.getProvider(connection.id) as? KavitaProvider
+        profileSession.appState.getProvider(connection.id) as? KavitaProvider
     }
 
     var streak: Int { JournalStats.streak(dailySeconds) }

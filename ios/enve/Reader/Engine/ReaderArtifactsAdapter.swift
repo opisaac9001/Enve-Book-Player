@@ -53,7 +53,10 @@ final class ReaderArtifactsAdapter: ReaderArtifactsStoring {
     private let book: Book
     private let store: ReaderArtifactsStore
 
-    init(book: Book, store: ReaderArtifactsStore = .shared) {
+    private let profileSession: ProfileSession
+
+    init(book: Book, store: ReaderArtifactsStore, profileSession: ProfileSession) {
+        self.profileSession = profileSession
         self.book = book
         self.store = store
     }
@@ -66,7 +69,7 @@ final class ReaderArtifactsAdapter: ReaderArtifactsStoring {
                 let existingIds = Set(loaded.map { $0.id })
                 loaded.append(contentsOf: legacy.filter { !existingIds.contains($0.id) })
                 store.saveBookmarks(bookId: book.stableId, bookmarks: loaded)
-                StorageService.shared.remove(forKey: "bookmarks_\(book.id)")
+                store.clearBookmarks(bookId: book.id)
             }
         }
         setBookmarks(loaded)
@@ -94,7 +97,7 @@ final class ReaderArtifactsAdapter: ReaderArtifactsStoring {
         persistBookmarks()
         let bookmarkID = bookmark.id
         Task { @MainActor in
-            await AppState.shared.bookStore.deleteBookmark(id: bookmarkID)
+            await profileSession.bookStore.deleteBookmark(id: bookmarkID)
         }
         scheduleExport()
     }
@@ -165,7 +168,7 @@ final class ReaderArtifactsAdapter: ReaderArtifactsStoring {
                 let existingIds = Set(loaded.map { $0.id })
                 loaded.append(contentsOf: legacy.filter { !existingIds.contains($0.id) })
                 store.saveAnnotations(bookId: book.stableId, annotations: loaded)
-                UserDefaults.standard.removeObject(forKey: "readerAnnotations_\(book.id)")
+                store.clearAnnotations(bookId: book.id)
             }
         }
         setAnnotations(loaded)
@@ -229,7 +232,7 @@ final class ReaderArtifactsAdapter: ReaderArtifactsStoring {
         let stableID = book.stableId
         let snapshot = annotations
         Task { @MainActor in
-            await AppState.shared.bookStore.replaceAnnotations(forBookStableId: stableID, annotations: snapshot)
+            await profileSession.bookStore.replaceAnnotations(forBookStableId: stableID, annotations: snapshot)
         }
         scheduleExport()
     }
@@ -239,7 +242,7 @@ final class ReaderArtifactsAdapter: ReaderArtifactsStoring {
         saveAnnotations()
         let annotationID = annotation.id
         Task { @MainActor in
-            await AppState.shared.bookStore.deleteAnnotation(id: annotationID)
+            await profileSession.bookStore.deleteAnnotation(id: annotationID)
         }
     }
 
@@ -287,19 +290,19 @@ final class ReaderArtifactsAdapter: ReaderArtifactsStoring {
         let stableID = book.stableId
         let snapshot = bookmarks
         Task { @MainActor in
-            await AppState.shared.bookStore.replaceBookmarks(forBookStableId: stableID, bookmarks: snapshot)
+            await profileSession.bookStore.replaceBookmarks(forBookStableId: stableID, bookmarks: snapshot)
         }
     }
 
     private func upsertBookmark(_ bookmark: Bookmark) {
         let stableID = book.stableId
         Task { @MainActor in
-            await AppState.shared.bookStore.upsertBookmark(bookmark, bookStableId: stableID)
+            await profileSession.bookStore.upsertBookmark(bookmark, bookStableId: stableID)
         }
     }
 
     private func scheduleExport() {
-        ObsidianNotesCoordinator.shared.scheduleAutoExport(book: book)
+        if profileSession.isOwner { ObsidianNotesCoordinator.shared.scheduleAutoExport(book: book) }
     }
 
     private func bookmarkTitle(position: TimeInterval, title: String?, mediaType: AppMediaType, chapterTitle: String?) -> String {

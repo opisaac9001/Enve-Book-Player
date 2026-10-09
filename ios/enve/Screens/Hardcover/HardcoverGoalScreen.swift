@@ -5,6 +5,7 @@ struct HardcoverGoalScreen: View {
     @Environment(\.mantelInset) private var mantelInset
 
     @State private var goal: HardcoverReadingGoalLegacy?
+    @State private var loadError: String?
     @State private var loaded = false
     @State private var editorShown = false
 
@@ -15,6 +16,8 @@ struct HardcoverGoalScreen: View {
 
                 if !loaded {
                     HardcoverLoading()
+                } else if let loadError {
+                    HardcoverEmpty(glyph: "exclamationmark.triangle", title: "Reading goal unavailable.", line: loadError)
                 } else if let goal {
                     ring(goal)
                     pace(goal)
@@ -133,7 +136,13 @@ struct HardcoverGoalScreen: View {
     }
 
     private func hardcoverLoadGoal() async {
-        goal = try? await HardcoverService.shared.getReadingGoal()
+        do {
+            goal = try await HardcoverService.shared.getReadingGoal()
+            loadError = nil
+        } catch {
+            goal = nil
+            loadError = error.localizedDescription
+        }
         loaded = true
     }
 }

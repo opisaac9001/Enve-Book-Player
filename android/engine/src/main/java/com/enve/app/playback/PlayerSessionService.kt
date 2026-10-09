@@ -4,7 +4,8 @@ import com.enve.audiobookshelf.AudiobookshelfRepository
 import com.enve.bookorbit.sync.BookOrbitHistorySessionSync
 import com.enve.silo.SiloRepository
 import com.enve.app.data.history.HistorySessionStore
-import com.enve.app.data.remote.GrimmoryApi
+import com.enve.app.data.history.AbsCrossProviderHistorySync
+import com.enve.app.data.grimmory.GrimmoryReadingSessionUploader
 import com.enve.app.data.remote.dto.ReadingSessionRequest
 import com.enve.app.data.repository.grimmory.grimmoryServerBookId
 import com.enve.core.data.local.PodcastFeedProgress
@@ -13,10 +14,15 @@ import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.HistorySession
+import com.enve.core.data.provider.PlaybackReportEvent
+import com.enve.core.data.provider.ProviderAdapter
 import com.enve.core.data.remote.ConnectionScope
 import com.enve.core.di.ApplicationScope
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -35,6 +41,7 @@ private const val PERIODIC_FLUSH_INTERVAL_MS = 30_000L
 private const val SEEK_SETTLE_MS = 2_000L
 private const val SEEK_TOLERANCE_SEC = 2L
 private const val MAX_PLAYBACK_SPEED = 4L
+private val PLAYBACK_REPORTING_SOURCES = setOf(BookSource.JELLYFIN, BookSource.EMBY, BookSource.PLEX, BookSource.SILO)
 
 internal class ListeningLedger {
     var totalMs = 0L
@@ -55,14 +62,22 @@ internal class ListeningLedger {
 
 @Singleton
 class PlayerSessionService @Inject constructor(
-    private val api: GrimmoryApi,
+    private val grimmorySessions: GrimmoryReadingSessionUploader,
     private val audiobookshelfRepository: AudiobookshelfRepository,
     private val bookOrbitHistorySync: BookOrbitHistorySessionSync,
     private val siloRepository: SiloRepository,
     private val history: HistorySessionStore,
+    private val crossProviderHistory: AbsCrossProviderHistorySync,
     private val feedProgress: PodcastFeedProgressStore,
+    private val providerAdapters: Set<@JvmSuppressWildcards ProviderAdapter>,
+    private val progressWrites: com.enve.app.data.sync.AudiobookProgressPushService,
+    private val connections: com.enve.core.data.local.ConnectionRegistry,
     @ApplicationScope private val appScope: CoroutineScope,
+    private val serverSync: com.enve.core.data.local.ProfileServerSyncStore,
 ) {
+    private val jobLock = Any()
+    private val pendingJobs = mutableSetOf<Job>()
+    private var closingLocally = false
     private val mutex = Mutex()
     private val remoteMutex = Mutex()
     private var active: ActiveSession? = null
@@ -78,6 +93,7 @@ class PlayerSessionService @Inject constructor(
         durationSec: Long,
         providerSessionId: String? = null,
     ) {
+        synchronized(jobLock) { closingLocally = false }
         if (book.mediaType != AppMediaType.AUDIOBOOK && book.mediaType != AppMediaType.PODCAST) return
         val sessionToClose = mutex.withLock {
             val current = active
@@ -106,11 +122,13 @@ class PlayerSessionService @Inject constructor(
         sessionToClose?.let { onAppScope { submitSession(it, finished = false) } }
     }
 
-    suspend fun markPlaybackChanged(isPlaying: Boolean, positionSec: Long, durationSec: Long) {
+    suspend fun markPlaybackChanged(isPlaying: Boolean, positionSec: Long, durationSec: Long, bookKey: String? = null) {
         var flushNow = false
         var seeked = false
+        var report: Pair<ActiveSession, PlaybackReportEvent>? = null
         mutex.withLock {
             val session = active ?: return
+            if (bookKey != null && session.bookKey != bookKey) return
             val now = System.currentTimeMillis()
             val wasPlaying = lastResumeRealtimeMs != null
             val position = positionSec.coerceAtLeast(0)
@@ -121,6 +139,8 @@ class PlayerSessionService @Inject constructor(
             if (isPlaying) {
                 if (lastResumeRealtimeMs == null) {
                     lastResumeRealtimeMs = now
+                    report = session to if (session.reportedStart) PlaybackReportEvent.RESUMED else PlaybackReportEvent.STARTED
+                    session.reportedStart = true
                 } else {
                     accumulateLocked(now)
                 }
@@ -132,8 +152,10 @@ class PlayerSessionService @Inject constructor(
                 accumulateLocked(now)
                 lastResumeRealtimeMs = null
                 flushNow = wasPlaying
+                if (wasPlaying) report = session to PlaybackReportEvent.PAUSED
             }
         }
+        report?.let { (session, event) -> reportPlayback(session.book, session.reportSessionId, event, positionSec) }
         when {
             flushNow -> flush()
             seeked -> scheduleSeekSettleFlush()
@@ -141,7 +163,7 @@ class PlayerSessionService @Inject constructor(
     }
 
     fun flush() {
-        appScope.launch { flushActive() }
+        launchSession { flushActive() }
     }
 
     suspend fun close(positionSec: Long, durationSec: Long, finished: Boolean = false) {
@@ -158,12 +180,51 @@ class PlayerSessionService @Inject constructor(
         onAppScope { submitSession(session, finished) }
     }
 
+    suspend fun closeLocally(positionSec: Long, durationSec: Long) {
+        val jobs = synchronized(jobLock) {
+            closingLocally = true
+            pendingJobs.toList()
+        }
+        jobs.forEach { it.cancelAndJoin() }
+        val session = mutex.withLock {
+            val current = active ?: return@withLock null
+            current.lastPositionSec = positionSec.coerceAtLeast(0)
+            current.durationSec = durationSec.coerceAtLeast(0)
+            accumulateLocked()
+            lastResumeRealtimeMs = null
+            active = null
+            current
+        } ?: return
+        recordLocalSession(session)
+        val snapshot = session.snapshot()
+        if (snapshot.isFeedOnly) saveFeedProgress(snapshot, finished = false)
+        if (snapshot.book.source == BookSource.AUDIOBOOKSHELF && snapshot.unsyncedListenedMs >= 1_000L) {
+            withConnectionScope(snapshot.book) {
+                audiobookshelfRepository.recordLocalListening(
+                    snapshot.book, snapshot.positionSec, snapshot.durationSec, snapshot.unsyncedListenedMs,
+                )
+            }
+        }
+    }
+
+    private fun launchSession(block: suspend () -> Unit): Job? = synchronized(jobLock) {
+        if (closingLocally) return@synchronized null
+        appScope.launch(start = CoroutineStart.LAZY) {
+            try { block() } catch (error: CancellationException) { throw error }
+            catch (_: Exception) { android.util.Log.w("PlayerSessionService", "Unable to sync playback session") }
+        }.also { job ->
+            pendingJobs += job
+            job.invokeOnCompletion { synchronized(jobLock) { pendingJobs -= job } }
+            job.start()
+        }
+    }
+
     private suspend fun onAppScope(block: suspend () -> Unit) {
-        appScope.launch { block() }.join()
+        launchSession { block() }?.join()
     }
 
     private fun scheduleSeekSettleFlush() {
-        val job = appScope.launch {
+        val job = launchSession {
             delay(SEEK_SETTLE_MS)
             flushActive()
         }
@@ -179,9 +240,16 @@ class PlayerSessionService @Inject constructor(
                 session.lastFlushAtMs = now
                 session.snapshot()
             } ?: return
+            if (!serverSync.accepts(snapshot.startedAtMs)) {
+                if (snapshot.isFeedOnly) saveFeedProgress(snapshot, finished = false)
+                return@withLock
+            }
             when {
                 snapshot.isFeedOnly -> saveFeedProgress(snapshot, finished = false)
                 snapshot.absSessionId != null -> syncAbsSession(snapshot, close = false)
+                snapshot.book.source == BookSource.AUDIOBOOKSHELF -> recordAbsLocalListening(snapshot)
+                snapshot.book.source in PLAYBACK_REPORTING_SOURCES ->
+                    reportPlayback(snapshot.book, snapshot.reportSessionId, PlaybackReportEvent.PROGRESS, snapshot.positionSec)
             }
         }
     }
@@ -192,10 +260,10 @@ class PlayerSessionService @Inject constructor(
         lastResumeRealtimeMs = now
     }
 
-    private suspend fun submitSession(session: ActiveSession, finished: Boolean) {
+    private suspend fun recordLocalSession(session: ActiveSession): HistorySession? {
         val listenedMs = session.listening.totalMs
         val endAtMs = System.currentTimeMillis()
-        val historySession = if (listenedMs >= 1_000L) {
+        return if (listenedMs >= 1_000L) {
             HistorySession(
                 id = UUID.randomUUID().toString(),
                 bookId = session.book.id,
@@ -212,10 +280,38 @@ class PlayerSessionService @Inject constructor(
         } else {
             null
         }
+    }
+
+    private suspend fun submitSession(session: ActiveSession, finished: Boolean) {
+        val listenedMs = session.listening.totalMs
+        val endAtMs = System.currentTimeMillis()
+        val historySession = recordLocalSession(session)
+        if (!serverSync.accepts(session.startedAtMs)) {
+            if (session.isFeedOnly) saveFeedProgress(session.snapshot(), finished)
+            return
+        }
+        if (historySession?.source == BookSource.GRIMMORY) {
+            try {
+                crossProviderHistory.onSession(historySession)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+            }
+        }
+
+        if (session.reportedStart) {
+            reportPlayback(session.book, session.reportSessionId, PlaybackReportEvent.STOPPED, session.lastPositionSec)
+        }
 
         if (session.book.source == BookSource.SILO) {
-
-            withConnection(session.book) { siloRepository.stopPlaybackSession(session.book) }
+            progressWrites.push(session.book, session.lastPositionSec, progress(session.lastPositionSec, session.durationSec) ?: 0f,
+                canWrite = { serverSync.accepts(session.startedAtMs) }) { book, position, percentage ->
+                withConnection(book) {
+                    val result = siloRepository.syncAudiobookProgress(book, position, percentage)
+                    if (result.isSuccess && serverSync.accepts(session.startedAtMs)) siloRepository.stopPlaybackSession(book)
+                    result
+                }
+            }
         }
 
         if (session.absSessionId != null || session.isFeedOnly) {
@@ -228,6 +324,11 @@ class PlayerSessionService @Inject constructor(
                     if (finished && session.book.episodeId != null) markEpisodeFinished(snapshot)
                 }
             }
+            return
+        }
+
+        if (session.book.source == BookSource.AUDIOBOOKSHELF) {
+            remoteMutex.withLock { recordAbsLocalListening(mutex.withLock { session.snapshot() }) }
             return
         }
 
@@ -250,7 +351,7 @@ class PlayerSessionService @Inject constructor(
                     val startProgress = progress(session.startPositionSec, session.durationSec)?.let { round(it * 1_000f) / 10f }
                     val endProgress = progress(session.lastPositionSec, session.durationSec)?.let { round(it * 1_000f) / 10f }
                     val request: suspend () -> Unit = {
-                        api.createReadingSession(
+                        grimmorySessions.upload(
                             ReadingSessionRequest(
                                 bookId = bookId,
                                 bookType = "AUDIOBOOK",
@@ -301,36 +402,68 @@ class PlayerSessionService @Inject constructor(
     }
 
     private suspend fun syncAbsSession(snapshot: SessionSnapshot, close: Boolean) {
+        if (!serverSync.isEnabled) return
         val sessionId = snapshot.absSessionId ?: return
         if (!close && snapshot.durationSec <= 0L) return
-        val result = withConnection(snapshot.book) {
-            if (close) {
-                audiobookshelfRepository.closePlaybackSession(
-                    sessionId = sessionId,
-                    currentTimeSec = snapshot.positionSec,
-                    timeListenedMs = snapshot.unsyncedListenedMs,
-                    durationSec = snapshot.durationSec,
-                )
-            } else {
-                audiobookshelfRepository.syncPlaybackSession(
-                    sessionId = sessionId,
-                    currentTimeSec = snapshot.positionSec,
-                    timeListenedMs = snapshot.unsyncedListenedMs,
-                    durationSec = snapshot.durationSec,
-                )
+        val result = progressWrites.push(snapshot.book, snapshot.positionSec, progress(snapshot.positionSec, snapshot.durationSec) ?: 0f,
+            canWrite = { serverSync.accepts(snapshot.startedAtMs) }) { book, position, _ ->
+            withConnection(book) {
+                val duration = book.duration.takeIf { it > 0L } ?: snapshot.durationSec
+                if (close) {
+                    audiobookshelfRepository.closePlaybackSession(
+                        sessionId = sessionId,
+                        currentTimeSec = position,
+                        timeListenedMs = snapshot.unsyncedListenedMs,
+                        durationSec = duration,
+                    )
+                } else {
+                    audiobookshelfRepository.syncPlaybackSession(
+                        sessionId = sessionId,
+                        currentTimeSec = position,
+                        timeListenedMs = snapshot.unsyncedListenedMs,
+                        durationSec = duration,
+                    )
+                }
             }
         }
         if (result.isSuccess) {
             mutex.withLock { snapshot.listening.acknowledge(snapshot.unsyncedListenedMs) }
         } else {
+            recordAbsLocalListening(snapshot)
             syncAbsProgressDirectly(snapshot)
         }
     }
 
+    private fun reportPlayback(book: Book, sessionId: String, event: PlaybackReportEvent, positionSec: Long) {
+        if (!serverSync.isEnabled || book.source !in PLAYBACK_REPORTING_SOURCES) return
+        val adapter = providerAdapters.firstOrNull { it.source == book.source } ?: return
+        val requestedAt = System.currentTimeMillis()
+        launchSession {
+            progressWrites.push(book, positionSec, progress(positionSec, book.duration) ?: book.progress,
+                canWrite = { serverSync.accepts(requestedAt) }, acknowledgePending = false, recordOutboundEcho = false) { checkpoint, position, _ ->
+                withConnection(checkpoint) { adapter.reportPlayback(checkpoint, event, sessionId, position) }
+            }
+        }
+    }
+
+    private suspend fun recordAbsLocalListening(snapshot: SessionSnapshot) {
+        if (!serverSync.isEnabled) return
+        val listenedMs = snapshot.unsyncedListenedMs
+        if (listenedMs >= 1_000L) {
+            withConnectionScope(snapshot.book) {
+                audiobookshelfRepository.recordLocalListening(snapshot.book, snapshot.positionSec, snapshot.durationSec, listenedMs)
+            }
+            mutex.withLock { snapshot.listening.acknowledge(listenedMs) }
+        }
+        withConnection(snapshot.book) { audiobookshelfRepository.uploadLocalListening() }
+    }
+
     private suspend fun markEpisodeFinished(snapshot: SessionSnapshot) {
+        if (!serverSync.isEnabled) return
         val durationSec = snapshot.durationSec.takeIf { it > 0L } ?: snapshot.book.duration
-        withConnection(snapshot.book) {
-            audiobookshelfRepository.syncAudiobookProgress(snapshot.book.copy(duration = durationSec), durationSec, 1f)
+        progressWrites.push(snapshot.book.copy(duration = durationSec), durationSec, 1f,
+            canWrite = { serverSync.accepts(snapshot.startedAtMs) }) { book, position, percentage ->
+            withConnection(book) { audiobookshelfRepository.syncAudiobookProgress(book, position, percentage) }
         }
     }
 
@@ -348,16 +481,28 @@ class PlayerSessionService @Inject constructor(
     }
 
     private suspend fun syncAbsProgressDirectly(snapshot: SessionSnapshot) {
+        if (!serverSync.isEnabled) return
         if (snapshot.durationSec <= 0L) return
         val progress = (snapshot.positionSec.toFloat() / snapshot.durationSec.toFloat()).coerceIn(0f, 1f)
-        withConnection(snapshot.book) {
-            audiobookshelfRepository.syncAudiobookProgress(snapshot.book, snapshot.positionSec, progress)
+        progressWrites.push(snapshot.book, snapshot.positionSec, progress,
+            canWrite = { serverSync.accepts(snapshot.startedAtMs) }) { book, position, percentage ->
+            withConnection(book) { audiobookshelfRepository.syncAudiobookProgress(book, position, percentage) }
         }
     }
 
-    private suspend fun <T> withConnection(book: Book, block: suspend () -> T): T {
+    private suspend fun <T> withConnectionScope(book: Book, block: suspend () -> T): T {
         val connectionId = book.connectionId ?: return block()
         return withContext(ConnectionScope.asContextElement(connectionId)) { block() }
+    }
+
+    private suspend fun <T> withConnection(book: Book, block: suspend () -> T): T = withConnectionScope(book) {
+        val connectionId = book.connectionId
+        if (connectionId != null) {
+            check(connections.connections.first().any { it.id == connectionId && it.source == book.source && it.enabled }) {
+                "Requested provider connection is unavailable"
+            }
+        }
+        block()
     }
 
     private data class ActiveSession(
@@ -368,6 +513,8 @@ class PlayerSessionService @Inject constructor(
         val startPositionSec: Long,
         var lastPositionSec: Long,
         var absSessionId: String? = null,
+        val reportSessionId: String = UUID.randomUUID().toString(),
+        var reportedStart: Boolean = false,
         var lastFlushAtMs: Long = startedAtMs,
         var lastTickAtMs: Long? = null,
         val listening: ListeningLedger = ListeningLedger(),
@@ -376,7 +523,7 @@ class PlayerSessionService @Inject constructor(
             get() = book.podcastEnclosureUrl != null
 
         fun isFlushDue(nowMs: Long): Boolean =
-            (absSessionId != null || isFeedOnly) &&
+            (absSessionId != null || isFeedOnly || book.source == BookSource.AUDIOBOOKSHELF || book.source in PLAYBACK_REPORTING_SOURCES) &&
                 durationSec > 0L &&
                 nowMs - lastFlushAtMs >= PERIODIC_FLUSH_INTERVAL_MS
 
@@ -390,7 +537,9 @@ class PlayerSessionService @Inject constructor(
 
         fun snapshot(): SessionSnapshot = SessionSnapshot(
             book = book,
+            startedAtMs = startedAtMs,
             absSessionId = absSessionId,
+            reportSessionId = reportSessionId,
             isFeedOnly = isFeedOnly,
             positionSec = lastPositionSec,
             durationSec = durationSec,
@@ -401,7 +550,9 @@ class PlayerSessionService @Inject constructor(
 
     private class SessionSnapshot(
         val book: Book,
+        val startedAtMs: Long,
         val absSessionId: String?,
+        val reportSessionId: String,
         val isFeedOnly: Boolean,
         val positionSec: Long,
         val durationSec: Long,

@@ -7,7 +7,7 @@ final class CatalogRefreshGate {
     private var activeProviderIds = Set<UUID>()
     private var waiters: [UUID: [CheckedContinuation<Void, Never>]] = [:]
 
-    private init() {}
+    init() {}
 
     func begin(providerId: UUID) async -> Bool {
         if activeProviderIds.insert(providerId).inserted {

@@ -45,8 +45,8 @@ final class NetworkPolicyService: @unchecked Sendable {
         return result
     }
 
-    func makeSessionConfiguration(allowCellular: Bool) -> URLSessionConfiguration {
-        let config = URLSessionConfiguration.default
+    func makeSessionConfiguration(allowCellular: Bool, isolatesCredentials: Bool = false) -> URLSessionConfiguration {
+        let config = isolatesCredentials ? URLSessionConfiguration.ephemeral : .default
         config.waitsForConnectivity = true
         config.allowsConstrainedNetworkAccess = false
         config.allowsExpensiveNetworkAccess = allowCellular
@@ -57,9 +57,16 @@ final class NetworkPolicyService: @unchecked Sendable {
 
     func makeBackgroundSessionConfiguration(
         identifier: String,
-        allowCellular: Bool
+        allowCellular: Bool,
+        isolatesCredentials: Bool = false
     ) -> URLSessionConfiguration {
         let config = URLSessionConfiguration.background(withIdentifier: identifier)
+        if isolatesCredentials {
+            config.httpCookieStorage = nil
+            config.httpShouldSetCookies = false
+            config.urlCredentialStorage = nil
+            config.urlCache = nil
+        }
         config.waitsForConnectivity = true
         config.allowsConstrainedNetworkAccess = false
         config.allowsExpensiveNetworkAccess = allowCellular

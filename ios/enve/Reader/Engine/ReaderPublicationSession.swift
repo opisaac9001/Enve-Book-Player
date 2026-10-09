@@ -33,7 +33,10 @@ final class ReaderPublicationSession {
 
     private var bookDiagnosticID: String { DiagnosticLogSanitizer.identifier(for: book.stableId) }
 
-    init(book: Book, providerResolver: any LibraryProviderResolving) {
+    private let profileSession: ProfileSession
+
+    init(book: Book, providerResolver: any LibraryProviderResolving, profileSession: ProfileSession = .owner) {
+        self.profileSession = profileSession
         self.book = book
         self.providerResolver = providerResolver
         let httpClient = DefaultHTTPClient()
@@ -55,6 +58,12 @@ final class ReaderPublicationSession {
 
     func begin(_ operation: @escaping () async -> Void) {
         openTask = Task { await operation() }
+    }
+
+    func retire() async {
+        let tasks = [openTask, streamedPositionsTask]
+        cleanup()
+        for task in tasks { await task?.value }
     }
 
     func cleanup() {
@@ -93,7 +102,7 @@ final class ReaderPublicationSession {
             }
             if book.source != .local, !book.isReadAloudBook {
                 do {
-                    let downloadedURL = try await UnifiedDownloadService.shared.prepareReaderAsset(for: book)
+                    let downloadedURL = try await profileSession.downloads.prepareReaderAsset(for: book)
                     try Task.checkCancellation()
                     resolvedURL = downloadedURL
                     fileURL = downloadedURL
@@ -158,7 +167,7 @@ final class ReaderPublicationSession {
     }
 
     func discardUnreadableAsset(at fileURL: URL) {
-        let importer = LocalEbookImporter.shared
+        let importer = profileSession.ebooks
         guard Self.isDiscardableAsset(
             at: fileURL,
             source: book.source,
@@ -185,17 +194,17 @@ final class ReaderPublicationSession {
 
     private func existingLocalAssetURL() -> URL? {
         if book.epub3Features?.hasMediaOverlay == true,
-            let cached = LocalEbookImporter.shared.cachedReadaloudEpub(forBookId: book.id)
+            let cached = profileSession.ebooks.cachedReadaloudEpub(forBookId: book.id)
         {
             return cached
         }
-        if #available(iOS 26.0, *),
-            let audiobook = EbookAudiobookLinker.shared.linkedAudiobook(for: book),
+        if #available(iOS 26.0, *), profileSession.isOwner,
+            let audiobook = profileSession.playback.linker.linkedAudiobook(for: book),
             let narrated = StoryAlignService.shared.cachedNarratedEpubURL(ebook: book, audiobook: audiobook)
         {
             return narrated
         }
-        return LocalEbookImporter.shared.resolveExistingLocalEbookURL(
+        return profileSession.ebooks.resolveExistingLocalEbookURL(
             bookIdentifier: book.id,
             ebookFileURL: book.ebookFileURL,
             filePath: book.filePath

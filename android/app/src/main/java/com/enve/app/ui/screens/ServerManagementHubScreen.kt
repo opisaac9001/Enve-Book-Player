@@ -29,7 +29,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.hilt.navigation.compose.hiltViewModel
+import com.enve.hearth.shell.profileViewModel
 import com.enve.core.data.model.BookSource
 import com.enve.hearth.design.EmberAccent
 import com.enve.hearth.design.hearthDisplay
@@ -57,7 +57,7 @@ fun ServerManagementHubScreen(
     onBack: () -> Unit,
     onNavigateToConnections: () -> Unit,
     onOpenServerTools: (String) -> Unit,
-    viewModel: ServerManagementViewModel = hiltViewModel(),
+    viewModel: ServerManagementViewModel = profileViewModel(),
 ) {
     val state by viewModel.state.collectAsState()
     val colors = EnveTheme.colors

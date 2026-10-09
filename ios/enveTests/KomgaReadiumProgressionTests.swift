@@ -18,6 +18,14 @@ struct KomgaReadiumProgressionTests {
         """#.utf8
     )
 
+    @Test func comicFormatSurvivesGenericAndParameterizedMediaTypes() {
+        #expect(KomgaProvider.ebookFormat(mediaType: "application/octet-stream", mediaProfile: "DIVINA", fileName: "/comics/Issue.CBR") == "cbr")
+        #expect(KomgaProvider.ebookFormat(mediaType: "application/zip; charset=binary", mediaProfile: "DIVINA", fileName: "Issue") == "cbz")
+        #expect(KomgaProvider.ebookFormat(mediaType: nil, mediaProfile: "DIVINA", fileName: "Issue") == "cbz")
+        #expect(KomgaProvider.ebookFormat(mediaType: "application/pdf", mediaProfile: "PDF", fileName: "/books/Issue.pdf") == "pdf")
+        #expect(KomgaProvider.ebookFormat(mediaType: "application/epub+zip", mediaProfile: "EPUB", fileName: "Book") == "epub")
+    }
+
     @Test func aFetchedProgressionBecomesAReadiumLocator() throws {
         let progression = try #require(KomgaProvider.readiumProgression(from: capturedProgression))
         let locator = try #require(EpubCFI.jsonObject(progression.locator))

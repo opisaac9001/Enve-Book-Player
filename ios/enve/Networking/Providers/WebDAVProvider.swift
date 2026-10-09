@@ -83,8 +83,51 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
     private static let torBoxMaxListItems = 100_000
     private static let torBoxMaxAudioFiles = 100_000
 
-    init(connection: ServerConnection) {
+    private let appState: AppState
+    private let ebooks: LocalEbookImporter
+    private let metadataStorage: MetadataStorage
+    private let metadataManager: MetadataManager
+    private let remoteImport: RemoteImportService
+    private let defaults: UserDefaults
+    private let networkSession: URLSession
+    private let certificateTransport: InsecureURLSession
+    private let isolatesCredentials: Bool
+    private let coverCacheDirectory: URL
+    private var backgroundJobs: [UUID: Task<Void, Never>] = [:]
+    private var isRetired = false
+
+    func retire() async {
+        isRetired = true
+        let jobs = Array(backgroundJobs.values)
+        for job in jobs { job.cancel() }
+        for job in jobs { await job.value }
+        backgroundJobs.removeAll()
+    }
+
+    private func startBackground(priority: TaskPriority, operation: @escaping @MainActor @Sendable () async -> Void) {
+        guard !isRetired else { return }
+        let id = UUID()
+        backgroundJobs[id] = Task(priority: priority) {
+            guard !Task.isCancelled else { return }
+            await operation()
+            self.backgroundJobs[id] = nil
+        }
+    }
+
+    init(connection: ServerConnection, profileSession: ProfileSession? = nil) {
         self.connection = connection
+        coverCacheDirectory = (profileSession?.storage.cachesDirectory
+            ?? FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0])
+            .appendingPathComponent("Covers", isDirectory: true)
+        appState = profileSession?.appState ?? .shared
+        ebooks = profileSession?.ebooks ?? .shared
+        metadataStorage = profileSession?.metadataStorage ?? .shared
+        metadataManager = profileSession?.metadataManager ?? .shared
+        remoteImport = profileSession?.remoteImport ?? .shared
+        defaults = profileSession?.defaults ?? .standard
+        networkSession = profileSession?.networkSession ?? .shared
+        certificateTransport = profileSession?.transport ?? .delegateInstance
+        isolatesCredentials = profileSession?.isOwner == false
     }
 
     func validateConnection() async throws -> Bool {
@@ -95,7 +138,7 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
         AppLogger.network.info("Password: \(passLen > 0 ? "<set \(passLen) chars>" : "<nil>")")
         AppLogger.network.info("AuthType: \(server.authType.rawValue)")
         let path = server.rootPath.isEmpty ? "/" : server.rootPath
-        _ = try await RemoteImportService.shared.listWebDAVDirectory(server: server, path: path)
+        _ = try await remoteImport.listWebDAVDirectory(server: server, path: path)
         AppLogger.network.info("Connection validated successfully")
         return true
     }
@@ -116,6 +159,8 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
     }
 
     func fetchBooks(libraryId: String) async throws -> [Book] {
+        guard !isRetired else { throw CancellationError() }
+        try Task.checkCancellation()
         let server = try await resolveServerConfig()
         let paths = normalizedIndexedPaths(from: server)
         guard let rootPath = paths.first(where: { self.libraryId(for: server, path: $0) == libraryId }) else {
@@ -152,7 +197,7 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
 
         let totalUnits = bookUnits.count + ebookFiles.count
         await MainActor.run {
-            AppState.shared.presentation.libraryImportProgress = LibraryImportProgress(
+            appState.presentation.libraryImportProgress = LibraryImportProgress(
                 libraryId: libraryId,
                 libraryName: libraryName,
                 loadedCount: 0,
@@ -253,7 +298,7 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
             let loadedCount = books.count
             if loadedCount % 25 == 0 || loadedCount == totalUnits {
                 await MainActor.run {
-                    AppState.shared.presentation.libraryImportProgress = LibraryImportProgress(
+                    appState.presentation.libraryImportProgress = LibraryImportProgress(
                         libraryId: libraryId,
                         libraryName: libraryName,
                         loadedCount: loadedCount,
@@ -273,7 +318,7 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
             let theBookId = bookId(for: server, path: remotePath)
             let fallbackTitle = (ebookFile.entry.name as NSString).deletingPathExtension
 
-            let storedMeta = try? await MetadataStorage.shared.loadMetadata(bookId: theBookId)
+            let storedMeta = try? await metadataStorage.loadMetadata(bookId: theBookId)
             let hasMeaningfulStoredData = storedMeta?.file.title != nil || storedMeta?.file.author != nil
 
             var coverURL: URL?
@@ -287,7 +332,7 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
                 if storedMeta?.file.coverPath != nil {
                     if var mutableMeta = storedMeta {
                         mutableMeta.file.coverPath = nil
-                        try? await MetadataStorage.shared.saveMetadata(mutableMeta)
+                        try? await metadataStorage.saveMetadata(mutableMeta)
                     }
                 }
                 coverURL = coverURLIfAvailable(server: server, folder: syntheticFolder)
@@ -346,7 +391,7 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
             if sidecarMetadata == nil && !hasMeaningfulStoredData {
                 let capturedBook = ebookBook
                 let capturedServer = server
-                Task.detached(priority: .utility) { [weak self] in
+                startBackground(priority: .utility) { [weak self] in
                     guard let self else { return }
                     await self.extractAndCacheEbookMetadata(for: capturedBook, server: capturedServer)
                 }
@@ -355,7 +400,7 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
             let loadedCount = books.count
             if loadedCount % 25 == 0 || loadedCount == totalUnits {
                 await MainActor.run {
-                    AppState.shared.presentation.libraryImportProgress = LibraryImportProgress(
+                    appState.presentation.libraryImportProgress = LibraryImportProgress(
                         libraryId: libraryId,
                         libraryName: libraryName,
                         loadedCount: loadedCount,
@@ -367,7 +412,7 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
         }
 
         await MainActor.run {
-            AppState.shared.presentation.libraryImportProgress = LibraryImportProgress(
+            appState.presentation.libraryImportProgress = LibraryImportProgress(
                 libraryId: libraryId,
                 libraryName: libraryName,
                 loadedCount: books.count,
@@ -382,11 +427,12 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
         let capturedLibraryId = libraryId
         let capturedLibraryName = libraryName
         let shouldDeferPrefetch = isPremiumizeConnection()
-        Task.detached(priority: shouldDeferPrefetch ? .background : .utility) { [weak self] in
+        startBackground(priority: shouldDeferPrefetch ? .background : .utility) { [weak self] in
             guard let self else { return }
             if shouldDeferPrefetch {
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
             }
+            guard !Task.isCancelled else { return }
             await self.prefetchChaptersAndDurations(
                 for: capturedBooks,
                 server: capturedServer,
@@ -433,8 +479,8 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
 
         if let onProgress {
 
-            let delegate = URLSessionDownloadProgressDelegate(progressHandler: onProgress, credential: credential)
-            let config = URLSessionConfiguration.default
+            let delegate = URLSessionDownloadProgressDelegate(progressHandler: onProgress, credential: credential, certificateTransport: certificateTransport)
+            let config = (isolatesCredentials ? URLSessionConfiguration.ephemeral : .default)
             config.timeoutIntervalForRequest = 60
             config.timeoutIntervalForResource = 300
             let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
@@ -452,14 +498,14 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
             let session: URLSession
             let needsInvalidation: Bool
             if !username.isEmpty {
-                let challengeDelegate = ProviderWebDAVAuthDelegate(username: username, password: password)
-                let config = URLSessionConfiguration.default
+                let challengeDelegate = ProviderWebDAVAuthDelegate(username: username, password: password, certificateTransport: certificateTransport)
+                let config = (isolatesCredentials ? URLSessionConfiguration.ephemeral : .default)
                 config.timeoutIntervalForRequest = 60
                 config.timeoutIntervalForResource = 300
                 session = URLSession(configuration: config, delegate: challengeDelegate, delegateQueue: nil)
                 needsInvalidation = true
             } else {
-                session = URLSession.shared
+                session = networkSession
                 needsInvalidation = false
             }
             do {
@@ -477,7 +523,7 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
             throw ProviderError.invalidResponse
         }
 
-        return try LocalEbookImporter.shared.cacheRemoteEbook(
+        return try ebooks.cacheRemoteEbook(
             tempURL: tempURL,
             preferredFilename: filename,
             bookIdentifier: book.id
@@ -497,7 +543,7 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
     }
 
     func fetchFullBookDetails(bookId: String, libraryId: String) async throws -> Book {
-        guard let book = await AppState.shared.bookStore.book(byBookId: bookId) else {
+        guard let book = await appState.bookStore.book(byBookId: bookId) else {
             throw ProviderError.invalidResponse
         }
 
@@ -712,7 +758,7 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
 
     private func resolveServerConfig() async throws -> WebDAVServerConfig {
         let config: WebDAVServerConfig? = await MainActor.run {
-            RemoteImportService.shared.webDAVServers.first { $0.id == connection.id.uuidString }
+            remoteImport.webDAVServers.first { $0.id == connection.id.uuidString }
         }
 
         if var config {
@@ -769,7 +815,7 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
         )
 
         await MainActor.run {
-            RemoteImportService.shared.saveWebDAVServer(newConfig)
+            remoteImport.saveWebDAVServer(newConfig)
         }
 
         return newConfig
@@ -900,11 +946,13 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
             let tmpFile = tmpDir.appendingPathComponent(filename)
             try data.write(to: tmpFile, options: .atomic)
 
-            let extracted = try await LocalEbookImporter.shared.extractMetadata(from: tmpFile)
+            let extracted = try await ebooks.extractMetadata(from: tmpFile)
+            try Task.checkCancellation()
+            guard !isRetired else { throw CancellationError() }
 
             var storedMeta =
-                (try? await MetadataStorage.shared.loadMetadata(bookId: book.id))
-                ?? MetadataManager.shared.initializeBookMetadata(from: book)
+                (try? await metadataStorage.loadMetadata(bookId: book.id))
+                ?? metadataManager.initializeBookMetadata(from: book)
 
             storedMeta.file.title = extracted.title.isEmpty ? nil : extracted.title
             storedMeta.file.author = extracted.author
@@ -924,7 +972,9 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
                 }
             }
 
-            try await MetadataStorage.shared.saveMetadata(storedMeta)
+            try Task.checkCancellation()
+            guard !isRetired else { throw CancellationError() }
+            try await metadataStorage.saveMetadata(storedMeta)
 
             await MainActor.run {
                 NotificationCenter.default.post(name: .metadataUpdated, object: book.id)
@@ -964,7 +1014,7 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
             request.setValue(value, forHTTPHeaderField: key)
         }
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await networkSession.data(for: request)
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             return nil
         }
@@ -1045,7 +1095,7 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
 
                     group.addTask {
                         do {
-                            let entries = try await RemoteImportService.shared.listWebDAVDirectory(server: server, path: normalizedPath)
+                            let entries = try await self.remoteImport.listWebDAVDirectory(server: server, path: normalizedPath)
                             return (normalizedPath, entries)
                         } catch {
                             AppLogger.network.error("Skipping '\(normalizedPath)' - PROPFIND failed: \(error.localizedDescription)")
@@ -1163,7 +1213,7 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
 
                     group.addTask {
                         do {
-                            let entries = try await RemoteImportService.shared.listWebDAVDirectory(server: server, path: normalizedPath)
+                            let entries = try await self.remoteImport.listWebDAVDirectory(server: server, path: normalizedPath)
                             return (normalizedPath, entries)
                         } catch {
                             AppLogger.network.error("TorBox cover scan skipping '\(normalizedPath)': \(error.localizedDescription)")
@@ -1416,7 +1466,7 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await networkSession.data(for: request)
             guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else { return nil }
             return try JSONDecoder().decode(TorBoxListResponse.self, from: data).data
         } catch {
@@ -1543,7 +1593,7 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
 
                     group.addTask {
                         do {
-                            let entries = try await RemoteImportService.shared.listWebDAVDirectory(server: server, path: normalizedPath)
+                            let entries = try await self.remoteImport.listWebDAVDirectory(server: server, path: normalizedPath)
                             return (normalizedPath, entries)
                         } catch {
                             AppLogger.network.error("ebook scan skipping '\(normalizedPath)': \(error.localizedDescription)")
@@ -1587,13 +1637,13 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
         var challengeDelegate: ProviderWebDAVAuthDelegate?
 
         if !username.isEmpty {
-            challengeDelegate = ProviderWebDAVAuthDelegate(username: username, password: password)
-            let config = URLSessionConfiguration.default
+            challengeDelegate = ProviderWebDAVAuthDelegate(username: username, password: password, certificateTransport: certificateTransport)
+            let config = (isolatesCredentials ? URLSessionConfiguration.ephemeral : .default)
             config.timeoutIntervalForRequest = 60
             config.timeoutIntervalForResource = 300
             session = URLSession(configuration: config, delegate: challengeDelegate, delegateQueue: nil)
         } else {
-            session = URLSession.shared
+            session = networkSession
         }
 
         do {
@@ -1792,8 +1842,8 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
     private func extractChaptersFromAudioFile(streamURL: URL, bookDuration: Double) async throws -> [Chapter] {
         let cacheKey = "enve.webdav.chapterCache.\(streamURL.absoluteString.hashValue)"
         let cacheDateKey = cacheKey + ".date"
-        if let cachedData = UserDefaults.standard.data(forKey: cacheKey),
-            let cachedDate = UserDefaults.standard.object(forKey: cacheDateKey) as? Date,
+        if let cachedData = defaults.data(forKey: cacheKey),
+            let cachedDate = defaults.object(forKey: cacheDateKey) as? Date,
             Date().timeIntervalSince(cachedDate) < 604_800,
             let cached = try? JSONDecoder().decode([Chapter].self, from: cachedData), !cached.isEmpty
         {
@@ -1810,8 +1860,8 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
             durationHint: bookDuration > 0 ? bookDuration : nil
         ), !rangedChapters.isEmpty {
             if let encoded = try? JSONEncoder().encode(rangedChapters) {
-                UserDefaults.standard.set(encoded, forKey: cacheKey)
-                UserDefaults.standard.set(Date(), forKey: cacheDateKey)
+                defaults.set(encoded, forKey: cacheKey)
+                defaults.set(Date(), forKey: cacheDateKey)
             }
             return rangedChapters
         }
@@ -1822,8 +1872,8 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
         if !extractedChapters.isEmpty,
             let encoded = try? JSONEncoder().encode(extractedChapters)
         {
-            UserDefaults.standard.set(encoded, forKey: cacheKey)
-            UserDefaults.standard.set(Date(), forKey: cacheDateKey)
+            defaults.set(encoded, forKey: cacheKey)
+            defaults.set(Date(), forKey: cacheDateKey)
         }
 
         return extractedChapters
@@ -1851,7 +1901,7 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
 
         if reportProgress {
             await MainActor.run {
-                AppState.shared.presentation.libraryImportProgress = LibraryImportProgress(
+                appState.presentation.libraryImportProgress = LibraryImportProgress(
                     libraryId: libraryId,
                     libraryName: libraryName,
                     loadedCount: 0,
@@ -1865,6 +1915,7 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
         var processed = 0
 
         for book in needsPrefetch {
+            guard !isRetired, !Task.isCancelled else { return }
             do {
                 let session = try await buildPlaybackSession(for: book)
                 var chapters: [Chapter] = session.chapters
@@ -1885,8 +1936,10 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
 
                 let finalChapters = chapters
                 let finalDuration = totalDuration
+                try Task.checkCancellation()
+                guard !isRetired else { return }
                 if !finalChapters.isEmpty {
-                    try? await MetadataStorage.shared.updateLayer(bookId: book.id, layer: .appCache) { metadata in
+                    try? await metadataStorage.updateLayer(bookId: book.id, layer: .appCache) { metadata in
                         var backend =
                             metadata.backend
                             ?? BackendMetadataLayer(
@@ -1914,7 +1967,7 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
                 }
 
                 await MainActor.run { () -> Void in
-                    _ = AppState.shared.mutateBook(uniqueId: book.uniqueId) { updated in
+                    _ = appState.mutateBook(uniqueId: book.uniqueId) { updated in
                         let isMultiTrack = (updated.audioTracks?.count ?? 0) > 1
                         if !finalChapters.isEmpty && (updated.chapters == nil || updated.chapters?.isEmpty == true) {
                             updated.chapters = finalChapters
@@ -1937,7 +1990,7 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
             processed += 1
             if reportProgress && (processed % 5 == 0 || processed == needsPrefetch.count) {
                 await MainActor.run {
-                    AppState.shared.presentation.libraryImportProgress = LibraryImportProgress(
+                    appState.presentation.libraryImportProgress = LibraryImportProgress(
                         libraryId: libraryId,
                         libraryName: libraryName,
                         loadedCount: processed,
@@ -1956,7 +2009,7 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
         if reportProgress {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             await MainActor.run {
-                AppState.shared.presentation.libraryImportProgress = nil
+                appState.presentation.libraryImportProgress = nil
             }
         }
     }
@@ -1973,10 +2026,8 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
     }
 
     private func saveCoverToCache(data: Data, bookId: String) -> URL? {
-        let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("Covers", isDirectory: true)
-
-        guard let cacheDir = cacheDir else { return nil }
+        guard !isRetired, !Task.isCancelled else { return nil }
+        let cacheDir = coverCacheDirectory
 
         try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
 
@@ -2025,10 +2076,12 @@ private actor BookFolderCollector {
 }
 
 private final class ProviderWebDAVAuthDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private let certificateTransport: InsecureURLSession
     let credential: URLCredential
     private var challengeCount = 0
 
-    init(username: String, password: String) {
+    init(username: String, password: String, certificateTransport: InsecureURLSession = .delegateInstance) {
+        self.certificateTransport = certificateTransport
         self.credential = URLCredential(
             user: username,
             password: password,
@@ -2047,11 +2100,7 @@ private final class ProviderWebDAVAuthDelegate: NSObject, URLSessionTaskDelegate
         let host = challenge.protectionSpace.host
 
         if method == NSURLAuthenticationMethodClientCertificate {
-            if let identity = NetworkHostUtils.findMTLSIdentity(forHost: host) {
-                completionHandler(.useCredential, URLCredential(identity: identity, certificates: nil, persistence: .forSession))
-            } else {
-                completionHandler(.performDefaultHandling, nil)
-            }
+            certificateTransport.urlSession(session, didReceive: challenge, completionHandler: completionHandler)
             return
         }
 

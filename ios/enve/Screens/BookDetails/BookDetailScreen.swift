@@ -2,12 +2,15 @@ import SwiftUI
 import UIKit
 
 struct BookDetailScreen: View {
+    @Environment(\.profileSession) private var capturedSession
+    private var profileSession: ProfileSession { capturedSession ?? .owner }
     let book: Book
 
     @Environment(EnveEngine.self) private var engine
     @Environment(\.hearth) private var hearth
     @Environment(\.mantelInset) private var mantelInset
     @Environment(\.dismiss) private var dismiss
+    private var savedBooks: SavedBooksStore { profileSession.savedBooks }
 
     @State private var live: Book?
     @State private var tint: Color = Hearth.accent
@@ -58,7 +61,7 @@ struct BookDetailScreen: View {
         }
     }
 
-    private var detail: some View {
+    private var detailContent: some View {
         GeometryReader { geo in
             let contentWidth = HearthAdaptive.contentWidth(for: geo.size.width, maximum: 980)
             ScrollView {
@@ -67,6 +70,13 @@ struct BookDetailScreen: View {
 
                     actions
                         .padding(.horizontal, 24)
+
+                    if let message = savedBooks.syncErrors[shown.uniqueId] {
+                        Text(message)
+                            .font(.hearthUI(13))
+                            .foregroundStyle(hearth.statusError)
+                            .padding(.horizontal, 24)
+                    }
 
                     if let summary = workSummary {
                         HearthDoorway(
@@ -146,13 +156,22 @@ struct BookDetailScreen: View {
             .scrollIndicators(.hidden)
             .ignoresSafeArea(edges: .top)
         }
+    }
+
+    private var detail: some View {
+        detailContent
         .background(HearthBackground())
         .overlay(alignment: .topLeading) {
             GlyphButton(systemImage: "chevron.left", label: "Back") { dismiss() }
                 .padding(.leading, 20)
         }
+        .overlay(alignment: .topTrailing) {
+            moreMenu
+                .padding(.trailing, 20)
+        }
         .navigationBarBackButtonHidden(true)
         .toolbar(.hidden, for: .navigationBar)
+        .hearthInteractiveBack()
         .animation(.smooth(duration: 0.35), value: shelf.message)
         .animation(.smooth(duration: 0.25), value: chapterFetcher.isFetching)
         .sheet(
@@ -189,7 +208,7 @@ struct BookDetailScreen: View {
             autoFetchChaptersIfNeeded()
             await shelf.load(book: shown, library: engine.library)
             if shown.source == .komga,
-                let provider = AppState.shared.getProvider(shown.providerId) as? KomgaProvider
+                let provider = profileSession.appState.getProvider(shown.providerId) as? KomgaProvider
             {
 
                 let bookId = shown.id
@@ -492,9 +511,37 @@ struct BookDetailScreen: View {
                 )
             }
 
+            if shown.mediaType == .audiobook || shown.mediaType == .ebook {
+                HStack(spacing: 10) {
+                    QuietButton(
+                        title: engine.library.isSaved(shown, in: .favorites) ? "Favorited" : "Favorite",
+                        systemImage: engine.library.isSaved(shown, in: .favorites) ? "heart.fill" : "heart"
+                    ) {
+                        PlatformHaptics.impact(.light)
+                        Task { await engine.library.toggleSaved(shown, in: .favorites) }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .disabled(savedBooks.isUpdating(shown.uniqueId, in: .favorites))
+                    QuietButton(
+                        title: engine.library.isSaved(shown, in: .later) ? "Saved for later" : (isEbook ? "Read Later" : "Listen Later"),
+                        systemImage: engine.library.isSaved(shown, in: .later) ? "bookmark.fill" : "bookmark"
+                    ) {
+                        PlatformHaptics.impact(.light)
+                        Task { await engine.library.toggleSaved(shown, in: .later) }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .disabled(savedBooks.isUpdating(shown.uniqueId, in: .later))
+                }
+            }
+
             HStack(spacing: 10) {
                 if showsDownload {
-                    DetailDownloadButton(book: shown, tint: tint)
+                    DetailDownloadButton(
+                        book: shown,
+                        tint: tint,
+                        formatName: shown.source == .booklore && counterpart?.source == .booklore
+                            ? (shown.mediaType == .ebook ? "ebook" : "audiobook") : nil
+                    )
                 }
                 QuietButton(
                     title: shown.isFinished ? "Mark unfinished" : "Mark finished",
@@ -502,8 +549,18 @@ struct BookDetailScreen: View {
                 ) {
                     toggleFinished()
                 }
-                Spacer(minLength: 0)
-                moreMenu
+            }
+            .frame(maxWidth: .infinity)
+
+            if shown.source == .booklore,
+               let counterpart,
+               counterpart.source == .booklore,
+               engine.library.canDownload(counterpart) {
+                DetailDownloadButton(
+                    book: counterpart,
+                    tint: tint,
+                    formatName: counterpart.mediaType == .ebook ? "ebook" : "audiobook"
+                )
             }
         }
     }
@@ -748,7 +805,7 @@ struct BookDetailScreen: View {
     private func setShelfStatus(_ status: BookOrbitProvider.BookOrbitReadStatus) {
         PlatformHaptics.impact(.light)
         Task {
-            await shelf.set(status, book: shown, library: engine.library)
+            await shelf.set(status, book: shown, library: engine.library, profileSession: profileSession)
             await refresh()
         }
     }
@@ -757,7 +814,7 @@ struct BookDetailScreen: View {
         guard !chapterFetcher.isFetching else { return }
         PlatformHaptics.impact(.light)
         Task {
-            await chapterFetcher.fetch(book: shown, library: engine.library)
+            await chapterFetcher.fetch(book: shown, library: engine.library, profileSession: profileSession)
             await refresh()
         }
     }
@@ -766,7 +823,7 @@ struct BookDetailScreen: View {
         guard !didAutoFetchChapters, shown.mediaType == .audiobook || shown.mediaType == .ebook, chapterList.isEmpty else { return }
         didAutoFetchChapters = true
         Task {
-            await chapterFetcher.fetch(book: shown, library: engine.library)
+            await chapterFetcher.fetch(book: shown, library: engine.library, profileSession: profileSession)
             await refresh()
         }
     }
@@ -910,12 +967,12 @@ struct BookDetailScreen: View {
 
     private func reloadCachedChapters() {
         guard shown.mediaType == .ebook else {
-            cachedChapters = ReaderArtifactsStore.shared.loadCachedAudioChapters(for: shown) ?? []
+            cachedChapters = profileSession.readerArtifacts.loadCachedAudioChapters(for: shown) ?? []
             return
         }
         cachedChapters =
-            ReaderArtifactsStore.shared.loadCachedChapters(bookId: shown.stableId)
-            ?? ReaderArtifactsStore.shared.loadCachedChapters(bookId: book.id)
+            profileSession.readerArtifacts.loadCachedChapters(bookId: shown.stableId)
+            ?? profileSession.readerArtifacts.loadCachedChapters(bookId: book.id)
             ?? []
     }
 
@@ -1115,7 +1172,7 @@ struct BookDetailScreen: View {
         let snapshot = await engine.library.detailSnapshot(for: book, current: live)
         let fresh = snapshot.book
         live = fresh
-        tint = await AmbientColorStore.shared.resolve(for: fresh)
+        tint = await AmbientColorStore(imageCache: profileSession.imageCache).resolve(for: fresh)
         counterpart = snapshot.counterpart
         inSeries = snapshot.inSeries
         workSummary = snapshot.workSummary

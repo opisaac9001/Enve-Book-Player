@@ -8,22 +8,36 @@ final class SiloEbookSyncStrategy: ProviderSyncStrategy {
 
     private let minimumServerSyncInterval: TimeInterval = 60
     private var lastSyncTime: Date?
-    private let playbackState: any PlaybackStateProvider = ActivePlayback.controller
+    private let playbackState: any PlaybackStateProvider
     private let providerConnections: any ProviderConnectionAccessing
     private let books: any BookQuerying
     private let bookWriter: any BookWriting
     private let progressRepository: any ProgressRepository
+    private let libraryCache: any RecentlyPlayedLibraryCaching
+    private let pendingSync: PendingSyncQueueStore
+    private let conflicts: EbookConflictStore
+    private let ebookLinks: any EbookLinkPersisting
 
     init(
         providerConnections: any ProviderConnectionAccessing,
         books: any BookQuerying,
         bookWriter: any BookWriting,
-        progressRepository: any ProgressRepository
+        progressRepository: any ProgressRepository,
+        libraryCache: any RecentlyPlayedLibraryCaching,
+        playbackState: any PlaybackStateProvider,
+        pendingSync: PendingSyncQueueStore,
+        conflicts: EbookConflictStore,
+        ebookLinks: any EbookLinkPersisting
     ) {
         self.providerConnections = providerConnections
         self.books = books
         self.bookWriter = bookWriter
         self.progressRepository = progressRepository
+        self.libraryCache = libraryCache
+        self.playbackState = playbackState
+        self.pendingSync = pendingSync
+        self.conflicts = conflicts
+        self.ebookLinks = ebookLinks
     }
 
     func sync(force: Bool, launchOptimized: Bool) async -> ProviderSyncResult {
@@ -67,7 +81,7 @@ final class SiloEbookSyncStrategy: ProviderSyncStrategy {
             ).sorted { $0.lastUpdate > $1.lastUpdate }
 
             for book in candidateBooks.prefix(launchOptimized && !force ? 100 : candidateBooks.count)
-            where book.stableId != activeBookId && PendingSyncQueueStore.shared.entries[book.stableId] == nil {
+            where book.stableId != activeBookId && pendingSync.entries[book.stableId] == nil {
                 do {
                     let localProgress = book.ebookProgress ?? book.canonicalEbookProgress
                     let localDate = book.lastUpdate
@@ -105,7 +119,7 @@ final class SiloEbookSyncStrategy: ProviderSyncStrategy {
                     switch direction {
                     case .pull:
                         let isFinished = serverResult.isFinished || serverProgress >= Book.finishedProgressThreshold
-                        let mutated = AppState.shared.mutateBook(stableId: book.stableId) {
+                        let mutated = libraryCache.mutateBook(stableId: book.stableId) {
                             $0.hideFromContinue = false
                             $0.ebookProgress = serverProgress
                             if let locator = serverResult.locator, !locator.isEmpty {
@@ -126,7 +140,7 @@ final class SiloEbookSyncStrategy: ProviderSyncStrategy {
                                 lastUpdate: serverDate
                             )
                         }
-                        EbookLinkStore.shared.saveLinks()
+                        ebookLinks.saveLinks()
                         AppLogger.sync.debug(
                             "Pulled Silo ebook progress bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId)) progress=\(Int(serverProgress * 100))%"
                         )
@@ -141,7 +155,7 @@ final class SiloEbookSyncStrategy: ProviderSyncStrategy {
                         pushed += 1
 
                     case .conflict:
-                        EbookConflictStore.shared.add(
+                        conflicts.add(
                             EbookSyncConflict(
                                 bookStableId: book.stableId,
                                 bookTitle: book.title,

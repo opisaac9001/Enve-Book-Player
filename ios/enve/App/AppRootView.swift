@@ -14,6 +14,8 @@ extension Notification.Name {
 
 struct AppRootView: View {
     @Environment(AppState.self) private var appState
+    @Environment(ProfileSwitchCoordinator.self) private var profiles
+    private let profileSession: ProfileSession
     @Environment(EnveEngine.self) private var engine
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var tab: HearthTab = .hearth
@@ -21,7 +23,7 @@ struct AppRootView: View {
         uniqueKeysWithValues: HearthTab.allCases.map { ($0, UUID()) }
     )
     @AppStorage("hearth.mode") private var modeRaw = Hearth.Mode.system.rawValue
-    @State private var prefs = LibraryDisplayPreferencesStore.shared.loadPreferences()
+    @State private var prefs: UserPreferences
 
     @State private var debugDetailBook: Book?
     @State private var debugPodcastShow: Book?
@@ -36,8 +38,9 @@ struct AppRootView: View {
     @State private var reauthConnection: ServerConnection?
     @State private var showOrphanedMatcher = false
 
-    init() {
-        let preferences = LibraryDisplayPreferencesStore.shared.loadPreferences()
+    init(profileSession: ProfileSession = .owner) {
+        self.profileSession = profileSession
+        let preferences = profileSession.preferences.loadPreferences()
         _prefs = State(initialValue: preferences)
         _tab = State(
             initialValue: HearthTab(rawValue: preferences.preferredStartTab.rawValue) ?? .hearth
@@ -68,57 +71,57 @@ struct AppRootView: View {
         )
         .fullScreenCover(isPresented: $presentation.isPlayerPresented) {
             PlayerScreen()
-                .enveEnvironment()
+                .enveEnvironment(session: profileSession)
         }
         .fullScreenCover(item: $presentation.selectedEbookForDetail) { book in
-            ReaderScreen(book: book, providerResolver: appState.providerConnections)
+            ReaderScreen(book: book, providerResolver: appState.providerConnections, profileSession: profileSession)
                 .id(book.stableId)
-                .enveEnvironment()
+                .enveEnvironment(session: profileSession)
         }
         .fullScreenCover(item: $debugDetailBook) { book in
             NavigationStack { BookDetailScreen(book: book) }
-                .enveEnvironment()
+                .enveEnvironment(session: profileSession)
         }
         .fullScreenCover(item: $debugPodcastShow) { show in
             NavigationStack { PodcastShowScreen(show: show) }
-                .enveEnvironment()
+                .enveEnvironment(session: profileSession)
         }
         .fullScreenCover(isPresented: $debugSettingsPresented) {
-            NavigationStack { SettingsScreen() }
-                .enveEnvironment()
+            NavigationStack { SettingsScreen(profileSession: profileSession) }
+                .enveEnvironment(session: profileSession)
         }
         .fullScreenCover(isPresented: $debugAddSourcePresented) {
             NavigationStack { SourcesQuickConnectScreen() }
-                .enveEnvironment()
+                .enveEnvironment(session: profileSession)
         }
         .fullScreenCover(isPresented: $tourPresented) {
             HearthTour()
-                .enveEnvironment()
+                .enveEnvironment(session: profileSession)
         }
         .fullScreenCover(item: $debugScreenRoute) { route in
             NavigationStack { debugRoutedScreen(route.id) }
-                .enveEnvironment()
+                .enveEnvironment(session: profileSession)
         }
         .fullScreenCover(item: $debugWorkHubKey) { route in
             NavigationStack { WorkHubScreen(workKey: route.id) }
-                .enveEnvironment()
+                .enveEnvironment(session: profileSession)
         }
         .fullScreenCover(item: $debugLibrarianBook) { book in
             LibrarianChatScreen(book: book)
-                .enveEnvironment()
+                .enveEnvironment(session: profileSession)
         }
         .sheet(item: $debugCardRequest) { request in
             QuoteCardSheet(quote: request.text, book: request.book, attribution: request.attribution)
-                .enveEnvironment()
+                .enveEnvironment(session: profileSession)
                 .presentationDetents([.large])
         }
         .sheet(item: $reauthConnection) { connection in
             NavigationStack { SourceDetailScreen(connectionId: connection.id) }
-                .enveEnvironment()
+                .enveEnvironment(session: profileSession)
         }
         .sheet(isPresented: $showOrphanedMatcher) {
             NavigationStack { OrphanedBookMatcherScreen() }
-                .enveEnvironment()
+                .enveEnvironment(session: profileSession)
         }
         .alert(item: $presentation.userFacingError) { error in
             Alert(title: Text(error.title), message: Text(error.message), dismissButton: .default(Text("OK")))
@@ -144,7 +147,7 @@ struct AppRootView: View {
         .task { await observePreferenceChanges() }
         .onChange(of: appState.currentBook?.stableId) { _, newId in
             if let newId {
-                PlayerStateStore.shared.saveLastPlayedBookId(newId)
+                profileSession.playerState.saveLastPlayedBookId(newId)
             }
         }
         .onOpenURL { openEnveBookLink($0) }
@@ -170,10 +173,11 @@ struct AppRootView: View {
     }
 
     private func openEnveBookLink(_ url: URL) {
+        guard !profileSession.isRetired else { return }
         // An OPDS implicit sign-in can come back by relaunching the app rather than through the in-app
         // browser sheet, so the waiting flow gets first refusal on the callback.
         if OPDSAuthenticationService.isCallback(url) {
-            OPDSAuthenticationService.shared.handleCallback(url)
+            profileSession.opdsLogin.handleCallback(url)
             return
         }
         if let request = EnveBookLink.readerRequest(from: url),
@@ -187,11 +191,12 @@ struct AppRootView: View {
             if let timestamp = request.timestamp {
                 Task { @MainActor in
                     for _ in 0..<20 {
-                        let snapshot = ActivePlayback.controller.snapshot
+                        guard !Task.isCancelled, !profileSession.isRetired else { return }
+                        let snapshot = profileSession.playback.composition.controller.snapshot
                         if snapshot.currentBook?.stableId == book.stableId,
                             !snapshot.isLoading
                         {
-                            PlayerViewModel.shared.seek(to: timestamp)
+                            profileSession.playback.player.seek(to: timestamp)
                             return
                         }
                         try? await Task.sleep(for: .milliseconds(150))
@@ -203,6 +208,7 @@ struct AppRootView: View {
 
     private func restoreLastPlayedIntoMantel() async {
         for _ in 0..<25 {
+            guard !Task.isCancelled, !profileSession.isRetired else { return }
             if engine.playback.restoreLastPlayedIntoMantelIfAvailable() { return }
             try? await Task.sleep(for: .milliseconds(200))
         }
@@ -210,13 +216,18 @@ struct AppRootView: View {
 
     private func observePreferenceChanges() async {
         for await _ in NotificationCenter.default.notifications(named: .preferencesDidChange).map({ _ in () }) {
-            prefs = LibraryDisplayPreferencesStore.shared.loadPreferences()
+            prefs = profileSession.preferences.loadPreferences()
         }
     }
 
     private func handleDebugRoute() async {
         #if DEBUG
         let route = Self.launchArgumentValue("imagineScreen")
+        if route == "profiles" {
+            debugScreenRoute = DebugRoute(id: "profiles")
+            return
+        }
+        guard profileSession.isOwner else { return }
         let openBook = Self.launchArgumentValue("imagineOpenBook")
         let fixtureFilename = Self.launchArgumentValue("imagineFixture")
         let seedCountArg = Int(Self.launchArgumentValue("imagineSeed") ?? "") ?? 0
@@ -225,6 +236,7 @@ struct AppRootView: View {
         Self.clearPersistedDebugRouteKeys()
         guard route != nil || (openBook?.isEmpty == false) || seedCountArg > 0 || teardownArg || refreshArg else { return }
         while !appState.isBootstrapComplete {
+            guard !Task.isCancelled, !profileSession.isRetired else { return }
             try? await Task.sleep(for: .milliseconds(200))
         }
         try? await Task.sleep(for: .seconds(1.5))
@@ -255,6 +267,8 @@ struct AppRootView: View {
             tab = .library
         case "journal":
             tab = .journal
+        case "profiles":
+            debugScreenRoute = DebugRoute(id: "profiles")
         case "settings":
             debugSettingsPresented = true
         case "addsource":
@@ -301,6 +315,11 @@ struct AppRootView: View {
                 let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
             {
                 let directURL = documents.appendingPathComponent(fixtureFilename)
+                if let encoded = ProcessInfo.processInfo.environment["ENVE_READER_FIXTURE_BASE64"],
+                    let data = Data(base64Encoded: encoded)
+                {
+                    try? data.write(to: directURL, options: .atomic)
+                }
                 let importedURL =
                     documents
                     .appendingPathComponent("Ebooks/local", isDirectory: true)
@@ -943,18 +962,18 @@ struct AppRootView: View {
             libraryId: "queue-e2e"
         )
 
-        let originalContinuousPlayback = LibraryDisplayPreferencesStore.shared
+        let originalContinuousPlayback = profileSession.preferences
             .loadPreferences()
             .continuousPlaybackEnabled
-        SettingsPrefs.mutate { $0.continuousPlaybackEnabled = true }
+        SettingsPrefs.mutate(in: profileSession.preferences) { $0.continuousPlaybackEnabled = true }
         engine.playback.clearQueue()
-        ActivePlayback.controller.stop()
+        profileSession.playback.composition.controller.stop()
 
         let started = engine.playback.playAll([first, second], groupKey: "debug:queue-e2e")
         var sawFirst = false
         var sawSecond = false
         for _ in 0..<150 {
-            let currentID = ActivePlayback.controller.snapshot.currentBook?.id
+            let currentID = profileSession.playback.composition.controller.snapshot.currentBook?.id
             sawFirst = sawFirst || currentID == first.id
             if currentID == second.id {
                 sawSecond = true
@@ -963,10 +982,10 @@ struct AppRootView: View {
             try? await Task.sleep(for: .milliseconds(100))
         }
 
-        let error = ActivePlayback.controller.snapshot.errorDescription
-        ActivePlayback.controller.stop()
+        let error = profileSession.playback.composition.controller.snapshot.errorDescription
+        profileSession.playback.composition.controller.stop()
         engine.playback.clearQueue()
-        SettingsPrefs.mutate { $0.continuousPlaybackEnabled = originalContinuousPlayback }
+        SettingsPrefs.mutate(in: profileSession.preferences) { $0.continuousPlaybackEnabled = originalContinuousPlayback }
 
         let fixtureNames = Set([firstURL.lastPathComponent, secondURL.lastPathComponent])
         let storedFixtures = await engine.library
@@ -1025,7 +1044,7 @@ struct AppRootView: View {
         let originalStrength = AudioProcessor.shared.volumeLevelingStrength
         AudioProcessor.shared.setVolumeLevelingStrength(.high)
         let persisted =
-            LibraryDisplayPreferencesStore.shared
+            profileSession.preferences
             .loadPreferences()
             .volumeLevelingStrength == .high
         AudioProcessor.shared.setVolumeLevelingStrength(originalStrength)
@@ -1548,6 +1567,7 @@ struct AppRootView: View {
     @ViewBuilder
     private func debugRoutedScreen(_ route: String) -> some View {
         switch route {
+        case "profiles": ProfilesScreen()
         case "suggestions": WorkSuggestionsScreen()
         case "podcasts": PodcastsHomeScreen()
         case "discover": DiscoverScreen()
@@ -1556,8 +1576,8 @@ struct AppRootView: View {
         case "vocabulary": VocabularyHubScreen()
         case "insights": JournalInsightsScreen()
         case "completion": CompletionCenterScreen()
-        case "storage": StorageScreen()
-        case "libraryhealth": LibraryHealthScreen()
+        case "storage": StorageScreen(profileSession: profileSession)
+        case "libraryhealth": LibraryHealthScreen(profileSession: profileSession)
         case "metadatabatch": MetadataBatchScreen()
         case "tour": HearthTour()
         default: EmptyView()
@@ -1572,7 +1592,7 @@ struct AppRootView: View {
                 shellBanners
 
                 ZStack {
-                    tabContent(.hearth) { HearthScreen(isActive: tab == .hearth) }
+                    tabContent(.hearth) { HearthScreen(isActive: tab == .hearth, profileSession: profileSession) }
                     tabContent(.library) { LibraryScreen(isActive: tab == .library) }
                     tabContent(.podcasts) { PodcastsHomeScreen(isActive: tab == .podcasts, showsBackButton: false) }
                     tabContent(.journal) { JournalScreen(isActive: tab == .journal) }
@@ -1929,16 +1949,48 @@ private struct BookFoldMark: View {
     }
 }
 
-extension View {
+private struct ProfileSessionEnvironmentKey: EnvironmentKey {
+    static let defaultValue: ProfileSession? = nil
+}
 
+extension EnvironmentValues {
+    var profileSession: ProfileSession? {
+        get { self[ProfileSessionEnvironmentKey.self] }
+        set { self[ProfileSessionEnvironmentKey.self] = newValue }
+    }
+}
+
+private struct EnveEnvironmentModifier: ViewModifier {
+    @Environment(\.profileSession) private var capturedSession
+    func body(content: Content) -> some View {
+        content.enveEnvironment(session: capturedSession ?? .owner)
+    }
+}
+
+extension View {
     func enveEnvironment() -> some View {
+        modifier(EnveEnvironmentModifier())
+    }
+
+    func enveEnvironment(session: ProfileSession) -> some View {
         self
-            .environment(AppState.shared)
-            .environment(EnveEngine.shared)
-            .environmentObject(ThemeManager.shared)
-            .environment(PlayerViewModel.shared)
-            .environment(\.shellNavigationStyle, LibraryDisplayPreferencesStore.shared.loadPreferences().shellNavigationStyle)
-            .preferredColorScheme(Hearth.mode.preferredColorScheme)
+            .defaultAppStorage(session.defaults)
+            .environment(\.profileSession, session)
+            .environment(ProfileSwitchCoordinator.shared)
+            .environment(session.appState)
+            .environment(session.libraryModel)
+            .environment(session.podcastsModel)
+            .environment(session.journalListening)
+            .environment(session.journalReading)
+            .environment(session.journalHub)
+            .environment(session.journalLibraryStats)
+            .environment(session.journalInsights)
+            .environment(session.achievements)
+            .environment(session.engine)
+            .environmentObject(session.theme)
+            .environment(session.playback.player)
+            .environment(\.shellNavigationStyle, session.preferences.loadPreferences().shellNavigationStyle)
+            .preferredColorScheme(Hearth.Mode(rawValue: session.defaults.string(forKey: "hearth.mode") ?? "")?.preferredColorScheme)
             .hearthRoot()
     }
 }

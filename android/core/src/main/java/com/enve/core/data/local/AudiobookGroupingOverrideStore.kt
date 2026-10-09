@@ -1,6 +1,8 @@
 package com.enve.core.data.local
 
 import android.content.Context
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
 import android.net.Uri
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringSetPreferencesKey
@@ -11,10 +13,9 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
-class AudiobookGroupingOverrideStore @Inject constructor(
-    @ApplicationContext context: Context,
-) {
-    private val dataStore = context.enveDataStore
+class AudiobookGroupingOverrideStore(private val dataStore: DataStore<Preferences>) {
+    @Inject
+    constructor(@ApplicationContext context: Context) : this(context.enveDataStore)
 
     suspend fun forceStandalone(source: BookSource, sourceId: String, fileId: String) {
         dataStore.edit { preferences ->

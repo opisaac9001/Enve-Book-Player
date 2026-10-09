@@ -9,6 +9,9 @@ struct HardcoverHubScreen: View {
     @State private var feed: [HardcoverFeedActivity] = []
     @State private var lists: [HardcoverUserList] = []
     @State private var connectionError: String?
+    @State private var goalError: String?
+    @State private var feedError: String?
+    @State private var listsError: String?
     @State private var loaded = false
 
     private var isConnected: Bool { SettingsManager.shared.hardcoverApiKey != nil }
@@ -34,8 +37,12 @@ struct HardcoverHubScreen: View {
                     } else {
                         if let goal {
                             goalCard(goal)
+                        } else if let goalError {
+                            errorLine("Reading goal: \(goalError)")
                         }
+                        if let feedError { errorLine("Activity: \(feedError)") }
                         circleSection
+                        if let listsError { errorLine("Lists: \(listsError)") }
                         if !lists.isEmpty {
                             listsSection
                         }
@@ -290,6 +297,9 @@ struct HardcoverHubScreen: View {
     private func hardcoverLoadHub() async {
         guard isConnected else { return }
         connectionError = nil
+        goalError = nil
+        feedError = nil
+        listsError = nil
 
         do {
             username = try await HardcoverService.shared.getCurrentUser().username
@@ -297,13 +307,12 @@ struct HardcoverHubScreen: View {
             connectionError = error.localizedDescription
         }
 
-        async let goalReq = try? HardcoverService.shared.getReadingGoal()
-        async let feedReq = try? HardcoverService.shared.getActivityFeed(limit: 10)
-        async let listsReq = try? HardcoverService.shared.getUserLists()
-        let (g, f, l) = await (goalReq, feedReq, listsReq)
-        if let g { goal = g }
-        feed = f ?? []
-        lists = l ?? []
+        do { goal = try await HardcoverService.shared.getReadingGoal() }
+        catch { goal = nil; goalError = error.localizedDescription }
+        do { feed = try await HardcoverService.shared.getActivityFeed(limit: 10) }
+        catch { feed = []; feedError = error.localizedDescription }
+        do { lists = try await HardcoverService.shared.getUserLists() }
+        catch { lists = []; listsError = error.localizedDescription }
         loaded = true
     }
 }

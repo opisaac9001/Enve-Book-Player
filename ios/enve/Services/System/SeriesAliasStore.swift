@@ -9,8 +9,11 @@ final class SeriesAliasStore {
 
     private(set) var aliases: [String: [String]]
 
-    private init() {
-        if let data = UserDefaults.standard.data(forKey: Self.storageKey),
+    @ObservationIgnored private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        if let data = defaults.data(forKey: Self.storageKey),
             let decoded = try? JSONDecoder().decode([String: [String]].self, from: data)
         {
             self.aliases = decoded
@@ -32,6 +35,6 @@ final class SeriesAliasStore {
 
     private func persist() {
         guard let data = try? JSONEncoder().encode(aliases) else { return }
-        UserDefaults.standard.set(data, forKey: Self.storageKey)
+        defaults.set(data, forKey: Self.storageKey)
     }
 }

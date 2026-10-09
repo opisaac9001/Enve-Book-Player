@@ -77,7 +77,7 @@ fun MantelBar(
         .border(1.dp, palette.hairline, shape)
         .padding(horizontal = Hearth.Spacing.S, vertical = Hearth.Spacing.XS)
 
-    Row(modifier.then(surface), verticalAlignment = Alignment.CenterVertically) {
+    Column(modifier.then(surface)) {
         if (hasItem) {
             EmberPill(
                 book = lastOpenedBook,
@@ -86,19 +86,20 @@ fun MantelBar(
                 subtitle = subtitle,
                 onOpenItem = onOpenItem,
                 onItemAction = onItemAction,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.fillMaxWidth(),
             )
             Box(
                 Modifier
-                    .padding(horizontal = Hearth.Spacing.XS)
-                    .width(1.dp)
-                    .height(30.dp)
+                    .fillMaxWidth()
+                    .padding(vertical = Hearth.Spacing.XS)
+                    .height(1.dp)
                     .background(palette.hairline),
             )
-            HearthTab.entries.forEach { tab ->
-                CompactTab(tab, tab == selected, onSelect)
-            }
-        } else {
+        }
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = Hearth.Spacing.XXL),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             HearthTab.entries.forEach { tab ->
                 TabItem(tab, tab == selected, onSelect, Modifier.weight(1f))
             }
@@ -125,30 +126,6 @@ private fun TabItem(tab: HearthTab, selected: Boolean, onSelect: (HearthTab) -> 
 }
 
 @Composable
-private fun CompactTab(tab: HearthTab, selected: Boolean, onSelect: (HearthTab) -> Unit) {
-    val palette = Hearth.palette
-    val eink = Hearth.eink
-    val shape = if (eink.sharpCorners) RoundedCornerShape(4.dp) else CircleShape
-    val tint = if (selected) palette.ember else palette.textTertiary
-    Box(
-        Modifier
-            .size(48.dp)
-            .clip(shape)
-            .then(
-                when {
-                    !selected -> Modifier
-                    eink.active -> Modifier.border(1.dp, palette.text, shape)
-                    else -> Modifier.background(palette.emberSoft)
-                },
-            )
-            .clickable { onSelect(tab) },
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(tab.glyph, contentDescription = tab.label, tint = tint, modifier = Modifier.size(22.dp))
-    }
-}
-
-@Composable
 private fun EmberPill(
     book: Book?,
     now: NowPlaying?,
@@ -159,11 +136,11 @@ private fun EmberPill(
     modifier: Modifier,
 ) {
     val palette = Hearth.palette
-    val isEbook = book?.mediaType == AppMediaType.EBOOK
-    val isActiveAudio = !isEbook && when {
+    val isActiveAudio = when {
         book == null -> now != null
         else -> now?.bookKey == book.uniqueKey
     }
+    val isEbook = !isActiveAudio && book?.mediaType == AppMediaType.EBOOK
     val title = book?.title ?: now?.title.orEmpty()
     val author = book?.author ?: now?.author
     val coverUrl = book?.coverUrl ?: now?.coverUrl

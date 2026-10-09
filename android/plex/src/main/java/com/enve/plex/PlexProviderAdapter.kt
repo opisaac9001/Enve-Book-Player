@@ -1,5 +1,6 @@
 package com.enve.plex
 
+import com.enve.core.data.provider.PlaybackReportEvent
 import com.enve.core.data.model.AudioTrack
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
@@ -55,6 +56,22 @@ class PlexProviderAdapter @Inject constructor(
         currentTimeSec: Long,
         progressFraction: Float,
     ): Result<Unit> = repository.syncAudiobookProgress(book, currentTimeSec, progressFraction)
+
+    override suspend fun reportPlayback(
+        book: Book,
+        event: PlaybackReportEvent,
+        sessionId: String,
+        positionSec: Long,
+    ): Result<Unit> = repository.reportPlayback(
+        book = book,
+        state = when (event) {
+            PlaybackReportEvent.PAUSED -> "paused"
+            PlaybackReportEvent.STOPPED -> "stopped"
+            else -> "playing"
+        },
+        sessionId = sessionId,
+        positionSec = positionSec,
+    )
 
     override suspend fun fetchAudiobookProgress(book: Book): Result<SyncSnapshot?> =
         repository.fetchAudiobookProgress(book)

@@ -18,6 +18,7 @@ enum JournalStatsSource: String, CaseIterable, Identifiable {
     case audiobookshelf
     case plex
     case jellyfin
+    case emby
     case hardcover
 
     var id: String { rawValue }
@@ -31,6 +32,7 @@ enum JournalStatsSource: String, CaseIterable, Identifiable {
         case .audiobookshelf: "Audiobookshelf"
         case .plex: "Plex"
         case .jellyfin: "Jellyfin"
+        case .emby: "Emby"
         case .hardcover: "Hardcover"
         }
     }
@@ -44,13 +46,14 @@ enum JournalStatsSource: String, CaseIterable, Identifiable {
         case .audiobookshelf: "waveform"
         case .plex: "play.rectangle.fill"
         case .jellyfin: "sparkles.tv.fill"
+        case .emby: "play.tv.fill"
         case .hardcover: "bookmark.fill"
         }
     }
 
     var isListening: Bool {
         switch self {
-        case .enveAudiobook, .audiobookshelf, .plex, .jellyfin, .grimmory: true
+        case .enveAudiobook, .audiobookshelf, .plex, .jellyfin, .emby, .grimmory: true
         case .enveEbook, .kavita, .hardcover: false
         }
     }
@@ -58,7 +61,7 @@ enum JournalStatsSource: String, CaseIterable, Identifiable {
     var isReading: Bool {
         switch self {
         case .enveEbook, .grimmory, .kavita, .hardcover: true
-        case .enveAudiobook, .audiobookshelf, .plex, .jellyfin: false
+        case .enveAudiobook, .audiobookshelf, .plex, .jellyfin, .emby: false
         }
     }
 
@@ -66,7 +69,7 @@ enum JournalStatsSource: String, CaseIterable, Identifiable {
         switch self {
         case .enveAudiobook, .enveEbook: .internalLibrary
         case .grimmory, .kavita, .audiobookshelf: .selfHosted
-        case .plex, .jellyfin: .streaming
+        case .plex, .jellyfin, .emby: .streaming
         case .hardcover: .metadataOnly
         }
     }
@@ -96,6 +99,10 @@ struct JournalServiceStats: Identifiable {
     let pagesRead: Int
     let isAvailable: Bool
     let category: JournalServiceCategory
+    // Only what other devices recorded, for services that already include Enve's own listening.
+    var mergeDailySeconds: [String: TimeInterval]?
+    var mergeTotalSeconds: TimeInterval?
+    var mergeSessionsCount: Int?
 
     var totalHours: Double { totalSeconds / 3600 }
 }
@@ -125,6 +132,7 @@ final class JournalHubModel {
 
     var recentSessions: [HistorySession] = []
     var allSessions: [HistorySession] = []
+    private var localSessions: [HistorySession] = []
 
     var bestDayDate: String?
     var bestDaySeconds: TimeInterval = 0
@@ -149,10 +157,14 @@ final class JournalHubModel {
 
     private let providerConnections: any ProviderConnectionAccessing
 
+    private unowned let profileSession: ProfileSession?
+
     init(
+        profileSession: ProfileSession? = nil,
         journal: JournalEngine = EnveEngine.shared.journal,
         providerConnections: any ProviderConnectionAccessing = AppState.shared.providerConnections
     ) {
+        self.profileSession = profileSession
         self.journal = journal
         self.providerConnections = providerConnections
     }
@@ -208,7 +220,7 @@ final class JournalHubModel {
     }
 
     private func loadEnveAudiobookStats() async {
-        let snapshot = await ListeningStatsTracker.shared.currentSnapshot()
+        let snapshot = await (profileSession?.listeningStats ?? ListeningStatsTracker.shared).currentSnapshot()
         serviceStats[.enveAudiobook] = JournalServiceStats(
             id: JournalStatsSource.enveAudiobook.rawValue,
             serviceName: JournalStatsSource.enveAudiobook.displayName,
@@ -230,7 +242,7 @@ final class JournalHubModel {
     }
 
     private func loadEnveEbookStats() async {
-        let snapshot = await ReadingStatsTracker.shared.currentSnapshot()
+        let snapshot = await (profileSession?.readingStats ?? ReadingStatsTracker.shared).currentSnapshot()
         serviceStats[.enveEbook] = JournalServiceStats(
             id: JournalStatsSource.enveEbook.rawValue,
             serviceName: JournalStatsSource.enveEbook.displayName,
@@ -276,6 +288,8 @@ final class JournalHubModel {
         var readSeconds: TimeInterval = 0
         var listenSeconds: TimeInterval = 0
         var daily: [String: TimeInterval] = [:]
+        var otherDevicesDaily: [String: TimeInterval] = [:]
+        var otherDevicesSessions = 0
         for session in sessions {
             let duration = TimeInterval(session.durationSeconds ?? 0)
             guard duration > 0 else { continue }
@@ -284,8 +298,13 @@ final class JournalHubModel {
             } else {
                 readSeconds += duration
             }
-            if let date = ISO8601Timestamp.parse(session.startTime) {
-                daily[JournalStats.dayKey(for: date), default: 0] += duration
+            guard let start = ISO8601Timestamp.parse(session.startTime) else { continue }
+            let key = JournalStats.dayKey(for: start)
+            daily[key, default: 0] += duration
+            let end = ISO8601Timestamp.parse(session.endTime) ?? start.addingTimeInterval(duration)
+            if !JournalEngine.isCoveredByLocal(start: start, end: end, bookId: session.bookId, local: localSessions) {
+                otherDevicesDaily[key, default: 0] += duration
+                otherDevicesSessions += 1
             }
         }
 
@@ -311,20 +330,23 @@ final class JournalHubModel {
             dailySeconds: daily,
             pagesRead: 0,
             isAvailable: true,
-            category: .selfHosted
+            category: .selfHosted,
+            mergeDailySeconds: otherDevicesDaily,
+            mergeTotalSeconds: otherDevicesDaily.values.reduce(0, +),
+            mergeSessionsCount: otherDevicesSessions
         )
     }
 
     private func loadAudiobookshelfStats() async {
-        let absStats: AudiobookshelfListeningStats?
+        let payload: JournalAudiobookshelfStatsPayload?
         do {
-            absStats = try await journal.audiobookshelfListeningStats()
+            payload = try await journal.audiobookshelfListeningStats()
         } catch {
             serviceErrors[.audiobookshelf] = error.localizedDescription
             serviceStats[.audiobookshelf] = Self.journalEmptyStats(for: .audiobookshelf)
             return
         }
-        guard let absStats else {
+        guard let payload else {
             serviceStats[.audiobookshelf] = Self.journalEmptyStats(for: .audiobookshelf)
             return
         }
@@ -332,7 +354,14 @@ final class JournalHubModel {
         loadingServices.insert(.audiobookshelf)
         defer { loadingServices.remove(.audiobookshelf) }
 
+        let absStats = payload.stats
         let daily = absStats.days ?? [:]
+        let otherDevicesSessions = payload.sessions.filter { !JournalEngine.isThisDevice($0) }
+        var otherDevicesDaily: [String: TimeInterval] = [:]
+        for session in otherDevicesSessions {
+            guard let day = session.date, session.timeListening > 0 else { continue }
+            otherDevicesDaily[day, default: 0] += session.timeListening
+        }
 
         serviceStats[.audiobookshelf] = JournalServiceStats(
             id: JournalStatsSource.audiobookshelf.rawValue,
@@ -341,16 +370,19 @@ final class JournalHubModel {
             totalSeconds: absStats.totalTime,
             readingSeconds: 0,
             listeningSeconds: absStats.totalTime,
-            sessionsCount: absStats.recentSessions?.count ?? 0,
-            booksFinished: 0,
-            booksInProgress: absStats.items.count,
+            sessionsCount: payload.sessions.count,
+            booksFinished: payload.progress.filter(\.isFinished).count,
+            booksInProgress: payload.progress.filter { !$0.isFinished && $0.progress > 0 }.count,
             totalBooks: absStats.items.count,
             currentStreak: Self.journalCurrentStreak(daily),
             longestStreak: Self.journalLongestStreak(daily),
             dailySeconds: daily,
             pagesRead: 0,
             isAvailable: true,
-            category: .selfHosted
+            category: .selfHosted,
+            mergeDailySeconds: otherDevicesDaily,
+            mergeTotalSeconds: otherDevicesDaily.values.reduce(0, +),
+            mergeSessionsCount: otherDevicesSessions.count
         )
     }
 
@@ -367,16 +399,20 @@ final class JournalHubModel {
 
         do {
             let account = try await provider.fetchAccount()
-            async let profileTask = provider.fetchProfileBar(userId: account.id, days: 365)
-            async let totalsTask = provider.fetchReadTotals(userId: account.id)
-            async let activityTask = provider.fetchReadingActivity(
+            // Each figure stands alone, so one failing endpoint doesn't blank the card.
+            async let profileTask = try? provider.fetchProfileBar(userId: account.id, days: 365)
+            async let totalsTask = try? provider.fetchReadTotals(userId: account.id)
+            async let activityTask = try? provider.fetchReadingActivity(
                 userId: account.id,
                 year: Calendar.current.component(.year, from: .now)
             )
-            async let historyTask = provider.fetchReadingHistory(page: 1, pageSize: 100, days: 365)
-            let (profile, totals, daily, history) = try await (profileTask, totalsTask, activityTask, historyTask)
-            let totalSeconds = TimeInterval(totals.timeSpentReading * 3600)
-            let finished = profile.booksRead + profile.comicsRead
+            async let historyTask = try? provider.fetchReadingHistory(page: 1, pageSize: 100, days: 365)
+            let (profileResult, totals, dailyResult, historyResult) = await (profileTask, totalsTask, activityTask, historyTask)
+            guard profileResult != nil || totals != nil || dailyResult != nil else { throw ProviderError.invalidResponse }
+            let daily = dailyResult ?? [:]
+            let history = historyResult ?? []
+            let totalSeconds = TimeInterval((totals?.timeSpentReading ?? 0) * 3600)
+            let finished = (profileResult?.booksRead ?? 0) + (profileResult?.comicsRead ?? 0)
 
             serviceStats[.kavita] = JournalServiceStats(
                 id: JournalStatsSource.kavita.rawValue,
@@ -392,7 +428,7 @@ final class JournalHubModel {
                 currentStreak: Self.journalCurrentStreak(daily),
                 longestStreak: Self.journalLongestStreak(daily),
                 dailySeconds: daily,
-                pagesRead: profile.pagesRead,
+                pagesRead: max(0, totals?.totalPagesRead ?? profileResult?.pagesRead ?? 0),
                 isAvailable: true,
                 category: .selfHosted
             )
@@ -405,6 +441,7 @@ final class JournalHubModel {
     }
 
     private func loadHardcoverStats() async {
+        guard profileSession?.isOwner ?? true else { return }
         let apiKey = SettingsManager.shared.hardcoverApiKey ?? ""
         guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             serviceStats[.hardcover] = Self.journalEmptyStats(for: .hardcover)
@@ -442,9 +479,10 @@ final class JournalHubModel {
     }
 
     private func loadSessions() async {
-        let listening = await HistorySessionStore.shared.loadListeningSessions()
-        let reading = await HistorySessionStore.shared.loadReadingSessions()
-        let remote = await journal.remoteHistorySessions()
+        let listening = await (profileSession?.historyStore ?? HistorySessionStore.shared).loadListeningSessions()
+        let reading = await (profileSession?.historyStore ?? HistorySessionStore.shared).loadReadingSessions()
+        localSessions = listening + reading
+        let remote = await journal.remoteHistorySessions(excludingCoveredBy: localSessions)
 
         var seen = Set<String>()
         var unique: [HistorySession] = []
@@ -456,9 +494,10 @@ final class JournalHubModel {
         recentSessions = Array(unique.prefix(20))
     }
 
+    // Enve's own listening to these servers' books, already inside the Enve totals, so it adds nothing to "All services".
     private func loadSessionBackedStats() {
-        for (source, historySource) in [(JournalStatsSource.plex, HistorySource.plex), (.jellyfin, .jellyfin)] {
-            let sessions = allSessions.filter { $0.source == historySource }
+        for (source, prefix) in [(JournalStatsSource.plex, "plex:"), (.jellyfin, "jellyfin:"), (.emby, "emby:")] {
+            let sessions = allSessions.filter { $0.source == .local && $0.bookId.hasPrefix(prefix) }
             guard !sessions.isEmpty else {
                 serviceStats[source] = Self.journalEmptyStats(for: source)
                 continue
@@ -490,7 +529,10 @@ final class JournalHubModel {
                 dailySeconds: daily,
                 pagesRead: sessions.compactMap(\.pagesRead).reduce(0, +),
                 isAvailable: true,
-                category: source.category
+                category: source.category,
+                mergeDailySeconds: [:],
+                mergeTotalSeconds: 0,
+                mergeSessionsCount: 0
             )
         }
     }
@@ -514,7 +556,7 @@ final class JournalHubModel {
         var periodReading: TimeInterval = 0
 
         for stat in active {
-            for (key, value) in stat.dailySeconds {
+            for (key, value) in stat.mergeDailySeconds ?? stat.dailySeconds {
                 guard let date = Self.journalDayFormatter.date(from: key) else { continue }
                 if let cutoff, date < cutoff { continue }
                 mergedDaily[key, default: 0] += value
@@ -528,10 +570,10 @@ final class JournalHubModel {
 
         let isAllTime = selectedRange == .allTime
         combinedDailySeconds = mergedDaily
-        combinedTotalSeconds = isAllTime ? active.reduce(0) { $0 + $1.totalSeconds } : periodTotal
+        combinedTotalSeconds = isAllTime ? active.reduce(0) { $0 + ($1.mergeTotalSeconds ?? $1.totalSeconds) } : periodTotal
         combinedSessions =
             isAllTime
-            ? active.reduce(0) { $0 + $1.sessionsCount }
+            ? active.reduce(0) { $0 + ($1.mergeSessionsCount ?? $1.sessionsCount) }
             : allSessions.filter { s in cutoff.map { s.startTime >= $0 } ?? true }.count
         combinedPagesRead = active.reduce(0) { $0 + $1.pagesRead }
         combinedBooksFinished = active.reduce(0) { $0 + $1.booksFinished }
@@ -544,8 +586,9 @@ final class JournalHubModel {
             totalListeningSeconds = 0
             totalReadingSeconds = 0
             for (source, stat) in serviceStats where stat.isAvailable {
-                if source.isListening { totalListeningSeconds += stat.totalSeconds }
-                if source.isReading { totalReadingSeconds += stat.totalSeconds }
+                let seconds = stat.mergeTotalSeconds ?? stat.totalSeconds
+                if source.isListening { totalListeningSeconds += seconds }
+                if source.isReading { totalReadingSeconds += seconds }
             }
         } else {
             totalListeningSeconds = periodListening
@@ -560,7 +603,7 @@ final class JournalHubModel {
             bestDaySeconds = 0
         }
         longestSession = allSessions.max { $0.durationSeconds < $1.durationSeconds }
-        weeklyGoalHours = PlayerStateStore.shared.loadWeeklyGoal()
+        weeklyGoalHours = (profileSession?.playerState ?? PlayerStateStore.shared).loadWeeklyGoal()
     }
 
     func hourlyDistribution() -> [Int: TimeInterval] {
@@ -670,7 +713,7 @@ final class JournalHubModel {
     private static let journalDayFormatter: DateFormatter = {
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy-MM-dd"
-        fmt.timeZone = TimeZone(secondsFromGMT: 0)
+        fmt.locale = Locale(identifier: "en_US_POSIX")
         return fmt
     }()
 

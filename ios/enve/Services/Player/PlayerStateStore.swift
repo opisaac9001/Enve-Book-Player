@@ -11,9 +11,11 @@ final class PlayerStateStore {
 
     private static let defaultMonthlyBookGoal = 4
 
-    private let userDefaults = UserDefaults.standard
+    private let userDefaults: UserDefaults
 
-    private init() {}
+    init(defaults: UserDefaults = .standard) {
+        userDefaults = defaults
+    }
 
     func saveSleepTimer(_ state: SleepTimerState?) {
         guard let state else {

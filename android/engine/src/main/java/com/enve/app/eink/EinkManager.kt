@@ -1,6 +1,8 @@
 package com.enve.app.eink
 
 import com.enve.core.data.local.PreferencesManager
+import com.enve.core.di.ApplicationScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -18,8 +20,9 @@ import javax.inject.Singleton
 class EinkManager @Inject constructor(
     private val detector: EinkDetector,
     private val prefs: PreferencesManager,
+    @ApplicationScope parentScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob(parentScope.coroutineContext[Job]) + Dispatchers.Default)
 
     private val _deviceProfile = MutableStateFlow(EinkDeviceProfile.Standard)
     val deviceProfile: StateFlow<EinkDeviceProfile> = _deviceProfile.asStateFlow()

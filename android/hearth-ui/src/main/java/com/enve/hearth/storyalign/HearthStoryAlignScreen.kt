@@ -55,7 +55,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.hilt.navigation.compose.hiltViewModel
+import com.enve.hearth.shell.profileViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.enve.core.data.model.Book
 import com.enve.engine.storyalign.StoryAlignJobUi
@@ -70,7 +70,7 @@ import com.enve.hearth.design.hearthDisplay
 @Composable
 fun HearthStoryAlignScreen(
     onBack: () -> Unit,
-    vm: HearthStoryAlignViewModel = hiltViewModel(),
+    vm: HearthStoryAlignViewModel = profileViewModel(),
 ) {
     val palette = Hearth.palette
     val picking by vm.picking.collectAsStateWithLifecycle()

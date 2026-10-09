@@ -17,9 +17,11 @@ protocol SiloReaderArtifactIDMapping: AnyObject {
 final class SiloReaderArtifactIDStore: SiloReaderArtifactIDMapping {
     static let shared = SiloReaderArtifactIDStore()
 
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
 
-    private init() {}
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
 
     func annotationRemoteID(connectionID: UUID, bookID: String, localID: String) -> String? {
         annotationMap(connectionID: connectionID, bookID: bookID)[localID]

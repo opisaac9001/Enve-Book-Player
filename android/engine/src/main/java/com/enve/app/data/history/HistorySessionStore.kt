@@ -3,6 +3,8 @@ package com.enve.app.data.history
 import android.content.Context
 import android.util.AtomicFile
 import com.enve.core.data.history.HistorySessionRepository
+import com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
+import com.enve.core.data.local.ProfileStorageLocations
 import com.enve.core.data.model.HistorySession
 import com.enve.core.data.model.HistorySessionOrigin
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -15,22 +17,32 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
-import java.io.File
 import java.io.FileOutputStream
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
-class HistorySessionStore @Inject constructor(
-    @ApplicationContext context: Context,
+class HistorySessionStore(
+    locations: ProfileStorageLocations,
 ) : HistorySessionRepository {
+    @Inject
+    constructor(@ApplicationContext context: Context) : this(
+        ProfileStorageLocations.forProfile(context, DEFAULT_ADULT_PROFILE_ID),
+    )
+
+    private val profileId = locations.profileId
     private val json = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true
     }
     private val file = AtomicFile(
-        File(context.filesDir, "history/history_sessions.json").also {
-            it.parentFile?.mkdirs()
+        locations.historySessionsFile.also {
+            val directory = checkNotNull(it.parentFile)
+            if (profileId == DEFAULT_ADULT_PROFILE_ID) {
+                directory.mkdirs()
+            } else {
+                check(directory.isDirectory || directory.mkdirs())
+            }
         },
     )
     private val serializer = ListSerializer(HistorySession.serializer())
@@ -98,7 +110,8 @@ class HistorySessionStore @Inject constructor(
             }
                 .sortedByDescending(HistorySession::endTimeMs)
                 .take(MAX_SESSIONS)
-        } catch (_: Exception) {
+        } catch (failure: Exception) {
+            if (profileId != DEFAULT_ADULT_PROFILE_ID) throw failure
             emptyList()
         }
     }

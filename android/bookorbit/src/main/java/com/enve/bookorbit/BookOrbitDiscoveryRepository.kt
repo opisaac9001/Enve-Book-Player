@@ -1,5 +1,6 @@
 package com.enve.bookorbit
 
+import com.enve.core.data.util.runSuspendCatching
 import com.enve.bookorbit.api.BookOrbitApi
 import com.enve.bookorbit.dto.BookOrbitRecommendationDto
 import kotlinx.coroutines.async
@@ -32,7 +33,7 @@ class BookOrbitDiscoveryRepository @Inject constructor(
     private val api: BookOrbitApi,
     private val endpoints: BookOrbitEndpoints,
 ) {
-    suspend fun getRelatedBooks(bookId: String): Result<BookOrbitRelatedBooks> = runCatching {
+    suspend fun getRelatedBooks(bookId: String): Result<BookOrbitRelatedBooks> = runSuspendCatching {
         val id = bookId.toIntOrNull() ?: error("Invalid BookOrbit book id")
         coroutineScope {
             val recommendations = async { fetch { api.recommendations(id) } }

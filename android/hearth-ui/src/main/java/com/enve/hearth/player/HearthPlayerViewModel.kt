@@ -9,7 +9,9 @@ import com.enve.engine.playback.NowPlaying
 import com.enve.engine.playback.PlaybackFacade
 import com.enve.engine.playback.PlaybackQueueItem
 import com.enve.engine.playback.PlaybackTransport
+import com.enve.engine.playback.PlayerReadAloudState
 import com.enve.engine.playback.PlayerSessionFacade
+import com.enve.engine.playback.ReadAloudLyricLine
 import com.enve.engine.prefs.PreferencesFacade
 import com.enve.engine.sleep.SleepDataFacade
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -37,6 +39,7 @@ class HearthPlayerViewModel @Inject constructor(
     val currentChapterIndex: StateFlow<Int> = session.currentChapterIndex
     val bookmarks: StateFlow<List<AudiobookBookmark>> = session.bookmarks
     val sleepRemainingSec: StateFlow<Long?> = session.sleepRemainingSec
+    val readAloud: StateFlow<PlayerReadAloudState> = session.readAloud
     private val mutableSleepTracker = MutableStateFlow(SleepTrackerUiState())
     val sleepTracker: StateFlow<SleepTrackerUiState> = mutableSleepTracker.asStateFlow()
     val scrubChapter: StateFlow<Boolean> =
@@ -60,6 +63,7 @@ class HearthPlayerViewModel @Inject constructor(
     fun seekToChapter(c: Chapter) = session.seekToChapter(c)
     fun nextChapter() = session.nextChapter()
     fun previousChapter() = session.previousChapter()
+    fun seekToReadAloudLine(line: ReadAloudLyricLine) = session.seekToReadAloudLine(line)
 
     fun addBookmark(note: String? = null) = session.addBookmark(note)
     fun deleteBookmark(b: AudiobookBookmark) = session.deleteBookmark(b)

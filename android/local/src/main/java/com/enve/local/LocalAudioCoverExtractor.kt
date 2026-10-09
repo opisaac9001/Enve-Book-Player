@@ -8,14 +8,14 @@ import java.io.File
 import java.security.MessageDigest
 
 internal object LocalAudioCoverExtractor {
-    fun extract(context: Context, uri: Uri): String? {
+    fun extract(context: Context, filesDirectory: File, uri: Uri): String? {
         val retriever = MediaMetadataRetriever()
         return try {
             retriever.setDataSource(context, uri)
             val artwork = retriever.embeddedPicture ?: return null
             val name = MessageDigest.getInstance("SHA-256").digest(uri.toString().toByteArray())
                 .joinToString("") { "%02x".format(it) }
-            val directory = File(context.filesDir, "local_audio_covers").apply { mkdirs() }
+            val directory = File(filesDirectory, "local_audio_covers").apply { mkdirs() }
             val file = File(directory, "${name}.img")
             val atomic = AtomicFile(file)
             val output = atomic.startWrite()

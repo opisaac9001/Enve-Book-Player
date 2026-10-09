@@ -9,12 +9,10 @@ final class ServerPageStreamingService: @unchecked Sendable {
     private var fullCacheTasks: [String: Task<Void, Never>] = [:]
     private var pageTasks: [String: Task<Data, Error>] = [:]
 
-    private var cacheRoot: URL {
-        let caches = fileManager.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        return caches.appendingPathComponent("StreamedPages", isDirectory: true)
-    }
+    private let cacheRoot: URL
 
-    private init() {
+    init(cachesDirectory: URL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]) {
+        cacheRoot = cachesDirectory.appendingPathComponent("StreamedPages", isDirectory: true)
         try? fileManager.createDirectory(at: cacheRoot, withIntermediateDirectories: true)
     }
 

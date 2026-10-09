@@ -21,9 +21,14 @@ enum ServerProbeOutcome {
     case unreachable
 }
 
-enum ServerProbe {
+struct ServerProbe {
+    private let session: URLSession
 
-    static func detect(rawURL: String) async -> ServerProbeOutcome {
+    static func detect(rawURL: String, session: URLSession = InsecureURLSession.shared) async -> ServerProbeOutcome {
+        await ServerProbe(session: session).detect(rawURL: rawURL)
+    }
+
+    private func detect(rawURL: String) async -> ServerProbeOutcome {
         let bases = candidateBases(from: rawURL)
         guard !bases.isEmpty else { return .unreachable }
 
@@ -44,7 +49,7 @@ enum ServerProbe {
         return .unreachable
     }
 
-    private static func identify(_ base: String) async -> DetectedServer? {
+    private func identify(_ base: String) async -> DetectedServer? {
 
         async let abs = fingerprintAudiobookshelf(base)
         async let grimmory = fingerprintGrimmory(base)
@@ -69,7 +74,7 @@ enum ServerProbe {
         let authMethods: [String]?
     }
 
-    private static func fingerprintAudiobookshelf(_ base: String) async -> DetectedServer? {
+    private func fingerprintAudiobookshelf(_ base: String) async -> DetectedServer? {
         guard let (resp, data) = await get(base, "/status"), resp.statusCode == 200,
             let status = try? JSONDecoder().decode(ABSStatus.self, from: data),
             status.app?.lowercased() == "audiobookshelf"
@@ -88,7 +93,7 @@ enum ServerProbe {
         let oidcEnabled: Bool
     }
 
-    private static func fingerprintGrimmory(_ base: String) async -> DetectedServer? {
+    private func fingerprintGrimmory(_ base: String) async -> DetectedServer? {
         guard let (resp, data) = await get(base, "/api/v1/public-settings"), resp.statusCode == 200,
             let settings = try? JSONDecoder().decode(GrimmorySettings.self, from: data)
         else { return nil }
@@ -105,7 +110,7 @@ enum ServerProbe {
         let slug: String?
     }
 
-    private static func fingerprintBookOrbit(_ base: String) async -> DetectedServer? {
+    private func fingerprintBookOrbit(_ base: String) async -> DetectedServer? {
         guard let (resp, data) = await get(base, "/api/v1/app-settings/oidc/providers/public"),
             resp.statusCode == 200,
             let providers = try? JSONDecoder().decode([BookOrbitProvider].self, from: data)
@@ -130,7 +135,7 @@ enum ServerProbe {
         }
     }
 
-    private static func fingerprintSilo(_ base: String) async -> DetectedServer? {
+    private func fingerprintSilo(_ base: String) async -> DetectedServer? {
 
         guard let (resp, data) = await get(base, "/api/v1/health"), resp.statusCode == 200,
             let health = try? JSONDecoder().decode(SiloHealth.self, from: data),
@@ -150,7 +155,7 @@ enum ServerProbe {
         let isClaimed: Bool
     }
 
-    private static func fingerprintKomga(_ base: String) async -> DetectedServer? {
+    private func fingerprintKomga(_ base: String) async -> DetectedServer? {
         guard let (resp, data) = await get(base, "/api/v1/claim"), resp.statusCode == 200,
             (try? JSONDecoder().decode(KomgaClaim.self, from: data)) != nil
         else { return nil }
@@ -164,14 +169,14 @@ enum ServerProbe {
         )
     }
 
-    private static func komgaHasOIDC(_ base: String) async -> Bool {
+    private func komgaHasOIDC(_ base: String) async -> Bool {
         guard let (resp, data) = await get(base, "/api/v1/oauth2/providers"), resp.statusCode == 200 else { return false }
         if let array = try? JSONSerialization.jsonObject(with: data) as? [Any] { return !array.isEmpty }
         if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] { return !object.isEmpty }
         return false
     }
 
-    private static func fingerprintPlex(_ base: String) async -> DetectedServer? {
+    private func fingerprintPlex(_ base: String) async -> DetectedServer? {
         guard let (resp, data) = await get(base, "/identity", accept: "application/json"),
             resp.statusCode == 200,
             let body = String(data: data, encoding: .utf8)?.lowercased(),
@@ -193,7 +198,7 @@ enum ServerProbe {
         let Id: String?
     }
 
-    private static func fingerprintJellyfinEmby(_ base: String) async -> DetectedServer? {
+    private func fingerprintJellyfinEmby(_ base: String) async -> DetectedServer? {
         let lowerBase = base.lowercased()
         let apiBases =
             lowerBase.hasSuffix("/emby")
@@ -232,14 +237,14 @@ enum ServerProbe {
         return nil
     }
 
-    private static func isValidPublicSystemInfo(_ info: PublicSystemInfo?) -> Bool {
+    private func isValidPublicSystemInfo(_ info: PublicSystemInfo?) -> Bool {
         guard let info else { return false }
         return info.ServerName?.isEmpty == false
             && info.Version?.isEmpty == false
             && info.Id?.isEmpty == false
     }
 
-    private static func fingerprintStoryteller(_ base: String) async -> DetectedServer? {
+    private func fingerprintStoryteller(_ base: String) async -> DetectedServer? {
 
         if let (resp, data) = await get(base, "/api/v2/auth/providers"), resp.statusCode == 200,
             let providers = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -267,7 +272,7 @@ enum ServerProbe {
         )
     }
 
-    private static func fingerprintKavita(_ base: String) async -> DetectedServer? {
+    private func fingerprintKavita(_ base: String) async -> DetectedServer? {
         guard let (resp, data) = await get(base, "/api/health"), resp.statusCode == 200 else { return nil }
         let body = (String(data: data, encoding: .utf8) ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -281,7 +286,7 @@ enum ServerProbe {
         )
     }
 
-    private static func fingerprintOPDS(_ base: String) async -> DetectedServer? {
+    private func fingerprintOPDS(_ base: String) async -> DetectedServer? {
         guard let (resp, data) = await get(base, ""), resp.statusCode == 200 else { return nil }
         let contentType = (resp.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
         let body = String(data: data.prefix(2048), encoding: .utf8)?.lowercased() ?? ""
@@ -303,7 +308,7 @@ enum ServerProbe {
         let authorization_endpoint: String
     }
 
-    private static func oidcIssuer(at base: String) async -> String? {
+    private func oidcIssuer(at base: String) async -> String? {
         guard let (resp, data) = await get(base, "/.well-known/openid-configuration"),
             resp.statusCode == 200,
             (try? JSONDecoder().decode(OIDCDiscovery.self, from: data)) != nil
@@ -311,11 +316,11 @@ enum ServerProbe {
         return base
     }
 
-    private static func isReachable(_ base: String) async -> Bool {
+    private func isReachable(_ base: String) async -> Bool {
         await get(base, "") != nil
     }
 
-    private static func get(
+    private func get(
         _ base: String,
         _ path: String,
         accept: String? = nil,
@@ -327,7 +332,7 @@ enum ServerProbe {
         request.timeoutInterval = timeout
         if let accept { request.setValue(accept, forHTTPHeaderField: "Accept") }
         do {
-            let (data, response) = try await InsecureURLSession.shared.data(for: request)
+            let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse else { return nil }
             return (http, data)
         } catch {
@@ -335,7 +340,7 @@ enum ServerProbe {
         }
     }
 
-    private static func candidateBases(from raw: String) -> [String] {
+    private func candidateBases(from raw: String) -> [String] {
         var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         while value.hasSuffix("/") { value.removeLast() }
         guard !value.isEmpty else { return [] }
@@ -350,7 +355,7 @@ enum ServerProbe {
         return [preferred, alternateScheme(for: preferred)].compactMap { $0 }
     }
 
-    private static func alternateScheme(for value: String) -> String? {
+    private func alternateScheme(for value: String) -> String? {
         if value.lowercased().hasPrefix("https://") {
             return "http://" + String(value.dropFirst("https://".count))
         }

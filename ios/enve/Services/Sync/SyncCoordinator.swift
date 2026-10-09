@@ -22,9 +22,18 @@ func freshestEbookProgressBook(captured: Book, cached: Book?) -> Book {
 @MainActor
 final class PerBookSerialQueue {
     private var active: [String: Task<Void, Never>] = [:]
+    private var isRetired = false
     private var tokens: [String: UUID] = [:]
 
+    func retire() async {
+        isRetired = true
+        let tasks = Array(active.values)
+        tasks.forEach { $0.cancel() }
+        for task in tasks { await task.value }
+    }
+
     func enqueue(bookId: String, operation: @escaping () async -> Void) async {
+        guard !isRetired else { return }
         let prior = active[bookId]
         let token = UUID()
         let task = Task { @MainActor in
@@ -44,35 +53,14 @@ final class PerBookSerialQueue {
 @MainActor
 @Observable
 final class SyncCoordinator {
-    static let shared: SyncCoordinator = {
-        let appState = AppState.shared
-        let coordinator = SyncCoordinator(
-            providerResolver: appState.providerConnections,
-            pendingSyncFlusher: PendingSyncQueueFlusher(
-                transport: ProviderPendingSyncTransport(
-                    providerResolver: appState.providerConnections,
-                    bookLookup: { stableId in
-                        await appState.bookStore.book(stableId: stableId)
-                    }
-                )
-            ),
-            recentlyPlayedSync: RecentlyPlayedSyncService(
-                playbackState: ActivePlayback.controller,
-                providerConnections: appState.providerConnections,
-                bookQuerying: appState.bookStore,
-                bookWriting: appState.bookStore,
-                progressRepository: appState.bookStore,
-                progressAPI: AudiobookshelfRecentlyPlayedProgressAPI(service: .shared),
-                progressCache: BookProgressStore.shared,
-                libraryCache: appState,
-                ebookLinks: EbookLinkStore.shared,
-                strategyRegistry: PluginRegistry.shared
-            )
-        )
-        coordinator.startAppIntegration()
-        return coordinator
-    }()
+    static var shared: SyncCoordinator { ProfileSession.owner.sync }
 
+    private unowned let profileSession: ProfileSession?
+    private var operations: [UUID: Task<Void, Never>] = [:]
+    private var isRetired = false
+    private var defaults: UserDefaults { profileSession?.defaults ?? .standard }
+    private var allowsOwnerIntegrations: Bool { profileSession?.isOwner ?? true }
+    private var allowsServerSync: Bool { !isRetired && (profileSession?.serverSyncEnabled ?? true) }
     private let serialQueue = PerBookSerialQueue()
     private let providerResolver: any LibraryProviderResolving
     private let pendingSyncFlusher: PendingSyncQueueFlusher
@@ -84,9 +72,9 @@ final class SyncCoordinator {
     private(set) var syncEnabled = true
     private(set) var isCloudKitAvailable = false
     private(set) var isEbookReaderOpen = false
-    var pendingSyncCount: Int { PendingSyncQueueStore.shared.count }
+    var pendingSyncCount: Int { (profileSession?.pendingSync ?? PendingSyncQueueStore.shared).count }
 
-    @ObservationIgnored private var eventContinuations: [String: AsyncStream<SyncEvent>.Continuation] = [:]
+    @ObservationIgnored private var eventContinuations: [String: [UUID: AsyncStream<SyncEvent>.Continuation]] = [:]
     @ObservationIgnored private var pushDebounceTasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var cancellables = Set<AnyCancellable>()
     @ObservationIgnored private var lifecycleController: SyncLifecycleController?
@@ -100,31 +88,62 @@ final class SyncCoordinator {
     init(
         providerResolver: any LibraryProviderResolving,
         pendingSyncFlusher: PendingSyncQueueFlusher,
-        recentlyPlayedSync: any RecentlyPlayedSyncing
+        recentlyPlayedSync: any RecentlyPlayedSyncing,
+        profileSession: ProfileSession? = nil
     ) {
+        self.profileSession = profileSession
         self.providerResolver = providerResolver
         self.pendingSyncFlusher = pendingSyncFlusher
         self.recentlyPlayedSync = recentlyPlayedSync
         loadSettings()
     }
 
-    private func startAppIntegration() {
+    func startAppIntegration() {
+        guard !isRetired else { return }
         setupLifecycle()
         setupReaderObservers()
-        ProgressAutoSaver.shared.onTick = {
-            _ = await SyncCoordinator.shared.persistCurrentPlayback(reason: .timerInterval)
+        if allowsOwnerIntegrations {
+            (profileSession?.autoSaver ?? ProgressAutoSaver.shared).onTick = { [weak self] in
+                _ = await self?.persistCurrentPlayback(reason: .timerInterval)
+            }
         }
-        Task { @MainActor in
-            _ = CloudProgressService.shared
+        retainOperation { [self] in
+            if allowsOwnerIntegrations { _ = (profileSession?.cloudProgress ?? CloudProgressService.shared) }
         }
     }
 
+    private func retainOperation(_ operation: @escaping @MainActor () async -> Void) {
+        guard !isRetired else { return }
+        let id = UUID()
+        operations[id] = Task {
+            await operation()
+            self.operations[id] = nil
+        }
+    }
+
+    func retire() async {
+        isRetired = true
+        await lifecycleController?.retire()
+        lifecycleController = nil
+        cancellables.removeAll()
+        if allowsOwnerIntegrations { (profileSession?.autoSaver ?? ProgressAutoSaver.shared).stop(); (profileSession?.autoSaver ?? ProgressAutoSaver.shared).onTick = nil }
+        let tasks = Array(pushDebounceTasks.values) + Array(operations.values)
+        tasks.forEach { $0.cancel() }
+        activeRecentlyPlayedSyncTask?.cancel()
+        for task in tasks { await task.value }
+        _ = await activeRecentlyPlayedSyncTask?.value
+        await serialQueue.retire()
+        pushDebounceTasks.removeAll()
+        eventContinuations.values.flatMap { $0.values }.forEach { $0.finish() }
+        eventContinuations.removeAll()
+    }
+
     private func loadSettings() {
-        if UserDefaults.standard.object(forKey: "crossDeviceSyncEnabled") == nil {
+        if defaults.object(forKey: "crossDeviceSyncEnabled") == nil {
             syncEnabled = true
-            UserDefaults.standard.set(true, forKey: "crossDeviceSyncEnabled")
+            defaults.set(true, forKey: "crossDeviceSyncEnabled")
         } else {
-            syncEnabled = UserDefaults.standard.bool(forKey: "crossDeviceSyncEnabled")
+            syncEnabled = defaults.bool(forKey: "crossDeviceSyncEnabled")
         }
     }
 
@@ -132,11 +151,11 @@ final class SyncCoordinator {
         #if os(iOS)
         lifecycleController = SyncLifecycleController(
             events: .application,
-            save: { reason in
-                _ = await SyncCoordinator.shared.persistCurrentPlayback(reason: reason)
+            save: { [weak self] reason in
+                _ = await self?.persistCurrentPlayback(reason: reason)
             },
-            enterForeground: {
-                await SyncCoordinator.shared.handleForeground()
+            enterForeground: { [weak self] in
+                await self?.handleForeground()
             }
         )
         lifecycleController?.start()
@@ -158,7 +177,7 @@ final class SyncCoordinator {
             .sink { [weak self] _ in
                 guard let self else { return }
                 isEbookReaderOpen = false
-                Task { @MainActor in
+                self.retainOperation {
                     _ = await self.runRecentlyPlayedSync(trigger: .appLaunch)
                 }
             }
@@ -167,8 +186,8 @@ final class SyncCoordinator {
 
     func setSyncEnabled(_ enabled: Bool) {
         syncEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: "crossDeviceSyncEnabled")
-        enabled ? ProgressAutoSaver.shared.start() : ProgressAutoSaver.shared.stop()
+        defaults.set(enabled, forKey: "crossDeviceSyncEnabled")
+        if allowsOwnerIntegrations { enabled ? (profileSession?.autoSaver ?? ProgressAutoSaver.shared).start() : (profileSession?.autoSaver ?? ProgressAutoSaver.shared).stop() }
     }
 
     func enqueuePendingSync(
@@ -181,7 +200,8 @@ final class SyncCoordinator {
         locator: String? = nil,
         isFinished: Bool? = nil
     ) {
-        PendingSyncQueueStore.shared.enqueue(
+        guard allowsServerSync else { return }
+        (profileSession?.pendingSync ?? PendingSyncQueueStore.shared).enqueue(
             PendingServerSync(
                 stableId: book.stableId,
                 sourceRaw: book.source.rawValue,
@@ -202,6 +222,8 @@ final class SyncCoordinator {
     }
 
     func flushPendingSyncs() async {
+        guard allowsServerSync else { return }
+        guard !isRetired else { return }
         await pendingSyncFlusher.flush()
     }
 
@@ -221,10 +243,11 @@ final class SyncCoordinator {
 
     func updateCloudAvailability(_ available: Bool) {
         isCloudKitAvailable = available
+        guard allowsOwnerIntegrations else { return }
         if available, syncEnabled {
-            ProgressAutoSaver.shared.start()
+            (profileSession?.autoSaver ?? ProgressAutoSaver.shared).start()
         } else {
-            ProgressAutoSaver.shared.stop()
+            (profileSession?.autoSaver ?? ProgressAutoSaver.shared).stop()
         }
     }
 
@@ -235,13 +258,17 @@ final class SyncCoordinator {
 
     private func handleForeground() async {
         await flushPendingSyncs()
-        async let cloudSync: Void = CloudProgressService.shared.syncOnAppLaunch(books: AppState.shared.allBooks)
-        async let providerSync: Void = CloudProgressService.shared.refreshCurrentBookFromServer()
+        guard allowsOwnerIntegrations, !isRetired else { return }
+        let service = profileSession?.cloudProgress ?? CloudProgressService.shared
+        let books = (profileSession?.appState ?? AppState.shared).allBooks
+        async let cloudSync: Void = service.syncOnAppLaunch(books: books)
+        async let providerSync: Void = service.refreshCurrentBookFromServer()
         _ = await (cloudSync, providerSync)
     }
 
     @discardableResult
     func runRecentlyPlayedSync(trigger: ServerStatusSyncTrigger) async -> ServerStatusSyncResult {
+        guard allowsServerSync else { return .cancelled }
         if isEbookReaderOpen, trigger != .homePullToRefresh {
             return .cancelled
         }
@@ -273,36 +300,41 @@ final class SyncCoordinator {
     }
 
     func syncOnAppLaunch(books: [Book]) async {
-        await CloudProgressService.shared.syncOnAppLaunch(books: books)
+        guard allowsOwnerIntegrations, !isRetired else { return }
+        await (profileSession?.cloudProgress ?? CloudProgressService.shared).syncOnAppLaunch(books: books)
     }
 
     func syncNewBooksFromCloud(_ books: [Book]) async {
-        await CloudProgressService.shared.syncNewBooksFromCloud(books)
+        guard allowsOwnerIntegrations, !isRetired else { return }
+        await (profileSession?.cloudProgress ?? CloudProgressService.shared).syncNewBooksFromCloud(books)
     }
 
     func getCloudProgress(for book: Book) async -> (position: TimeInterval, deviceName: String?)? {
-        await CloudProgressService.shared.getCloudProgress(for: book)
+        guard allowsOwnerIntegrations, !isRetired else { return nil }
+        return await (profileSession?.cloudProgress ?? CloudProgressService.shared).getCloudProgress(for: book)
     }
 
     func manualSync() async {
-        await CloudProgressService.shared.refreshFromCloud()
+        guard allowsServerSync else { return }
+        guard !isRetired else { return }
+        if allowsOwnerIntegrations { await (profileSession?.cloudProgress ?? CloudProgressService.shared).refreshFromCloud() }
         _ = await runRecentlyPlayedSync(trigger: .homePullToRefresh)
-        _ = await KOReaderSyncService.shared.pullAllAndMerge()
+        if allowsOwnerIntegrations { _ = await KOReaderSyncService.shared.pullAllAndMerge() }
         await flushPendingSyncs()
     }
 
     func resolveEbookConflict(bookStableId: String, useServer: Bool) {
-        guard let conflict = EbookConflictStore.shared.remove(stableId: bookStableId) else { return }
+        guard let conflict = (profileSession?.ebookConflicts ?? EbookConflictStore.shared).remove(stableId: bookStableId) else { return }
 
-        if let book = AppState.shared.bookInMemory(stableId: bookStableId) {
-            RemoteRewindTracker.shared.recordUserResolution(
+        if let book = (profileSession?.appState ?? AppState.shared).bookInMemory(stableId: bookStableId) {
+            (profileSession?.rewindTracker ?? RemoteRewindTracker.shared).recordUserResolution(
                 scope: RemoteProgressScope(book: book, domain: .ebook, source: conflict.remoteSource),
                 acceptedRemote: useServer
             )
         }
 
         if useServer {
-            let updated = AppState.shared.mutateBook(stableId: bookStableId) { book in
+            let updated = (profileSession?.appState ?? AppState.shared).mutateBook(stableId: bookStableId) { book in
                 book.ebookProgress = conflict.serverProgress
                 if let locator = conflict.serverLocator, !locator.isEmpty {
                     book.epubLocator = locator
@@ -310,16 +342,16 @@ final class SyncCoordinator {
                 book.lastUpdate = conflict.serverDate
             }
             if updated != nil {
-                EbookLinkStore.shared.saveLinks()
-                AppState.shared.allBooksChanged.send(())
+                (profileSession?.ebookLinks ?? EbookLinkStore.shared).saveLinks()
+                (profileSession?.appState ?? AppState.shared).allBooksChanged.send(())
             }
             return
         }
 
-        guard var book = AppState.shared.bookInMemory(stableId: bookStableId) else { return }
+        guard var book = (profileSession?.appState ?? AppState.shared).bookInMemory(stableId: bookStableId) else { return }
         book.lastUpdate = Date()
         let resolvedBook = book
-        Task {
+        retainOperation { [self] in
             await pushProgress(book: resolvedBook, forceImmediate: true, domain: .ebook)
         }
     }
@@ -329,7 +361,7 @@ final class SyncCoordinator {
         domain: ProgressSyncDomain,
         excludingProvider: Bool = false
     ) async {
-        guard syncEnabled else { return }
+        guard allowsServerSync else { return }
         let bookId = book.stableId
 
         emit(.pullStarted(bookId: bookId))
@@ -337,13 +369,14 @@ final class SyncCoordinator {
         if book.isStorytellerReadAloud && domain.usesEbookProgress {
             do {
                 guard !excludingProvider,
-                    let sink = PluginRegistry.shared.sinks(applicableTo: book, domain: domain)
+                    let sink = (profileSession?.registry ?? PluginRegistry.shared).sinks(applicableTo: book, domain: domain)
                         .first(where: { $0.id == ProviderSyncSink.identifier }),
                     let snapshot = try await sink.pull(book: book, domain: domain)
                 else {
                     emit(.pullCompleted(bookId: bookId, applied: false))
                     return
                 }
+                guard allowsServerSync else { return }
                 await applySnapshot(snapshot, to: book, usesEbookProgress: true)
                 emit(.pullCompleted(bookId: bookId, applied: true))
             } catch {
@@ -352,11 +385,12 @@ final class SyncCoordinator {
             return
         }
 
-        let sinks = PluginRegistry.shared.sinks(applicableTo: book, domain: domain).filter {
+        let sinks = (profileSession?.registry ?? PluginRegistry.shared).sinks(applicableTo: book, domain: domain).filter {
             !excludingProvider || $0.id != ProviderSyncSink.identifier
         }
         var snapshots: [SyncSnapshot] = []
         for sink in sinks {
+            guard allowsServerSync else { return }
             do {
                 if let snap = try await sink.pull(book: book, domain: domain) {
                     snapshots.append(snap)
@@ -367,6 +401,7 @@ final class SyncCoordinator {
             }
         }
 
+        guard allowsServerSync else { return }
         guard let snapshot = pickFreshest(snapshots) else {
             emit(.pullCompleted(bookId: bookId, applied: false))
             return
@@ -379,7 +414,7 @@ final class SyncCoordinator {
             localProgress = book.canonicalEbookProgress
             localDate = book.lastUpdate
         } else {
-            let savedPos = BookProgressStore.shared.loadProgress(for: book)?.progress ?? 0
+            let savedPos = (profileSession?.bookProgress ?? BookProgressStore.shared).loadProgress(for: book)?.progress ?? 0
             let dur = book.duration ?? 1
             localProgress = dur > 0 ? savedPos / dur : 0
             localDate = book.lastUpdate
@@ -411,7 +446,7 @@ final class SyncCoordinator {
             emit(.pullCompleted(bookId: bookId, applied: false))
             await pushProgress(book: book, forceImmediate: true, domain: domain)
         case .conflict:
-            let verdict = RemoteRewindTracker.shared.assess(
+            let verdict = (profileSession?.rewindTracker ?? RemoteRewindTracker.shared).assess(
                 scope: RemoteProgressScope(book: book, domain: domain, source: snapshot.source),
                 observation: RemoteProgressObservation(
                     progress: snapshot.progress,
@@ -424,7 +459,7 @@ final class SyncCoordinator {
 
             switch verdict {
             case .confirmed:
-                EbookConflictStore.shared.remove(stableId: bookId)
+                (profileSession?.ebookConflicts ?? EbookConflictStore.shared).remove(stableId: bookId)
                 AppLogger.sync.info(
                     "[SyncCoordinator] Confirmed intentional \(snapshot.source) rewind for bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId))"
                 )
@@ -436,7 +471,7 @@ final class SyncCoordinator {
                 AppLogger.sync.info(
                     "[SyncCoordinator] Conflict detected for bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId))"
                 )
-                EbookConflictStore.shared.add(
+                (profileSession?.ebookConflicts ?? EbookConflictStore.shared).add(
                     EbookSyncConflict(
                         bookStableId: bookId,
                         bookTitle: book.title,
@@ -468,6 +503,7 @@ final class SyncCoordinator {
         sourceEngine: ReaderEngineKind? = nil,
         domain: ProgressSyncDomain
     ) async {
+        guard allowsServerSync else { return }
         let bookId = book.stableId
 
         if forceImmediate {
@@ -478,8 +514,9 @@ final class SyncCoordinator {
 
         pushDebounceTasks[bookId]?.cancel()
         let capturedBook = book
+        let delay = pushDebounceInterval
         pushDebounceTasks[bookId] = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled else { return }
             await self?.performPush(
                 book: capturedBook,
@@ -490,16 +527,18 @@ final class SyncCoordinator {
     }
 
     func pushCloudProgress(_ update: ProgressUpdate) async {
+        guard allowsOwnerIntegrations, !isRetired else { return }
         guard syncEnabled else { return }
         if update.domain == .ebook,
-            EbookConflictStore.shared.contains(stableId: update.book.stableId)
+            (profileSession?.ebookConflicts ?? EbookConflictStore.shared).contains(stableId: update.book.stableId)
         {
             return
         }
 
         await serialQueue.enqueue(bookId: update.book.stableId) {
             do {
-                try await CloudKitProgressSync.shared.push(update)
+                guard self.allowsOwnerIntegrations else { return }
+                try await (self.profileSession?.cloudKit ?? CloudKitProgressSync.shared).push(update)
             } catch {
                 AppLogger.sync.error(
                     "iCloud push failed for bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: update.book.stableId)): \(error.localizedDescription)"
@@ -516,6 +555,7 @@ final class SyncCoordinator {
         timeListened: TimeInterval,
         forceImmediate: Bool = false
     ) async {
+        guard allowsServerSync else { return }
         let duration = book.duration ?? 0
         let update = ProgressUpdate(
             book: book,
@@ -527,17 +567,19 @@ final class SyncCoordinator {
             sessionId: sessionId,
             isFinished: isFinished,
             timeListened: timeListened,
-            playbackRate: ActivePlayback.controller.snapshot.playbackSpeed
+            playbackRate: (profileSession?.playback.composition.controller ?? ActivePlayback.controller).snapshot.playbackSpeed
         )
 
         if forceImmediate {
+            pushDebounceTasks.removeValue(forKey: book.stableId)?.cancel()
             await performPush(update: update)
             return
         }
 
         pushDebounceTasks[book.stableId]?.cancel()
+        let delay = pushDebounceInterval
         pushDebounceTasks[book.stableId] = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled else { return }
             await self?.performPush(update: update)
         }
@@ -552,14 +594,16 @@ final class SyncCoordinator {
 
     @discardableResult
     func persistCurrentPlayback(reason: ProgressSaveReason) async -> Bool {
-        await CurrentPlaybackPersister.shared.saveCurrent(reason: reason)
+        guard allowsOwnerIntegrations, !isRetired else { return false }
+        return await (profileSession?.currentPlaybackPersister ?? CurrentPlaybackPersister.shared).saveCurrent(reason: reason)
     }
 
     func persistCurrentPlayback(book: Book, position: TimeInterval) async {
-        await CurrentPlaybackPersister.shared.save(
+        guard allowsOwnerIntegrations, !isRetired else { return }
+        await (profileSession?.currentPlaybackPersister ?? CurrentPlaybackPersister.shared).save(
             for: book,
             position: position,
-            playbackRate: ActivePlayback.controller.snapshot.playbackSpeed
+            playbackRate: (profileSession?.playback.composition.controller ?? ActivePlayback.controller).snapshot.playbackSpeed
         )
     }
 
@@ -570,10 +614,10 @@ final class SyncCoordinator {
         playbackRate: Double,
         isFinished: Bool
     ) async -> Bool {
-        guard syncEnabled else { return false }
-        guard let sink = PluginRegistry.shared
+        guard allowsOwnerIntegrations, syncEnabled, !isRetired else { return false }
+        guard let sink = (profileSession?.registry ?? PluginRegistry.shared)
             .sinks(applicableTo: book, domain: .audiobook)
-            .first(where: { $0.id == CloudKitProgressSync.shared.id })
+            .first(where: { $0.id == (profileSession?.cloudKit ?? CloudKitProgressSync.shared).id })
         else {
             return false
         }
@@ -607,6 +651,7 @@ final class SyncCoordinator {
     }
 
     func pushHardcoverIfNeeded(book: Book, progress: Double, sessionService: PlayerSessionService) async {
+        guard allowsOwnerIntegrations, !isRetired else { return }
         let bookId = book.stableId
         let last = lastHardcoverProgress[bookId] ?? -1
         let isFinishing = progress >= Book.finishedProgressThreshold
@@ -621,17 +666,22 @@ final class SyncCoordinator {
 
     func subscribe(book: Book) -> AsyncStream<SyncEvent> {
         let bookId = book.stableId
-        return AsyncStream { [weak self] continuation in
+        let token = UUID()
+        let (stream, continuation) = AsyncStream<SyncEvent>.makeStream()
+        guard !isRetired else {
+            continuation.finish()
+            return stream
+        }
+        eventContinuations[bookId, default: [:]][token] = continuation
+        continuation.onTermination = { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.eventContinuations[bookId]?.finish()
-                self?.eventContinuations[bookId] = continuation
-                continuation.onTermination = { [weak self] _ in
-                    Task { @MainActor [weak self] in
-                        self?.eventContinuations.removeValue(forKey: bookId)
-                    }
+                self?.eventContinuations[bookId]?.removeValue(forKey: token)
+                if self?.eventContinuations[bookId]?.isEmpty == true {
+                    self?.eventContinuations.removeValue(forKey: bookId)
                 }
             }
         }
+        return stream
     }
 
     private func emit(_ event: SyncEvent) {
@@ -642,7 +692,7 @@ final class SyncCoordinator {
             .conflictDetected(let id, _, _, _):
             bookId = id
         }
-        eventContinuations[bookId]?.yield(event)
+        eventContinuations[bookId]?.values.forEach { $0.yield(event) }
     }
 
     private func pickFreshest(_ snapshots: [SyncSnapshot]) -> SyncSnapshot? {
@@ -661,12 +711,12 @@ final class SyncCoordinator {
         to book: Book,
         usesEbookProgress: Bool
     ) async {
-        guard AppState.shared.indexInMemory(stableId: book.stableId) != nil else { return }
+        guard (profileSession?.appState ?? AppState.shared).indexInMemory(stableId: book.stableId) != nil else { return }
         if usesEbookProgress {
             var resolvedLocator: String? = nil
             if let loc = snapshot.locator, !loc.isEmpty {
                 if loc.hasPrefix("/body/DocFragment") {
-                    let fileURL = EbookChapterSyncService.shared.resolvedFileURL(for: book)
+                    let fileURL = (profileSession?.ebookChapters ?? EbookChapterSyncService.shared).resolvedFileURL(for: book)
                     if let url = fileURL,
                         let locatorJSON = await KOReaderXPointerConverter.locatorJSON(
                             xpointer: loc,
@@ -681,7 +731,7 @@ final class SyncCoordinator {
                 }
             }
             let narratedAudioTime = EpubLocationBridge.narratedAudioTime(from: resolvedLocator)
-            let updatedBook = AppState.shared.mutateBook(stableId: book.stableId) { updated in
+            let updatedBook = (profileSession?.appState ?? AppState.shared).mutateBook(stableId: book.stableId) { updated in
                 updated.ebookProgress = snapshot.progress
                 if let narratedAudioTime {
                     updated.currentTime = narratedAudioTime
@@ -695,15 +745,15 @@ final class SyncCoordinator {
                 }
                 updated.lastUpdate = snapshot.lastUpdate
             }
-            EbookLinkStore.shared.saveLinks()
+            (profileSession?.ebookLinks ?? EbookLinkStore.shared).saveLinks()
             if let updatedBook {
                 if let narratedAudioTime {
-                    NarratedAudioPositionStore.shared.recordNarration(
+                    (profileSession?.narratedPositions ?? NarratedAudioPositionStore.shared).recordNarration(
                         audioTime: narratedAudioTime,
                         for: updatedBook
                     )
                 }
-                await AppState.shared.bookStore.applyAuthoritativeProgress([
+                await (profileSession?.appState ?? AppState.shared).bookStore.applyAuthoritativeProgress([
                     AuthoritativeProgressUpdate(
                         bookUniqueId: updatedBook.uniqueId,
                         stableId: updatedBook.stableId,
@@ -717,7 +767,7 @@ final class SyncCoordinator {
                         serverReadStatus: updatedBook.serverReadStatus
                     )
                 ])
-                await LinkedBookProgressCoordinator.shared.recordEbookProgress(
+                await (profileSession?.linkedProgress ?? LinkedBookProgressCoordinator.shared).recordEbookProgress(
                     book: updatedBook,
                     progression: snapshot.progress,
                     observedAt: snapshot.lastUpdate,
@@ -731,21 +781,21 @@ final class SyncCoordinator {
                 ? snapshot.positionSeconds
                 : snapshot.progress * duration
             if duration > 0 || position > 0 {
-                BookProgressStore.shared.saveProgress(
+                (profileSession?.bookProgress ?? BookProgressStore.shared).saveProgress(
                     for: book,
                     progress: position,
                     duration: duration,
                     at: snapshot.lastUpdate
                 )
             }
-            let updatedBook = AppState.shared.mutateBook(stableId: book.stableId) {
+            let updatedBook = (profileSession?.appState ?? AppState.shared).mutateBook(stableId: book.stableId) {
                 $0.currentTime = position
                 $0.isFinished = snapshot.isFinished
                 $0.serverReadStatus = snapshot.isFinished ? "READ" : nil
                 $0.lastUpdate = snapshot.lastUpdate
             }
             if let updatedBook {
-                await AppState.shared.bookStore.applyAuthoritativeProgress([
+                await (profileSession?.appState ?? AppState.shared).bookStore.applyAuthoritativeProgress([
                     AuthoritativeProgressUpdate(
                         bookUniqueId: updatedBook.uniqueId,
                         stableId: updatedBook.stableId,
@@ -759,7 +809,7 @@ final class SyncCoordinator {
                         serverReadStatus: updatedBook.serverReadStatus
                     )
                 ])
-                await LinkedBookProgressCoordinator.shared.recordAudiobookProgress(
+                await (profileSession?.linkedProgress ?? LinkedBookProgressCoordinator.shared).recordAudiobookProgress(
                     book: updatedBook,
                     currentTime: position,
                     isFinished: snapshot.isFinished,
@@ -779,8 +829,8 @@ final class SyncCoordinator {
         let pushBook: Book
         if domain.usesEbookProgress {
             let cached =
-                AppState.shared.bookInMemory(uniqueId: book.uniqueId)
-                ?? AppState.shared.bookInMemory(stableId: book.stableId)
+                (profileSession?.appState ?? AppState.shared).bookInMemory(uniqueId: book.uniqueId)
+                ?? (profileSession?.appState ?? AppState.shared).bookInMemory(stableId: book.stableId)
             pushBook = freshestEbookProgressBook(captured: book, cached: cached)
         } else {
             pushBook = book
@@ -796,13 +846,14 @@ final class SyncCoordinator {
     }
 
     private func performPush(update: ProgressUpdate) async {
+        guard allowsServerSync else { return }
+        guard !isRetired else { return }
         let book = update.book
         let bookId = book.stableId
-        guard syncEnabled else { return }
         // Until the user picks a side, pushing would overwrite the position they may still choose.
-        if update.domain.usesEbookProgress, EbookConflictStore.shared.contains(stableId: bookId) { return }
+        if update.domain.usesEbookProgress, (profileSession?.ebookConflicts ?? EbookConflictStore.shared).contains(stableId: bookId) { return }
 
-        let sinks = PluginRegistry.shared.sinks(applicableTo: book, domain: update.domain)
+        let sinks = (profileSession?.registry ?? PluginRegistry.shared).sinks(applicableTo: book, domain: update.domain)
         let providerSink = sinks.first { $0.id == ProviderSyncSink.identifier }
         let hasProviderSync = providerSink != nil
 
@@ -811,12 +862,13 @@ final class SyncCoordinator {
         }
 
         await serialQueue.enqueue(bookId: bookId) { [weak self] in
-            guard let self else { return }
+            guard let self, self.allowsServerSync else { return }
             var providerSucceeded = false
             var providerError: Error?
             var anySinkSucceeded = false
 
             for sink in sinks {
+                guard self.allowsServerSync else { return }
                 do {
                     try await sink.push(update)
                     anySinkSucceeded = true
@@ -835,7 +887,7 @@ final class SyncCoordinator {
             }
 
             if anySinkSucceeded {
-                RemoteRewindTracker.shared.recordOutboundWrite(
+                (profileSession?.rewindTracker ?? RemoteRewindTracker.shared).recordOutboundWrite(
                     key: RemoteProgressWriteKey(book: book, domain: update.domain),
                     progress: update.progress,
                     positionSeconds: update.positionSeconds > 0 ? update.positionSeconds : nil,
@@ -889,10 +941,10 @@ final class SyncCoordinator {
                 sessionId: nil,
                 isFinished: isFinished,
                 timeListened: 0,
-                playbackRate: ActivePlayback.controller.snapshot.playbackSpeed
+                playbackRate: (profileSession?.playback.composition.controller ?? ActivePlayback.controller).snapshot.playbackSpeed
             )
         }
-        let position = BookProgressStore.shared.loadProgress(for: book)?.progress ?? 0
+        let position = (profileSession?.bookProgress ?? BookProgressStore.shared).loadProgress(for: book)?.progress ?? 0
         let duration = book.duration ?? 0
         let progress = duration > 0 ? position / duration : 0
         let finished = isFinished || (duration > 0 && position >= duration * Book.finishedProgressThreshold)
@@ -906,7 +958,7 @@ final class SyncCoordinator {
             sessionId: nil,
             isFinished: finished,
             timeListened: 0,
-            playbackRate: ActivePlayback.controller.snapshot.playbackSpeed
+            playbackRate: (profileSession?.playback.composition.controller ?? ActivePlayback.controller).snapshot.playbackSpeed
         )
     }
 }
@@ -917,7 +969,7 @@ extension SyncCoordinator {
         domain: ProgressSyncDomain
     ) {
         Task { @MainActor in
-            await SyncCoordinator.shared.pullOnOpen(book: book, domain: domain)
+            self.retainOperation { [self] in await pullOnOpen(book: book, domain: domain) }
         }
     }
 }

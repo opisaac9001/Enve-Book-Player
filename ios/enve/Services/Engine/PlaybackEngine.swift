@@ -11,6 +11,8 @@ final class PlaybackEngine {
     @ObservationIgnored private var readAloudPlayTask: Task<Void, Never>?
     let queue: PlaybackQueueCoordinator
 
+    @ObservationIgnored private unowned let profileSession: ProfileSession
+
     init(
         appState: AppState = .shared,
         playbackController: any PlaybackControlling = ActivePlayback.composition.controller,
@@ -18,8 +20,11 @@ final class PlaybackEngine {
         readerOpen: ReaderOpenCoordinator = .shared,
         linkedProgress: LinkedBookProgressCoordinator = .shared,
         readAloudPlayback: AlignedReadAloudSessionCoordinator = .shared,
-        queueStore: PlaybackQueueStore = .shared
+        queueStore: PlaybackQueueStore = .shared,
+        playbackStarter: any BookPlaybackStarting = ActivePlayback.composition.bookStarter,
+        profileSession: ProfileSession = .owner
     ) {
+        self.profileSession = profileSession
         self.appState = appState
         self.playbackController = playbackController
         self.readerOpen = readerOpen
@@ -27,19 +32,28 @@ final class PlaybackEngine {
         self.readAloudPlayback = readAloudPlayback
         self.queue = PlaybackQueueCoordinator(
             appState: appState,
+            progressStore: profileSession.progress,
             playback: playbackController,
             playbackEvents: playbackEvents,
+            playbackStarter: playbackStarter,
             linkedProgress: linkedProgress,
             store: queueStore
         )
     }
 
+    func retire() async {
+        let task = readAloudPlayTask
+        task?.cancel()
+        await queue.retire()
+        await task?.value
+    }
+
     var currentBook: Book? {
-        playbackController.snapshot.currentBook ?? appState.currentBook ?? PlayerViewModel.shared.currentBook
+        playbackController.snapshot.currentBook ?? appState.currentBook ?? profileSession.playback.player.currentBook
     }
 
     var currentChapter: Chapter? {
-        PlayerViewModel.shared.currentChapter
+        profileSession.playback.player.currentChapter
     }
 
     func play(_ book: Book, presentPlayer: Bool = true) {
@@ -127,7 +141,7 @@ final class PlaybackEngine {
 
     func restoreLastPlayedIntoMantelIfAvailable() -> Bool {
         if appState.currentBook != nil { return true }
-        guard let restored = PlayerViewModel.shared.currentBook else { return false }
+        guard let restored = profileSession.playback.player.currentBook else { return false }
         appState.currentBook = restored
         return true
     }

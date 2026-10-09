@@ -12,10 +12,13 @@ final class PlexAuthStore {
     private static let clientIdKey = "plexClientIdentifier"
     private static let currentAccountIdKey = "plexCurrentAccountId"
 
-    private var keychain: KeychainHelper { KeychainHelper.shared }
-    private let userDefaults = UserDefaults.standard
+    private let keychain: KeychainHelper
+    private let userDefaults: UserDefaults
 
-    private init() {}
+    init(defaults: UserDefaults = .standard, keychain: KeychainHelper = .shared) {
+        userDefaults = defaults
+        self.keychain = keychain
+    }
 
     func saveToken(_ token: String) {
         keychain.set(token, key: Self.userTokenKey)

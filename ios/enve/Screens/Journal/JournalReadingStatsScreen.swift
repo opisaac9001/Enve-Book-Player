@@ -4,7 +4,7 @@ struct JournalReadingStatsScreen: View {
     @Environment(\.hearth) private var hearth
     @Environment(\.mantelInset) private var mantelInset
 
-    @State private var model = JournalReadingStatsModel()
+    @Environment(JournalReadingStatsModel.self) private var model
     @State private var loaded = false
     @State private var countsByPages = false
 

@@ -10,6 +10,10 @@ enum CloudProgressEligibility {
             return false
         }
     }
+
+    static func canSync(_ book: Book, isEnabled: Bool, isAvailable: Bool) -> Bool {
+        isEnabled && isAvailable && includes(book)
+    }
 }
 
 @MainActor
@@ -60,7 +64,11 @@ extension CloudKitProgressSync: SyncSink {
     var displayName: String { "iCloud" }
 
     func isApplicable(to book: Book, domain: ProgressSyncDomain) -> Bool {
-        SyncCoordinator.shared.isCloudKitAvailable && CloudProgressEligibility.includes(book)
+        CloudProgressEligibility.canSync(
+            book,
+            isEnabled: isSyncEnabled(),
+            isAvailable: isSyncAvailable()
+        )
     }
 
     func pull(book: Book, domain: ProgressSyncDomain) async -> SyncSnapshot? {
@@ -83,11 +91,11 @@ extension CloudKitProgressSync: SyncSink {
     }
 
     func push(_ update: ProgressUpdate) async throws {
-        let userProgress = UserProgressStore.shared.progress(for: update.book)
+        let localProgress = userProgress.progress(for: update.book)
         if update.domain == .audiobook,
             !Self.shouldPushAudiobookPosition(
                 update.positionSeconds,
-                storedLocalPosition: userProgress?.currentTime
+                storedLocalPosition: localProgress?.currentTime
             )
         {
             return
@@ -100,10 +108,10 @@ extension CloudKitProgressSync: SyncSink {
                 : duration > 0 && update.positionSeconds >= duration * Book.finishedProgressThreshold)
         let lastInteractionDate: Date = if update.domain == .ebook {
             update.book.lastUpdate
-        } else if let saved = BookProgressStore.shared.loadProgress(for: update.book) {
+        } else if let saved = bookProgress.loadProgress(for: update.book) {
             Date(timeIntervalSince1970: saved.lastUpdated)
-        } else if let userProgress {
-            userProgress.lastUpdate
+        } else if let localProgress {
+            localProgress.lastUpdate
         } else {
             Date()
         }

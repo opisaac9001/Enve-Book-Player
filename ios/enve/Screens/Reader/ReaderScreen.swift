@@ -8,11 +8,13 @@ import WebKit
 struct ReaderScreen: View {
     let book: Book
 
+    private let profileSession: ProfileSession
     @StateObject private var model: ClassicReaderModel
     @Environment(\.hearth) private var hearth
     @Environment(\.shellNavigationStyle) private var shellNavigationStyle
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var chromeVisible = false
     @State private var tray: ReaderTray?
@@ -23,10 +25,10 @@ struct ReaderScreen: View {
     @State private var bookmarkToast: String?
     @State private var bookmarkToastTask: Task<Void, Never>?
     @State private var readAloudControlsVisible = false
+    @State private var readAloudControlsHideTask: Task<Void, Never>?
     @State private var ttsControlsVisible = false
     @State private var ttsControlsPresentedForSession = false
     @State private var initialChromeHideTask: Task<Void, Never>?
-    @State private var readAloudControlsHideTask: Task<Void, Never>?
     @State private var ttsControlsHideToken = UUID()
     @State private var defineRequest: ReaderDefineRequest?
     @State private var progressConflict: EbookSyncConflict?
@@ -46,7 +48,8 @@ struct ReaderScreen: View {
     @State private var ttsPlaybackFixtureTriggered = false
     #endif
 
-    init(book: Book, providerResolver: any LibraryProviderResolving) {
+    init(book: Book, providerResolver: any LibraryProviderResolving, profileSession: ProfileSession = .owner) {
+        self.profileSession = profileSession
         self.book = book
         #if DEBUG
         let engineOverride = ProcessInfo.processInfo.arguments
@@ -59,12 +62,17 @@ struct ReaderScreen: View {
             wrappedValue: ClassicReaderModel(
                 book: book,
                 readerEngineOverride: engineOverride,
-                providerResolver: providerResolver
+                providerResolver: providerResolver,
+                profileSession: profileSession
             )
         )
     }
 
     var body: some View {
+        readerLifecycle
+    }
+
+    private var readerCanvas: some View {
         ZStack {
             backdrop
             content
@@ -84,7 +92,7 @@ struct ReaderScreen: View {
             }
         }
         .overlay(alignment: .bottom) {
-            if model.pendingSelection == nil {
+            if model.pendingSelection == nil || model.isReadAloudMode {
                 floatingPills
                     .padding(.bottom, chromeVisible ? 172 : 36)
             }
@@ -98,9 +106,9 @@ struct ReaderScreen: View {
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
-        .overlay {
+        .overlayPreferenceValue(ReaderNarrationControlsBoundsKey.self) { narrationBounds in
             if let selection = model.pendingSelection {
-                annotateLayer(selection)
+                annotateLayer(selection, narrationBounds: narrationBounds)
             }
         }
         .overlay {
@@ -183,6 +191,10 @@ struct ReaderScreen: View {
         .animation(.smooth(duration: 0.25), value: ttsControlsVisible)
         .animation(.smooth(duration: 0.28), value: showsNextSeriesPrompt)
         .animation(.smooth(duration: 0.3), value: restReminder.isDue)
+    }
+
+    private var readerNavigation: some View {
+        readerCanvas
         .sheet(
             item: Binding(
                 get: { model.annotationController.editingAnnotation },
@@ -257,6 +269,10 @@ struct ReaderScreen: View {
         } message: {
             Text(librarianMessage ?? "")
         }
+    }
+
+    private var readerEditors: some View {
+        readerNavigation
         .sheet(item: $noteDraft) { draft in
             ReaderNoteSheet(excerpt: draft.text) { note in
                 saveNote(draft: draft, note: note)
@@ -296,11 +312,11 @@ struct ReaderScreen: View {
                 book: book,
                 conflict: conflict,
                 onKeepLocal: {
-                    SyncCoordinator.shared.resolveEbookConflict(bookStableId: book.stableId, useServer: false)
+                    profileSession.sync.resolveEbookConflict(bookStableId: book.stableId, useServer: false)
                 },
                 onUseRemote: {
                     let serverLocator = conflict.serverLocator
-                    SyncCoordinator.shared.resolveEbookConflict(bookStableId: book.stableId, useServer: true)
+                    profileSession.sync.resolveEbookConflict(bookStableId: book.stableId, useServer: true)
                     if let json = serverLocator, !json.isEmpty {
                         model.navigateTo(locatorJSON: json)
                     } else {
@@ -313,6 +329,10 @@ struct ReaderScreen: View {
             .preferredColorScheme(model.preferredColorScheme)
             .enveEnvironment()
         }
+    }
+
+    private var readerPlaybackObservers: some View {
+        readerEditors
         .onReceive(model.ttsService.$highlightLocator.removeDuplicates()) { locator in
             model.applyTTSDecoration(locator)
         }
@@ -361,6 +381,10 @@ struct ReaderScreen: View {
         }
         .preferredColorScheme(model.preferredColorScheme)
         .statusBarHidden(!chromeVisible)
+    }
+
+    private var readerLifecycle: some View {
+        readerPlaybackObservers
         .onAppear(perform: beginSession)
         .onChange(of: restReminderInterval) { _, minutes in
             restReminder.update(minutes: minutes)
@@ -379,11 +403,19 @@ struct ReaderScreen: View {
             model.updateSystemColorScheme(newValue)
         }
         .onChange(of: model.pendingSelection != nil) { _, active in
-            guard active else { return }
-            readAloudControlsHideTask?.cancel()
-            withAnimation(.smooth) {
-                chromeVisible = false
-                readAloudControlsVisible = false
+            if active {
+                initialChromeHideTask?.cancel()
+                withAnimation(.smooth) { chromeVisible = false }
+            }
+            if model.isReadAloudMode {
+                showReadAloudControls(autoHide: !active)
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active, model.isReadAloudMode {
+                showReadAloudControls(autoHide: model.pendingSelection == nil)
+            } else {
+                readAloudControlsHideTask?.cancel()
             }
         }
         .onChange(of: tray) { _, presented in
@@ -445,15 +477,16 @@ struct ReaderScreen: View {
         }
         .onChange(of: model.isReadAloudMode) { _, active in
             if active {
-                showReadAloudControls(autoHide: true)
+                initialChromeHideTask?.cancel()
+                withAnimation(.smooth) { chromeVisible = false }
+                showReadAloudControls(autoHide: model.pendingSelection == nil)
             } else {
-                readAloudControlsHideTask?.cancel()
-                withAnimation(.smooth) { readAloudControlsVisible = false }
+                hideReadAloudControls()
             }
         }
         .onDisappear(perform: endSession)
         .task {
-            ambient = await AmbientColorStore.shared.resolve(for: book)
+            ambient = await AmbientColorStore(imageCache: profileSession.imageCache).resolve(for: book)
             #if DEBUG
             if ProcessInfo.processInfo.arguments.contains("-readerAutoReadTogether") {
                 for _ in 0..<120 {
@@ -756,7 +789,10 @@ struct ReaderScreen: View {
             HStack(spacing: 18) {
                 GlyphButton(systemImage: "list.bullet", label: "Contents") { tray = .contents }
                 if showsAppearance {
-                    GlyphButton(systemImage: "textformat.size", label: "Appearance") { tray = .appearance }
+                    GlyphButton(
+                        systemImage: isComicReader ? "slider.horizontal.3" : "textformat.size",
+                        label: isComicReader ? "Comic settings" : "Appearance"
+                    ) { tray = .appearance }
                 }
                 if isEPUB {
                     GlyphButton(systemImage: "magnifyingglass", label: "Search") { tray = .search }
@@ -990,7 +1026,9 @@ struct ReaderScreen: View {
     }
 
     private var showsFullHeightTapZones: Bool {
+        // EPUB engines already route taps; overlaying them intercepts native text selection.
         !chromeVisible
+            && !isEPUB
             && model.state.isReady
             && model.appearance.tapEdgesTurnPages
             && model.pendingSelection == nil
@@ -1038,9 +1076,10 @@ struct ReaderScreen: View {
                 ReaderNarratePill(
                     model: model,
                     onBookmark: { bookmarkDraft = makeBookmarkDraft(readAloud: true) },
-                    onPlaybackToggle: { showReadAloudControls(autoHide: true) },
+                    onPlaybackToggle: { showReadAloudControls(autoHide: model.pendingSelection == nil) },
                     onMore: { showDetailedReadAloudControls() }
                 )
+                .anchorPreference(key: ReaderNarrationControlsBoundsKey.self, value: .bounds) { $0 }
             }
             if !chromeVisible,
                 ttsControlsVisible,
@@ -1054,7 +1093,10 @@ struct ReaderScreen: View {
         .animation(.smooth(duration: 0.3), value: model.isReadAloudMode)
     }
 
-    private func annotateLayer(_ selection: ReaderSelectionSnapshot) -> some View {
+    private func annotateLayer(
+        _ selection: ReaderSelectionSnapshot,
+        narrationBounds: Anchor<CGRect>?
+    ) -> some View {
         GeometryReader { geo in
             ReaderAnnotateBar(
                 selectedColor: $inkColor,
@@ -1074,28 +1116,25 @@ struct ReaderScreen: View {
                 onCopy: { withLiveSelection { copySelection(currentEPUBSelection(fallback: selection)) } },
                 onDefine: { withLiveSelection { handleDefine() } }
             )
-            .position(annotateBarPosition(for: selection.frame, in: geo.size))
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("reader-annotation-toolbar")
+            .position(
+                ReaderAnnotationToolbarLayout.position(
+                    for: selection.frame,
+                    in: geo.size,
+                    narrationBounds: narrationBounds.map { geo[$0] }
+                )
+            )
         }
         .ignoresSafeArea()
         .transition(.opacity)
     }
 
-    private func annotateBarPosition(for frame: CGRect?, in size: CGSize) -> CGPoint {
-        let compact = size.width < 390
-        let barWidth = min(size.width - 24, compact ? 348 : 500)
-        let halfWidth = barWidth / 2
-        let sideInset = (size.width - barWidth) / 2
-        let barOffset: CGFloat = 54
-        guard let frame, frame != .zero else {
-            return CGPoint(x: size.width / 2, y: size.height - 140)
-        }
-        let x = min(max(frame.midX, sideInset + halfWidth), size.width - sideInset - halfWidth)
-        let above = frame.minY - barOffset
-        let y = above > 90 ? above : min(frame.maxY + barOffset, size.height - 110)
-        return CGPoint(x: x, y: y)
-    }
-
     private func readerOpenLibrarian() {
+        guard profileSession.isOwner else {
+            librarianMessage = "Librarian is available in the adult profile."
+            return
+        }
         if let message = EnveLibrarianService.shared.availabilityMessage() {
             librarianMessage = message
             return
@@ -1108,7 +1147,7 @@ struct ReaderScreen: View {
             dismissPendingSelection()
             return
         }
-        let shouldAutoSave = LibraryDisplayPreferencesStore.shared.loadPreferences().vocabAutoLogLookups
+        let shouldAutoSave = profileSession.preferences.loadPreferences().vocabAutoLogLookups
         if shouldAutoSave {
             model.annotationController.saveVocab(entry)
         }
@@ -1148,6 +1187,7 @@ struct ReaderScreen: View {
     }
 
     private func dismissPendingSelection() {
+        model.pendingSingleTapTask?.cancel()
         model.activeReaderEngineAdapter?.clearSelection()
         model.pendingSelection = nil
     }
@@ -1192,13 +1232,15 @@ struct ReaderScreen: View {
     }
 
     private func handleTap(_ point: CGPoint, viewSize size: CGSize) {
+        if model.pendingSelection != nil {
+            dismissPendingSelection()
+            return
+        }
         initialChromeHideTask?.cancel()
         if model.isReadAloudMode, model.overlayPlayer != nil {
             if chromeVisible {
                 hideReadAloudControls()
-                withAnimation(.smooth(duration: 0.35)) {
-                    chromeVisible = false
-                }
+                withAnimation(.smooth(duration: 0.35)) { chromeVisible = false }
             } else if readAloudControlsVisible {
                 hideReadAloudControls()
             } else {
@@ -1281,28 +1323,25 @@ struct ReaderScreen: View {
 
     private func showReadAloudControls(autoHide: Bool) {
         readAloudControlsHideTask?.cancel()
-        withAnimation(.smooth(duration: 0.25)) {
-            readAloudControlsVisible = true
-        }
+        withAnimation(.smooth(duration: 0.25)) { readAloudControlsVisible = true }
         guard autoHide else { return }
         readAloudControlsHideTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(4.0))
+            try? await Task.sleep(for: .seconds(4))
             guard !Task.isCancelled,
+                scenePhase == .active,
+                model.isReadAloudMode,
                 model.overlayPlayer?.isPlaying == true,
+                model.pendingSelection == nil,
                 tray == nil,
                 bookmarkDraft == nil
             else { return }
-            withAnimation(.smooth(duration: 0.25)) {
-                readAloudControlsVisible = false
-            }
+            withAnimation(.smooth(duration: 0.25)) { readAloudControlsVisible = false }
         }
     }
 
     private func hideReadAloudControls() {
         readAloudControlsHideTask?.cancel()
-        withAnimation(.smooth(duration: 0.25)) {
-            readAloudControlsVisible = false
-        }
+        withAnimation(.smooth(duration: 0.25)) { readAloudControlsVisible = false }
     }
 
     private func showTTSControls(autoHide: Bool) {
@@ -1356,7 +1395,7 @@ struct ReaderScreen: View {
 
     private func beginSession() {
         model.updateSystemColorScheme(colorScheme)
-        LastOpenedBookStore.shared.record(book)
+        profileSession.lastOpened.record(book)
         model.tapHandler = { handleTap($0, viewSize: $1) }
         model.doubleTapHandler = { [weak model] point in
             model?.handleReaderDoubleTap(at: point)
@@ -1366,32 +1405,33 @@ struct ReaderScreen: View {
         model.sessionStartDate = Date()
         model.sessionStartProgress = model.currentProgress ?? book.canonicalEbookProgress
         Task {
-            await ReadingStatsTracker.shared.startSession(
+            await profileSession.readingStats.startSession(
                 bookId: book.stableId,
                 positionProgression: model.currentProgress ?? 0,
                 location: model.currentSectionTitle
             )
         }
-        Task { await HardcoverSyncService.shared.syncBookStarted(book: book) }
+        Task { if profileSession.isOwner { await HardcoverSyncService.shared.syncBookStarted(book: book) } }
         Task {
 
-            await SyncCoordinator.shared.pullOnOpen(
+            await profileSession.sync.pullOnOpen(
                 book: book,
                 domain: .ebook,
                 excludingProvider: book.source == .storyteller
             )
-            progressConflict = EbookConflictStore.shared.find(stableId: book.stableId)
+            progressConflict = profileSession.ebookConflicts.find(stableId: book.stableId)
         }
         model.startAutoSaveTimer()
         Task {
-            await EbookAudiobookLinker.shared.rebuildCacheIfNeeded()
-            linkedAudiobook = await EbookAudiobookLinker.shared.linkedAudiobookAsync(for: book)
+            await profileSession.ebookLinker.rebuildCacheIfNeeded()
+            linkedAudiobook = await profileSession.ebookLinker.linkedAudiobookAsync(for: book)
         }
         Task { nextSeriesIssue = await findNextSeriesIssue() }
         restReminder.start(minutes: restReminderInterval)
     }
 
     private func endSession() {
+        guard !profileSession.isRetired else { return }
         bookmarkToastTask?.cancel()
         restReminder.stop()
         initialChromeHideTask?.cancel()
@@ -1417,70 +1457,72 @@ struct ReaderScreen: View {
         let progress = model.currentProgress ?? 0
         if progress >= Book.finishedProgressThreshold {
             Task {
-                await HardcoverSyncService.shared.syncBookFinished(book: book)
-                if LibraryDisplayPreferencesStore.shared.loadPreferences().autoDeleteFinishedBooks,
+                if profileSession.isOwner { await HardcoverSyncService.shared.syncBookFinished(book: book) }
+                if profileSession.preferences.loadPreferences().autoDeleteFinishedBooks,
                     book.source != .local
                 {
-                    try? LocalEbookImporter.shared.deleteRemoteEbookArtifacts(forBookId: book.id)
-                    AppState.shared.mutateBook(uniqueId: book.uniqueId) { $0.ebookFileURL = nil }
+                    try? profileSession.ebooks.deleteRemoteEbookArtifacts(forBookId: book.id)
+                    profileSession.appState.mutateBook(uniqueId: book.uniqueId) { $0.ebookFileURL = nil }
                 }
             }
         } else if progress > 0 {
-            Task { await HardcoverSyncService.shared.syncProgress(book: book, progress: progress) }
+            Task { if profileSession.isOwner { await HardcoverSyncService.shared.syncProgress(book: book, progress: progress) } }
         }
 
-        if book.source == .booklore {
-            let capturedBook = book
-            let startDate = model.sessionStartDate
-            let startProgress = model.sessionStartProgress
-            let locatorJSON = model.lastKnownLocatorJSON
-            var bgTaskId: UIBackgroundTaskIdentifier = .invalid
+        let capturedBook = book
+        let startDate = model.sessionStartDate
+        let startProgress = model.sessionStartProgress
+        let locatorJSON = model.lastKnownLocatorJSON
+        var bgTaskId: UIBackgroundTaskIdentifier = .invalid
+        if book.source == .booklore, profileSession.progress.syncProgressToServer {
             bgTaskId = UIApplication.shared.beginBackgroundTask {
                 UIApplication.shared.endBackgroundTask(bgTaskId)
                 bgTaskId = .invalid
             }
-            Task {
-                defer {
-                    if bgTaskId != .invalid {
-                        UIApplication.shared.endBackgroundTask(bgTaskId)
-                    }
-                }
-                guard let provider = AppState.shared.getProvider(capturedBook.providerId) as? BookloreProvider else { return }
-                try? await provider.uploadEbookReadingSession(
-                    for: capturedBook,
-                    startDate: startDate,
-                    startProgress: startProgress,
-                    endProgress: progress,
-                    epubLocator: locatorJSON
-                )
-            }
         }
-
+        let finalProgression = model.currentProgress
+        let sectionTitle = model.currentSectionTitle
         Task {
-            await ReadingStatsTracker.shared.endSession(
-                bookId: book.stableId,
-                finalProgression: model.currentProgress,
-                location: model.currentSectionTitle
+            defer {
+                if bgTaskId != .invalid {
+                    UIApplication.shared.endBackgroundTask(bgTaskId)
+                }
+            }
+            let session = await profileSession.readingStats.endSession(
+                bookId: capturedBook.stableId,
+                finalProgression: finalProgression,
+                location: sectionTitle
+            )
+            guard bgTaskId != .invalid, let session,
+                let provider = profileSession.appState.getProvider(capturedBook.providerId) as? BookloreProvider
+            else { return }
+            try? await provider.uploadEbookReadingSession(
+                for: capturedBook,
+                startDate: startDate,
+                activeSeconds: session.durationSeconds,
+                startProgress: startProgress,
+                endProgress: progress,
+                epubLocator: locatorJSON
             )
         }
     }
 
     private func readerSyncAudiobookOnDismissIfNeeded() {
         guard !book.isReadAloudBook, book.epub3Features?.hasMediaOverlay != true else { return }
-        let playback = ActivePlayback.controller
+        let playback = profileSession.playback.composition.controller
         guard let audiobook = linkedAudiobook,
             playback.snapshot.currentBook?.stableId == audiobook.stableId,
             !playback.snapshot.isPlaying
         else { return }
         guard let chapterIndex = model.currentChapterIndex,
-            let seekTime = EbookAudiobookLinker.shared.audiobookTimeForEbookChapter(chapterIndex, ebook: book)
+            let seekTime = profileSession.ebookLinker.audiobookTimeForEbookChapter(chapterIndex, ebook: book)
         else { return }
         playback.seek(to: seekTime)
     }
 
     private func findNextSeriesIssue() async -> Book? {
         guard book.mediaType == .ebook, let series = book.series else { return nil }
-        let siblings = DetailSeriesOrder.sorted(await AppState.shared.bookStore.books(inSeries: series))
+        let siblings = DetailSeriesOrder.sorted(await profileSession.appState.bookStore.books(inSeries: series))
             .filter { $0.mediaType == .ebook && (!isComicBook(book) || isComicBook($0)) }
         guard let currentIndex = siblings.firstIndex(where: { $0.stableId == book.stableId }) else {
             return nil
@@ -1492,7 +1534,7 @@ struct ReaderScreen: View {
         model.saveProgress()
         dismissedNextSeriesPrompt = true
         PlatformHaptics.selection()
-        AppState.shared.presentation.selectedEbookForDetail = issue
+        profileSession.appState.presentation.selectedEbookForDetail = issue
     }
 
     private func dismissNextSeriesPrompt() {
@@ -2103,6 +2145,50 @@ private struct ReaderReadAloudBar: View {
     }
 }
 
+enum ReaderAnnotationToolbarLayout {
+    static let barHeight: CGFloat = 54
+    static let controlsGap: CGFloat = 10
+
+    static func position(
+        for frame: CGRect?,
+        in size: CGSize,
+        narrationBounds: CGRect?
+    ) -> CGPoint {
+        let compact = size.width < 390
+        let barWidth = min(size.width - 24, compact ? 348 : 500)
+        let halfWidth = barWidth / 2
+        let sideInset = (size.width - barWidth) / 2
+        let barOffset: CGFloat = 54
+        let x: CGFloat
+        let preferredY: CGFloat
+        if let frame, frame != .zero {
+            x = min(max(frame.midX, sideInset + halfWidth), size.width - sideInset - halfWidth)
+            let above = frame.minY - barOffset
+            preferredY = above > 90 ? above : min(frame.maxY + barOffset, size.height - 110)
+        } else {
+            x = size.width / 2
+            preferredY = size.height - 140
+        }
+        // Resolve the actual pill in the annotation layer's coordinate space, including
+        // safe-area insets. Bottom selections must leave both toolbars accessible.
+        let y: CGFloat
+        if let narrationBounds {
+            y = max(barHeight / 2, min(preferredY, narrationBounds.minY - barHeight / 2 - controlsGap))
+        } else {
+            y = preferredY
+        }
+        return CGPoint(x: x, y: y)
+    }
+}
+
+private struct ReaderNarrationControlsBoundsKey: PreferenceKey {
+    nonisolated static var defaultValue: Anchor<CGRect>? { nil }
+
+    nonisolated static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
+        value = nextValue() ?? value
+    }
+}
+
 private struct ReaderNarratePill: View {
     @ObservedObject var model: ClassicReaderModel
     let onBookmark: () -> Void
@@ -2135,6 +2221,8 @@ private struct ReaderNarratePill: View {
             }
         }
         .padding(.horizontal, 8)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("reader-narration-controls")
         .background {
             HearthChromeBackground(
                 shape: .capsule,

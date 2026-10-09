@@ -1,6 +1,8 @@
 package com.enve.app.readium
 
 import android.content.Context
+import com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
+import com.enve.core.data.local.ProfileStorageLocations
 import android.util.Log
 import com.enve.app.data.offline.ComicOfflineStorage
 import com.enve.core.reader.MediaOverlayTimeline
@@ -24,6 +26,7 @@ import kotlinx.coroutines.withContext
 class ReaderNarrationStore @Inject constructor(
     @ApplicationContext private val context: Context,
     private val offlineStorage: ComicOfflineStorage,
+    private val locations: ProfileStorageLocations = ProfileStorageLocations.forProfile(context, DEFAULT_ADULT_PROFILE_ID),
 ) : ReaderNarrationSource {
     private val narrationTimes = ConcurrentHashMap<String, Double>()
     private val timelineMutex = Mutex()
@@ -42,7 +45,7 @@ class ReaderNarrationStore @Inject constructor(
     override fun existingReaderAsset(bookId: String): File? {
         offlineStorage.getDownloadedFile(bookId)?.takeIf { it.extension.equals("epub", ignoreCase = true) }?.let { return it }
         val safeName = bookId.replace(Regex("[^a-zA-Z0-9_-]"), "_")
-        return File(context.cacheDir, "ebooks").listFiles()
+        return File(locations.cacheDirectory, "ebooks").listFiles()
             ?.filter { it.isFile && it.name.startsWith("$safeName.") && it.name.endsWith(".epub") && it.length() > 0L }
             ?.maxByOrNull(File::lastModified)
     }

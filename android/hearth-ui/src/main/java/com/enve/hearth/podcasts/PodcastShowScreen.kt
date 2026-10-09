@@ -55,10 +55,11 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.hilt.navigation.compose.hiltViewModel
+import com.enve.hearth.shell.profileViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.enve.core.data.model.Book
+import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.PodcastShow
 import com.enve.hearth.design.CoverTile
 import com.enve.hearth.design.Hearth
@@ -75,14 +76,16 @@ fun PodcastShowScreen(
     initial: Book,
     onBack: () -> Unit,
     onPlay: (Book) -> Unit,
+    onOpenEpisode: (Book) -> Unit,
 ) {
-    val vm: PodcastShowViewModel = hiltViewModel()
+    val vm: PodcastShowViewModel = profileViewModel()
     LaunchedEffect(initial.uniqueKey) { vm.load(initial) }
     LifecycleResumeEffect(vm) {
         vm.refresh()
         onPauseOrDispose { }
     }
     val state by vm.state.collectAsStateWithLifecycle()
+    val subscriptions by vm.subscriptions.collectAsStateWithLifecycle()
     val palette = Hearth.palette
     val show = (state.load as? PodcastShowLoad.Loaded)?.show
 
@@ -90,22 +93,22 @@ fun PodcastShowScreen(
         Modifier.fillMaxSize().background(palette.bg),
         contentPadding = PaddingValues(bottom = LocalMantelInset.current + Hearth.Spacing.L),
     ) {
-        item { ShowHeader(initial, show, state.episodes.size, onBack) }
+        item { ShowHeader(initial, show, state.episodes.size, onBack, subscriptions.any { it.feedUrl == show?.feedUrl }, vm::toggleSubscription) }
         when (state.load) {
             PodcastShowLoad.Loading -> item { ShowLoading() }
             PodcastShowLoad.Failed -> item {
-                ShowMessage("Couldn't open this show.", "Check the Audiobookshelf connection and try again.") {
+                ShowMessage("Couldn't open this show.", if (initial.source == BookSource.LOCAL) "Check the feed URL and try again." else "Check the Audiobookshelf connection and try again.") {
                     QuietButton("Try again", onClick = vm::retry)
                 }
             }
             is PodcastShowLoad.Loaded -> if (state.episodes.isEmpty()) {
-                item { ShowMessage("No episodes yet.", "Audiobookshelf hasn't downloaded any episodes of this show.") }
+                item { ShowMessage("No episodes yet.", if (initial.source == BookSource.LOCAL) "This feed has no playable episodes yet." else "Audiobookshelf hasn't downloaded any episodes of this show.") }
             } else {
                 item { ShowTally(state) }
                 if (state.inProgress.isNotEmpty()) {
                     item { SectionOverline("Still playing") }
                     items(state.inProgress, key = { "playing-${it.id}" }) { episode ->
-                        EpisodeRow(episode, onPlay, showDivider = false)
+                        EpisodeRow(episode, onPlay, onOpenEpisode, showDivider = false, directFeed = initial.source == BookSource.LOCAL)
                     }
                 }
                 item { EpisodeControls(state.query, state.newestFirst, vm::setQuery, vm::toggleOrder) }
@@ -121,7 +124,7 @@ fun PodcastShowScreen(
                     }
                 } else {
                     items(state.visibleEpisodes, key = { it.id }) { episode ->
-                        EpisodeRow(episode, onPlay, showDivider = episode.id != state.visibleEpisodes.last().id)
+                        EpisodeRow(episode, onPlay, onOpenEpisode, showDivider = episode.id != state.visibleEpisodes.last().id, directFeed = initial.source == BookSource.LOCAL)
                     }
                 }
             }
@@ -130,7 +133,7 @@ fun PodcastShowScreen(
 }
 
 @Composable
-private fun ShowHeader(initial: Book, show: PodcastShow?, episodeCount: Int, onBack: () -> Unit) {
+private fun ShowHeader(initial: Book, show: PodcastShow?, episodeCount: Int, onBack: () -> Unit, subscribed: Boolean, onToggleSubscription: (PodcastShow) -> Unit) {
     val palette = Hearth.palette
     var descriptionExpanded by rememberSaveable(initial.uniqueKey) { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth().statusBarsPadding()) {
@@ -193,6 +196,9 @@ private fun ShowHeader(initial: Book, show: PodcastShow?, episodeCount: Int, onB
                         .padding(top = Hearth.Spacing.L)
                         .clickable(role = Role.Button) { descriptionExpanded = !descriptionExpanded },
                 )
+            }
+            if (initial.source == BookSource.LOCAL && show != null) {
+                QuietButton(if (subscribed) "Following" else "Follow show", onClick = { onToggleSubscription(show) })
             }
         }
     }
@@ -300,15 +306,14 @@ private fun EpisodeControls(
 }
 
 @Composable
-private fun EpisodeRow(episode: Book, onPlay: (Book) -> Unit, showDivider: Boolean) {
+private fun EpisodeRow(episode: Book, onPlay: (Book) -> Unit, onOpenEpisode: (Book) -> Unit, showDivider: Boolean, directFeed: Boolean) {
     val palette = Hearth.palette
-    var notesExpanded by rememberSaveable(episode.id) { mutableStateOf(false) }
     val notes = episode.description?.let(PodcastsFormat::cleanHTML)?.takeIf { it.isNotEmpty() }
     Column(Modifier.padding(horizontal = Hearth.Spacing.XXL)) {
         Column(
             Modifier
                 .fillMaxWidth()
-                .then(if (notes != null) Modifier.clickable { notesExpanded = !notesExpanded } else Modifier)
+                .clickable { onOpenEpisode(episode) }
                 .padding(vertical = Hearth.Spacing.M),
             verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
         ) {
@@ -328,7 +333,7 @@ private fun EpisodeRow(episode: Book, onPlay: (Book) -> Unit, showDivider: Boole
                     ).takeIf { it.isNotEmpty() }?.let {
                         Text(it.joinToString(" · "), style = hearthUI(11.sp), color = palette.textTertiary)
                     }
-                    EpisodeStatus(episode)
+                    EpisodeStatus(episode, directFeed)
                 }
                 GlyphButton(icon = Icons.Filled.PlayArrow, label = "Play ${episode.title}", onClick = { onPlay(episode) })
             }
@@ -337,7 +342,7 @@ private fun EpisodeRow(episode: Book, onPlay: (Book) -> Unit, showDivider: Boole
                     it,
                     style = hearthUI(12.sp),
                     color = palette.textSecondary,
-                    maxLines = if (notesExpanded) Int.MAX_VALUE else 2,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
@@ -352,7 +357,7 @@ private fun EpisodeRow(episode: Book, onPlay: (Book) -> Unit, showDivider: Boole
 }
 
 @Composable
-private fun EpisodeStatus(episode: Book) {
+private fun EpisodeStatus(episode: Book, directFeed: Boolean) {
     val palette = Hearth.palette
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S)) {
         when {
@@ -369,7 +374,7 @@ private fun EpisodeStatus(episode: Book) {
         if (episode.isFeedOnlyEpisode) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.XS)) {
                 Icon(Icons.Outlined.Podcasts, contentDescription = null, tint = palette.textTertiary, modifier = Modifier.size(12.dp))
-                Text("Not on server", style = hearthUI(11.sp, FontWeight.Medium), color = palette.textTertiary)
+                Text(if (directFeed) "RSS episode" else "Not on server", style = hearthUI(11.sp, FontWeight.Medium), color = palette.textTertiary)
             }
         }
     }

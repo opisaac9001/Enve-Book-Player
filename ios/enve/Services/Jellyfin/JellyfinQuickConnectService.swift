@@ -52,7 +52,8 @@ struct JellyfinQuickConnectAuthResult {
 
 final class JellyfinQuickConnectService {
     static let shared = JellyfinQuickConnectService()
-    private init() {}
+    private let session: URLSession
+    init(session: URLSession = .shared) { self.session = session }
 
     private let maxPollAttempts = 150
     private let pollInterval: TimeInterval = 2.0
@@ -76,7 +77,7 @@ final class JellyfinQuickConnectService {
         request.setValue(auth, forHTTPHeaderField: "X-Emby-Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse,
             httpResponse.statusCode == 200
@@ -104,7 +105,7 @@ final class JellyfinQuickConnectService {
         request.setValue(auth, forHTTPHeaderField: "X-Emby-Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw QuickConnectError.invalidResponse
@@ -148,7 +149,7 @@ final class JellyfinQuickConnectService {
             request.setValue("application/json", forHTTPHeaderField: "Accept")
 
             do {
-                let (data, response) = try await URLSession.shared.data(for: request)
+                let (data, response) = try await session.data(for: request)
 
                 guard let httpResponse = response as? HTTPURLResponse else {
                     throw QuickConnectError.invalidResponse
@@ -197,7 +198,7 @@ final class JellyfinQuickConnectService {
         let body = QuickConnectAuthRequest(Secret: secret)
         request.httpBody = try JSONEncoder().encode(body)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw QuickConnectError.invalidResponse

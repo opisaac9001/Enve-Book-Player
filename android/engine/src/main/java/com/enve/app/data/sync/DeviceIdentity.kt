@@ -9,8 +9,9 @@ import javax.inject.Singleton
 @Singleton
 class DeviceIdentity @Inject constructor(
     @ApplicationContext context: Context,
+    locations: com.enve.core.data.local.ProfileStorageLocations,
 ) {
-    private val prefs = context.getSharedPreferences("enve_device", Context.MODE_PRIVATE)
+    private val prefs = context.getSharedPreferences(if (locations.profileId == com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID) "enve_device" else "enve_device_profile_${locations.profileId}", Context.MODE_PRIVATE)
 
     val deviceId: String
         get() {

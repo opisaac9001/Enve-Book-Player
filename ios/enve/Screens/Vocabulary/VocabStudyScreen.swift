@@ -79,8 +79,14 @@ struct VocabStudyScreen: View {
 
     @Environment(\.hearth) private var hearth
     @Environment(\.dismiss) private var dismiss
-    @State private var session = VocabStudySession()
+    @State private var session: VocabStudySession
     @State private var started = false
+
+    init(entries: [VocabEntry], booksById: [String: Book], vocabulary: VocabularyEngine = EnveEngine.shared.vocabulary) {
+        self.entries = entries
+        self.booksById = booksById
+        _session = State(initialValue: VocabStudySession(vocabulary: vocabulary))
+    }
 
     var body: some View {
         ZStack {

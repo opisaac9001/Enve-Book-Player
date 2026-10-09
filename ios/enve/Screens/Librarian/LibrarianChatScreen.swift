@@ -1,6 +1,27 @@
 import SwiftUI
 
 struct LibrarianChatScreen: View {
+    @Environment(\.profileSession) private var capturedSession
+    let book: Book
+    let currentEbookProgress: Double?
+
+    init(book: Book, currentEbookProgress: Double? = nil) {
+        self.book = book
+        self.currentEbookProgress = currentEbookProgress
+    }
+
+    var body: some View {
+        let session = capturedSession ?? .owner
+        if session.isOwner && !session.isRetired {
+            OwnerLibrarianChatScreen(book: book, currentEbookProgress: currentEbookProgress, profileSession: session)
+        } else {
+            ContentUnavailableView("Librarian unavailable", systemImage: "books.vertical",
+                description: Text("The Librarian is available in the owner profile."))
+        }
+    }
+}
+
+private struct OwnerLibrarianChatScreen: View {
     @Environment(\.hearth) private var hearth
     @Environment(\.dismiss) private var dismiss
 
@@ -12,8 +33,8 @@ struct LibrarianChatScreen: View {
     private var transcriptionService: AudiobookTranscriptionService { .shared }
     private var ebookContextService: EbookContextService { .shared }
 
-    init(book: Book, currentEbookProgress: Double? = nil) {
-        _model = State(initialValue: LibrarianChatModel(book: book, initialEbookProgress: currentEbookProgress))
+    init(book: Book, currentEbookProgress: Double?, profileSession: ProfileSession) {
+        _model = State(initialValue: LibrarianChatModel(book: book, initialEbookProgress: currentEbookProgress, profileSession: profileSession))
     }
 
     var body: some View {

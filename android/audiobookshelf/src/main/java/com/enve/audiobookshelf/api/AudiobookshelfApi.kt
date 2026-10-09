@@ -28,6 +28,27 @@ interface AudiobookshelfApi {
     @GET("api/libraries")
     suspend fun getLibraries(): Response<AbsLibrariesResponse>
 
+    @GET("api/libraries/{libraryId}/collections")
+    suspend fun getCollections(
+        @Path("libraryId") libraryId: String,
+        @Query("limit") limit: Int = 500,
+    ): Response<AbsCollectionsResponse>
+
+    @POST("api/collections")
+    suspend fun createCollection(@Body request: AbsCreateCollectionRequest): Response<AbsCollectionDto>
+
+    @POST("api/collections/{collectionId}/book")
+    suspend fun addCollectionBook(
+        @Path("collectionId") collectionId: String,
+        @Body request: AbsCollectionBookRequest,
+    ): Response<AbsCollectionDto>
+
+    @DELETE("api/collections/{collectionId}/book/{bookId}")
+    suspend fun removeCollectionBook(
+        @Path("collectionId") collectionId: String,
+        @Path("bookId") bookId: String,
+    ): Response<Unit>
+
     @GET("api/libraries/{libraryId}/items")
     suspend fun getLibraryItems(
         @Path("libraryId") libraryId: String,
@@ -67,14 +88,14 @@ interface AudiobookshelfApi {
     @POST("api/items/{itemId}/play")
     suspend fun startPlaybackSession(
         @Path("itemId") itemId: String,
-        @Body request: AbsPlaybackStartRequest = AbsPlaybackStartRequest(),
+        @Body request: AbsPlaybackStartRequest,
     ): Response<AbsPlaybackSessionDto>
 
     @POST("api/items/{itemId}/play/{episodeId}")
     suspend fun startEpisodePlaybackSession(
         @Path("itemId") itemId: String,
         @Path("episodeId") episodeId: String,
-        @Body request: AbsPlaybackStartRequest = AbsPlaybackStartRequest(),
+        @Body request: AbsPlaybackStartRequest,
     ): Response<AbsPlaybackSessionDto>
 
     @POST("api/session/{sessionId}/sync")
@@ -88,6 +109,11 @@ interface AudiobookshelfApi {
         @Path("sessionId") sessionId: String,
         @Body request: AbsPlaybackSessionUpdateRequest,
     ): Response<Unit>
+
+    @POST("api/session/local-all")
+    suspend fun syncLocalSessions(
+        @Body request: AbsLocalSessionsRequest,
+    ): Response<AbsLocalSessionsResponse>
 
     @PATCH("api/me/progress/{libraryItemId}")
     suspend fun updateProgress(

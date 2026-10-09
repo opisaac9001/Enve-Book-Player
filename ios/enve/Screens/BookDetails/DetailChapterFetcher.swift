@@ -30,7 +30,7 @@ private struct GenericChapter: Decodable {
 final class DetailChapterFetcher {
     private(set) var isFetching = false
 
-    func fetch(book: Book, library: LibraryEngine) async {
+    func fetch(book: Book, library: LibraryEngine, profileSession: ProfileSession = .owner) async {
         guard !isFetching else { return }
         isFetching = true
         defer { isFetching = false }
@@ -41,26 +41,26 @@ final class DetailChapterFetcher {
 
         let cachedChapters =
             book.mediaType == .ebook
-            ? ReaderArtifactsStore.shared.loadCachedChapters(bookId: book.stableId)
-                ?? ReaderArtifactsStore.shared.loadCachedChapters(bookId: book.id)
-            : ReaderArtifactsStore.shared.loadCachedAudioChapters(for: book)
+            ? profileSession.readerArtifacts.loadCachedChapters(bookId: book.stableId)
+                ?? profileSession.readerArtifacts.loadCachedChapters(bookId: book.id)
+            : profileSession.readerArtifacts.loadCachedAudioChapters(for: book)
         if let cached = cachedChapters, hasAdequateChapters(cached, for: book)
         {
             AppLogger.network.info("[Chapters] Using adequate cached chapters: \(cached.count)")
-            apply(cached, to: book, library: library)
+            apply(cached, to: book, library: library, profileSession: profileSession)
             return
         }
 
         if book.mediaType == .ebook {
-            if let result = await deriveEbookChapters(book: book, library: library) {
-                apply(result.chapters, to: result.book, library: library)
+            if let result = await deriveEbookChapters(book: book, library: library, profileSession: profileSession) {
+                apply(result.chapters, to: result.book, library: library, profileSession: profileSession)
             }
             return
         }
 
         if book.source == .local {
-            if let newChapters = await deriveLocalChapters(book: book), !newChapters.isEmpty {
-                apply(newChapters, to: book, library: library)
+            if let newChapters = await deriveLocalChapters(book: book, profileSession: profileSession), !newChapters.isEmpty {
+                apply(newChapters, to: book, library: library, profileSession: profileSession)
             }
             return
         }
@@ -69,30 +69,30 @@ final class DetailChapterFetcher {
             let provider = library.provider(for: book) as? StorytellerProvider
         {
             if let chapters = try? await provider.fetchManifestChapters(for: book), !chapters.isEmpty {
-                apply(chapters, to: book, library: library)
+                apply(chapters, to: book, library: library, profileSession: profileSession)
                 return
             }
 
             if let session = try? await provider.startPlaybackSession(for: book) {
                 if !session.chapters.isEmpty {
-                    apply(session.chapters, to: book, library: library)
+                    apply(session.chapters, to: book, library: library, profileSession: profileSession)
                     return
                 }
 
                 if let trackURL = session.audioTracks.first.flatMap({ URL(string: $0.contentUrl) }),
-                    let embedded = await MetadataLayeringManager.shared.extractEmbeddedChapters(
+                    let embedded = await MetadataLayeringManager(playbackStateManager: profileSession.playbackState, localStorage: profileSession.localStorage, providerConnections: profileSession.providerConnections).extractEmbeddedChapters(
                         from: trackURL,
                         headers: provider.getStreamingHeaders()
                     ),
                     !embedded.isEmpty
                 {
-                    apply(embedded, to: book, library: library)
+                    apply(embedded, to: book, library: library, profileSession: profileSession)
                     return
                 }
 
                 let synthesized = trackBasedChapters(from: session.audioTracks)
                 if !synthesized.isEmpty {
-                    apply(synthesized, to: book, library: library)
+                    apply(synthesized, to: book, library: library, profileSession: profileSession)
                     return
                 }
             }
@@ -105,12 +105,12 @@ final class DetailChapterFetcher {
 
             if let chapters = refreshed.chapters, hasAdequateChapters(chapters, for: refreshed) {
                 AppLogger.network.info("[Chapters] Using adequate Audiobookshelf chapters: \(chapters.count)")
-                apply(chapters, to: book, library: library)
+                apply(chapters, to: book, library: library, profileSession: profileSession)
                 return
             }
 
-            if let extracted = await MetadataLayeringManager.shared.extractChapters(for: refreshed), !extracted.isEmpty {
-                apply(extracted, to: book, library: library)
+            if let extracted = await MetadataLayeringManager(playbackStateManager: profileSession.playbackState, localStorage: profileSession.localStorage, providerConnections: profileSession.providerConnections).extractChapters(for: refreshed), !extracted.isEmpty {
+                apply(extracted, to: book, library: library, profileSession: profileSession)
                 return
             }
         }
@@ -119,12 +119,12 @@ final class DetailChapterFetcher {
 
         if let serverChapters = refreshed.chapters, hasAdequateChapters(serverChapters, for: refreshed) {
             AppLogger.network.info("[Chapters] Using adequate server chapters: \(serverChapters.count)")
-            apply(serverChapters, to: refreshed, library: library)
+            apply(serverChapters, to: refreshed, library: library, profileSession: profileSession)
             return
         }
         AppLogger.network.info("[Chapters] Server/cache chapters inadequate; attempting embedded extraction")
-        if let extracted = await MetadataLayeringManager.shared.extractChapters(for: refreshed), !extracted.isEmpty {
-            apply(extracted, to: refreshed, library: library)
+        if let extracted = await MetadataLayeringManager(playbackStateManager: profileSession.playbackState, localStorage: profileSession.localStorage, providerConnections: profileSession.providerConnections).extractChapters(for: refreshed), !extracted.isEmpty {
+            apply(extracted, to: refreshed, library: library, profileSession: profileSession)
             AppLogger.network.info("[Chapters] Applied embedded chapters: \(extracted.count)")
         } else {
             AppLogger.network.debug(
@@ -133,7 +133,7 @@ final class DetailChapterFetcher {
         }
     }
 
-    private func deriveEbookChapters(book: Book, library: LibraryEngine) async -> (book: Book, chapters: [Chapter])? {
+    private func deriveEbookChapters(book: Book, library: LibraryEngine, profileSession: ProfileSession) async -> (book: Book, chapters: [Chapter])? {
         let refreshed: Book
         if book.source != .local {
             refreshed = await library.refreshDetails(for: book)
@@ -145,14 +145,14 @@ final class DetailChapterFetcher {
             return (refreshed, serverChapters)
         }
 
-        if let extracted = await EbookChapterSyncService.shared.extractEbookChapters(for: refreshed), !extracted.isEmpty {
+        if let extracted = await profileSession.ebookChapters.extractEbookChapters(for: refreshed), !extracted.isEmpty {
             return (refreshed, extracted)
         }
 
         return nil
     }
 
-    private func deriveLocalChapters(book: Book) async -> [Chapter]? {
+    private func deriveLocalChapters(book: Book, profileSession: ProfileSession) async -> [Chapter]? {
         if let audioPath = book.filePath {
             let fileURL = URL(fileURLWithPath: audioPath)
             let sidecarURL = fileURL.deletingPathExtension().appendingPathExtension("json")
@@ -189,7 +189,7 @@ final class DetailChapterFetcher {
             }
         }
 
-        return await MetadataLayeringManager.shared.extractChapters(for: book)
+        return await MetadataLayeringManager(playbackStateManager: profileSession.playbackState, localStorage: profileSession.localStorage, providerConnections: profileSession.providerConnections).extractChapters(for: book)
     }
 
     private func trackBasedChapters(from tracks: [AudioTrackInfo]) -> [Chapter] {
@@ -210,10 +210,10 @@ final class DetailChapterFetcher {
         }
     }
 
-    private func apply(_ chapters: [Chapter], to book: Book, library: LibraryEngine) {
-        ReaderArtifactsStore.shared.saveCachedChapters(bookId: book.stableId, chapters: chapters)
+    private func apply(_ chapters: [Chapter], to book: Book, library: LibraryEngine, profileSession: ProfileSession) {
+        profileSession.readerArtifacts.saveCachedChapters(bookId: book.stableId, chapters: chapters)
         if book.id != book.stableId {
-            ReaderArtifactsStore.shared.saveCachedChapters(bookId: book.id, chapters: chapters)
+            profileSession.readerArtifacts.saveCachedChapters(bookId: book.id, chapters: chapters)
         }
         library.applyCurrentBookChapters(chapters, for: book)
     }

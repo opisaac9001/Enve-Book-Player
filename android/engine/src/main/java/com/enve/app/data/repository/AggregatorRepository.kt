@@ -1,9 +1,14 @@
 package com.enve.app.data.repository
 
+import com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
+import com.enve.core.data.local.ProfileStorageLocations
+
+import com.enve.core.data.util.runSuspendCatching
 import com.enve.core.data.local.ConnectionRegistry
 import com.enve.core.data.provider.ProviderPlaybackSession
 import com.enve.core.data.local.toBook
 import com.enve.core.data.model.Book
+import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.Library
 import com.enve.core.data.model.ProviderConnection
@@ -45,8 +50,8 @@ internal fun selectConnectionForSource(
     connectionId: String?,
     connections: List<ProviderConnection>,
 ): ProviderConnection? = connectionId
-    ?.let { id -> connections.firstOrNull { it.id == id && it.source == source } }
-    ?: connections.firstOrNull { it.source == source }
+    ?.let { id -> connections.firstOrNull { it.id == id && it.source == source && it.enabled } }
+    .let { selected -> if (connectionId != null) selected else connections.firstOrNull { it.source == source && it.enabled } }
 
 internal fun compositeLibraryId(connectionId: String, rawId: String): String = "$connectionId::$rawId"
 
@@ -54,6 +59,7 @@ internal fun compositeLibraryId(connectionId: String, rawId: String): String = "
 class AggregatorRepository @Inject constructor(
     private val activeSourceAdapter: ActiveSourceProviderAdapter,
     private val bookCacheDao: com.enve.core.data.local.BookCacheDao,
+    private val audiobookProgressPush: com.enve.app.data.sync.AudiobookProgressPushService,
 
     private val providerAdapters: Set<@JvmSuppressWildcards ProviderAdapter>,
     private val komgaRepository: com.enve.komga.KomgaRepository,
@@ -66,7 +72,11 @@ class AggregatorRepository @Inject constructor(
     private val prefs: com.enve.core.data.local.PreferencesManager,
     private val vault: com.enve.core.auth.CredentialVault,
     @ApplicationContext private val context: android.content.Context,
+    private val locations: ProfileStorageLocations = ProfileStorageLocations.forProfile(context, DEFAULT_ADULT_PROFILE_ID),
+    private val serverSync: com.enve.core.data.local.ProfileServerSyncStore = com.enve.core.data.local.ProfileServerSyncStore(context, locations),
 ) {
+    val serverSyncEnabled: Boolean get() = serverSync.isEnabled
+
     private val jsonSerializer = Json { ignoreUnknownKeys = true }
 
     @Serializable
@@ -77,7 +87,7 @@ class AggregatorRepository @Inject constructor(
     )
 
     private fun cacheFileForHome(): java.io.File {
-        val cacheDir = java.io.File(context.cacheDir, "book-index-cache").also { it.mkdirs() }
+        val cacheDir = java.io.File(locations.cacheDirectory, "book-index-cache").also { it.mkdirs() }
         return java.io.File(cacheDir, "aggregated_home_snapshot.json")
     }
 
@@ -142,11 +152,11 @@ class AggregatorRepository @Inject constructor(
 
     private fun Book.withConnection(connection: ProviderConnection): Book {
         val rawLibraryId = libraryId
-        return copy(
+        return serverSync.catalogBook(copy(
             source = connection.source,
             connectionId = connection.id,
             libraryId = rawLibraryId?.takeIf { it.isNotBlank() }?.let { compositeLibraryId(connection.id, it) },
-        )
+        ))
     }
 
     private suspend fun connectionForBook(book: Book): ProviderConnection? {
@@ -155,7 +165,11 @@ class AggregatorRepository @Inject constructor(
     }
 
     private suspend fun <T> withBookConnection(book: Book, block: suspend (ProviderAdapter) -> Result<T>): Result<T> {
-        val connection = connectionForBook(book) ?: return block(getAdapterForSource(book.source))
+        val connection = connectionForBook(book) ?: return if (book.connectionId == null) {
+            block(getAdapterForSource(book.source))
+        } else {
+            Result.failure(IllegalStateException("Requested provider connection is unavailable"))
+        }
         return withConnectionContext(connection) { block(getAdapterForSource(connection.source)) }
     }
 
@@ -166,7 +180,9 @@ class AggregatorRepository @Inject constructor(
             applyConnection(connection)
         }
         return kotlinx.coroutines.withContext(ConnectionScope.asContextElement(connection.id)) {
-            block()
+            if (connectionRegistry.connections.first().none { it.id == connection.id && it.source == connection.source && it.enabled }) {
+                Result.failure(IllegalStateException("Requested provider connection is unavailable"))
+            } else block()
         }
     }
 
@@ -182,9 +198,12 @@ class AggregatorRepository @Inject constructor(
         )
     }
 
-    suspend fun getLibraries(): Result<List<Library>> {
-        val connections = connectionRegistry.connections.first().filter { it.enabled }
-        if (connections.isEmpty()) return activeSourceAdapter.getLibraries()
+    suspend fun getLibraries(connectionIds: Set<String>? = null): Result<List<Library>> {
+        val connections = connectionRegistry.connections.first()
+            .filter { it.enabled && (connectionIds == null || it.id in connectionIds) }
+        if (connections.isEmpty()) {
+            return if (connectionIds == null) activeSourceAdapter.getLibraries() else Result.success(emptyList())
+        }
 
         val results = coroutineScope {
             connections.map { connection ->
@@ -231,7 +250,7 @@ class AggregatorRepository @Inject constructor(
             ?: return Result.success(null)
         return withConnectionContext(connection) {
             when (book.source) {
-                BookSource.GRIMMORY -> legacyRepository.getBookDetail(book.id).map { it as Book? }
+                BookSource.GRIMMORY -> legacyRepository.getBookDetail(book.id).map { serverSync.catalogBook(it) as Book? }
                 else -> Result.success<Book?>(null)
             }
         }
@@ -252,7 +271,7 @@ class AggregatorRepository @Inject constructor(
                 size = size,
                 sort = sort,
                 dir = dir,
-            )
+            ).map { books -> books.map(serverSync::catalogBook) }
         }
 
         val parsedLibraryId = parseCompositeLibraryId(libraryId)
@@ -305,6 +324,10 @@ class AggregatorRepository @Inject constructor(
     suspend fun getHomeSnapshot(): Result<AggregatedHomeSnapshot> {
         val connections = connectionRegistry.connections.first().filter { it.enabled }
         val connectionIds = connections.map { it.id }.sorted()
+        if (!serverSync.isEnabled) {
+            val recent = getBooks(size = 20).getOrElse { return Result.failure(it) }
+            return Result.success(AggregatedHomeSnapshot(recentlyAdded = recent))
+        }
 
         if (connections.isEmpty()) {
             val listening = activeSourceAdapter.getContinueListening().getOrElse { return Result.failure(it) }
@@ -457,7 +480,19 @@ class AggregatorRepository @Inject constructor(
     }
 
     suspend fun updateBookStatus(book: Book, status: String): Result<Unit> {
-        val result = withBookConnection(book) { it.updateBookStatus(book.id, status) }
+        if (book.mediaType == AppMediaType.AUDIOBOOK || book.mediaType == AppMediaType.PODCAST) {
+            val normalized = status.uppercase()
+            val finished = normalized in setOf("READ", "COMPLETED", "FINISHED")
+            return audiobookProgressPush.command(book, canWrite = { serverSync.isEnabled }, transform = { cached ->
+                com.enve.app.data.sync.AudiobookProgressPushService.Command(
+                    progress = if (finished) 1f else cached.readProgress,
+                    positionSec = if (finished && cached.duration > 0L) cached.duration else cached.currentTime,
+                    finished = finished, hidden = normalized == "ABANDONED", status = normalized,
+                )
+            }) { withBookConnection(book) { it.updateBookStatus(book.id, status) } }
+        }
+        val result = if (serverSync.isEnabled) withBookConnection(book) { it.updateBookStatus(book.id, status) }
+            else Result.success(Unit)
         if (result.isSuccess) {
             val normalizedStatus = status.uppercase()
 
@@ -501,9 +536,15 @@ class AggregatorRepository @Inject constructor(
     }
 
     suspend fun resetBookProgress(book: Book): Result<Unit> {
-        val result = withBookConnection(book) { it.resetBookProgress(book) }
+        if (book.mediaType == AppMediaType.AUDIOBOOK || book.mediaType == AppMediaType.PODCAST) {
+            return audiobookProgressPush.command(book, canWrite = { serverSync.isEnabled }, transform = { cached ->
+                com.enve.app.data.sync.AudiobookProgressPushService.Command(0f, 0L, false, cached.hideFromContinue, null)
+            }) { withBookConnection(book) { it.resetBookProgress(book) } }
+        }
+        val result = if (serverSync.isEnabled) withBookConnection(book) { it.resetBookProgress(book) }
+            else Result.success(Unit)
         if (result.isSuccess) {
-            runCatching {
+            runSuspendCatching {
                 bookCacheDao.updateUnifiedProgress(
                     bookId = book.id,
                     connectionId = book.connectionId,
@@ -524,10 +565,12 @@ class AggregatorRepository @Inject constructor(
     }
 
     suspend fun markSeriesRead(book: Book, seriesId: String): Result<Unit> {
+        if (!serverSync.isEnabled) return Result.success(Unit)
         return withBookConnection(book) { it.markSeriesRead(seriesId) }
     }
 
     suspend fun markSeriesUnread(book: Book, seriesId: String): Result<Unit> {
+        if (!serverSync.isEnabled) return Result.success(Unit)
         return withBookConnection(book) { it.markSeriesUnread(seriesId) }
     }
 
@@ -646,6 +689,9 @@ class AggregatorRepository @Inject constructor(
     }
 
     suspend fun startPlaybackSession(book: Book): Result<com.enve.core.data.provider.ProviderPlaybackSession> {
+        if (!serverSync.isEnabled) {
+            return getAudioTracks(book).map { tracks -> ProviderPlaybackSession(sessionId = "", audioTracks = tracks, chapters = book.chapters) }
+        }
         return withBookConnection(book) { it.startPlaybackSession(book) }
     }
 
@@ -656,7 +702,7 @@ class AggregatorRepository @Inject constructor(
     suspend fun getPodcastShow(show: Book): Result<com.enve.core.data.model.PodcastShow> =
         withBookConnection(show) { it.getPodcastShow(show) }.map { podcast ->
             podcast.copy(
-                episodes = podcast.episodes.map { it.copy(connectionId = show.connectionId, libraryId = show.libraryId ?: it.libraryId) },
+                episodes = podcast.episodes.map { serverSync.catalogBook(it.copy(connectionId = show.connectionId, libraryId = show.libraryId ?: it.libraryId)) },
             )
         }
 
@@ -680,29 +726,22 @@ class AggregatorRepository @Inject constructor(
         book: Book,
         currentTimeSec: Long,
         progressFraction: Float,
+        acknowledgePending: Boolean = true,
     ): Result<Unit> {
-        val result = withBookConnection(book) { it.syncAudiobookProgress(book, currentTimeSec, progressFraction) }
-
-        if (result.isSuccess) {
-            runCatching {
-                bookCacheDao.updateUnifiedProgress(
-                    bookId = book.id,
-                    connectionId = book.connectionId,
-                    progress = progressFraction.coerceIn(0f, 1f),
-                    currentTimeSec = currentTimeSec,
-                    locatorJson = null,
-                    nowMs = System.currentTimeMillis(),
-                )
-            }
+        if (!serverSync.isEnabled) return Result.success(Unit)
+        val requestedAt = System.currentTimeMillis()
+        return audiobookProgressPush.push(book, currentTimeSec, progressFraction, canWrite = { serverSync.accepts(requestedAt) }, acknowledgePending = acknowledgePending) { checkpoint, position, progress ->
+            withBookConnection(checkpoint) { it.syncAudiobookProgress(checkpoint, position, progress) }
         }
-        return result
     }
 
     suspend fun fetchAudiobookProgress(book: Book): Result<com.enve.core.data.sync.SyncSnapshot?> {
+        if (!serverSync.isEnabled) return Result.success(null)
         return withBookConnection(book) { it.fetchAudiobookProgress(book) }
     }
 
     suspend fun fetchEbookProgress(book: com.enve.core.data.model.Book): Result<com.enve.core.data.sync.SyncSnapshot?> {
+        if (!serverSync.isEnabled) return Result.success(null)
         return withBookConnection(book) { it.fetchEbookProgress(book) }
     }
 
@@ -733,6 +772,7 @@ class AggregatorRepository @Inject constructor(
             )
         }
 
+        if (!serverSync.isEnabled) return Result.success(Unit)
         val result = if (connection != null) {
             withConnectionContext(connection) {
                 getAdapterForSource(connection.source).syncEbookProgress(
@@ -862,10 +902,8 @@ class AggregatorRepository @Inject constructor(
             }
     }
 
-    suspend fun fetchAudiobookNarrator(book: Book): Result<String?> {
-        val adapter = providerAdapters.find { it.source == book.source } ?: return Result.success(null)
-        return adapter.fetchAudiobookNarrator(book)
-    }
+    suspend fun fetchAudiobookNarrator(book: Book): Result<String?> =
+        withBookConnection(book) { it.fetchAudiobookNarrator(book) }
 
     suspend fun getBooksInSeries(seriesName: String): List<Book> {
         return bookCacheDao.booksWhereSeries(seriesName)

@@ -24,31 +24,39 @@ protocol BookPlaybackStarting: AnyObject {
 
 @MainActor
 final class AudiobookPlaybackCoordinator: BookPlaybackStarting {
-    static let shared = AudiobookPlaybackCoordinator()
+    static var shared: AudiobookPlaybackCoordinator { ProfileSession.owner.playback.starter }
 
     private let appState: AppState
     private let playback: PlaybackManager
+    private var playTask: Task<Void, Never>?
+    private var isRetired = false
+
+    private unowned let profileSession: ProfileSession
 
     init(
         appState: AppState = .shared,
-        playback: PlaybackManager = .shared
+        playback: PlaybackManager = .shared,
+        profileSession: ProfileSession = .owner
     ) {
+        self.profileSession = profileSession
         self.appState = appState
         self.playback = playback
     }
 
     func play(_ book: Book, presentPlayer: Bool = true) {
+        guard !isRetired else { return }
+        playTask?.cancel()
         AppLogger.player.debug(
             "Starting playback source=\(book.source) bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId))"
         )
 
         if book.hasEPUB3MediaOverlay {
-            AlignedReadAloudSessionCoordinator.shared.play(book, presentPlayer: presentPlayer)
+            profileSession.playback.readAloud.play(book, presentPlayer: presentPlayer)
             return
         }
 
         if book.mediaType == .ebook {
-            LastOpenedBookStore.shared.record(book)
+            profileSession.lastOpened.record(book)
             appState.presentation.selectedEbookForDetail = book
             return
         }
@@ -57,19 +65,19 @@ final class AudiobookPlaybackCoordinator: BookPlaybackStarting {
             let partKey = book.partKey,
             let directURL = URL(string: partKey),
             directURL.scheme?.hasPrefix("http") == true,
-            !LocalStorageManager.shared.isAudiobookDownloaded(book)
+            !profileSession.localStorage.isAudiobookDownloaded(book)
         {
-            LastOpenedBookStore.shared.record(book)
+            profileSession.lastOpened.record(book)
             appState.currentBook = book
             appState.presentation.isPlayerPresented = presentPlayer
             playback.playDirectURL(book, url: directURL)
             return
         }
 
-        let isDownloaded = LocalStorageManager.shared.isAudiobookDownloaded(book)
+        let isDownloaded = profileSession.localStorage.isAudiobookDownloaded(book)
         let localPlaybackIssue =
             isDownloaded
-            ? LocalStorageManager.shared.unsupportedLocalPlaybackReason(for: book)
+            ? profileSession.localStorage.unsupportedLocalPlaybackReason(for: book)
             : nil
 
         if !isDownloaded, book.audioTracks?.first?.format?.lowercased() == "zip" {
@@ -102,22 +110,40 @@ final class AudiobookPlaybackCoordinator: BookPlaybackStarting {
             return
         }
 
-        LastOpenedBookStore.shared.record(book)
+        profileSession.lastOpened.record(book)
         appState.currentBook = book
         appState.presentation.isPlayerPresented = presentPlayer
         playRemote(book, catalogProvider: provider, playbackProvider: playbackProvider)
     }
 
+    func retire() async {
+        isRetired = true
+        playTask?.cancel()
+        await playTask?.value
+    }
+
     private func playLocal(_ book: Book, presentPlayer: Bool) {
-        LastOpenedBookStore.shared.record(book)
+        profileSession.lastOpened.record(book)
         appState.currentBook = book
         appState.presentation.isPlayerPresented = presentPlayer
 
-        Task { @MainActor in
-            let enrichedBook = await MetadataManager.shared.enrichBookWithStoredMetadata(book)
+        playTask = Task { @MainActor in
+            guard !Task.isCancelled, !isRetired else { return }
+            var enrichedBook = await profileSession.metadataManager.enrichBookWithStoredMetadata(book)
+            restoreCachedChaptersIfNeeded(to: &enrichedBook)
             appState.currentBook = enrichedBook
             _ = appState.libraryCache.replaceExisting(enrichedBook)
+            guard !Task.isCancelled, !isRetired else { return }
             playback.playLocalBook(enrichedBook)
+
+            guard AudiobookPlaybackPolicy.chaptersNeedRefresh(for: enrichedBook) else { return }
+            let chapterService = profileSession.playback.chapterService
+            if await chapterService.refreshChaptersFromServer(for: enrichedBook) { return }
+            if let localURL = profileSession.localStorage.localAudiobookFileURLIfExists(bookId: enrichedBook.downloadKey),
+                let embedded = await extractEmbeddedChapters(from: localURL, bookDuration: enrichedBook.duration ?? 0)
+            {
+                chapterService.applyChapters(embedded, for: enrichedBook)
+            }
         }
     }
 
@@ -126,7 +152,8 @@ final class AudiobookPlaybackCoordinator: BookPlaybackStarting {
         catalogProvider: any LibraryProvider,
         playbackProvider: any PlaybackSessionProvider
     ) {
-        Task { @MainActor in
+        playTask = Task { @MainActor in
+            guard !Task.isCancelled, !isRetired else { return }
             let freshestCachedBook = appState.libraryCache.book(uniqueId: book.uniqueId) ?? book
             var bookToPlay = freshestCachedBook
 
@@ -144,7 +171,7 @@ final class AudiobookPlaybackCoordinator: BookPlaybackStarting {
 
                     var finalBook = fetchedBook
                     if AudiobookPlaybackPolicy.chaptersAreInadequateForExtraction(finalBook),
-                        let localURL = LocalStorageManager.shared.localAudiobookFileURLIfExists(
+                        let localURL = profileSession.localStorage.localAudiobookFileURLIfExists(
                             bookId: finalBook.downloadKey
                         ),
                         let embedded = await extractEmbeddedChapters(
@@ -160,12 +187,13 @@ final class AudiobookPlaybackCoordinator: BookPlaybackStarting {
                             && $0.linkedAudiobookStableId == freshestCachedBook.stableId
                     }
                     if !hasLinkedEbook {
-                        await ChapterMetadataCache.cache(finalBook)
+                        await ChapterMetadataCache.cache(finalBook, readerArtifacts: profileSession.readerArtifacts,
+                            metadataStorage: profileSession.metadataStorage)
                     }
 
-                    bookToPlay = await MetadataManager.shared.enrichBookWithStoredMetadata(finalBook)
+                    bookToPlay = await profileSession.metadataManager.enrichBookWithStoredMetadata(finalBook)
                     if hasLinkedEbook,
-                        let renamed = ReaderArtifactsStore.shared.loadCachedAudioChapters(for: bookToPlay),
+                        let renamed = profileSession.readerArtifacts.loadCachedAudioChapters(for: bookToPlay),
                         !renamed.isEmpty
                     {
                         bookToPlay.chapters = renamed
@@ -174,11 +202,11 @@ final class AudiobookPlaybackCoordinator: BookPlaybackStarting {
                     AppLogger.player.error(
                         "Playback metadata refresh failed bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId)): \(error)"
                     )
-                    bookToPlay = await MetadataManager.shared.enrichBookWithStoredMetadata(book)
+                    bookToPlay = await profileSession.metadataManager.enrichBookWithStoredMetadata(book)
                     restoreCachedChaptersIfNeeded(to: &bookToPlay)
                 }
             } else {
-                bookToPlay = await MetadataManager.shared.enrichBookWithStoredMetadata(freshestCachedBook)
+                bookToPlay = await profileSession.metadataManager.enrichBookWithStoredMetadata(freshestCachedBook)
                 restoreCachedChaptersIfNeeded(to: &bookToPlay)
             }
 
@@ -187,15 +215,19 @@ final class AudiobookPlaybackCoordinator: BookPlaybackStarting {
 
             if let chapters = bookToPlay.chapters, !chapters.isEmpty {
                 await appState.bookStore.upsertBooks([bookToPlay])
-                ActivePlayback.composition.bookMetadataUpdater.updateChapters(chapters, for: bookToPlay)
+                profileSession.playback.composition.bookMetadataUpdater.updateChapters(chapters, for: bookToPlay)
             }
             playback.playBook(bookToPlay, provider: playbackProvider)
+
+            if AudiobookPlaybackPolicy.chaptersNeedRefresh(for: bookToPlay) {
+                await profileSession.playback.chapterService.refreshChaptersFromServer(for: bookToPlay)
+            }
         }
     }
 
     private func restoreCachedChaptersIfNeeded(to book: inout Book) {
         guard book.chapters?.isEmpty ?? true else { return }
-        guard let cached = ReaderArtifactsStore.shared.loadCachedAudioChapters(for: book),
+        guard let cached = profileSession.readerArtifacts.loadCachedAudioChapters(for: book),
             !cached.isEmpty
         else { return }
         book.chapters = cached

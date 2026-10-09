@@ -5,7 +5,7 @@ import Logging
 @MainActor
 @Observable
 final class LibraryCatalogCoordinator {
-    static let shared = LibraryCatalogCoordinator()
+    static var shared: LibraryCatalogCoordinator { ProfileSession.owner.catalog }
 
     var libraries: [Library] = []
     var collections: [Collection] = []
@@ -14,6 +14,7 @@ final class LibraryCatalogCoordinator {
     var isRefreshing = false
     var forceNextLocalRefresh = false
 
+    private unowned let profileSession: ProfileSession?
     private let library: LibraryBookCache
     private let session: any CurrentBookSession
     private let presentation: AppPresentationState
@@ -22,6 +23,8 @@ final class LibraryCatalogCoordinator {
     private let progress: UserProgressStore
     private let mirrorCheckpoints: ServerMirrorCheckpointStore
 
+    private var operations: [UUID: Task<Void, Never>] = [:]
+    private var isRetired = false
     private var isFullRefreshInProgress = false
     private var hasPerformedInitialCloudSync = false
     private var metadataSaveTask: Task<Void, Never>?
@@ -39,8 +42,10 @@ final class LibraryCatalogCoordinator {
         providerConnections: any ProviderConnectionResolving = AppState.shared.providerConnections,
         progress: UserProgressStore = .shared,
         mirrorCheckpoints: ServerMirrorCheckpointStore = .shared,
-        metadataFileURL: URL? = nil
+        metadataFileURL: URL? = nil,
+        profileSession: ProfileSession? = nil
     ) {
+        self.profileSession = profileSession
         self.library = library
         self.session = session
         self.presentation = presentation
@@ -51,21 +56,38 @@ final class LibraryCatalogCoordinator {
         self.metadataFileURL = metadataFileURL ?? Self.defaultMetadataFileURL()
     }
 
+    @discardableResult
+    private func retainOperation(priority: TaskPriority? = nil, operation: @escaping @MainActor () async -> Void) -> Task<Void, Never>? {
+        guard !isRetired else { return nil }
+        let id = UUID()
+        let task = Task(priority: priority) {
+            await operation()
+            self.operations[id] = nil
+        }
+        operations[id] = task
+        return task
+    }
+
     func performInitialCloudSyncIfNeeded() {
-        guard PlatformRuntime.cloudKitEnabled else { return }
+        guard profileSession?.isOwner ?? true, PlatformRuntime.cloudKitEnabled else { return }
         guard !hasPerformedInitialCloudSync else { return }
         let launchSyncBooks = library.books.filter(CloudProgressEligibility.includes)
         guard !launchSyncBooks.isEmpty else { return }
 
         hasPerformedInitialCloudSync = true
 
-        Task(priority: .utility) {
-            await SyncCoordinator.shared.syncOnAppLaunch(books: launchSyncBooks)
+        retainOperation(priority: .utility) { [self] in
+            await (profileSession?.sync ?? SyncCoordinator.shared).syncOnAppLaunch(books: launchSyncBooks)
         }
     }
 
     func refreshLibrary(forceFullReconciliation: Bool = false) async {
-        guard !isFullRefreshInProgress else {
+        guard let task = retainOperation(operation: { [self] in await performRefreshLibrary(forceFullReconciliation: forceFullReconciliation) }) else { return }
+        await task.value
+    }
+
+    private func performRefreshLibrary(forceFullReconciliation: Bool = false) async {
+        guard !isRetired, !isFullRefreshInProgress else {
             AppLogger.general.warning("Refresh already in progress - skipping")
             return
         }
@@ -100,7 +122,7 @@ final class LibraryCatalogCoordinator {
             library.suppressNotifications = false
             self.isRefreshing = false
             presentation.libraryImportProgress = nil
-            SmartCollectionStore.shared.refresh()
+            (profileSession?.smartCollections ?? SmartCollectionStore.shared).refresh()
             AppLogger.general.info("Refresh complete. Total books: \(library.books.count)")
             library.changes.send(())
             NotificationCenter.default.post(name: .collectionsDidChange, object: nil)
@@ -109,10 +131,10 @@ final class LibraryCatalogCoordinator {
 
         await saveMetadataAsync()
 
-        await EbookLinkStore.shared.reapplyLinks()
+        await (profileSession?.ebookLinks ?? EbookLinkStore.shared).reapplyLinks()
 
-        if #available(iOS 26.0, *) {
-            await MainActor.run { StoryAlignService.shared.syncReadAloudLibrary() }
+        if !isRetired, profileSession?.isRetired != true, profileSession?.isOwner ?? true, #available(iOS 26.0, *) {
+            await MainActor.run { (profileSession?.storyAlignService ?? StoryAlignService.shared).syncReadAloudLibrary() }
         }
 
         await MainActor.run { _ = flushLocalBooksToCache() }
@@ -121,8 +143,13 @@ final class LibraryCatalogCoordinator {
     }
 
     func refreshServerCollections() async {
+        guard let task = retainOperation(operation: { [self] in await performRefreshServerCollections() }) else { return }
+        await task.value
+    }
+
+    private func performRefreshServerCollections() async {
         for (providerId, provider) in providerConnections.allProviders where provider.capabilities.contains(.collections) {
-            guard await CatalogRefreshGate.shared.begin(providerId: providerId) else {
+            guard await (profileSession?.catalogRefreshGate ?? CatalogRefreshGate.shared).begin(providerId: providerId) else {
                 AppLogger.general.info("Coalesced duplicate collection refresh for \(provider.connection.name)")
                 continue
             }
@@ -133,11 +160,16 @@ final class LibraryCatalogCoordinator {
                 providerId: providerId,
                 libraries: selectedLibraries(from: providerLibraries, for: provider)
             )
-            CatalogRefreshGate.shared.end(providerId: providerId)
+            (profileSession?.catalogRefreshGate ?? CatalogRefreshGate.shared).end(providerId: providerId)
         }
     }
 
     func refreshLocalLibrariesFromUI() async {
+        guard let task = retainOperation(operation: { [self] in await performRefreshLocalLibrariesFromUI() }) else { return }
+        await task.value
+    }
+
+    private func performRefreshLocalLibrariesFromUI() async {
         guard !isRefreshing else { return }
 
         await MainActor.run { isRefreshing = true }
@@ -154,15 +186,20 @@ final class LibraryCatalogCoordinator {
         let localBooks = library.books.filter { $0.source == .local }
         guard !localBooks.isEmpty else { return nil }
         let store = bookStore
-        return Task.detached(priority: .utility) {
+        return retainOperation(priority: .utility) {
             await store.upsertBooks(localBooks)
         }
     }
 
     func refreshLocalLibraries() async {
+        guard let task = retainOperation(operation: { [self] in await performRefreshLocalLibraries() }) else { return }
+        await task.value
+    }
+
+    private func performRefreshLocalLibraries() async {
         AppLogger.general.info("Refreshing local libraries...")
 
-        let localLibraries = LocalLibraryStorageStore.shared.loadLibraries()
+        let localLibraries = (profileSession?.localLibrary ?? LocalLibraryStorageStore.shared).loadLibraries()
         let existingLocalBooks = await MainActor.run {
             library.books.filter { $0.source == .local }
         }
@@ -188,12 +225,12 @@ final class LibraryCatalogCoordinator {
 
         for localLib in localLibraries {
             libraryIdSet.insert(localLib.id)
-            let libraryBooks = LocalLibraryStorageStore.shared.loadBooks(libraryId: localLib.id)
+            let libraryBooks = (profileSession?.localLibrary ?? LocalLibraryStorageStore.shared).loadBooks(libraryId: localLib.id)
             AppLogger.general.info("Found \(libraryBooks.count) books for local library: \(localLib.name)")
             let books = libraryBooks.map { $0.toBook(libraryId: localLib.id) }
 
             if !books.isEmpty {
-                let enriched = await MetadataManager.shared.enrichBooksWithStoredMetadata(books)
+                let enriched = await (profileSession?.metadataManager ?? MetadataManager.shared).enrichBooksWithStoredMetadata(books)
                 let progressAdjusted = applyLocalProgressOverrides(
                     enriched,
                     preloadedStoredProgress: await preloadStoredProgressMap(for: enriched)
@@ -215,8 +252,8 @@ final class LibraryCatalogCoordinator {
             }
 
             if let path = resolvedLocalBookPath(for: book) {
-                let serverRoot = LocalEbookImporter.shared.serverEbooksRoot.standardizedFileURL.path
-                let localRoot = LocalEbookImporter.shared.localEbooksRoot.standardizedFileURL.path
+                let serverRoot = (profileSession?.ebooks ?? LocalEbookImporter.shared).serverEbooksRoot.standardizedFileURL.path
+                let localRoot = (profileSession?.ebooks ?? LocalEbookImporter.shared).localEbooksRoot.standardizedFileURL.path
                 if path.hasPrefix(serverRoot), !path.hasPrefix(localRoot) {
                     return false
                 }
@@ -257,7 +294,7 @@ final class LibraryCatalogCoordinator {
 
         if localLibrarySetUnchanged, !forceNextLocalRefresh {
             AppLogger.general.warning("Local libraries unchanged (\(allLocalBooks.count) books) - skipping cache write")
-            await EbookLinkStore.shared.reapplyLinks()
+            await (profileSession?.ebookLinks ?? EbookLinkStore.shared).reapplyLinks()
             performInitialCloudSyncIfNeeded()
             return
         }
@@ -269,7 +306,7 @@ final class LibraryCatalogCoordinator {
             let removedCount = beforeCount - updatedBooks.count
             updatedBooks.append(contentsOf: allLocalBooks)
             library.books = updatedBooks
-            LibraryRecoveryCoordinator.shared.pendingBookStoreDeletions.formUnion(removedLocalUniqueIds)
+            (profileSession?.recovery ?? LibraryRecoveryCoordinator.shared).pendingBookStoreDeletions.formUnion(removedLocalUniqueIds)
             AppLogger.general.info(
                 "Batch updated local libraries: removed \(removedCount), added \(allLocalBooks.count) books. Total: \(library.books.count)"
             )
@@ -279,16 +316,21 @@ final class LibraryCatalogCoordinator {
             await cacheWrite.value
         }
         if !addedLocalBooks.isEmpty {
-            await SyncCoordinator.shared.syncNewBooksFromCloud(addedLocalBooks)
+            await (profileSession?.sync ?? SyncCoordinator.shared).syncNewBooksFromCloud(addedLocalBooks)
         }
-        LibraryRecoveryCoordinator.shared.flushPendingBookStoreDeletions()
+        (profileSession?.recovery ?? LibraryRecoveryCoordinator.shared).flushPendingBookStoreDeletions()
 
-        await EbookLinkStore.shared.reapplyLinks()
+        await (profileSession?.ebookLinks ?? EbookLinkStore.shared).reapplyLinks()
 
         performInitialCloudSyncIfNeeded()
     }
 
     func resumeStartupCatalogWork() async {
+        guard let task = retainOperation(operation: { [self] in await performResumeStartupCatalogWork() }) else { return }
+        await task.value
+    }
+
+    private func performResumeStartupCatalogWork() async {
         await resumeInterruptedGrimmoryCatalogSyncs()
         await refreshMissingRemoteCatalogIfNeeded()
     }
@@ -300,7 +342,7 @@ final class LibraryCatalogCoordinator {
             !$0.isArchived
                 && providerConnections[$0.id] != nil
                 && !$0.url.lowercased().contains("example.com")
-                && !AuthenticationFailureStore.shared.isBlocked(connectionId: $0.id)
+                && !(profileSession?.authenticationFailures ?? AuthenticationFailureStore.shared).isBlocked(connectionId: $0.id)
         }
         guard !targets.isEmpty else { return }
 
@@ -320,13 +362,13 @@ final class LibraryCatalogCoordinator {
     }
 
     private func resumeInterruptedGrimmoryCatalogSyncs() async {
-        let pendingConnectionIds = BookloreProvider.pendingCatalogSyncConnectionIds
-            .union(CatalogImportCheckpointStore.pendingConnectionIds)
+        let pendingConnectionIds = GrimmoryCatalogCheckpointStore(root: profileSession?.storage.applicationSupportDirectory ?? ProfileStorageLocations.owner.applicationSupportDirectory).pendingConnectionIds()
+            .union((profileSession?.catalogCheckpoints ?? CatalogImportCheckpointStore.shared).pendingConnectionIds)
         let targets = providerConnections.connections.filter {
             pendingConnectionIds.contains($0.id)
                 && !$0.isArchived
                 && providerConnections[$0.id] != nil
-                && !AuthenticationFailureStore.shared.isBlocked(connectionId: $0.id)
+                && !(profileSession?.authenticationFailures ?? AuthenticationFailureStore.shared).isBlocked(connectionId: $0.id)
         }
         guard !targets.isEmpty else { return }
 
@@ -341,6 +383,11 @@ final class LibraryCatalogCoordinator {
     }
 
     func refreshStaleServerMirrorDomains() async {
+        guard let task = retainOperation(operation: { [self] in await performRefreshStaleServerMirrorDomains() }) else { return }
+        await task.value
+    }
+
+    private func performRefreshStaleServerMirrorDomains() async {
         let mirrorConnections = providerConnections.connections.filter { connection in
             guard connection.isConnected,
                 !connection.isArchived,
@@ -373,14 +420,14 @@ final class LibraryCatalogCoordinator {
                     now: now
                 )
             else { continue }
-            guard await CatalogRefreshGate.shared.begin(providerId: connection.id) else { continue }
+            guard await (profileSession?.catalogRefreshGate ?? CatalogRefreshGate.shared).begin(providerId: connection.id) else { continue }
             let providerLibraries = libraries.filter { $0.providerId == connection.id }
             await refreshProviderCollections(
                 provider: provider,
                 providerId: connection.id,
                 libraries: selectedLibraries(from: providerLibraries, for: provider)
             )
-            CatalogRefreshGate.shared.end(providerId: connection.id)
+            (profileSession?.catalogRefreshGate ?? CatalogRefreshGate.shared).end(providerId: connection.id)
         }
 
         await refreshRecentCatalogWindows(for: mirrorConnections, now: now)
@@ -415,10 +462,10 @@ final class LibraryCatalogCoordinator {
                     now: now
                 )
             else { continue }
-            guard await CatalogRefreshGate.shared.begin(providerId: connection.id) else { continue }
+            guard await (profileSession?.catalogRefreshGate ?? CatalogRefreshGate.shared).begin(providerId: connection.id) else { continue }
 
             do {
-                defer { CatalogRefreshGate.shared.end(providerId: connection.id) }
+                defer { (profileSession?.catalogRefreshGate ?? CatalogRefreshGate.shared).end(providerId: connection.id) }
                 let fetchedLibraries = try await provider.fetchLibraries()
                 let targets = selectedLibraries(from: fetchedLibraries, for: provider)
                 guard !targets.isEmpty else { continue }
@@ -437,7 +484,7 @@ final class LibraryCatalogCoordinator {
                         limit: Self.startupRecentBooksPerLibrary
                     )
                     let normalized = normalizeFetchedBooks(fetched, for: library, provider: provider)
-                    let enriched = await MetadataManager.shared.enrichBooksWithStoredMetadata(normalized)
+                    let enriched = await (profileSession?.metadataManager ?? MetadataManager.shared).enrichBooksWithStoredMetadata(normalized)
                     let progress = applyLocalProgressOverrides(
                         enriched,
                         preloadedStoredProgress: await preloadStoredProgressMap(for: enriched)
@@ -454,7 +501,7 @@ final class LibraryCatalogCoordinator {
                 var seen = Set<String>()
                 let deduplicated = recentBooks.filter { seen.insert($0.uniqueId).inserted }
                 if !deduplicated.isEmpty {
-                    let deletedIds = DeletedBooksTombstoneStore.shared.allDeleted
+                    let deletedIds = (profileSession?.deletedBooks ?? DeletedBooksTombstoneStore.shared).allDeleted
                     library.performBatch {
                         var indices = Dictionary(
                             uniqueKeysWithValues: library.books.enumerated().map { ($0.element.uniqueId, $0.offset) }
@@ -507,7 +554,7 @@ final class LibraryCatalogCoordinator {
                 )
             else { return true }
             if now.timeIntervalSince(cursor.lastFullReconciledAt) >= Self.fullCatalogReconciliationInterval
-                || CatalogMappingRevisionStore.shared.isStale(
+                || (profileSession?.catalogMapping ?? CatalogMappingRevisionStore.shared).isStale(
                     providerId: connection.id,
                     libraryId: library.id,
                     revision: provider.catalogMappingRevision
@@ -615,6 +662,17 @@ final class LibraryCatalogCoordinator {
         libraryId: String,
         forceFullReconciliation: Bool = false
     ) async {
+        guard let task = retainOperation(operation: { [self] in
+            await performRefreshLibrary(providerId: providerId, libraryId: libraryId, forceFullReconciliation: forceFullReconciliation)
+        }) else { return }
+        await task.value
+    }
+
+    private func performRefreshLibrary(
+        providerId: UUID,
+        libraryId: String,
+        forceFullReconciliation: Bool = false
+    ) async {
         guard let provider = providerConnections[providerId] else {
             AppLogger.general.info(
                 "[Sync] No provider found diagnosticID=\(DiagnosticLogSanitizer.identifier(for: providerId.uuidString))"
@@ -622,11 +680,11 @@ final class LibraryCatalogCoordinator {
             return
         }
 
-        guard await CatalogRefreshGate.shared.begin(providerId: providerId) else {
+        guard await (profileSession?.catalogRefreshGate ?? CatalogRefreshGate.shared).begin(providerId: providerId) else {
             AppLogger.general.info("Coalesced duplicate catalog refresh for \(provider.connection.name)")
             return
         }
-        defer { CatalogRefreshGate.shared.end(providerId: providerId) }
+        defer { (profileSession?.catalogRefreshGate ?? CatalogRefreshGate.shared).end(providerId: providerId) }
 
         let backgroundTask = BackgroundTaskAssertion.begin(name: "Library Refresh")
         defer { backgroundTask.end() }
@@ -685,6 +743,17 @@ final class LibraryCatalogCoordinator {
         forceFullReconciliation: Bool = false,
         refreshCollections: Bool = true
     ) async {
+        guard let task = retainOperation(operation: { [self] in
+            await performRefreshConnectionLibraries(providerId: providerId, forceFullReconciliation: forceFullReconciliation, refreshCollections: refreshCollections)
+        }) else { return }
+        await task.value
+    }
+
+    private func performRefreshConnectionLibraries(
+        providerId: UUID,
+        forceFullReconciliation: Bool = false,
+        refreshCollections: Bool = true
+    ) async {
         guard let provider = providerConnections[providerId] else {
             AppLogger.general.info(
                 "[Catalog] No provider found diagnosticID=\(DiagnosticLogSanitizer.identifier(for: providerId.uuidString))"
@@ -693,17 +762,17 @@ final class LibraryCatalogCoordinator {
         }
 
         if providerConnections.connectionsNeedingReauth.contains(where: { $0.id == providerId })
-            || AuthenticationFailureStore.shared.isBlocked(connectionId: providerId)
+            || (profileSession?.authenticationFailures ?? AuthenticationFailureStore.shared).isBlocked(connectionId: providerId)
         {
             AppLogger.general.warning("[Catalog] Skipping refresh for provider requiring reauth: \(provider.connection.name)")
             return
         }
 
-        guard await CatalogRefreshGate.shared.begin(providerId: providerId) else {
+        guard await (profileSession?.catalogRefreshGate ?? CatalogRefreshGate.shared).begin(providerId: providerId) else {
             AppLogger.general.info("Coalesced duplicate catalog refresh for \(provider.connection.name)")
             return
         }
-        defer { CatalogRefreshGate.shared.end(providerId: providerId) }
+        defer { (profileSession?.catalogRefreshGate ?? CatalogRefreshGate.shared).end(providerId: providerId) }
 
         let backgroundTask = BackgroundTaskAssertion.begin(name: "Library Refresh")
         defer { backgroundTask.end() }
@@ -721,7 +790,7 @@ final class LibraryCatalogCoordinator {
         }
 
         defer {
-            Task { @MainActor in
+            retainOperation { [self] in
                 self.isRefreshing = false
                 presentation.libraryImportProgress = nil
                 library.changes.send(())
@@ -788,11 +857,11 @@ final class LibraryCatalogCoordinator {
         forceFullReconciliation: Bool
     ) async {
         let name = provider.connection.name
-        guard await CatalogRefreshGate.shared.begin(providerId: providerId) else {
+        guard await (profileSession?.catalogRefreshGate ?? CatalogRefreshGate.shared).begin(providerId: providerId) else {
             AppLogger.general.info("Coalesced duplicate catalog refresh for \(name)")
             return
         }
-        defer { CatalogRefreshGate.shared.end(providerId: providerId) }
+        defer { (profileSession?.catalogRefreshGate ?? CatalogRefreshGate.shared).end(providerId: providerId) }
 
         let existingCloudEligibleIds = Set(
             library.books.lazy
@@ -859,7 +928,7 @@ final class LibraryCatalogCoordinator {
                 && !existingCloudEligibleIds.contains($0.stableId)
         }
         if !addedCloudEligibleBooks.isEmpty {
-            await SyncCoordinator.shared.syncNewBooksFromCloud(addedCloudEligibleBooks)
+            await (profileSession?.sync ?? SyncCoordinator.shared).syncNewBooksFromCloud(addedCloudEligibleBooks)
         }
         AppLogger.general.info("Finished: \(name)")
     }
@@ -945,7 +1014,7 @@ final class LibraryCatalogCoordinator {
 
     private func markFullReconciled(_ lib: Library, providerId: UUID, provider: any LibraryProvider) async {
         await bookStore.markFullReconciled(providerId: providerId, libraryId: lib.id, at: Date())
-        CatalogMappingRevisionStore.shared.recordReconciled(
+        (profileSession?.catalogMapping ?? CatalogMappingRevisionStore.shared).recordReconciled(
             providerId: providerId,
             libraryId: lib.id,
             revision: provider.catalogMappingRevision
@@ -959,7 +1028,7 @@ final class LibraryCatalogCoordinator {
         providerName: String,
         forceFullReconciliation: Bool = false
     ) async {
-        defer { LibraryRecoveryCoordinator.shared.reconcileRescuedDownloads() }
+        defer { (profileSession?.recovery ?? LibraryRecoveryCoordinator.shared).reconcileRescuedDownloads() }
 
         let startTime = Date()
         let existingLibraryBooks = await MainActor.run {
@@ -970,8 +1039,8 @@ final class LibraryCatalogCoordinator {
             bookloreProvider.supportsRemoteBrowsing,
             let remoteCount = try? await bookloreProvider.remoteBookCount(libraryId: lib.id)
         {
-            RemoteLibraryBrowseStore.shared.record(providerId: providerId, libraryId: lib.id, bookCount: remoteCount)
-            if RemoteLibraryBrowseStore.shared.isRemoteBrowsed(providerId: providerId, libraryId: lib.id) {
+            (profileSession?.remoteLibraryBrowse ?? RemoteLibraryBrowseStore.shared).record(providerId: providerId, libraryId: lib.id, bookCount: remoteCount)
+            if (profileSession?.remoteLibraryBrowse ?? RemoteLibraryBrowseStore.shared).isRemoteBrowsed(providerId: providerId, libraryId: lib.id) {
                 await importRemoteBrowsedRecents(
                     lib: lib,
                     provider: bookloreProvider,
@@ -1001,7 +1070,7 @@ final class LibraryCatalogCoordinator {
 
         let streamBatch: (LibraryFetchBatchResult) -> Void = { [weak self] result in
             guard let self else { return }
-            Task { @MainActor in
+            retainOperation { [self] in
                 presentation.libraryImportProgress = LibraryImportProgress(
                     libraryId: lib.id,
                     libraryName: lib.name,
@@ -1019,7 +1088,7 @@ final class LibraryCatalogCoordinator {
         let needsFullReconciliation =
             forceFullReconciliation || cursorSnapshot == nil
             || Date().timeIntervalSince(cursorSnapshot!.lastFullReconciledAt) > Self.fullCatalogReconciliationInterval
-            || CatalogMappingRevisionStore.shared.isStale(
+            || (profileSession?.catalogMapping ?? CatalogMappingRevisionStore.shared).isStale(
                 providerId: providerId,
                 libraryId: lib.id,
                 revision: provider.catalogMappingRevision
@@ -1060,7 +1129,7 @@ final class LibraryCatalogCoordinator {
                 for batchStart in stride(from: 0, to: normalizedDelta.count, by: batchSize) {
                     let batchEnd = min(batchStart + batchSize, normalizedDelta.count)
                     let batch = Array(normalizedDelta[batchStart..<batchEnd])
-                    let enrichedBatch = await MetadataManager.shared.enrichBooksWithStoredMetadata(batch)
+                    let enrichedBatch = await (profileSession?.metadataManager ?? MetadataManager.shared).enrichBooksWithStoredMetadata(batch)
                     let progressBatch = applyLocalProgressOverrides(
                         enrichedBatch,
                         preloadedStoredProgress: await preloadStoredProgressMap(for: enrichedBatch)
@@ -1070,7 +1139,7 @@ final class LibraryCatalogCoordinator {
                 }
 
                 await MainActor.run {
-                    let deletedIds = DeletedBooksTombstoneStore.shared.allDeleted
+                    let deletedIds = (profileSession?.deletedBooks ?? DeletedBooksTombstoneStore.shared).allDeleted
                     library.performBatch {
                         var byUniqueId = [String: Int](minimumCapacity: library.books.count)
                         for (i, book) in library.books.enumerated() {
@@ -1184,7 +1253,7 @@ final class LibraryCatalogCoordinator {
         for batchStart in stride(from: 0, to: normalizedFetchedBooks.count, by: batchSize) {
             let batchEnd = min(batchStart + batchSize, normalizedFetchedBooks.count)
             let batch = Array(normalizedFetchedBooks[batchStart..<batchEnd])
-            let enrichedBatch = await MetadataManager.shared.enrichBooksWithStoredMetadata(batch)
+            let enrichedBatch = await (profileSession?.metadataManager ?? MetadataManager.shared).enrichBooksWithStoredMetadata(batch)
             let progressBatch = applyLocalProgressOverrides(
                 enrichedBatch,
                 preloadedStoredProgress: await preloadStoredProgressMap(for: enrichedBatch)
@@ -1194,7 +1263,7 @@ final class LibraryCatalogCoordinator {
         }
 
         await MainActor.run {
-            let deletedIds = DeletedBooksTombstoneStore.shared.allDeleted
+            let deletedIds = (profileSession?.deletedBooks ?? DeletedBooksTombstoneStore.shared).allDeleted
             let refreshedIds = Set(allEnriched.map(\.uniqueId))
             if let current = session.currentBook,
                 current.providerId == providerId,
@@ -1296,12 +1365,12 @@ final class LibraryCatalogCoordinator {
         existingLibraryBooks: [Book]
     ) async {
         let recents = (try? await provider.fetchRecentBooks(libraryId: lib.id, limit: 100)) ?? []
-        let deletedIds = DeletedBooksTombstoneStore.shared.allDeleted
+        let deletedIds = (profileSession?.deletedBooks ?? DeletedBooksTombstoneStore.shared).allDeleted
         let visible = recents.filter { !deletedIds.contains($0.stableId) }
         guard !visible.isEmpty else { return }
 
         let normalized = normalizeFetchedBooks(visible, for: lib, provider: provider)
-        let enriched = await MetadataManager.shared.enrichBooksWithStoredMetadata(normalized)
+        let enriched = await (profileSession?.metadataManager ?? MetadataManager.shared).enrichBooksWithStoredMetadata(normalized)
         let progressAdjusted = applyLocalProgressOverrides(
             enriched,
             preloadedStoredProgress: await preloadStoredProgressMap(for: enriched)
@@ -1332,7 +1401,7 @@ final class LibraryCatalogCoordinator {
             return false
         }
 
-        RemoteLibraryBrowseStore.shared.record(
+        (profileSession?.remoteLibraryBrowse ?? RemoteLibraryBrowseStore.shared).record(
             providerId: providerId,
             libraryId: lib.id,
             bookCount: session.totalElements
@@ -1382,7 +1451,7 @@ final class LibraryCatalogCoordinator {
             }
         }
 
-        let deletedIds = await MainActor.run { DeletedBooksTombstoneStore.shared.allDeleted }
+        let deletedIds = await MainActor.run { (profileSession?.deletedBooks ?? DeletedBooksTombstoneStore.shared).allDeleted }
         var loadedSoFar = 0
 
         do {
@@ -1390,7 +1459,7 @@ final class LibraryCatalogCoordinator {
                 try Task.checkCancellation()
                 let visible = batch.books.filter { !deletedIds.contains($0.stableId) }
                 let normalized = normalizeFetchedBooks(visible, for: lib, provider: provider)
-                let enriched = await MetadataManager.shared.enrichBooksWithStoredMetadata(normalized)
+                let enriched = await (profileSession?.metadataManager ?? MetadataManager.shared).enrichBooksWithStoredMetadata(normalized)
                 let progressAdjusted = applyLocalProgressOverrides(
                     enriched,
                     preloadedStoredProgress: await preloadStoredProgressMap(for: enriched)
@@ -1526,7 +1595,7 @@ final class LibraryCatalogCoordinator {
         existingLibraryBooks: [Book],
         startTime: Date
     ) async -> Bool {
-        let storedCheckpoint = CatalogImportCheckpointStore.load(
+        let storedCheckpoint = (profileSession?.catalogCheckpoints ?? CatalogImportCheckpointStore.shared).load(
             connectionId: providerId,
             libraryId: lib.id
         )
@@ -1556,7 +1625,7 @@ final class LibraryCatalogCoordinator {
         } else {
             do {
                 let reconciliation = try await bookStore.beginReconciliation(libraryId: lib.id, providerId: providerId)
-                checkpoint = try CatalogImportCheckpointStore.start(
+                checkpoint = try (profileSession?.catalogCheckpoints ?? CatalogImportCheckpointStore.shared).start(
                     connection: provider.connection,
                     libraryId: lib.id,
                     snapshotIdentifier: source.snapshotIdentifier,
@@ -1568,7 +1637,7 @@ final class LibraryCatalogCoordinator {
             }
         }
 
-        let deletedIds = await MainActor.run { DeletedBooksTombstoneStore.shared.allDeleted }
+        let deletedIds = await MainActor.run { (profileSession?.deletedBooks ?? DeletedBooksTombstoneStore.shared).allDeleted }
         var loadedSoFar = checkpoint.committedBookCount
         var catalogIdentities: [String: String] = [:]
 
@@ -1581,7 +1650,7 @@ final class LibraryCatalogCoordinator {
                     identities: &catalogIdentities
                 )
                 let normalized = normalizeFetchedBooks(visible, for: lib, provider: provider)
-                let enriched = await MetadataManager.shared.enrichBooksWithStoredMetadata(normalized)
+                let enriched = await (profileSession?.metadataManager ?? MetadataManager.shared).enrichBooksWithStoredMetadata(normalized)
                 let progressAdjusted = applyLocalProgressOverrides(
                     enriched,
                     preloadedStoredProgress: await preloadStoredProgressMap(for: enriched)
@@ -1597,7 +1666,7 @@ final class LibraryCatalogCoordinator {
                     generation: checkpoint.reconciliationGeneration,
                     notifyChange: false
                 )
-                try CatalogImportCheckpointStore.markCommitted(batch, checkpoint: &checkpoint)
+                try (profileSession?.catalogCheckpoints ?? CatalogImportCheckpointStore.shared).markCommitted(batch, checkpoint: &checkpoint)
                 loadedSoFar = checkpoint.committedBookCount
                 AppLogger.general.info(
                     "\(lib.name): committed incremental catalog batch (\(loadedSoFar) books, resume=\(batch.resumeToken ?? "complete"))"
@@ -1629,7 +1698,7 @@ final class LibraryCatalogCoordinator {
 
         guard checkpoint.completedSnapshot else {
             AppLogger.general.error("\(lib.name): incremental catalog ended without a complete snapshot marker")
-            CatalogImportCheckpointStore.clear(connectionId: providerId, libraryId: lib.id)
+            (profileSession?.catalogCheckpoints ?? CatalogImportCheckpointStore.shared).clear(connectionId: providerId, libraryId: lib.id)
             await MainActor.run { presentation.libraryImportProgress = nil }
             return true
         }
@@ -1647,7 +1716,7 @@ final class LibraryCatalogCoordinator {
                 return true
             }
             await markFullReconciled(lib, providerId: providerId, provider: provider)
-            CatalogImportCheckpointStore.clear(connectionId: providerId, libraryId: lib.id)
+            (profileSession?.catalogCheckpoints ?? CatalogImportCheckpointStore.shared).clear(connectionId: providerId, libraryId: lib.id)
             AppLogger.general.info("\(lib.name): incremental reconciliation committed - \(kept) kept, \(deleted) removed")
         } catch {
             AppLogger.general.error("\(lib.name): incremental reconciliation failed: \(error.localizedDescription)")
@@ -1739,13 +1808,13 @@ final class LibraryCatalogCoordinator {
 
         var loadedSoFar = 0
         var firstBatchTotalCount: Int? = nil
-        let deletedIds = await MainActor.run { DeletedBooksTombstoneStore.shared.allDeleted }
+        let deletedIds = await MainActor.run { (profileSession?.deletedBooks ?? DeletedBooksTombstoneStore.shared).allDeleted }
 
         do {
             for try await batch in provider.fetchBookBatches(libraryId: lib.id) {
                 let visible = batch.books.filter { !deletedIds.contains($0.stableId) }
                 let normalized = normalizeFetchedBooks(visible, for: lib, provider: provider)
-                let enriched = await MetadataManager.shared.enrichBooksWithStoredMetadata(normalized)
+                let enriched = await (profileSession?.metadataManager ?? MetadataManager.shared).enrichBooksWithStoredMetadata(normalized)
                 let progressAdjusted = applyLocalProgressOverrides(
                     enriched,
                     preloadedStoredProgress: await preloadStoredProgressMap(for: enriched)
@@ -1899,7 +1968,7 @@ final class LibraryCatalogCoordinator {
 
         let removedBookIds = beforeBookUniqueIds.subtracting(Set(library.books.filter { $0.providerId == providerId }.map { $0.uniqueId }))
         if !removedBookIds.isEmpty {
-            LibraryRecoveryCoordinator.shared.pendingBookStoreDeletions.formUnion(removedBookIds)
+            (profileSession?.recovery ?? LibraryRecoveryCoordinator.shared).pendingBookStoreDeletions.formUnion(removedBookIds)
         }
 
         if beforeBookCount != library.books.count || beforeLibraryCount != libraries.count || beforeSeriesCount != series.count {
@@ -1931,8 +2000,8 @@ final class LibraryCatalogCoordinator {
         let lookups: [(uniqueId: String, stableKey: String, legacyKey: String)] = books.map {
             ($0.uniqueId, "bookProgress_\($0.stableId)", "bookProgress_\($0.id)")
         }
-        return await Task.detached(priority: .userInitiated) {
-            let defaults = UserDefaults.standard
+        let defaults = profileSession?.defaults ?? UserDefaults.standard
+        return {
             var map = [String: (progress: TimeInterval, duration: TimeInterval, lastUpdated: TimeInterval)](minimumCapacity: 256)
             for entry in lookups {
                 let dict =
@@ -1946,26 +2015,27 @@ final class LibraryCatalogCoordinator {
                 map[entry.uniqueId] = (progress, duration, lastUpdated)
             }
             return map
-        }.value
+        }()
     }
 
     private func applyLocalProgressOverrides(
         _ books: [Book],
-        preloadedStoredProgress: [String: (progress: TimeInterval, duration: TimeInterval, lastUpdated: TimeInterval)]? = nil
+        preloadedStoredProgress: [String: (progress: TimeInterval, duration: TimeInterval, lastUpdated: TimeInterval)]? = nil,
+        isCatalogFetch: Bool = true
     ) -> [Book] {
         let storedProgressMap: [String: (progress: TimeInterval, duration: TimeInterval, lastUpdated: TimeInterval)] =
             preloadedStoredProgress
             ?? {
                 var map: [String: (TimeInterval, TimeInterval, TimeInterval)] = [:]
                 for book in books {
-                    if let stored = BookProgressStore.shared.loadProgress(for: book) {
+                    if let stored = (profileSession?.bookProgress ?? BookProgressStore.shared).loadProgress(for: book) {
                         map[book.uniqueId] = stored
                     }
                 }
                 return map
             }()
 
-        var adjusted = books
+        var adjusted = isCatalogFetch ? books.map { personalProgress(from: $0, existing: nil) } : books
 
         for index in adjusted.indices {
             let book = adjusted[index]
@@ -2005,7 +2075,9 @@ final class LibraryCatalogCoordinator {
             let hasServerProgress = serverTime > 0 || (book.progress ?? 0) > 0
 
             let shouldOverride: Bool
-            if !hasServerProgress {
+            if profileSession?.serverSyncEnabled == false {
+                shouldOverride = true
+            } else if !hasServerProgress {
                 shouldOverride = localTime > 0
             } else {
                 shouldOverride = localUpdate > serverUpdate
@@ -2025,8 +2097,19 @@ final class LibraryCatalogCoordinator {
         return adjusted
     }
 
+    private func personalProgress(from incoming: Book, existing: Book?) -> Book {
+        guard incoming.source != .local, profileSession?.serverSyncEnabled == false else { return incoming }
+        var book = incoming
+        book.currentTime = existing?.currentTime ?? 0
+        book.ebookProgress = existing?.ebookProgress
+        book.epubLocator = existing?.epubLocator
+        book.isFinished = existing?.isFinished ?? false
+        book.lastUpdate = existing?.lastUpdate ?? .distantPast
+        book.hideFromContinue = existing?.hideFromContinue ?? false
+        return book
+    }
+
     private func applyLocalRelationshipOverrides(_ books: [Book], existingBooks: [Book]) -> [Book] {
-        guard !existingBooks.isEmpty else { return books }
 
         func preferredEbookURL(existing: Book, incoming: Book) -> URL? {
             if let incomingURL = incoming.ebookFileURL,
@@ -2058,11 +2141,18 @@ final class LibraryCatalogCoordinator {
         let existingByStableId = Dictionary(existingBooks.map { ($0.stableId, $0) }, uniquingKeysWith: { _, new in new })
 
         return books.map { incoming in
-            guard let existing = existingByUniqueId[incoming.uniqueId] ?? existingByStableId[incoming.stableId] else {
-                return incoming
-            }
+            let existing = existingByUniqueId[incoming.uniqueId] ?? existingByStableId[incoming.stableId]
+            let incoming = personalProgress(from: incoming, existing: existing)
+            guard let existing else { return incoming }
 
             var merged = incoming
+            if merged.epub3Features?.hasMediaOverlay != true,
+                existing.epub3Features?.hasMediaOverlay == true,
+                let fileURL = existing.ebookFileURL,
+                FileManager.default.fileExists(atPath: fileURL.path)
+            {
+                merged.epub3Features = existing.epub3Features
+            }
 
             if incoming.lastUpdate > existing.lastUpdate {
                 merged.ebookFileURL = preferredEbookURL(existing: existing, incoming: incoming)
@@ -2162,6 +2252,11 @@ final class LibraryCatalogCoordinator {
     }
 
     func refreshBookDetails(for book: Book) async {
+        guard let task = retainOperation(operation: { [self] in await performRefreshBookDetails(for: book) }) else { return }
+        await task.value
+    }
+
+    private func performRefreshBookDetails(for book: Book) async {
         guard let provider = providerConnections[book.providerId] else { return }
 
         do {
@@ -2172,14 +2267,16 @@ final class LibraryCatalogCoordinator {
             }
 
             if !hasLinkedEbook {
-                await ChapterMetadataCache.cache(fetchedBook)
+                await ChapterMetadataCache.cache(fetchedBook,
+                    readerArtifacts: profileSession?.readerArtifacts ?? .shared,
+                    metadataStorage: profileSession?.metadataStorage ?? .shared)
 
                 if fetchedBook.source == .booklore, fetchedBook.mediaType == .audiobook,
                     let bookloreProvider = provider as? BookloreProvider
                 {
                     if fetchedBook.chapters?.isEmpty ?? true,
-                        let cached = ReaderArtifactsStore.shared.loadCachedChapters(bookId: fetchedBook.stableId)
-                            ?? ReaderArtifactsStore.shared.loadCachedChapters(bookId: fetchedBook.id),
+                        let cached = (profileSession?.readerArtifacts ?? ReaderArtifactsStore.shared).loadCachedChapters(bookId: fetchedBook.stableId)
+                            ?? (profileSession?.readerArtifacts ?? ReaderArtifactsStore.shared).loadCachedChapters(bookId: fetchedBook.id),
                         !cached.isEmpty
                     {
                         fetchedBook.chapters = cached
@@ -2188,7 +2285,8 @@ final class LibraryCatalogCoordinator {
                     let bookDuration = fetchedBook.duration ?? 0
                     let existingChapters = fetchedBook.chapters ?? []
                     let chaptersAdequate = existingChapters.count > 1 || (existingChapters.count == 1 && bookDuration <= 1800)
-                    if !chaptersAdequate, let session = try? await bookloreProvider.startPlaybackSession(for: fetchedBook) {
+                    if !chaptersAdequate, profileSession?.serverSyncEnabled ?? true,
+                        let session = try? await bookloreProvider.startPlaybackSession(for: fetchedBook) {
                         let resolvedChapters: [Chapter]
                         if session.chapters.count > 1 || (session.chapters.count == 1 && bookDuration <= 1800) {
                             resolvedChapters = session.chapters
@@ -2211,9 +2309,9 @@ final class LibraryCatalogCoordinator {
                         }
                         if !resolvedChapters.isEmpty {
                             fetchedBook.chapters = resolvedChapters
-                            ReaderArtifactsStore.shared.saveCachedChapters(bookId: fetchedBook.stableId, chapters: resolvedChapters)
+                            (profileSession?.readerArtifacts ?? ReaderArtifactsStore.shared).saveCachedChapters(bookId: fetchedBook.stableId, chapters: resolvedChapters)
                             if fetchedBook.id != fetchedBook.stableId {
-                                ReaderArtifactsStore.shared.saveCachedChapters(bookId: fetchedBook.id, chapters: resolvedChapters)
+                                (profileSession?.readerArtifacts ?? ReaderArtifactsStore.shared).saveCachedChapters(bookId: fetchedBook.id, chapters: resolvedChapters)
                             }
                             AppLogger.general.info(
                                 "[Booklore] Synthesized \(resolvedChapters.count) chapters bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: fetchedBook.stableId))"
@@ -2223,11 +2321,11 @@ final class LibraryCatalogCoordinator {
                 }
             }
 
-            let enrichedBook = await MetadataManager.shared.enrichBookWithStoredMetadata(fetchedBook)
+            let enrichedBook = await (profileSession?.metadataManager ?? MetadataManager.shared).enrichBookWithStoredMetadata(fetchedBook)
             var preservedBook = applyLocalRelationshipOverrides([enrichedBook], existingBooks: [book]).first ?? enrichedBook
 
             if hasLinkedEbook {
-                if let renamed = ReaderArtifactsStore.shared.loadCachedAudioChapters(for: preservedBook),
+                if let renamed = (profileSession?.readerArtifacts ?? ReaderArtifactsStore.shared).loadCachedAudioChapters(for: preservedBook),
                     !renamed.isEmpty
                 {
                     preservedBook.chapters = renamed
@@ -2247,7 +2345,7 @@ final class LibraryCatalogCoordinator {
 
                 if !(preservedBook.chapters?.isEmpty ?? true) || preservedBook.linkedAudiobookStableId != nil {
                     let bookToSave = preservedBook
-                    Task(priority: .utility) { await bookStore.upsertBooks([bookToSave]) }
+                    retainOperation(priority: .utility) { [self] in await bookStore.upsertBooks([bookToSave]) }
                 }
             }
         } catch {
@@ -2265,6 +2363,18 @@ final class LibraryCatalogCoordinator {
     private static func defaultMetadataFileURL() -> URL? {
         guard let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return nil }
         return documentsDirectory.appendingPathComponent("enve_metadata.json")
+    }
+
+    func retire() async {
+        isRetired = true
+        let tasks = Array(operations.values)
+        tasks.forEach { $0.cancel() }
+        for task in tasks { await task.value }
+        let pending = metadataSaveTask
+        pending?.cancel()
+        await pending?.value
+        metadataSaveTask = nil
+        saveMetadata(immediate: true)
     }
 
     func saveMetadataChanges() {
@@ -2322,6 +2432,13 @@ final class LibraryCatalogCoordinator {
     }
 
     func loadCachedMetadata() async -> Bool {
+        var didLoad = false
+        guard let task = retainOperation(operation: { [self] in didLoad = await performLoadCachedMetadata() }) else { return false }
+        await task.value
+        return didLoad
+    }
+
+    private func performLoadCachedMetadata() async -> Bool {
         AppLogger.general.info("Attempting to load cached metadata...")
 
         guard let url = metadataFileURL else {
@@ -2379,7 +2496,7 @@ final class LibraryCatalogCoordinator {
 
         await MainActor.run {
             if !progressMap.isEmpty {
-                library.books = self.applyLocalProgressOverrides(library.books, preloadedStoredProgress: progressMap)
+                library.books = self.applyLocalProgressOverrides(library.books, preloadedStoredProgress: progressMap, isCatalogFetch: false)
             }
         }
 

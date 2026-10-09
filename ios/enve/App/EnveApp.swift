@@ -11,117 +11,10 @@ struct EnveApp: App {
     @UIApplicationDelegateAdaptor(CarPlayAppDelegate.self) var carPlayDelegate
     #endif
 
-    @State private var appState = AppState.shared
+    @State private var profiles = ProfileSwitchCoordinator.shared
     @StateObject private var themeManager = ThemeManager.shared
-    @State private var hasHandledInitialActivePhase = false
 
     @Environment(\.scenePhase) private var scenePhase
-
-    private static func bootstrapPlugins(
-        providerConnections: ProviderConnectionStore,
-        bookStore: any BookStoreRepository
-    ) {
-        PluginRegistry.shared.register(sink: ProviderSyncSink(providerResolver: providerConnections))
-        PluginRegistry.shared.register(sink: BookloreKoreaderSink.shared)
-        if PlatformRuntime.cloudKitEnabled {
-            PluginRegistry.shared.register(sink: CloudKitProgressSync.shared)
-        }
-
-        let registry = PluginRegistry.shared
-        registry.register(libraryProviderFactory: { AudiobookshelfProvider(connection: $0) }, for: .audiobookshelf)
-        registry.register(libraryProviderFactory: { PlexProvider(connection: $0) }, for: .plex)
-        registry.register(libraryProviderFactory: { JellyfinProvider(connection: $0) }, for: .jellyfin)
-        registry.register(libraryProviderFactory: { EmbyProvider(connection: $0) }, for: .emby)
-        registry.register(libraryProviderFactory: { WebDAVProvider(connection: $0) }, for: .webdav)
-        registry.register(libraryProviderFactory: { WebDAVProvider(connection: $0) }, for: .torbox)
-
-        registry.register(libraryProviderFactory: { WebDAVProvider(connection: $0) }, for: .premiumize)
-        registry.register(libraryProviderFactory: { RealDebridProvider(connection: $0) }, for: .realdebrid)
-        registry.register(libraryProviderFactory: { BookloreProvider(connection: $0) }, for: .booklore)
-        registry.register(libraryProviderFactory: { KomgaProvider(connection: $0) }, for: .komga)
-        registry.register(libraryProviderFactory: { KavitaProvider(connection: $0) }, for: .kavita)
-        registry.register(libraryProviderFactory: { OPDSProvider(connection: $0) }, for: .opds)
-        registry.register(libraryProviderFactory: { StorytellerProvider(connection: $0) }, for: .storyteller)
-        registry.register(libraryProviderFactory: { BookOrbitProvider(connection: $0) }, for: .bookOrbit)
-        registry.register(libraryProviderFactory: { SiloProvider(connection: $0) }, for: .silo)
-        registry.register(libraryProviderFactory: { OneDriveProvider(connection: $0) }, for: .oneDrive)
-
-        let nativeProgressSources: [(ProviderType, Book.BookSource)] = [
-            (.jellyfin, .jellyfin), (.emby, .emby), (.plex, .plex), (.kavita, .kavita),
-        ]
-        for (type, source) in nativeProgressSources {
-            registry.register(
-                syncStrategy: NativeProgressSyncStrategy(
-                    providerType: type, source: source,
-                    connections: providerConnections, books: bookStore,
-                    progressRepository: bookStore, libraryCache: AppState.shared,
-                    progressCache: BookProgressStore.shared, playbackState: ActivePlayback.controller
-                )
-            )
-        }
-
-        registry.register(
-            syncStrategy: StorytellerSyncStrategy(
-                providerConnections: providerConnections,
-                books: bookStore,
-                catalogRepository: bookStore
-            )
-        )
-        registry.register(
-            syncStrategy: BookloreEbookSyncStrategy(
-                providerConnections: providerConnections,
-                books: bookStore,
-                bookWriter: bookStore,
-                progressRepository: bookStore
-            )
-        )
-        registry.register(
-            syncStrategy: BookloreAudiobookSyncStrategy(
-                providerConnections: providerConnections,
-                books: bookStore,
-                bookWriter: bookStore
-            )
-        )
-        registry.register(
-            syncStrategy: KomgaEbookSyncStrategy(
-                providerConnections: providerConnections,
-                books: bookStore,
-                bookWriter: bookStore
-            )
-        )
-        registry.register(
-            syncStrategy: BookOrbitSyncStrategy(
-                providerConnections: providerConnections,
-                books: bookStore,
-                bookWriter: bookStore
-            )
-        )
-        registry.register(
-            syncStrategy: SiloActivitySyncStrategy(
-                providerConnections: providerConnections,
-                books: bookStore
-            )
-        )
-        registry.register(
-            syncStrategy: SiloEbookSyncStrategy(
-                providerConnections: providerConnections,
-                books: bookStore,
-                bookWriter: bookStore,
-                progressRepository: bookStore
-            )
-        )
-        registry.register(
-            syncStrategy: OPDSProgressionSyncStrategy(
-                providerConnections: providerConnections,
-                books: bookStore,
-                progressRepository: bookStore,
-                libraryCache: AppState.shared,
-                progressCache: BookProgressStore.shared,
-                playbackState: ActivePlayback.controller,
-                reauthentication: providerConnections
-            )
-        )
-    }
 
     private static func disableCoreDataDebugLogging() {
         let keys = [
@@ -149,91 +42,93 @@ struct EnveApp: App {
         AppLogger.bootstrap()
         AppLogger.general.info("Enve source provenance: \(EnveProvenance.identifier)")
 
-        Self.bootstrapPlugins(
-            providerConnections: AppState.shared.providerConnections,
-            bookStore: AppState.shared.bookStore
-        )
+
         #if os(iOS)
         EnveAppShortcuts.updateAppShortcutParameters()
         #endif
-        Task { @MainActor in
-            AppState.shared.providerConnections.syncProviders()
-        }
 
         #if os(iOS)
 
-        WatchSessionBridge.shared.start()
         RuntimeDiagnosticsCollector.shared.start()
         #endif
-        AutoSleepService.shared.start()
 
         #if os(iOS) && !targetEnvironment(macCatalyst)
         if #available(iOS 26.0, *) {
             BGTaskScheduler.shared.register(forTaskWithIdentifier: "com.enve.enve.storyalign", using: .main) { task in
                 guard let task = task as? BGContinuedProcessingTask else { return }
-                StoryAlignService.shared.handleContinuedProcessingTask(task)
+                let coordinator = ProfileSwitchCoordinator.shared
+                guard coordinator.activeSession.isOwner, !coordinator.isLocked, !coordinator.activeSession.isRetired else {
+                    task.setTaskCompleted(success: false)
+                    return
+                }
+                coordinator.activeSession.storyAlignService.handleContinuedProcessingTask(task)
             }
-            StoryAlignService.shared.loadPausedConversion()
         }
         #endif
     }
 
     var body: some Scene {
         WindowGroup {
-            AppRootView()
-                .environment(appState)
-                .environment(EnveEngine.shared)
-                .environmentObject(themeManager)
-                .environment(PlayerViewModel.shared)
-                .onAppear {
+            Group {
+                if profiles.isLocked {
+                    ProfilePickerScreen()
+                        .environment(profiles)
+                        .environmentObject(themeManager)
+                        .hearthRoot()
+                } else {
+                    AppRootView(profileSession: profiles.activeSession)
+                        .id(ObjectIdentifier(profiles.activeSession))
+                        .enveEnvironment(session: profiles.activeSession)
+                }
+            }
+            .task(id: ObjectIdentifier(profiles.activeSession)) {
+                guard !profiles.isLocked else { return }
+                let session = profiles.activeSession
+                session.start()
+                if session.isOwner, #available(iOS 26.0, *) { session.storyAlignService.loadPausedConversion() }
+                await session.listeningStats.startTracking()
+                await session.appCache.runMaintenance()
+                guard !Task.isCancelled, !session.isRetired else { return }
+                #if os(iOS)
+                session.fileSharing.startWatching()
+                session.fileSharing.scheduleRefresh(reason: "app-launch")
+                session.activateSystemAccess()
+                #endif
+                if session.isOwner && PlatformRuntime.cloudKitEnabled {
+                    await ServerConnectionCloudKitSync.shared.bootstrap()
+                }
+            }
+            .onChange(of: profiles.isLocked) { _, locked in
+                if !locked {
+                    profiles.activeSession.start()
+                    profiles.activeSession.activateSystemAccess()
+                }
+            }
+            .onChange(of: scenePhase) { _, phase in
+                let session = profiles.activeSession
+                if phase == .active {
+                    guard !profiles.isLocked else { return }
                     #if os(iOS)
-                    BookWidgetBridge.shared.start()
+                    session.fileSharing.startWatching()
+                    session.fileSharing.scheduleRefresh(reason: "scene-active")
                     #endif
+                } else if phase == .background {
+                    profiles.onBackground()
+                    #if os(iOS)
+                    session.fileSharing.stopWatching()
+                    #endif
+                    session.appState.persistStartupCachesImmediately()
                     Task {
-                        await ListeningStatsTracker.shared.startTracking()
-                        await AppCache.shared.runMaintenance()
-                        if PlatformRuntime.cloudKitEnabled {
-                            await ServerConnectionCloudKitSync.shared.bootstrap()
-                        }
+                        await session.playback.player.saveProgressOnBackground()
+                        await session.listeningStats.endSession(uploadToServer: false)
+                        await session.readingStats.endSession(uploadToServer: false)
                     }
-
+                } else {
                     #if os(iOS)
-                    FileSharingImportCoordinator.shared.startWatching()
-                    FileSharingImportCoordinator.shared.scheduleRefresh(reason: "app-launch")
+                    session.fileSharing.stopWatching()
                     #endif
                 }
-                .onChange(of: scenePhase) { _, newPhase in
-                    if newPhase == .active {
-                        #if os(iOS)
-                        FileSharingImportCoordinator.shared.startWatching()
-                        #endif
-                        if hasHandledInitialActivePhase {
-                            #if os(iOS)
-                            FileSharingImportCoordinator.shared.scheduleRefresh(reason: "scene-active")
-                            #endif
-                            Task.detached(priority: .utility) {
-                                await appState.providerConnections.refreshAudiobookshelfAuthentication()
-                                await appState.providerConnections.refreshBookloreAuthentication()
-                            }
-                        } else {
-                            hasHandledInitialActivePhase = true
-                        }
-                    } else if newPhase == .background {
-                        #if os(iOS)
-                        FileSharingImportCoordinator.shared.stopWatching()
-                        #endif
-                        appState.persistStartupCachesImmediately()
-                        Task {
-                            await PlayerViewModel.shared.saveProgressOnBackground()
-                            await ListeningStatsTracker.shared.endSession()
-                            await ReadingStatsTracker.shared.endSession()
-                        }
-                    } else {
-                        #if os(iOS)
-                        FileSharingImportCoordinator.shared.stopWatching()
-                        #endif
-                    }
-                }
+            }
         }
         .enveCatalystCommands()
     }

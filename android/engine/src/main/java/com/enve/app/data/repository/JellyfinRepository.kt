@@ -1,5 +1,6 @@
 package com.enve.app.data.repository
 
+import com.enve.core.data.util.runSuspendCatching
 import com.enve.core.data.local.PreferencesManager
 import com.enve.app.data.remote.dto.JellyfinAuthenticateWithQuickConnectRequest
 import com.enve.app.data.remote.dto.JellyfinAuthenticationResult
@@ -55,7 +56,7 @@ class JellyfinRepository @Inject constructor(
         return "$base$path"
     }
 
-    suspend fun isQuickConnectEnabled(serverUrl: String): Result<Boolean> = runCatching {
+    suspend fun isQuickConnectEnabled(serverUrl: String): Result<Boolean> = runSuspendCatching {
         withContext(Dispatchers.IO) {
             val url = resolveUrl(serverUrl, "/QuickConnect/Enabled").toHttpUrlOrNull()
                 ?: error("Invalid Jellyfin server URL")
@@ -77,7 +78,7 @@ class JellyfinRepository @Inject constructor(
         }
     }
 
-    suspend fun initiateQuickConnect(serverUrl: String): Result<JellyfinQuickConnectResult> = runCatching {
+    suspend fun initiateQuickConnect(serverUrl: String): Result<JellyfinQuickConnectResult> = runSuspendCatching {
         withContext(Dispatchers.IO) {
             val url = resolveUrl(serverUrl, "/QuickConnect/Initiate").toHttpUrlOrNull()
                 ?: error("Invalid Jellyfin server URL")
@@ -122,7 +123,7 @@ class JellyfinRepository @Inject constructor(
         }
     }
 
-    suspend fun pollQuickConnect(serverUrl: String, secret: String): Result<JellyfinQuickConnectResult> = runCatching {
+    suspend fun pollQuickConnect(serverUrl: String, secret: String): Result<JellyfinQuickConnectResult> = runSuspendCatching {
         withContext(Dispatchers.IO) {
             val url = resolveUrl(serverUrl, "/QuickConnect/Connect").toHttpUrlOrNull()
                 ?.newBuilder()
@@ -152,7 +153,7 @@ class JellyfinRepository @Inject constructor(
     suspend fun authenticateWithQuickConnect(
         serverUrl: String,
         secret: String,
-    ): Result<JellyfinAuthenticationResult> = runCatching {
+    ): Result<JellyfinAuthenticationResult> = runSuspendCatching {
         withContext(Dispatchers.IO) {
             val url = resolveUrl(serverUrl, "/Users/AuthenticateWithQuickConnect").toHttpUrlOrNull()
                 ?: error("Invalid Jellyfin server URL")

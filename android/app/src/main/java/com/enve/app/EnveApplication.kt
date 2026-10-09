@@ -10,11 +10,9 @@ import androidx.work.Configuration
 import coil.ImageLoader
 import coil.ImageLoaderFactory
 import com.enve.app.diagnostics.CrashLogger
-import com.enve.app.eink.EinkManager
 import com.enve.app.playback.AudiobookDownloadWorker
 import com.enve.app.readium.ReadiumManager
 import com.enve.app.storyalign.StoryAlignWorker
-import com.enve.app.widgets.BookWidgetPublisher
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
 
@@ -23,17 +21,16 @@ class EnveApplication : Application(), ImageLoaderFactory, Configuration.Provide
 
     val readiumManager: ReadiumManager by lazy { ReadiumManager(this) }
 
-    @Inject
-    lateinit var imageLoader: ImageLoader
+    val imageLoader: ImageLoader by lazy { ImageLoader.Builder(this).build() }
 
     @Inject
-    lateinit var einkManager: EinkManager
+    lateinit var profiles: com.enve.app.profiles.ProfileSwitchCoordinator
+
+    @Inject
+    lateinit var bookWidgetPublisher: com.enve.app.widgets.BookWidgetPublisher
 
     @Inject
     lateinit var workerFactory: HiltWorkerFactory
-
-    @Inject
-    lateinit var bookWidgetPublisher: BookWidgetPublisher
 
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder()
@@ -50,6 +47,11 @@ class EnveApplication : Application(), ImageLoaderFactory, Configuration.Provide
         runCatching {
             android.webkit.WebView(this).destroy()
         }
+        androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.addObserver(object : androidx.lifecycle.DefaultLifecycleObserver {
+            override fun onStop(owner: androidx.lifecycle.LifecycleOwner) {
+                profiles.onBackground()
+            }
+        })
         createDownloadNotificationChannel()
         createStoryAlignNotificationChannel()
 
@@ -60,7 +62,6 @@ class EnveApplication : Application(), ImageLoaderFactory, Configuration.Provide
             field.isAccessible = true
             field.set(null, 50 * 1024 * 1024)
         }
-        einkManager.initialize()
 
         Thread {
             runCatching {

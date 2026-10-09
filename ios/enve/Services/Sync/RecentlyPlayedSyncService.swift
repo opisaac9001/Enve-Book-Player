@@ -289,6 +289,13 @@ final class RecentlyPlayedSyncService: RecentlyPlayedSyncing {
             }
         }
 
+        if !wasCancelled {
+            for backend in progressBackends {
+                guard let connectionId = UUID(uuidString: backend.id) else { continue }
+                pushCount += await CrossProviderHistorySessionSync.shared.retryPending(targetConnectionId: connectionId)
+            }
+        }
+
         let force = trigger == .homePullToRefresh
         let launchOptimized = trigger == .appLaunch
         let strategies = strategyRegistry.syncStrategies

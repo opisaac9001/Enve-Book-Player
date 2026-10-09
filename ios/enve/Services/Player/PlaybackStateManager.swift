@@ -13,27 +13,41 @@ final class PlaybackStateManager {
         initializeModelContainer()
     }
 
+    init(storage: ProfileStorageLocations) throws {
+        let container = try Self.openContainer(storeURL: storage.playbackStoreURL)
+        modelContainer = container
+        modelContext = ModelContext(container)
+    }
+
     private func initializeModelContainer() {
         do {
-            let schema = Schema([
-                PlaybackState.self,
-                AudiobookBookmark.self,
-                MetadataOverride.self,
-                SyncedPlaybackState.self,
-            ])
-            let modelConfiguration = ModelConfiguration(
-                schema: schema,
-                isStoredInMemoryOnly: false,
-                allowsSave: true,
-                cloudKitDatabase: .none
-            )
-            let container = try ModelContainer(for: schema, configurations: [modelConfiguration])
+            let container = try Self.openContainer(storeURL: ProfileStorageLocations.owner.playbackStoreURL)
             modelContainer = container
             modelContext = ModelContext(container)
             AppLogger.player.info("PlaybackState model container initialized")
         } catch {
             AppLogger.player.error("Failed to initialize model container: \(error)")
         }
+    }
+
+    private static func openContainer(storeURL: URL) throws -> ModelContainer {
+        try FileManager.default.createDirectory(
+            at: storeURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let schema = Schema([
+            PlaybackState.self,
+            AudiobookBookmark.self,
+            MetadataOverride.self,
+            SyncedPlaybackState.self,
+        ])
+        let configuration = ModelConfiguration(
+            schema: schema,
+            url: storeURL,
+            allowsSave: true,
+            cloudKitDatabase: .none
+        )
+        return try ModelContainer(for: schema, configurations: [configuration])
     }
 
     func loadPlaybackState(for bookId: String) throws -> PlaybackState {

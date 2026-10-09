@@ -38,7 +38,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.hilt.navigation.compose.hiltViewModel
+import com.enve.hearth.shell.profileViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.enve.app.ui.components.ChromeActionButton
 import com.enve.app.ui.components.ScreenBackButton
@@ -58,7 +58,7 @@ fun VocabularyHubScreen(
     onBack: () -> Unit,
     onStudy: () -> Unit,
     onSettings: () -> Unit,
-    viewModel: VocabViewModel = hiltViewModel(),
+    viewModel: VocabViewModel = profileViewModel(),
 ) {
     val hub by viewModel.hub.collectAsStateWithLifecycle()
     val colors = EnveTheme.colors

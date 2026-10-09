@@ -10,6 +10,15 @@ import org.junit.Test
 
 class BookDetailFormatsTest {
     @Test
+    fun localNarrationDetectionSurvivesServerDetailMerge() {
+        val summary = Book(id = "42", title = "EPUB", source = BookSource.GRIMMORY, mediaType = AppMediaType.EBOOK)
+        val local = summary.copy(readAlongAvailable = true, hasAudio = true, hasEbook = true)
+        assertTrue(mergeBookDetail(summary, local).readAlongAvailable)
+        assertTrue(mergeBookDetail(local, summary).readAlongAvailable)
+        assertSame(local, detailListenTarget(local, null))
+    }
+
+    @Test
     fun hydratedFormatsSurviveCatalogUpdatesForEitherPrimaryFormat() {
         for (type in listOf(AppMediaType.AUDIOBOOK, AppMediaType.EBOOK)) {
             val summary = Book(
@@ -38,5 +47,23 @@ class BookDetailFormatsTest {
     fun missingDetailsPreserveCatalog() {
         val book = Book(id = "42", title = "Book", source = BookSource.GRIMMORY)
         assertSame(book, mergeBookDetail(book, null))
+    }
+
+    @Test
+    fun grimmoryCombinedFormatsOpenTheirOwnEdition() {
+        val ebook = Book(
+            id = "42",
+            title = "Combined formats",
+            source = BookSource.GRIMMORY,
+            mediaType = AppMediaType.EBOOK,
+            hasAudio = true,
+            hasEbook = true,
+        )
+        val audiobook = ebook.copy(id = "grimmory-ab-42", mediaType = AppMediaType.AUDIOBOOK)
+
+        assertSame(ebook, detailReadTarget(audiobook, ebook))
+        assertSame(audiobook, detailListenTarget(ebook, audiobook))
+        assertSame(ebook, detailReadTarget(ebook, null))
+        assertSame(audiobook, detailListenTarget(audiobook, null))
     }
 }

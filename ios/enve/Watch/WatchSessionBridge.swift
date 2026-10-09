@@ -18,19 +18,24 @@ final class WatchSessionBridge: NSObject {
     private var lastPayload = WatchNowPlayingPayload.empty
     private var lastContextPush = Date.distantPast
     private var watchABSSessions: [String: String] = [:]
+    private unowned let profileSession: ProfileSession?
+    private var isRevoked = false
+    private var operations: [UUID: Task<Void, Never>] = [:]
     private let providerResolver: any LibraryProviderResolving
     private let connectionAccess: any ProviderConnectionAccessing
     private let bookQuerying: any BookQuerying
     private let libraryCache: LibraryBookCache
     private let playback: any PlaybackControlling
 
-    private init(
+    init(
         providerResolver: any LibraryProviderResolving,
         connectionAccess: any ProviderConnectionAccessing,
         bookQuerying: any BookQuerying,
         libraryCache: LibraryBookCache,
-        playback: any PlaybackControlling = ActivePlayback.controller
+        playback: any PlaybackControlling = ActivePlayback.controller,
+        profileSession: ProfileSession? = nil
     ) {
+        self.profileSession = profileSession
         self.providerResolver = providerResolver
         self.connectionAccess = connectionAccess
         self.bookQuerying = bookQuerying
@@ -41,6 +46,7 @@ final class WatchSessionBridge: NSObject {
 
     func start() {
         guard !hasStarted, WCSession.isSupported() else { return }
+        isRevoked = false
         hasStarted = true
 
         let session = WCSession.default
@@ -53,9 +59,41 @@ final class WatchSessionBridge: NSObject {
         .store(in: &cancellables)
     }
 
+    func revoke() {
+        hasStarted = false
+        isRevoked = true
+        cancellables.removeAll()
+        operations.values.forEach { $0.cancel() }
+        Self.clearSharedSnapshot()
+        if WCSession.isSupported(), WCSession.default.delegate === self { WCSession.default.delegate = nil }
+    }
+
+    static func clearSharedSnapshot() {
+        guard WCSession.isSupported() else { return }
+        let session = WCSession.default
+        let envelope = WatchWire.envelope(.nowPlaying, WatchNowPlayingPayload.empty)
+        try? session.updateApplicationContext(envelope)
+        if session.isReachable { session.sendMessage(envelope, replyHandler: nil, errorHandler: nil) }
+    }
+
+    func retire() async {
+        revoke()
+        let pending = Array(operations.values)
+        for task in pending { await task.value }
+    }
+
+    private func receive(_ message: [String: Any], reply: (@Sendable ([String: Any]) -> Void)?) {
+        guard !isRevoked else { return }
+        let id = UUID()
+        operations[id] = Task {
+            await handle(message, reply: reply)
+            operations[id] = nil
+        }
+    }
+
     private func currentPayload() -> WatchNowPlayingPayload {
         let playback = playback.snapshot
-        let player = PlayerViewModel.shared
+        let player = (profileSession?.playback.player ?? PlayerViewModel.shared)
         let book = playback.currentBook ?? player.currentBook
         let position = playback.duration > 0 ? playback.position : player.progress
         let duration = playback.duration > 0 ? playback.duration : (book?.duration ?? player.duration)
@@ -79,6 +117,7 @@ final class WatchSessionBridge: NSObject {
     }
 
     private func pushNowPlaying(force: Bool = false) {
+        guard !isRevoked else { return }
         let session = WCSession.default
         guard session.activationState == .activated, session.isPaired, session.isWatchAppInstalled else { return }
 
@@ -106,7 +145,12 @@ final class WatchSessionBridge: NSObject {
         }
     }
 
-    private func handle(_ message: [String: Any], reply: (@Sendable ([String: Any]) -> Void)?) async {
+    private func handle(_ message: [String: Any], reply originalReply: (@Sendable ([String: Any]) -> Void)?) async {
+        guard !isRevoked else { return }
+        let reply: (([String: Any]) -> Void)? = { [weak self] value in
+            guard let self, !self.isRevoked else { return }
+            originalReply?(value)
+        }
         guard let kind = WatchWire.kind(of: message) else {
             reply?(WatchWire.replyError("unknown message"))
             return
@@ -125,7 +169,7 @@ final class WatchSessionBridge: NSObject {
                 return
             }
             let books = await bookQuerying.searchBooks(query: request.query, limit: 40)
-            reply?(WatchWire.reply(WatchSearchResults(items: books.filter { $0.mediaType != .ebook }.map(Self.summary))))
+            reply?(WatchWire.reply(WatchSearchResults(items: books.filter { $0.mediaType != .ebook }.map(summary))))
 
         case .requestDescriptor:
             guard let request = WatchWire.payload(WatchDescriptorRequest.self, from: message) else {
@@ -150,7 +194,7 @@ final class WatchSessionBridge: NSObject {
         case .requestPosition:
             guard let request = WatchWire.payload(WatchDescriptorRequest.self, from: message),
                 let book = await findBook(stableId: request.stableId),
-                let stored = BookProgressStore.shared.loadProgress(for: book)
+                let stored = (profileSession?.bookProgress ?? BookProgressStore.shared).loadProgress(for: book)
             else {
                 reply?(WatchWire.replyError("no stored position"))
                 return
@@ -181,8 +225,8 @@ final class WatchSessionBridge: NSObject {
         }
     }
 
-    private static func summary(_ book: Book) -> WatchBookSummary {
-        let stored = BookProgressStore.shared.loadProgress(for: book)
+    private func summary(_ book: Book) -> WatchBookSummary {
+        let stored = (profileSession?.bookProgress ?? BookProgressStore.shared).loadProgress(for: book)
         return WatchBookSummary(
             stableId: book.stableId,
             title: String(book.title.prefix(120)),
@@ -202,13 +246,13 @@ final class WatchSessionBridge: NSObject {
         var podcastBooks = await store.pagedBooks(offset: 0, limit: 30, mediaType: AppMediaType.podcast.rawValue)
 
         let known = Set(podcastBooks.map(\.stableId))
-        let rssEpisodes = BookProgressStore.shared.loadRecentlyPlayed()
+        let rssEpisodes = (profileSession?.bookProgress ?? BookProgressStore.shared).loadRecentlyPlayed()
             .filter { $0.isPodcastEpisode && !known.contains($0.stableId) }
         podcastBooks = rssEpisodes + podcastBooks
         return WatchLibrarySnapshot(
-            continueItems: continueBooks.map(Self.summary),
-            recentItems: recentBooks.map(Self.summary),
-            podcastItems: podcastBooks.prefix(30).map(Self.summary),
+            continueItems: continueBooks.map(summary),
+            recentItems: recentBooks.map(summary),
+            podcastItems: podcastBooks.prefix(30).map(summary),
             generatedAt: Date()
         )
     }
@@ -217,7 +261,7 @@ final class WatchSessionBridge: NSObject {
         if let book = await bookQuerying.book(stableId: stableId) {
             return book
         }
-        return BookProgressStore.shared.loadRecentlyPlayed().first { $0.stableId == stableId }
+        return (profileSession?.bookProgress ?? BookProgressStore.shared).loadRecentlyPlayed().first { $0.stableId == stableId }
     }
 
     private func buildDescriptor(stableId: String) async throws -> WatchPlaybackDescriptor {
@@ -228,7 +272,7 @@ final class WatchSessionBridge: NSObject {
             throw WatchBridgeError.notAudio
         }
 
-        let position = BookProgressStore.shared.loadProgress(for: book)?.progress ?? book.currentTime
+        let position = (profileSession?.bookProgress ?? BookProgressStore.shared).loadProgress(for: book)?.progress ?? book.currentTime
 
         if book.isPodcastEpisode, providerResolver.provider(for: book) == nil {
             guard let urlString = book.partKey, let url = URL(string: urlString), !url.isFileURL else {
@@ -298,7 +342,7 @@ final class WatchSessionBridge: NSObject {
 
         var streamURL = provider.getAudioURL(for: book)
         if streamURL == nil {
-            streamURL = try? await PlayerViewModel.shared.resolveStreamURL(for: book)
+            streamURL = try? await (profileSession?.playback.player ?? PlayerViewModel.shared).resolveStreamURL(for: book)
         }
         guard var url = streamURL, !url.isFileURL else {
             throw WatchBridgeError.noStreamURL
@@ -332,10 +376,11 @@ final class WatchSessionBridge: NSObject {
             let backendId = book.backendId,
             let backend = connectionAccess.backend(id: backendId)
         else { return }
-        let position = BookProgressStore.shared.loadProgress(for: book)?.progress ?? book.currentTime
+        let position = (profileSession?.bookProgress ?? BookProgressStore.shared).loadProgress(for: book)?.progress ?? book.currentTime
         let duration = book.duration ?? 0
-        Task.detached(priority: .utility) {
-            try? await AudiobookshelfService.shared.closePlaySession(
+        let service = profileSession?.absService ?? AudiobookshelfService.shared
+        Task {
+            try? await service.closePlaySession(
                 sessionId: sessionId,
                 currentTime: position,
                 duration: duration,
@@ -373,7 +418,7 @@ final class WatchSessionBridge: NSObject {
         guard let book = await findBook(stableId: stableId), let coverURL = book.coverURL else { return nil }
 
         let image: UIImage?
-        if let cached = await DiskImageCache.shared.image(for: coverURL) {
+        if let cached = await (profileSession?.imageCache ?? DiskImageCache.shared).image(for: coverURL) {
             image = cached
         } else if coverURL.isFileURL {
             image = UIImage(contentsOfFile: coverURL.path)
@@ -382,7 +427,7 @@ final class WatchSessionBridge: NSObject {
             for (key, value) in CachedAsyncCoverImage.authHeaders(for: book) {
                 request.setValue(value, forHTTPHeaderField: key)
             }
-            if let data = try? await URLSession.shared.data(for: request).0 {
+            if let data = try? await (profileSession?.networkSession ?? URLSession.shared).data(for: request).0 {
                 image = UIImage(data: data)
             } else {
                 image = nil
@@ -413,14 +458,14 @@ final class WatchSessionBridge: NSObject {
         }
         guard let book = await findBook(stableId: report.stableId) else { return }
 
-        if let stored = BookProgressStore.shared.loadProgress(for: book),
+        if let stored = (profileSession?.bookProgress ?? BookProgressStore.shared).loadProgress(for: book),
             stored.lastUpdated > report.timestamp.timeIntervalSince1970
         {
             return
         }
 
-        BookProgressStore.shared.saveProgress(for: book, progress: report.position, duration: report.duration, at: report.timestamp)
-        BookProgressStore.shared.saveRecentlyPlayed(book, date: report.timestamp)
+        (profileSession?.bookProgress ?? BookProgressStore.shared).saveProgress(for: book, progress: report.position, duration: report.duration, at: report.timestamp)
+        (profileSession?.bookProgress ?? BookProgressStore.shared).saveRecentlyPlayed(book, date: report.timestamp)
         libraryCache.mutateBook(uniqueId: book.uniqueId) {
             $0.currentTime = report.position
             $0.lastUpdate = report.timestamp
@@ -431,7 +476,7 @@ final class WatchSessionBridge: NSObject {
         updated.currentTime = report.position
         updated.lastUpdate = report.timestamp
         updated.isFinished = report.isFinished
-        await SyncCoordinator.shared.pushProgress(
+        await (profileSession?.sync ?? SyncCoordinator.shared).pushProgress(
             book: updated,
             forceImmediate: true,
             domain: .audiobook
@@ -439,11 +484,11 @@ final class WatchSessionBridge: NSObject {
     }
 
     private func execute(_ command: WatchCommandPayload) async {
-        let player = PlayerViewModel.shared
+        let player = (profileSession?.playback.player ?? PlayerViewModel.shared)
         switch command.action {
         case .play:
             guard let book = await findBook(stableId: command.value) else { return }
-            EnveEngine.shared.playback.play(book, presentPlayer: false)
+            (profileSession?.engine ?? EnveEngine.shared).playback.play(book, presentPlayer: false)
         case .toggle:
             player.togglePlay()
         case .pause:
@@ -485,7 +530,7 @@ private enum WatchBridgeError: LocalizedError {
 
 extension WatchSessionBridge: WCSessionDelegate {
     nonisolated func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
-        Task { @MainActor in WatchSessionBridge.shared.pushNowPlaying() }
+        Task { @MainActor in self.pushNowPlaying() }
     }
 
     nonisolated func sessionDidBecomeInactive(_ session: WCSession) {}
@@ -495,13 +540,13 @@ extension WatchSessionBridge: WCSessionDelegate {
     }
 
     nonisolated func sessionWatchStateDidChange(_ session: WCSession) {
-        Task { @MainActor in WatchSessionBridge.shared.pushNowPlaying() }
+        Task { @MainActor in self.pushNowPlaying() }
     }
 
     nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
         let payload = UncheckedSendableBox(message)
         Task { @MainActor in
-            await WatchSessionBridge.shared.handle(payload.value, reply: nil)
+            self.receive(payload.value, reply: nil)
         }
     }
 
@@ -513,14 +558,14 @@ extension WatchSessionBridge: WCSessionDelegate {
         let payload = UncheckedSendableBox(message)
         let reply = UncheckedSendableBox(replyHandler)
         Task { @MainActor in
-            await WatchSessionBridge.shared.handle(payload.value) { reply.value($0) }
+            self.receive(payload.value) { reply.value($0) }
         }
     }
 
     nonisolated func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
         let payload = UncheckedSendableBox(userInfo)
         Task { @MainActor in
-            await WatchSessionBridge.shared.handle(payload.value, reply: nil)
+            self.receive(payload.value, reply: nil)
         }
     }
 }

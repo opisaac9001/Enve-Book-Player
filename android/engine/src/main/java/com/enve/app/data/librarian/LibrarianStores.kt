@@ -1,6 +1,8 @@
 package com.enve.app.data.librarian
 
 import android.content.Context
+import com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
+import com.enve.core.data.local.ProfileStorageLocations
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -14,8 +16,9 @@ import javax.inject.Singleton
 @Singleton
 class EbookContextStore @Inject constructor(
     @ApplicationContext context: Context,
+    private val locations: ProfileStorageLocations = ProfileStorageLocations.forProfile(context, DEFAULT_ADULT_PROFILE_ID),
 ) {
-    private val root = File(context.filesDir, "enve-librarian/ebook-contexts")
+    private val root = File(locations.filesDirectory, "enve-librarian/ebook-contexts")
     private val json = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true
@@ -89,8 +92,9 @@ class EbookContextStore @Inject constructor(
 @Singleton
 class LibrarianConversationStore @Inject constructor(
     @ApplicationContext context: Context,
+    private val locations: ProfileStorageLocations = ProfileStorageLocations.forProfile(context, DEFAULT_ADULT_PROFILE_ID),
 ) {
-    private val root = File(context.filesDir, "enve-librarian/conversations")
+    private val root = File(locations.filesDirectory, "enve-librarian/conversations")
     private val json = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true
@@ -125,8 +129,9 @@ class LibrarianConversationStore @Inject constructor(
 @Singleton
 class LibrarianEnginePreferenceStore @Inject constructor(
     @ApplicationContext context: Context,
+    private val locations: ProfileStorageLocations = ProfileStorageLocations.forProfile(context, DEFAULT_ADULT_PROFILE_ID),
 ) {
-    private val file = File(context.filesDir, "enve-librarian/engine-preference.txt")
+    private val file = File(locations.filesDirectory, "enve-librarian/engine-preference.txt")
 
     suspend fun load(): LibrarianEnginePreference = withContext(Dispatchers.IO) {
         val saved = file.takeIf { it.isFile }?.readText()?.trim().orEmpty()

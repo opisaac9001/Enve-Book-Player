@@ -26,7 +26,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.hilt.navigation.compose.hiltViewModel
+import com.enve.hearth.shell.profileViewModel
 import com.enve.core.data.model.BookCardStyle
 import com.enve.core.data.model.LibraryLayout
 import com.enve.core.data.model.MergeAggressiveness
@@ -48,7 +48,7 @@ import com.enve.hearth.design.hearthDisplay
 @Composable
 fun LibraryDisplaySettingsScreen(
     onBack: () -> Unit,
-    viewModel: LibraryViewModel = hiltViewModel(),
+    viewModel: LibraryViewModel = profileViewModel(),
 ) {
     val state by viewModel.state.collectAsState()
     val colors = EnveTheme.colors

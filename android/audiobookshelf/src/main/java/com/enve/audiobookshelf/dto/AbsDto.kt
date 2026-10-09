@@ -259,7 +259,7 @@ data class AbsPlaybackSessionUpdateRequest(
 
 @Serializable
 data class AbsPlaybackStartRequest(
-    val deviceInfo: AbsPlaybackDeviceInfo = AbsPlaybackDeviceInfo(),
+    val deviceInfo: AbsPlaybackDeviceInfo,
     val supportedMimeTypes: List<String> = listOf(
         "audio/mpeg",
         "audio/mp4",
@@ -275,9 +275,48 @@ data class AbsPlaybackStartRequest(
 
 @Serializable
 data class AbsPlaybackDeviceInfo(
+    val deviceId: String,
     val clientName: String = "Enve",
-    val deviceId: String = "enve-android",
-    val deviceName: String = "Android",
+    val manufacturer: String = "",
+    val model: String = "",
+    val sdkVersion: Int = 0,
+)
+
+@Serializable
+data class AbsLocalSessionDto(
+    val id: String,
+    val libraryItemId: String,
+    val episodeId: String? = null,
+    val mediaType: String,
+    val displayTitle: String,
+    val displayAuthor: String? = null,
+    val duration: Double,
+    val playMethod: Int = 3,
+    val mediaPlayer: String = "Enve Android",
+    val date: String,
+    val dayOfWeek: String,
+    val timeListening: Double,
+    val currentTime: Double,
+    val startedAt: Long,
+    val updatedAt: Long,
+)
+
+@Serializable
+data class AbsLocalSessionsRequest(
+    val sessions: List<AbsLocalSessionDto>,
+    val deviceInfo: AbsPlaybackDeviceInfo,
+)
+
+@Serializable
+data class AbsLocalSessionsResponse(
+    val results: List<AbsLocalSessionResult> = emptyList(),
+)
+
+@Serializable
+data class AbsLocalSessionResult(
+    val id: String,
+    val success: Boolean = false,
+    val error: String? = null,
 )
 
 @Serializable
@@ -296,6 +335,7 @@ data class AbsBookmarkRequest(
 
 @Serializable
 data class AbsMeResponse(
+    val id: String? = null,
     val bookmarks: List<AbsBookmarkDto> = emptyList(),
     val mediaProgress: List<AbsMediaProgressDto> = emptyList(),
 )
