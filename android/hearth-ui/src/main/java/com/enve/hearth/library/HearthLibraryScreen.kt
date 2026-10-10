@@ -70,6 +70,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
@@ -181,11 +182,7 @@ fun HearthLibraryScreen(
                 Overline("$total in your library")
                 Text("Library", style = HearthText.ScreenTitle, color = palette.text)
             }
-            if (refreshing) {
-                CircularProgressIndicator(color = palette.ember, strokeWidth = 2.dp, modifier = Modifier.padding(Hearth.Spacing.S).size(20.dp))
-            } else {
-                HeaderGlyph(Icons.Outlined.Refresh, "Refresh") { vm.refresh() }
-            }
+            HeaderGlyph(Icons.Outlined.Refresh, "Refresh", enabled = !refreshing) { vm.refresh() }
             HeaderGlyph(
                 if (columns == 1) Icons.Outlined.GridView else Icons.AutoMirrored.Outlined.ViewList,
                 when (columns) {
@@ -506,10 +503,15 @@ private enum class BulkAction(val title: String, val confirmLabel: String) {
 }
 
 @Composable
-private fun HeaderGlyph(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit) {
+private fun HeaderGlyph(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
     Icon(
         icon, contentDescription = label, tint = Hearth.palette.textSecondary,
-        modifier = Modifier.clip(RoundedCornerShape(50)).clickable(onClick = onClick).padding(Hearth.Spacing.S).size(22.dp),
+        modifier = Modifier.clip(RoundedCornerShape(50)).alpha(if (enabled) 1f else 0.4f).clickable(enabled = enabled, onClick = onClick).padding(Hearth.Spacing.S).size(22.dp),
     )
 }
 
@@ -537,9 +539,9 @@ private fun BulkActionBar(
         horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
     ) {
         Text("$count selected", style = HearthText.Label, color = palette.ember, modifier = Modifier.weight(1f))
-        HeaderGlyph(Icons.Filled.PlayArrow, "Play selected", onPlay)
-        HeaderGlyph(Icons.Outlined.Download, "Download selected", onDownload)
-        HeaderGlyph(Icons.Outlined.Folder, "Add selected to collection", onCollections)
+        HeaderGlyph(Icons.Filled.PlayArrow, "Play selected", onClick = onPlay)
+        HeaderGlyph(Icons.Outlined.Download, "Download selected", onClick = onDownload)
+        HeaderGlyph(Icons.Outlined.Folder, "Add selected to collection", onClick = onCollections)
         Box {
             HeaderGlyph(Icons.Outlined.MoreVert, "More selection actions") { menuExpanded = true }
             DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
@@ -561,7 +563,7 @@ private fun BulkActionBar(
                 )
             }
         }
-        HeaderGlyph(Icons.Outlined.Close, "Cancel selection", onCancel)
+        HeaderGlyph(Icons.Outlined.Close, "Cancel selection", onClick = onCancel)
     }
 }
 

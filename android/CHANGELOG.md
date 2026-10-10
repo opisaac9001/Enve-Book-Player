@@ -2,6 +2,10 @@
 
 Release notes for the Android app. Versions are `<name> build <code>`, matching `versionName` and `versionCode` in `app/build.gradle.kts`.
 
+## Unreleased
+
+- Removed the duplicate orange library loading indicator; pull-to-refresh keeps its grey spinner.
+
 ## 1.2 build 53 — 2026-10-09
 
 - Added separate user profiles with isolated settings, history, downloads, and sync state.
