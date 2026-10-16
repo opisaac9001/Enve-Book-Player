@@ -44,6 +44,7 @@ import com.enve.core.data.model.Chapter
 import com.enve.core.data.model.toShallowBook
 import com.enve.core.data.provider.ProviderMetadataUpdate
 import com.enve.core.data.remote.ConnectionScope
+import com.enve.core.di.ApplicationScope
 import com.enve.engine.library.BookOrbitCollectionEdit
 import com.enve.engine.library.BookOrbitCollectionMembership
 import com.enve.engine.library.LibraryFacade
@@ -55,13 +56,16 @@ import com.enve.engine.library.LibraryMetadataMatch
 import com.enve.engine.library.LibraryShelfPage
 import com.enve.engine.library.LibraryConnectionOption
 import com.enve.engine.library.AudiobookshelfHistoryCandidate
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -93,6 +97,7 @@ class LibraryFacadeImpl @Inject constructor(
     private val history: HistorySessionStore,
     private val crossProviderHistory: AbsCrossProviderHistorySync,
     private val groupingOverrides: AudiobookGroupingOverrideStore,
+    @ApplicationScope scope: CoroutineScope,
 ) : LibraryFacade {
     override val locallyMatchedMetadataKeys: Flow<Set<String>> = matchedMetadata.matchedKeys
     override val historySessions = history.sessions
@@ -104,22 +109,31 @@ class LibraryFacadeImpl @Inject constructor(
     override val recentlyAdded: Flow<List<Book>> = visibleBooks(cache::recentlyAddedBooksExcludingLibraries)
     override val downloaded: Flow<List<Book>> = visibleBooks(cache::downloadedBooksExcludingLibraries)
     override val allBooks: Flow<List<Book>> = visibleBooks(cache::rawAllBooksExcludingLibraries)
-    override val totalCount: Flow<Int> = prefs.excludedLibraryIds.flatMapLatest(cache::totalCountExcludingLibraries)
-    override val libraries: Flow<List<com.enve.core.data.model.Library>> = cache.libraries
+        .shareIn(scope, SharingStarted.WhileSubscribed(5_000, replayExpirationMillis = 0), replay = 1)
+    override val totalCount: Flow<Int> = allBooks.map { it.size }
+    override val libraries: Flow<List<com.enve.core.data.model.Library>> =
+        combine(cache.libraries, connectionRegistry.connections) { libraries, connections ->
+            val disabled = connections.filterNot { it.enabled }.mapTo(mutableSetOf()) { it.id }
+            libraries.filterNot { it.connectionId in disabled }
+        }
     override val isRefreshing: StateFlow<Boolean> = cache.isRefreshing
 
     private fun visibleBooks(source: (Set<String>) -> Flow<List<Book>>): Flow<List<Book>> =
         prefs.excludedLibraryIds.flatMapLatest { excluded ->
-            combine(source(excluded), duplicateGroups.groups) { books, groups ->
-                books.visibleLibraryBooks(excluded).filterNot { it.uniqueKey in groups }
+            combine(source(excluded), duplicateGroups.groups, connectionRegistry.connections) { books, groups, connections ->
+                val disabled = connections.filterNot { it.enabled }.mapTo(mutableSetOf()) { it.id }
+                books.visibleLibraryBooks(excluded, disabled).filterNot { it.uniqueKey in groups }
             }
         }
 
     private suspend fun visibleBooks(books: List<Book>): List<Book> =
-        books.visibleLibraryBooks(prefs.excludedLibraryIds.first()).filterNot { it.uniqueKey in duplicateGroups.groups.value }
+        books.visibleLibraryBooks(prefs.excludedLibraryIds.first(), disabledConnectionIds()).filterNot { it.uniqueKey in duplicateGroups.groups.value }
 
     private suspend fun Book.takeIfVisible(): Book? =
-        takeIf { it.isVisibleLibraryBook(prefs.excludedLibraryIds.first()) && it.uniqueKey !in duplicateGroups.groups.value }
+        takeIf { it.isVisibleLibraryBook(prefs.excludedLibraryIds.first(), disabledConnectionIds()) && it.uniqueKey !in duplicateGroups.groups.value }
+
+    private suspend fun disabledConnectionIds(): Set<String> =
+        connectionRegistry.connections.first().filterNot { it.enabled }.mapTo(mutableSetOf()) { it.id }
 
     override suspend fun browseSeries(): List<BrowseGroup> = aggregator.getBrowseSeries()
     override suspend fun browseAuthors(): List<BrowseGroup> = aggregator.getBrowseAuthors()
@@ -474,6 +488,7 @@ class LibraryFacadeImpl @Inject constructor(
         }
 
     override suspend fun download(book: Book) {
+        if (book.source == BookSource.LOCAL) return
         if (book.usesOfflineAudioDownload()) {
             offlineDownloads.startAudiobookDownload(book, allowCellular = prefs.downloadOnCellular.first())
         } else {

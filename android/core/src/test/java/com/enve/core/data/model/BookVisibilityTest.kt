@@ -33,6 +33,22 @@ class BookVisibilityTest {
         assertEquals(listOf(book), listOf(book).visibleLibraryBooks(setOf("connection-a::hidden")))
     }
 
+    @Test
+    fun disabledConnectionIsFilteredBeforeDeduplicatingAccounts() {
+        val disabled = book("same", "connection-a", "connection-a::books")
+        val enabled = book("same", "connection-b", "connection-b::books")
+        val imported = book("local", "unused", null).copy(source = BookSource.LOCAL, connectionId = null)
+
+        assertEquals(
+            listOf(enabled, imported),
+            listOf(disabled, enabled, imported).visibleLibraryBooks(emptySet(), setOf("connection-a")),
+        )
+        assertEquals(
+            listOf(disabled, imported),
+            listOf(disabled, enabled, imported).visibleLibraryBooks(emptySet()),
+        )
+    }
+
     private fun book(id: String, connectionId: String, libraryId: String?) = Book(
         id = id,
         title = id,

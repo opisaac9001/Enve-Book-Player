@@ -15,8 +15,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -45,6 +47,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import com.enve.app.data.reader.ReaderTheme
 import com.enve.app.ui.screens.pageLabel
@@ -77,6 +80,7 @@ fun HearthComicChrome(
     onOpenSettings: () -> Unit,
     onCloseSettings: () -> Unit,
     onSettingsChange: (ComicReaderSettings) -> Unit,
+    onDirectionChange: (ComicReadingDirection?) -> Unit,
     onPageChange: (Int) -> Unit,
     restReminder: ReaderRestReminderSpec,
 ) {
@@ -112,7 +116,9 @@ fun HearthComicChrome(
             if (state.showSettingsSheet) {
                 HearthComicSettingsSheet(
                     settings = baseSettings,
+                    directionOverride = state.directionOverride,
                     onSettingsChange = onSettingsChange,
+                    onDirectionChange = onDirectionChange,
                     onDismiss = onCloseSettings,
                 )
             }
@@ -195,7 +201,9 @@ private fun ComicBottomVeil(
 @Composable
 private fun HearthComicSettingsSheet(
     settings: ComicReaderSettings,
+    directionOverride: ComicReadingDirection?,
     onSettingsChange: (ComicReaderSettings) -> Unit,
+    onDirectionChange: (ComicReadingDirection?) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val palette = Hearth.palette
@@ -217,9 +225,12 @@ private fun HearthComicSettingsSheet(
             }
 
             Overline("Direction")
-            ChipRow(ComicReadingDirection.entries, { it.label }, { it == settings.readingDirection }) {
-                onSettingsChange(settings.copy(readingDirection = it))
-            }
+            ChipRow(
+                listOf(null) + ComicReadingDirection.entries,
+                { it?.label ?: if (directionOverride == null) "Auto · ${settings.readingDirection.label}" else "Auto" },
+                { it == directionOverride },
+                onDirectionChange,
+            )
 
             Overline("Page fit")
             ChipRow(ComicPageFit.entries, { it.label }, { it == settings.pageFit }) {
@@ -258,9 +269,9 @@ private fun HearthComicSettingsSheet(
             if (settings.brightness >= 0f) {
                 Text(
                     "Use system brightness", style = HearthText.Label, color = palette.ember,
-                    modifier = Modifier.clip(RoundedCornerShape(50))
-                        .clickable { onSettingsChange(settings.copy(brightness = -1f)) }
-                        .padding(horizontal = Hearth.Spacing.S, vertical = Hearth.Spacing.XS),
+                    modifier = Modifier.sizeIn(minHeight = 48.dp).clip(RoundedCornerShape(50))
+                        .clickable(role = Role.Button) { onSettingsChange(settings.copy(brightness = -1f)) }
+                        .wrapContentHeight().padding(horizontal = Hearth.Spacing.S, vertical = Hearth.Spacing.XS),
                 )
             }
 

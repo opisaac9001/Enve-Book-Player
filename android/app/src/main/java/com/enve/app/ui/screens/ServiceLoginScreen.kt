@@ -7,6 +7,7 @@ import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.browser.auth.AuthTabIntent
 import androidx.compose.animation.*
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -77,6 +78,7 @@ fun ServiceLoginScreen(
     onLogin: () -> Unit = {},
     onLoginWithToken: (String) -> Unit = {},
     onStartOidcLogin: () -> Unit = {},
+    onOidcCallback: (Uri) -> Unit = {},
     onStartPlexOAuth: () -> Unit = {},
     onCancelPlexOAuth: () -> Unit = {},
     onConsumeBrowserAuthUrl: () -> Unit = {},
@@ -132,6 +134,12 @@ fun ServiceLoginScreen(
         }
     }
 
+    val siloAuthLauncher = rememberLauncherForActivityResult(AuthTabIntent.AuthenticateUserResultContract()) { result ->
+        if (result.resultCode == AuthTabIntent.RESULT_OK) {
+            result.resultUri?.let(onOidcCallback)
+        }
+    }
+
     LaunchedEffect(authState.browserAuthUrl, authState.browserAuthRequiredCookie) {
         val url = authState.browserAuthUrl
         if (!url.isNullOrBlank()) {
@@ -147,7 +155,13 @@ fun ServiceLoginScreen(
                     ),
                 )
             } else {
-                if (authState.selectedSource == BookSource.GRIMMORY) {
+                if (authState.selectedSource == BookSource.SILO) {
+                    AuthTabIntent.Builder().build().launch(
+                        siloAuthLauncher,
+                        Uri.parse(url),
+                        "org.siloserver.silo",
+                    )
+                } else if (authState.selectedSource == BookSource.GRIMMORY) {
                     com.enve.app.ui.components.openExternalOAuthBrowser(context, url, HearthEmber)
                 } else {
                     com.enve.app.ui.components.openInAppBrowser(context, url, HearthEmber)
@@ -379,7 +393,6 @@ private fun UnifiedLoginSection(
                     AuthTab.SSO -> SsoContent(
                         source = source, isLoading = authState.isLoading,
                         onConnect = onStartOidcLogin, metrics = metrics,
-                        serverUrl = authState.serverUrl,
                         komgaOauthProvider = authState.komgaOauthProvider,
                         onKomgaOauthProviderChange = onKomgaOauthProviderChange,
                     )
@@ -796,7 +809,6 @@ private fun SsoContent(
     isLoading: Boolean,
     onConnect: () -> Unit,
     metrics: AdaptiveMetrics,
-    serverUrl: String,
     komgaOauthProvider: String,
     onKomgaOauthProviderChange: (String) -> Unit,
 ) {
@@ -835,7 +847,7 @@ private fun SsoContent(
         val redirectUri = when (source) {
             BookSource.AUDIOBOOKSHELF -> com.enve.core.auth.OAuthRedirectUris.AUDIOBOOKSHELF
             BookSource.GRIMMORY -> com.enve.core.auth.OAuthRedirectUris.GRIMMORY
-            BookSource.BOOKORBIT -> serverUrl.trim().trimEnd('/').takeIf { it.isNotBlank() }?.let { "$it/oauth2-callback" }
+            BookSource.BOOKORBIT -> com.enve.core.auth.OAuthRedirectUris.BOOKORBIT
             else -> null
         }
         if (redirectUri != null) {
@@ -858,6 +870,13 @@ private fun SsoContent(
                         fontSize = DS.FontSize.Caption.scaled(metrics),
                         fontWeight = FontWeight.SemiBold,
                     )
+                    if (source == BookSource.BOOKORBIT) {
+                        Text(
+                            "BookOrbit 3.0 or newer is required for SSO.",
+                            color = colors.secondaryText,
+                            fontSize = DS.FontSize.Caption.scaled(metrics),
+                        )
+                    }
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(DS.Spacing.SM.scaled(metrics)),

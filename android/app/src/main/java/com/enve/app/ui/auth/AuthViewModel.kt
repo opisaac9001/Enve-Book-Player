@@ -23,6 +23,9 @@ import com.enve.bookorbit.auth.BookOrbitOidcFlow
 import com.enve.app.data.repository.GrimmoryRepository
 import com.enve.komga.KomgaRepository
 import com.enve.silo.SiloRepository
+import com.enve.silo.auth.SiloOidcCallback
+import com.enve.silo.auth.SiloOidcFlow
+import com.enve.silo.auth.SiloOidcStart
 import com.enve.app.data.repository.LibraryCacheRepository
 import com.enve.storyteller.StorytellerRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -123,6 +126,7 @@ class AuthViewModel @Inject constructor(
     private val absOidcFlow: com.enve.audiobookshelf.auth.AbsOidcFlow,
     private val komgaOAuthFlow: com.enve.komga.auth.KomgaOAuthFlow,
     private val bookOrbitOidcFlow: BookOrbitOidcFlow,
+    private val siloOidcFlow: SiloOidcFlow,
     private val passwordLogins: Map<BookSource, @JvmSuppressWildcards PasswordLogin>,
 ) : ViewModel() {
 
@@ -681,8 +685,8 @@ class AuthViewModel @Inject constructor(
 
     private fun prepareCloudRootSelection(connectionId: String) {
         viewModelScope.launch {
-            val roots = repository.getTorBoxRootCandidates(connectionId)
-                .getOrDefault(emptyList())
+            val result = repository.getTorBoxRootCandidates(connectionId)
+            val roots = result.getOrNull().orEmpty()
             _state.update {
                 it.copy(
                     isLoading = false,
@@ -692,7 +696,9 @@ class AuthViewModel @Inject constructor(
                     pendingCloudRootConnectionId = connectionId,
                     cloudRootCandidates = roots,
                     selectedCloudRootPaths = emptyList(),
-                    error = null,
+                    error = result.exceptionOrNull()?.let { error ->
+                        NetworkErrorMapper.mapForUser(error.message ?: "TorBox folders could not be loaded. Try again.")
+                    },
                 )
             }
         }
@@ -884,6 +890,29 @@ class AuthViewModel @Inject constructor(
                     }
                 }
 
+                BookSource.SILO -> {
+                    val normalizedUrl = normalizeUrl(current.serverUrl, current.urlScheme)
+                    val validationError = validateServerUrl(normalizedUrl)
+                    if (validationError != null) {
+                        _state.update { it.copy(isLoading = false, error = validationError) }
+                        return@launch
+                    }
+                    stagePendingLoginHeaders(current.effectiveHeaders)
+                    when (val result = siloOidcFlow.start(normalizedUrl, current.effectiveHeaders)) {
+                        is SiloOidcStart.Ready ->
+                            _state.update {
+                                it.copy(
+                                    isLoading = false,
+                                    serverUrl = result.serverUrl,
+                                    authMode = ConnectionAuthMode.SSO,
+                                    browserAuthUrl = result.authUrl,
+                                )
+                            }
+                        is SiloOidcStart.Failed ->
+                            _state.update { it.copy(isLoading = false, error = result.message) }
+                    }
+                }
+
                 else -> {
                     _state.update {
                         it.copy(
@@ -976,7 +1005,13 @@ class AuthViewModel @Inject constructor(
         val isStorytellerCallback = scheme == "storyteller"
         val isAbsOauthCallback = scheme == "audiobookshelf" && host == "oauth"
         val isGrimmoryOauthCallback = scheme == "grimmory" || scheme == "booklore"
-        val isBookOrbitOauthCallback = source == BookSource.BOOKORBIT && path.contains("oauth2-callback")
+        val isBookOrbitOauthCallback = scheme == "bookorbit" && host == "oauth2-callback" && path.isEmpty()
+        val isSiloOauthCallback = scheme == "org.siloserver.silo" && host.isEmpty() && path == "/auth/callback"
+
+        if (isSiloOauthCallback) {
+            handleSiloOauthCallback(uri)
+            return
+        }
 
         if (isAbsOauthCallback) {
             handleAbsOauthCallback(uri)
@@ -1223,7 +1258,10 @@ class AuthViewModel @Inject constructor(
                     }
                     val connectionId = upsertConnectionForCurrentState(connState)
                     bookOrbitOidcFlow.persistTokensForConnection(connectionId, result.username)
+                    prefs.setActiveBookSource(BookSource.BOOKORBIT)
+                    prefs.saveServerInfo(result.serverUrl, result.username)
                     prefs.setActiveConnectionId(connectionId)
+                    repository.invalidateListCaches()
                     _state.update {
                         it.copy(
                             isLoading = false,
@@ -1237,6 +1275,41 @@ class AuthViewModel @Inject constructor(
                 is com.enve.bookorbit.auth.BookOrbitOidcCallback.NoPending ->
                     _state.update { it.copy(isLoading = false, error = "BookOrbit SSO callback received without a pending login. Try again.") }
                 is com.enve.bookorbit.auth.BookOrbitOidcCallback.Failed ->
+                    _state.update { it.copy(isLoading = false, error = result.message) }
+            }
+        }
+    }
+
+    private fun handleSiloOauthCallback(uri: Uri) {
+        viewModelScope.launch {
+            _state.update { it.copy(isLoading = true, error = null) }
+            when (val result = siloOidcFlow.completeCallback(uri)) {
+                is SiloOidcCallback.Success -> {
+                    val connState = _state.value.copy(
+                        selectedSource = BookSource.SILO,
+                        serverUrl = result.serverUrl,
+                        username = result.username,
+                        authMode = ConnectionAuthMode.SSO,
+                    )
+                    _state.update { connState }
+                    val connectionId = upsertConnectionForCurrentState(connState)
+                    siloOidcFlow.persistTokensForConnection(connectionId, result.username)
+                    prefs.setActiveBookSource(BookSource.SILO)
+                    prefs.saveServerInfo(result.serverUrl, result.username)
+                    prefs.setActiveConnectionId(connectionId)
+                    _state.update {
+                        it.copy(
+                            isLoading = false,
+                            isConnected = true,
+                            password = "",
+                            activeConnectionId = connectionId,
+                            loginEpoch = it.loginEpoch + 1,
+                        )
+                    }
+                }
+                SiloOidcCallback.NoPending ->
+                    _state.update { it.copy(isLoading = false, error = "Silo SSO callback received without a pending login. Try again.") }
+                is SiloOidcCallback.Failed ->
                     _state.update { it.copy(isLoading = false, error = result.message) }
             }
         }

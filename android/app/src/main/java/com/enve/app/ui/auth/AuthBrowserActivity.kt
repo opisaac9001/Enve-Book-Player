@@ -238,6 +238,7 @@ class AuthBrowserActivity : ComponentActivity() {
 
     private fun handleUrl(uri: Uri): Boolean {
         if (!isProfileActive()) return true
+        if (uri.toString() == "about:blank") return false
         markCookieAuthNavigation(uri)
         if (isAuthCallback(uri)) {
             val enrichedUri = if (originServerUrl.isNotBlank() && uri.getQueryParameter("server").isNullOrBlank()) {
@@ -308,6 +309,7 @@ class AuthBrowserActivity : ComponentActivity() {
         if (scheme == "storyteller") return true
         if (scheme == "audiobookshelf" && host == "oauth") return true
         if (scheme == "grimmory" || scheme == "booklore") return true
+        if (scheme == "bookorbit" && host == "oauth2-callback" && path.isEmpty()) return true
         if (requiredCookieName != null && (scheme == "http" || scheme == "https")) return false
         if (path.contains("oauth2-callback")) return true
         return host == "auth-callback" || path.contains("auth-callback")

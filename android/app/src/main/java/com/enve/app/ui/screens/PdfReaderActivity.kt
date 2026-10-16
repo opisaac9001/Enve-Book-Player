@@ -58,7 +58,7 @@ class PdfReaderActivity : ComponentActivity() {
 
 
     private val prefs get() = profileBinding.runtime.component.preferences()
-    private val okHttpClient get() = profileBinding.runtime.component.unauthenticatedHttpClient()
+    private val okHttpClient get() = profileBinding.runtime.component.httpClient()
     private val repository get() = profileBinding.runtime.component.grimmoryRepository()
     private val aggregatorRepository get() = profileBinding.runtime.component.aggregator()
     private val bookCacheDao get() = profileBinding.runtime.component.bookCacheDao()
@@ -175,16 +175,18 @@ class PdfReaderActivity : ComponentActivity() {
             ?: repository.getEbookDownloadUrl(bookId)
 
         val file = try {
-            downloadReaderFile(
-                cacheDir = profileBinding.runtime.component.storageLocations().cacheDirectory,
-                okHttpClient = okHttpClient,
-                bookId = bookId,
-                format = ReaderFormat.PDF,
-                downloadUrl = downloadUrl,
-                contentResolver = contentResolver,
-                onStatus = { status -> uiState = uiState.copy(loadingText = status) },
-                onProgress = { progress -> uiState = uiState.copy(loadingProgress = progress) },
-            )
+            withContext(com.enve.core.data.remote.ConnectionScope.asContextElement(bookConnectionId)) {
+                downloadReaderFile(
+                    cacheDir = profileBinding.runtime.component.storageLocations().cacheDirectory,
+                    okHttpClient = okHttpClient,
+                    bookId = bookId,
+                    format = ReaderFormat.PDF,
+                    downloadUrl = downloadUrl,
+                    contentResolver = contentResolver,
+                    onStatus = { status -> uiState = uiState.copy(loadingText = status) },
+                    onProgress = { progress -> uiState = uiState.copy(loadingProgress = progress) },
+                )
+            }
         } catch (e: Exception) {
             uiState = uiState.copy(isLoading = false, error = "Download failed: ${e.message}")
             return

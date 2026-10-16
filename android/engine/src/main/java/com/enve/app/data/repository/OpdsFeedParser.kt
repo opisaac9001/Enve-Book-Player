@@ -640,7 +640,7 @@ object OpdsFeedParser {
 
     private fun formatForToken(token: String?): OpdsFormat = when (token) {
         null -> OpdsFormat.UNKNOWN
-        "epub" -> OpdsFormat.EPUB
+        "epub", "kepub" -> OpdsFormat.EPUB
         "pdf" -> OpdsFormat.PDF
         "cbz" -> OpdsFormat.CBZ
         "cbr" -> OpdsFormat.CBR

@@ -642,7 +642,7 @@ class LibraryViewModel @Inject constructor(
             _state.update { it.copy(isRefreshing = true) }
 
             bookloreRepository.invalidateAllCaches()
-            aggregatorRepository.invalidateCaches()
+            libraryCacheRepository.refreshNow()
             refreshLibraries()
 
             _state.update { it.copy(searchQuery = it.searchQuery, isRefreshing = false) }

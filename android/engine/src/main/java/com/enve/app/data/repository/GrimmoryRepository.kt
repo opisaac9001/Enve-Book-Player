@@ -167,8 +167,14 @@ internal fun grimmoryEbookFileProgress(
     val canonicalCfi = foliateCheckpoint?.epubCfi
         ?.trim()
         ?.takeIf(EpubBridgeCheckpointCodec::isFullEpubCfi)
-    val contentSourceProgressPercent = foliateCheckpoint
-        ?.takeIf { canonicalCfi != null }
+    val readiumHref = checkpoint
+        ?.takeIf { it.sourceEngine == ReaderEngineKind.READIUM && normalizedBookType != "PDF" && normalizedBookType != "CBX" }
+        ?.href
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+    val positionedCheckpoint = foliateCheckpoint?.takeIf { canonicalCfi != null }
+        ?: checkpoint?.takeIf { readiumHref != null }
+    val contentSourceProgressPercent = positionedCheckpoint
         ?.resourceProgression
         ?.takeIf { it.isFinite() }
         ?.coerceIn(0.0, 1.0)
@@ -179,7 +185,7 @@ internal fun grimmoryEbookFileProgress(
         positionData = pagePosition ?: canonicalCfi,
         positionHref = canonicalCfi?.let {
             foliateCheckpoint.href?.trim()?.takeIf(String::isNotBlank)
-        },
+        } ?: readiumHref,
         progressPercent = (totalProgression.toDouble() * 100.0).coerceIn(0.0, 100.0),
         ttsPositionCfi = null,
         contentSourceProgressPercent = contentSourceProgressPercent,
@@ -195,6 +201,7 @@ class GrimmoryRepository @Inject constructor(
     private val vault: CredentialVault,
     private val connectionRegistry: com.enve.core.data.local.ConnectionRegistry,
     private val listProgress: GrimmoryListProgressResolver,
+    private val torBoxCatalog: TorBoxCatalogStore,
     @ApplicationContext private val context: Context,
     @ApplicationScope parentScope: CoroutineScope =
         CoroutineScope(SupervisorJob() + Dispatchers.Default),
@@ -215,15 +222,6 @@ class GrimmoryRepository @Inject constructor(
         val connectionId: String?,
         val username: String,
         val cloudRootPaths: List<String> = emptyList(),
-    )
-    private data class CloudAudioFile(
-        val id: String,
-        val name: String,
-        val path: String,
-        val parentFolder: String?,
-        val link: String,
-        val size: Long?,
-        val coverUrl: String? = null,
     )
     private data class CloudCoverFile(
         val path: String,
@@ -294,13 +292,14 @@ class GrimmoryRepository @Inject constructor(
 
     private val detailedBookCache = androidx.collection.LruCache<BookCacheKey, Book>(200)
     private val audiobookInfoCache = androidx.collection.LruCache<BookCacheKey, AudiobookInfoDto>(200)
-    private var skipPersistentBookCacheNextFetch = false
+    @Volatile private var listCachesInvalidatedAt = 0L
 
     private val backgroundScope = CoroutineScope(SupervisorJob(parentScope.coroutineContext[Job]) + Dispatchers.IO)
 
     private data class CacheEntry<T>(val data: T, val timestamp: Long = System.currentTimeMillis())
     private val cacheTtlMs = 5 * 60 * 1000L
     private val BOOK_INDEX_MAX_AGE_MS = 30 * 60 * 1000L
+    private val LIBRARIES_MAX_AGE_MS = 10 * 60 * 1000L
 
     private val jsonSerializer = Json {
         ignoreUnknownKeys = true
@@ -367,9 +366,9 @@ class GrimmoryRepository @Inject constructor(
         booksCache.clear()
         librariesCache.clear()
         recentlyAddedCache.clear()
+        torBoxCatalog.invalidate()
         clearTorBoxBookIndexCache()
-
-        skipPersistentBookCacheNextFetch = true
+        listCachesInvalidatedAt = System.currentTimeMillis()
     }
 
     private fun accountCacheKey(): String {
@@ -414,6 +413,7 @@ class GrimmoryRepository @Inject constructor(
         source: BookSource,
         serverUrl: String,
         libraryId: String?,
+        notBefore: Long = 0L,
     ): List<BookSummaryDto>? = withContext(Dispatchers.IO) {
         runCatching {
             val file = cacheFileForBooks(source, serverUrl, libraryId)
@@ -424,7 +424,7 @@ class GrimmoryRepository @Inject constructor(
             }
             if (source == BookSource.GRIMMORY && payload.formatInventoryVersion != 1) return@runCatching null
 
-            if (System.currentTimeMillis() - payload.savedAt > BOOK_INDEX_MAX_AGE_MS) {
+            if (System.currentTimeMillis() - payload.savedAt > BOOK_INDEX_MAX_AGE_MS || payload.savedAt < notBefore) {
                 return@runCatching null
             }
 
@@ -481,6 +481,7 @@ class GrimmoryRepository @Inject constructor(
         source: BookSource,
         serverUrl: String,
         libraryId: String?,
+        notBefore: Long,
     ): List<Book>? = withContext(Dispatchers.IO) {
         runCatching {
             val file = cacheFileForBooks(source, serverUrl, libraryId)
@@ -490,7 +491,7 @@ class GrimmoryRepository @Inject constructor(
                 return@runCatching null
             }
 
-            if (System.currentTimeMillis() - payload.savedAt > 3600_000) return@runCatching null
+            if (System.currentTimeMillis() - payload.savedAt > 3600_000 || payload.savedAt < notBefore) return@runCatching null
             payload.books
         }.getOrNull()
     }
@@ -516,12 +517,13 @@ class GrimmoryRepository @Inject constructor(
     private suspend fun loadLibrariesFromDisk(
         source: BookSource,
         serverUrl: String,
+        notBefore: Long = 0L,
     ): List<LibraryDto>? = withContext(Dispatchers.IO) {
         runCatching {
             val file = cacheFileForLibraries(source, serverUrl)
             if (!file.exists() || file.length() == 0L) return@runCatching null
             val payload = jsonSerializer.decodeFromString<LibrariesCachePayload>(file.readText())
-            if (payload.source != source.name || payload.serverUrl != serverUrl) return@runCatching null
+            if (payload.source != source.name || payload.serverUrl != serverUrl || payload.savedAt < notBefore) return@runCatching null
             payload.libraries
         }.getOrNull()
     }
@@ -546,12 +548,13 @@ class GrimmoryRepository @Inject constructor(
         source: BookSource,
         serverUrl: String,
         lane: String,
+        notBefore: Long = 0L,
     ): List<BookSummaryDto>? = withContext(Dispatchers.IO) {
         runCatching {
             val file = cacheFileForHomeLane(source, serverUrl, lane)
             if (!file.exists() || file.length() == 0L) return@runCatching null
             val payload = jsonSerializer.decodeFromString<HomeLaneCachePayload>(file.readText())
-            if (payload.source != source.name || payload.serverUrl != serverUrl || payload.lane != lane) return@runCatching null
+            if (payload.source != source.name || payload.serverUrl != serverUrl || payload.lane != lane || payload.savedAt < notBefore) return@runCatching null
             payload.summaries
         }.getOrNull()
     }
@@ -586,6 +589,19 @@ class GrimmoryRepository @Inject constructor(
             }
             if (accessToken.isBlank()) {
                 return Result.failure(Exception("Access token is required"))
+            }
+
+            if (source == BookSource.TORBOX) {
+                val url = normalizedTorBoxBase(serverUrl).toHttpUrlOrNull()?.newBuilder()
+                    ?.addPathSegments("torrents/mylist")
+                    ?.addQueryParameter("limit", "1")
+                    ?.build() ?: return Result.failure(Exception("TorBox server URL is invalid"))
+                retryTorBoxRequest {
+                    val request = Request.Builder().url(url)
+                        .header("Authorization", "Bearer $accessToken").build()
+                    val body = torBoxWebDavClient.newCall(request).torBoxResponseBody()
+                    jsonSerializer.decodeFromString<TorBoxListResponseDto>(body).requireTorBoxList()
+                }
             }
 
             prefs.setActiveBookSource(source)
@@ -686,8 +702,9 @@ class GrimmoryRepository @Inject constructor(
                 return Result.success(emptyList())
             }
 
-            if (source == BookSource.GRIMMORY && !skipPersistentBookCacheNextFetch) {
-                val cached = loadLibrariesFromDisk(source, serverUrl)
+            if (source == BookSource.GRIMMORY) {
+                val notBefore = maxOf(listCachesInvalidatedAt, System.currentTimeMillis() - LIBRARIES_MAX_AGE_MS)
+                val cached = loadLibrariesFromDisk(source, serverUrl, notBefore)
                 if (!cached.isNullOrEmpty()) {
                     val mapped = cached.map { it.toLibrary() }
                     librariesCache[ctx.cacheScope] = CacheEntry(mapped)
@@ -730,13 +747,11 @@ class GrimmoryRepository @Inject constructor(
                 BookSource.LOCAL -> listOf(Library(id = "local-root", name = "Local Files", bookCount = 0))
                 else -> emptyList()
             }
-            skipPersistentBookCacheNextFetch = false
             librariesCache[ctx.cacheScope] = CacheEntry(libs)
             Result.success(libs)
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
-            skipPersistentBookCacheNextFetch = false
             val source = ctx.source
             if (source == BookSource.GRIMMORY) {
                 val serverUrl = ctx.serverUrl
@@ -759,6 +774,7 @@ class GrimmoryRepository @Inject constructor(
         dir: String = "desc"
     ): Result<List<Book>> {
         val ctx = resolveScopedContext()
+        if (ctx.source == BookSource.TORBOX) return runSuspendCatching { fetchTorBoxBooks(ctx, libraryId) }
         booksCache[ctx.cacheScope]?.takeIf { it.isValid() && it.data.first == libraryId }?.let { return Result.success(it.data.second) }
         val coalesceKey = "${ctx.source.name}|${ctx.serverUrl}|${accountCacheKey()}|${libraryId ?: ""}"
         return mutexForBooksKey(coalesceKey).withLock {
@@ -783,8 +799,8 @@ class GrimmoryRepository @Inject constructor(
                 return Result.success(emptyList())
             }
 
-            if (source == BookSource.GRIMMORY && !skipPersistentBookCacheNextFetch) {
-                val cachedSummaries = loadBooksIndexFromDisk(source, serverUrl, libraryId)
+            if (source == BookSource.GRIMMORY) {
+                val cachedSummaries = loadBooksIndexFromDisk(source, serverUrl, libraryId, listCachesInvalidatedAt)
                 if (!cachedSummaries.isNullOrEmpty()) {
                     val cachedMapped = appendCompanionAudiobooks(cachedSummaries.toBooks(serverUrl, token), serverUrl, token)
                     val withOverrides = applyCachedTitleOverrides(cachedMapped)
@@ -798,8 +814,8 @@ class GrimmoryRepository @Inject constructor(
                     )
                     return Result.success(withOverrides)
                 }
-            } else if (source != BookSource.GRIMMORY && source != BookSource.TORBOX && !skipPersistentBookCacheNextFetch) {
-                val cached = loadGenericBooksFromDisk(source, serverUrl, libraryId)
+            } else if (source != BookSource.TORBOX) {
+                val cached = loadGenericBooksFromDisk(source, serverUrl, libraryId, listCachesInvalidatedAt)
                 if (!cached.isNullOrEmpty()) {
                     booksCache[ctx.cacheScope] = CacheEntry(Pair(libraryId, cached))
                     return Result.success(cached)
@@ -831,13 +847,11 @@ class GrimmoryRepository @Inject constructor(
                 saveGenericBooksToDisk(source, serverUrl, libraryId, resolved)
             }
 
-            skipPersistentBookCacheNextFetch = false
             booksCache[ctx.cacheScope] = CacheEntry(Pair(libraryId, resolved))
             Result.success(resolved)
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
-            skipPersistentBookCacheNextFetch = false
             if (ctx.source == BookSource.GRIMMORY) {
                 val cachedSummaries = loadBooksIndexFromDisk(ctx.source, ctx.serverUrl, libraryId)
                 if (!cachedSummaries.isNullOrEmpty()) {
@@ -953,12 +967,10 @@ class GrimmoryRepository @Inject constructor(
                     .filter { it.mediaType == AppMediaType.AUDIOBOOK && it.isEligibleForGrimmoryContinue() }
                     .takeIf { it.isNotEmpty() }
                     ?: deriveContinueListeningFromLibrary()
-                skipPersistentBookCacheNextFetch = false
                 Result.success(lane)
             } else {
                 val fallback = deriveContinueListeningFromLibrary()
                 if (fallback.isNotEmpty()) {
-                    skipPersistentBookCacheNextFetch = false
                     Result.success(fallback)
                 } else {
                     Result.failure(Exception("Failed to fetch continue listening"))
@@ -974,12 +986,10 @@ class GrimmoryRepository @Inject constructor(
                 .orEmpty()
             if (diskFallback.isNotEmpty()) {
                 val resolved = resolveAndEnrichAudiobooks(diskFallback, serverUrl, token)
-                skipPersistentBookCacheNextFetch = false
                 return Result.success(resolved.filter { it.mediaType == AppMediaType.AUDIOBOOK && it.isEligibleForGrimmoryContinue() })
             }
             val fallback = runSuspendCatching { deriveContinueListeningFromLibrary() }.getOrDefault(emptyList())
             if (fallback.isNotEmpty()) {
-                skipPersistentBookCacheNextFetch = false
                 Result.success(fallback)
             } else {
                 Result.failure(e)
@@ -1031,12 +1041,10 @@ class GrimmoryRepository @Inject constructor(
                     .filter { it.mediaType == AppMediaType.EBOOK && it.isEligibleForGrimmoryContinue() }
                     .takeIf { it.isNotEmpty() }
                     ?: deriveContinueReadingFromLibrary()
-                skipPersistentBookCacheNextFetch = false
                 Result.success(lane)
             } else {
                 val fallback = deriveContinueReadingFromLibrary()
                 if (fallback.isNotEmpty()) {
-                    skipPersistentBookCacheNextFetch = false
                     Result.success(fallback)
                 } else {
                     Result.failure(Exception("Failed to fetch continue reading"))
@@ -1052,12 +1060,10 @@ class GrimmoryRepository @Inject constructor(
                 .orEmpty()
             if (diskFallback.isNotEmpty()) {
                 val resolved = resolveAndEnrichAudiobooks(diskFallback, serverUrl, token)
-                skipPersistentBookCacheNextFetch = false
                 return Result.success(resolved.filter { it.mediaType == AppMediaType.EBOOK && it.isEligibleForGrimmoryContinue() })
             }
             val fallback = runSuspendCatching { deriveContinueReadingFromLibrary() }.getOrDefault(emptyList())
             if (fallback.isNotEmpty()) {
-                skipPersistentBookCacheNextFetch = false
                 Result.success(fallback)
             } else {
                 Result.failure(e)
@@ -1099,13 +1105,11 @@ class GrimmoryRepository @Inject constructor(
             val serverUrl = ctx.serverUrl
             val token = ctx.token
 
-            if (!skipPersistentBookCacheNextFetch) {
-                val cachedSummaries = loadHomeLaneFromDisk(source, serverUrl, "recently-added")
-                if (!cachedSummaries.isNullOrEmpty()) {
-                    val cached = resolveAndEnrichAudiobooks(cachedSummaries.toBooks(serverUrl, token), serverUrl, token)
-                    recentlyAddedCache[ctx.cacheScope] = CacheEntry(cached)
-                    return Result.success(cached)
-                }
+            val cachedSummaries = loadHomeLaneFromDisk(source, serverUrl, "recently-added", listCachesInvalidatedAt)
+            if (!cachedSummaries.isNullOrEmpty()) {
+                val cached = resolveAndEnrichAudiobooks(cachedSummaries.toBooks(serverUrl, token), serverUrl, token)
+                recentlyAddedCache[ctx.cacheScope] = CacheEntry(cached)
+                return Result.success(cached)
             }
 
             val response = api.getRecentlyAdded()
@@ -1115,13 +1119,11 @@ class GrimmoryRepository @Inject constructor(
                 val books = summaries.toBooks(serverUrl, token)
                 val resolved = resolveAndEnrichAudiobooks(books, serverUrl, token)
                 val lane = resolved.takeIf { it.isNotEmpty() } ?: deriveRecentlyAddedFromLibrary()
-                skipPersistentBookCacheNextFetch = false
                 recentlyAddedCache[ctx.cacheScope] = CacheEntry(lane)
                 Result.success(lane)
             } else {
                 val fallback = deriveRecentlyAddedFromLibrary()
                 if (fallback.isNotEmpty()) {
-                    skipPersistentBookCacheNextFetch = false
                     recentlyAddedCache[ctx.cacheScope] = CacheEntry(fallback)
                     Result.success(fallback)
                 } else {
@@ -1139,12 +1141,10 @@ class GrimmoryRepository @Inject constructor(
             if (diskFallback.isNotEmpty()) {
                 val resolved = resolveAndEnrichAudiobooks(diskFallback, serverUrl, token)
                 recentlyAddedCache[ctx.cacheScope] = CacheEntry(resolved)
-                skipPersistentBookCacheNextFetch = false
                 return Result.success(resolved)
             }
             val fallback = runSuspendCatching { deriveRecentlyAddedFromLibrary() }.getOrDefault(emptyList())
             if (fallback.isNotEmpty()) {
-                skipPersistentBookCacheNextFetch = false
                 recentlyAddedCache[ctx.cacheScope] = CacheEntry(fallback)
                 Result.success(fallback)
             } else {
@@ -1807,15 +1807,20 @@ class GrimmoryRepository @Inject constructor(
             }
             val body = response.body()
                 ?: error("Grimmory ebook progress returned an empty response.")
-            Result.success(
-                grimmoryEbookProgressSnapshot(
-                    body = body,
-                    updatedAtMs = parseIsoToEpochMs(
-                        body.epubProgress?.updatedAt
-                            ?: body.pdfProgress?.updatedAt
-                            ?: body.cbxProgress?.updatedAt,
-                    ),
+            val snapshot = grimmoryEbookProgressSnapshot(
+                body = body,
+                updatedAtMs = parseIsoToEpochMs(
+                    body.epubProgress?.updatedAt
+                        ?: body.pdfProgress?.updatedAt
+                        ?: body.cbxProgress?.updatedAt,
                 ),
+            )
+            if (snapshot == null || snapshot.epubCfi != null || body.epubProgress == null) {
+                return Result.success(snapshot)
+            }
+            val detail = runSuspendCatching { api.getBookProgressDetail(rawBookId).body()?.epubProgress }.getOrNull()
+            Result.success(
+                detail?.let { grimmoryPositionedEbookSnapshot(snapshot, body.epubProgress.href, it) } ?: snapshot,
             )
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
@@ -2121,7 +2126,9 @@ class GrimmoryRepository @Inject constructor(
                 async {
                     semaphore.withPermit {
                         val resp = api.getBooks(libraryId = libraryId, page = p, size = serverPageSize, sort = sort, dir = dir)
-                        resp.body()?.content.orEmpty()
+                        val body = resp.body()
+                        if (!resp.isSuccessful || body == null) error("Grimmory books page $p failed (HTTP ${resp.code()})")
+                        body.content
                     }
                 }
             }.awaitAll().flatten()
@@ -2151,7 +2158,8 @@ class GrimmoryRepository @Inject constructor(
             for (summary in group) {
                 val inventory = byId[summary.id]
                     ?: error("Grimmory format inventory omitted book ${summary.id}")
-                resolved += summary.withFormatInventory(inventory)
+                val enriched = summary.withFormatInventory(inventory)
+                resolved += if (enriched.libraryId == null) enriched.copy(libraryId = libraryId) else enriched
             }
         }
         return resolved
@@ -2543,7 +2551,7 @@ class GrimmoryRepository @Inject constructor(
             }.getOrNull()
         }
 
-        val supportedExtensions = setOf("epub", "pdf", "cbz", "cbr", "cbx", "mobi", "azw3", "mp3", "m4b", "aac", "flac", "ogg")
+        val supportedExtensions = setOf("epub", "kepub", "pdf", "cbz", "cbr", "cbx", "mobi", "azw3", "mp3", "m4b", "aac", "flac", "ogg")
         val pendingDirs = ArrayDeque<String>().apply { add("$base/") }
         val visitedDirs = mutableSetOf<String>()
         val candidateFiles = linkedSetOf<String>()
@@ -2614,7 +2622,7 @@ class GrimmoryRepository @Inject constructor(
     suspend fun getTorBoxRootCandidates(connectionId: String): Result<List<String>> = runSuspendCatching {
         withContext(ConnectionScope.asContextElement(connectionId)) {
             val ctx = resolveScopedContext()
-            torBoxRootCandidates(fetchTorBoxAudioFiles(ctx, rootPaths = emptyList()))
+            torBoxRootCandidates(fetchTorBoxAudioFiles(ctx, rootPaths = emptyList(), awaitFolders = true))
         }
     }
 
@@ -2662,43 +2670,33 @@ class GrimmoryRepository @Inject constructor(
     private suspend fun fetchTorBoxAudioFiles(
         ctx: ScopedContext,
         rootPaths: List<String>,
+        awaitFolders: Boolean = false,
     ): List<CloudAudioFile> {
         val baseUrl = normalizedTorBoxBase(ctx.serverUrl)
         val token = ctx.token.takeIf { it.isNotBlank() } ?: return emptyList()
-        val apiFiles = buildList {
-            addAll(fetchTorBoxDownloadTypeAudioFiles(baseUrl, token, "torrents", "torrent_id", "tb-torrent"))
-            addAll(fetchTorBoxDownloadTypeAudioFiles(baseUrl, token, "usenet", "usenet_id", "tb-usenet"))
-            addAll(fetchTorBoxDownloadTypeAudioFiles(baseUrl, token, "webdl", "web_id", "tb-webdl"))
-        }
-        val webDavFiles = fetchTorBoxWebDavAudioFiles(token)
+        val (apiFiles, webDavFiles) = torBoxCatalog.files(
+            connectionId = ctx.connectionId,
+            serverUrl = baseUrl,
+            token = token,
+            roots = rootPaths,
+            awaitFolders = awaitFolders,
+            loadApi = { fresh ->
+                withContext(ConnectionScope.asContextElement(ctx.connectionId)) {
+                    coroutineScope {
+                        listOf(
+                            async { fetchTorBoxDownloadTypeAudioFiles(baseUrl, token, "torrents", "torrent_id", "tb-torrent", fresh) },
+                            async { fetchTorBoxDownloadTypeAudioFiles(baseUrl, token, "usenet", "usenet_id", "tb-usenet", fresh) },
+                            async { fetchTorBoxDownloadTypeAudioFiles(baseUrl, token, "webdl", "web_id", "tb-webdl", fresh) },
+                        ).awaitAll().flatten()
+                    }
+                }
+            },
+            loadFolders = { fetchTorBoxWebDavAudioFiles(token, rootPaths) },
+        )
         val files = mergeTorBoxFiles(apiFiles, webDavFiles)
         val filtered = filterCloudFilesByRoots(files, rootPaths)
         Log.i("GrimmoryRepository", "TorBox files: api=${apiFiles.size} webdav=${webDavFiles.size} total=${files.size} filtered=${filtered.size} roots=${rootPaths.size}")
         return filtered
-    }
-
-    private fun mergeTorBoxFiles(apiFiles: List<CloudAudioFile>, webDavFiles: List<CloudAudioFile>): List<CloudAudioFile> {
-        val merged = LinkedHashMap<String, CloudAudioFile>()
-        apiFiles.forEach { file ->
-            merged[file.path.trim('/').lowercase()] = file
-        }
-        webDavFiles.forEach { file ->
-            val key = file.path.trim('/').lowercase()
-            val api = merged[key]
-            merged[key] = if (api == null) {
-                file
-            } else {
-                api.copy(
-                    name = file.name,
-                    path = file.path,
-                    parentFolder = file.parentFolder,
-                    link = file.link,
-                    size = api.size ?: file.size,
-                    coverUrl = file.coverUrl ?: api.coverUrl,
-                )
-            }
-        }
-        return merged.values.toList()
     }
 
     private suspend fun fetchTorBoxDownloadTypeAudioFiles(
@@ -2707,6 +2705,7 @@ class GrimmoryRepository @Inject constructor(
         typePath: String,
         idParameter: String,
         idPrefix: String,
+        fresh: Boolean,
     ): List<CloudAudioFile> {
         val files = mutableListOf<CloudAudioFile>()
         val covers = mutableListOf<CloudCoverFile>()
@@ -2720,7 +2719,7 @@ class GrimmoryRepository @Inject constructor(
                 ?.newBuilder()
                 ?.addQueryParameter("limit", limit.toString())
                 ?.addQueryParameter("offset", offset.toString())
-                ?.addQueryParameter("bypass_cache", "true")
+                ?.apply { if (fresh) addQueryParameter("bypass_cache", "true") }
                 ?.build()
                 ?.toString()
                 ?: return files
@@ -2730,10 +2729,8 @@ class GrimmoryRepository @Inject constructor(
             if (newItems.isEmpty()) break
 
             newItems.forEach { item ->
-                val hasAvailabilityFlag = item.downloadPresent != null || item.downloadFinished != null
-                if (hasAvailabilityFlag && item.downloadPresent != true && item.downloadFinished != true) {
-                    return@forEach
-                }
+                val available = item.downloadPresent ?: item.downloadFinished ?: true
+                if (!available) return@forEach
                 val itemId = item.id.toString()
                 val itemName = (item.name?.takeIf { it.isNotBlank() } ?: item.hash?.takeIf { it.isNotBlank() } ?: itemId)
                     .let(::decodeUrlPath)
@@ -2775,8 +2772,9 @@ class GrimmoryRepository @Inject constructor(
         return attachCloudCovers(files, covers)
     }
 
-    private suspend fun fetchTorBoxWebDavAudioFiles(token: String): List<CloudAudioFile> = withContext(Dispatchers.IO) {
+    private suspend fun fetchTorBoxWebDavAudioFiles(token: String, rootPaths: List<String>): List<CloudAudioFile> = withContext(Dispatchers.IO) {
         val base = "https://webdav.torbox.app/"
+        val roots = normalizeCloudRootPaths(rootPaths)
         val pendingDirs = ArrayDeque<String>().apply { add(base) }
         val visitedDirs = mutableSetOf<String>()
         val audioFiles = mutableListOf<CloudAudioFile>()
@@ -2785,12 +2783,17 @@ class GrimmoryRepository @Inject constructor(
         while (pendingDirs.isNotEmpty() && visitedDirs.size < TORBOX_WEBDAV_MAX_DIRS && audioFiles.size < TORBOX_MAX_AUDIO_FILES) {
             val dir = pendingDirs.removeFirst().trimEnd('/') + "/"
             if (!visitedDirs.add(dir)) continue
-            val listing = torBoxWebDavListing(dir, token) ?: continue
+            val listing = torBoxWebDavListing(dir, token)
             hrefsFromListing(dir, listing).forEach { href ->
                 val clean = href.substringBefore('#').substringBefore('?')
                 if (clean.trimEnd('/') == dir.trimEnd('/')) return@forEach
                 if (clean.endsWith("/")) {
-                    if (clean !in visitedDirs && pendingDirs.size < TORBOX_WEBDAV_MAX_DIRS) pendingDirs.add(clean)
+                    val path = torBoxWebDavRelativePath(base, clean)?.let(::decodeUrlPath)?.trim('/')
+                        ?: return@forEach
+                    val selected = roots.isEmpty() || roots.any { root ->
+                        path == root || path.startsWith("$root/") || root.startsWith("$path/")
+                    }
+                    if (selected && clean !in visitedDirs && pendingDirs.size < TORBOX_WEBDAV_MAX_DIRS) pendingDirs.add(clean)
                     return@forEach
                 }
                 val name = decodeUrlPathSegment(clean.substringAfterLast('/')).takeIf { it.isNotBlank() } ?: return@forEach
@@ -2824,21 +2827,14 @@ class GrimmoryRepository @Inject constructor(
         attachCloudCovers(audioFiles, coverFiles)
     }
 
-    private fun torBoxWebDavListing(url: String, token: String): String? = try {
+    private suspend fun torBoxWebDavListing(url: String, token: String): String = retryTorBoxRequest {
         val request = Request.Builder()
             .url(url)
             .method("PROPFIND", webDavPropfindBody())
             .header("Depth", "1")
             .header("Authorization", Credentials.basic("torbox", token))
             .build()
-        torBoxWebDavClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) return@use null
-            response.body?.string()
-        }
-    } catch (e: kotlinx.coroutines.CancellationException) {
-        throw e
-    } catch (e: Exception) {
-        null
+        torBoxWebDavClient.newCall(request).torBoxResponseBody()
     }
 
     private fun webDavPropfindBody(): RequestBody =
@@ -3030,10 +3026,14 @@ class GrimmoryRepository @Inject constructor(
             .orEmpty()
     }.getOrDefault(emptyList())
 
-    private suspend fun fetchTorBoxList(url: String): List<TorBoxDownloadDto> = runSuspendCatching {
+    private suspend fun fetchTorBoxList(url: String): List<TorBoxDownloadDto> = retryTorBoxRequest {
         val response = api.torBoxList(url)
-        if (response.isSuccessful) response.body()?.data.orEmpty() else emptyList()
-    }.getOrDefault(emptyList())
+        if (!response.isSuccessful) {
+            response.errorBody()?.close()
+            throw TorBoxRequestException(response.code(), response.headers()["Retry-After"])
+        }
+        response.body()?.requireTorBoxList() ?: throw TorBoxRequestException(502)
+    }
 
     private fun groupCloudAudioFiles(files: List<CloudAudioFile>): List<CloudBookGroup> {
         return files

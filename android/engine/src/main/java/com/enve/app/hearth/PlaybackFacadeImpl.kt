@@ -6,9 +6,11 @@ import android.util.Log
 import com.enve.app.playback.AudioPlaybackManager
 import com.enve.app.playback.AutoMediaBrowserHelper
 import com.enve.app.playback.PlaybackQueueCoordinator
+import com.enve.app.playback.PlaybackStartException
 import com.enve.core.data.local.BookCacheDao
 import com.enve.core.data.local.PreferencesManager
 import com.enve.core.data.model.Book
+import com.enve.core.data.sync.AudiobookCheckpointOrder
 import com.enve.engine.playback.NowPlaying
 import com.enve.engine.playback.PlaybackFacade
 import com.enve.engine.playback.PlaybackQueueItem
@@ -18,6 +20,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -37,6 +41,7 @@ class PlaybackFacadeImpl @Inject constructor(
     private val bookCache: BookCacheDao,
     private val queueCoordinator: PlaybackQueueCoordinator,
     private val preferences: PreferencesManager,
+    private val checkpointOrder: AudiobookCheckpointOrder,
     @ApplicationScope parentScope: CoroutineScope =
         CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) : PlaybackFacade {
@@ -113,15 +118,18 @@ class PlaybackFacadeImpl @Inject constructor(
 
     private fun launchPlayback(errorMessage: String, action: suspend () -> Boolean) {
         scope.launch {
-            val succeeded = try {
-                action()
+            val failure = try {
+                if (action()) null else errorMessage
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: PlaybackStartException) {
+                Log.w("PlaybackFacade", "Provider playback session failed: ${e.cause?.javaClass?.simpleName}")
+                e.message ?: errorMessage
             } catch (e: Exception) {
                 Log.e("PlaybackFacade", errorMessage, e)
-                false
+                errorMessage
             }
-            if (!succeeded) _errors.emit(errorMessage)
+            failure?.let { _errors.emit(it) }
         }
     }
 
@@ -170,6 +178,18 @@ class PlaybackFacadeImpl @Inject constructor(
             .stateIn(scope, SharingStarted.WhileSubscribed(5000), null)
 
     override fun togglePlayPause() = audioManager.togglePlayPause()
+
+    override suspend fun stop() {
+        val key = audioManager.state.value.mediaId?.let(AutoMediaBrowserHelper::cacheKeyFrom)
+        val marker = checkpointOrder.newSequence()
+        audioManager.stop()
+        if (key == null) return
+        withTimeoutOrNull(STOP_CHECKPOINT_TIMEOUT_MS) {
+            while (!checkpointOrder.serialized { it.changedSince(key, marker) && !it.hasPendingCapture(key) }) {
+                delay(STOP_CHECKPOINT_POLL_MS)
+            }
+        }
+    }
     override fun seekTo(positionMs: Long) = audioManager.seekTo(positionMs)
     override fun skipForward() = audioManager.skipForward(skipForwardSeconds.value * 1000L)
     override fun skipBackward() = audioManager.skipBackward(skipBackwardSeconds.value * 1000L)
@@ -179,3 +199,6 @@ class PlaybackFacadeImpl @Inject constructor(
         scope.launch { preferences.setPlaybackSpeed(speed) }
     }
 }
+
+private const val STOP_CHECKPOINT_TIMEOUT_MS = 2_000L
+private const val STOP_CHECKPOINT_POLL_MS = 50L

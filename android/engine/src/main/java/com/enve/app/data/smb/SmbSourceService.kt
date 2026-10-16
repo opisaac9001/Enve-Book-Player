@@ -40,7 +40,7 @@ class SmbSourceService @Inject constructor(
 ) {
     private val contentServer = SmbContentServer()
     private val audioExtensions = setOf("mp3", "m4b", "m4a", "mp4", "aac", "flac", "ogg", "opus", "wav")
-    private val ebookExtensions = setOf("epub", "pdf", "cbz", "cbr", "cbx", "mobi", "azw3")
+    private val ebookExtensions = setOf("epub", "kepub", "pdf", "cbz", "cbr", "cbx", "mobi", "azw3")
 
     suspend fun scan(rootUrl: String, credentials: SmbCredentials, sourceId: String): List<Book> = withContext(Dispatchers.IO) {
         val root = normalizedDirectoryUrl(rootUrl)
@@ -254,7 +254,7 @@ class SmbSourceService @Inject constructor(
         }
 
         private fun mimeType(fileName: String): String = when (fileName.substringAfterLast('.', "").lowercase()) {
-            "epub" -> "application/epub+zip"
+            "epub", "kepub" -> "application/epub+zip"
             "pdf" -> "application/pdf"
             "cbz" -> "application/vnd.comicbook+zip"
             "cbr" -> "application/vnd.comicbook-rar"

@@ -10,6 +10,8 @@ data class ResolvedTrack(
     val durationMs: Long,
     val url: String,
     val httpHeaders: Map<String, String> = emptyMap(),
+    val sizeBytes: Long = 0L,
+    val assetId: String? = null,
 )
 
 interface AudiobookTrackResolver {

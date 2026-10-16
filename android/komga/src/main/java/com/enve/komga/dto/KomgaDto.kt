@@ -4,6 +4,7 @@ import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
+import java.util.Locale
 
 @Serializable
 data class KomgaLibraryDto(
@@ -35,6 +36,7 @@ data class KomgaBookDto(
     val seriesTitle: String,
     val libraryId: String,
     val name: String,
+    val url: String? = null,
     val number: Int? = null,
     val created: String? = null,
     val lastModified: String? = null,
@@ -69,6 +71,28 @@ internal fun KomgaBookDto.displayMetadata(): KomgaBookDisplayMetadata {
 
 private fun String.isIssueNumberOnly(issueNumber: String): Boolean =
     trim().trimStart('#').equals(issueNumber.trim().trimStart('#'), ignoreCase = true)
+
+internal fun KomgaBookDto.readerFileType(): String? {
+    val mediaType = media?.mediaType?.lowercase(Locale.US).orEmpty()
+    return when {
+        media?.mediaProfile == "EPUB" -> if (media.epubDivinaCompatible == true) "CBZ" else "EPUB"
+        media?.mediaProfile == "PDF" -> "PDF"
+        mediaType.contains("epub") -> "EPUB"
+        mediaType.contains("pdf") -> "PDF"
+        mediaType.contains("rar") -> "CBR"
+        mediaType.contains("zip") -> "CBZ"
+        mediaType.contains("7z") || mediaType.contains("tar") -> "CBX"
+        media?.mediaProfile == "DIVINA" -> "CBX"
+        else -> when (url.orEmpty().substringAfterLast('/').substringAfterLast('.', "").lowercase(Locale.US)) {
+            "epub", "kepub" -> "EPUB"
+            "pdf" -> "PDF"
+            "cbz", "zip" -> "CBZ"
+            "cbr", "rar" -> "CBR"
+            "cb7", "7z", "cbt", "tar" -> "CBX"
+            else -> null
+        }
+    }
+}
 
 @Serializable
 data class KomgaMediaDto(

@@ -81,4 +81,40 @@ class AbsLocalListeningLedgerTest {
     fun zeroListeningIsIgnored() {
         assertTrue(AbsLocalListeningLedger.record(emptyList(), entry(0), nowMs = 1, today = day).isEmpty())
     }
+
+    @Test
+    fun uploadsOnlyEntriesStampedWithTheSignedInAccount() {
+        var sessions = AbsLocalListeningLedger.record(emptyList(), entry(10_000).copy(recordedAccountId = "alice"), nowMs = 1, today = day) { "alice-1" }
+        sessions = AbsLocalListeningLedger.record(sessions, entry(10_000).copy(recordedAccountId = "bob"), nowMs = 2, today = day) { "bob-1" }
+
+        assertEquals(2, sessions.size)
+        assertEquals(listOf("alice-1"), AbsLocalListeningLedger.pendingFor(sessions, "conn", "alice").map { it.id })
+        assertEquals(listOf("bob-1"), AbsLocalListeningLedger.pendingFor(sessions, "conn", "bob").map { it.id })
+        assertTrue(AbsLocalListeningLedger.pendingFor(sessions, "conn", null).isEmpty())
+        assertTrue(AbsLocalListeningLedger.pendingFor(sessions, "other", "alice").isEmpty())
+    }
+
+    @Test
+    fun legacyEntriesUploadOnlyToTheConnectionTheyWereRecordedUnder() {
+        val legacy = AbsLocalListeningLedger.record(emptyList(), entry(10_000), nowMs = 1, today = day) { "legacy" }
+        val unscoped = AbsLocalListeningLedger.record(emptyList(), entry(10_000).copy(connectionId = ""), nowMs = 1, today = day) { "unscoped" }
+
+        assertEquals(listOf("legacy"), AbsLocalListeningLedger.pendingFor(legacy, "conn", "anyone").map { it.id })
+        assertTrue(AbsLocalListeningLedger.pendingFor(legacy, "other", "anyone").isEmpty())
+        assertTrue(AbsLocalListeningLedger.pendingFor(unscoped, "", "anyone").isEmpty())
+        assertEquals(1, unscoped.size)
+    }
+
+    @Test
+    fun crossProviderReceiptsStillMatchTheirTargetAccount() {
+        val receipt = AbsLocalListeningSession(
+            id = "receipt", connectionId = "conn", libraryItemId = "item-1",
+            displayTitle = "Title", day = day.toString(), dayOfWeek = "Friday",
+            durationSec = 3_600.0, timeListeningSec = 20.0, currentTimeSec = 120.0,
+            startedAtMs = 1L, updatedAtMs = 2L, accountId = "account", sourceBookKey = "source:book",
+        )
+
+        assertEquals(listOf(receipt), AbsLocalListeningLedger.pendingFor(listOf(receipt), "conn", "account"))
+        assertTrue(AbsLocalListeningLedger.pendingFor(listOf(receipt), "conn", "someone-else").isEmpty())
+    }
 }

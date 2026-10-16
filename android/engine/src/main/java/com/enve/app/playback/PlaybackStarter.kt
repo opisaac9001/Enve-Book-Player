@@ -1,5 +1,6 @@
 package com.enve.app.playback
 
+import com.enve.app.data.NetworkStateProvider
 import com.enve.app.data.offline.OfflineDownloadManager
 import com.enve.app.data.offline.OfflineTrackInfo
 import com.enve.app.data.repository.AggregatorRepository
@@ -20,11 +21,14 @@ import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.Chapter
 import com.enve.core.data.provider.synthesizeChaptersFromTracks
 import com.enve.core.data.remote.ConnectionScope
+import com.enve.core.data.remote.NetworkErrorMapper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.EmptyCoroutineContext
+
+class PlaybackStartException(message: String, cause: Throwable?) : Exception(message, cause)
 
 @Singleton
 class PlaybackStarter @Inject constructor(
@@ -43,6 +47,7 @@ class PlaybackStarter @Inject constructor(
     private val openProgress: PlaybackOpenProgressResolver,
     private val embeddedChapterExtractor: EmbeddedChapterExtractor,
     private val playerReadAloud: PlayerReadAloudService,
+    private val network: NetworkStateProvider,
 ) {
 
     suspend fun start(book: Book, resolveOpenProgress: Boolean = true): Boolean {
@@ -77,19 +82,21 @@ class PlaybackStarter @Inject constructor(
                 (cached ?: book).copy(hasEbook = book.hasEbook || cached?.hasEbook == true).forAudioPlayback(),
             )
 
-            offline.ensureCoverCached(base)
+            val localTracks = offline.localTracks(base.id)
+            val offlineOnly = !localTracks.isNullOrEmpty() && !network.hasActiveNetwork()
+
+            if (!offlineOnly) offline.ensureCoverCached(base)
             val offlineCover = offline.localCoverUri(base.id) ?: offline.getManifest(base.id)?.coverUrl
             val resolved = if (offlineCover != null) base.copy(coverUrl = offlineCover) else base
 
             val mediaId = AutoMediaBrowserHelper.mediaIdForCacheKey(resolved.uniqueKey)
             val feedEnclosureUrl = resolved.podcastEnclosureUrl
-            val startSec = if (resolveOpenProgress && feedEnclosureUrl == null) {
-                openProgress.resolveStartSeconds(resolved)
-            } else {
-                localStartSeconds(resolved)
+            val startSec = when {
+                offlineOnly -> audioLocalStartSeconds(resolved)
+                resolveOpenProgress && feedEnclosureUrl == null -> openProgress.resolveStartSeconds(resolved)
+                else -> localStartSeconds(resolved)
             }
 
-            val localTracks = offline.localTracks(resolved.id)
             val started = when {
                 !localTracks.isNullOrEmpty() -> {
                     startOffline(resolved, localTracks, startSec, mediaId)
@@ -124,6 +131,7 @@ class PlaybackStarter @Inject constructor(
             if (rows == 0) bookCache.updateDownloadedStatusById(book.id, true, System.currentTimeMillis())
         }
         val durationSec = when {
+            book.source == BookSource.TORBOX && tracks.all { it.durationMs > 0L } -> tracks.sumOf { it.durationMs } / 1000L
             book.duration > 0L -> book.duration
             tracks.sumOf { it.durationMs } > 0L -> tracks.sumOf { it.durationMs } / 1000L
             else -> 0L
@@ -187,14 +195,19 @@ class PlaybackStarter @Inject constructor(
     }
 
     private suspend fun startProvider(book: Book, startSec: Long, mediaId: String): Boolean {
-        val session = aggregator.startPlaybackSession(book).getOrNull()
+        val sessionResult = aggregator.startPlaybackSession(book)
+        val session = sessionResult.getOrNull()
         val tracks = (session?.audioTracks?.takeIf { it.isNotEmpty() }
             ?: aggregator.getAudioTracks(book).getOrElse { book.audioTracks })
             .filter { !it.contentUrl.isNullOrBlank() }
             .sortedBy { it.index }
-        if (tracks.isEmpty()) return false
+        if (tracks.isEmpty()) {
+            val failure = sessionResult.exceptionOrNull() ?: return false
+            throw PlaybackStartException("Couldn't start \"${book.title}\": ${NetworkErrorMapper.mapForUser(failure.message)}", failure)
+        }
 
         val durationSec = when {
+            book.source == BookSource.TORBOX && tracks.all { it.durationMs > 0L } -> tracks.sumOf { it.durationMs } / 1000L
             book.duration > 0 -> book.duration
             tracks.sumOf { it.durationMs } > 0L -> tracks.sumOf { it.durationMs } / 1000L
             else -> 0L
@@ -212,15 +225,19 @@ class PlaybackStarter @Inject constructor(
 
         if (tracks.size > 1) {
             audioManager.playMultiTrack(
-                tracks = tracks.map { AudioPlaybackManager.TrackInfo(it.contentUrl.orEmpty(), it.title ?: it.fileName, it.durationMs) },
+                tracks = tracks.map {
+                    AudioPlaybackManager.TrackInfo(it.contentUrl.orEmpty(), it.title ?: it.fileName, it.durationMs, it.format)
+                },
                 bookId = book.id, title = book.title, author = book.author, coverUrl = book.coverUrl,
                 startPositionMs = effectiveStart * 1000, mediaId = mediaId, authToken = castToken,
+                connectionId = book.connectionId,
             )
         } else {
             audioManager.play(
                 streamUrl = tracks.first().contentUrl.orEmpty(), bookId = book.id, title = book.title,
                 author = book.author, coverUrl = book.coverUrl, startPositionMs = effectiveStart * 1000,
-                mediaId = mediaId, authToken = castToken,
+                mediaId = mediaId, authToken = castToken, format = tracks.first().format,
+                connectionId = book.connectionId,
             )
         }
         sessionService.start(book.copy(duration = durationSec), effectiveStart, durationSec, session?.sessionId)

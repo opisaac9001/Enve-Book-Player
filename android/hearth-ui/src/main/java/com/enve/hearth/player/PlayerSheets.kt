@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
@@ -38,6 +39,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -83,13 +89,14 @@ private fun QueueSheet(vm: HearthPlayerViewModel, onDismiss: () -> Unit) {
     ) {
         Overline("Up Next")
         if (queue.isNotEmpty()) {
-            Text(
-                "Clear",
-                style = HearthText.Caption,
-                color = palette.ember,
-                modifier = Modifier.clip(RoundedCornerShape(50)).clickable { vm.clearQueue() }
-                    .padding(horizontal = Hearth.Spacing.M, vertical = Hearth.Spacing.XS),
-            )
+            Box(
+                Modifier.heightIn(min = 48.dp).clip(RoundedCornerShape(50))
+                    .clickable(role = Role.Button, onClickLabel = "Clear Up Next") { vm.clearQueue() }
+                    .padding(horizontal = Hearth.Spacing.M),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("Clear", style = HearthText.Caption, color = palette.ember)
+            }
         }
     }
     Spacer(Modifier.size(Hearth.Spacing.S))
@@ -119,28 +126,23 @@ private fun QueueSheet(vm: HearthPlayerViewModel, onDismiss: () -> Unit) {
                         Text(it, style = HearthText.Caption, color = palette.textSecondary, maxLines = 1)
                     }
                 }
-                Icon(
+                SheetIconButton(
                     Icons.Outlined.ArrowUpward,
                     contentDescription = "Move ${item.book.title} earlier",
-                    tint = if (index > 0) palette.textSecondary else palette.textTertiary.copy(alpha = 0.35f),
-                    modifier = Modifier.clip(RoundedCornerShape(50))
-                        .then(if (index > 0) Modifier.clickable { vm.moveQueuedUp(item.book.uniqueKey) } else Modifier)
-                        .padding(Hearth.Spacing.XS).size(19.dp),
+                    enabled = index > 0,
+                    onClick = { vm.moveQueuedUp(item.book.uniqueKey) },
                 )
-                Icon(
+                SheetIconButton(
                     Icons.Outlined.ArrowDownward,
                     contentDescription = "Move ${item.book.title} later",
-                    tint = if (index in 0 until queue.lastIndex) palette.textSecondary else palette.textTertiary.copy(alpha = 0.35f),
-                    modifier = Modifier.clip(RoundedCornerShape(50))
-                        .then(if (index in 0 until queue.lastIndex) Modifier.clickable { vm.moveQueuedDown(item.book.uniqueKey) } else Modifier)
-                        .padding(Hearth.Spacing.XS).size(19.dp),
+                    enabled = index in 0 until queue.lastIndex,
+                    onClick = { vm.moveQueuedDown(item.book.uniqueKey) },
                 )
-                Icon(
+                SheetIconButton(
                     Icons.Outlined.Delete,
                     contentDescription = "Remove ${item.book.title} from Up Next",
+                    onClick = { vm.removeQueued(item.book.uniqueKey) },
                     tint = palette.textTertiary,
-                    modifier = Modifier.clip(RoundedCornerShape(50)).clickable { vm.removeQueued(item.book.uniqueKey) }
-                        .padding(Hearth.Spacing.XS).size(19.dp),
                 )
             }
         }
@@ -292,10 +294,30 @@ private fun BookmarkRow(b: AudiobookBookmark, onSeek: () -> Unit, onDelete: () -
             val where = listOfNotNull(b.chapterTitle?.takeIf { it.isNotBlank() }, fmtSec(b.position)).joinToString(" · ")
             Text(where, style = HearthText.Caption, color = palette.textTertiary)
         }
+        SheetIconButton(Icons.Outlined.Delete, "Delete bookmark ${b.title}", onDelete, tint = palette.textTertiary)
+    }
+}
+
+@Composable
+private fun SheetIconButton(
+    icon: ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+    tint: Color = Hearth.palette.textSecondary,
+) {
+    val palette = Hearth.palette
+    Box(
+        Modifier.size(48.dp).clip(CircleShape)
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+            .semantics { this.contentDescription = contentDescription },
+        contentAlignment = Alignment.Center,
+    ) {
         Icon(
-            Icons.Outlined.Delete, contentDescription = "Delete",
-            tint = palette.textTertiary,
-            modifier = Modifier.clip(RoundedCornerShape(50)).clickable(onClick = onDelete).padding(Hearth.Spacing.XS).size(20.dp),
+            icon,
+            contentDescription = null,
+            tint = if (enabled) tint else palette.textTertiary.copy(alpha = 0.35f),
+            modifier = Modifier.size(20.dp),
         )
     }
 }

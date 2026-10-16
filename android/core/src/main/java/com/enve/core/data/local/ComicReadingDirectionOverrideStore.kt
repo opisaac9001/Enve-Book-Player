@@ -15,19 +15,15 @@ class ComicReadingDirectionOverrideStore(private val dataStore: DataStore<Prefer
     @Inject
     constructor(@ApplicationContext context: Context) : this(context.enveDataStore)
 
-    suspend fun direction(bookKey: String, providerDirection: suspend () -> String? = { null }): String? {
-        val preferences = dataStore.data.first()
-        return preferences[key(bookKey)] ?: providerDirection() ?: preferences[defaultDirectionKey]
-    }
+    suspend fun direction(bookKey: String): String? = dataStore.data.first()[key(bookKey)]
 
     suspend fun save(bookKey: String, direction: String) {
-        dataStore.edit { preferences ->
-            preferences[key(bookKey)] = direction
-            preferences[defaultDirectionKey] = direction
-        }
+        dataStore.edit { preferences -> preferences[key(bookKey)] = direction }
     }
 
-    private val defaultDirectionKey = stringPreferencesKey("reader.comic.defaultDirectionOverride")
+    suspend fun clear(bookKey: String) {
+        dataStore.edit { preferences -> preferences.remove(key(bookKey)) }
+    }
 
     private fun key(bookKey: String) =
         stringPreferencesKey("reader.comic.directionOverride.$bookKey")

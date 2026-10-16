@@ -16,6 +16,8 @@ import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
+private const val LOCAL_LIBRARY_ID = "local-main"
+
 @Singleton
 class LocalProviderAdapter @Inject constructor(
     private val localRepository: LocalLibraryRepository,
@@ -26,7 +28,7 @@ class LocalProviderAdapter @Inject constructor(
     override val supportsMetadataUpdate: Boolean = true
 
     override suspend fun getLibraries(): Result<List<Library>> = Result.success(listOf(
-        Library(id = "local-main", name = "Local Files", bookCount = 0)
+        Library(id = LOCAL_LIBRARY_ID, name = "Local Files", bookCount = 0)
     ))
 
     override suspend fun getBooks(
@@ -37,9 +39,9 @@ class LocalProviderAdapter @Inject constructor(
         dir: String
     ): Result<List<Book>> = withContext(Dispatchers.IO) {
         val uriString = scopedUri() ?: return@withContext Result.failure(Exception("No local library URI found"))
-        val sourceId = ConnectionScope.getConnectionId() ?: "local-main"
+        val sourceId = ConnectionScope.getConnectionId() ?: LOCAL_LIBRARY_ID
         val books = localRepository.scanDirectory(uriString, sourceId)
-        Result.success(books)
+        Result.success(books.map { it.copy(libraryId = LOCAL_LIBRARY_ID) })
     }
 
     override suspend fun getContinueListening(): Result<List<Book>> = Result.success(emptyList())
@@ -66,7 +68,7 @@ class LocalProviderAdapter @Inject constructor(
     override suspend fun getAudioTracks(book: Book): Result<List<AudioTrack>> = runSuspendCatching {
         if (book.mediaType != AppMediaType.AUDIOBOOK) return@runSuspendCatching emptyList()
         val uriString = scopedUri() ?: error("No local library URI found")
-        val sourceId = ConnectionScope.getConnectionId() ?: book.connectionId ?: "local-main"
+        val sourceId = ConnectionScope.getConnectionId() ?: book.connectionId ?: LOCAL_LIBRARY_ID
         localRepository.scanDirectory(uriString, sourceId)
             .firstOrNull { it.id == book.id }
             ?.audioTracks

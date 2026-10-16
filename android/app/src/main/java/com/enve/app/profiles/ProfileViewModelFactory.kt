@@ -252,6 +252,7 @@ class ProfileViewModelFactory(private val component: com.enve.app.profiles.Profi
             component.preferences(),
             component.preferencesFacade(),
             component.hearthDismissedShelfStore(),
+            markUnreadAction(),
             component.resources().context,
         )
         com.enve.hearth.opds.HearthOpdsCatalogViewModel::class.java -> com.enve.hearth.opds.HearthOpdsCatalogViewModel(
@@ -290,6 +291,7 @@ class ProfileViewModelFactory(private val component: com.enve.app.profiles.Profi
             component.annotations(),
             component.bookOrbit(),
             component.serverTools(),
+            markUnreadAction(),
         )
         com.enve.hearth.bookorbit.BookOrbitHighlightsViewModel::class.java -> com.enve.hearth.bookorbit.BookOrbitHighlightsViewModel(
             component.bookOrbit(),
@@ -336,6 +338,7 @@ class ProfileViewModelFactory(private val component: com.enve.app.profiles.Profi
             component.absOidcFlow(),
             component.komgaOAuthFlow(),
             component.bookOrbitOidcFlow(),
+            component.siloOidcFlow(),
             component.passwordLogins(),
         )
         else -> throw IllegalArgumentException("Unsupported profile ViewModel: ${modelClass.name}")
@@ -343,4 +346,11 @@ class ProfileViewModelFactory(private val component: com.enve.app.profiles.Profi
         model.viewModelScope.coroutineContext[Job]?.let { jobs += it }
         return model
     }
+
+    private fun markUnreadAction() = com.enve.hearth.MarkUnreadAction(
+        component.library(),
+        component.playback(),
+        component.lastOpenedBookStore(),
+        component.hearthDismissedShelfStore(),
+    )
 }

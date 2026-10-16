@@ -65,6 +65,8 @@ import com.enve.app.ui.theme.EnveTheme
 import com.enve.app.ui.theme.eink
 import com.enve.app.ui.screens.reader.BUNDLED_READER_FONTS
 import com.enve.app.ui.screens.reader.FoliateReaderEngine
+import com.enve.app.ui.screens.reader.epubLinkIsNoteRef
+import com.enve.app.ui.screens.reader.epubNoteHtml
 import com.enve.app.viewmodel.ReaderViewModel
 import com.enve.app.viewmodel.ThemeViewModel
 import com.enve.app.viewmodel.CachedReaderProgress
@@ -189,7 +191,7 @@ class EbookReaderActivity : FragmentActivity() {
 
 
     private val prefs get() = profileBinding.runtime.component.preferences()
-    private val okHttpClient get() = profileBinding.runtime.component.unauthenticatedHttpClient()
+    private val okHttpClient get() = profileBinding.runtime.component.httpClient()
     private val repository get() = profileBinding.runtime.component.grimmoryRepository()
     private val syncCoordinator get() = profileBinding.runtime.component.syncCoordinator()
     private val progressConflictPassages get() = profileBinding.runtime.component.progressConflictPassageService()
@@ -215,6 +217,7 @@ class EbookReaderActivity : FragmentActivity() {
     private var readiumFootnoteDialog: android.app.AlertDialog? = null
     private var readiumNavigator: EpubNavigatorFragment? = null
     private var readiumFootnoteReturnLocator: Locator? = null
+    @Volatile private var readiumLinkActivatedAtMs = 0L
 
     private var bookId: String = ""
     private var bookSource: BookSource = BookSource.GRIMMORY
@@ -274,6 +277,7 @@ class EbookReaderActivity : FragmentActivity() {
             }
 
             override fun onDoubleTap(e: MotionEvent): Boolean {
+                if (readerTapBelongsToLinkOrNote()) return false
                 val st = vm.state.value
                 if (!st.readAlongSupported) return false
                 if (st.showAppearanceSheet || st.showTocSheet || st.showAnnotationDialog) return false
@@ -290,6 +294,7 @@ class EbookReaderActivity : FragmentActivity() {
             }
 
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                if (readerTapBelongsToLinkOrNote()) return false
                 val st = vm.state.value
                 if (st.showAppearanceSheet || st.showTocSheet ||
                     st.showAnnotationDialog || st.showMoreMenu || st.showSearchSheet) return false
@@ -313,9 +318,10 @@ class EbookReaderActivity : FragmentActivity() {
                 readiumFootnoteReturnLocator = it
             }
             val state = vm.state.value
-            documentGestureSequenceBlocked = state.showAppearanceSheet || state.showTocSheet ||
+            documentGestureSequenceBlocked = foliateEngine?.footnoteOpen == true ||
+                state.showAppearanceSheet || state.showTocSheet ||
                 state.showSearchSheet || state.showMoreMenu || state.showAnnotationDialog ||
-                state.showReadAloudSheet || state.showSelectionPopup || state.showAutoScrollPanel ||
+                state.showReadAloudSheet || state.showReadAloudLyrics || state.showSelectionPopup || state.showAutoScrollPanel ||
                 state.showToolbarCustomizer || state.showAnnotationsSheet ||
                 state.activeDecorationAnnotation != null || state.pendingProgressConflict != null
         }
@@ -340,6 +346,10 @@ class EbookReaderActivity : FragmentActivity() {
         if (consumed) return true
         return super.dispatchTouchEvent(ev)
     }
+
+    private fun readerTapBelongsToLinkOrNote(): Boolean =
+        readiumFootnoteDialog != null || foliateEngine?.footnoteOpen == true ||
+            android.os.SystemClock.uptimeMillis() - readiumLinkActivatedAtMs < LINK_TAP_GRACE_MS
 
     override fun onActionModeStarted(mode: android.view.ActionMode) {
         super.onActionModeStarted(mode)
@@ -471,6 +481,7 @@ class EbookReaderActivity : FragmentActivity() {
         private const val AUDIO_SEEDED_PROGRESS_TOLERANCE = 0.005f
         private const val ZIP_END_RECORD_BYTES = 22L
         private const val MAX_ZIP_END_RECORD_SEARCH_BYTES = 65_557L
+        private const val LINK_TAP_GRACE_MS = 700L
 
         fun createIntent(
             context: Context,
@@ -526,7 +537,7 @@ class EbookReaderActivity : FragmentActivity() {
         epubContainer  = findViewById(R.id.epub_container)
         composeOverlay = findViewById(R.id.compose_overlay)
         ViewCompat.setOnApplyWindowInsetsListener(epubContainer) { _, insets ->
-            epubContainerSafeInsets = insets.getInsets(
+            epubContainerSafeInsets = insets.getInsetsIgnoringVisibility(
                 WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout(),
             )
             applyEpubContainerPadding()
@@ -587,21 +598,22 @@ class EbookReaderActivity : FragmentActivity() {
                 enableEdgeToEdge(statusBarStyle = systemBarStyle, navigationBarStyle = systemBarStyle)
                 onDispose { }
             }
-            DisposableEffect(readerState.showChrome) {
-                val controller = WindowCompat.getInsetsController(window, window.decorView)
-                val systemBars = WindowInsetsCompat.Type.statusBars() or
-                    WindowInsetsCompat.Type.navigationBars()
+            val systemBarsController = remember { WindowCompat.getInsetsController(window, window.decorView) }
+            val systemBars = WindowInsetsCompat.Type.statusBars() or WindowInsetsCompat.Type.navigationBars()
+            LaunchedEffect(readerState.showChrome) {
                 if (readerState.showChrome) {
-                    controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
-                    controller.show(systemBars)
+                    systemBarsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
+                    systemBarsController.show(systemBars)
                 } else {
-                    controller.systemBarsBehavior =
+                    systemBarsController.systemBarsBehavior =
                         WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                    controller.hide(systemBars)
+                    systemBarsController.hide(systemBars)
                 }
+            }
+            DisposableEffect(systemBarsController) {
                 onDispose {
-                    controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
-                    controller.show(systemBars)
+                    systemBarsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
+                    systemBarsController.show(systemBars)
                 }
             }
             val uiTextScale by hearthPreferences.uiTextScale.collectAsStateWithLifecycle(initialValue = 1f)
@@ -709,7 +721,7 @@ class EbookReaderActivity : FragmentActivity() {
             hasOfflineSource = hasOfflineSource,
             networkAvailable = networkAvailable,
         )
-        val ebookResource = if (sourceFormat == EbookSourceFormat.EPUB && useReaderNetwork) {
+        val ebookResource = if (sourceFormat.isEpubPackage && useReaderNetwork) {
             runCatching { vm.getEbookResource() }.getOrNull()
         } else {
             null
@@ -721,7 +733,7 @@ class EbookReaderActivity : FragmentActivity() {
 
         val normalizeStartMs = android.os.SystemClock.elapsedRealtime()
         val epubFile = try {
-            setStatus(if (sourceFormat == EbookSourceFormat.EPUB || sourceFormat == EbookSourceFormat.READALOUD) "Opening book…" else "Converting ${sourceFormat.displayName}…")
+            setStatus(if (sourceFormat.isEpubPackage || sourceFormat == EbookSourceFormat.READALOUD) "Opening book…" else "Converting ${sourceFormat.displayName}…")
             OnDeviceEbookNormalizer(
                 kindleConverter = NativeKindleEpubConverter(applicationContext),
             ).normalizeToEpub(
@@ -753,7 +765,7 @@ class EbookReaderActivity : FragmentActivity() {
         val customFonts = runCatching { customFontRepository.listFonts() }.getOrDefault(emptyList())
         val publicationSha256 = withContext(Dispatchers.IO) { epubFile.sha256() }
         val mayUseFoliate = requestedReaderEngine == ReaderEngineKind.FOLIATE &&
-            sourceFormat == EbookSourceFormat.EPUB &&
+            sourceFormat.isEpubPackage &&
             ebookResource?.format.equals("EPUB", ignoreCase = true) &&
             FoliateReaderEngine.isSupported() &&
             withContext(Dispatchers.IO) { isReflowableEpub(epubFile) }
@@ -896,6 +908,7 @@ class EbookReaderActivity : FragmentActivity() {
         val initialPrefs = vm.state.value.prefs.toEpubPreferences(einkBoldText = einkBoldNow, einkActive = einkActiveNow)
 
         val selectionCallback = ReaderSelectionCallback(
+            onSelectionStarted = { vm.onTextSelectionStarted() },
             onShowPopup = { vm.showSelectionPopup() },
             onClearSelection = { vm.clearSelection() },
         )
@@ -910,8 +923,22 @@ class EbookReaderActivity : FragmentActivity() {
                         link: Link,
                         context: HyperlinkNavigator.LinkContext?,
                     ): Boolean {
-                        val footnote = context as? HyperlinkNavigator.FootnoteContext ?: return true
-                        runOnUiThread { showReadiumFootnote(footnote.noteContent) }
+                        val returnLocator = readiumFootnoteReturnLocator
+                        readiumLinkActivatedAtMs = android.os.SystemClock.uptimeMillis()
+                        val footnote = context as? HyperlinkNavigator.FootnoteContext
+                        if (footnote != null) {
+                            runOnUiThread { showReadiumFootnote(footnote.noteContent, returnLocator) }
+                            return false
+                        }
+                        lifecycleScope.launch {
+                            val note = readiumLinkedNote(publication, link, returnLocator)
+                            if (note != null) {
+                                showReadiumFootnote(note, returnLocator)
+                            } else {
+                                (vm.readiumReadingAnchor() ?: returnLocator)?.let(vm::noteInternalLinkJump)
+                                readiumNavigator?.go(link)
+                            }
+                        }
                         return false
                     }
 
@@ -922,6 +949,7 @@ class EbookReaderActivity : FragmentActivity() {
                     }
                 },
                 configuration  = EpubNavigatorFragment.Configuration {
+                    disablePageTurnsWhileScrolling = true
                     selectionActionModeCallback = selectionCallback
                     decorationTemplates[com.enve.app.readium.StrikethroughStyle::class] =
                         com.enve.app.readium.strikethroughTemplate()
@@ -1202,9 +1230,40 @@ class EbookReaderActivity : FragmentActivity() {
         }
     }
 
-    private fun showReadiumFootnote(content: String) {
+    private suspend fun readiumLinkedNote(
+        publication: org.readium.r2.shared.publication.Publication,
+        link: Link,
+        returnLocator: Locator?,
+    ): String? {
+        val linkUrl = link.url()
+        val fragment = linkUrl.fragment ?: return null
+        val target = publication.linkWithHref(linkUrl.removeFragment()) ?: return null
+        val targetHref = target.url().normalize().toString()
+        val source = returnLocator?.href?.let(publication::linkWithHref)
+        suspend fun read(resourceLink: Link): String? = withContext(Dispatchers.IO) {
+            val resource = publication.get(resourceLink) ?: return@withContext null
+            try {
+                resource.read().getOrNull()?.decodeToString()
+            } finally {
+                resource.close()
+            }
+        }
+        val targetHtml = read(target) ?: return null
+        val linkedAsNoteRef = source?.let { sourceLink ->
+            val sourceHtml = read(sourceLink) ?: return@let false
+            val sourceUrl = sourceLink.url()
+            withContext(Dispatchers.Default) {
+                epubLinkIsNoteRef(sourceHtml) { href ->
+                    val resolved = Url(href)?.let(sourceUrl::resolve) ?: return@epubLinkIsNoteRef false
+                    resolved.fragment == fragment && resolved.removeFragment().normalize().toString() == targetHref
+                }
+            }
+        } ?: false
+        return withContext(Dispatchers.Default) { epubNoteHtml(targetHtml, fragment, linkedAsNoteRef) }
+    }
+
+    private fun showReadiumFootnote(content: String, returnLocator: Locator?) {
         readiumFootnoteDialog?.dismiss()
-        val returnLocator = readiumFootnoteReturnLocator
         val message = HtmlCompat.fromHtml(content, HtmlCompat.FROM_HTML_MODE_COMPACT)
         val dialog = android.app.AlertDialog.Builder(this)
             .setTitle(R.string.reader_footnote_title)
@@ -1216,20 +1275,23 @@ class EbookReaderActivity : FragmentActivity() {
                 readiumFootnoteDialog = null
             }
             if (returnLocator != null) {
-                epubContainer.post {
-                    readiumNavigator?.go(returnLocator, animated = false)
-                }
+                epubContainer.post { restoreReadiumPage(returnLocator) }
             }
         }
         readiumFootnoteDialog = dialog
         dialog.show()
         if (returnLocator != null) {
             epubContainer.postDelayed({
-                if (readiumFootnoteDialog === dialog) {
-                    readiumNavigator?.go(returnLocator, animated = false)
-                }
+                if (readiumFootnoteDialog === dialog) restoreReadiumPage(returnLocator)
             }, 100)
         }
+    }
+
+    private fun restoreReadiumPage(locator: Locator) {
+        val navigator = readiumNavigator ?: return
+        val current = navigator.currentLocator.value
+        if (current.href == locator.href && current.locations.progression == locator.locations.progression) return
+        navigator.go(locator, animated = false)
     }
 
     private fun readAloudLocatorFromClip(
@@ -1665,7 +1727,7 @@ class EbookReaderActivity : FragmentActivity() {
             }
         }
 
-        return withContext(Dispatchers.IO) {
+        return withContext(Dispatchers.IO + com.enve.core.data.remote.ConnectionScope.asContextElement(bookConnectionId)) {
             val downloadClient = okHttpClient.newBuilder()
                 .callTimeout(0, TimeUnit.MILLISECONDS)
                 .readTimeout(5, TimeUnit.MINUTES)
@@ -1720,7 +1782,7 @@ class EbookReaderActivity : FragmentActivity() {
     }
 
     private fun isZipBackedEbook(format: EbookSourceFormat): Boolean =
-        format == EbookSourceFormat.EPUB || format == EbookSourceFormat.READALOUD
+        format.isEpubPackage || format == EbookSourceFormat.READALOUD
 
     @Suppress("DEPRECATION")
     private fun hasNetworkConnection(): Boolean {
@@ -1918,6 +1980,7 @@ private fun ReadiumError.describe(): String =
 private const val MAX_READIUM_ERROR_CAUSES = 4
 
 private class ReaderSelectionCallback(
+    private val onSelectionStarted: () -> Unit,
     private val onShowPopup: () -> Unit,
     private val onClearSelection: () -> Unit,
 ) : android.view.ActionMode.Callback {
@@ -1939,6 +2002,7 @@ private class ReaderSelectionCallback(
     override fun onCreateActionMode(mode: android.view.ActionMode, menu: android.view.Menu): Boolean {
         handler.removeCallbacksAndMessages(null)
         active = true
+        onSelectionStarted()
         menu.clear()
         handler.postDelayed(showPopup, POPUP_DELAY_MS)
         return true

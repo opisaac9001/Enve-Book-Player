@@ -31,6 +31,68 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class PublicSourceRegressionTest {
     @Test
+    fun audiobookshelfCollectionsLoadFromLiveServer() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val fixtureFile = java.io.File(context.filesDir, "abs-collections-live.json")
+        org.junit.Assume.assumeTrue("Live server fixture is not configured", fixtureFile.exists())
+        val fixture = org.json.JSONObject(fixtureFile.readText())
+        withProfile { component ->
+            val url = fixture.getString("serverUrl")
+            val username = fixture.getString("username")
+            val connectionId = "audiobookshelf|$url|$username"
+            component.connections().upsert(ProviderConnection(
+                id = connectionId, source = BookSource.AUDIOBOOKSHELF, name = "Live collections test",
+                serverUrl = url, username = username, urlScheme = UrlScheme.HTTP,
+            ))
+            component.vault().put(com.enve.core.auth.CredentialVault.accessTokenKey(connectionId), fixture.getString("token"))
+            withContext(ConnectionScope.asContextElement(connectionId)) {
+                val libraries = fixture.getJSONArray("libraries")
+                for (index in 0 until libraries.length()) {
+                    val library = libraries.getJSONObject(index)
+                    val rawId = library.getString("libraryId")
+                    val collections = component.audiobookshelfRepository()
+                        .getCollections("$connectionId::$rawId").getOrThrow()
+                    val expected = library.getJSONArray("collectionIds")
+                    assertEquals((0 until expected.length()).map { expected.getString(it) }.toSet(),
+                        collections.map { it.id }.toSet())
+                }
+            }
+        }
+    }
+
+    @Test
+    fun audiobookshelfCollectionsUseRemoteLibraryIds() = runBlocking {
+        withProfile { component ->
+            CollectionServer().use { server ->
+                val libraryId = "71b172fc-7dc2-4d3f-9580-af6ea375fd64"
+                val url = "http://127.0.0.1:${server.port}"
+                val connectionId = "audiobookshelf|$url|fixture"
+                component.connections().upsert(ProviderConnection(
+                    id = connectionId, source = BookSource.AUDIOBOOKSHELF, name = "Collections fixture",
+                    serverUrl = url, username = "fixture", urlScheme = UrlScheme.HTTP,
+                ))
+                component.vault().put(com.enve.core.auth.CredentialVault.accessTokenKey(connectionId), "fixture-token")
+                withContext(ConnectionScope.asContextElement(connectionId)) {
+                    val repository = component.audiobookshelfRepository()
+                    repository.getCollections("$connectionId::$libraryId").getOrThrow()
+                    repository.setCollectionBook(Book(
+                        id = "fixture-item", title = "Collections fixture", source = BookSource.AUDIOBOOKSHELF,
+                        connectionId = connectionId, libraryId = "$connectionId::$libraryId",
+                    ), "Enve Favorites", saved = true).getOrThrow()
+                }
+                assertEquals(listOf(
+                    "GET /api/libraries/$libraryId/collections?limit=500",
+                    "GET /api/libraries/$libraryId/collections?limit=500",
+                    "POST /api/collections",
+                ), server.requests.toList())
+                val body = org.json.JSONObject(server.createdCollection)
+                assertEquals(libraryId, body.getString("libraryId"))
+                assertEquals("fixture-item", body.getJSONArray("books").getString(0))
+            }
+        }
+    }
+
+    @Test
     fun reopeningStreamedComicWaitsForItsPendingCleanup() = runBlocking {
         withProfile { component ->
             val pages = component.serverPageStreamingService()
@@ -135,6 +197,53 @@ class PublicSourceRegressionTest {
             locations.filesDirectory.deleteRecursively()
             locations.cacheDirectory.deleteRecursively()
             locations.readerDatabaseFile.parentFile!!.deleteRecursively()
+        }
+    }
+
+    private class CollectionServer : AutoCloseable {
+        private val socket = ServerSocket(0)
+        val port: Int get() = socket.localPort
+        val requests = java.util.concurrent.CopyOnWriteArrayList<String>()
+        @Volatile var createdCollection = ""
+        private val worker = thread(isDaemon = true, name = "collections-fixture") {
+            while (!socket.isClosed) {
+                val client = runCatching { socket.accept() }.getOrNull() ?: break
+                client.use {
+                    val input = it.getInputStream().bufferedReader()
+                    val request = input.readLine() ?: return@use
+                    var length = 0
+                    while (true) {
+                        val header = input.readLine() ?: break
+                        if (header.isEmpty()) break
+                        if (header.startsWith("Content-Length:", ignoreCase = true)) {
+                            length = header.substringAfter(':').trim().toInt()
+                        }
+                    }
+                    requests += request.substringBeforeLast(' ')
+                    if (length > 0) {
+                        val payload = CharArray(length)
+                        var offset = 0
+                        while (offset < length) {
+                            val count = input.read(payload, offset, length - offset)
+                            if (count < 0) break
+                            offset += count
+                        }
+                        createdCollection = String(payload, 0, offset)
+                    }
+                    val body = if (request.startsWith("POST ")) {
+                        """{"id":"fixture-collection","name":"Enve Favorites","books":[{"id":"fixture-item"}]}"""
+                    } else { """{"results":[]}""" }
+                    val bytes = body.toByteArray()
+                    val output = it.getOutputStream()
+                    output.write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n".toByteArray())
+                    output.write(bytes)
+                    output.flush()
+                }
+            }
+        }
+        override fun close() {
+            socket.close()
+            worker.join(1000)
         }
     }
 

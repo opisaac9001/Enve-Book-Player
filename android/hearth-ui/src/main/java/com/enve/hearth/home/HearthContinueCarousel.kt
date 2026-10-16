@@ -155,7 +155,10 @@ internal fun BookCard(
             .clip(shape)
             .background(palette.bgElevated)
             .border(if (eink.active) 1.5.dp else 1.dp, if (eink.active) palette.text else palette.hairline, shape)
-            .then(if (onLongClick == null) Modifier.clickable(onClick = onOpen) else Modifier.combinedClickable(onClick = onOpen, onLongClick = onLongClick)),
+            .then(
+                if (onLongClick == null) Modifier.clickable(onClick = onOpen)
+                else Modifier.combinedClickable(onClick = onOpen, onLongClickLabel = "More options", onLongClick = onLongClick),
+            ),
     ) {
         if (!eink.active) {
             CardBackdrop(book, tint, Modifier.matchParentSize())
@@ -350,20 +353,27 @@ private fun PlayButton(isEbook: Boolean, title: String, tint: Color, onPlay: () 
     }
     Box(
         Modifier
-            .size(44.dp)
+            .size(48.dp)
             .clip(CircleShape)
-            .background(if (eink.active) palette.bg else tint)
-            .then(if (eink.active) Modifier.border(2.dp, palette.text, CircleShape) else Modifier)
             .clickable(role = Role.Button, onClick = onPlay)
             .semantics { contentDescription = if (isEbook) "Read $title" else "Listen to $title" },
         contentAlignment = Alignment.Center,
     ) {
-        Icon(
-            if (isEbook) Icons.AutoMirrored.Filled.MenuBook else Icons.Filled.PlayArrow,
-            contentDescription = null,
-            tint = foreground,
-            modifier = Modifier.size(22.dp),
-        )
+        Box(
+            Modifier
+                .size(44.dp)
+                .clip(CircleShape)
+                .background(if (eink.active) palette.bg else tint)
+                .then(if (eink.active) Modifier.border(2.dp, palette.text, CircleShape) else Modifier),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                if (isEbook) Icons.AutoMirrored.Filled.MenuBook else Icons.Filled.PlayArrow,
+                contentDescription = null,
+                tint = foreground,
+                modifier = Modifier.size(22.dp),
+            )
+        }
     }
 }
 

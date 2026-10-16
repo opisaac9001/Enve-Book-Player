@@ -160,7 +160,7 @@ class ComicOfflineStorage(
         require(book.id == bookId)
         val payload = requireNotNull(source.getDownloadedFile(bookId))
         val extension = payload.extension
-        val readAlong = extension.equals("epub", true) && hasEmbeddedReadAloud(payload)
+        val readAlong = (extension.equals("epub", true) || extension.equals("kepub", true)) && hasEmbeddedReadAloud(payload)
         val cover = source.coverFile(bookId).takeIf { it.isFile && it.length() > 0L }
         val payloads = listOf(CompletedDownloadFile(payload, "book.$extension")) +
             listOfNotNull(cover?.let { CompletedDownloadFile(it, "cover.img", it.length()) })

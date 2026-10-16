@@ -70,6 +70,7 @@ data class ConnectionCapability(
             BookSource.SILO to ConnectionCapability(
                 source = BookSource.SILO,
                 supportsToken = true,
+                supportsOidc = true,
             ),
             BookSource.OPDS to ConnectionCapability(
                 source = BookSource.OPDS,

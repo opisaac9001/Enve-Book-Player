@@ -20,6 +20,8 @@ class AuthBrowserCallbackTest {
                 .apply { isAccessible = true }
             val serverCallback = Uri.parse("https://example.com/oauth2-callback?code=test&state=test")
             assertTrue(callback.invoke(browser, serverCallback) as Boolean)
+            assertTrue(callback.invoke(browser, Uri.parse("bookorbit://oauth2-callback?code=test&state=test")) as Boolean)
+            assertFalse(callback.invoke(browser, Uri.parse("bookorbit://other?code=test&state=test")) as Boolean)
             cookie.set(browser, "CF_Authorization")
             assertFalse(callback.invoke(browser, serverCallback) as Boolean)
             assertTrue(callback.invoke(browser, Uri.parse("grimmory://oauth2-callback?code=test&state=test")) as Boolean)

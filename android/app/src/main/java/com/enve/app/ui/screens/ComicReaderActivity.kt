@@ -67,6 +67,7 @@ class ComicReaderActivity : ComponentActivity() {
     private val vm: ComicReaderViewModel by viewModels { profileBinding.factory }
     private val themeViewModel: ThemeViewModel by viewModels { profileBinding.factory }
     private lateinit var insetsController: WindowInsetsControllerCompat
+    private var pageEntries: List<List<Int>> = emptyList()
 
     private val epdRefreshManager get() = profileBinding.runtime.component.epdRefreshManager()
     private val audioPlaybackManager get() = profileBinding.runtime.component.audioPlayback()
@@ -198,9 +199,14 @@ class ComicReaderActivity : ComponentActivity() {
                         readNextPosition = readNextPosition,
                         restReminder = restReminder,
                         onSettingsChange = vm::updateSettings,
+                        onDirectionChange = vm::setReadingDirection,
                         onBack = { finish() },
                         onPageChange = vm::showPage,
                         onPagesNeeded = vm::requestPages,
+                        onPageEntriesChange = {
+                            pageEntries = it
+                            vm.updatePageEntries(it)
+                        },
                         onToggleBookmark = vm::toggleBookmark,
                         onOpenSettings = vm::openSettingsSheet,
                         onCloseSettings = vm::closeSettingsSheet,
@@ -239,7 +245,13 @@ class ComicReaderActivity : ComponentActivity() {
             if (state.pages.isNotEmpty() && ReaderHardwareKeyPolicy.shouldTriggerTurn(event.action, event.repeatCount)) {
                 val isRtl = state.settings.readingDirection == ComicReadingDirection.RIGHT_TO_LEFT
                 val offset = if (direction == ReaderPageKeyDirection.FORWARD) 1 else -1
-                vm.showPage(state.currentPage + if (isRtl) -offset else offset)
+                val step = if (isRtl) -offset else offset
+                val entryIndex = pageEntries.indexOfFirst { state.currentPage in it }
+                if (entryIndex < 0) {
+                    vm.showPage(state.currentPage + step)
+                } else {
+                    pageEntries.getOrNull(entryIndex + step)?.let { vm.showPage(it.first()) }
+                }
             }
             return true
         }
@@ -256,9 +268,11 @@ private fun ComicReaderScreen(
     readNextPosition: ReadNextPosition,
     restReminder: com.enve.app.ui.screens.reader.ReaderRestReminderSpec,
     onSettingsChange: (ComicReaderSettings) -> Unit,
+    onDirectionChange: (ComicReadingDirection?) -> Unit,
     onBack: () -> Unit,
     onPageChange: (Int) -> Unit,
     onPagesNeeded: (List<Int>) -> Unit,
+    onPageEntriesChange: (List<List<Int>>) -> Unit,
     onToggleBookmark: (Int) -> Unit,
     onOpenSettings: () -> Unit,
     onCloseSettings: () -> Unit,
@@ -282,9 +296,10 @@ private fun ComicReaderScreen(
         settings.progressionMode == ComicProgressionMode.PAGED &&
         settings.spreadMode != ComicSpreadMode.OFF &&
         (settings.spreadMode == ComicSpreadMode.ON || isLandscape)
-    val pageEntries = remember(state.pages, spreadActive) {
-        buildPageEntries(state.pages.size, spreadActive)
+    val pageEntries = remember(state.pages.size, spreadActive, state.widePages) {
+        buildPageEntries(state.pages.size, spreadActive, state.widePages)
     }
+    LaunchedEffect(pageEntries) { onPageEntriesChange(pageEntries) }
     val currentEntryIndex = remember(state.currentPage, pageEntries) {
         pageEntries.indexOfFirst { state.currentPage in it }.coerceAtLeast(0)
     }
@@ -341,6 +356,7 @@ private fun ComicReaderScreen(
             state.pages.isNotEmpty() -> {
                 ComicHorizontalPager(
                     pages = state.pages,
+                    entries = pageEntries,
                     availablePages = state.availablePages,
                     currentPage = state.currentPage,
                     spreadActive = spreadActive,
@@ -379,12 +395,13 @@ private fun ComicReaderScreen(
             onOpenSettings = onOpenSettings,
             onCloseSettings = onCloseSettings,
             onSettingsChange = onSettingsChange,
+            onDirectionChange = onDirectionChange,
             onPageChange = onPageChange,
             restReminder = restReminder,
         )
 
         val nextBook = state.nextInSeries
-        val onLastPage = state.pages.isNotEmpty() && state.currentPage >= state.pages.lastIndex
+        val onLastPage = state.pages.isNotEmpty() && currentEntry.max() >= state.pages.lastIndex
         if (readNextEnabled && nextBook != null && onLastPage) {
             NextInSeriesButton(
                 book = nextBook,

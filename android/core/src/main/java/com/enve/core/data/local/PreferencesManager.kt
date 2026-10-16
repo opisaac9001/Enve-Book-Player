@@ -864,6 +864,7 @@ class PreferencesManager(
         val READ_ALOUD_SPEED = floatPreferencesKey("reader.readAloud.speed")
         val READ_ALOUD_SYNC_OFFSET_MS = intPreferencesKey("reader.readAloud.syncOffsetMs")
         val READ_ALOUD_AUTO_TURN = booleanPreferencesKey("reader.readAloud.autoTurn")
+        val READ_ALOUD_SKIP_ON_PAGE_TURN = booleanPreferencesKey("reader.readAloud.skipOnPageTurn")
         val READ_ALOUD_HIGHLIGHT = booleanPreferencesKey("reader.readAloud.highlight")
         val READ_ALOUD_HIGHLIGHT_HEX = stringPreferencesKey("reader.readAloud.highlightHex")
         val READ_ALOUD_SKIP_ASIDES = booleanPreferencesKey("reader.readAloud.skipAsides")
@@ -916,6 +917,7 @@ class PreferencesManager(
     val readAloudSpeed: Flow<Float> = dataStore.data.map { it[ReaderKeys.READ_ALOUD_SPEED] ?: 1.0f }
     val readAloudSyncOffsetMs: Flow<Int> = dataStore.data.map { it[ReaderKeys.READ_ALOUD_SYNC_OFFSET_MS] ?: 0 }
     val readAloudAutoTurn: Flow<Boolean> = dataStore.data.map { it[ReaderKeys.READ_ALOUD_AUTO_TURN] ?: true }
+    val readAloudSkipOnPageTurn: Flow<Boolean> = dataStore.data.map { it[ReaderKeys.READ_ALOUD_SKIP_ON_PAGE_TURN] ?: true }
     val readAloudHighlight: Flow<Boolean> = dataStore.data.map { it[ReaderKeys.READ_ALOUD_HIGHLIGHT] ?: true }
     val readAloudHighlightHex: Flow<String> = dataStore.data.map { it[ReaderKeys.READ_ALOUD_HIGHLIGHT_HEX] ?: "#FFF59D" }
     val readAloudSkipAsides: Flow<Boolean> = dataStore.data.map { it[ReaderKeys.READ_ALOUD_SKIP_ASIDES] ?: true }
@@ -978,6 +980,7 @@ class PreferencesManager(
         readAloudSpeed: Float? = null,
         readAloudSyncOffsetMs: Int? = null,
         readAloudAutoTurn: Boolean? = null,
+        readAloudSkipOnPageTurn: Boolean? = null,
         readAloudHighlight: Boolean? = null,
         readAloudHighlightHex: String? = null,
         readAloudSkipAsides: Boolean? = null,
@@ -1016,6 +1019,7 @@ class PreferencesManager(
                 readAloudSpeed?.let { p[ReaderKeys.READ_ALOUD_SPEED] = it }
                 readAloudSyncOffsetMs?.let { p[ReaderKeys.READ_ALOUD_SYNC_OFFSET_MS] = it }
                 readAloudAutoTurn?.let { p[ReaderKeys.READ_ALOUD_AUTO_TURN] = it }
+                readAloudSkipOnPageTurn?.let { p[ReaderKeys.READ_ALOUD_SKIP_ON_PAGE_TURN] = it }
                 readAloudHighlight?.let { p[ReaderKeys.READ_ALOUD_HIGHLIGHT] = it }
                 readAloudHighlightHex?.let { p[ReaderKeys.READ_ALOUD_HIGHLIGHT_HEX] = it }
                 readAloudSkipAsides?.let { p[ReaderKeys.READ_ALOUD_SKIP_ASIDES] = it }

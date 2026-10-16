@@ -367,7 +367,7 @@ class SyncCoordinator @Inject constructor(
                     val creds = koreaderSink.credentialsForBook(book)
                     if (creds != null && creds.enabled) {
                         try {
-                            koreaderSink.push(book, null, normalizedProgress)
+                            koreaderSink.push(book, ebookLocator, normalizedProgress)
                         } catch (e: kotlinx.coroutines.CancellationException) {
                             throw e
                         } catch (_: Exception) {

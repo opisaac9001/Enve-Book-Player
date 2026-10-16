@@ -20,6 +20,8 @@ class BookOrbitTrackResolver @Inject constructor(
                 title = track.title ?: track.fileName,
                 durationMs = track.durationMs,
                 url = url,
+                sizeBytes = track.fileSizeBytes,
+                assetId = track.fileId,
             )
         }
     }

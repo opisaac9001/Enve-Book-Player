@@ -122,8 +122,7 @@ object KOReaderHubXPointerConverter {
     }
 
     private fun resolveCfi(dom: HtmlDom, partialCfi: String): ResolvedCfi {
-        var cfi = partialCfi.trim().replace(CFI_ASSERTION, "")
-        require(!cfi.contains(',')) { "range CFIs do not name a single position" }
+        var cfi = partialCfi.trim().replace(CFI_ASSERTION, "").rangeStart()
 
         var charOffset: Int? = null
         CFI_CHAR_OFFSET.find(cfi)?.let { match ->
@@ -171,6 +170,13 @@ object KOReaderHubXPointerConverter {
     private fun contentCfi(locatorJson: String, root: JsonObject): String? {
         (root["locations"] as? JsonObject)?.get("partialCfi").stringLiteralOrNull()?.takeIf { it.isNotBlank() }?.let { return it.contentPath() }
         return EpubBridgeCheckpointCodec.cfi(locatorJson)?.contentPath()
+    }
+
+    private fun String.rangeStart(): String {
+        val parts = split(',')
+        if (parts.size == 1) return this
+        require(parts.size == 3) { "malformed range CFI" }
+        return parts[0] + parts[1]
     }
 
     private fun String.contentPath(): String? =

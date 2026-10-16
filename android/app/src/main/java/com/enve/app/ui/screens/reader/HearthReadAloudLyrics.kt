@@ -2,17 +2,22 @@ package com.enve.app.ui.screens.reader
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.statusBarsIgnoringVisibility
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -28,6 +33,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -37,6 +43,7 @@ import com.enve.hearth.design.HearthText
 import com.enve.hearth.design.hearthDisplay
 import com.enve.hearth.design.Overline
 
+@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
 fun HearthReadAloudLyrics(
     rows: List<ReadAloudClipRow>,
@@ -44,6 +51,7 @@ fun HearthReadAloudLyrics(
     onSelect: (ReadAloudClipRow) -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
+    onToggleControls: () -> Unit = {},
 ) {
     val palette = Hearth.palette
     val spoken = rows.filter { it.text.isNotBlank() }
@@ -58,24 +66,31 @@ fun HearthReadAloudLyrics(
     Box(
         modifier.fillMaxSize()
             .background(palette.bg)
-            .clickable(interactionSource = blocker, indication = null) {},
+            .clickable(interactionSource = blocker, indication = null, onClick = onToggleControls),
     ) {
-        Column(Modifier.fillMaxSize().statusBarsPadding()) {
+        Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBarsIgnoringVisibility)) {
             Row(
                 Modifier.fillMaxWidth().padding(
-                    horizontal = Hearth.Spacing.XL,
-                    vertical = Hearth.Spacing.M,
+                    start = Hearth.Spacing.XL,
+                    end = Hearth.Spacing.S,
+                    top = Hearth.Spacing.XXS,
+                    bottom = Hearth.Spacing.XXS,
                 ),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Overline("Read mode")
-                Icon(
-                    Icons.Outlined.Close,
-                    "Close read mode",
-                    tint = palette.textSecondary,
-                    modifier = Modifier.clip(CircleShape).clickable(onClick = onClose).size(28.dp),
-                )
+                Box(
+                    Modifier.size(48.dp).clip(CircleShape).clickable(role = Role.Button, onClick = onClose),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Outlined.Close,
+                        "Close read mode",
+                        tint = palette.textSecondary,
+                        modifier = Modifier.size(28.dp),
+                    )
+                }
             }
 
             if (spoken.isEmpty()) {
@@ -103,7 +118,12 @@ fun HearthReadAloudLyrics(
                             color = if (current) palette.text else palette.textTertiary,
                             modifier = Modifier.fillMaxWidth()
                                 .testTag(READ_MODE_LINE_TAG)
-                                .clickable { onSelect(row) }
+                                .combinedClickable(
+                                    onClick = onToggleControls,
+                                    onDoubleClick = { onSelect(row) },
+                                    onLongClickLabel = "Play from here",
+                                    onLongClick = { onSelect(row) },
+                                )
                                 .padding(vertical = Hearth.Spacing.M),
                         )
                     }

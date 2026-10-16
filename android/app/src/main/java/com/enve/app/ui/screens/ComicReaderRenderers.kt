@@ -80,6 +80,7 @@ import kotlin.math.abs
 @Composable
 internal fun ComicHorizontalPager(
     pages: List<File>,
+    entries: List<List<Int>>,
     availablePages: Set<Int>,
     currentPage: Int,
     spreadActive: Boolean,
@@ -91,10 +92,6 @@ internal fun ComicHorizontalPager(
     onPagesNeeded: (List<Int>) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val entries: List<List<Int>> = remember(pages, spreadActive, settings.spreadMode) {
-        buildPageEntries(pages.size, spreadActive)
-    }
-
     val entryIndex = remember(currentPage, entries) {
         entries.indexOfFirst { currentPage in it }.coerceAtLeast(0)
     }
@@ -141,10 +138,11 @@ internal fun ComicHorizontalPager(
         ) { pageIdx ->
             val pageIndices = entries.getOrElse(pageIdx) { listOf(pageIdx.coerceIn(pages.indices)) }
             LaunchedEffect(pageIndices) { onPagesNeeded(pageIndices) }
+            val displayIndices = spreadDisplayOrder(pageIndices, isRtl)
 
             ZoomableComicSpread(
-                pageFiles = pageIndices.map { pages[it] },
-                pageAvailability = pageIndices.map { it in availablePages },
+                pageFiles = displayIndices.map { pages[it] },
+                pageAvailability = displayIndices.map { it in availablePages },
                 pageDescription = pageLabel(pageIndices, pages.size),
                 settings = settings,
                 bgColor = bgColor,
@@ -159,21 +157,25 @@ internal fun ComicHorizontalPager(
     }
 }
 
-internal fun buildPageEntries(pageCount: Int, spreadActive: Boolean): List<List<Int>> {
+internal fun buildPageEntries(pageCount: Int, spreadActive: Boolean, widePages: Set<Int>): List<List<Int>> {
     if (!spreadActive || pageCount <= 0) return (0 until pageCount).map { listOf(it) }
-    val result = mutableListOf<List<Int>>()
-    var i = 0
+    val result = mutableListOf(listOf(0))
+    var i = 1
     while (i < pageCount) {
-        if (i + 1 < pageCount) {
-            result.add(listOf(i, i + 1))
-            i += 2
-        } else {
+        val next = i + 1
+        if (i in widePages || next >= pageCount || next in widePages) {
             result.add(listOf(i))
             i++
+        } else {
+            result.add(listOf(i, next))
+            i += 2
         }
     }
     return result
 }
+
+internal fun spreadDisplayOrder(pageIndices: List<Int>, isRtl: Boolean): List<Int> =
+    if (isRtl) pageIndices.reversed() else pageIndices
 
 @Composable
 private fun ZoomableComicSpread(
@@ -387,7 +389,9 @@ internal fun ComicVerticalStrip(
 ) {
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = currentPage.coerceIn(0, pages.lastIndex))
     LaunchedEffect(listState) {
-        snapshotFlow { listState.firstVisibleItemIndex }
+        snapshotFlow {
+            if (listState.lastScrolledForward && !listState.canScrollForward) pages.lastIndex else listState.firstVisibleItemIndex
+        }
             .distinctUntilChanged()
             .collect { onPageVisible(it.coerceIn(0, pages.lastIndex)) }
     }

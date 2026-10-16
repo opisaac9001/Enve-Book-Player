@@ -90,7 +90,7 @@ data class LibraryDto(
 @Serializable
 data class BookSummaryDto(
     @Serializable(with = FlexibleIdSerializer::class) val id: String,
-    val title: String,
+    val title: String = "",
     val authors: List<String>? = null,
     val thumbnailUrl: String? = null,
     val readStatus: String? = null,
@@ -194,7 +194,13 @@ data class EbookProgressObjectDto(
     val percentage: Float? = null,
     val cfi: String? = null,
     val href: String? = null,
+    val contentSourceProgressPercent: Float? = null,
     val updatedAt: String? = null,
+)
+
+@Serializable
+data class GrimmoryBookProgressDetailDto(
+    val epubProgress: EbookProgressObjectDto? = null,
 )
 
 @Serializable

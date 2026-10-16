@@ -6,7 +6,7 @@ import java.net.URLDecoder
 object KOReaderDocumentId {
 
     private val EBOOK_EXTENSIONS =
-        setOf("epub", "pdf", "cbz", "cbr", "mobi", "azw3", "fb2", "txt", "djvu")
+        setOf("epub", "kepub", "pdf", "cbz", "cbr", "mobi", "azw3", "fb2", "txt", "djvu")
 
     fun fromFilename(pathOrName: String): String? =
         basename(pathOrName)?.let { md5Hash(it) }

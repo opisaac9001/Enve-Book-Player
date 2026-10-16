@@ -259,7 +259,7 @@ dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.core:core-splashscreen:1.0.1")
     implementation("androidx.documentfile:documentfile:1.1.0")
-    implementation("androidx.browser:browser:1.8.0")
+    implementation("androidx.browser:browser:1.9.0")
     implementation("androidx.webkit:webkit:1.12.1")
     implementation("androidx.glance:glance-appwidget:1.1.1")
 

@@ -59,6 +59,7 @@ interface PlaybackFacade {
     fun clearQueue()
 
     fun togglePlayPause()
+    suspend fun stop()
     fun seekTo(positionMs: Long)
     fun skipForward()
     fun skipBackward()

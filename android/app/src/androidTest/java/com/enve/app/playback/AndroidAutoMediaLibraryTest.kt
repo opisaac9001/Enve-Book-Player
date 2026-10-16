@@ -25,6 +25,7 @@ import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.Chapter
+import com.enve.core.data.model.ProviderConnection
 import com.enve.engine.playback.PlaybackAutomationContract
 import dagger.hilt.android.EntryPointAccessors
 import org.junit.Assert.assertArrayEquals
@@ -559,17 +560,34 @@ class AndroidAutoMediaLibraryTest {
     fun pausedMultiTrackSeekRewindAndClearSaveExactBookCheckpoint() {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val runtime = EntryPointAccessors.fromApplication(context, AndroidAutoDebugEntryPoint::class.java).runtime()
+        val connections = runtime.connections()
+        val suffix = System.nanoTime()
+        val firstConnectionId = "android-auto-checkpoint-one-$suffix"
+        val secondConnectionId = "android-auto-checkpoint-two-$suffix"
+        runBlocking {
+            listOf(firstConnectionId, secondConnectionId).forEach { id ->
+                connections.upsert(ProviderConnection(
+                    id = id,
+                    source = BookSource.LOCAL,
+                    name = "Android Auto checkpoint test",
+                    serverUrl = "",
+                    username = "",
+                    enabled = false,
+                ))
+            }
+        }
         val dao = runtime.bookCacheDao()
         val audioManager = runtime.audioPlayback()
         val audio = File(context.cacheDir, "android-auto-checkpoint.wav")
         writeSilentWav(audio)
         val book = Book(
             id = "android-auto-checkpoint", title = "Android Auto Checkpoint", source = BookSource.LOCAL,
-            connectionId = "android-auto-checkpoint-one", mediaType = AppMediaType.AUDIOBOOK,
+            connectionId = firstConnectionId, mediaType = AppMediaType.AUDIOBOOK,
             duration = 60L, currentTime = 7L, readProgress = 7f / 60f,
         )
-        val other = book.copy(connectionId = "android-auto-checkpoint-two")
+        val other = book.copy(connectionId = secondConnectionId)
         runBlocking { dao.upsert(listOf(book.toCachedBook(0L), other.toCachedBook(0L))) }
+        runBlocking { assertNotNull(dao.getByCacheKey(book.uniqueKey)) }
         val thread = HandlerThread("android-auto-checkpoint-test").apply { start() }
         val handler = Handler(thread.looper)
         val token = SessionToken(context, ComponentName(context, PlaybackService::class.java))
@@ -612,7 +630,11 @@ class AndroidAutoMediaLibraryTest {
             audioManager.stop()
             handler.call { browser.release() }
             thread.quitSafely()
-            runBlocking { dao.deleteByCacheKeys(listOf(book.uniqueKey, other.uniqueKey)) }
+            runBlocking {
+                dao.deleteByCacheKeys(listOf(book.uniqueKey, other.uniqueKey))
+                connections.remove(firstConnectionId)
+                connections.remove(secondConnectionId)
+            }
             audio.delete()
         }
     }

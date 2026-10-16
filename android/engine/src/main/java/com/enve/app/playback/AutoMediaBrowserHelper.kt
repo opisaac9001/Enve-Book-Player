@@ -30,6 +30,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
@@ -60,6 +62,18 @@ class AutoMediaBrowserHelper @Inject constructor(
         private const val TAG = "AutoMediaBrowser"
         private const val SHELF_LIMIT = 50
         private const val COVER_ITEM_TIMEOUT_MS = 3_000L
+
+        fun buildRoot(): MediaItem = MediaItem.Builder()
+            .setMediaId(ROOT_ID)
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle("Enve")
+                    .setIsBrowsable(true)
+                    .setIsPlayable(false)
+                    .setMediaType(MediaMetadata.MEDIA_TYPE_FOLDER_AUDIO_BOOKS)
+                    .build()
+            )
+            .build()
 
         fun cacheKeyFrom(mediaId: String): String? {
             if (!mediaId.startsWith(BOOK_PREFIX)) return null
@@ -131,18 +145,6 @@ class AutoMediaBrowserHelper @Inject constructor(
         }
     }
 
-    fun buildRoot(): MediaItem = MediaItem.Builder()
-        .setMediaId(ROOT_ID)
-        .setMediaMetadata(
-            MediaMetadata.Builder()
-                .setTitle("Enve")
-                .setIsBrowsable(true)
-                .setIsPlayable(false)
-                .setMediaType(MediaMetadata.MEDIA_TYPE_FOLDER_AUDIO_BOOKS)
-                .build()
-        )
-        .build()
-
     suspend fun getChildren(parentId: String): List<MediaItem> = withContext(Dispatchers.IO) {
         when (parentId) {
             ROOT_ID -> listOf(
@@ -204,7 +206,7 @@ class AutoMediaBrowserHelper @Inject constructor(
             else -> cacheKeyFrom(mediaId)
                 ?.let { bookCacheDao.getByCacheKey(it) }
                 ?.toBook()
-                ?.let { browseItemFor(it, artworkUriFor(it)) }
+                ?.let { browseItemFor(it, cachedArtworkUriFor(it)) }
         }
     }
 
@@ -325,7 +327,7 @@ class AutoMediaBrowserHelper @Inject constructor(
         chapters: List<Chapter>,
         providerSessionId: String?,
     ): ResolvedPlayback {
-        val artworkUri = artworkUriFor(book)
+        val artworkUri = cachedArtworkUriFor(book)
         val totalDurationMs = book.duration
             .takeIf { it > 0L }
             ?.times(1000L)
@@ -386,15 +388,24 @@ class AutoMediaBrowserHelper @Inject constructor(
         return coverItems(rows.map { it.toBook() })
     }
 
-    private suspend fun coverItems(books: List<Book>): List<MediaItem> = coroutineScope {
-        books.map { book ->
-            async {
-                val artworkUri = withTimeoutOrNull(COVER_ITEM_TIMEOUT_MS) {
-                    artworkUriFor(book)
+    private fun coverItems(books: List<Book>): List<MediaItem> =
+        books.map { book -> browseItemFor(book, cachedArtworkUriFor(book)) }
+
+    suspend fun prefetchArtwork(items: List<MediaItem>): Boolean = coroutineScope {
+        val permits = Semaphore(4)
+        items.mapNotNull { item -> cacheKeyFrom(item.mediaId) }
+            .distinct()
+            .map { cacheKey ->
+                async(Dispatchers.IO) {
+                    permits.withPermit {
+                        val book = bookCacheDao.getByCacheKey(cacheKey)?.toBook() ?: return@withPermit false
+                        if (cachedArtworkUriFor(book) != null) return@withPermit false
+                        boundedArtworkUriFor(book) != null
+                    }
                 }
-                browseItemFor(book, artworkUri)
             }
-        }.awaitAll()
+            .awaitAll()
+            .any { it }
     }
 
     private suspend fun searchCandidates(search: VoiceAudiobookSearch): List<SearchCandidate> =
@@ -432,8 +443,14 @@ class AutoMediaBrowserHelper @Inject constructor(
         )
     }
 
-    private suspend fun artworkUriFor(book: Book): Uri? =
-        autoArtworkCache.uriFor(book.id, book.uniqueKey, book.coverUrl)
+    private suspend fun boundedArtworkUriFor(book: Book): Uri? =
+        cachedArtworkUriFor(book)
+            ?: withTimeoutOrNull(COVER_ITEM_TIMEOUT_MS) {
+                autoArtworkCache.uriFor(book.id, book.uniqueKey, book.coverUrl)
+            }
+
+    private fun cachedArtworkUriFor(book: Book): Uri? =
+        autoArtworkCache.cachedUriFor(book.id, book.uniqueKey, book.coverUrl)
 
     private fun shelfItem(id: String, titleResId: Int, artworkResId: Int): MediaItem = MediaItem.Builder()
         .setMediaId(id)
@@ -498,7 +515,8 @@ class AutoMediaBrowserHelper @Inject constructor(
             .build()
         return MediaItem.Builder()
             .setMediaId(mediaIdForTrack(book.uniqueKey, track.index))
-            .setUri(track.contentUrl.orEmpty())
+            .setUri(connectionStreamUrl(track.contentUrl.orEmpty(), book.connectionId))
+            .apply { AudioPlaybackManager.mimeTypeForAudioFormat(track.format)?.let(::setMimeType) }
             .setMediaMetadata(meta)
             .build()
     }
@@ -524,7 +542,8 @@ class AutoMediaBrowserHelper @Inject constructor(
             .build()
         return MediaItem.Builder()
             .setMediaId(mediaIdForChapter(book.uniqueKey, segment.chapter.index))
-            .setUri(track.contentUrl.orEmpty())
+            .setUri(connectionStreamUrl(track.contentUrl.orEmpty(), book.connectionId))
+            .apply { AudioPlaybackManager.mimeTypeForAudioFormat(track.format)?.let(::setMimeType) }
             .setClippingConfiguration(
                 MediaItem.ClippingConfiguration.Builder()
                     .setStartPositionMs(segment.startMs)

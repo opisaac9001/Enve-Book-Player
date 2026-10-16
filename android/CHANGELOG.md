@@ -2,9 +2,16 @@
 
 Release notes for the Android app. Versions are `<name> build <code>`, matching `versionName` and `versionCode` in `app/build.gradle.kts`.
 
-## Unreleased
+## 1.2 build 54 — experimental — 2026-10-15
 
-- Removed the duplicate orange library loading indicator; pull-to-refresh keeps its grey spinner.
+- Fit ebook completion outlines to portrait covers while retaining circular audiobook indicators.
+- Show chapter-length estimates in reader Contents while preserving narration controls.
+- Keep authorized Grimmory libraries visible and improve large-catalog imports.
+- Improve downloaded audiobook startup and offline resume.
+- Include the current reader, authentication, playback, synchronization, and accessibility implementation from Android main.
+- Preserve the single library refresh indicator.
+
+This is an experimental candidate. The full provider/device regression matrix and owner Android Auto check remain incomplete.
 
 ## 1.2 build 53 — 2026-10-09
 

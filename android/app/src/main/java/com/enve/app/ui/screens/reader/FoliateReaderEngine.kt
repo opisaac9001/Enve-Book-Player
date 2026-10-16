@@ -116,6 +116,10 @@ class FoliateReaderEngine(
     override var currentSelection: Locator? = null
         private set
 
+    @Volatile
+    var footnoteOpen: Boolean = false
+        private set
+
     private val pendingSearches = ConcurrentHashMap<String, CompletableDeferred<List<Locator>>>()
     private val customFontFaces = buildCustomFontFaces(customFonts)
     private val customFontFiles = customFontFaces.associateBy(CustomFontFace::assetPath)
@@ -473,6 +477,7 @@ class FoliateReaderEngine(
                 "ready" -> handleReady(payload as? JSONObject ?: JSONObject())
                 "relocate" -> handleRelocate(payload as? JSONObject ?: return)
                 "selection" -> handleSelection(payload as? JSONObject)
+                "footnote" -> footnoteOpen = (payload as? JSONObject)?.optBoolean("open") == true
                 "annotationResolution" -> {
                     val results = (payload as? JSONObject)?.optJSONArray("results") ?: return
                     val resolution = buildMap {
@@ -514,6 +519,7 @@ class FoliateReaderEngine(
                                 title = item.optString("title").ifBlank { "Untitled" },
                                 href = href,
                                 depth = item.optInt("depth", 0).coerceAtLeast(0),
+                                progression = item.optDouble("progression").takeIf { it in 0.0..1.0 },
                             ),
                         )
                     }
