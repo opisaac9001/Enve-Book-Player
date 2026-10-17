@@ -5,6 +5,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -62,6 +64,9 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -85,7 +90,10 @@ import com.enve.hearth.design.ShelfHeader
 import com.enve.hearth.design.hearthDisplay
 import com.enve.hearth.design.hearthUI
 import com.enve.hearth.design.rememberAmbientTint
+import com.enve.hearth.MarkUnreadDialog
 import com.enve.hearth.detail.detailListenTarget
+import com.enve.hearth.needsUnreadConfirmation
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -119,6 +127,7 @@ fun HearthHomeScreen(
     var seeAllSection by rememberSaveable { mutableStateOf<HearthHomeSection?>(null) }
     var contextBook by remember { mutableStateOf<Book?>(null) }
     var contextDismissable by rememberSaveable { mutableStateOf(false) }
+    var confirmUnreadBook by remember { mutableStateOf<Book?>(null) }
     val palette = Hearth.palette
 
     if (showingDiscover) {
@@ -151,10 +160,22 @@ fun HearthHomeScreen(
                     if (contextDismissable) TextButton(onClick = { vm.dismissFromShelf(book); contextBook = null }) { Text("Hide from Hearth") }
                     TextButton(onClick = { vm.setFinished(book, !book.isFinished); contextBook = null }) { Text(if (book.isFinished) "Mark unfinished" else "Mark finished") }
                     if (book.progress > 0f) TextButton(onClick = { vm.resetProgress(book); contextBook = null }) { Text("Reset progress") }
+                    TextButton(onClick = {
+                        if (book.needsUnreadConfirmation()) confirmUnreadBook = book else vm.markUnread(book)
+                        contextBook = null
+                    }) { Text("Mark as unread") }
                     TextButton(onClick = { onPlayBook(book); contextBook = null }) { Text(if (book.mediaType == AppMediaType.EBOOK) "Read" else "Listen") }
                 }
             },
             confirmButton = { TextButton(onClick = { contextBook = null }) { Text("Done") } },
+        )
+    }
+
+    confirmUnreadBook?.let { book ->
+        MarkUnreadDialog(
+            book = book,
+            onConfirm = { vm.markUnread(book); confirmUnreadBook = null },
+            onDismiss = { confirmUnreadBook = null },
         )
     }
 
@@ -213,6 +234,7 @@ fun HearthHomeScreen(
                             readTarget = if (book.mediaType == AppMediaType.EBOOK || book.hasEbook) book else heroLinks.second,
                             onListen = onListenBook,
                             onRead = onReadBook,
+                            onLongClick = { contextBook = book; contextDismissable = true },
                         )
                     }
                     item {
@@ -311,14 +333,21 @@ private fun HomeHeader(lastSyncMillis: Long, onOpenSettings: () -> Unit, onOpenP
         }
         Box(
             Modifier
-                .size(40.dp)
+                .size(48.dp)
                 .clip(CircleShape)
-                .background(palette.bgElevated)
-                .border(1.dp, palette.hairline, CircleShape)
-                .clickable(onClick = onOpenSettings),
+                .clickable(role = Role.Button, onClickLabel = "Open settings", onClick = onOpenSettings),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(Icons.Outlined.Settings, contentDescription = "Settings", tint = palette.textSecondary, modifier = Modifier.size(18.dp))
+            Box(
+                Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(palette.bgElevated)
+                    .border(1.dp, palette.hairline, CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Outlined.Settings, contentDescription = "Settings", tint = palette.textSecondary, modifier = Modifier.size(18.dp))
+            }
         }
     }
 }
@@ -527,11 +556,28 @@ private fun Doorways(onDiscover: () -> Unit, onPodcasts: () -> Unit, onHardcover
         Overline("DOORWAYS")
         Column(
             Modifier.fillMaxWidth().clip(RoundedCornerShape(Hearth.Radius.Card))
-                .background(palette.bgElevated).border(1.dp, palette.hairline, RoundedCornerShape(Hearth.Radius.Card)),
+                .background(palette.bgElevated).border(1.dp, palette.hairline, RoundedCornerShape(Hearth.Radius.Card))
+                .horizontalDragCancelsTaps(),
         ) {
             DoorwayRow("Discover", "Find your next read", Icons.Outlined.Explore, onDiscover)
             DoorwayRow("Podcasts", "Browse shows and episodes", Icons.Outlined.Podcasts, onPodcasts)
             DoorwayRow("Hardcover", "Explore your reading life", Icons.Outlined.AutoStories, onHardcover)
+        }
+    }
+}
+
+private fun Modifier.horizontalDragCancelsTaps(): Modifier = pointerInput(Unit) {
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+        while (true) {
+            val change = awaitPointerEvent(PointerEventPass.Initial).changes.firstOrNull { it.id == down.id } ?: return@awaitEachGesture
+            val drift = change.position - down.position
+            if (abs(drift.x) > viewConfiguration.touchSlop && abs(drift.x) > abs(drift.y)) {
+                change.consume()
+                return@awaitEachGesture
+            }
+            if (!change.pressed) return@awaitEachGesture
+            if (awaitPointerEvent(PointerEventPass.Final).changes.any { it.id == down.id && it.isConsumed }) return@awaitEachGesture
         }
     }
 }
@@ -558,8 +604,13 @@ private fun HomeSeeAll(title: String, books: List<Book>, onBack: () -> Unit, onO
     val palette = Hearth.palette
     Column(Modifier.fillMaxSize().background(palette.bg).statusBarsPadding()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = Hearth.Spacing.XL, vertical = Hearth.Spacing.L), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.AutoMirrored.Outlined.ArrowBack, "Back", tint = palette.text, modifier = Modifier.clickable(onClick = onBack).padding(8.dp))
-            Text(title, style = hearthDisplay(28.sp, FontWeight.SemiBold), color = palette.text, modifier = Modifier.padding(start = Hearth.Spacing.M))
+            Box(
+                Modifier.size(48.dp).clip(CircleShape).clickable(role = Role.Button, onClick = onBack),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.AutoMirrored.Outlined.ArrowBack, "Back", tint = palette.text)
+            }
+            Text(title, style = hearthDisplay(28.sp, FontWeight.SemiBold), color = palette.text, modifier = Modifier.padding(start = Hearth.Spacing.S))
         }
         LazyVerticalGrid(
             columns = GridCells.Fixed(3),

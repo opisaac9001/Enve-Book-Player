@@ -8,6 +8,7 @@ import com.enve.app.data.offline.resolvers.BookOrbitTrackResolver
 import com.enve.app.data.offline.resolvers.GrimmoryTrackResolver
 import com.enve.app.data.offline.resolvers.PlexTrackResolver
 import com.enve.app.data.offline.resolvers.StorytellerTrackResolver
+import com.enve.app.data.offline.resolvers.TorBoxTrackResolver
 import dagger.Binds
 import dagger.Module
 import dagger.hilt.InstallIn
@@ -42,4 +43,9 @@ abstract class AudiobookDownloadModule {
     @IntoMap
     @AudiobookTrackResolverKey(BookSource.BOOKORBIT)
     abstract fun bindBookOrbitResolver(impl: BookOrbitTrackResolver): AudiobookTrackResolver
+
+    @Binds
+    @IntoMap
+    @AudiobookTrackResolverKey(BookSource.TORBOX)
+    abstract fun bindTorBoxResolver(impl: TorBoxTrackResolver): AudiobookTrackResolver
 }

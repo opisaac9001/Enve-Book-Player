@@ -42,7 +42,7 @@ object ReaderEnginePolicy {
     }
 
     fun select(request: ReaderEngineRequest): ReaderEngineKind {
-        val isOrdinaryEpub = request.format.equals("EPUB", ignoreCase = true) &&
+        val isOrdinaryEpub = (request.format.equals("EPUB", ignoreCase = true) || request.format.equals("KEPUB", ignoreCase = true)) &&
             request.isReflowable &&
             !request.readAlong
         if (!isOrdinaryEpub) return ReaderEngineKind.READIUM

@@ -7,6 +7,7 @@ import java.util.Locale
 
 enum class EbookSourceFormat(val extension: String, val displayName: String) {
     EPUB("epub", "EPUB"),
+    KEPUB("kepub", "KePub"),
     READALOUD("epub", "Read Aloud"),
     MOBI("mobi", "MOBI"),
     AZW("azw", "AZW"),
@@ -18,9 +19,13 @@ enum class EbookSourceFormat(val extension: String, val displayName: String) {
     val isKindleFamily: Boolean
         get() = this == MOBI || this == AZW || this == AZW3
 
+    val isEpubPackage: Boolean
+        get() = this == EPUB || this == KEPUB
+
     companion object {
         fun fromServerType(value: String?): EbookSourceFormat = when (value?.uppercase(Locale.US)) {
             "EPUB" -> EPUB
+            "KEPUB" -> KEPUB
             "READALOUD", "READ_ALOUD", "READ-ALOUD" -> READALOUD
             "MOBI" -> MOBI
             "AZW" -> AZW
@@ -55,7 +60,8 @@ class OnDeviceEbookNormalizer(
         }
 
         when (format) {
-            EbookSourceFormat.EPUB -> {
+            EbookSourceFormat.EPUB,
+            EbookSourceFormat.KEPUB -> {
                 if (source != normalized) source.copyTo(normalized, overwrite = true)
                 normalized
             }

@@ -47,7 +47,7 @@ fun inferMediaTypeFromPath(path: String, defaultType: AppMediaType = AppMediaTyp
     val ext = path.substringBefore('?').substringAfterLast('.', "").lowercase()
     return when (ext) {
         "m4b", "mp3", "aac", "flac", "ogg" -> AppMediaType.AUDIOBOOK
-        "epub", "pdf", "cbz", "cbr", "cbx", "mobi", "azw3", "fb2" -> AppMediaType.EBOOK
+        "epub", "kepub", "pdf", "cbz", "cbr", "cbx", "mobi", "azw3", "fb2" -> AppMediaType.EBOOK
         else -> defaultType
     }
 }

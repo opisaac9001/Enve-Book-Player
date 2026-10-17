@@ -129,15 +129,19 @@ fun SyncCenterScreen(
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(
-                            imageVector = if (state.isSyncingAll) Icons.Default.Sync else Icons.Default.CloudDone,
+                            imageVector = if (state.isSyncingAll || state.pendingCount > 0) Icons.Default.Sync else Icons.Default.CloudDone,
                             contentDescription = null,
-                            tint = if (state.isSyncingAll) colors.accent else Color(0xFF6F8F6A),
+                            tint = if (state.isSyncingAll || state.pendingCount > 0) colors.accent else Color(0xFF6F8F6A),
                             modifier = Modifier.size(32.dp.scaled(metrics)),
                         )
                     }
 
                     Text(
-                        text = if (state.isSyncingAll) "Syncing…" else "Up to Date",
+                        text = when {
+                            state.isSyncingAll -> "Syncing…"
+                            state.pendingCount > 0 -> "Updates pending"
+                            else -> "Up to Date"
+                        },
                         color = colors.primaryText,
                         fontSize = DS.FontSize.Title3.scaled(metrics),
                         fontWeight = FontWeight.Bold,

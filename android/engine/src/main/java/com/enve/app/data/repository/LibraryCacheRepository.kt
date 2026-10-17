@@ -16,6 +16,7 @@ import com.enve.core.data.local.CachedBookListItem
 import com.enve.core.data.local.CachedLibrary
 import com.enve.core.data.local.ConnectionRegistry
 import com.enve.core.data.local.LibraryCacheDao
+import com.enve.core.data.local.decodeChapters
 import com.enve.core.data.local.toCachedBook
 import com.enve.core.data.local.toBook
 import com.enve.core.data.local.toCached
@@ -29,14 +30,21 @@ import com.enve.core.data.provider.LibraryAccessRevocations
 import com.enve.core.data.util.FINISHED_PROGRESS_THRESHOLD
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.take
+import kotlinx.coroutines.flow.transformLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
@@ -58,6 +66,7 @@ class LibraryCacheRepository @Inject constructor(
     private val matchedMetadataStore: MatchedBookMetadataStore,
     private val bookLinkRepository: BookLinkRepository,
     private val libraryRevocations: LibraryAccessRevocations,
+    private val torBoxCatalog: TorBoxCatalogStore,
     @ApplicationScope parentScope: CoroutineScope =
         CoroutineScope(SupervisorJob() + Dispatchers.Default),
     private val serverSync: com.enve.core.data.local.ProfileServerSyncStore,
@@ -74,6 +83,14 @@ class LibraryCacheRepository @Inject constructor(
     init {
         scope.launch { pruneRemovedConnections() }
         scope.launch {
+            torBoxCatalog.updates.collect { connectionId ->
+                if (connectionRegistry.connections.first().any { it.id == connectionId }) {
+                    doRefresh(setOf(connectionId), awaitRefresh = true, completedTorBox = true)
+                    aggregator.clearHomeSnapshotCache()
+                }
+            }
+        }
+        scope.launch {
             libraryRevocations.revoked.collect { revoked ->
                 val libraryId = compositeLibraryId(revoked.connectionId, revoked.libraryId)
                 dao.deleteForConnectionLibrary(revoked.connectionId, libraryId)
@@ -82,11 +99,6 @@ class LibraryCacheRepository @Inject constructor(
             }
         }
     }
-
-    private fun List<Book>.dedupAcrossConnections(): List<Book> =
-        distinctBy { book ->
-            "${book.source.name}:${book.id.ifBlank { book.title }}"
-        }
 
     private fun List<Book>.applyMetadataOverrides(overrides: List<BookMetadataOverride>): List<Book> {
         if (overrides.isEmpty()) return this
@@ -141,7 +153,7 @@ class LibraryCacheRepository @Inject constructor(
 
     val allBooks: Flow<List<Book>> =
         combine(dao.observeAllForList(), metadataOverrideDao.observeAll()) { list, overrides ->
-            list.map(CachedBookListItem::toBook).applyMetadataOverrides(overrides).dedupAcrossConnections()
+            list.map(CachedBookListItem::toBook).applyMetadataOverrides(overrides).distinctBy(::catalogIdentity)
         }
 
     val rawAllBooks: Flow<List<Book>> =
@@ -149,10 +161,23 @@ class LibraryCacheRepository @Inject constructor(
             list.map(CachedBookListItem::toBook).applyMetadataOverrides(overrides)
         }
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     fun rawAllBooksExcludingLibraries(excludedLibraryIds: Set<String>): Flow<List<Book>> =
         combine(
-            if (excludedLibraryIds.isEmpty()) dao.observeAllForList()
-            else dao.observeAllForListExcludingLibraries(excludedLibraryIds.toList()),
+            flow {
+                var emitted = false
+                emitAll(
+                    isRefreshing.transformLatest { refreshing ->
+                        if (refreshing && emitted) return@transformLatest
+                        val rows = if (excludedLibraryIds.isEmpty()) dao.observeAllForList()
+                        else dao.observeAllForListExcludingLibraries(excludedLibraryIds.toList())
+                        (if (refreshing) rows.take(1) else rows).collect {
+                            emitted = true
+                            emit(it)
+                        }
+                    }.buffer(Channel.RENDEZVOUS),
+                )
+            },
             metadataOverrideDao.observeAll(),
         ) { list, overrides -> list.map(CachedBookListItem::toBook).applyMetadataOverrides(overrides) }
 
@@ -214,7 +239,7 @@ class LibraryCacheRepository @Inject constructor(
 
     suspend fun refreshNow() {
         aggregator.invalidateCaches()
-        doRefresh()
+        doRefresh(awaitRefresh = true)
     }
 
     private val defaultStalenessMs: Long = 6 * 60 * 60 * 1000L
@@ -352,8 +377,13 @@ class LibraryCacheRepository @Inject constructor(
         return dao.booksWhereTagLike(needle).map(CachedBook::toBook)
     }
 
-    private suspend fun doRefresh(connectionIds: Set<String>? = null) {
-        if (!refreshMutex.tryLock()) {
+    private suspend fun doRefresh(
+        connectionIds: Set<String>? = null,
+        awaitRefresh: Boolean = false,
+        completedTorBox: Boolean = false,
+    ) {
+        if (awaitRefresh) refreshMutex.lock()
+        else if (!refreshMutex.tryLock()) {
             Log.i(TAG, "doRefresh: another refresh is already running, skipping")
             return
         }
@@ -377,7 +407,7 @@ class LibraryCacheRepository @Inject constructor(
                 fetchAndUpsert(libraryId = null, connectionId = null)
             } else {
                 for (library in libraries) {
-                    fetchAndUpsert(libraryId = library.id, connectionId = library.connectionId)
+                    fetchAndUpsert(libraryId = library.id, connectionId = library.connectionId, pruneTorBox = completedTorBox)
                 }
             }
             rebuildAutomaticLinks()
@@ -461,22 +491,24 @@ class LibraryCacheRepository @Inject constructor(
         }
     }
 
-    private suspend fun fetchAndUpsert(libraryId: String?, connectionId: String?) {
+    private suspend fun fetchAndUpsert(libraryId: String?, connectionId: String?, pruneTorBox: Boolean = false) {
+        val torBox = connectionRegistry.connections.first().any { it.id == connectionId && it.source == BookSource.TORBOX }
+        val completeCatalog = !torBox || pruneTorBox || (connectionId != null && torBoxCatalog.isComplete(connectionId))
         var page = 0
         val nowMs = System.currentTimeMillis()
         val seenKeys = mutableSetOf<String>()
         val overrides = metadataOverrideDao.getAll().associateBy { it.bookKey }
         while (true) {
             val fetchSequence = checkpointOrder.newSequence()
-            val result = aggregator.getBooks(
+            val books: List<Book> = aggregator.getBooks(
                 libraryId = libraryId,
                 page = page,
                 size = PAGE_SIZE,
                 sort = "addedOn",
                 dir = "desc",
-            )
-            val books: List<Book> = result.getOrNull() ?: run {
-                Log.w(TAG, "fetchAndUpsert: getBooks failed p=$page lib=$libraryId: ${result.exceptionOrNull()?.message}")
+            ).getOrElse { error ->
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                _refreshError.value = error.message ?: "Library import failed"
                 return
             }
 
@@ -498,6 +530,15 @@ class LibraryCacheRepository @Inject constructor(
                 checkpointOrder.serialized { state ->
                     val applied = mutableListOf<String>()
                     database.withTransaction {
+                        val extrasDao = database.bookExtrasDao()
+                        for (book in chunk) {
+                            if (book.source != BookSource.TORBOX || book.audioTracks.size <= 1) continue
+                            val extras = extrasDao.get(book.uniqueKey) ?: continue
+                            val chapters = extras.decodeChapters()
+                            if (chapters.isNotEmpty() && chapters.size != book.audioTracks.size) {
+                                extrasDao.upsert(extras.copy(chaptersJson = "[]", updatedAt = nowMs))
+                            }
+                        }
                         val batchKeys = mapped.mapTo(mutableSetOf()) { it.cacheKey }
                         val existingByKey = dao.getByCacheKeys(batchKeys.toList()).associateBy { it.cacheKey }
                         val supersededKeys = mapped.mapNotNull { it.supersededCacheKey() }.filterNot(batchKeys::contains)
@@ -514,7 +555,10 @@ class LibraryCacheRepository @Inject constructor(
                                 allowServerProgress = serverSync.isEnabled,
                                 hasPendingAudioPush = dirty,
                                 preserveAudioCheckpoint = protected,
-                            )
+                            ).let { row ->
+                                if (existing == null || existing.narratorEnrichedAt == 0L) row
+                                else row.copy(narrator = row.narrator ?: existing.narrator, narratorEnrichedAt = existing.narratorEnrichedAt)
+                            }
                             if (!protected && !dirty && (merged.mediaType == AppMediaType.AUDIOBOOK.name || merged.hasAudio || merged.currentTime > 0L) &&
                                 (existing == null || merged.currentTime != existing.currentTime || merged.readProgress != existing.readProgress ||
                                     merged.lastReadTime != existing.lastReadTime || merged.isFinished != existing.isFinished)
@@ -531,7 +575,10 @@ class LibraryCacheRepository @Inject constructor(
             if (books.size != PAGE_SIZE) break
             page++
         }
-        if (!connectionId.isNullOrBlank() && !libraryId.isNullOrBlank()) {
+        if (
+            !connectionId.isNullOrBlank() && !libraryId.isNullOrBlank() && completeCatalog &&
+            (!torBox || torBoxCatalog.isComplete(connectionId))
+        ) {
             dao.deleteStaleForConnectionLibrary(connectionId, libraryId, nowMs)
         }
     }
@@ -562,7 +609,7 @@ internal fun CachedBook.preservingLocalProgress(
         (checkpoint.mediaType == AppMediaType.AUDIOBOOK.name || checkpoint.hasAudio || checkpoint.currentTime > 0L) &&
             (checkpoint.lastReadTime > lastReadTime || preserveAudioCheckpoint)
     } == true
-    if (!allowServerProgress || hasPendingAudioPush || keepAudioCheckpoint) return copy(
+    if (!allowServerProgress || (source == BookSource.LOCAL.name && existing != null) || hasPendingAudioPush || keepAudioCheckpoint) return copy(
         readAlongAvailable = knownReadAlong,
         hasAudio = hasAudio || knownReadAlong,
         hasEbook = hasEbook || knownReadAlong,

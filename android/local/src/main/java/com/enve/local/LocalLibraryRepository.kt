@@ -112,7 +112,7 @@ class LocalLibraryRepository @Inject constructor(
         val extension = file.extension()
 
         val mediaType = when (extension) {
-            "epub", "pdf" -> AppMediaType.EBOOK
+            "epub", "kepub", "pdf" -> AppMediaType.EBOOK
             "mp3", "m4b", "m4a", "aac" -> AppMediaType.AUDIOBOOK
             "cbz", "cbr" -> AppMediaType.EBOOK
             else -> return null
@@ -120,11 +120,11 @@ class LocalLibraryRepository @Inject constructor(
 
         val id = file.uri.toString()
         val audioMetadata = if (mediaType == AppMediaType.AUDIOBOOK) readAudioMetadata(file) else null
-        val epubMetadata = if (extension == "epub") {
+        val epubMetadata = if (extension == "epub" || extension == "kepub") {
             runCatching { EpubCoverExtractor.extractMetadata(context, file.uri, locations.cacheDirectory) }.getOrNull()
         } else null
         val coverUrl = when {
-            extension == "epub" -> epubMetadata?.coverUrl
+            extension == "epub" || extension == "kepub" -> epubMetadata?.coverUrl
             mediaType == AppMediaType.AUDIOBOOK -> {
                 val namedCover = directory.listFiles().firstOrNull {
                     !it.isDirectory && it.extension() in coverExtensions &&

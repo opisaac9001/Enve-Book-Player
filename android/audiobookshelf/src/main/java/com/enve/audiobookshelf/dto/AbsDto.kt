@@ -222,6 +222,7 @@ data class AbsSeriesSummaryDto(
 @Serializable
 data class AbsPlaybackSessionDto(
     val id: String,
+    val userId: String? = null,
     val libraryItemId: String? = null,
     val duration: Double? = null,
     val currentTime: Double? = null,

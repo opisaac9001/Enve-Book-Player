@@ -9,6 +9,7 @@ import com.enve.core.data.model.Library
 import com.enve.core.data.provider.ProviderAdapter
 import com.enve.core.data.provider.ProviderPlaybackSession
 import com.enve.core.data.provider.synthesizeChaptersFromTracks
+import com.enve.core.data.util.runSuspendCatching
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -38,22 +39,25 @@ abstract class CloudSourceProviderAdapter(
     override suspend fun getRecentlyAdded(): Result<List<Book>> =
         repository.getRecentlyAddedForSource(source)
 
-    override suspend fun getAudioTracks(book: Book): Result<List<AudioTrack>> = runCatching {
-        if (book.mediaType != AppMediaType.AUDIOBOOK) return@runCatching emptyList()
+    override suspend fun getAudioTracks(book: Book): Result<List<AudioTrack>> = runSuspendCatching {
+        if (book.mediaType != AppMediaType.AUDIOBOOK) return@runSuspendCatching emptyList()
         book.audioTracks.takeIf { it.any { track -> !track.contentUrl.isNullOrBlank() } }
             ?: repository.getBooksForSource(source, book.libraryId, page = 0, size = 500)
-                .getOrDefault(emptyList())
+                .getOrThrow()
                 .firstOrNull { it.id == book.id }
                 ?.audioTracks
                 .orEmpty()
     }
 
-    override suspend fun startPlaybackSession(book: Book): Result<ProviderPlaybackSession> = runCatching {
+    override suspend fun startPlaybackSession(book: Book): Result<ProviderPlaybackSession> = runSuspendCatching {
         val tracks = trackDurations.resolveDurations(book, getAudioTracks(book).getOrThrow())
         ProviderPlaybackSession(
             sessionId = "$sessionPrefix-${book.id}",
             audioTracks = tracks,
-            chapters = book.chapters.ifEmpty { synthesizeChaptersFromTracks(tracks, book.duration) },
+            chapters = book.chapters
+                .takeUnless { source == BookSource.TORBOX && tracks.size > 1 && it.size != tracks.size }
+                ?.takeIf { it.isNotEmpty() }
+                ?: synthesizeChaptersFromTracks(tracks, book.duration),
         )
     }
 

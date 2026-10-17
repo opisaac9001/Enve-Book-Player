@@ -13,6 +13,7 @@ import com.enve.app.data.remote.dto.AudiobookProgressDto
 import com.enve.app.data.remote.dto.BookDetailDto
 import com.enve.app.data.remote.dto.BookFileDto
 import com.enve.app.data.remote.dto.BookSummaryDto
+import com.enve.app.data.remote.dto.EbookProgressObjectDto
 import com.enve.app.data.remote.dto.GrimmoryAppBookProgressDto
 import com.enve.app.data.remote.dto.LibraryDto
 import com.enve.app.data.remote.dto.LegacyBookloreBookDto
@@ -27,6 +28,8 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 internal const val GRIMMORY_COMPANION_AUDIOBOOK_ID_PREFIX = "grimmory-ab-"
 
@@ -65,18 +68,25 @@ internal fun BookFileDto.isPrimaryFile(): Boolean = isPrimary == true || primary
 internal fun BookFileDto.resolvedType(): String? = bookType ?: fileExtension
 
 internal fun BookSummaryDto.withFormatInventory(inventory: LegacyBookloreBookDto): BookSummaryDto {
+    val identified = copy(
+        title = title.ifBlank {
+            listOfNotNull(inventory.title, inventory.metadata?.title, inventory.name)
+                .firstOrNull { it.isNotBlank() } ?: title
+        },
+        libraryId = libraryId?.takeIf { it.isNotBlank() } ?: inventory.libraryId?.takeIf { it.isNotBlank() },
+    )
     val files = listOfNotNull(inventory.primaryFile) + inventory.alternativeFormats.orEmpty()
     val ebook = files.firstOrNull { isGrimmoryEbookType(it.resolvedType()) }
     val hasAudio = files.any { isGrimmoryAudioType(it.resolvedType()) }
     return if (ebook != null && hasAudio) {
-        copy(
+        identified.copy(
             primaryFile = ebook,
             primaryFileType = ebook.resolvedType(),
             primaryFileName = ebook.fileName,
             alternativeFormats = files.filterNot { it == ebook },
         )
     } else {
-        copy(
+        identified.copy(
             primaryFile = inventory.primaryFile ?: primaryFile,
             alternativeFormats = inventory.alternativeFormats ?: alternativeFormats,
         )
@@ -412,6 +422,30 @@ internal fun grimmoryEbookProgressSnapshot(
         updatedAt = updatedAtMs,
         finished = finished,
     )
+}
+
+internal fun grimmoryPositionedEbookSnapshot(
+    snapshot: SyncSnapshot,
+    appHref: String?,
+    detail: EbookProgressObjectDto,
+): SyncSnapshot {
+    if (snapshot.epubCfi != null || snapshot.locatorJson != null) return snapshot
+    val href = detail.href?.trim()?.takeIf(String::isNotBlank) ?: return snapshot
+    val expectedHref = appHref?.trim()?.takeIf(String::isNotBlank)
+    if (expectedHref != null && expectedHref != href) return snapshot
+    detail.cfi?.trim()?.takeIf(EpubBridgeCheckpointCodec::isFullEpubCfi)?.let { cfi ->
+        return snapshot.copy(epubCfi = cfi, href = href)
+    }
+    val chapterProgress = grimmoryPercentFraction(detail.contentSourceProgressPercent) ?: return snapshot
+    val locator = buildJsonObject {
+        put("href", href)
+        put("type", "application/xhtml+xml")
+        put("locations", buildJsonObject {
+            put("progression", chapterProgress.toDouble())
+            put("totalProgression", snapshot.percentage.toDouble().coerceIn(0.0, 1.0))
+        })
+    }
+    return snapshot.copy(href = href, locatorJson = locator.toString())
 }
 
 internal fun mergeListedAudiobook(

@@ -142,6 +142,7 @@ interface ProfileRuntimeComponent {
     fun absOidcFlow(): com.enve.audiobookshelf.auth.AbsOidcFlow
     fun komgaOAuthFlow(): com.enve.komga.auth.KomgaOAuthFlow
     fun bookOrbitOidcFlow(): com.enve.bookorbit.auth.BookOrbitOidcFlow
+    fun siloOidcFlow(): com.enve.silo.auth.SiloOidcFlow
     fun passwordLogins(): Map<com.enve.core.data.model.BookSource, @JvmSuppressWildcards com.enve.core.data.auth.PasswordLogin>
 
     fun epdRefreshManager(): com.enve.app.eink.EpdRefreshManager

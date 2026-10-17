@@ -134,6 +134,7 @@ fun HearthRoot(
             var castBlockedTitle by remember { mutableStateOf<String?>(null) }
             LaunchedEffect(openBookRequest) {
                 if (openBookRequest != null) {
+                    showSettings = false
                     detailBook = openBookRequest
                     onBookRequestConsumed()
                 }

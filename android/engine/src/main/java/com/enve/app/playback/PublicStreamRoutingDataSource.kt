@@ -23,9 +23,19 @@ internal class PublicStreamRoutingDataSource(
     }
 
     override fun open(dataSpec: DataSpec): Long {
-        val target = if (dataSpec.uri.fragment == PUBLIC_STREAM_FRAGMENT) public else authenticated
-        active = target
-        return target.open(dataSpec)
+        if (dataSpec.uri.fragment == PUBLIC_STREAM_FRAGMENT) {
+            active = public
+            return public.open(dataSpec)
+        }
+        active = authenticated
+        val connectionId = streamConnectionId(dataSpec.uri.encodedFragment)
+            ?: return authenticated.open(dataSpec)
+        return authenticated.open(
+            dataSpec.buildUpon()
+                .setUri(dataSpec.uri.buildUpon().encodedFragment(null).build())
+                .setHttpRequestHeaders(dataSpec.httpRequestHeaders + (STREAM_CONNECTION_HEADER to connectionId))
+                .build(),
+        )
     }
 
     override fun read(buffer: ByteArray, offset: Int, length: Int): Int =

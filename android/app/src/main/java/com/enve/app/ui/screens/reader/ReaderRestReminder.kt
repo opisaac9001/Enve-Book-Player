@@ -10,6 +10,7 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -43,6 +44,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -247,16 +249,20 @@ private fun ReaderRestPrompt(
                         )
                     }
                     Spacer(Modifier.width(8.dp))
-                    Icon(
-                        Icons.Outlined.Close,
-                        contentDescription = "Dismiss rest reminder",
-                        tint = palette.textSecondary,
+                    Box(
                         modifier = Modifier
-                            .size(32.dp)
+                            .size(48.dp)
                             .clip(CircleShape)
-                            .clickable(onClick = onDismiss)
-                            .padding(7.dp),
-                    )
+                            .clickable(role = Role.Button, onClick = onDismiss),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.Outlined.Close,
+                            contentDescription = "Dismiss rest reminder",
+                            tint = palette.textSecondary,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
                 }
                 if (showsSettingsHint) {
                     Spacer(Modifier.height(Hearth.Spacing.M))

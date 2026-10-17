@@ -4,16 +4,12 @@ Release notes for the Android app. Versions are `<name> build <code>`, matching 
 
 ## Unreleased
 
-- Removed the duplicate orange library loading indicator; pull-to-refresh keeps its grey spinner.
-
-## 1.2 build 53 — 2026-10-09
-
-- Added separate user profiles with isolated settings, history, downloads, and sync state.
-- Scoped provider caches and progress writes to the correct server and account.
-- Improved Android Auto checkpoints and resume handling.
-- Fixed retry counts, cancellation, concurrent KOReader link updates, and streamed-comic cleanup.
-- Respected manual and provider-supplied comic reading direction.
-- Removed unused sync code and expanded regression tests and contributor setup checks.
+- Hide download actions for local files in book details, library menus, and bulk selection.
+- Load TorBox source lists concurrently, use its normal API cache, and skip WebDAV folders outside selected roots.
+- Exclude expired TorBox files even when their downloads previously completed.
+- Share TorBox catalog scans across screens, show API books before WebDAV finishes, and fetch fresh lists on manual refresh.
+- Probe the current and next cloud audio tracks before the remaining tracks.
+- Match TorBox WebDAV filenames with omitted ampersands without duplicating their API tracks.
 
 ## 1.2 build 52 — 2026-09-28
 

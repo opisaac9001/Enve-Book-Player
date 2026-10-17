@@ -32,7 +32,17 @@ Run the unit tests and the minified release build:
 ./gradlew :app:testDebugUnitTest :app:assembleRelease
 ```
 
-The release build is unsigned. Use your own signing configuration for a distributable APK or app bundle. Never commit a keystore, signing password, server credential, private URL, downloaded book, or diagnostic export.
+The release build is unsigned unless all four release-signing environment variables are set:
+
+```sh
+ENVE_RELEASE_KEYSTORE_FILE=/path/to/keystore \
+ENVE_RELEASE_STORE_PASSWORD=... \
+ENVE_RELEASE_KEY_ALIAS=... \
+ENVE_RELEASE_KEY_PASSWORD=... \
+./gradlew :app:assembleRelease
+```
+
+Never commit a keystore, signing password, server credential, private URL, downloaded book, or diagnostic export. The manual `Signed APK` GitHub Actions workflow builds an existing version tag, verifies the signed APK, and attaches it and its SHA-256 checksum to a draft GitHub release. Publish that draft only after completing `docs/release/production-checklist.md` and closing the binary-distribution gates in `docs/legal/THIRD_PARTY_AUDIT.md`.
 
 ## Repository layout
 

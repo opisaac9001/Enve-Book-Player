@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import com.enve.core.reader.highlightColorHex
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -15,6 +16,9 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -43,6 +47,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -152,32 +157,28 @@ private fun NoteSheet(vm: ReaderViewModel, state: ReaderUiState) {
                 modifier = Modifier.fillMaxWidth().heightIn(min = 72.dp),
             )
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.M)) {
+        Row {
             NARRATION_INKS.forEach { hex ->
-                val selected = hex == ink
-                Box(
-                    Modifier.size(30.dp).clip(CircleShape).background(parseHexColor(hex) ?: EmberAccent)
-                        .border(if (selected) 2.dp else 0.dp, if (selected) palette.ember else Color.Transparent, CircleShape)
-                        .clickable { ink = hex },
-                )
+                InkSwatch(hex, selected = hex == ink) { ink = hex }
             }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.M)) {
             Text(
                 "Cancel", style = HearthText.Label, color = palette.textSecondary,
-                modifier = Modifier.clip(RoundedCornerShape(50)).clickable { vm.showAnnotationDialog(false); vm.hideSelectionPopup() }
-                    .padding(horizontal = Hearth.Spacing.L, vertical = Hearth.Spacing.M),
+                modifier = Modifier.sizeIn(minHeight = 48.dp).clip(RoundedCornerShape(50))
+                    .clickable(role = Role.Button) { vm.showAnnotationDialog(false); vm.hideSelectionPopup() }
+                    .wrapContentHeight().padding(horizontal = Hearth.Spacing.L, vertical = Hearth.Spacing.M),
             )
             Spacer(Modifier.weight(1f))
             Text(
                 "Save note", style = HearthText.Label.copy(fontWeight = FontWeight.SemiBold), color = palette.readableOnEmber,
-                modifier = Modifier.clip(RoundedCornerShape(50)).background(palette.ember)
-                    .clickable {
+                modifier = Modifier.sizeIn(minHeight = 48.dp).clip(RoundedCornerShape(50)).background(palette.ember)
+                    .clickable(role = Role.Button) {
                         state.pendingSelection?.let { vm.addAnnotation(it, AnnotationStyle.HIGHLIGHT, ink, note, state.selectionText) }
                         vm.showAnnotationDialog(false)
                         vm.hideSelectionPopup()
                     }
-                    .padding(horizontal = Hearth.Spacing.L, vertical = Hearth.Spacing.M),
+                    .wrapContentHeight().padding(horizontal = Hearth.Spacing.L, vertical = Hearth.Spacing.M),
             )
         }
     }
@@ -186,10 +187,33 @@ private fun NoteSheet(vm: ReaderViewModel, state: ReaderUiState) {
 private val NARRATION_INKS = listOf("#FFF59D", "#A5D6A7", "#90CAF9", "#F8BBD0")
 
 @Composable
+private fun InkSwatch(hex: String, selected: Boolean, onSelect: () -> Unit) {
+    val palette = Hearth.palette
+    val colorName = when (hex) {
+        "#FFF59D" -> "Yellow"
+        "#A5D6A7" -> "Green"
+        "#90CAF9" -> "Blue"
+        "#F8BBD0" -> "Pink"
+        else -> "Highlight"
+    }
+    Box(
+        Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp).clip(CircleShape)
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onSelect)
+            .semantics { contentDescription = "$colorName highlight color" },
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            Modifier.size(30.dp).clip(CircleShape).background(parseHexColor(hex) ?: EmberAccent)
+                .border(if (selected) 2.dp else 0.dp, if (selected) palette.ember else Color.Transparent, CircleShape),
+        )
+    }
+}
+
+@Composable
 private fun ReadAloudSheet(vm: ReaderViewModel, state: ReaderUiState) {
     val palette = Hearth.palette
     val prefs = state.prefs
-    Column(Modifier.fillMaxWidth().padding(horizontal = Hearth.Spacing.XL).padding(bottom = Hearth.Spacing.XXL), verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.L)) {
+    Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = Hearth.Spacing.XL).padding(bottom = Hearth.Spacing.XXL), verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.L)) {
         Overline("Read Aloud")
 
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S)) {
@@ -210,18 +234,16 @@ private fun ReadAloudSheet(vm: ReaderViewModel, state: ReaderUiState) {
 
         HearthToggleRow("Highlight read aloud", prefs.readAloudHighlight) { vm.updatePreferences(prefs.copy(readAloudHighlight = it)) }
         if (prefs.readAloudHighlight) {
-            Row(horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.M)) {
+            Row {
                 NARRATION_INKS.forEach { hex ->
-                    val selected = hex.equals(prefs.readAloudHighlightHex, ignoreCase = true)
-                    Box(
-                        Modifier.size(30.dp).clip(CircleShape).background(parseHexColor(hex) ?: EmberAccent)
-                            .border(if (selected) 2.dp else 0.dp, if (selected) palette.ember else Color.Transparent, CircleShape)
-                            .clickable { vm.updatePreferences(prefs.copy(readAloudHighlightHex = hex)) },
-                    )
+                    InkSwatch(hex, selected = hex.equals(prefs.readAloudHighlightHex, ignoreCase = true)) {
+                        vm.updatePreferences(prefs.copy(readAloudHighlightHex = hex))
+                    }
                 }
             }
         }
         HearthToggleRow("Turn pages with read aloud", prefs.readAloudAutoTurn) { vm.updatePreferences(prefs.copy(readAloudAutoTurn = it)) }
+        HearthToggleRow("Skip audio on page turn", prefs.readAloudSkipOnPageTurn) { vm.updatePreferences(prefs.copy(readAloudSkipOnPageTurn = it)) }
         HearthToggleRow("Skip footnotes & page numbers", prefs.readAloudSkipAsides) { vm.updatePreferences(prefs.copy(readAloudSkipAsides = it)) }
 
         Overline("Clips in this chapter")
@@ -232,7 +254,7 @@ private fun ReadAloudSheet(vm: ReaderViewModel, state: ReaderUiState) {
                 items(state.readAlongChapterClips) { row ->
                     val current = row.index == state.readAlongClipIndex
                     Row(
-                        Modifier.fillMaxWidth().clickable { vm.jumpToReadAlongClip(row); vm.showReadAloudSheet(false) }
+                        Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable { vm.jumpToReadAlongClip(row); vm.showReadAloudSheet(false) }
                             .padding(vertical = Hearth.Spacing.S),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -376,11 +398,14 @@ private fun AppearanceSheet(vm: ReaderViewModel, state: ReaderUiState, customFon
 private fun ThemeCard(label: String, theme: ReaderTheme, bg: Color, fg: Color, current: ReaderTheme, onSelect: (ReaderTheme) -> Unit) {
     val palette = Hearth.palette
     val selected = theme == current
-    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Column(
+        modifier = Modifier.selectable(selected = selected, role = Role.RadioButton) { onSelect(theme) },
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
         Box(
             Modifier.size(width = 56.dp, height = 72.dp).clip(RoundedCornerShape(10.dp)).background(bg)
-                .border(if (selected) 2.dp else 1.dp, if (selected) palette.ember else palette.hairline, RoundedCornerShape(10.dp))
-                .clickable { onSelect(theme) },
+                .border(if (selected) 2.dp else 1.dp, if (selected) palette.ember else palette.hairline, RoundedCornerShape(10.dp)),
             contentAlignment = Alignment.Center,
         ) {
             Text("Aa", style = hearthDisplay(20.sp, FontWeight.SemiBold), color = fg)
@@ -395,11 +420,24 @@ private fun Stepper(label: String, value: String, onDec: () -> Unit, onInc: () -
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
         Text(label, style = HearthText.Body, color = palette.text)
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.L)) {
-            Text("-", style = HearthText.Body.copy(fontWeight = FontWeight.Bold, fontSize = 22.sp), color = palette.ember, modifier = Modifier.clip(CircleShape).clickable(onClick = onDec).padding(horizontal = Hearth.Spacing.S))
+            StepperButton("-", "Decrease $label", onDec)
             Text(value, style = HearthText.Caption, color = palette.textSecondary)
-            Text("+", style = HearthText.Body.copy(fontWeight = FontWeight.Bold, fontSize = 22.sp), color = palette.ember, modifier = Modifier.clip(CircleShape).clickable(onClick = onInc).padding(horizontal = Hearth.Spacing.S))
+            StepperButton("+", "Increase $label", onInc)
         }
     }
+}
+
+@Composable
+private fun StepperButton(symbol: String, description: String, onClick: () -> Unit) {
+    Text(
+        symbol,
+        style = HearthText.Body.copy(fontWeight = FontWeight.Bold, fontSize = 22.sp),
+        color = Hearth.palette.ember,
+        modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp).clip(CircleShape)
+            .clickable(role = Role.Button, onClick = onClick)
+            .semantics { contentDescription = description }
+            .wrapContentSize(),
+    )
 }
 
 @Composable
@@ -437,21 +475,43 @@ private fun ContentsSheet(vm: ReaderViewModel, state: ReaderUiState) {
             )
             Spacer(Modifier.size(Hearth.Spacing.S))
         }
+        if (tab == 0 && state.tocPageCounts.values.any { it.estimated }) {
+            Text(
+                "Estimated chapter lengths; screen page counts may differ.",
+                style = HearthText.Caption,
+                color = palette.textSecondary,
+                modifier = Modifier.padding(bottom = Hearth.Spacing.S),
+            )
+        }
         LazyColumn(Modifier.heightIn(max = 460.dp), state = tocListState) {
             when (tab) {
                 0 -> if (state.tocEntries.isEmpty()) {
                     item { Empty("This book keeps no table of contents.") }
                 } else {
                     items(state.tocEntries, key = { it.id }) { e ->
-                        Text(
-                            e.title,
-                            style = hearthDisplay(16.sp, FontWeight.Normal),
-                            color = if (e.id == state.currentTocEntryId) palette.ember else palette.text,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.fillMaxWidth().clickable { vm.navigateTo(e); vm.showToc(false) }
+                        Column(
+                            Modifier.fillMaxWidth().clickable { vm.navigateTo(e); vm.showToc(false) }
                                 .padding(start = (e.depth * 16).dp, top = Hearth.Spacing.M, bottom = Hearth.Spacing.M),
-                        )
+                        ) {
+                            Text(
+                                e.title,
+                                style = hearthDisplay(16.sp, FontWeight.Normal),
+                                color = if (e.id == state.currentTocEntryId) palette.ember else palette.text,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            state.tocPageCounts[e.id]?.let { count ->
+                                val label = if (count.pages == 1) "1 page" else "${count.pages} pages"
+                                Text(
+                                    if (count.estimated) "~$label" else label,
+                                    style = HearthText.Caption,
+                                    color = palette.textSecondary,
+                                    modifier = Modifier.semantics {
+                                        contentDescription = if (count.estimated) "About $label" else label
+                                    },
+                                )
+                            }
+                        }
                     }
                 }
                 1 -> if (filteredBookmarks.isEmpty()) {
@@ -512,8 +572,8 @@ private fun AnnotationRow(a: ReaderAnnotation, dot: Color, onOpen: () -> Unit, o
             Text(a.selectedText.ifBlank { a.note.ifBlank { "Bookmark" } }, style = HearthText.Body, color = palette.text, maxLines = 3, overflow = TextOverflow.Ellipsis)
             if (a.note.isNotBlank() && a.selectedText.isNotBlank()) Text(a.note, style = HearthText.Caption, color = palette.textSecondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
-        Text("Edit", style = HearthText.Caption, color = palette.ember, modifier = Modifier.clip(RoundedCornerShape(50)).clickable(onClick = onEdit).padding(horizontal = Hearth.Spacing.S, vertical = Hearth.Spacing.XS))
-        Icon(Icons.Outlined.Delete, "Delete", tint = palette.textTertiary, modifier = Modifier.clip(CircleShape).clickable(onClick = onDelete).padding(Hearth.Spacing.XS).size(18.dp))
+        Text("Edit", style = HearthText.Caption, color = palette.ember, modifier = Modifier.sizeIn(minHeight = 48.dp).clip(RoundedCornerShape(50)).clickable(role = Role.Button, onClick = onEdit).wrapContentHeight().padding(horizontal = Hearth.Spacing.S, vertical = Hearth.Spacing.XS))
+        Icon(Icons.Outlined.Delete, "Delete", tint = palette.textTertiary, modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp).clip(CircleShape).clickable(role = Role.Button, onClick = onDelete).wrapContentSize().size(18.dp))
     }
 }
 

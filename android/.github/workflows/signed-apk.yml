@@ -1,0 +1,93 @@
+name: Signed APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing version tag to build and attach to a draft release
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build signed release APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      ENVE_RELEASE_STORE_PASSWORD: ${{ secrets.ENVE_RELEASE_STORE_PASSWORD }}
+      ENVE_RELEASE_KEY_ALIAS: ${{ secrets.ENVE_RELEASE_KEY_ALIAS }}
+      ENVE_RELEASE_KEY_PASSWORD: ${{ secrets.ENVE_RELEASE_KEY_PASSWORD }}
+      ENVE_RELEASE_KEYSTORE_BASE64: ${{ secrets.ENVE_RELEASE_KEYSTORE_BASE64 }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify release tag
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(git describe --tags --exact-match)" = "$RELEASE_TAG"
+
+      - name: Set up JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Restore release keystore
+        run: |
+          test -n "$ENVE_RELEASE_KEYSTORE_BASE64"
+          test -n "$ENVE_RELEASE_STORE_PASSWORD"
+          test -n "$ENVE_RELEASE_KEY_ALIAS"
+          test -n "$ENVE_RELEASE_KEY_PASSWORD"
+          printf '%s' "$ENVE_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/enve-release"
+          chmod 600 "$RUNNER_TEMP/enve-release"
+          echo "ENVE_RELEASE_KEYSTORE_FILE=$RUNNER_TEMP/enve-release" >> "$GITHUB_ENV"
+
+      - name: Run release gate
+        run: |
+          ./scripts/verify-provenance
+          ./gradlew --no-daemon test :app:verifyAcknowledgementsInventory :app:generateReleaseDependencyInventory :app:lintRelease :app:assembleRelease
+
+      - name: Verify and package APK
+        run: |
+          apk="app/build/outputs/apk/release/app-release.apk"
+          test -f "$apk"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$apk"
+          asset="Enve-Book-Player-${RELEASE_TAG}.apk"
+          cp "$apk" "$RUNNER_TEMP/$asset"
+          cd "$RUNNER_TEMP"
+          sha256sum "$asset" > "$asset.sha256"
+          echo "APK_ASSET=$asset" >> "$GITHUB_ENV"
+
+      - name: Upload signed artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-apk-${{ inputs.release_tag }}
+          path: |
+            ${{ runner.temp }}/Enve-Book-Player-*.apk
+            ${{ runner.temp }}/Enve-Book-Player-*.apk.sha256
+          if-no-files-found: error
+
+      - name: Create draft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            "$RUNNER_TEMP/$APK_ASSET#$APK_ASSET" \
+            "$RUNNER_TEMP/$APK_ASSET.sha256#$APK_ASSET.sha256" \
+            --draft \
+            --generate-notes \
+            --title "Enve Book Player $RELEASE_TAG" \
+            --verify-tag

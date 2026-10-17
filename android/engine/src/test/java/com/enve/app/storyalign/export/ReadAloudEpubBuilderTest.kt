@@ -19,6 +19,51 @@ import java.util.zip.ZipOutputStream
 
 class ReadAloudEpubBuilderTest {
 
+    @Test fun chaptersWithMatchingFileNamesKeepSeparateNarration() {
+        val original = EpubZip.from(ByteArrayInputStream(sampleEpub()))
+        val entries = original.entries().toMutableMap()
+        val opf = parseXmlDocument(entries.getValue("OEBPS/content.opf"))
+        opf.selectFirst("item")!!.attr("href", "part-one/chapter.xhtml")
+        opf.selectFirst("manifest")!!.append("""<item id="c1_overlay" href="old.smil" media-type="application/smil+xml"/>""")
+        entries["OEBPS/old.smil"] = "<smil/>".toByteArray()
+        opf.selectFirst("manifest")!!.append("""<item id="c2" href="part-two/chapter.xhtml" media-type="application/xhtml+xml"/>""")
+        opf.selectFirst("spine")!!.append("""<itemref idref="c2"/>""")
+        entries["OEBPS/content.opf"] = opf.outerHtml().toByteArray()
+        val chapterText = entries.remove("OEBPS/ch1.xhtml")!!
+        entries["OEBPS/part-one/chapter.xhtml"] = chapterText
+        entries["OEBPS/part-two/chapter.xhtml"] = chapterText
+        val source = ByteArrayOutputStream().also { bytes ->
+            ZipOutputStream(bytes).use { zip ->
+                entries.forEach { (name, contents) ->
+                    zip.putNextEntry(ZipEntry(name))
+                    zip.write(contents)
+                    zip.closeEntry()
+                }
+            }
+        }.toByteArray()
+        val zip = EpubZip.from(ByteArrayInputStream(source))
+        val doc = EpubParser.parse(zip)
+        val audio = AudioFile(0, 0.0, 100.0, "0000.m4a")
+        val chapters = doc.spineOrderedManifest.mapIndexed { index, item ->
+            AlignedChapter(item, alignedSentences = listOf(AlignedSentence(
+                "The quick brown fox.", 0, SentenceRange(0, index * 10.0, index * 10.0 + 2, audio, emptyList()),
+            )))
+        }
+        val output = ReadAloudEpubBuilder.build(zip, doc, chapters,
+            listOf(ReadAloudEpubBuilder.AudioClipFile("0000.m4a", ByteArray(64))), "2026-10-12T00:00:00Z")
+        val exported = EpubZip.from(ByteArrayInputStream(output)).entries()
+        val manifest = parseXmlDocument(exported.getValue("OEBPS/content.opf")).select("item")
+        assertEquals(2, manifest.count { it.attr("media-type") == "application/smil+xml" })
+        val overlayPaths = chapters.map { chapter ->
+            manifest.first { it.attr("id") == "${chapter.manifestItem.id}_overlay" }.attr("href")
+        }
+        assertEquals(2, overlayPaths.toSet().size)
+        chapters.zip(overlayPaths).forEach { (chapter, path) ->
+            val smil = exported.getValue("OEBPS/$path").toString(Charsets.UTF_8)
+            assertTrue(smil.contains("${chapter.manifestItem.href}#${chapter.manifestItem.id}-sentence0"))
+        }
+    }
+
     @Test fun buildsValidNarratedEpub() {
         val srcBytes = sampleEpub()
         val doc = EpubParser.parse(EpubZip.from(ByteArrayInputStream(srcBytes)))
@@ -48,10 +93,10 @@ class ReadAloudEpubBuilderTest {
         val outZip = EpubZip.from(ByteArrayInputStream(out))
         val entries = outZip.entries()
 
-        assertNotNull(entries["OEBPS/storyalign/MediaOverlays/ch1.smil"])
+        assertNotNull(entries["OEBPS/storyalign/MediaOverlays/chapter-0.smil"])
         assertNotNull(entries["OEBPS/storyalign/Audio/0000.m4a"])
 
-        val smil = entries["OEBPS/storyalign/MediaOverlays/ch1.smil"]!!.toString(Charsets.UTF_8)
+        val smil = entries["OEBPS/storyalign/MediaOverlays/chapter-0.smil"]!!.toString(Charsets.UTF_8)
         assertTrue(smil.contains("<par id=\"c1-sentence0\">"))
         assertTrue(smil.contains("clipBegin=\"0.000s\" clipEnd=\"2.000s\""))
 

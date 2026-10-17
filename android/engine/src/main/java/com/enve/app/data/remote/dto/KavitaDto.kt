@@ -94,13 +94,31 @@ data class KavitaSortOptionsDto(
 @Serializable
 data class KavitaVolumeDto(
     val id: Int,
+    val minNumber: Float = 0f,
+    val name: String? = null,
     val chapters: List<KavitaChapterDto> = emptyList(),
 )
 
 @Serializable
 data class KavitaChapterDto(
     val id: Int,
+    val range: String? = null,
+    val minNumber: Float = 0f,
+    val sortOrder: Float = 0f,
+    val isSpecial: Boolean = false,
+    val title: String? = null,
+    val titleName: String? = null,
     val pages: Int = 0,
+    val pagesRead: Int = 0,
+    val lastReadingProgressUtc: String? = null,
+    val createdUtc: String? = null,
+    val format: Int? = null,
+    val files: List<KavitaMangaFileDto> = emptyList(),
+)
+
+@Serializable
+data class KavitaMangaFileDto(
+    val format: Int = KavitaMangaFormat.UNKNOWN,
 )
 
 @Serializable

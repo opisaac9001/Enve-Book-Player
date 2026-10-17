@@ -301,7 +301,7 @@ class ComicOfflineService @Inject constructor(
     }
 
     private fun validateEpub(file: File, extension: String) {
-        if (!extension.equals("epub", ignoreCase = true)) return
+        if (!extension.equals("epub", ignoreCase = true) && !extension.equals("kepub", ignoreCase = true)) return
         try {
             ZipFile(file).use { require(it.entries().hasMoreElements()) }
         } catch (e: Exception) {
@@ -312,7 +312,7 @@ class ComicOfflineService @Inject constructor(
 }
 
 internal fun Book.withDownloadedReadAloud(file: File, extension: String): Book {
-    if (readAlongAvailable || !extension.equals("epub", true)) return this
+    if (readAlongAvailable || (!extension.equals("epub", true) && !extension.equals("kepub", true))) return this
     val narrated = try {
         MediaOverlayTimeline.load(file)?.clips?.isNotEmpty() == true
     } catch (error: kotlinx.coroutines.CancellationException) {

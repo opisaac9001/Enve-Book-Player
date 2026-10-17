@@ -64,6 +64,7 @@ let restorePending = true
 let annotationValues = new Map()
 let annotationRevision = 0
 let activeFootnote = null
+let footnoteOpenReported = false
 
 const READER_THEMES = {
     LIGHT: { background: '#FFFFFF', text: '#161616', panel: '#FFFFFF', border: '#D8D8D8' },
@@ -598,11 +599,18 @@ view.addEventListener('external-link', event => {
     postNative('externalLink', { href: String(event.detail?.href ?? '') })
 })
 
+const reportFootnoteOpen = open => {
+    if (footnoteOpenReported === open) return
+    footnoteOpenReported = open
+    postNative('footnote', { open })
+}
+
 const closeFootnote = () => {
     if (!activeFootnote) return
     activeFootnote.view.close()
     activeFootnote.overlay.remove()
     activeFootnote = null
+    reportFootnoteOpen(false)
 }
 
 const footnotes = new FootnoteHandler()
@@ -631,6 +639,7 @@ footnotes.addEventListener('before-render', event => {
     })
     document.body.append(overlay)
     activeFootnote = { overlay, view: noteView }
+    reportFootnoteOpen(true)
 })
 footnotes.addEventListener('render', event => {
     const noteView = event.detail.view
@@ -655,9 +664,12 @@ footnotes.addEventListener('render', event => {
 
 view.addEventListener('link', event => {
     const handled = footnotes.handle(view.book, event)
-    handled?.catch(error => {
+    if (!handled) return
+    reportFootnoteOpen(true)
+    handled.catch(error => {
         console.error('Footnote popup failed', error)
         closeFootnote()
+        reportFootnoteOpen(false)
         view.goTo(event.detail?.href)
     })
 })
@@ -852,23 +864,37 @@ const restoreFromCheckpoint = async checkpoint => {
     return 'start'
 }
 
-const flattenToc = (items, depth = 0) => (items ?? []).flatMap(item => [
-    { title: compact(item.label) || 'Untitled', href: item.href ?? '', depth },
-    ...flattenToc(item.subitems, depth + 1),
+const tocProgression = (href, sectionFractions) => {
+    if (!href || href.includes('#')) return null
+    const index = view.resolveNavigation(href)?.index
+    const start = sectionFractions[index]
+    const end = sectionFractions[index + 1]
+    return Number.isFinite(start) && Number.isFinite(end) && end > start ? start : null
+}
+
+const flattenToc = (items, sectionFractions, depth = 0) => (items ?? []).flatMap(item => [
+    {
+        title: compact(item.label) || 'Untitled',
+        href: item.href ?? '',
+        depth,
+        progression: tocProgression(item.href, sectionFractions),
+    },
+    ...flattenToc(item.subitems, sectionFractions, depth + 1),
 ])
 
 const sanitizePublicationDocument = (source, mediaType) => {
     const value = String(source ?? '')
-    const parserType = mediaType === 'text/html' ||
+    const markup = mediaType.includes('html') ||
         /^\s*(?:<\?xml[\s\S]*?\?>\s*)?(?:<!doctype\s+html|<html(?:\s|>))/i.test(value)
+    const parserType = mediaType === 'text/html'
         ? 'text/html'
-        : 'application/xml'
+        : markup ? 'application/xhtml+xml' : 'application/xml'
     let doc = new DOMParser().parseFromString(value, parserType)
     let outputType = parserType === 'text/html'
         ? 'text/html'
         : (mediaType || parserType)
     if (parserType !== 'text/html' && doc.querySelector('parsererror')) {
-        if (mediaType.includes('html')) {
+        if (markup) {
             doc = new DOMParser().parseFromString(value, 'text/html')
             outputType = 'text/html'
         } else {
@@ -957,29 +983,32 @@ const renderAnnotations = async () => {
 view.addEventListener('create-overlay', () => { renderAnnotations().catch(() => {}) })
 
 const annotationCfi = async annotation => {
+    let cfiIndex = null
     if (annotation.cfi?.startsWith('epubcfi(')) {
         try {
             const target = view.resolveCFI(annotation.cfi)
+            if (Number.isInteger(target?.index)) cfiIndex = target.index
             const section = view.book.sections[target?.index]
             const doc = await section?.createDocument?.()
             if (doc && annotationRangeMatches(target.anchor(doc), annotation.text)) return annotation.cfi
         } catch {}
     }
     const locator = annotation.locator
-    if (!locator?.href) return null
     try {
-        const resolved = view.book.resolveHref(locator.href)
+        const resolved = locator?.href
+            ? view.book.resolveHref(locator.href)
+            : cfiIndex === null ? null : { index: cfiIndex }
         const section = view.book.sections[resolved?.index]
         if (!resolved || !section?.createDocument) return null
         const doc = await section.createDocument()
         const checkpoint = {
-            cssSelector: locator.locations?.cssSelector,
-            domRange: locator.locations?.domRange,
-            textQuote: locator.text?.highlight ? {
+            cssSelector: locator?.locations?.cssSelector,
+            domRange: locator?.locations?.domRange,
+            textQuote: locator?.text?.highlight ? {
                 exact: locator.text.highlight,
                 prefix: locator.text.before,
                 suffix: locator.text.after,
-            } : null,
+            } : annotation.text ? { exact: annotation.text } : null,
         }
         let anchor = rangeFromTextQuote(doc, checkpoint.textQuote, checkpoint.cssSelector)
             ?? rangeFromDomRange(doc, checkpoint.domRange)
@@ -1152,7 +1181,7 @@ const boot = async () => {
         restorePending = false
         postNative('ready', {
             title: compact(view.book.metadata?.title),
-            toc: flattenToc(view.book.toc),
+            toc: flattenToc(view.book.toc, view.getSectionFractions?.() ?? []),
             restoreMethod: method,
             checkpoint: lastLocation?.checkpoint ?? null,
         })

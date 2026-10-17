@@ -101,6 +101,16 @@ import kotlin.math.roundToInt
 
 data class TocEntry(val id: String, val title: String, val href: String, val depth: Int)
 
+data class TocPageCount(val pages: Int, val estimated: Boolean)
+
+private data class TocPageBoundary(
+    val position: Double,
+    val containingPage: Int,
+    val pagesBefore: Int,
+    val exactStart: Boolean,
+    val exactEnd: Boolean,
+)
+
 private data class ReadAlongFragmentSplit(
     val visibleRatio: Double,
     val offScreenRatio: Double,
@@ -186,6 +196,7 @@ data class ReaderUiState(
     val lastPageLabel: String?         = null,
     val currentSection: String         = "",
     val currentTocEntryId: String?     = null,
+    val tocPageCounts: Map<String, TocPageCount> = emptyMap(),
     val progressPct: Int               = 0,
     val showAppearanceSheet: Boolean   = false,
     val showTocSheet:        Boolean   = false,
@@ -230,6 +241,7 @@ data class ReaderUiState(
     val transientMessage: String? = null,
 
     val readAlongPreparing: Boolean = false,
+    val linkReturnLocator: Locator? = null,
 )
 
 data class ReadAloudClipRow(
@@ -289,6 +301,17 @@ data class ProgressConflictPrompt(
 )
 
 enum class ProgressConflictChoice { LOCAL, REMOTE, LATER }
+
+internal fun isReadAloudOnlyPreferenceChange(old: ReaderPreferences, new: ReaderPreferences): Boolean =
+    new == old.copy(
+        readAloudSpeed = new.readAloudSpeed,
+        readAloudSyncOffsetMs = new.readAloudSyncOffsetMs,
+        readAloudAutoTurn = new.readAloudAutoTurn,
+        readAloudSkipOnPageTurn = new.readAloudSkipOnPageTurn,
+        readAloudHighlight = new.readAloudHighlight,
+        readAloudHighlightHex = new.readAloudHighlightHex,
+        readAloudSkipAsides = new.readAloudSkipAsides,
+    )
 
 internal suspend fun sourceOwnedEbookDownloadUrl(
     source: BookSource,
@@ -366,11 +389,17 @@ class ReaderViewModel @Inject constructor(
     private var readiumRestoreConfirmed = false
     private var readiumCheckpointDirty = false
     private var readiumCheckpointFingerprint: String? = null
+    private var readiumUserNavigationGeneration = 0L
     private var readiumUserInteractionPending = false
+        set(value) {
+            if (value) readiumUserNavigationGeneration += 1L
+            field = value
+        }
     private val unleasedReadiumPosition = ReaderPositionBaseline()
     private var readiumRestoreJob: Job? = null
     private var viewportAnchor: ViewportAnchor? = null
     private var viewportReanchorJob: Job? = null
+    private var textSelectionActive = false
     private var publication: Publication? = null
     private var bookId: String = ""
     private var bookTitle: String = ""
@@ -392,6 +421,8 @@ class ReaderViewModel @Inject constructor(
 
     private var positions: List<Locator> = emptyList()
     private var pageMarkers: List<EpubPageMarker> = emptyList()
+    private var tocPageCountsJob: Job? = null
+    private var foliateTocProgressions: List<Double?> = emptyList()
 
     private var lastLocator: Locator? = null
 
@@ -884,9 +915,10 @@ class ReaderViewModel @Inject constructor(
             toolbarButtons   = toolbarButtons,
             ttsEnabled       = prefs.readerTtsEnabled.first(),
             ttsSpeed         = prefs.readerTtsSpeed.first(),
-            readAloudSpeed        = prefs.readAloudSpeed.first(),
+            readAloudSpeed        = prefs.readAloudSpeed.first().takeIf { it.isFinite() }?.coerceIn(0.5f, 3.0f) ?: 1.0f,
             readAloudSyncOffsetMs = prefs.readAloudSyncOffsetMs.first(),
             readAloudAutoTurn     = prefs.readAloudAutoTurn.first(),
+            readAloudSkipOnPageTurn = prefs.readAloudSkipOnPageTurn.first(),
             readAloudHighlight    = prefs.readAloudHighlight.first(),
             readAloudHighlightHex = prefs.readAloudHighlightHex.first(),
             readAloudSkipAsides   = prefs.readAloudSkipAsides.first(),
@@ -945,6 +977,8 @@ class ReaderViewModel @Inject constructor(
         foliateCheckpointSync.reset()
         positions = emptyList()
         pageMarkers = emptyList()
+        tocPageCountsJob?.cancel()
+        foliateTocProgressions = emptyList()
         lastLocator = null
         submitCurrentReadAloudCheckpoint()
         mediaOverlayEngine?.release()
@@ -958,6 +992,7 @@ class ReaderViewModel @Inject constructor(
                 hasPageList = false,
                 currentPageLabel = null,
                 lastPageLabel = null,
+                tocPageCounts = emptyMap(),
             )
         }
         engine.applyPreferences(_state.value.prefs)
@@ -1029,6 +1064,8 @@ class ReaderViewModel @Inject constructor(
             scheduleFoliateSync()
         }
         _state.update { it.copy(tocEntries = entries) }
+        foliateTocProgressions = toc.map { it.progression }
+        refreshFoliateTocPageCounts()
         engineNavigator?.applyPreferences(_state.value.prefs)
         applyDecorations()
         return true
@@ -1047,6 +1084,7 @@ class ReaderViewModel @Inject constructor(
         latestEpubCheckpoint = checkpoint
         lastLocator = location.locator
         val currentToc = findCurrentTocEntry(location.locator)
+        val totalPagesChanged = location.totalPages != _state.value.totalPages
         _state.update {
             it.copy(
                 progressPct = ((checkpoint.totalProgression ?: 0.0) * 100.0)
@@ -1063,6 +1101,7 @@ class ReaderViewModel @Inject constructor(
                 currentTocEntryId = currentToc?.id,
             )
         }
+        if (totalPagesChanged) refreshFoliateTocPageCounts()
         if (!foliateRestoreConfirmed) return
         if (!location.userInitiated) return
         foliateCheckpointSync.submit(checkpoint)
@@ -1100,6 +1139,7 @@ class ReaderViewModel @Inject constructor(
         navigator   = nav
         positions = emptyList()
         pageMarkers = emptyList()
+        tocPageCountsJob?.cancel()
         _state.update {
             it.copy(
                 totalPages = 0,
@@ -1107,6 +1147,7 @@ class ReaderViewModel @Inject constructor(
                 hasPageList = false,
                 currentPageLabel = null,
                 lastPageLabel = null,
+                tocPageCounts = emptyMap(),
             )
         }
 
@@ -1171,6 +1212,7 @@ class ReaderViewModel @Inject constructor(
                         lastPageLabel = pageMarkers.lastOrNull()?.label,
                     )
                 }
+                refreshReadiumTocPageCounts(pub)
                 lastLocator?.let { loc ->
                     val totalProg = loc.locations.totalProgression ?: 0.0
                     val page = currentPositionIndex(totalProg)
@@ -1213,15 +1255,7 @@ class ReaderViewModel @Inject constructor(
                 )
             }
             if (isPlaying) {
-                val clip = currentClipSnapshot()
-                val nav = navigator
-                if (clip != null && nav != null) {
-                    readAlongClipUiJob?.cancel()
-                    readAlongClipUiJob = viewModelScope.launch {
-                        autoNavigateReadAlongClip(clip, nav, buildReadAlongLocator(clip) ?: return@launch)
-                        scheduleReadAlongPagePreflip(clip, nav)
-                    }
-                }
+                followCurrentReadAlongClip()
             } else {
                 readAlongPageFlipJob?.cancel()
                 readAlongPageFlipJob = null
@@ -1307,10 +1341,12 @@ class ReaderViewModel @Inject constructor(
                         readAlongPageFlipJob?.cancel()
                         readAlongPageFlipJob = null
                     }
-                    if (_state.value.readAlongPlaying && !audioIsNavigating) {
-                        syncReadAlongToVisiblePage(nav, locator)
-                    } else if (!_state.value.readAlongPlaying && !_state.value.readAlongPreparing) {
-                        presyncReadAlongToReadingPosition(nav, locator)
+                    if (_state.value.prefs.readAloudSkipOnPageTurn && viewportReanchorJob?.isActive != true) {
+                        if (_state.value.readAlongPlaying && !audioIsNavigating) {
+                            syncReadAlongToVisiblePage(nav, locator)
+                        } else if (!_state.value.readAlongPlaying && !_state.value.readAlongPreparing) {
+                            presyncReadAlongToReadingPosition(nav, locator)
+                        }
                     }
                 }
                 val lease = epubCheckpointLease
@@ -1512,11 +1548,172 @@ class ReaderViewModel @Inject constructor(
                 append(pub.tableOfContents, 0)
             }
             _state.update { it.copy(tocEntries = entries) }
+            refreshReadiumTocPageCounts(pub)
             lastLocator?.let { locator ->
                 val current = findCurrentTocEntry(locator)
                 _state.update { it.copy(currentTocEntryId = current?.id) }
             }
         }
+    }
+
+    private fun refreshReadiumTocPageCounts(pub: Publication) {
+        if (publication !== pub || engineNavigator != null) return
+        tocPageCountsJob?.cancel()
+        val entries = _state.value.tocEntries
+        val positions = positions
+        val pageMarkers = pageMarkers
+        if (entries.isEmpty() || positions.isEmpty()) return
+        tocPageCountsJob = viewModelScope.launch {
+            val counts = withContext(Dispatchers.Default) { readiumTocPageCounts(pub, entries, positions, pageMarkers) }
+            if (publication !== pub || engineNavigator != null ||
+                _state.value.tocEntries !== entries || this@ReaderViewModel.positions !== positions
+            ) return@launch
+            _state.update { it.copy(tocPageCounts = counts) }
+        }
+    }
+
+    private suspend fun readiumTocPageCounts(
+        pub: Publication,
+        entries: List<TocEntry>,
+        positions: List<Locator>,
+        pageMarkers: List<EpubPageMarker>,
+    ): Map<String, TocPageCount> {
+        val resourceIndex = pub.readingOrder.withIndex().mapNotNull { (index, link) ->
+            normalizePublicationHref(link.url().toString())?.let { it to index }
+        }.toMap()
+        val targets = entries.map { entry ->
+            resourceIndex[normalizePublicationHref(entry.href)]?.let { resource ->
+                resource to parsePublicationHref(entry.href)?.fragment?.takeIf(String::isNotEmpty)
+            }
+        }
+        val fragmentFractions = HashMap<Pair<Int, String>, Double>()
+        targets.mapNotNull { target -> target?.second?.let { target.first to it } }
+            .groupBy({ it.first }, { it.second })
+            .forEach { (resource, fragments) ->
+                val html = readResourceText(pub, pub.readingOrder[resource]) ?: return@forEach
+                fragments.distinct().forEach { fragment ->
+                    fragmentFraction(html, fragment)?.let { fragmentFractions[resource to fragment] = it }
+                }
+            }
+        val firstPositionOfResource = HashMap<Int, Int>()
+        val positionCountOfResource = HashMap<Int, Int>()
+        positions.forEachIndexed { index, locator ->
+            resourceIndex[normalizePublicationHref(locator.href.toString())]?.let { resource ->
+                firstPositionOfResource.putIfAbsent(resource, index)
+                positionCountOfResource.merge(resource, 1, Int::plus)
+            }
+        }
+        fun positionOf(resource: Int, fragment: String?): Double? {
+            val first = firstPositionOfResource[resource] ?: return null
+            val fraction = if (fragment == null) 0.0 else fragmentFractions[resource to fragment] ?: return null
+            return first + fraction * positionCountOfResource.getValue(resource)
+        }
+        val totalPositions = positions.size.toDouble()
+
+        val pageList = pub.pageList
+        val pageResources = pageList.mapNotNull { resourceIndex[normalizePublicationHref(it.url().toString())] }
+        val pageResourcesOrdered = pageResources.isNotEmpty() &&
+            pageResources.size == pageList.size &&
+            pageMarkers.size == pageList.size &&
+            pageResources.zipWithNext().all { (previous, next) -> next >= previous }
+        if (!pageResourcesOrdered) {
+            return tocPageCounts(
+                entries = entries,
+                starts = targets.map { target -> target?.let { (resource, fragment) -> positionOf(resource, fragment) } },
+                bookEnd = totalPositions,
+            ) { start, end -> estimatedTocPageCount(start, end, totalPositions) }
+        }
+
+        var page = 0
+        val firstPageOfResource = IntArray(pub.readingOrder.size) { resource ->
+            while (page < pageResources.size && pageResources[page] < resource) page++
+            page
+        }
+        fun progressionAt(position: Double): Double? {
+            val index = position.toInt().coerceIn(0, positions.lastIndex)
+            val base = positions[index].locations.totalProgression ?: return null
+            val next = positions.getOrNull(index + 1)?.locations?.totalProgression ?: 1.0
+            return (base + (position - index) * (next - base)).takeIf { it.isFinite() }
+        }
+        fun boundaryOf(resource: Int, fragment: String?): TocPageBoundary? {
+            val position = positionOf(resource, fragment) ?: return null
+            if (fragment == null) {
+                val firstPage = firstPageOfResource[resource]
+                val firstPageInResource = firstPage < pageResources.size && pageResources[firstPage] == resource
+                val pageAtResourceStart = firstPageInResource && pageList[firstPage].url().fragment == null
+                return TocPageBoundary(
+                    position = position,
+                    containingPage = if (pageAtResourceStart) firstPage else firstPage - 1,
+                    pagesBefore = firstPage,
+                    exactStart = pageAtResourceStart || !firstPageInResource,
+                    exactEnd = true,
+                )
+            }
+            val progression = progressionAt(position) ?: return null
+            return TocPageBoundary(
+                position = position,
+                containingPage = pageMarkers.indexOfLast { it.progression <= progression },
+                pagesBefore = pageMarkers.count { it.progression < progression },
+                exactStart = false,
+                exactEnd = false,
+            )
+        }
+        return tocPageCounts(
+            entries = entries,
+            starts = targets.map { target -> target?.let { (resource, fragment) -> boundaryOf(resource, fragment) } },
+            bookEnd = TocPageBoundary(totalPositions, pageList.lastIndex, pageList.size, exactStart = true, exactEnd = true),
+        ) { start, end ->
+            val pages = end.pagesBefore - start.containingPage.coerceAtLeast(0)
+            TocPageCount(pages, estimated = !start.exactStart || !end.exactEnd)
+                .takeIf { end.position > start.position && pages > 0 }
+        }
+    }
+
+    private fun fragmentFraction(html: String, fragment: String): Double? {
+        val attribute = Regex("""\s(?:id|name)\s*=\s*(["'])${Regex.escape(fragment)}\1""").find(html) ?: return null
+        val tagStart = html.lastIndexOf('<', attribute.range.first)
+        if (tagStart < 0) return null
+        return tagStart.toDouble() / html.length
+    }
+
+    private fun refreshFoliateTocPageCounts() {
+        val total = _state.value.totalPages.toDouble()
+        val counts = tocPageCounts(
+            entries = _state.value.tocEntries,
+            starts = foliateTocProgressions.map { it?.times(total) },
+            bookEnd = total,
+        ) { start, end -> estimatedTocPageCount(start, end, total) }
+        _state.update { it.copy(tocPageCounts = counts) }
+    }
+
+    private fun estimatedTocPageCount(start: Double, end: Double, total: Double): TocPageCount? {
+        if (!start.isFinite() || !end.isFinite() || start < 0.0 || end > total || end <= start) return null
+        val pages = (end - start).roundToInt()
+        return TocPageCount(pages, estimated = true).takeIf { pages > 0 }
+    }
+
+    private fun <T : Any> tocPageCounts(
+        entries: List<TocEntry>,
+        starts: List<T?>,
+        bookEnd: T,
+        count: (start: T, end: T) -> TocPageCount?,
+    ): Map<String, TocPageCount> {
+        if (starts.size != entries.size) return emptyMap()
+        val counts = HashMap<String, TocPageCount>()
+        fun close(index: Int, end: T?) {
+            val start = starts[index] ?: return
+            if (end == null) return
+            count(start, end)?.let { counts[entries[index].id] = it }
+        }
+        val open = ArrayDeque<Int>()
+        entries.forEachIndexed { index, entry ->
+            while (open.isNotEmpty() && entries[open.last()].depth >= entry.depth) {
+                close(open.removeLast(), starts[index])
+            }
+            open.addLast(index)
+        }
+        while (open.isNotEmpty()) close(open.removeLast(), bookEnd)
+        return counts
     }
 
     fun navigateTo(entry: TocEntry) {
@@ -1573,11 +1770,12 @@ class ReaderViewModel @Inject constructor(
         ) {
             readAlongPageFlipJob?.cancel()
             readAlongPageFlipJob = null
-            if (newPrefs.readAloudAutoTurn && !newPrefs.scroll && _state.value.readAlongPlaying) {
+            if (newPrefs.readAloudAutoTurn && !newPrefs.scroll && _state.value.readAlongPlaying &&
+                readAlongClipUiJob?.isActive != true
+            ) {
                 val clip = mediaOverlayEngine?.currentClipSnapshot()
                 val nav = navigator
                 if (clip != null && nav != null) {
-                    readAlongClipUiJob?.cancel()
                     readAlongClipUiJob = viewModelScope.launch { scheduleReadAlongPagePreflip(clip, nav) }
                 }
             }
@@ -1587,8 +1785,10 @@ class ReaderViewModel @Inject constructor(
         ) {
             refreshReadAlongHighlight()
         }
-        navigator?.submitPreferences(newPrefs.toEpubPreferences(einkBoldText = einkBoldActive, einkActive = einkSingleColumnActive))
-        engineNavigator?.applyPreferences(newPrefs)
+        if (!isReadAloudOnlyPreferenceChange(oldPrefs, newPrefs)) {
+            navigator?.submitPreferences(newPrefs.toEpubPreferences(einkBoldText = einkBoldActive, einkActive = einkSingleColumnActive))
+            engineNavigator?.applyPreferences(newPrefs)
+        }
 
         savePrefsJob?.cancel()
         savePrefsJob = viewModelScope.launch {
@@ -1635,6 +1835,7 @@ class ReaderViewModel @Inject constructor(
             readAloudSpeed = readerPrefs.readAloudSpeed,
             readAloudSyncOffsetMs = readerPrefs.readAloudSyncOffsetMs,
             readAloudAutoTurn = readerPrefs.readAloudAutoTurn,
+            readAloudSkipOnPageTurn = readerPrefs.readAloudSkipOnPageTurn,
             readAloudHighlight = readerPrefs.readAloudHighlight,
             readAloudHighlightHex = readerPrefs.readAloudHighlightHex,
             readAloudSkipAsides = readerPrefs.readAloudSkipAsides,
@@ -1872,7 +2073,7 @@ class ReaderViewModel @Inject constructor(
             )
         }
         engine.beginPlaybackPreparation()
-        audioPlaybackManager.stop()
+        if (!readAloudPlayback.state.value.hasMediaItem) audioPlaybackManager.stop()
         readAloudPlayback.connect()
     }
 
@@ -1920,6 +2121,7 @@ class ReaderViewModel @Inject constructor(
     }
 
     fun setReadAlongSpeed(speed: Float) {
+        if (!speed.isFinite()) return
         updatePreferences(_state.value.prefs.copy(readAloudSpeed = speed.coerceIn(0.5f, 3.0f)))
     }
 
@@ -1962,8 +2164,12 @@ class ReaderViewModel @Inject constructor(
         val link = pub.readingOrder.firstOrNull {
             it.url().toString().substringBefore('#').substringAfterLast('/') == wanted
         } ?: return null
-        val resource = pub.get(link) ?: return null
-        return try {
+        return readResourceText(pub, link)
+    }
+
+    private suspend fun readResourceText(pub: Publication, link: Link): String? = withContext(Dispatchers.IO) {
+        val resource = pub.get(link) ?: return@withContext null
+        try {
             resource.read().getOrNull()?.toString(Charsets.UTF_8)
         } finally {
             resource.close()
@@ -2063,6 +2269,7 @@ class ReaderViewModel @Inject constructor(
         readAlongPageFlipJob?.cancel()
         readAlongPageFlipJob = null
         if (!_state.value.prefs.readAloudAutoTurn || _state.value.prefs.scroll || !_state.value.readAlongPlaying) return
+        if (isTextSelectionActive()) return
 
         val fragmentId = clip.textFragmentId ?: return
         val split = readAlongFragmentSplit(fragmentId, nav) ?: return
@@ -2075,7 +2282,7 @@ class ReaderViewModel @Inject constructor(
         val expectedClip = clip
         readAlongPageFlipJob = viewModelScope.launch {
             if (delayMs > 0L) delay(delayMs)
-            if (!_state.value.readAlongPlaying || audioIsNavigating) return@launch
+            if (!_state.value.readAlongPlaying || audioIsNavigating || isTextSelectionActive()) return@launch
             if (mediaOverlayEngine?.currentClipSnapshot() != expectedClip) return@launch
             audioIsNavigating = true
             try {
@@ -2095,7 +2302,7 @@ class ReaderViewModel @Inject constructor(
         nav: EpubNavigatorFragment,
         locator: Locator,
     ) {
-        if (!_state.value.prefs.readAloudAutoTurn) return
+        if (!_state.value.prefs.readAloudAutoTurn || isTextSelectionActive()) return
         val fragmentId = clip.textFragmentId ?: return
         val currentHref = normalizePublicationHref(nav.currentLocator.value.href.toString())
         val clipHref = normalizePublicationHref(clip.textHref)
@@ -2118,6 +2325,25 @@ class ReaderViewModel @Inject constructor(
                 audioIsNavigating = false
             }
         }
+    }
+
+    private fun followCurrentReadAlongClip() {
+        val clip = mediaOverlayEngine?.currentClipSnapshot() ?: return
+        val nav = navigator ?: return
+        readAlongClipUiJob?.cancel()
+        readAlongClipUiJob = viewModelScope.launch {
+            autoNavigateReadAlongClip(clip, nav, buildReadAlongLocator(clip) ?: return@launch)
+            scheduleReadAlongPagePreflip(clip, nav)
+        }
+    }
+
+    private fun isTextSelectionActive(): Boolean =
+        textSelectionActive || _state.value.showSelectionPopup || _state.value.showAnnotationDialog
+
+    fun onTextSelectionStarted() {
+        textSelectionActive = true
+        readAlongPageFlipJob?.cancel()
+        readAlongPageFlipJob = null
     }
 
     private fun buildReadAlongLocator(clip: SmilClip): Locator? {
@@ -2261,9 +2487,13 @@ class ReaderViewModel @Inject constructor(
         readAlongSyncJob?.cancel()
         readAlongSyncJob = viewModelScope.launch {
             delay(300)
+            if (!_state.value.prefs.readAloudSkipOnPageTurn) return@launch
             val currentClip = engine.currentClip()
             val fragId = currentClip?.textFragmentId
-            if (fragId != null && isReadAlongFragmentVisible(fragId, nav)) {
+            if (currentClip != null && fragId != null &&
+                normalizePublicationHref(currentClip.textHref) == normalizePublicationHref(nav.currentLocator.value.href.toString()) &&
+                isReadAlongFragmentVisible(fragId, nav)
+            ) {
                 return@launch
             }
 
@@ -2412,7 +2642,7 @@ class ReaderViewModel @Inject constructor(
             (function() {
                 const el = document.getElementById('$safeId');
                 if (!el) return false;
-                el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                el.scrollIntoView({ behavior: 'auto', block: 'center' });
                 return true;
             })();
         """.trimIndent()
@@ -2436,14 +2666,16 @@ class ReaderViewModel @Inject constructor(
 
     fun preserveReadiumPositionAcross(viewportChange: () -> Unit) {
         val nav = navigator
-        if (nav == null || engineNavigator != null || !readiumRestoreConfirmed || _state.value.readAlongPlaying) {
+        if (nav == null || engineNavigator != null || !readiumRestoreConfirmed) {
             viewportChange()
             return
         }
         viewportReanchorJob?.cancel()
+        val navigationGeneration = readiumUserNavigationGeneration
         viewportReanchorJob = viewModelScope.launch {
+            val narration = narrationViewportAnchor()
             val reused = viewportAnchor?.takeIf { it.page == null || it.page == nav.currentLocator.value.pageKey() }
-            val anchor = reused?.locator ?: firstVisibleTextLocator(nav)
+            val anchor = narration ?: reused?.locator ?: firstVisibleTextLocator(nav)
             if (anchor == null) {
                 viewportAnchor = null
                 viewportChange()
@@ -2452,7 +2684,9 @@ class ReaderViewModel @Inject constructor(
             viewportAnchor = ViewportAnchor(anchor, page = null)
             viewportChange()
             delay(VIEWPORT_SETTLE_MS)
-            if (nav.currentLocator.value.href != anchor.href) {
+            if (navigationGeneration != readiumUserNavigationGeneration ||
+                normalizePublicationHref(nav.currentLocator.value.href.toString()) != normalizePublicationHref(anchor.href.toString())
+            ) {
                 viewportAnchor = null
                 return@launch
             }
@@ -2460,6 +2694,11 @@ class ReaderViewModel @Inject constructor(
             delay(VIEWPORT_SETTLE_MS)
             viewportAnchor = ViewportAnchor(anchor, page = nav.currentLocator.value.pageKey())
         }
+    }
+
+    private fun narrationViewportAnchor(): Locator? {
+        if (!_state.value.readAlongPlaying || !_state.value.prefs.readAloudAutoTurn) return null
+        return mediaOverlayEngine?.currentClipSnapshot()?.let(::buildReadAlongLocator)
     }
 
     private fun Locator.pageKey(): String = "$href|${locations.progression}"
@@ -2471,6 +2710,27 @@ class ReaderViewModel @Inject constructor(
             (function() {
                 if (!decodeURIComponent(window.location.pathname).endsWith(decodeURIComponent($expectedPath))) return null;
                 const visible = (r) => r.width > 0 && r.height > 0 && r.right > 0 && r.left < window.innerWidth && r.bottom > 0 && r.top < window.innerHeight;
+                const selectorFor = (element) => {
+                    const path = [];
+                    for (let el = element; el && el !== document.body; el = el.parentElement) {
+                        if (el.id) {
+                            path.unshift('#' + CSS.escape(el.id));
+                            return path.join(' > ');
+                        }
+                        path.unshift(el.localName + ':nth-child(' + (Array.prototype.indexOf.call(el.parentElement.children, el) + 1) + ')');
+                    }
+                    path.unshift('body');
+                    return path.join(' > ');
+                };
+                const textAround = (node, start, end) => {
+                    const before = document.createRange();
+                    before.setStart(document.body, 0);
+                    before.setEnd(node, start);
+                    const after = document.createRange();
+                    after.setStart(node, end);
+                    after.setEnd(document.body, document.body.childNodes.length);
+                    return { before: before.toString().slice(-64), after: after.toString().slice(0, 64) };
+                };
                 const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
                 const range = document.createRange();
                 for (let node = walker.nextNode(); node; node = walker.nextNode()) {
@@ -2483,7 +2743,14 @@ class ReaderViewModel @Inject constructor(
                         range.setStart(node, i);
                         range.setEnd(node, i + 1);
                         if (Array.from(range.getClientRects()).some(visible)) {
-                            return { before: text.slice(Math.max(0, i - 64), i), highlight: text.slice(i, i + 64) };
+                            const end = Math.min(text.length, i + 64);
+                            const context = textAround(node, i, end);
+                            return {
+                                selector: selectorFor(node.parentElement),
+                                before: context.before,
+                                highlight: text.slice(i, end),
+                                after: context.after,
+                            };
                         }
                     }
                 }
@@ -2493,13 +2760,48 @@ class ReaderViewModel @Inject constructor(
         val json = nav.evaluateJavascript(script)
             ?.let { runCatching { org.json.JSONObject(it) }.getOrNull() }
             ?: return null
+        val selector = json.optString("selector").ifEmpty { null }
         return current.copy(
-            locations = current.locations.copy(otherLocations = emptyMap()),
+            locations = current.locations.copy(
+                otherLocations = current.locations.otherLocations - "cssSelector" +
+                    listOfNotNull(selector?.let { "cssSelector" to it }),
+            ),
             text = Locator.Text(
                 before = json.optString("before").ifEmpty { null },
                 highlight = json.optString("highlight"),
+                after = json.optString("after").ifEmpty { null },
             ),
         )
+    }
+
+    suspend fun readiumReadingAnchor(): Locator? {
+        val nav = navigator ?: return null
+        return firstVisibleTextLocator(nav) ?: nav.currentLocator.value
+    }
+
+    fun noteInternalLinkJump(returnLocator: Locator) {
+        _state.update { it.copy(linkReturnLocator = returnLocator) }
+    }
+
+    fun returnFromInternalLink() {
+        val locator = _state.value.linkReturnLocator ?: return
+        _state.update { it.copy(linkReturnLocator = null) }
+        val nav = navigator ?: return
+        viewModelScope.launch {
+            readiumUserInteractionPending = true
+            if (!nav.go(locator, animated = false)) {
+                readiumUserInteractionPending = false
+                return@launch
+            }
+            delay(VIEWPORT_SETTLE_MS)
+            if (normalizePublicationHref(nav.currentLocator.value.href.toString()) == normalizePublicationHref(locator.href.toString())) {
+                nav.go(locator, animated = false)
+            }
+        }
+    }
+
+    fun dismissInternalLinkReturn() {
+        _state.update { it.copy(linkReturnLocator = null) }
     }
 
     fun noteReadiumUserInteraction() {
@@ -2514,7 +2816,11 @@ class ReaderViewModel @Inject constructor(
         viewModelScope.launch {
             navigator?.let {
                 readiumUserInteractionPending = true
-                if (!it.goForward()) readiumUserInteractionPending = false
+                if (_state.value.prefs.scroll) {
+                    if (!scrollReadiumPage(it, forward = true)) readiumUserInteractionPending = false
+                } else if (!it.goForward()) {
+                    readiumUserInteractionPending = false
+                }
             }
         }
     }
@@ -2527,10 +2833,23 @@ class ReaderViewModel @Inject constructor(
         viewModelScope.launch {
             navigator?.let {
                 readiumUserInteractionPending = true
-                if (!it.goBackward()) readiumUserInteractionPending = false
+                if (_state.value.prefs.scroll) {
+                    if (!scrollReadiumPage(it, forward = false)) readiumUserInteractionPending = false
+                } else if (!it.goBackward()) {
+                    readiumUserInteractionPending = false
+                }
             }
         }
     }
+
+    private suspend fun scrollReadiumPage(nav: EpubNavigatorFragment, forward: Boolean): Boolean =
+        nav.evaluateJavascript("""
+            (function() {
+                const before = window.scrollY;
+                window.scrollBy({ top: ${if (forward) 1 else -1} * window.innerHeight * 0.9, behavior: 'auto' });
+                return window.scrollY !== before;
+            })();
+        """.trimIndent()) == "true"
 
     fun seekToProgress(fraction: Float) {
         val f = fraction.coerceIn(0f, 1f)
@@ -2566,6 +2885,8 @@ class ReaderViewModel @Inject constructor(
     }
 
     private fun clearSelectionState() {
+        val resumeFollowing = isTextSelectionActive() && _state.value.readAlongPlaying
+        textSelectionActive = false
         _state.update {
             it.copy(
                 pendingSelection = null,
@@ -2573,6 +2894,7 @@ class ReaderViewModel @Inject constructor(
                 showSelectionPopup = false,
             )
         }
+        if (resumeFollowing) followCurrentReadAlongClip()
     }
 
     fun addAnnotation(

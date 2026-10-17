@@ -37,4 +37,5 @@ dependencies {
     ksp("com.google.dagger:hilt-compiler:2.58")
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 }

@@ -8,8 +8,10 @@ import com.enve.bookorbit.dto.BookOrbitOidcProviderDto
 import com.enve.bookorbit.dto.BookOrbitOidcStateDto
 import com.enve.bookorbit.dto.BookOrbitOidcTokenDto
 import com.enve.core.auth.CredentialVault
+import com.enve.core.auth.OAuthRedirectUris
 import com.enve.core.data.local.PreferencesManager
 import com.enve.core.di.RefreshClient
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -64,7 +66,7 @@ class BookOrbitOidcFlow @Inject constructor(
             val state = oidcState(normalizedServerUrl, provider.slug, headers)
             val verifier = generateVerifier()
             val nonce = generateState() + generateState()
-            val redirectUri = redirectUri(normalizedServerUrl)
+            val redirectUri = OAuthRedirectUris.BOOKORBIT
             val authUrl = authorizationUrl(
                 endpoint = state.authorizationEndpoint,
                 provider = provider,
@@ -84,28 +86,30 @@ class BookOrbitOidcFlow @Inject constructor(
             BookOrbitOidcStart.Ready(authUrl = authUrl, serverUrl = normalizedServerUrl)
         }.getOrElse { e ->
             pending = null
+            if (e is CancellationException) throw e
             BookOrbitOidcStart.Failed(e.message ?: "Failed to start BookOrbit SSO login")
         }
     }
 
     suspend fun completeCallback(uri: Uri): BookOrbitOidcCallback = withContext(Dispatchers.IO) {
+        val p = pending ?: return@withContext BookOrbitOidcCallback.NoPending
+        if (uri.scheme != "bookorbit" || uri.host != "oauth2-callback" || !uri.path.isNullOrEmpty()) {
+            return@withContext BookOrbitOidcCallback.Failed("Invalid BookOrbit SSO callback URL.")
+        }
+        val returnedState = uri.getQueryParameter("state")
+        if (returnedState != p.state) {
+            pending = null
+            return@withContext BookOrbitOidcCallback.Failed("BookOrbit SSO state mismatch. Try again.")
+        }
         val authError = uri.getQueryParameter("error")
         if (!authError.isNullOrBlank()) {
             pending = null
             return@withContext BookOrbitOidcCallback.Failed("BookOrbit SSO error: $authError")
         }
-
         val code = uri.getQueryParameter("code")
-        val returnedState = uri.getQueryParameter("state")
-        val p = pending ?: return@withContext BookOrbitOidcCallback.NoPending
-
-        if (code.isNullOrBlank() || returnedState.isNullOrBlank()) {
+        if (code.isNullOrBlank()) {
             pending = null
-            return@withContext BookOrbitOidcCallback.Failed("BookOrbit SSO response was missing code or state.")
-        }
-        if (returnedState != p.state) {
-            pending = null
-            return@withContext BookOrbitOidcCallback.Failed("BookOrbit SSO state mismatch (possible CSRF). Try again.")
+            return@withContext BookOrbitOidcCallback.Failed("BookOrbit SSO response was missing a code.")
         }
 
         runCatching {
@@ -115,6 +119,7 @@ class BookOrbitOidcFlow @Inject constructor(
             BookOrbitOidcCallback.Success(serverUrl = p.serverUrl, username = token.username)
         }.getOrElse { e ->
             pending = null
+            if (e is CancellationException) throw e
             BookOrbitOidcCallback.Failed(e.message ?: "BookOrbit SSO token exchange failed")
         }
     }
@@ -147,7 +152,7 @@ class BookOrbitOidcFlow @Inject constructor(
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) error("Failed to fetch BookOrbit SSO providers: HTTP ${response.code}")
             val providers = json.decodeFromString<List<BookOrbitOidcProviderDto>>(response.body?.string().orEmpty())
-            return providers.firstOrNull { it.enabled } ?: providers.firstOrNull()
+            return providers.firstOrNull { it.enabled }
                 ?: error("No enabled BookOrbit SSO providers were found.")
         }
     }
@@ -213,9 +218,6 @@ class BookOrbitOidcFlow @Inject constructor(
             return TokenResult(token.accessToken, refreshToken, token.user.username)
         }
     }
-
-    private fun redirectUri(serverUrl: String): String =
-        "${serverUrl.trimEnd('/')}/oauth2-callback"
 
     private fun Request.Builder.applyHeaders(headers: Map<String, String>): Request.Builder = apply {
         headers.forEach { (key, value) -> header(key, value) }

@@ -10,19 +10,21 @@ object ConnectionScope {
 
     fun asContextElement(connectionId: String?) = currentConnectionId.asContextElement(connectionId)
 
+    fun <T> withConnectionId(connectionId: String?, block: () -> T): T {
+        val previous = currentConnectionId.get()
+        currentConnectionId.set(connectionId)
+        try {
+            return block()
+        } finally {
+            currentConnectionId.set(previous)
+        }
+    }
+
     fun propagatingExecutor(delegate: ExecutorService): ExecutorService =
         object : ExecutorService by delegate {
             override fun execute(command: Runnable) {
                 val captured = currentConnectionId.get()
-                delegate.execute {
-                    val previous = currentConnectionId.get()
-                    currentConnectionId.set(captured)
-                    try {
-                        command.run()
-                    } finally {
-                        currentConnectionId.set(previous)
-                    }
-                }
+                delegate.execute { withConnectionId(captured) { command.run() } }
             }
         }
 }

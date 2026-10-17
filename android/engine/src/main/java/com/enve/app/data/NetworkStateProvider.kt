@@ -13,6 +13,18 @@ class NetworkStateProvider @Inject constructor(
 ) {
     private val cm get() = context.getSystemService(ConnectivityManager::class.java)
 
+    @Suppress("DEPRECATION")
+    fun hasActiveNetwork(): Boolean {
+        val manager = cm ?: return false
+        val active = manager.getNetworkCapabilities(manager.activeNetwork) ?: return false
+        if (!active.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return true
+        return manager.allNetworks.any { network ->
+            manager.getNetworkCapabilities(network)?.let { capabilities ->
+                !capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+            } == true
+        }
+    }
+
     fun isActiveNetworkMetered(): Boolean {
         val manager = cm ?: return false
         val caps = manager.getNetworkCapabilities(manager.activeNetwork) ?: return false

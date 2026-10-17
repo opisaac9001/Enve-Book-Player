@@ -132,6 +132,7 @@ data class AudioTrack(
     val cumulativeStartMs: Long = 0,
     val fileId: String? = null,
     val contentUrl: String? = null,
+    val format: String? = null,
 )
 
 @Serializable

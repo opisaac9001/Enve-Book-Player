@@ -5,6 +5,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -63,7 +65,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
@@ -79,9 +83,14 @@ import com.enve.core.data.model.AppMediaType
 import com.enve.hearth.design.CoverTile
 import com.enve.hearth.design.EmberGlow
 import com.enve.hearth.design.Hearth
+import com.enve.hearth.design.HearthDismissState
+import com.enve.hearth.design.HearthDismissStyle
 import com.enve.hearth.design.HearthText
 import com.enve.hearth.design.Overline
 import com.enve.hearth.design.hearthDisplay
+import com.enve.hearth.design.hearthDismissExclusion
+import com.enve.hearth.design.hearthDismissGesture
+import com.enve.hearth.design.rememberHearthDismissState
 
 enum class PlayerSheet { SPEED, SLEEP, CHAPTERS, BOOKMARKS, QUEUE }
 
@@ -106,8 +115,9 @@ fun PlayerScreen(
     var readMode by remember(now?.bookKey) { mutableStateOf(false) }
     val readAvailable = readAloud.available && readAloud.bookKey == now?.bookKey
     val showReadMode = readMode && readAvailable
+    val dismissState = rememberHearthDismissState(HearthDismissStyle.Cover, onDismiss)
 
-    Box(Modifier.fillMaxSize().background(palette.bgSunken)) {
+    Box(Modifier.fillMaxSize().hearthDismissGesture(dismissState).background(palette.bgSunken)) {
         EmberGlow(color = palette.ember, playing = transport.isPlaying, modifier = Modifier.fillMaxSize())
 
         BoxWithConstraints(
@@ -118,6 +128,7 @@ fun PlayerScreen(
             val widePanel = maxWidth >= 600.dp
             val narrowPanel = maxWidth < 380.dp
             val shortPanel = maxHeight < 760.dp * density.fontScale
+            val scrollablePanel = maxHeight < 500.dp * density.fontScale
             val compactPanel = narrowPanel || shortPanel || Hearth.typeCompact
             val horizontalPadding = when {
                 narrowPanel -> Hearth.Spacing.M
@@ -149,13 +160,15 @@ fun PlayerScreen(
             val playButtonSize = if (compactPanel) 64.dp else 76.dp
             val playIconSize = if (compactPanel) 34.dp else 38.dp
             val transportIconSize = if (compactPanel) 30.dp else 34.dp
-            val transportTouchPadding = Hearth.Spacing.S
+            val transportTouchPadding = maxOf(Hearth.Spacing.S, (48.dp - transportIconSize) / 2)
             val compactUtilities = compactPanel
             val utilityIconSize = if (compactUtilities) 20.dp else 22.dp
             val utilityTextSize = if (compactUtilities) 9.sp else 10.sp
 
             Column(
-                Modifier.fillMaxSize().padding(horizontal = horizontalPadding),
+                Modifier.fillMaxSize()
+                    .then(if (scrollablePanel) Modifier.verticalScroll(rememberScrollState()) else Modifier)
+                    .padding(horizontal = horizontalPadding),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Row(Modifier.fillMaxWidth().padding(vertical = Hearth.Spacing.S), verticalAlignment = Alignment.CenterVertically) {
@@ -180,7 +193,9 @@ fun PlayerScreen(
                 Spacer(Modifier.height(if (compactPanel || widePanel) Hearth.Spacing.S else Hearth.Spacing.L))
                 if (showReadMode) {
                     Box(
-                        Modifier.weight(1f).fillMaxWidth(),
+                        Modifier
+                            .then(if (scrollablePanel) Modifier.height(readModeHeight) else Modifier.weight(1f))
+                            .fillMaxWidth(),
                         contentAlignment = Alignment.Center,
                     ) {
                         PlayerReadAloudLyrics(
@@ -217,7 +232,9 @@ fun PlayerScreen(
                     color = palette.text,
                     maxLines = 2,
                     textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().semantics {
+                        customActions = listOf(CustomAccessibilityAction("Close player") { onDismiss(); true })
+                    },
                 )
                 now?.author?.let {
                     Spacer(Modifier.height(Hearth.Spacing.XS))
@@ -245,6 +262,7 @@ fun PlayerScreen(
                     durationMs = spanLenMs,
                     chapters = if (chapterScope) emptyList() else chapters.map { it.startTime * 1000f / (transport.durationMs.takeIf { d -> d > 0 } ?: 1L) },
                     onSeek = { fraction -> vm.seekTo(spanStartMs + (fraction * spanLenMs).toLong()) },
+                    dismissState = dismissState,
                 )
                 Spacer(Modifier.height(Hearth.Spacing.S))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -270,7 +288,7 @@ fun PlayerScreen(
                             tint = if (canGoPreviousChapter) palette.text else palette.textSecondary,
                             modifier = Modifier
                                 .clip(CircleShape)
-                                .clickable(enabled = canGoPreviousChapter) { vm.previousChapter() }
+                                .clickable(enabled = canGoPreviousChapter, role = Role.Button) { vm.previousChapter() }
                                 .padding(transportTouchPadding)
                                 .size(transportIconSize),
                         )
@@ -312,7 +330,7 @@ fun PlayerScreen(
                             tint = if (canGoNextChapter) palette.text else palette.textSecondary,
                             modifier = Modifier
                                 .clip(CircleShape)
-                                .clickable(enabled = canGoNextChapter) { vm.nextChapter() }
+                                .clickable(enabled = canGoNextChapter, role = Role.Button) { vm.nextChapter() }
                                 .padding(transportTouchPadding)
                                 .size(transportIconSize),
                         )
@@ -430,7 +448,7 @@ private fun SkipIntervalButton(
         Text(
             text = seconds.toString(),
             color = tint,
-            fontSize = with(LocalDensity.current) { (iconSize * 0.28f).toSp() },
+            fontSize = (iconSize.value * 0.28f).sp,
             fontWeight = FontWeight.Bold,
             maxLines = 1,
             modifier = Modifier.offset(y = iconSize / 24),
@@ -526,7 +544,13 @@ private fun UtilityPill(
 }
 
 @Composable
-private fun ChapterScrubber(positionMs: Long, durationMs: Long, chapters: List<Float>, onSeek: (Float) -> Unit) {
+private fun ChapterScrubber(
+    positionMs: Long,
+    durationMs: Long,
+    chapters: List<Float>,
+    onSeek: (Float) -> Unit,
+    dismissState: HearthDismissState,
+) {
     val palette = Hearth.palette
     val eink = Hearth.eink
     val progress = if (durationMs > 0) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
@@ -534,7 +558,7 @@ private fun ChapterScrubber(positionMs: Long, durationMs: Long, chapters: List<F
     val shown = dragFraction ?: progress
 
     Canvas(
-        Modifier.fillMaxWidth().height(28.dp).pointerInput(durationMs) {
+        Modifier.fillMaxWidth().height(28.dp).hearthDismissExclusion(dismissState).pointerInput(durationMs) {
             detectHorizontalDragGestures(
                 onDragStart = { offset -> dragFraction = (offset.x / size.width).coerceIn(0f, 1f) },
                 onHorizontalDrag = { change, _ -> dragFraction = (change.position.x / size.width).coerceIn(0f, 1f) },

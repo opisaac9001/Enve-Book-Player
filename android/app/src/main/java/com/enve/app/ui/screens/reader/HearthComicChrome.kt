@@ -15,8 +15,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -45,6 +47,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import com.enve.app.data.reader.ReaderTheme
 import com.enve.app.ui.screens.pageLabel
@@ -68,7 +71,6 @@ import kotlin.math.roundToInt
 @Composable
 fun HearthComicChrome(
     state: ComicReaderUiState,
-    baseSettings: ComicReaderSettings,
     visiblePageIndices: List<Int>,
     chromeVisible: Boolean,
     einkActive: Boolean,
@@ -77,6 +79,8 @@ fun HearthComicChrome(
     onOpenSettings: () -> Unit,
     onCloseSettings: () -> Unit,
     onSettingsChange: (ComicReaderSettings) -> Unit,
+    onDefaultDirectionChange: (ComicReadingDirection) -> Unit,
+    onDirectionChange: (ComicReadingDirection?) -> Unit,
     onPageChange: (Int) -> Unit,
     restReminder: ReaderRestReminderSpec,
 ) {
@@ -111,8 +115,12 @@ fun HearthComicChrome(
             )
             if (state.showSettingsSheet) {
                 HearthComicSettingsSheet(
-                    settings = baseSettings,
+                    settings = state.defaultSettings,
+                    effectiveDirection = state.settings.readingDirection,
+                    directionOverride = state.directionOverride,
                     onSettingsChange = onSettingsChange,
+                    onDefaultDirectionChange = onDefaultDirectionChange,
+                    onDirectionChange = onDirectionChange,
                     onDismiss = onCloseSettings,
                 )
             }
@@ -195,7 +203,11 @@ private fun ComicBottomVeil(
 @Composable
 private fun HearthComicSettingsSheet(
     settings: ComicReaderSettings,
+    effectiveDirection: ComicReadingDirection,
+    directionOverride: ComicReadingDirection?,
     onSettingsChange: (ComicReaderSettings) -> Unit,
+    onDefaultDirectionChange: (ComicReadingDirection) -> Unit,
+    onDirectionChange: (ComicReadingDirection?) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val palette = Hearth.palette
@@ -211,15 +223,29 @@ private fun HearthComicSettingsSheet(
                 .padding(horizontal = Hearth.Spacing.XL).padding(bottom = Hearth.Spacing.XXL),
             verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.L),
         ) {
-            Overline("Page flow")
-            ChipRow(ComicProgressionMode.entries, { it.label }, { it == settings.progressionMode }) {
-                onSettingsChange(settings.copy(progressionMode = it))
-            }
+            val defaultFlow = if (settings.progressionMode == ComicProgressionMode.VERTICAL_STRIP) {
+                ComicReadingDirection.VERTICAL
+            } else settings.readingDirection
+            Overline("Default page flow")
+            ChipRow(
+                listOf(ComicReadingDirection.LEFT_TO_RIGHT, ComicReadingDirection.RIGHT_TO_LEFT, ComicReadingDirection.VERTICAL),
+                { if (it == ComicReadingDirection.VERTICAL) "Scroll" else it.label },
+                { it == defaultFlow },
+                onDefaultDirectionChange,
+            )
 
             Overline("Direction")
-            ChipRow(ComicReadingDirection.entries, { it.label }, { it == settings.readingDirection }) {
-                onSettingsChange(settings.copy(readingDirection = it))
-            }
+            ChipRow(
+                listOf(null) + ComicReadingDirection.entries,
+                { it?.label ?: if (directionOverride == null) "Auto · ${effectiveDirection.label}" else "Auto" },
+                { it == directionOverride },
+                onDirectionChange,
+            )
+            Text(
+                "Auto uses the series or file direction, then your default page flow.",
+                style = HearthText.Caption,
+                color = palette.textSecondary,
+            )
 
             Overline("Page fit")
             ChipRow(ComicPageFit.entries, { it.label }, { it == settings.pageFit }) {
@@ -258,9 +284,9 @@ private fun HearthComicSettingsSheet(
             if (settings.brightness >= 0f) {
                 Text(
                     "Use system brightness", style = HearthText.Label, color = palette.ember,
-                    modifier = Modifier.clip(RoundedCornerShape(50))
-                        .clickable { onSettingsChange(settings.copy(brightness = -1f)) }
-                        .padding(horizontal = Hearth.Spacing.S, vertical = Hearth.Spacing.XS),
+                    modifier = Modifier.sizeIn(minHeight = 48.dp).clip(RoundedCornerShape(50))
+                        .clickable(role = Role.Button) { onSettingsChange(settings.copy(brightness = -1f)) }
+                        .wrapContentHeight().padding(horizontal = Hearth.Spacing.S, vertical = Hearth.Spacing.XS),
                 )
             }
 

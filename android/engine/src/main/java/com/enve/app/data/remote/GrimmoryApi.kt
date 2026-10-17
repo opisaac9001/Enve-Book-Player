@@ -466,6 +466,11 @@ interface GrimmoryApi {
         @Path("bookId") bookId: String,
     ): Response<GrimmoryAppBookProgressDto>
 
+    @GET("api/v1/books/{bookId}")
+    suspend fun getBookProgressDetail(
+        @Path("bookId") bookId: String,
+    ): Response<GrimmoryBookProgressDetailDto>
+
     @PUT("api/v1/app/books/{bookId}/progress")
     suspend fun putAppBookProgress(
         @Path("bookId") bookId: String,

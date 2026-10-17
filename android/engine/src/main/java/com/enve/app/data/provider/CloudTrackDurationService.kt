@@ -9,6 +9,7 @@ import com.enve.core.data.local.decodeAudioTracks
 import com.enve.core.data.local.encodeAudioTracksJson
 import com.enve.core.data.model.AudioTrack
 import com.enve.core.data.model.Book
+import com.enve.core.data.model.BookSource
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -52,7 +53,24 @@ class CloudTrackDurationService @Inject constructor(
         if (merged.any { it.durationMs <= 0L } && activeProbes.add(cacheKey)) {
             scope.launch {
                 try {
-                    persistIfChanged(cacheKey, probeMissing(merged))
+                    var remainingMs = book.currentTime * 1000L
+                    val currentIndex = merged.indexOfFirst { track ->
+                        if (track.durationMs <= 0L || remainingMs < track.durationMs) {
+                            true
+                        } else {
+                            remainingMs -= track.durationMs
+                            false
+                        }
+                    }.coerceAtLeast(0)
+                    val priorityIndices = (currentIndex..(currentIndex + 1).coerceAtMost(merged.lastIndex)).toSet()
+                    val concurrency = if (book.source == BookSource.TORBOX) 2 else PROBE_CONCURRENCY
+                    val priority = probeMissing(merged.filterIndexed { index, _ -> index in priorityIndices }, concurrency)
+                    val priorityByIndex = priority.associateBy { it.index }
+                    val withPriority = merged.map { priorityByIndex[it.index] ?: it }
+                    persistIfChanged(cacheKey, withPriority)
+                    val remaining = probeMissing(withPriority.filterIndexed { index, _ -> index !in priorityIndices }, concurrency)
+                    val remainingByIndex = remaining.associateBy { it.index }
+                    persistIfChanged(cacheKey, withPriority.map { remainingByIndex[it.index] ?: it })
                 } finally {
                     activeProbes.remove(cacheKey)
                 }
@@ -61,8 +79,8 @@ class CloudTrackDurationService @Inject constructor(
         return merged
     }
 
-    private suspend fun probeMissing(tracks: List<AudioTrack>): List<AudioTrack> {
-        val semaphore = Semaphore(PROBE_CONCURRENCY)
+    private suspend fun probeMissing(tracks: List<AudioTrack>, concurrency: Int): List<AudioTrack> {
+        val semaphore = Semaphore(concurrency)
         return coroutineScope {
             tracks.map { track ->
                 async {

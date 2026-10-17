@@ -41,6 +41,7 @@ import javax.inject.Inject
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.enve.app.ui.components.CastButton
@@ -153,80 +154,83 @@ class MainActivity : ComponentActivity() {
             var downloadedBookRequest by remember { mutableStateOf<Book?>(null) }
 
             var resumeHearthInSettings by remember { mutableStateOf(false) }
+            val hearthState = rememberSaveableStateHolder()
             if (classicInitialRoute == null) {
                 val widgetPlayerRequest by openPlayerFromWidget.collectAsState()
-                HearthRoot(
-                    imageLoader = runtime.component.imageLoader(),
-                    onOpenProfiles = if (profileState.enabled) ({ classicInitialRoute = Routes.PROFILES }) else null,
-                    profileName = profileState.profiles.firstOrNull { it.id == runtime.profileId }?.name,
-                    initialShowSettings = resumeHearthInSettings,
-                    showPlayerRequest = widgetPlayerRequest,
-                    onPlayerRequestConsumed = { openPlayerFromWidget.value = false },
-                    openBookRequest = downloadedBookRequest,
-                    onBookRequestConsumed = { downloadedBookRequest = null },
-                    playerTopAction = { CastButton(Modifier.size(48.dp)) },
-                    onOpdsAuthorize = { connectionId, methodType, authorizeUrl ->
-                        startActivity(
-                            Intent(this@MainActivity, OpdsAuthBrowserActivity::class.java)
-                                .putExtra(OpdsAuthBrowserActivity.EXTRA_CONNECTION_ID, connectionId)
-                                .putExtra(OpdsAuthBrowserActivity.EXTRA_METHOD_TYPE, methodType)
-                                .putExtra(OpdsAuthBrowserActivity.EXTRA_AUTHORIZE_URL, authorizeUrl),
-                        )
-                    },
-                    playerOverlay = {
-                        playbackConflict?.let { conflict ->
-                            EnveTheme(
-                                appTheme = bridgedTheme,
-                                themeColor = bridgedAccent,
-                                dynamicBackgroundEnabled = false,
-                                einkProfile = themeState.einkProfile,
-                            ) {
-                                ProgressConflictDialog(
-                                    prompt = ProgressConflictPrompt(
-                                        localPercentage = conflict.localPercentage,
-                                        localUpdatedAt = conflict.localUpdatedAt,
-                                        remotePercentage = conflict.remotePercentage,
-                                        remoteUpdatedAt = conflict.remoteUpdatedAt,
-                                        remoteSource = conflict.remoteSource,
-                                    ),
-                                    onChooseLocal = {
-                                        playbackOpenProgress.resolveConflict(PlaybackProgressConflictChoice.LOCAL)
-                                    },
-                                    onChooseRemote = {
-                                        playbackOpenProgress.resolveConflict(PlaybackProgressConflictChoice.REMOTE)
-                                    },
-                                    onDecideLater = {
-                                        playbackOpenProgress.resolveConflict(PlaybackProgressConflictChoice.LATER)
-                                    },
-                                )
-                            }
-                        }
-                    },
-                    onManageSources = {
-                        classicInitialRoute = Routes.QUICK_CONNECT
-                        resumeHearthInSettings = true
-                    },
-                    onOpenSettingsDestination = { destination ->
-                        classicInitialRoute = destination.toRoute()
-                        resumeHearthInSettings = true
-                    },
-                    onAskLibrarian = { book ->
-                        startActivity(
-                            com.enve.app.ui.screens.EbookLibrarianActivity.createIntent(
-                                context = this,
-                                bookId = book.id,
-                                bookSource = book.source,
-                                connectionId = book.connectionId,
-                                title = book.title,
-                                author = book.author,
-                                bookFormat = book.readerFormat(),
-                                currentProgress = (book.epubProgress ?: book.readProgress).toDouble(),
+                hearthState.SaveableStateProvider("hearth") {
+                    HearthRoot(
+                        imageLoader = runtime.component.imageLoader(),
+                        onOpenProfiles = if (profileState.enabled) ({ classicInitialRoute = Routes.PROFILES }) else null,
+                        profileName = profileState.profiles.firstOrNull { it.id == runtime.profileId }?.name,
+                        initialShowSettings = resumeHearthInSettings,
+                        showPlayerRequest = widgetPlayerRequest,
+                        onPlayerRequestConsumed = { openPlayerFromWidget.value = false },
+                        openBookRequest = downloadedBookRequest,
+                        onBookRequestConsumed = { downloadedBookRequest = null },
+                        playerTopAction = { CastButton(Modifier.size(48.dp)) },
+                        onOpdsAuthorize = { connectionId, methodType, authorizeUrl ->
+                            startActivity(
+                                Intent(this@MainActivity, OpdsAuthBrowserActivity::class.java)
+                                    .putExtra(OpdsAuthBrowserActivity.EXTRA_CONNECTION_ID, connectionId)
+                                    .putExtra(OpdsAuthBrowserActivity.EXTRA_METHOD_TYPE, methodType)
+                                    .putExtra(OpdsAuthBrowserActivity.EXTRA_AUTHORIZE_URL, authorizeUrl),
                             )
-                        )
-                    },
-                    onOpenEbook = { book -> openReader(book) },
-                    onOpenAnnotation = { book, annotation -> openReader(book, annotation) },
-                )
+                        },
+                        playerOverlay = {
+                            playbackConflict?.let { conflict ->
+                                EnveTheme(
+                                    appTheme = bridgedTheme,
+                                    themeColor = bridgedAccent,
+                                    dynamicBackgroundEnabled = false,
+                                    einkProfile = themeState.einkProfile,
+                                ) {
+                                    ProgressConflictDialog(
+                                        prompt = ProgressConflictPrompt(
+                                            localPercentage = conflict.localPercentage,
+                                            localUpdatedAt = conflict.localUpdatedAt,
+                                            remotePercentage = conflict.remotePercentage,
+                                            remoteUpdatedAt = conflict.remoteUpdatedAt,
+                                            remoteSource = conflict.remoteSource,
+                                        ),
+                                        onChooseLocal = {
+                                            playbackOpenProgress.resolveConflict(PlaybackProgressConflictChoice.LOCAL)
+                                        },
+                                        onChooseRemote = {
+                                            playbackOpenProgress.resolveConflict(PlaybackProgressConflictChoice.REMOTE)
+                                        },
+                                        onDecideLater = {
+                                            playbackOpenProgress.resolveConflict(PlaybackProgressConflictChoice.LATER)
+                                        },
+                                    )
+                                }
+                            }
+                        },
+                        onManageSources = {
+                            classicInitialRoute = Routes.QUICK_CONNECT
+                            resumeHearthInSettings = true
+                        },
+                        onOpenSettingsDestination = { destination ->
+                            classicInitialRoute = destination.toRoute()
+                            resumeHearthInSettings = true
+                        },
+                        onAskLibrarian = { book ->
+                            startActivity(
+                                com.enve.app.ui.screens.EbookLibrarianActivity.createIntent(
+                                    context = this,
+                                    bookId = book.id,
+                                    bookSource = book.source,
+                                    connectionId = book.connectionId,
+                                    title = book.title,
+                                    author = book.author,
+                                    bookFormat = book.readerFormat(),
+                                    currentProgress = (book.epubProgress ?: book.readProgress).toDouble(),
+                                )
+                            )
+                        },
+                        onOpenEbook = { book -> openReader(book) },
+                        onOpenAnnotation = { book, annotation -> openReader(book, annotation) },
+                    )
+                }
             } else {
                 com.enve.hearth.design.HearthUiTextScale(uiTextScale) {
                     EnveTheme(

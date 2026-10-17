@@ -206,6 +206,16 @@ class GrimmoryProviderAdapter @Inject constructor(
     override suspend fun getEbookResource(bookId: String): ProviderEbookResource =
         repository.getEbookResource(bookId)
 
+    override suspend fun getComicReadingDirection(book: Book): Result<String?> = runSuspendCatching {
+        val response = api.getBookProgressDetail(book.id)
+        check(response.isSuccessful) { "Comic metadata HTTP ${response.code()}" }
+        when (response.body()?.metadata?.comicMetadata?.readingDirection?.trim()?.lowercase()) {
+            "rtl" -> "RIGHT_TO_LEFT"
+            "ltr" -> "LEFT_TO_RIGHT"
+            else -> null
+        }
+    }
+
     override suspend fun updateBookStatus(bookId: String, status: String): Result<Unit> =
         repository.updateBookStatus(bookId, status)
 

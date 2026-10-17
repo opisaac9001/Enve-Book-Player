@@ -86,13 +86,12 @@ class PlexRepository @Inject constructor(
     }
 
     private suspend fun firstPlayablePartKey(metadata: PlexMetadata): String? {
-
-        metadata.media.firstOrNull()?.part?.firstOrNull()?.key?.let { return it }
+        metadata.playableRendition()?.let { return it.part.key }
         if (metadata.type == "album") {
             val resp = api.getMetadataChildren(metadata.ratingKey)
             if (!resp.isSuccessful) error("Plex children HTTP ${resp.code()}")
-            val tracks = resp.body()?.mediaContainer?.metadata.orEmpty()
-            return tracks.firstOrNull()?.media?.firstOrNull()?.part?.firstOrNull()?.key
+            val tracks = resp.body()?.mediaContainer?.metadata.orEmpty().sortedWith(plexTrackOrder)
+            return tracks.firstOrNull()?.playableRendition()?.part?.key
         }
         return null
     }
@@ -160,17 +159,9 @@ class PlexRepository @Inject constructor(
     // Plex keeps resume points per track (as iOS writes them), so multi-file books report against the track playing.
     private suspend fun trackSpans(book: Book): List<PlexTrackSpan> {
         trackSpans[book.uniqueKey]?.let { return it }
-        val root = api.getMetadata(book.id).body()?.mediaContainer?.metadata?.firstOrNull() ?: return emptyList()
-        val tracks = if (root.type == "album" || root.media.isEmpty()) {
-            api.getMetadataChildren(book.id).body()?.mediaContainer?.metadata.orEmpty().sortedWith(plexTrackOrder)
-        } else {
-            emptyList()
-        }
-        var start = 0L
-        return tracks.map { track ->
-            val duration = track.duration ?: track.media.firstOrNull()?.part?.firstOrNull()?.duration ?: 0L
-            PlexTrackSpan(track.ratingKey, start, duration).also { start += duration }
-        }.also { trackSpans[book.uniqueKey] = it }
+        val playable = api.playableTracks(book.id)?.takeIf { it.isAlbum } ?: return emptyList()
+        return playable.tracks.map { PlexTrackSpan(it.metadata.ratingKey, it.startMs, it.durationMs) }
+            .also { trackSpans[book.uniqueKey] = it }
     }
 
     private suspend fun progressTarget(book: Book, positionMs: Long): PlexProgressTarget {
@@ -240,33 +231,18 @@ class PlexRepository @Inject constructor(
     suspend fun getAudioTracks(book: Book): Result<List<AudioTrack>> = withContext(Dispatchers.IO) {
         runSuspendCatching {
             val (serverUrl, token) = scoped()
-            val rootResp = api.getMetadata(book.id)
-            if (!rootResp.isSuccessful) error("Plex metadata HTTP ${rootResp.code()}")
-            val rootMeta = rootResp.body()?.mediaContainer?.metadata?.firstOrNull()
-                ?: return@runSuspendCatching emptyList<AudioTrack>()
-            val tracks = if (rootMeta.type == "album" || rootMeta.media.isEmpty()) {
-                val childrenResp = api.getMetadataChildren(book.id)
-                if (!childrenResp.isSuccessful) error("Plex children HTTP ${childrenResp.code()}")
-                childrenResp.body()?.mediaContainer?.metadata.orEmpty()
-            } else {
-
-                listOf(rootMeta)
-            }
-            var cumulative = 0L
-            tracks.sortedWith(plexTrackOrder).mapIndexedNotNull { idx, t ->
-                val part = t.media.firstOrNull()?.part?.firstOrNull() ?: return@mapIndexedNotNull null
-                val durationMs = t.duration ?: part.duration ?: 0L
-                val track = AudioTrack(
+            val playable = api.playableTracks(book.id) ?: return@runSuspendCatching emptyList<AudioTrack>()
+            playable.tracks.mapIndexed { idx, track ->
+                val part = track.rendition.part
+                AudioTrack(
                     index = idx,
-                    fileName = part.file?.substringAfterLast('/') ?: t.title,
-                    title = t.title,
-                    durationMs = durationMs,
+                    fileName = part.file?.substringAfterLast('/') ?: track.metadata.title,
+                    title = track.metadata.title,
+                    durationMs = track.durationMs,
                     fileSizeBytes = 0L,
-                    cumulativeStartMs = cumulative,
+                    cumulativeStartMs = track.startMs,
                     contentUrl = buildStreamUrl(serverUrl, part.key, token),
                 )
-                cumulative += durationMs
-                track
             }
         }
     }
@@ -425,12 +401,6 @@ class PlexRepository @Inject constructor(
         return all
     }
 
-    private val plexTrackOrder = compareBy<PlexMetadata>(
-        { it.parentIndex ?: 0 },
-        { it.index ?: Int.MAX_VALUE },
-        { it.ratingKey },
-    )
-
     private fun PlexMetadata.toBook(serverUrl: String, libraryId: String): Book {
         val durationSec = (duration ?: 0L) / 1000L
         val currentTimeSec = (viewOffset ?: 0L) / 1000L
@@ -474,7 +444,7 @@ class PlexRepository @Inject constructor(
 
     private fun PlexMetadata.extractSeries(author: String?): PlexSeries? {
         parseSeriesFromTitle(title)?.let { return it }
-        val filePath = media.firstOrNull()?.part?.firstOrNull()?.file ?: return null
+        val filePath = playableRendition()?.part?.file ?: return null
         return parseSeriesFromPath(filePath, author, title)
     }
 

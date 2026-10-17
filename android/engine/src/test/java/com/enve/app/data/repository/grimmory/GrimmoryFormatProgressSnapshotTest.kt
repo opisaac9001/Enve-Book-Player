@@ -5,6 +5,7 @@ import com.enve.app.data.remote.dto.EbookProgressObjectDto
 import com.enve.app.data.remote.dto.GrimmoryAppBookProgressDto
 import com.enve.app.data.remote.dto.GrimmoryKoreaderProgressDto
 import com.enve.app.data.remote.dto.PageProgressDto
+import com.enve.core.reader.EpubBridgeCheckpointCodec
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -175,7 +176,91 @@ class GrimmoryFormatProgressSnapshotTest {
         assertNull(grimmoryGlobalAudiobookPositionMs(ab, trackStartsByIndex = null))
     }
 
+    @Test
+    fun kobo_synced_progress_restores_the_chapter_and_its_progression() {
+        val body = GrimmoryAppBookProgressDto(
+            epubProgress = EbookProgressObjectDto(percentage = 42f, href = KOBO_HREF),
+        )
+        val snapshot = requireNotNull(grimmoryEbookProgressSnapshot(body, updatedAtMs = 5L))
+        assertNull(snapshot.epubCfi)
+
+        val positioned = grimmoryPositionedEbookSnapshot(
+            snapshot,
+            appHref = KOBO_HREF,
+            detail = EbookProgressObjectDto(percentage = 42f, href = KOBO_HREF, contentSourceProgressPercent = 37.5f),
+        )
+
+        assertEquals(KOBO_HREF, positioned.href)
+        assertNull(positioned.epubCfi)
+        val checkpoint = requireNotNull(
+            EpubBridgeCheckpointCodec.fromReadiumLocator(
+                locatorJson = requireNotNull(positioned.locatorJson),
+                publicationSha256 = "sha",
+                providerFileId = null,
+                writerEpoch = 1,
+                revision = 0,
+                observedAt = 5L,
+            ),
+        )
+        assertEquals(KOBO_HREF, checkpoint.href)
+        assertEquals(0.375, checkpoint.resourceProgression!!, 0.0001)
+        assertEquals(0.42, checkpoint.totalProgression!!, 0.0001)
+        assertEquals(0.42f, positioned.percentage, 0.0001f)
+    }
+
+    @Test
+    fun file_level_cfi_wins_over_chapter_progression() {
+        val snapshot = requireNotNull(
+            grimmoryEbookProgressSnapshot(
+                GrimmoryAppBookProgressDto(epubProgress = EbookProgressObjectDto(percentage = 10f, href = KOBO_HREF)),
+                updatedAtMs = null,
+            ),
+        )
+        val positioned = grimmoryPositionedEbookSnapshot(
+            snapshot,
+            appHref = null,
+            detail = EbookProgressObjectDto(href = KOBO_HREF, cfi = CFI, contentSourceProgressPercent = 50f),
+        )
+        assertEquals(CFI, positioned.epubCfi)
+        assertNull(positioned.locatorJson)
+    }
+
+    @Test
+    fun chapter_progression_from_another_file_or_without_href_is_ignored() {
+        val snapshot = requireNotNull(
+            grimmoryEbookProgressSnapshot(
+                GrimmoryAppBookProgressDto(epubProgress = EbookProgressObjectDto(percentage = 10f, href = KOBO_HREF)),
+                updatedAtMs = null,
+            ),
+        )
+        assertEquals(
+            snapshot,
+            grimmoryPositionedEbookSnapshot(
+                snapshot,
+                appHref = KOBO_HREF,
+                detail = EbookProgressObjectDto(href = "OEBPS/other.xhtml", contentSourceProgressPercent = 50f),
+            ),
+        )
+        assertEquals(
+            snapshot,
+            grimmoryPositionedEbookSnapshot(
+                snapshot,
+                appHref = KOBO_HREF,
+                detail = EbookProgressObjectDto(contentSourceProgressPercent = 50f),
+            ),
+        )
+        assertEquals(
+            snapshot,
+            grimmoryPositionedEbookSnapshot(
+                snapshot,
+                appHref = KOBO_HREF,
+                detail = EbookProgressObjectDto(href = KOBO_HREF),
+            ),
+        )
+    }
+
     private companion object {
         const val CFI = "epubcfi(/6/2!/4/2/2)"
+        const val KOBO_HREF = "OEBPS/Text/chapter03.xhtml"
     }
 }

@@ -13,6 +13,7 @@ import com.enve.core.data.model.Book
 import com.enve.engine.library.LibraryFacade
 import com.enve.engine.prefs.HearthHomeSection
 import com.enve.engine.prefs.PreferencesFacade
+import com.enve.hearth.MarkUnreadAction
 import com.enve.hearth.observeLastOpenedBook
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -32,6 +33,7 @@ class HearthHomeViewModel @Inject constructor(
     prefs: PreferencesManager,
     preferences: PreferencesFacade,
     private val dismissedShelfStore: HearthDismissedShelfStore,
+    private val markUnreadAction: MarkUnreadAction,
     @ApplicationContext context: Context,
 ) : ViewModel() {
 
@@ -94,5 +96,9 @@ class HearthHomeViewModel @Inject constructor(
 
     fun resetProgress(book: Book) {
         viewModelScope.launch { library.resetProgress(book) }
+    }
+
+    fun markUnread(book: Book) {
+        viewModelScope.launch { markUnreadAction(book) }
     }
 }

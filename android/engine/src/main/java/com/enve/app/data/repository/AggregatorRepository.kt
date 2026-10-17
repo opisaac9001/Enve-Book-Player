@@ -55,11 +55,15 @@ internal fun selectConnectionForSource(
 
 internal fun compositeLibraryId(connectionId: String, rawId: String): String = "$connectionId::$rawId"
 
+internal fun catalogIdentity(book: Book): String =
+    "${book.connectionId ?: book.source.name}:${book.id.ifBlank { book.title }}"
+
 @Singleton
 class AggregatorRepository @Inject constructor(
     private val activeSourceAdapter: ActiveSourceProviderAdapter,
     private val bookCacheDao: com.enve.core.data.local.BookCacheDao,
     private val audiobookProgressPush: com.enve.app.data.sync.AudiobookProgressPushService,
+    private val progressReset: com.enve.app.data.sync.ProgressResetService,
 
     private val providerAdapters: Set<@JvmSuppressWildcards ProviderAdapter>,
     private val komgaRepository: com.enve.komga.KomgaRepository,
@@ -147,8 +151,6 @@ class AggregatorRepository @Inject constructor(
             ParsedLibraryId(connectionId = parts[0], source = null, rawId = parts[1])
         }
     }
-
-    private fun bookIdentity(book: Book): String = "${book.source.name}:${book.id.ifBlank { book.title }}"
 
     private fun Book.withConnection(connection: ProviderConnection): Book {
         val rawLibraryId = libraryId
@@ -313,7 +315,7 @@ class AggregatorRepository @Inject constructor(
         }
 
         val unique = allBooks.asSequence()
-            .distinctBy { bookIdentity(it) }
+            .distinctBy(::catalogIdentity)
             .sortedByDescending { it.addedOn }
             .map { withOfflineDownloadState(it) }
             .toList()
@@ -377,17 +379,17 @@ class AggregatorRepository @Inject constructor(
 
         val finalSnapshot = AggregatedHomeSnapshot(
             continueListening = allListening.asSequence()
-                .distinctBy { bookIdentity(it) }
+                .distinctBy(::catalogIdentity)
                 .sortedByDescending { it.lastReadTime }
                 .take(20)
                 .toList(),
             continueReading = allReading.asSequence()
-                .distinctBy { bookIdentity(it) }
+                .distinctBy(::catalogIdentity)
                 .sortedByDescending { it.lastReadTime }
                 .take(20)
                 .toList(),
             recentlyAdded = allRecent.asSequence()
-                .distinctBy { bookIdentity(it) }
+                .distinctBy(::catalogIdentity)
                 .sortedByDescending { it.addedOn }
                 .take(20)
                 .toList(),
@@ -535,34 +537,8 @@ class AggregatorRepository @Inject constructor(
         return result
     }
 
-    suspend fun resetBookProgress(book: Book): Result<Unit> {
-        if (book.mediaType == AppMediaType.AUDIOBOOK || book.mediaType == AppMediaType.PODCAST) {
-            return audiobookProgressPush.command(book, canWrite = { serverSync.isEnabled }, transform = { cached ->
-                com.enve.app.data.sync.AudiobookProgressPushService.Command(0f, 0L, false, cached.hideFromContinue, null)
-            }) { withBookConnection(book) { it.resetBookProgress(book) } }
-        }
-        val result = if (serverSync.isEnabled) withBookConnection(book) { it.resetBookProgress(book) }
-            else Result.success(Unit)
-        if (result.isSuccess) {
-            runSuspendCatching {
-                bookCacheDao.updateUnifiedProgress(
-                    bookId = book.id,
-                    connectionId = book.connectionId,
-                    progress = 0f,
-                    currentTimeSec = 0L,
-                    locatorJson = null,
-                    nowMs = System.currentTimeMillis(),
-                )
-                bookCacheDao.updateFinishedStatus(
-                    bookId = book.id,
-                    connectionId = book.connectionId,
-                    finished = false,
-                    nowMs = System.currentTimeMillis(),
-                )
-            }
-        }
-        return result
-    }
+    suspend fun resetBookProgress(book: Book): Result<Unit> =
+        progressReset.reset(book, syncEnabled = serverSync.isEnabled) { withBookConnection(book) { it.resetBookProgress(book) } }
 
     suspend fun markSeriesRead(book: Book, seriesId: String): Result<Unit> {
         if (!serverSync.isEnabled) return Result.success(Unit)

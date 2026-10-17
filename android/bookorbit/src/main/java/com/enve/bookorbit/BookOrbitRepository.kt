@@ -393,6 +393,7 @@ class BookOrbitRepository @Inject constructor(
                 cumulativeStartMs = offsetMs,
                 fileId = asset.assetId,
                 contentUrl = audiobookAssetUrl(book.id, asset.assetId),
+                format = asset.format,
             ).also { offsetMs += durationMs }
         }
         return tracks to manifest
@@ -806,6 +807,7 @@ class BookOrbitRepository @Inject constructor(
                 cumulativeStartMs = offsetMs,
                 fileId = file.id.toString(),
                 contentUrl = null,
+                format = file.format,
             ).also {
                 offsetMs += durationMs
             }

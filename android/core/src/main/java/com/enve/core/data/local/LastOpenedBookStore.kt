@@ -32,6 +32,12 @@ class LastOpenedBookStore(private val dataStore: DataStore<Preferences>) {
         dataStore.edit { preferences -> preferences[LAST_OPENED_BOOK_KEY] = key }
     }
 
+    suspend fun forget(bookKey: String) {
+        dataStore.edit { preferences ->
+            if (preferences[LAST_OPENED_BOOK_KEY] == bookKey) preferences.remove(LAST_OPENED_BOOK_KEY)
+        }
+    }
+
     private companion object {
         val LAST_OPENED_BOOK_KEY = stringPreferencesKey("enve.lastOpenedBookKey")
     }
