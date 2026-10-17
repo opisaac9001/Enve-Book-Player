@@ -10,6 +10,7 @@ data class ReaderEngineTocItem(
     val title: String,
     val href: String,
     val depth: Int,
+    val progression: Double?,
 )
 
 data class ReaderEngineLocation(

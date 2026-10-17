@@ -40,6 +40,10 @@ class ReaderEngineContractTest {
             ReaderEngineKind.FOLIATE,
             ReaderEnginePolicy.select(request(BookSource.BOOKORBIT)),
         )
+        assertEquals(
+            ReaderEngineKind.FOLIATE,
+            ReaderEnginePolicy.select(request(BookSource.GRIMMORY, format = "KEPUB")),
+        )
     }
 
     @Test

@@ -208,12 +208,10 @@ class HearthLibraryViewModel @Inject constructor(
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val libraries: StateFlow<List<Library>> =
-        combine(library.libraries, sourceFilter, visibleBooks, excludedLibraryIds) { libs, src, books, excluded ->
-            val visibleLibraryIds = books.mapNotNull { it.libraryId }.toSet()
+        combine(library.libraries, sourceFilter, excludedLibraryIds) { libs, src, excluded ->
             val included = libs.filterNot { it.id in excluded }
             val scoped = if (src == null) included else included.filter { it.source == src }
-            val visible = if (visibleLibraryIds.isEmpty()) scoped else scoped.filter { it.id in visibleLibraryIds }
-            visible
+            scoped
                 .sortedWith(compareBy<Library> { it.name.lowercase() }.thenBy { it.id })
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -376,7 +374,13 @@ class HearthLibraryViewModel @Inject constructor(
         }
     }
     fun setStatus(s: StatusFilter) { status.value = s }
-    fun setSourceFilter(s: BookSource?) { sourceFilter.value = s }
+    fun setSourceFilter(s: BookSource?) {
+        val selectedLibrary = libraryFilter.value
+        if (s != null && selectedLibrary != null && libraries.value.none { it.id == selectedLibrary && it.source == s }) {
+            libraryFilter.value = null
+        }
+        sourceFilter.value = s
+    }
     fun setLibraryFilter(name: String?) {
         libraryFilter.value = name?.takeUnless { it in excludedLibraryIds.value }
     }

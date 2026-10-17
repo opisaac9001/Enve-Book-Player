@@ -15,6 +15,7 @@ class OAuthCallbackIntentFilterTest {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val callbacks = listOf(
             "grimmory://oauth2-callback?code=test&state=test",
+            "bookorbit://oauth2-callback?code=test&state=test",
             "booklore://oauth2-callback?code=test&state=test",
             "audiobookshelf://oauth?code=test&state=test",
             "storyteller://auth-callback?token=test",

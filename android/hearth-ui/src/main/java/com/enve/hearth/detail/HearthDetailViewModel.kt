@@ -22,6 +22,7 @@ import com.enve.engine.library.AudiobookshelfHistoryCandidate
 import com.enve.engine.library.LibraryMetadataEdit
 import com.enve.engine.library.LibraryMetadataMatch
 import com.enve.engine.library.BookOrbitCollectionMembership
+import com.enve.hearth.MarkUnreadAction
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -38,6 +39,7 @@ class HearthDetailViewModel @Inject constructor(
     private val annotationsFacade: AnnotationsFacade,
     private val bookOrbit: BookOrbitFacade,
     private val serverTools: ServerToolsFacade,
+    private val markUnreadAction: MarkUnreadAction,
 ) : ViewModel() {
     val saved = savedBooks.saved
     val savedSyncErrors = savedBooks.syncErrors
@@ -405,6 +407,12 @@ class HearthDetailViewModel @Inject constructor(
         val b = _book.value ?: return
         _book.value = b.copy(currentTime = 0, readProgress = 0f, epubProgress = 0f)
         viewModelScope.launch { library.resetProgress(b) }
+    }
+
+    fun markUnread() {
+        val b = _book.value ?: return
+        _book.value = b.copy(currentTime = 0, readProgress = 0f, epubProgress = 0f, isFinished = false)
+        viewModelScope.launch { markUnreadAction(b) }
     }
 
     fun saveMetadata(edit: LibraryMetadataEdit) {

@@ -57,7 +57,9 @@ class PendingProgressReplay @Inject constructor(
                     else -> continue
                 }
                 result.exceptionOrNull()?.let { if (it is CancellationException) throw it }
-                if (result.isSuccess && books.getByCacheKey(book.uniqueKey) == cached) {
+                val unchanged = books.getByCacheKey(book.uniqueKey)
+                    ?.copy(lastReadTime = cached.lastReadTime, inProgress = cached.inProgress) == cached
+                if (result.isSuccess && unchanged) {
                     completed += pending.deleteIfUnchanged(entry.bookId, entry.source, entry.connectionKey, entry.createdAt, entry.percentage)
                 }
             } catch (error: CancellationException) {

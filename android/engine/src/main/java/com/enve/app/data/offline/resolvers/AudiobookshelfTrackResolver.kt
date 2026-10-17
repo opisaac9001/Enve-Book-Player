@@ -30,6 +30,7 @@ class AudiobookshelfTrackResolver @Inject constructor(
                 title = track.title ?: track.fileName,
                 durationMs = track.durationMs,
                 url = url,
+                assetId = track.fileId,
             )
         }
     }

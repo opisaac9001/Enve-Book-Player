@@ -25,6 +25,7 @@ import com.enve.audiobookshelf.dto.*
 import com.enve.audiobookshelf.listening.AbsCrossProviderHistory
 import com.enve.audiobookshelf.listening.AbsListeningEntry
 import com.enve.audiobookshelf.listening.AbsLocalListeningStore
+import com.enve.audiobookshelf.listening.AbsPlaybackSessionHttpException
 import com.enve.core.data.remote.ConnectionScope
 import com.enve.core.data.remote.dto.AbsLoginRequest
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -42,6 +43,8 @@ import javax.inject.Singleton
 
 private const val TAG = "AudiobookshelfRepo"
 private const val HTTP_FORBIDDEN = 403
+
+internal fun absRemoteLibraryId(libraryId: String): String = libraryId.substringAfterLast("::")
 
 internal fun mergeAbsMediaProgress(
     items: List<AbsLibraryItemDto>,
@@ -73,7 +76,7 @@ class AudiobookshelfRepository @Inject constructor(
     private val serverSync: com.enve.core.data.local.ProfileServerSyncStore = com.enve.core.data.local.ProfileServerSyncStore(context, locations),
 ) {
     suspend fun getCollections(libraryId: String): Result<List<AbsCollectionDto>> = runSuspendCatching {
-        val response = api.getCollections(libraryId)
+        val response = api.getCollections(absRemoteLibraryId(libraryId))
         if (!response.isSuccessful) error("Collections request failed: HTTP ${response.code()}")
         val body = response.body() ?: error("Collections response is empty")
         if (body.results == null && body.collections == null) error("Collections response has no list")
@@ -82,7 +85,7 @@ class AudiobookshelfRepository @Inject constructor(
     }
 
     suspend fun setCollectionBook(book: Book, name: String, saved: Boolean): Result<Unit> = runSuspendCatching {
-        val libraryId = book.libraryId ?: error("Book has no Audiobookshelf library")
+        val libraryId = book.libraryId?.let(::absRemoteLibraryId) ?: error("Book has no Audiobookshelf library")
         val collection = getCollections(libraryId).getOrThrow().firstOrNull { it.name.equals(name, ignoreCase = true) }
         if (collection == null) {
             if (!saved) return@runSuspendCatching
@@ -696,6 +699,9 @@ class AudiobookshelfRepository @Inject constructor(
         }
         if (!sessionResponse.isSuccessful) error("Failed to start Audiobookshelf playback: HTTP ${sessionResponse.code()}")
         val session = sessionResponse.body() ?: error("Audiobookshelf playback session returned an empty response")
+        session.userId?.takeIf(String::isNotBlank)?.let { userId ->
+            ConnectionScope.getConnectionId()?.let { localListening.rememberAccount(it, userId) }
+        }
         val sessionTracks = session.audioTracks
             .mapNotNull { mapPlaybackTrackToTrack(it, serverUrl) }
             .sortedBy { it.index }
@@ -766,17 +772,17 @@ class AudiobookshelfRepository @Inject constructor(
                 api.syncPlaybackSession(sessionId, request)
             }
             if (!response.isSuccessful) {
-                val action = if (close) "close" else "sync"
-                error("Audiobookshelf playback session $action failed: HTTP ${response.code()}")
+                throw AbsPlaybackSessionHttpException(response.code(), if (close) "close" else "sync")
             }
         }
     }
 
     suspend fun recordLocalListening(book: Book, currentTimeSec: Long, durationSec: Long, listenedMs: Long) {
         if (!serverSync.isEnabled) return
+        val connectionId = ConnectionScope.getConnectionId().orEmpty()
         localListening.record(
             AbsListeningEntry(
-                connectionId = ConnectionScope.getConnectionId().orEmpty(),
+                connectionId = connectionId,
                 libraryItemId = book.absItemId,
                 episodeId = book.episodeId,
                 displayTitle = book.title,
@@ -784,6 +790,7 @@ class AudiobookshelfRepository @Inject constructor(
                 durationSec = durationSec.toDouble(),
                 currentTimeSec = currentTimeSec.toDouble(),
                 listenedMs = listenedMs,
+                recordedAccountId = localListening.rememberedAccount(connectionId),
             ),
         )
     }
@@ -826,6 +833,7 @@ class AudiobookshelfRepository @Inject constructor(
             val syncStartedAt = System.currentTimeMillis()
             if (!serverSync.isEnabled) return@runSuspendCatching 0
             val accountId = getMe().getOrNull()?.id?.takeIf(String::isNotBlank)
+            accountId?.let { id -> ConnectionScope.getConnectionId()?.let { localListening.rememberAccount(it, id) } }
             val pending = localListening.pending(ConnectionScope.getConnectionId().orEmpty(), accountId)
                 .filter { serverSync.accepts(it.startedAtMs) }
             if (pending.isEmpty()) return@runSuspendCatching 0

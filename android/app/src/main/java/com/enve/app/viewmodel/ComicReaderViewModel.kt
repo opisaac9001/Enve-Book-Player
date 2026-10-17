@@ -1,6 +1,7 @@
 package com.enve.app.viewmodel
 
 import android.content.Context
+import android.graphics.BitmapFactory
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -20,6 +21,7 @@ import com.enve.app.data.repository.GrimmoryRepository
 import com.enve.app.ui.screens.ReaderFormat
 import com.enve.app.ui.screens.buildPageLocator
 import com.enve.app.ui.screens.loadOrExtractComicPages
+import com.enve.app.ui.screens.readComicArchiveDirection
 import com.enve.app.ui.screens.pageIndexFromProgress
 import com.enve.app.ui.screens.parseSavedPage
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -32,11 +34,13 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import javax.inject.Inject
 
@@ -44,7 +48,10 @@ enum class ComicReadingDirection(val label: String) {
     LEFT_TO_RIGHT("LTR"),
     RIGHT_TO_LEFT("RTL"),
     VERTICAL("Vertical"),
-    WEBTOON("Webtoon"),
+    WEBTOON("Webtoon");
+
+    val isStrip: Boolean
+        get() = this == VERTICAL || this == WEBTOON
 }
 
 enum class ComicProgressionMode(val label: String) {
@@ -91,12 +98,15 @@ data class ComicReaderUiState(
     val author: String = "",
     val formatLabel: String = "Comic",
     val settings: ComicReaderSettings = ComicReaderSettings(),
+    val directionOverride: ComicReadingDirection? = null,
+    val defaultSettings: ComicReaderSettings = ComicReaderSettings(),
     val isLoading: Boolean = true,
     val loadingText: String = "Preparing comic...",
     val loadingProgress: Int? = null,
     val error: String? = null,
     val pages: List<File> = emptyList(),
     val availablePages: Set<Int> = emptySet(),
+    val widePages: Set<Int> = emptySet(),
     val currentPage: Int = 0,
     val bookmarks: Set<Int> = emptySet(),
     val showSettingsSheet: Boolean = false,
@@ -130,7 +140,12 @@ class ComicReaderViewModel @Inject constructor(
     private val database: com.enve.app.data.local.ReaderDatabase,
 ) : ViewModel() {
 
-    private var bookDirectionOverride: ComicReadingDirection? = null
+    private var preferenceSettings = ComicReaderSettings()
+    private var directionOverride: ComicReadingDirection? = null
+    private var autoDirection: ComicReadingDirection? = null
+    private var archiveDirection: ComicReadingDirection? = null
+    private var pageEntries: List<List<Int>> = emptyList()
+    private var movedSinceOpen = false
 
     private val _state = MutableStateFlow(ComicReaderUiState())
     val state: StateFlow<ComicReaderUiState> = _state.asStateFlow()
@@ -145,6 +160,9 @@ class ComicReaderViewModel @Inject constructor(
     private var pageLoadingMode = ComicPageLoadingMode.STREAM
     private var preloadJob: Job? = null
     private val pageJobs = mutableMapOf<Int, Job>()
+    private var measureJob: Job? = null
+    private var resumeJob: Job? = null
+    private val measuredPages = mutableSetOf<Int>()
 
     init {
         viewModelScope.launch {
@@ -152,12 +170,12 @@ class ComicReaderViewModel @Inject constructor(
         }
         viewModelScope.launch {
             val namesFlow = combine(
-                prefs.comicReadingDirection,
                 prefs.comicProgressionMode,
                 prefs.comicPageFit,
                 prefs.comicSpreadMode,
-            ) { direction, progression, fit, spread ->
-                ComicPreferenceNames(direction, progression, fit, spread)
+                directionOverrides.defaultDirection,
+            ) { progression, fit, spread, direction ->
+                ComicPreferenceNames(progression, fit, spread, direction)
             }
             val togglesFlow = combine(
                 prefs.comicZoomEnabled,
@@ -174,7 +192,7 @@ class ComicReaderViewModel @Inject constructor(
 
             combine(namesFlow, togglesFlow, extrasFlow) { names, toggles, extras ->
                 ComicReaderSettings(
-                    readingDirection = enumValueOrDefault(names.readingDirection, ComicReadingDirection.LEFT_TO_RIGHT),
+                    readingDirection = mapProviderReadingDirection(names.direction) ?: ComicReadingDirection.LEFT_TO_RIGHT,
                     progressionMode = enumValueOrDefault(names.progressionMode, ComicProgressionMode.PAGED),
                     pageFit = enumValueOrDefault(names.pageFit, ComicPageFit.FIT_WIDTH),
                     spreadMode = enumValueOrDefault(names.spreadMode, ComicSpreadMode.AUTO),
@@ -186,15 +204,24 @@ class ComicReaderViewModel @Inject constructor(
                     backgroundTheme = enumValueOrDefault(extras.second, ComicBackgroundTheme.BLACK),
                 )
             }.collect { settings ->
-                _state.update {
-                    it.copy(
-                        settings = settings.copy(
-                            readingDirection = bookDirectionOverride ?: settings.readingDirection,
-                        ),
-                    )
-                }
+                preferenceSettings = settings
+                publishSettings()
             }
         }
+    }
+
+    private fun publishSettings() {
+        _state.update {
+            it.copy(
+                directionOverride = directionOverride,
+                defaultSettings = preferenceSettings,
+                settings = resolveComicReaderSettings(preferenceSettings, directionOverride, autoDirection),
+            )
+        }
+    }
+
+    private fun applyReadingDirection() {
+        publishSettings()
     }
 
     fun initialize(args: ComicReaderArgs) {
@@ -204,8 +231,13 @@ class ComicReaderViewModel @Inject constructor(
         if (initialized && sameBook) return
         endStreamingSession()
         initialized = true
+        movedSinceOpen = false
         if (!sameBook) {
-            bookDirectionOverride = null
+            directionOverride = null
+            autoDirection = null
+            archiveDirection = null
+            pageEntries = emptyList()
+            publishSettings()
             _state.update { it.copy(nextInSeries = null) }
         }
         bookId = args.bookId
@@ -222,6 +254,7 @@ class ComicReaderViewModel @Inject constructor(
                 error = null,
                 pages = emptyList(),
                 availablePages = emptySet(),
+                widePages = emptySet(),
                 currentPage = 0,
             )
         }
@@ -255,26 +288,52 @@ class ComicReaderViewModel @Inject constructor(
     }
 
     fun updateSettings(settings: ComicReaderSettings) {
-        val directionChanged = settings.readingDirection != _state.value.settings.readingDirection
-        if (directionChanged) bookDirectionOverride = settings.readingDirection
-        _state.update { it.copy(settings = settings) }
+        preferenceSettings = settings
+        publishSettings()
+        val saved = preferenceSettings
         viewModelScope.launch {
-            if (directionChanged) {
-                directionOverrides.save(currentBookKey(), settings.readingDirection.name)
-            }
             prefs.saveComicReaderPreferences(
-                readingDirection = settings.readingDirection.name.takeIf { directionChanged },
-                progressionMode = settings.progressionMode.name,
-                pageFit = settings.pageFit.name,
-                spreadMode = settings.spreadMode.name,
-                zoomEnabled = settings.zoomEnabled,
-                autoHideChrome = settings.autoHideChrome,
-                backgroundArgb = settings.backgroundTheme.argb,
-                volumeButtonNav = settings.volumeButtonNavigation,
-                brightness = settings.brightness,
-                backgroundTheme = settings.backgroundTheme.name,
+                progressionMode = saved.progressionMode.name,
+                pageFit = saved.pageFit.name,
+                spreadMode = saved.spreadMode.name,
+                zoomEnabled = saved.zoomEnabled,
+                autoHideChrome = saved.autoHideChrome,
+                backgroundArgb = saved.backgroundTheme.argb,
+                volumeButtonNav = saved.volumeButtonNavigation,
+                brightness = saved.brightness,
+                backgroundTheme = saved.backgroundTheme.name,
             )
         }
+    }
+
+    fun setDefaultReadingDirection(direction: ComicReadingDirection) {
+        updateSettings(preferenceSettings.copy(
+            readingDirection = direction,
+            progressionMode = if (direction.isStrip) ComicProgressionMode.VERTICAL_STRIP else ComicProgressionMode.PAGED,
+        ))
+        viewModelScope.launch { directionOverrides.saveDefaultDirection(direction.name) }
+    }
+
+    fun setReadingDirection(direction: ComicReadingDirection?) {
+        if (direction == directionOverride) return
+        directionOverride = direction
+        applyReadingDirection()
+        val bookKey = currentBookKey()
+        viewModelScope.launch {
+            if (direction != null) {
+                directionOverrides.save(bookKey, direction.name)
+                return@launch
+            }
+            directionOverrides.clear(bookKey)
+            if (autoDirection == null) {
+                autoDirection = resolveAutoReadingDirection()
+                if (directionOverride == null) applyReadingDirection()
+            }
+        }
+    }
+
+    fun updatePageEntries(entries: List<List<Int>>) {
+        pageEntries = entries
     }
 
     fun showPage(pageIndex: Int) {
@@ -282,6 +341,7 @@ class ComicReaderViewModel @Inject constructor(
         if (current.pages.isEmpty()) return
         val clamped = pageIndex.coerceIn(0, current.pages.lastIndex)
         if (clamped == current.currentPage) return
+        movedSinceOpen = true
         _state.update { it.copy(currentPage = clamped) }
         if (pageLoadingMode == ComicPageLoadingMode.STREAM) {
             requestPageWindow(clamped)
@@ -312,8 +372,13 @@ class ComicReaderViewModel @Inject constructor(
     }
 
     fun endStreamingSession() {
+        resumeJob?.cancel()
+        resumeJob = null
         preloadJob?.cancel()
         preloadJob = null
+        measureJob?.cancel()
+        measureJob = null
+        measuredPages.clear()
         pageJobs.values.forEach(Job::cancel)
         pageJobs.clear()
         val session = streamedSession
@@ -339,8 +404,8 @@ class ComicReaderViewModel @Inject constructor(
 
     suspend fun checkpointForProfileSwitch() {
         val current = _state.value
-        if (bookId.isNotBlank() && current.pages.isNotEmpty()) {
-            val progress = (current.currentPage + 1).toFloat() / current.pages.size
+        if (bookId.isNotBlank() && current.pages.isNotEmpty() && movedSinceOpen) {
+            val progress = comicReadProgress(current.currentPage, current.pages.size, pageEntries)
             val locator = buildPageLocator(format, current.currentPage)
             val now = System.currentTimeMillis()
             bookCacheDao.updateUnifiedProgress(bookId, bookConnectionId, progress, -1L, locator, now)
@@ -359,9 +424,9 @@ class ComicReaderViewModel @Inject constructor(
 
     fun syncProgress() {
         val current = _state.value
-        if (bookId.isBlank() || current.pages.isEmpty()) return
-        val totalPages = current.pages.size.coerceAtLeast(1)
-        val percentage = (current.currentPage + 1).toFloat() / totalPages.toFloat()
+        if (bookId.isBlank() || current.pages.isEmpty() || !movedSinceOpen) return
+        val totalPages = current.pages.size
+        val percentage = comicReadProgress(current.currentPage, totalPages, pageEntries)
         val locator = buildPageLocator(format, current.currentPage)
         viewModelScope.launch {
             try {
@@ -386,19 +451,18 @@ class ComicReaderViewModel @Inject constructor(
         }
     }
 
-    private suspend fun resolveInitialPage(argsLocator: String?, lastIndex: Int): Int {
+    private suspend fun resolveInitialPage(argsLocator: String?, lastIndex: Int, includeServer: Boolean = true): Int {
 
         val fromArgs = parseSavedPage(argsLocator, format).coerceAtLeast(0)
-        val cached = runCatching {
-            val cached = bookCacheDao.getByIdAndConnection(bookId, bookConnectionId)
-                ?: bookCacheDao.getById(bookId)
-            cached
-        }.getOrNull()
+        val cached = bookCacheDao.getByIdAndConnection(bookId, bookConnectionId)
+            ?: bookCacheDao.getById(bookId)
         val fromLocal = cached?.epubLocator
             ?.let { parseSavedPage(it, format).coerceAtLeast(0) }
             ?: 0
         val fromLocalProgress = cached?.let { pageIndexFromProgress(it.epubProgress ?: it.readProgress, lastIndex + 1) } ?: 0
-        val serverSnapshot = runCatching {
+        val localPage = maxOf(fromArgs, fromLocal, fromLocalProgress).coerceIn(0, lastIndex)
+        if (!includeServer) return localPage
+        val serverSnapshot = try {
             val stub = Book(
                 id = bookId,
                 title = "",
@@ -406,32 +470,30 @@ class ComicReaderViewModel @Inject constructor(
                 connectionId = bookConnectionId,
             )
             aggregatorRepository.fetchEbookProgress(stub).getOrNull()
-        }.getOrNull()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
         val fromServer = serverSnapshot?.locatorJson
             ?.let { parseSavedPage(it, format).coerceAtLeast(0) }
             ?: 0
         val fromServerProgress = pageIndexFromProgress(serverSnapshot?.percentage, lastIndex + 1)
-        return maxOf(fromArgs, fromLocal, fromLocalProgress, fromServer, fromServerProgress).coerceIn(0, lastIndex)
+        return maxOf(localPage, fromServer, fromServerProgress).coerceIn(0, lastIndex)
     }
 
     private suspend fun openComic(locator: String?) {
         _state.update { it.copy(isLoading = true, loadingText = "Downloading ${format.displayName}...", error = null) }
 
-        resolveBookReadingDirection()?.let { direction ->
-            bookDirectionOverride = direction
-            val isStrip = direction == ComicReadingDirection.VERTICAL || direction == ComicReadingDirection.WEBTOON
-            _state.update {
-                it.copy(
-                    settings = it.settings.copy(
-                        readingDirection = direction,
-                        progressionMode = if (isStrip) ComicProgressionMode.VERTICAL_STRIP else it.settings.progressionMode,
-                    ),
-                )
-            }
-            Log.d("ComicReader", "Resolved reading direction for $bookId -> $direction")
-        }
-
         val offlineFile = comicOfflineService.getLocalFile(bookId)
+        archiveDirection = offlineFile?.let { file ->
+            withContext(Dispatchers.IO) { readComicArchiveDirection(file) }
+        }
+        directionOverride = directionOverrides.direction(currentBookKey())?.let(::mapProviderReadingDirection)
+        if (directionOverride == null) autoDirection = resolveAutoReadingDirection(includeProvider = offlineFile == null)
+        applyReadingDirection()
+        Log.d("ComicReader", "Reading direction for $bookId: override=$directionOverride auto=$autoDirection")
+
         if (offlineFile != null && offlineFile.exists() && offlineFile.length() > 0L) {
             val pages = try {
                 loadOrExtractComicPages(
@@ -452,10 +514,25 @@ class ComicReaderViewModel @Inject constructor(
                 _state.update { it.copy(isLoading = false, error = "No readable image pages were found in this comic archive.") }
                 return
             }
-            val initialPage = resolveInitialPage(locator, pages.lastIndex)
-            _state.update { it.copy(isLoading = false, pages = pages, currentPage = initialPage, loadingProgress = null) }
-            _state.update { it.copy(availablePages = pages.indices.toSet()) }
-            syncProgress()
+            val initialPage = resolveInitialPage(locator, pages.lastIndex, includeServer = false)
+            _state.update {
+                it.copy(isLoading = false, pages = pages, currentPage = initialPage,
+                    loadingProgress = null, availablePages = pages.indices.toSet())
+            }
+            measureExtractedPages(pages)
+            val bookKey = currentBookKey()
+            resumeJob = viewModelScope.launch {
+                val serverPage = async { resolveInitialPage(locator, pages.lastIndex) }
+                val direction = if (directionOverride == null) resolveAutoReadingDirection() else null
+                val resumedPage = serverPage.await()
+                if (currentBookKey() == bookKey) {
+                    if (!movedSinceOpen) _state.update { it.copy(currentPage = resumedPage) }
+                    if (directionOverride == null) {
+                        autoDirection = direction
+                        applyReadingDirection()
+                    }
+                }
+            }
             return
         }
 
@@ -524,6 +601,9 @@ class ComicReaderViewModel @Inject constructor(
             return
         }
 
+        archiveDirection = withContext(Dispatchers.IO) { readComicArchiveDirection(archive) }
+        autoDirection = autoDirection ?: archiveDirection
+        applyReadingDirection()
         val initialPage = resolveInitialPage(locator, pages.lastIndex)
         _state.update {
             it.copy(
@@ -534,7 +614,7 @@ class ComicReaderViewModel @Inject constructor(
                 loadingProgress = null,
             )
         }
-        syncProgress()
+        measureExtractedPages(pages)
     }
 
     private suspend fun openStreamedKomga(locator: String?) {
@@ -586,7 +666,6 @@ class ComicReaderViewModel @Inject constructor(
         } else {
             startFullSessionPreload(session)
         }
-        syncProgress()
     }
 
     private fun requestPageWindow(currentPage: Int) {
@@ -622,7 +701,28 @@ class ComicReaderViewModel @Inject constructor(
             aggregatorRepository.downloadComicPage(book, index, destination).getOrThrow()
         }
         _state.update { it.copy(availablePages = it.availablePages + pageIndex) }
+        if (pageIndex !in measuredPages) {
+            val wide = withContext(Dispatchers.IO) { isWidePage(file) }
+            measuredPages += pageIndex
+            if (wide) _state.update { it.copy(widePages = it.widePages + pageIndex) }
+        }
         return file
+    }
+
+    private fun measureExtractedPages(pages: List<File>) {
+        measureJob?.cancel()
+        measureJob = viewModelScope.launch {
+            val wide = withContext(Dispatchers.IO) {
+                pages.indices.filterTo(mutableSetOf()) { isWidePage(pages[it]) }
+            }
+            _state.update { it.copy(widePages = wide) }
+        }
+    }
+
+    private fun isWidePage(file: File): Boolean {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.absolutePath, bounds)
+        return bounds.outWidth > bounds.outHeight
     }
 
     private suspend fun loadStreamedPage(session: StreamedComicSession, pageIndex: Int) {
@@ -639,10 +739,8 @@ class ComicReaderViewModel @Inject constructor(
         super.onCleared()
     }
 
-    private suspend fun resolveBookReadingDirection(): ComicReadingDirection? {
-        val cachedBook = runCatching {
-            (bookCacheDao.getByIdAndConnection(bookId, bookConnectionId) ?: bookCacheDao.getById(bookId))?.toBook()
-        }.getOrNull()
+    private suspend fun resolveAutoReadingDirection(includeProvider: Boolean = true): ComicReadingDirection? {
+        val cachedBook = (bookCacheDao.getByIdAndConnection(bookId, bookConnectionId) ?: bookCacheDao.getById(bookId))?.toBook()
         val book = cachedBook ?: Book(
             id = bookId,
             title = _state.value.title,
@@ -652,26 +750,27 @@ class ComicReaderViewModel @Inject constructor(
             primaryFileType = format.name,
         )
 
-        directionOverrides.direction(book.uniqueKey) {
-            aggregatorRepository.getComicReadingDirection(book)
-                .getOrNull()
-                ?.let(::mapProviderReadingDirection)
-                ?.name
-        }
-            ?.let(::mapProviderReadingDirection)
-            ?.let { return it }
-
-        return inferComicReadingDirection(book)
+        val bookKey = currentBookKey()
+        val providerDirection = if (includeProvider) {
+            val result = aggregatorRepository.getComicReadingDirection(book)
+                .onFailure { Log.w("ComicReader", "Provider reading direction unavailable for $bookId: ${it.javaClass.simpleName}") }
+            if (result.isSuccess) {
+                val direction = mapProviderReadingDirection(result.getOrNull())
+                directionOverrides.saveProviderDirection(bookKey, direction?.name)
+                direction
+            } else mapProviderReadingDirection(directionOverrides.providerDirection(bookKey))
+        } else mapProviderReadingDirection(directionOverrides.providerDirection(bookKey))
+        return providerDirection ?: archiveDirection
     }
 
     private fun currentBookKey(): String = comicBookKey(bookId, bookSource, bookConnectionId)
 }
 
 private data class ComicPreferenceNames(
-    val readingDirection: String,
     val progressionMode: String,
     val pageFit: String,
     val spreadMode: String,
+    val direction: String,
 )
 
 private data class ComicPreferenceToggles(
@@ -684,7 +783,7 @@ private data class ComicPreferenceToggles(
 private fun <T : Enum<T>> enumValueOrDefault(value: String, default: T): T =
     default.declaringJavaClass.enumConstants?.firstOrNull { it.name == value } ?: default
 
-internal fun mapProviderReadingDirection(raw: String?): ComicReadingDirection? = when (raw?.uppercase()) {
+internal fun mapProviderReadingDirection(raw: String?): ComicReadingDirection? = when (raw?.trim()?.uppercase()) {
     "LEFT_TO_RIGHT" -> ComicReadingDirection.LEFT_TO_RIGHT
     "RIGHT_TO_LEFT" -> ComicReadingDirection.RIGHT_TO_LEFT
     "VERTICAL" -> ComicReadingDirection.VERTICAL
@@ -695,26 +794,21 @@ internal fun mapProviderReadingDirection(raw: String?): ComicReadingDirection? =
 internal fun comicBookKey(bookId: String, source: BookSource, connectionId: String?): String =
     "${connectionId ?: source.name}:$bookId"
 
-private fun inferComicReadingDirection(book: Book): ComicReadingDirection? {
-    val language = book.language?.trim()?.lowercase()
-    if (language in setOf("ja", "jp", "jpn", "japanese") || language?.contains("japanese") == true) {
-        return ComicReadingDirection.RIGHT_TO_LEFT
-    }
+internal fun resolveComicReaderSettings(
+    defaults: ComicReaderSettings,
+    bookOverride: ComicReadingDirection?,
+    metadataDirection: ComicReadingDirection?,
+): ComicReaderSettings {
+    val direction = bookOverride ?: metadataDirection
+    return defaults.copy(
+        readingDirection = direction ?: defaults.readingDirection,
+        progressionMode = direction?.let {
+            if (it.isStrip) ComicProgressionMode.VERTICAL_STRIP else ComicProgressionMode.PAGED
+        } ?: defaults.progressionMode,
+    )
+}
 
-    val searchable = buildString {
-        append(book.title).append(' ')
-        book.subtitle?.let { append(it).append(' ') }
-        book.seriesName?.let { append(it).append(' ') }
-        book.libraryName?.let { append(it).append(' ') }
-        book.categories.forEach { append(it).append(' ') }
-    }.lowercase()
-
-    return when {
-        searchable.contains("webtoon") || searchable.contains("vertical") -> ComicReadingDirection.WEBTOON
-        searchable.contains("manga") ||
-            searchable.contains("マンガ") ||
-            searchable.contains("漫画") ||
-            searchable.contains("japanese") -> ComicReadingDirection.RIGHT_TO_LEFT
-        else -> null
-    }
+internal fun comicReadProgress(currentPage: Int, pageCount: Int, entries: List<List<Int>>): Float {
+    val lastVisiblePage = entries.firstOrNull { currentPage in it }?.max() ?: currentPage
+    return ((lastVisiblePage + 1).toFloat() / pageCount.coerceAtLeast(1)).coerceIn(0f, 1f)
 }

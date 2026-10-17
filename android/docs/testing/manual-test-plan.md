@@ -194,3 +194,166 @@ Run these checks through a compatible vehicle or the supported Desktop Head Unit
 - [ ] Backgrounding during playback keeps audio; returning restores state
 - [ ] Process death and relaunch restores the last book and the now-playing pill
 - [ ] Long titles and author names ellipsize on every screen
+
+## TorBox verification — 2026-10-10
+
+Tested the debug app on a connected Pixel 7a with one real TorBox account and one available 20-track MP3 audiobook. The download contains 518.7 MB of audio with a measured total duration of 577.14 minutes. The release app was not replaced.
+
+### Device UI results
+
+| Workflow | Result |
+|---|---|
+| Valid token sign-in, folder discovery, selecting folders, Use All | Passed |
+| Empty token form and rejected token | Passed; rejected token stays on sign-in with a clear error |
+| Source and library filters | Passed |
+| Search for an existing title and a missing title; clear search | Passed |
+| Grid column changes and list layout | Passed |
+| Manual and repeated refresh | Passed; one book and 20 tracks remain |
+| Refresh without Wi-Fi or mobile data, then reconnect | Passed; cached book remains and refresh recovers |
+| Streaming, pause/resume, 30-second skips, next/previous chapter | Passed |
+| Chapter selection and chapter progress slider | Passed |
+| Playback speed | Passed at 1.5×; restored to 1× |
+| Bookmark creation, persistence through restart, jump, deletion | Passed; test bookmark removed |
+| End-of-chapter sleep timer | Passed; playback pauses at the boundary |
+| Download, cancel/restart, network interruption/recovery, completion | Passed |
+| Remove-download confirmation, cancel removal, confirmed removal | Passed |
+| Download persistence after process restart | Passed |
+| Offline playback | Passed; sampled every one of the 20 tracks through UI chapter controls with Wi-Fi and mobile data disabled |
+| Offline cold-start resume | Passed at 3:18:57 in the book, preserving the chapter and track offset |
+| Screen-off playback and media play/pause controls | Passed |
+| API artwork | Passed; HTTP 200 image/jpeg, Coil decode succeeds, artwork renders in library, mini-player and full player |
+
+Wi-Fi and mobile data were restored. Playback is paused near the original position with the original three-column library layout and empty search. The downloaded audiobook remains available on the debug install.
+
+### Automated results
+
+- 848 unit tests passed: app 194, engine 606, Hearth UI 48; zero failures or errors.
+- `TorBoxLibraryLoadingTest`: 3 device tests passed. Covers concurrent source scans and selected folders, rejected-token credential preservation, and native Android duration extraction when the API provides no duration.
+- Unit fixtures cover logical API failures, authentication failures, bounded network/server retries, numeric/date Retry-After handling, cancelled and superseded scans, failed-scan pruning prevention, account isolation, and API/WebDAV identity and artwork merging.
+- Debug and minified release builds passed with no new compiler or R8 warnings.
+
+### Coverage limits
+
+- TorBox currently supplies audiobooks only. EPUB/PDF reading through TorBox is not implemented.
+- Real playback coverage is the available multi-track MP3 book. Other audio formats, WebDAV-only playback, and additional real accounts need suitable test data; M4B file discovery/merging is covered by fixtures, not a real M4B UI playback test.
+- No cast receiver, Android Auto head unit, or watch was exercised in this pass.
+- The account has one available audiobook, so a real multi-book queue transition was not tested.
+- Backend rate limits and server outages were simulated in unit fixtures; the UI connection-loss test used disabled device networking.
+
+
+## Android app UI audit — 2026-10-10
+
+Tested the debug app on a physical Pixel 7a, using the existing TorBox account and original local EPUB, three-page PDF, three-page CBZ, and two short MP3 fixtures. The release app was not changed. This supplements the TorBox results above.
+
+### Fixes verified on the phone
+
+- Profiles now exits through both the screen Back button and Android Back when opened as a settings bridge.
+- Licenses respects the status bar; all 24 bundled notices opened without a missing-notice error.
+- Reader theme labels select the theme along with their preview tiles.
+- Local scans preserve completion, reader position, and continue-reading visibility; a finished PDF remained finished after refresh.
+- The landscape player scrolls to expose speed, chapters, and More; More opens its tools. Portrait controls remain visible.
+- Returning from a settings bridge preserves the original tab and settings category.
+- Sync Center says Updates pending while queued progress exists. One pending item remained after manual sync; this pass did not establish delivery of that item.
+- Disabled sources disappear from book lists and library counts; re-enabling the fixture source restored all six cached sample entries and their completion flags.
+
+The TorBox refresh test now waits for its obsolete folder scan to start before invalidation, avoiding a test setup race where cancellation occurred before the loader ran.
+
+### UI coverage
+
+| Area | Checks completed |
+|---|---|
+| Navigation | All four tabs, all seven settings categories, bridge return state, Profiles setup and Back |
+| Appearance | Paper and Ink themes, accent changes, extra-large app text, forced e-ink mode, startup tab persistence through cold start |
+| Library | Refresh, source enable/disable, sort priority, audio and finished-book filters, local folder picker/import |
+| EPUB | Open/reopen position, page flow, contents jump, search results, font and size changes, theme-label selection, bookmarks, saved bookmark note, highlight creation and deletion |
+| PDF | Next/previous pages, final-page completion, reopened position, portrait and landscape rendering |
+| Comics | Page swipes, scroll mode, theme changes, reopened position |
+| Audio | Local play/pause, persisted skip intervals, Play Next and queue removal, automatic transition between two sample audiobooks, portrait and landscape player |
+| Podcasts | Browse, show details, follow/unfollow, streamed episode confirmed playing through Android media session, pause |
+| Downloads and tools | Download list and storage rendering, opening a downloaded book from settings; metadata/server summaries; reader/custom-font settings; Sync Center; KOReader/CrossPoint setup; Obsidian annotation count |
+| Other screens | Journal, stats and insights; sleep-health setup; vocabulary and dictionaries empty states; Hidden Books; StoryAlign empty inputs; Hardcover sign-in; About and all 24 bundled notices |
+
+### Automated verification
+
+- Debug and minified release builds passed; no new compiler or R8 warnings.
+- Unit suite: 1,144 tests discovered, 1,143 passed, zero failures/errors, one skipped live Grimmory format-sync test requiring a lab server.
+- 73 device tests passed: Room migrations and cache queries, isolated profile stores and switching, public-source regression, TorBox loading, and read-aloud lyrics.
+- Changes remain local and uncommitted.
+
+### Remaining coverage
+
+- This was one phone, not a tablet, other Android versions/OEMs, a real e-ink panel, or a TalkBack audit.
+- Other providers need live accounts for authentication, catalog, playback, and sync verification. Profiles setup was inspected without changing the owner's profile configuration; isolated profile behavior was covered by device tests.
+- DRM books, complex/large documents, full synchronized narration, other audio formats, multitouch comic zoom, and large catalogs were not exercised.
+- Cast, Android Auto, Wear hardware, phone-call audio focus, and headset controls still need the corresponding devices or conditions.
+- Health authorization, alignment jobs, external vault export, purchases, and support submissions were not performed.
+- TorBox ebook support remains unimplemented. No claim is made that every app state or device combination is glitch-free.
+
+### End state
+
+Removed the fixture source and folder, its cached library entries, its downloaded comic, all four test annotations, and the temporary podcast subscription. The original TorBox source and downloaded audiobook remain; playback is paused, and the library is back to three columns with default filters. Appearance, text size, startup tab, skip intervals, and rotation settings were restored. Short sample reading/listening history and the sampled podcast episode position may remain in the debug app; user history was not cleared. Final process log check: zero fatal exceptions, ANRs, playback exceptions, or IllegalStateExceptions.
+
+
+## Boox read-aloud report — 2026-10-10
+
+### Changes
+
+- Keep the EPUB viewport and read-mode header insets constant while Android's system bars appear/disappear. Showing controls no longer changes pagination.
+- Block the underlying EPUB gesture detector while read mode owns touches. A single tap shows/hides controls; double-tapping a sentence deliberately selects that clip.
+- Preserve an existing read-aloud media session when selecting another sentence. Previously the reader cleared the shared player before attempting to seek, causing lost playback and a chapter-start reset.
+
+### Verification
+
+- Physical Pixel 7a with forced e-ink mode and an original EPUB containing 15 SMIL segments and five minutes of embedded audio. This was not a physical Boox test.
+- Ordinary EPUB controls: visible paragraph bounds stayed identical while controls were shown and hidden.
+- Read mode: paused at sentence 6, tapped another sentence to show/hide controls, and confirmed clip 6 and visible line bounds remained unchanged.
+- Double-tapped sentence 8: selected clip 8 at approximately 2:20, played, then paused through the UI without a source error or chapter-start reset.
+- Underline annotations: selected a word, used Underline, reopened its editor to confirm the saved style, and visually confirmed the underline in the reader. The temporary annotation was removed. Automatic narration currently offers highlighting; an underline narration preference was not added because the report's meaning remains unclear.
+- Six read-mode device tests passed, covering single-tap control actions without seeking, double-tap selection, close, narrated lines, blank lines, and empty chapters.
+- All 194 app unit tests passed, with zero failures/errors/skips.
+- Debug and minified release builds passed; the final build had no compiler or R8 warnings.
+
+The changes remain local and uncommitted. The public prerelease has not been updated. Physical Boox behavior still needs confirmation.
+
+Temporary narration books, their source folder and cached library entries, the test underline annotation, and the instrumentation package were removed. E-ink mode was restored to Auto. The original TorBox source and download remain. Final process check found zero fatal exceptions, ANRs, playback errors, or IllegalStateExceptions.
+
+## Read-aloud page-turn controls — 2026-10-10
+
+- Added a persisted “Skip audio on page turn” switch, independent of “Turn pages with read aloud.” Its default preserves the previous enabled behavior.
+- Read-mode controls stay visible until explicitly hidden; entering read mode cancels the normal reader's auto-hide timer.
+- Pixel 7a, narrated EPUB fixture: disabled skipping preserved paused audio at 74,912 ms across page changes and playing audio continued from 74,916 to 78,011 ms without seeking. Enabled skipping moved playback to 200,016 ms when navigating to the last page.
+- Reinstalled the final debug APK and cold-started the app: both disabled page-turn settings persisted. With automatic page turning enabled and skipping disabled, manual page changes left playback above 220 seconds; narration subsequently returned the reader to the active sentence's page.
+- Read-mode controls remained available beyond 20 seconds while narration played. Single taps hid/revealed controls without changing the paused audio position. Final APK also checked with narration paused.
+- Verification: debug and minified release builds succeeded; 194 app unit tests and six HearthReadAloudLyrics device tests passed. No Kotlin/R8 warnings; Gradle emitted an SDK XML tooling version warning (SDK XML v4 versus command-line support for v3).
+- Physical Boox behavior remains unverified; this device check used the Pixel 7a. Removed the temporary local source and fixture folder and restored both page-turn settings to enabled.
+
+### Follow-up UI run — forced e-ink and rotation
+
+- Ran the narrated EPUB through the actual Pixel 7a UI with e-ink forced on. Normal reader sentence bounds remained identical when controls were hidden/revealed. Read-mode controls stayed visible beyond the former 15-second timeout.
+- Paused at 41,292 ms: single taps on another sentence hid and revealed controls without changing playback or foreground sentence bounds. Double-tapping sentence 5 selected clip 5 and started playback at 80,028 ms.
+- Disabled both page-turn settings: a paused page turn retained 92,425 ms; turning to the last page while playing continued at 95,546 ms. Re-enabled audio skipping: navigating away from the current clip moved playback to the first page at 0 ms.
+- Rotated portrait/landscape: read-mode transport buttons remained visible and the paused position was retained. Found and fixed a separate layout issue: ReadAloudSheet now scrolls, so lower preferences and chapter clips are reachable in landscape. Installed the rebuilt APK and verified scrolling to clips and toggling both page-turn settings there.
+- Debug and minified release builds passed, with 194 app unit tests passing. No Kotlin/R8 warnings; the existing SDK XML tooling warning remains. Runtime log counters for fatal exceptions, ANRs, ExoPlaybackException, and IllegalStateException were zero.
+- Restored portrait/automatic rotation, automatic e-ink detection, and both enabled page-turn preferences. Removed the temporary fixture source and folder. Physical Boox hardware has not been tested.
+
+### Bigme hardware run — 2026-10-10
+
+- Connected Bigme identifies as HiBreak, Android 14, 1264×1680. Installed the debug APK alongside the existing release app; release app data was not accessed or changed.
+- Automatic e-ink detection selected the monochrome Hearth layout. Imported an original narrated EPUB into an isolated temporary local source.
+- Read-mode controls remained visible while narration advanced beyond 40 seconds. Paused at 46,395 ms: single taps hid/revealed controls without changing audio position or foreground sentence bounds. Double-tapping sentence 5 started clip 5 at 80,089 ms.
+- With audio skipping disabled, a page-edge tap changed from sentences 1–8 to 9–15 while paused playback stayed at 84,626 ms. Fast swipes also changed pages. With skipping enabled and narration playing, a page-edge turn selected clip 9 at 160 seconds; subsequent playback advanced to 166,128 ms.
+- Paused playback survived portrait/landscape rotation. Read-mode controls were accessible in landscape; the settings sheet scrolled to the lower toggles and clip list.
+- Disabled settings persisted across a cold start. Restored both page-turn settings to enabled, original automatic rotation, and portrait orientation. Removed the temporary source and its fixture folder.
+- Runtime counters for fatal exceptions, ANRs, ExoPlaybackException, and IllegalStateException were zero. Actual Boox hardware remains untested; this run used Bigme hardware.
+- All six HearthReadAloudLyrics instrumentation tests passed on the Bigme (16.739 seconds). Uninstalled the instrumentation package and left the debug app installed for further testing.
+
+
+## BookOrbit SSO — 2026-10-10
+
+- Configured BookOrbit 3.2.0 with a dedicated Authentik confidential client in the private lab. Authorization-code and refresh-token grants, RSA signing, native callback allowlist, and existing-account linking are configured. Credentials and endpoint addresses remain in ignored local instructions. Lab doctor passed.
+- On the connected Bigme, the debug app completed identity-provider sign-in and returned through `bookorbit://oauth2-callback`, saved the BookOrbit connection, and loaded 794 books across four libraries. The connection survived installing the final APK and restarting the app.
+- Streamed the chaptered M4B fixture, sought to the previous chapter, observed advancing PLAYING state with full buffering, and paused at 55 seconds.
+- Reproduced HTTP 401 opening an EPUB through the unauthenticated reader client. After switching EPUB/PDF downloads to the authenticated profile client with the book connection scope, the namespace-prefix EPUB rendered Unicode text and a server highlight; the synthetic PDF rendered page 1 of 1.
+- AuthBrowserCallbackTest and OAuthCallbackIntentFilterTest passed on the Bigme (2 tests). Android debug and minified release builds passed, and all 194 app unit tests passed with no new warnings. The installed debug APK hash matched the final build.
+- iOS already uses the native callback. Callback state/code validation and enabled-provider selection were tightened, and authorization-endpoint query items are preserved. Swift parsing passed. The iOS build and live UI test remain blocked by existing Booklore access-control compile errors; approval to repair those unrelated files is pending.
+- The live identity provider was Authentik. Pocket-ID and an expired-token refresh were not exercised.

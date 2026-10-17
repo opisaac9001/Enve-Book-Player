@@ -96,6 +96,9 @@ internal fun readAloudHighlightPositionMs(playerPositionMs: Long, syncOffsetMs: 
     else -> (playerPositionMs + syncOffsetMs).coerceAtLeast(0L)
 }
 
+internal fun readAloudPlaybackSpeed(speed: Float): Float? =
+    speed.takeIf { it.isFinite() }?.coerceIn(0.5f, 3.0f)
+
 internal fun readAloudPageFlipDelayMs(
     clipDurationMs: Long,
     elapsedClipMs: Long,
@@ -117,6 +120,54 @@ internal fun shouldCorrectReadAloudPosition(
     highlightPositionMs: Long,
     clipBeginMs: Long,
 ): Boolean = playerPositionMs < clipBeginMs && highlightPositionMs < clipBeginMs
+
+private const val READ_ALOUD_CLIP_END_TOLERANCE_MS = 30L
+
+internal enum class ReadAloudClipEndAction { NONE, ADVANCE_HIGHLIGHT, ADVANCE_PLAYBACK }
+
+internal fun readAloudClipEndAction(
+    playerPositionMs: Long,
+    highlightPositionMs: Long,
+    clipEndMs: Long?,
+    continuesInSameAudio: Boolean,
+): ReadAloudClipEndAction {
+    val threshold = (clipEndMs ?: return ReadAloudClipEndAction.NONE) - READ_ALOUD_CLIP_END_TOLERANCE_MS
+    return when {
+        continuesInSameAudio && highlightPositionMs >= threshold -> ReadAloudClipEndAction.ADVANCE_HIGHLIGHT
+        !continuesInSameAudio && playerPositionMs >= threshold -> ReadAloudClipEndAction.ADVANCE_PLAYBACK
+        else -> ReadAloudClipEndAction.NONE
+    }
+}
+
+internal suspend fun <T> firstNarratedStart(
+    candidates: List<T>,
+    clipsOf: suspend (T) -> List<SmilClip>,
+    startIndexIn: (List<SmilClip>) -> Int?,
+): Pair<T, Int>? {
+    for (candidate in candidates) {
+        val start = startIndexIn(clipsOf(candidate)) ?: continue
+        return candidate to start
+    }
+    return null
+}
+
+internal fun readAloudSkippedChapterNotice(skippedTitles: List<String>): String? = when (skippedTitles.size) {
+    0 -> null
+    1 -> "No narration for “${skippedTitles.single()}”. Continuing with the next narrated chapter."
+    else -> "No narration for ${skippedTitles.size} chapters. Continuing with the next narrated chapter."
+}
+
+internal fun readAloudOverlayBelongsElsewhere(
+    textHrefs: List<String>,
+    spineHref: String,
+    readingOrderHrefs: Set<String>,
+): Boolean = textHrefs.isNotEmpty() && textHrefs.none { it == spineHref } && textHrefs.all { it in readingOrderHrefs }
+
+internal fun uniqueHrefMatch(hrefs: List<String>, target: String): Int? {
+    hrefs.indexOf(target).takeIf { it >= 0 }?.let { return it }
+    val name = target.substringAfterLast('/')
+    return hrefs.indices.singleOrNull { hrefs[it].substringAfterLast('/') == name }
+}
 
 internal fun resolveReadAloudForwardIndex(
     clips: List<SmilClip>,
@@ -187,6 +238,10 @@ class MediaOverlayEngine(
 
     private var chapterByHref: Map<String, ChapterMO> = emptyMap()
 
+    private var readingOrderHrefs: List<String> = emptyList()
+
+    private var tocTitleByHref: Map<String, String> = emptyMap()
+
     private val zipFallbackPathByHref = linkedMapOf<String, String>()
 
     private val extractedAudioFiles = ConcurrentHashMap<String, File>()
@@ -206,7 +261,7 @@ class MediaOverlayEngine(
     private val playbackTransitionMutex = Mutex()
     private var decoderRetriesForCurrentAudio: Int = 0
     private var decoderRetryInFlight: Boolean = false
-    private var playbackSpeed: Float = 1f
+    @Volatile private var playbackSpeed: Float = 1f
     private var lastObservedPlaying: Boolean? = null
     private var lastObservedPlayWhenReady: Boolean? = null
     private var observedPlaybackSession: Boolean = false
@@ -353,13 +408,11 @@ class MediaOverlayEngine(
             ?.let { file ->
                 runCatching {
                     java.util.zip.ZipFile(file).use { zip ->
-                        val out = linkedMapOf<String, String>()
-                        zip.entries().asSequence().forEach { e ->
-                            if (!e.isDirectory) {
-                                out[e.name.substringAfterLast('/').lowercase()] = e.name
-                            }
-                        }
-                        out
+                        zip.entries().asSequence()
+                            .filterNot { it.isDirectory }
+                            .groupBy({ it.name.substringAfterLast('/').lowercase() }, { it.name })
+                            .filterValues { it.size == 1 }
+                            .mapValues { it.value.single() }
                     }
                 }.getOrElse { emptyMap() }
             }
@@ -398,14 +451,13 @@ class MediaOverlayEngine(
                 ?.toString()
                 ?.let(::normalizeHref)
                 ?.let(smilLinksByNormalizedHref::get)
-                ?: smilLinksByNormalizedHref.values.firstOrNull { link ->
+                ?: smilLinksByNormalizedHref.values.singleOrNull { link ->
                     alternateSmilName != null &&
                         link.url().toString().substringAfterLast('/').lowercase() == alternateSmilName
                 }
-                ?: smilLinksByNormalizedHref.values.firstOrNull { link ->
-                val name = link.url().toString().substringAfterLast('/').lowercase()
-                name == zipSmilName
-            }
+                ?: smilLinksByNormalizedHref.values.singleOrNull { link ->
+                    link.url().toString().substringAfterLast('/').lowercase() == zipSmilName
+                }
 
             val alternateZipPath = alternateSmilName?.let(zipPathsByLowerName::get)
 
@@ -433,6 +485,16 @@ class MediaOverlayEngine(
         chapterStartProgressions = publication.positionsByReadingOrder().map { positions ->
             positions.firstOrNull()?.locations?.totalProgression
         }
+        tocTitleByHref = buildMap {
+            fun collect(links: List<Link>) {
+                links.forEach { link ->
+                    link.title?.takeIf { it.isNotBlank() }?.let { putIfAbsent(normalizeHref(link.url().toString()), it) }
+                    collect(link.children)
+                }
+            }
+            collect(publication.tableOfContents)
+        }
+        readingOrderHrefs = publication.readingOrder.map { normalizeHref(it.url().toString()) }
         chaptersInReadingOrder = chapters
         chapterByHref = chapters.associateBy { it.spineHref }
         Log.i(TAG, "Discovery: ${chapters.size} chapters with SMIL (out of ${publication.readingOrder.size} spine items) in ${android.os.SystemClock.elapsedRealtime() - tStart}ms")
@@ -456,7 +518,12 @@ class MediaOverlayEngine(
                 Log.w(TAG, "Failed to parse SMIL for chapter ${chapter.spineHref}", err)
                 null
             }
-            val clipsRaw = parsed?.clips ?: emptyList()
+            val clipsRaw = parsed?.clips
+                ?.takeUnless {
+                    readAloudOverlayBelongsElsewhere(it.map(SmilClip::textHref), chapter.spineHref, readingOrderHrefs.toSet())
+                        .also { foreign -> if (foreign) Log.w(TAG, "SMIL for ${chapter.spineHref} narrates another chapter") }
+                }
+                ?: emptyList()
 
             if (sourceFile != null) {
                 val zipPaths: List<String> = runCatching {
@@ -671,7 +738,7 @@ class MediaOverlayEngine(
     }
 
     fun setPlaybackSpeed(speed: Float) {
-        playbackSpeed = speed.coerceIn(0.5f, 3.0f)
+        playbackSpeed = readAloudPlaybackSpeed(speed) ?: return
         playbackSession?.id?.let { playback?.setPlaybackSpeed(it, playbackSpeed) }
     }
 
@@ -693,19 +760,13 @@ class MediaOverlayEngine(
             if (nextIdx <= clips.lastIndex) {
                 startPlayback(ch, nextIdx, playWhenReady = isPlaying, notifyClipChanged = true, command)
             } else {
-
-                val nextChIdx = ch.readingOrderIndex + 1
-                val nextCh = chaptersInReadingOrder.firstOrNull { it.readingOrderIndex >= nextChIdx }
-                if (nextCh != null) {
-                    val parsedClips = parseChapter(nextCh) ?: return@launchPlaybackCommand
-                    if (parsedClips.isNotEmpty()) {
-                        startPlayback(nextCh, 0, playWhenReady = isPlaying, notifyClipChanged = true, command)
-                    } else {
-                        completeNarration()
-                    }
-                } else {
+                val next = nextNarratedStart(ch, skipSkippable = false)
+                if (next == null) {
                     completeNarration()
+                    return@launchPlaybackCommand
                 }
+                noteSkippedChapters(ch, next.first)
+                startPlayback(next.first, next.second, playWhenReady = isPlaying, notifyClipChanged = true, command)
             }
         }
     }
@@ -730,14 +791,12 @@ class MediaOverlayEngine(
             if (target >= 0) {
                 startPlayback(ch, target, playWhenReady = isPlaying, notifyClipChanged = true, command)
             } else {
-
-                val prevCh = chaptersInReadingOrder.lastOrNull { it.readingOrderIndex < ch.readingOrderIndex }
-                if (prevCh != null) {
-                    val parsedClips = parseChapter(prevCh) ?: return@launchPlaybackCommand
-                    if (parsedClips.isNotEmpty()) {
-                        startPlayback(prevCh, parsedClips.lastIndex, playWhenReady = isPlaying, notifyClipChanged = true, command)
-                    }
-                }
+                val previous = firstNarratedStart(
+                    candidates = chaptersInReadingOrder.filter { it.readingOrderIndex < ch.readingOrderIndex }.asReversed(),
+                    clipsOf = { parseChapter(it).orEmpty() },
+                    startIndexIn = { clips -> clips.lastIndex.takeIf { it >= 0 } },
+                ) ?: return@launchPlaybackCommand
+                startPlayback(previous.first, previous.second, playWhenReady = isPlaying, notifyClipChanged = true, command)
             }
         }
     }
@@ -822,9 +881,7 @@ class MediaOverlayEngine(
     suspend fun firstClipForHref(textHref: String, resourceProgression: Double?): SmilClip? {
         ensureDiscovered()
         val normalized = normalizeHref(textHref)
-        val chapter = chapterByHref[normalized]
-            ?: chaptersInReadingOrder.firstOrNull { it.spineHref.endsWith(normalized.substringAfterLast('/')) }
-            ?: return null
+        val chapter = chapterForHref(normalized) ?: return null
         val clips = parseChapter(chapter) ?: return null
         if (clips.isEmpty()) return null
         val target = resourceProgression?.let { p ->
@@ -1010,9 +1067,7 @@ class MediaOverlayEngine(
         resourceProgression: Double?,
     ): Triple<ChapterMO, Int, Boolean>? {
 
-        val chapter = chapterByHref[normalizedHref]
-            ?: chaptersInReadingOrder.firstOrNull { it.spineHref.endsWith(normalizedHref.substringAfterLast('/')) }
-            ?: return null
+        val chapter = chapterForHref(normalizedHref) ?: return null
         val clips = parseChapter(chapter) ?: return null
         if (clips.isEmpty()) return null
 
@@ -1031,6 +1086,23 @@ class MediaOverlayEngine(
         }
 
         return Triple(chapter, 0, true)
+    }
+
+    private fun chapterForHref(normalizedHref: String): ChapterMO? =
+        chapterByHref[normalizedHref]
+            ?: uniqueHrefMatch(chaptersInReadingOrder.map { it.spineHref }, normalizedHref)?.let(chaptersInReadingOrder::get)
+
+    private suspend fun nextNarratedStart(after: ChapterMO, skipSkippable: Boolean = true): Pair<ChapterMO, Int>? =
+        firstNarratedStart(
+            candidates = chaptersInReadingOrder.filter { it.readingOrderIndex > after.readingOrderIndex },
+            clipsOf = { parseChapter(it).orEmpty() },
+            startIndexIn = { clips -> if (skipSkippable) nextAutoAdvanceIndex(clips, 0) else clips.indices.firstOrNull() },
+        )
+
+    private fun noteSkippedChapters(from: ChapterMO, to: ChapterMO) {
+        val titles = ((from.readingOrderIndex + 1) until to.readingOrderIndex)
+            .mapNotNull { readingOrderHrefs.getOrNull(it)?.let(tocTitleByHref::get) }
+        readAloudSkippedChapterNotice(titles)?.let { onPlaybackInfo?.invoke(it) }
     }
 
     private fun recordZipFallbackHref(href: String, zipPaths: List<String>) {
@@ -1178,35 +1250,29 @@ class MediaOverlayEngine(
                     }
                 }
 
-                if (effectiveEnd != null && highlightPosition >= effectiveEnd - 30L) {
-                    val nextIdx = nextAutoAdvanceIndex(clips, idx + 1)
-                    if (nextIdx == null) {
-
-                        val nextCh = chaptersInReadingOrder.firstOrNull { it.readingOrderIndex > ch.readingOrderIndex }
-                        if (nextCh == null) {
-                            completeNarration()
-                            return@launch
-                        }
-
-                        val nextClips = parseChapter(nextCh) ?: emptyList()
-                        val nextStart = nextAutoAdvanceIndex(nextClips, 0)
-                        if (nextStart == null) {
-                            completeNarration()
-                            return@launch
-                        }
-                        startPlayback(nextCh, nextStart, playWhenReady = true, notifyClipChanged = true)
-                        return@launch
-                    }
-                    val nextClip = clips[nextIdx]
-                    if (nextIdx == idx + 1 && nextClip.audioHref == clip.audioHref) {
-
+                val nextIdx = nextAutoAdvanceIndex(clips, idx + 1)
+                val nextClip = nextIdx?.let(clips::get)
+                val continuesInSameAudio = nextIdx == idx + 1 && nextClip?.audioHref == clip.audioHref
+                when (readAloudClipEndAction(playerPosition, highlightPosition, effectiveEnd, continuesInSameAudio)) {
+                    ReadAloudClipEndAction.ADVANCE_HIGHLIGHT -> if (nextIdx != null && nextClip != null) {
                         currentClipIndexInternal = nextIdx
                         onClipChanged?.invoke(nextClip, nextIdx)
-                    } else {
-
-                        startPlayback(ch, nextIdx, playWhenReady = true, notifyClipChanged = true)
+                    }
+                    ReadAloudClipEndAction.ADVANCE_PLAYBACK -> {
+                        if (nextIdx != null) {
+                            startPlayback(ch, nextIdx, playWhenReady = true, notifyClipChanged = true)
+                            return@launch
+                        }
+                        val next = nextNarratedStart(ch)
+                        if (next == null) {
+                            completeNarration()
+                            return@launch
+                        }
+                        noteSkippedChapters(ch, next.first)
+                        startPlayback(next.first, next.second, playWhenReady = true, notifyClipChanged = true)
                         return@launch
                     }
+                    ReadAloudClipEndAction.NONE -> Unit
                 }
 
                 if (!playbackState.isPlaying) {
@@ -1239,18 +1305,13 @@ class MediaOverlayEngine(
             return
         }
 
-        val nextCh = chaptersInReadingOrder.firstOrNull { it.readingOrderIndex > ch.readingOrderIndex }
-        if (nextCh == null) {
+        val next = nextNarratedStart(ch)
+        if (next == null) {
             completeNarration()
             return
         }
-        val nextClips = parseChapter(nextCh) ?: emptyList()
-        val nextStart = nextAutoAdvanceIndex(nextClips, 0)
-        if (nextStart == null) {
-            completeNarration()
-            return
-        }
-        startPlaybackLocked(nextCh, nextStart, playWhenReady = true, notifyClipChanged = true, command)
+        noteSkippedChapters(ch, next.first)
+        startPlaybackLocked(next.first, next.second, playWhenReady = true, notifyClipChanged = true, command)
         }
     }
 

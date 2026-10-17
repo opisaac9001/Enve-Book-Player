@@ -102,7 +102,7 @@ class PlaybackQueueCoordinator @Inject constructor(
     suspend fun open(book: Book, positionMs: Long? = null): Boolean = mutex.withLock {
         finalizeCurrent()
         store.clear()
-        start(book, positionMs)
+        startOrThrow(book, positionMs)
     }
 
     suspend fun playAll(books: List<Book>, groupKey: String?): Boolean = mutex.withLock {
@@ -222,15 +222,17 @@ class PlaybackQueueCoordinator @Inject constructor(
         return false
     }
 
-    private suspend fun start(book: Book, positionMs: Long? = null): Boolean {
-        val started = try {
-            starter.start(book, resolveOpenProgress = positionMs == null)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.e(TAG, "Couldn't start ${book.uniqueKey}", e)
-            false
-        }
+    private suspend fun start(book: Book, positionMs: Long? = null): Boolean = try {
+        startOrThrow(book, positionMs)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.e(TAG, "Couldn't start ${book.uniqueKey}", e)
+        false
+    }
+
+    private suspend fun startOrThrow(book: Book, positionMs: Long?): Boolean {
+        val started = starter.start(book, resolveOpenProgress = positionMs == null)
         if (started) completedBookKey = null
         if (started && positionMs != null) audioManager.seekTo(positionMs.coerceAtLeast(0L))
         return started

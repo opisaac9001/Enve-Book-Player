@@ -5,6 +5,9 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 data class TorBoxListResponseDto(
+    val success: Boolean = false,
+    val error: String? = null,
+    val detail: String? = null,
     val data: List<TorBoxDownloadDto>? = null,
 )
 

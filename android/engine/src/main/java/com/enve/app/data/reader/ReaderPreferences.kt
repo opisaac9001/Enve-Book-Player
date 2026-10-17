@@ -85,6 +85,7 @@ data class ReaderPreferences(
     val readAloudSpeed:        Float = 1.0f,
     val readAloudSyncOffsetMs: Int = 0,
     val readAloudAutoTurn:     Boolean = true,
+    val readAloudSkipOnPageTurn: Boolean = true,
     val readAloudHighlight:    Boolean = true,
     val readAloudHighlightHex: String = "#FFF59D",
     val readAloudSkipAsides:   Boolean = true,

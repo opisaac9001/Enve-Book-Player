@@ -9,6 +9,8 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -79,6 +81,16 @@ class OfflineAudioStorage(
         return File(dir, "track_${trackIndex}.part")
     }
 
+    fun trackResumeValidatorFile(bookId: String, trackIndex: Int): File {
+        val dir = bookDirectory(bookId).also { it.mkdirs() }
+        return File(dir, "resume_${trackIndex}.validator")
+    }
+
+    fun trackAssetFile(bookId: String, trackIndex: Int): File {
+        val dir = bookDirectory(bookId).also { it.mkdirs() }
+        return File(dir, "asset_${trackIndex}.id")
+    }
+
     fun createTrackFinalFile(bookId: String, trackIndex: Int, extension: String): File {
         val dir = bookDirectory(bookId).also { it.mkdirs() }
         return File(dir, "track_${trackIndex}.${extension.ifBlank { "bin" }}")
@@ -109,7 +121,17 @@ class OfflineAudioStorage(
 
     fun saveManifest(manifest: OfflineAudioManifest) {
         val dir = bookDirectory(manifest.bookId).also { it.mkdirs() }
-        File(dir, "manifest.json").writeText(json.encodeToString(manifest))
+        val staged = File(dir, "manifest.json.tmp")
+        staged.outputStream().use { output ->
+            output.write(json.encodeToString(manifest).toByteArray(Charsets.UTF_8))
+            output.fd.sync()
+        }
+        Files.move(
+            staged.toPath(),
+            File(dir, "manifest.json").toPath(),
+            StandardCopyOption.ATOMIC_MOVE,
+            StandardCopyOption.REPLACE_EXISTING,
+        )
     }
 
     fun getManifest(bookId: String): OfflineAudioManifest? {
@@ -131,7 +153,20 @@ class OfflineAudioStorage(
 
     fun isDownloaded(bookId: String): Boolean {
         val manifest = getManifest(bookId) ?: return false
-        return manifest.tracks.isNotEmpty() && manifest.tracks.all { absolutePath(it.relativePath).exists() }
+        return manifest.tracks.isNotEmpty() && manifest.tracks.all { track ->
+            val file = absolutePath(track.relativePath)
+            val length = file.length()
+            file.isFile && length > 0 && (track.bytes <= 0 || length == track.bytes)
+        }
+    }
+
+    fun discardPartialDownload(bookId: String) {
+        val dir = bookDirectory(bookId)
+        if (!dir.exists()) return
+        if (!isDownloaded(bookId)) return removeDownload(bookId)
+        dir.listFiles()
+            ?.filter { it.isFile && (it.name.endsWith(".part") || it.name.endsWith(".validator")) }
+            ?.forEach { check(it.delete()) }
     }
 
     fun removeDownload(bookId: String) {

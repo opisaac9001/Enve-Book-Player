@@ -207,7 +207,7 @@ fun EnveApp(
             popExitTransition = { if (navigationAnimationsEnabled) EnveAnimations.popExitSlideFade() else ExitTransition.None },
         ) {
                 composable(Routes.PROFILES) {
-                    com.enve.hearth.profiles.HearthProfilesScreen(profilesFacade, onBack = { navController.popBackStack() })
+                    com.enve.hearth.profiles.HearthProfilesScreen(profilesFacade, onBack = goBack)
                 }
             composable(Routes.STATS) {
                 StatsScreen(
@@ -484,6 +484,7 @@ fun EnveApp(
                         loginAttempted = true
                         authViewModel.startOidcLogin()
                     },
+                    onOidcCallback = { authViewModel.handleAuthCallbackUri(it) },
                     onStartPlexOAuth = {
                         epochAtOpen = authState.loginEpoch
                         loginAttempted = true

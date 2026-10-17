@@ -51,7 +51,8 @@ class StoryAlignPipelineTest {
         val reparsed = EpubParser.parse(EpubZip.from(ByteArrayInputStream(result.readAloudEpub)))
         assertEquals("Pipeline Book", reparsed.metaInfo.title)
 
-        assertNotNull(outZip.entries()["OEBPS/storyalign/MediaOverlays/ch1.smil"])
+        assertNotNull(outZip.entries()["OEBPS/storyalign/MediaOverlays/chapter-0.smil"])
+        assertNotNull(outZip.entries()["OEBPS/storyalign/MediaOverlays/chapter-1.smil"])
         val opf = parseXmlDocument(outZip.entries()["OEBPS/content.opf"]!!)
         assertTrue(opf.select("item").any { it.attr("media-overlay").isNotEmpty() })
         assertTrue(opf.select("item").any { it.attr("media-type") == "application/smil+xml" })

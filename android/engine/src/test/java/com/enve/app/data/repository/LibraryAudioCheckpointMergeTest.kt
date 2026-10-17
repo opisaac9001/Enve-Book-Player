@@ -56,4 +56,27 @@ class LibraryAudioCheckpointMergeTest {
         assertEquals(0f, merged.readProgress)
         assertEquals(4000L, merged.lastReadTime)
     }
+
+    @Test
+    fun localScanKeepsReaderCompletionAndVisibility() {
+        val saved = Book(
+            id = "local-ebook", title = "Old", source = BookSource.LOCAL,
+            mediaType = AppMediaType.EBOOK, readProgress = 1f, epubProgress = 1f,
+            epubLocator = "saved-locator", isFinished = true, lastReadTime = 2000L,
+            hideFromContinue = true,
+        ).toCachedBook(1L)
+        val scanned = saved.copy(
+            title = "Updated", readProgress = 0f, epubProgress = null, epubLocator = null,
+            isFinished = false, lastReadTime = 0L, hideFromContinue = false,
+        )
+        val merged = scanned.preservingLocalProgress(saved)
+        assertEquals("Updated", merged.title)
+        assertEquals(true, merged.isFinished)
+        assertEquals(true, merged.hideFromContinue)
+        assertEquals(1f, merged.readProgress)
+        assertEquals(1f, merged.epubProgress)
+        assertEquals("saved-locator", merged.epubLocator)
+        assertEquals(2000L, merged.lastReadTime)
+    }
+
 }

@@ -17,7 +17,7 @@ import org.junit.Test
 class GrimmoryEbookProgressPayloadTest {
 
     @Test
-    fun readiumCheckpointUsesPercentOnlyOfficialFields() {
+    fun readiumCheckpointSendsChapterPositionWithoutCfi() {
         val payload = grimmoryEbookFileProgress(
             bookFileId = 84,
             totalProgression = 0.72f,
@@ -34,8 +34,28 @@ class GrimmoryEbookProgressPayloadTest {
         assertEquals(84L, payload.bookFileId)
         assertEquals(72.0, payload.progressPercent, 0.0001)
         assertNull(payload.positionData)
-        assertNull(payload.positionHref)
+        assertEquals("chapter-4.xhtml", payload.positionHref)
         assertNull(payload.ttsPositionCfi)
+        assertEquals(37.0, payload.contentSourceProgressPercent!!, 0.0001)
+    }
+
+    @Test
+    fun readiumCheckpointWithoutHrefUsesPercentOnly() {
+        val payload = grimmoryEbookFileProgress(
+            bookFileId = 84,
+            totalProgression = 0.72f,
+            checkpointValue = EpubBridgeCheckpointCodec.encode(
+                checkpoint(
+                    sourceEngine = ReaderEngineKind.READIUM,
+                    href = null,
+                    epubCfi = null,
+                    resourceProgression = 0.37,
+                ),
+            ),
+        )
+
+        assertNull(payload.positionData)
+        assertNull(payload.positionHref)
         assertNull(payload.contentSourceProgressPercent)
     }
 

@@ -18,6 +18,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSourceBitmapLoader
+import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import com.enve.app.profiles.ProfileLifecycleRegistry
@@ -56,8 +57,10 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -72,9 +75,44 @@ import com.enve.core.data.playback.CastCompatibility
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.Credentials
 import okhttp3.OkHttpClient
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
+
+internal suspend fun <T : Any> Deferred<T?>.awaitReady(timeoutMs: Long): T? =
+    withTimeoutOrNull(timeoutMs) { await() }
+
+internal fun knownAbsolutePositionMs(previousItemDurationsMs: List<Long>, currentPositionMs: Long): Long? =
+    if (previousItemDurationsMs.all { it > 0L }) {
+        (previousItemDurationsMs.sum() + currentPositionMs).coerceAtLeast(0L)
+    } else {
+        null
+    }
+
+internal class PlaybackRequestGate {
+    private val latest = AtomicLong()
+    private val adoption = Mutex()
+
+    fun begin(): Long = latest.incrementAndGet()
+
+    fun current(): Long = latest.get()
+
+    fun isCurrent(request: Long): Boolean = latest.get() == request
+
+    fun ensureCurrent(request: Long) {
+        check(isCurrent(request)) { "Superseded by a newer playback request" }
+    }
+
+    suspend fun <T> adopt(request: Long, block: suspend () -> T): T = adoption.withLock {
+        ensureCurrent(request)
+        block()
+    }
+}
 
 @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
 @androidx.annotation.OptIn(UnstableApi::class)
@@ -86,6 +124,10 @@ class PlaybackService : MediaLibraryService() {
     private var profileLifecycleRegistration: AutoCloseable? = null
     private var closedForProfileSwitch = false
     private var mediaSession: MediaLibrarySession? = null
+    private var bootstrapPlayer: ExoPlayer? = null
+    @Volatile private var artworkDataSourceFactory: DataSource.Factory? = null
+    private val browserHelperReady = CompletableDeferred<AutoMediaBrowserHelper?>()
+    private val playbackRequests = PlaybackRequestGate()
     private var audioEffectsManager: AudioEffectsManager? = null
     private var localPlayer: ExoPlayer? = null
     private var castPlayer: RemoteCastPlayer? = null
@@ -157,6 +199,8 @@ class PlaybackService : MediaLibraryService() {
     override fun onCreate() {
         super.onCreate()
 
+        createSession()
+
         val device = EntryPointAccessors.fromApplication(applicationContext, PlaybackServiceEntryPoint::class.java)
         val coordinator = device.profileCoordinator()
         profileCoordinator = coordinator
@@ -165,17 +209,62 @@ class PlaybackService : MediaLibraryService() {
             initializeSession(runtime, device)
         } else {
             initializationScope.launch {
-                coordinator.initialize()
-                val initialized = coordinator.activeRuntime.value
-                if (initialized == null) stopSelf() else initializeSession(initialized, device)
+                try {
+                    coordinator.initialize()
+                    val initialized = coordinator.activeRuntime.value
+                    if (initialized == null) abandonBootstrapSession() else initializeSession(initialized, device)
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    Log.e(TAG, "Unable to initialize the playback profile: ${error.javaClass.simpleName}")
+                    abandonBootstrapSession()
+                } finally {
+                    browserHelperReady.complete(null)
+                }
             }
         }
+    }
+
+    private fun createSession() {
+        val player = ExoPlayer.Builder(this).build().also { bootstrapPlayer = it }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main).also { serviceScope = it }
+        val sessionBuilder = MediaLibrarySession.Builder(this, NoSkipTrackPlayer(player), LibraryCallback(scope))
+            .setMediaButtonPreferences(autoMediaButtonPreferences())
+        packageManager.getLaunchIntentForPackage(packageName)?.let { launchIntent ->
+            launchIntent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            sessionBuilder.setSessionActivity(
+                PendingIntent.getActivity(
+                    this,
+                    0,
+                    launchIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                ),
+            )
+        }
+        sessionBuilder.setBitmapLoader(
+            CacheBitmapLoader(
+                DataSourceBitmapLoader(
+                    DataSourceBitmapLoader.DEFAULT_EXECUTOR_SERVICE.get(),
+                    DataSource.Factory {
+                        (artworkDataSourceFactory ?: DefaultDataSource.Factory(this)).createDataSource()
+                    },
+                ),
+            ),
+        )
+        mediaSession = sessionBuilder.build()
+        setMediaNotificationProvider(
+            DefaultMediaNotificationProvider.Builder(this)
+                .setChannelName(R.string.playback_notification_channel_name)
+                .build()
+                .apply { setSmallIcon(R.drawable.ic_notification) }
+        )
+        setShowNotificationForIdlePlayer(SHOW_NOTIFICATION_FOR_IDLE_PLAYER_NEVER)
     }
 
     private fun initializeSession(runtime: ActiveProfileRuntime, device: PlaybackServiceEntryPoint) {
         val coordinator = checkNotNull(profileCoordinator)
         if (coordinator.state.value.locked || coordinator.state.value.switching || coordinator.activeRuntime.value !== runtime) {
-            stopSelf()
+            abandonBootstrapSession()
             return
         }
         capturedRuntime = runtime
@@ -186,6 +275,7 @@ class PlaybackService : MediaLibraryService() {
 
         val dataSourceFactory = entryPoint.let { entry ->
             val playbackClient = entry.httpClient().newBuilder()
+                .apply { interceptors().add(0, StreamConnectionInterceptor) }
                 .addInterceptor { chain ->
                     val request = chain.request()
                     val url = request.url
@@ -207,6 +297,7 @@ class PlaybackService : MediaLibraryService() {
                 PublicStreamRoutingDataSource(authenticatedFactory.createDataSource(), publicFactory.createDataSource())
             }
         }
+        artworkDataSourceFactory = dataSourceFactory
         val audioAttributes = AudioAttributes.Builder()
             .setContentType(C.AUDIO_CONTENT_TYPE_SPEECH)
             .setUsage(C.USAGE_MEDIA)
@@ -253,42 +344,13 @@ class PlaybackService : MediaLibraryService() {
         readAloudPlayback = entryPoint.readAloud()
         readAloudCheckpoints = entryPoint.readAloudCheckpoints()
 
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main).also { serviceScope = it }
         val initialPlayer: Player = if (cast != null && cast.isCastSessionAvailable) cast else exoPlayer
-        val sessionBuilder = MediaLibrarySession.Builder(
-            this,
-            NoSkipTrackPlayer(initialPlayer),
-            LibraryCallback(scope),
-        ).setMediaButtonPreferences(autoMediaButtonPreferences())
-        packageManager.getLaunchIntentForPackage(packageName)?.let { launchIntent ->
-            launchIntent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            sessionBuilder.setSessionActivity(
-                PendingIntent.getActivity(
-                    this,
-                    0,
-                    launchIntent,
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-                ),
-            )
-        }
-
-        sessionBuilder.setBitmapLoader(
-            CacheBitmapLoader(
-                DataSourceBitmapLoader(
-                    DataSourceBitmapLoader.DEFAULT_EXECUTOR_SERVICE.get(),
-                    dataSourceFactory,
-                ),
-            ),
-        )
-        mediaSession = sessionBuilder.build()
-
-        setMediaNotificationProvider(
-            DefaultMediaNotificationProvider.Builder(this)
-                .setChannelName(R.string.playback_notification_channel_name)
-                .build()
-                .apply { setSmallIcon(R.drawable.ic_notification) }
-        )
-        setShowNotificationForIdlePlayer(SHOW_NOTIFICATION_FOR_IDLE_PLAYER_NEVER)
+        checkNotNull(mediaSession).setPlayer(NoSkipTrackPlayer(initialPlayer))
+        bootstrapPlayer?.release()
+        bootstrapPlayer = null
+        mediaSession?.setMediaButtonPreferences(autoMediaButtonPreferences())
+        browserHelperReady.complete(autoBrowserHelper)
+        mediaSession?.notifyChildrenChanged(AutoMediaBrowserHelper.ROOT_ID, 4, null)
 
         startWatchingChapters()
         startWatchingProgress()
@@ -354,8 +416,19 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
+    private fun abandonBootstrapSession() {
+        browserHelperReady.complete(null)
+        mediaSession?.release()
+        mediaSession = null
+        bootstrapPlayer?.release()
+        bootstrapPlayer = null
+        stopSelf()
+    }
+
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? {
-        if (!ownsActiveProfile()) return null
+        val awaitingProfile = capturedRuntime == null && !closedForProfileSwitch &&
+            profileCoordinator?.state?.value?.locked == false
+        if (!ownsActiveProfile() && !awaitingProfile) return null
         Log.i(
             "PlaybackService",
             "onGetSession pkg=${controllerInfo.packageName} uid=${controllerInfo.uid} trusted=${controllerInfo.isTrusted} sessionPresent=${mediaSession != null}",
@@ -365,8 +438,9 @@ class PlaybackService : MediaLibraryService() {
 
     private fun ownsActiveProfile(): Boolean {
         val coordinator = profileCoordinator ?: return false
+        val runtime = capturedRuntime ?: return false
         return !closedForProfileSwitch && !coordinator.state.value.switching && !coordinator.state.value.locked &&
-            coordinator.activeRuntime.value?.generation == capturedRuntime?.generation
+            coordinator.activeRuntime.value?.generation == runtime.generation
     }
 
     private suspend fun checkpointForProfileSwitch() = withContext(Dispatchers.Main.immediate) {
@@ -375,10 +449,12 @@ class PlaybackService : MediaLibraryService() {
         val player = mediaSession?.player
         if (player != null) {
             player.pause()
-            val positionMs = absolutePositionMs(player)
+            val positionMs = checkpointPositionMs(player)
             val durationMs = absoluteDurationMs(player)
-            progressService?.persistPlayback(player.currentMediaItem?.mediaId, null, positionMs, durationMs, force = true)
-            playerSessionService?.closeLocally(positionMs / 1_000L, durationMs / 1_000L)
+            positionMs?.let { knownPositionMs ->
+                progressService?.persistPlayback(player.currentMediaItem?.mediaId, null, knownPositionMs, durationMs, force = true)
+            }
+            playerSessionService?.closeLocally(positionMs?.div(1_000L), durationMs / 1_000L)
             player.stop()
             player.clearMediaItems()
         }
@@ -397,6 +473,7 @@ class PlaybackService : MediaLibraryService() {
 
     override fun onDestroy() {
         initializationScope.cancel()
+        browserHelperReady.complete(null)
         progressWatchJob?.cancel()
         progressWatchJob = null
         chapterWatchJob?.cancel()
@@ -405,14 +482,16 @@ class PlaybackService : MediaLibraryService() {
         if (!closedForProfileSwitch) runCatching {
             runBlocking {
                 val player = mediaSession?.player
-                val shutdownCheckpoint = player?.let(::captureCheckpoint) ?: checkpointBuffer.latestSnapshot()
+                val currentItemId = player?.currentMediaItem?.mediaId
+                val shutdownCheckpoint = player?.let(::captureCheckpoint)
+                    ?: checkpointBuffer.latestSnapshot()?.takeIf { it.mediaId == currentItemId }
                 flushCheckpointBuffer()
                 if (pendingCastHandoff == null &&
                     player != null &&
                     player.currentMediaItem?.let(::isReadAloudItem) != true
                 ) {
                     playerSessionService?.closeLocally(
-                        positionSec = (shutdownCheckpoint?.positionMs ?: absolutePositionMs(player)) / 1000L,
+                        positionSec = (shutdownCheckpoint?.positionMs ?: checkpointPositionMs(player))?.div(1000L),
                         durationSec = (shutdownCheckpoint?.durationMs ?: absoluteDurationMs(player)) / 1000L,
                     )
                 }
@@ -432,6 +511,8 @@ class PlaybackService : MediaLibraryService() {
         playbackQueueCoordinator = null
         mediaSession?.release()
         mediaSession = null
+        bootstrapPlayer?.release()
+        bootstrapPlayer = null
         localPlayer?.release()
         localPlayer = null
         castPlayer?.release()
@@ -584,12 +665,14 @@ class PlaybackService : MediaLibraryService() {
     }
 
     private suspend fun preparePlaybackTargetForReplacement(
+        request: Long,
         mediaItems: List<MediaItem>,
         startIndex: Int,
         startPositionMs: Long,
     ): List<MediaItem> {
         if (mediaItems.isEmpty()) {
             withContext(Dispatchers.Main.immediate) {
+                playbackRequests.ensureCurrent(request)
                 cancelPendingCastHandoff()
                 clearCastPlayback()
             }
@@ -613,6 +696,7 @@ class PlaybackService : MediaLibraryService() {
             preferences?.playbackSpeed?.first()
         }
         return withContext(Dispatchers.Main.immediate) {
+            playbackRequests.ensureCurrent(request)
             if (cast != null &&
                 cast === castPlayer &&
                 cast.isCastSessionAvailable &&
@@ -996,6 +1080,7 @@ class PlaybackService : MediaLibraryService() {
 
     companion object {
         private const val TAG = "PlaybackService"
+        private const val BROWSER_HELPER_TIMEOUT_MS = 10_000L
         private const val CAST_HANDOFF_POLL_MS = 250L
         private const val CAST_HANDOFF_TIMEOUT_MS = 20_000L
         private const val CAST_RECEIVER_FORWARD_TOLERANCE_MS = 5_000L
@@ -1155,7 +1240,8 @@ class PlaybackService : MediaLibraryService() {
     private fun captureCheckpoint(player: Player): PlayerProgressService.Checkpoint? {
         val item = player.currentMediaItem ?: return null
         if (isReadAloudItem(item)) return null
-        val snapshot = progressService?.capturePlayback(item.mediaId, positionMs = absolutePositionMs(player), durationMs = absoluteDurationMs(player))
+        val positionMs = checkpointPositionMs(player) ?: return null
+        val snapshot = progressService?.capturePlayback(item.mediaId, positionMs = positionMs, durationMs = absoluteDurationMs(player))
             ?: return null
         return checkpointBuffer.retain(snapshot)
     }
@@ -1217,24 +1303,24 @@ class PlaybackService : MediaLibraryService() {
         val player = mediaSession?.player ?: return
         val mediaItem = player.currentMediaItem ?: return
         if (isReadAloudItem(mediaItem)) return
+        val positionMs = checkpointPositionMs(player)
         val isPlaying = player.isPlaying
         val ended = player.playbackState == Player.STATE_ENDED
         val justStopped = wasServicePlaying && !isPlaying
         wasServicePlaying = isPlaying
         val mediaId = mediaItem.mediaId.takeIf { it.isNotBlank() }
-        val positionMs = absolutePositionMs(player)
         val durationMs = absoluteDurationMs(player)
 
         if (!ended) lastHandledEndedMediaId = null
         val justEnded = ended && mediaId != lastHandledEndedMediaId
         val shouldPersist = force || isPlaying || justStopped || justEnded
-        val checkpoint = if (shouldPersist) {
+        val checkpoint = if (shouldPersist && positionMs != null) {
             service.capturePlayback(mediaId, positionMs = positionMs, durationMs = durationMs)?.let(checkpointBuffer::retain)
         } else null
         val markPlayback = suspend {
             playerSessionService?.markPlaybackChanged(
                 isPlaying = isPlaying,
-                positionSec = positionMs / 1000L,
+                positionSec = positionMs?.div(1000L),
                 durationSec = durationMs / 1000L,
                 bookKey = checkpoint?.key ?: AutoMediaBrowserHelper.cacheKeyFrom(mediaItem.mediaId),
             )
@@ -1319,6 +1405,11 @@ class PlaybackService : MediaLibraryService() {
         return (offsetMs + player.currentPosition).coerceAtLeast(0L)
     }
 
+    private fun checkpointPositionMs(player: Player): Long? = knownAbsolutePositionMs(
+        previousItemDurationsMs = (0 until player.currentMediaItemIndex).map { index -> mediaItemDurationMs(player, index) },
+        currentPositionMs = player.currentPosition,
+    )
+
     private fun absoluteDurationMs(player: Player): Long {
         val itemDurations = (0 until player.mediaItemCount).sumOf { index ->
             mediaItemDurationMs(player, index)
@@ -1373,30 +1464,40 @@ class PlaybackService : MediaLibraryService() {
         val primary: AutoMediaBrowserHelper.ResolvedPlayback?,
     )
 
-    private suspend fun adoptResolvedPlayback(resolved: AutoMediaBrowserHelper.ResolvedPlayback) {
-        withContext(Dispatchers.Main.immediate) {
-            audioPlaybackManager?.adoptExternalPlayback(resolved.book.id)
-            chapterStore?.set(
-                cacheKey = resolved.book.uniqueKey,
-                bookId = resolved.book.id,
-                chapters = resolved.chapters,
-                title = resolved.book.title,
-                author = resolved.book.author,
-                coverUrl = resolved.book.coverUrl,
+    private suspend fun adoptResolvedPlayback(
+        request: Long,
+        resolved: AutoMediaBrowserHelper.ResolvedPlayback,
+    ) {
+        playbackRequests.adopt(request) {
+            withContext(Dispatchers.Main.immediate) {
+                playbackRequests.ensureCurrent(request)
+                audioPlaybackManager?.adoptExternalPlayback(resolved.book.id)
+                chapterStore?.set(
+                    cacheKey = resolved.book.uniqueKey,
+                    bookId = resolved.book.id,
+                    chapters = resolved.chapters,
+                    title = resolved.book.title,
+                    author = resolved.book.author,
+                    coverUrl = resolved.book.coverUrl,
+                )
+            }
+            playbackRequests.ensureCurrent(request)
+            playerSessionService?.start(
+                book = resolved.book,
+                positionSec = resolved.absoluteStartPositionMs / 1000L,
+                durationSec = resolved.durationSec,
+                providerSessionId = resolved.providerSessionId,
             )
+            playbackRequests.ensureCurrent(request)
+            lastOpenedBookStore?.record(resolved.book)
         }
-        playerSessionService?.start(
-            book = resolved.book,
-            positionSec = resolved.absoluteStartPositionMs / 1000L,
-            durationSec = resolved.durationSec,
-            providerSessionId = resolved.providerSessionId,
-        )
-        lastOpenedBookStore?.record(resolved.book)
     }
 
     private inner class LibraryCallback(
         private val scope: CoroutineScope,
     ) : MediaLibrarySession.Callback {
+        private val artworkRefreshParents = ConcurrentHashMap.newKeySet<String>()
+
         override fun onDisconnected(session: MediaSession, controller: MediaSession.ControllerInfo) {
             activePlaybackTarget()?.let(::checkpointPlayback)
             super.onDisconnected(session, controller)
@@ -1551,8 +1652,6 @@ class PlaybackService : MediaLibraryService() {
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<MediaItem>> {
             Log.i("PlaybackService", "onGetLibraryRoot pkg=${browser.packageName}")
-            val helper = autoBrowserHelper
-                ?: return Futures.immediateFuture(LibraryResult.ofError(SessionError.ERROR_NOT_SUPPORTED))
             val rootExtras = Bundle().apply {
                 putInt(
                     MediaConstants.EXTRAS_KEY_CONTENT_STYLE_BROWSABLE,
@@ -1566,7 +1665,7 @@ class PlaybackService : MediaLibraryService() {
             val rootParams = LibraryParams.Builder()
                 .setExtras(rootExtras)
                 .build()
-            return Futures.immediateFuture(LibraryResult.ofItem(helper.buildRoot(), rootParams))
+            return Futures.immediateFuture(LibraryResult.ofItem(AutoMediaBrowserHelper.buildRoot(), rootParams))
         }
 
         override fun onGetChildren(
@@ -1578,10 +1677,30 @@ class PlaybackService : MediaLibraryService() {
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
             Log.i("PlaybackService", "onGetChildren pkg=${browser.packageName} parent=$parentId")
-            val helper = autoBrowserHelper
-                ?: return Futures.immediateFuture(LibraryResult.ofItemList(ImmutableList.of(), params))
             return launchToListenableFuture {
-                val items = AutoMediaBrowserHelper.paginate(helper.getChildren(parentId), page, pageSize)
+                val helper = browserHelperReady.awaitReady(BROWSER_HELPER_TIMEOUT_MS)
+                    ?: return@launchToListenableFuture LibraryResult.ofError(SessionError.ERROR_INVALID_STATE)
+                val allItems = helper.getChildren(parentId)
+                val items = AutoMediaBrowserHelper.paginate(allItems, page, pageSize)
+                if (allItems.any { AutoMediaBrowserHelper.cacheKeyFrom(it.mediaId) != null } &&
+                    artworkRefreshParents.add(parentId)
+                ) {
+                    scope.launch(Dispatchers.IO) {
+                        try {
+                            if (helper.prefetchArtwork(allItems)) {
+                                withContext(Dispatchers.Main.immediate) {
+                                    if (ownsActiveProfile()) session.notifyChildrenChanged(parentId, allItems.size, null)
+                                }
+                            }
+                        } catch (error: CancellationException) {
+                            throw error
+                        } catch (error: Exception) {
+                            Log.w(TAG, "Artwork prefetch failed: ${error.javaClass.simpleName}")
+                        } finally {
+                            artworkRefreshParents.remove(parentId)
+                        }
+                    }
+                }
                 Log.i("PlaybackService", "onGetChildren parent=$parentId page=$page returning ${items.size} items")
                 LibraryResult.ofItemList(ImmutableList.copyOf(items), params)
             }
@@ -1592,9 +1711,9 @@ class PlaybackService : MediaLibraryService() {
             browser: MediaSession.ControllerInfo,
             mediaId: String,
         ): ListenableFuture<LibraryResult<MediaItem>> {
-            val helper = autoBrowserHelper
-                ?: return Futures.immediateFuture(LibraryResult.ofError(SessionError.ERROR_NOT_SUPPORTED))
             return launchToListenableFuture {
+                val helper = browserHelperReady.awaitReady(BROWSER_HELPER_TIMEOUT_MS)
+                    ?: return@launchToListenableFuture LibraryResult.ofError(SessionError.ERROR_INVALID_STATE)
                 val item = helper.getItem(mediaId)
                 if (item == null) {
                     LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
@@ -1610,9 +1729,9 @@ class PlaybackService : MediaLibraryService() {
             query: String,
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<Void>> {
-            val helper = autoBrowserHelper
-                ?: return Futures.immediateFuture(LibraryResult.ofError(SessionError.ERROR_NOT_SUPPORTED))
             return launchToListenableFuture {
+                val helper = browserHelperReady.awaitReady(BROWSER_HELPER_TIMEOUT_MS)
+                    ?: return@launchToListenableFuture LibraryResult.ofError(SessionError.ERROR_INVALID_STATE)
                 val count = helper.audiobookSearchCount(query)
                 withContext(Dispatchers.Main.immediate) {
                     session.notifySearchResultChanged(browser, query, count, params)
@@ -1629,9 +1748,9 @@ class PlaybackService : MediaLibraryService() {
             pageSize: Int,
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
-            val helper = autoBrowserHelper
-                ?: return Futures.immediateFuture(LibraryResult.ofItemList(ImmutableList.of(), params))
             return launchToListenableFuture {
+                val helper = browserHelperReady.awaitReady(BROWSER_HELPER_TIMEOUT_MS)
+                    ?: return@launchToListenableFuture LibraryResult.ofError(SessionError.ERROR_INVALID_STATE)
                 val items = helper.searchAudiobooks(query, page, pageSize)
                 LibraryResult.ofItemList(ImmutableList.copyOf(items), params)
             }
@@ -1644,15 +1763,18 @@ class PlaybackService : MediaLibraryService() {
         ): ListenableFuture<List<MediaItem>> {
             Log.i("PlaybackService", "onAddMediaItems pkg=${controller.packageName} count=${mediaItems.size}")
             val revocation = beginNormalPlaybackRequest(mediaItems)
+            val request = if (mediaItems.any { it.localConfiguration?.uri == null }) {
+                playbackRequests.begin()
+            } else {
+                playbackRequests.current()
+            }
             return launchToListenableFuture {
                 finishNormalPlaybackRequest(revocation)
-                val helper = autoBrowserHelper
-                val resolved = if (helper == null) {
-                    Resolved(mediaItems, 0, 0L, null)
-                } else {
-                    resolveQueue(helper, mediaItems)
+                val helper = checkNotNull(browserHelperReady.awaitReady(BROWSER_HELPER_TIMEOUT_MS)) {
+                    "Playback is not ready"
                 }
-                resolved.primary?.let { adoptResolvedPlayback(it) }
+                val resolved = resolveQueue(helper, mediaItems)
+                resolved.primary?.let { adoptResolvedPlayback(request, it) }
                 val resolvedItems = resolved.items
                 val target = withContext(Dispatchers.Main.immediate) {
                     activePlaybackTarget()
@@ -1665,6 +1787,7 @@ class PlaybackService : MediaLibraryService() {
                     resolvedItems
                 }
                 withContext(Dispatchers.Main.immediate) {
+                    playbackRequests.ensureCurrent(request)
                     check(activePlaybackTarget() === target) {
                         "Playback target changed while media was being resolved"
                     }
@@ -1695,21 +1818,15 @@ class PlaybackService : MediaLibraryService() {
         ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
             Log.i("PlaybackService", "onSetMediaItems pkg=${controller.packageName} count=${mediaItems.size} startIndex=$startIndex startMs=$startPositionMs")
             val revocation = beginNormalPlaybackRequest(mediaItems)
+            val request = playbackRequests.begin()
             return launchToListenableFuture {
                 finishNormalPlaybackRequest(revocation)
-                val helper = autoBrowserHelper
-                if (helper == null) {
-                    val targetedItems =
-                        preparePlaybackTargetForReplacement(mediaItems, startIndex, startPositionMs)
-                    return@launchToListenableFuture MediaSession.MediaItemsWithStartPosition(
-                        targetedItems,
-                        startIndex,
-                        startPositionMs,
-                    )
+                val helper = checkNotNull(browserHelperReady.awaitReady(BROWSER_HELPER_TIMEOUT_MS)) {
+                    "Playback is not ready"
                 }
                 withContext(Dispatchers.Main.immediate) { persistServiceProgress(force = true, handleCompletion = false) }
                 val resolved = resolveQueue(helper, mediaItems)
-                resolved.primary?.let { adoptResolvedPlayback(it) }
+                resolved.primary?.let { adoptResolvedPlayback(request, it) }
                 val callerSpecifiedPosition = startPositionMs != C.TIME_UNSET && startPositionMs > 0L
                 val effectiveIndex = if (callerSpecifiedPosition) {
                     if (resolved.items.isEmpty()) 0 else startIndex.coerceIn(0, resolved.items.lastIndex)
@@ -1723,7 +1840,8 @@ class PlaybackService : MediaLibraryService() {
                 }
                 Log.i("PlaybackService", "onSetMediaItems resolved count=${resolved.items.size} startIndex=$effectiveIndex startMs=$effectiveMs")
                 val targetedItems =
-                    preparePlaybackTargetForReplacement(resolved.items, effectiveIndex, effectiveMs)
+                    preparePlaybackTargetForReplacement(request, resolved.items, effectiveIndex, effectiveMs)
+                playbackRequests.ensureCurrent(request)
                 MediaSession.MediaItemsWithStartPosition(
                     targetedItems,
                     effectiveIndex,
@@ -1743,18 +1861,21 @@ class PlaybackService : MediaLibraryService() {
             } else {
                 null
             }
+            val request = if (isForPlayback) playbackRequests.begin() else playbackRequests.current()
             return launchToListenableFuture {
                 finishNormalPlaybackRequest(revocation)
-                val helper = autoBrowserHelper
+                val helper = browserHelperReady.awaitReady(BROWSER_HELPER_TIMEOUT_MS)
                     ?: throw UnsupportedOperationException("No media browser helper")
                 val resolved = helper.resolvePlaybackResumption(isForPlayback)
                     ?: throw UnsupportedOperationException("No resumable audiobook")
-                if (isForPlayback) adoptResolvedPlayback(resolved)
+                if (isForPlayback) adoptResolvedPlayback(request, resolved)
                 val targetedItems = preparePlaybackTargetForReplacement(
+                    request,
                     resolved.items,
                     resolved.startIndex,
                     resolved.startPositionMs,
                 )
+                playbackRequests.ensureCurrent(request)
                 MediaSession.MediaItemsWithStartPosition(
                     targetedItems,
                     resolved.startIndex,

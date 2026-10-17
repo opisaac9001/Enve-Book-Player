@@ -40,6 +40,14 @@ class KOReaderHubXPointerConverterTest {
         </body></html>
     """.trimIndent()
 
+    private val koboChapter = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <html xmlns="http://www.w3.org/1999/xhtml"><head><title>Kobo</title></head><body>
+        <div id="book-columns"><p><span class="koboSpan" id="kobo.1.1">Two households</span></p>
+        <p><span class="koboSpan" id="kobo.2.1">In fair Verona, </span><span class="koboSpan" id="kobo.2.2">where we lay our scene</span></p></div>
+        </body></html>
+    """.trimIndent()
+
     private fun epub(vararg chapters: String): File {
         val file = File.createTempFile("koreader-xpointer", ".epub").apply { deleteOnExit() }
         val manifest = chapters.indices.joinToString("") {
@@ -336,10 +344,58 @@ class KOReaderHubXPointerConverterTest {
     }
 
     @Test
+    fun range_cfis_resolve_to_their_start_position() {
+        val file = epub(nestedChapter)
+
+        assertEquals(
+            "/body/DocFragment[1]/body/div[1]/section[1]/p[2]/text()[1].2",
+            KOReaderHubXPointerConverter.xpointer(locatorWithCfi("/4/2/2/4,/1:2,/3:1"), file),
+        )
+        assertEquals(
+            "/body/DocFragment[1]/body/div[1]/section[1]/p[2]/text()[1].0",
+            KOReaderHubXPointerConverter.xpointer(
+                EpubBridgeCheckpointCodec.encode(
+                    EpubBridgeCheckpoint(
+                        publicationSha256 = "sha",
+                        observedAt = 1,
+                        sourceEngine = ReaderEngineKind.FOLIATE,
+                        href = "OEBPS/text/c0.xhtml",
+                        epubCfi = "epubcfi(/6/2!/4/2/2/4,/1:0,/1:5)",
+                        totalProgression = 0.3,
+                    ),
+                ),
+                file,
+            ),
+        )
+    }
+
+    @Test
+    fun kobo_span_wrappers_round_trip_between_xpointer_and_cfi() {
+        val file = epub(koboChapter)
+
+        val locator = KOReaderHubXPointerConverter.locatorJson(
+            "/body/DocFragment[1]/body/div[1]/p[2]/span[2]/text()[1].4", 0.4, file,
+        )!!
+
+        assertEquals("/4/2/4/4/1:4", partialCfi(locator))
+        assertEquals(
+            "/body/DocFragment[1]/body/div[1]/p[2]/span[2]/text()[1].4",
+            KOReaderHubXPointerConverter.xpointer(locator, file),
+        )
+        assertEquals(
+            "/body/DocFragment[1]/body/div[1]/p[1]/span[1]/text()[1].3",
+            KOReaderHubXPointerConverter.xpointer(
+                locatorWithCfi("/4/2[book-columns]/2/2[kobo.1.1]/1:3"),
+                file,
+            ),
+        )
+    }
+
+    @Test
     fun refuses_range_truncated_and_unresolved_cfis() {
         val file = epub(nestedChapter)
 
-        assertNull(KOReaderHubXPointerConverter.xpointer(locatorWithCfi("/4/2/2/4,/1:0,/1:5"), file))
+        assertNull(KOReaderHubXPointerConverter.xpointer(locatorWithCfi("/4/2/2/4,/1:0"), file))
         assertNull(KOReaderHubXPointerConverter.xpointer(locatorWithCfi("/4/2/98/2"), file))
         assertNull(KOReaderHubXPointerConverter.xpointer(locatorWithCfi("/4/2/1/2"), file))
         assertNull(KOReaderHubXPointerConverter.xpointer(locatorWithCfi("/4/2/2/2/3:0"), file))

@@ -2,6 +2,8 @@ package com.enve.app.data.offline
 
 import com.enve.core.di.ApplicationScope
 import android.content.Context
+import android.media.MediaMetadataRetriever
+import java.io.File
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
@@ -26,8 +28,8 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.runInterruptible
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -39,11 +41,36 @@ import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.FileOutputStream
+import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
+
+enum class DownloadRunOutcome { COMPLETED, RETRY, FAILED }
+
+internal class TrackDownloadHttpException(val code: Int) : IllegalStateException("Track download failed with HTTP $code")
+
+internal class TrackDownloadIntegrityException(message: String) : IOException(message)
+
+internal class UnsupportedDownloadException(message: String) : IllegalStateException(message)
+
+internal fun isRetryableDownloadFailure(error: Throwable): Boolean = when (error) {
+    is TrackDownloadHttpException -> error.code == 408 || error.code == 429 || error.code >= 500
+    is UnsupportedDownloadException -> false
+    else -> true
+}
+
+internal fun contentRangeStart(contentRange: String?): Long? =
+    contentRange?.substringAfter("bytes ", "")?.substringBefore('-')?.trim()?.toLongOrNull()
+
+internal fun contentRangeTotal(contentRange: String?): Long? =
+    contentRange?.substringAfterLast('/', "")?.trim()?.toLongOrNull()?.takeIf { it > 0L }
+
+internal fun strongResumeValidator(etag: String?, lastModified: String?): String? =
+    etag?.trim()?.takeIf { it.isNotEmpty() && !it.startsWith("W/") }
+        ?: lastModified?.trim()?.takeIf { it.isNotEmpty() }
 
 @Singleton
 class OfflineDownloadManager @Inject constructor(
@@ -63,11 +90,12 @@ class OfflineDownloadManager @Inject constructor(
     private var acceptingDownloads = true
     private val activeDownloads = mutableSetOf<Job>()
     private val cancelSignals = ConcurrentHashMap<String, AtomicBoolean>()
+    private val commitLock = Any()
 
     private val _progressByBookId = MutableStateFlow<Map<String, OfflineDownloadProgress>>(emptyMap())
     val progressByBookId: StateFlow<Map<String, OfflineDownloadProgress>> = _progressByBookId.asStateFlow()
 
-    private val _downloadedBookIds = MutableStateFlow(storage.listManifests().map { it.bookId }.toSet())
+    private val _downloadedBookIds = MutableStateFlow(completedManifests().map { it.bookId }.toSet())
     val downloadedBookIds: StateFlow<Set<String>> = _downloadedBookIds.asStateFlow()
 
     fun isDownloaded(bookId: String): Boolean = storage.isDownloaded(bookId)
@@ -76,7 +104,10 @@ class OfflineDownloadManager @Inject constructor(
 
     fun getManifest(bookId: String): OfflineAudioManifest? = storage.getManifest(bookId)
 
-    fun listDownloadedManifests(): List<OfflineAudioManifest> = storage.listManifests()
+    fun listDownloadedManifests(): List<OfflineAudioManifest> = completedManifests()
+
+    private fun completedManifests(): List<OfflineAudioManifest> =
+        storage.listManifests().filter { storage.isDownloaded(it.bookId) }
 
     fun sharedStorageBytes(): Long = storage.sharedStorageBytes()
 
@@ -92,17 +123,15 @@ class OfflineDownloadManager @Inject constructor(
     }
 
     fun localTracks(bookId: String): List<OfflineTrackInfo>? {
+        if (!storage.isDownloaded(bookId)) return null
         val manifest = storage.getManifest(bookId) ?: return null
-        if (manifest.tracks.isEmpty()) return null
-        return manifest.tracks.mapNotNull { track ->
-            val file = storage.absolutePath(track.relativePath)
-            if (!file.exists()) return@mapNotNull null
+        return manifest.tracks.map { track ->
             OfflineTrackInfo(
-                uri = Uri.fromFile(file).toString(),
+                uri = Uri.fromFile(storage.absolutePath(track.relativePath)).toString(),
                 title = track.title,
                 durationMs = track.durationMs,
             )
-        }.takeIf { it.isNotEmpty() }
+        }
     }
 
     fun startAudiobookDownload(book: Book, allowCellular: Boolean = false) {
@@ -223,36 +252,49 @@ class OfflineDownloadManager @Inject constructor(
     }
 
     fun refreshCompletedDownloads() {
-        _downloadedBookIds.value = storage.listManifests().map { it.bookId }.toSet()
+        _downloadedBookIds.value = completedManifests().map { it.bookId }.toSet()
     }
 
-    suspend fun runDownload(book: Book, requireWifi: Boolean = false): Boolean = coroutineScope {
+    suspend fun runDownload(book: Book, requireWifi: Boolean = false, finalAttempt: Boolean = true): DownloadRunOutcome = coroutineScope {
         val job = checkNotNull(currentCoroutineContext()[Job])
         synchronized(admissionLock) {
             check(acceptingDownloads) { "Downloads are paused for this profile." }
             activeDownloads += job
         }
         try {
-            runCapturedDownload(book, requireWifi)
+            runCapturedDownload(book, requireWifi, finalAttempt)
         } finally {
             synchronized(admissionLock) { activeDownloads -= job }
         }
     }
 
-    private suspend fun runCapturedDownload(book: Book, requireWifi: Boolean = false): Boolean {
+    private suspend fun runCapturedDownload(book: Book, requireWifi: Boolean, finalAttempt: Boolean): DownloadRunOutcome {
         if (storage.isDownloaded(book.id)) {
             storage.clearPendingRequest(book.id)
-            return true
+            return DownloadRunOutcome.COMPLETED
         }
         val cancelSignal = AtomicBoolean(false)
-        cancelSignals[book.id] = cancelSignal
+        synchronized(commitLock) { cancelSignals[book.id] = cancelSignal }
         return try {
             downloadBook(book, cancelSignal, requireWifi)
             storage.clearPendingRequest(book.id)
-            true
+            DownloadRunOutcome.COMPLETED
         } catch (error: Throwable) {
+            if (cancelSignal.get()) {
+                _progressByBookId.update { it - book.id }
+                storage.clearPendingRequest(book.id)
+                synchronized(commitLock) {
+                    if (cancelSignals[book.id] === cancelSignal) storage.discardPartialDownload(book.id)
+                }
+                throw error
+            }
+            if (!currentCoroutineContext().isActive) {
+                _progressByBookId.update { current ->
+                    current[book.id]?.let { current + (book.id to it.copy(status = OfflineDownloadStatus.QUEUED)) } ?: current
+                }
+            }
             currentCoroutineContext().ensureActive()
-            if ((error is CancellationException && !cancelSignal.get()) || error is WifiUnavailableException) {
+            if (error is CancellationException || error is WifiUnavailableException) {
                 _progressByBookId.update { current ->
                     val existing = current[book.id]
                     val queued = existing?.copy(status = OfflineDownloadStatus.QUEUED) ?: OfflineDownloadProgress(
@@ -268,35 +310,16 @@ class OfflineDownloadManager @Inject constructor(
                     current + (book.id to queued)
                 }
                 if (error is CancellationException) throw error
-                return false
+                return DownloadRunOutcome.RETRY
             }
-            if (error is CancellationException || cancelSignal.get()) {
-                _progressByBookId.update { current ->
-                    val existing = current[book.id]
-                    current + (
-                        book.id to OfflineDownloadProgress(
-                            bookId = book.id,
-                            title = book.title,
-                            status = OfflineDownloadStatus.CANCELLED,
-                            progress = existing?.progress ?: 0f,
-                            downloadedBytes = existing?.downloadedBytes ?: 0,
-                            totalBytes = existing?.totalBytes ?: 0,
-                            completedTracks = existing?.completedTracks ?: 0,
-                            totalTracks = existing?.totalTracks ?: 0,
-                            errorMessage = null,
-                        )
-                    )
-                }
-                storage.clearPendingRequest(book.id)
-                throw error
-            }
+            val retry = !finalAttempt && isRetryableDownloadFailure(error)
             _progressByBookId.update { current ->
                 val existing = current[book.id]
                 current + (
                     book.id to OfflineDownloadProgress(
                         bookId = book.id,
                         title = book.title,
-                        status = OfflineDownloadStatus.FAILED,
+                        status = if (retry) OfflineDownloadStatus.QUEUED else OfflineDownloadStatus.FAILED,
                         progress = existing?.progress ?: 0f,
                         downloadedBytes = existing?.downloadedBytes ?: 0,
                         totalBytes = existing?.totalBytes ?: 0,
@@ -306,17 +329,22 @@ class OfflineDownloadManager @Inject constructor(
                     )
                 )
             }
-            false
+            if (retry) DownloadRunOutcome.RETRY else DownloadRunOutcome.FAILED
         } finally {
             cancelSignals.remove(book.id, cancelSignal)
         }
     }
 
     fun cancelDownload(bookId: String) {
-        cancelSignals[bookId]?.set(true)
+        val activeRun = synchronized(commitLock) { cancelSignals[bookId]?.also { it.set(true) } }
         workManager.cancelUniqueWork(scopedWorkName(bookId))
         storage.clearPendingRequest(bookId)
         _progressByBookId.update { it - bookId }
+        if (activeRun == null) {
+            synchronized(commitLock) {
+                if (cancelSignals[bookId] == null) storage.discardPartialDownload(bookId)
+            }
+        }
     }
 
     fun removeDownload(bookId: String) {
@@ -351,12 +379,25 @@ class OfflineDownloadManager @Inject constructor(
         workManager.enqueueUniqueWork(scopedWorkName(bookId), policy, request)
     }
 
+    private fun downloadedTrackDuration(source: BookSource, durationMs: Long, file: File): Long {
+        if (source != BookSource.TORBOX || durationMs > 0) return durationMs
+        val retriever = MediaMetadataRetriever()
+        try {
+            retriever.setDataSource(file.absolutePath)
+            val duration = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
+            check(duration != null && duration > 0) { "The downloaded TorBox audio file has no readable duration." }
+            return duration
+        } finally {
+            retriever.release()
+        }
+    }
+
     private suspend fun downloadBook(book: Book, cancelSignal: AtomicBoolean, requireWifi: Boolean) = okHttpClient.withDownloadCalls { calls ->
         ensureWifiAvailable(requireWifi)
         val resolver = resolvers[book.source]
-            ?: throw IllegalStateException("No resolver registered for ${book.source.displayName}")
+            ?: throw UnsupportedDownloadException("No resolver registered for ${book.source.displayName}")
         val plannedTracks = resolver.resolveTracks(book).getOrThrow()
-        if (plannedTracks.isEmpty()) throw IllegalStateException("No tracks resolved for ${book.title}")
+        if (plannedTracks.isEmpty()) throw UnsupportedDownloadException("No tracks resolved for ${book.title}")
 
         currentCoroutineContext().ensureActive()
         if (cancelSignal.get()) throw CancellationException("Cancelled")
@@ -386,7 +427,17 @@ class OfflineDownloadManager @Inject constructor(
             if (cancelSignal.get()) throw CancellationException("Cancelled")
             ensureWifiAvailable(requireWifi)
 
-            val existingFinal = storage.existingTrackFinalFile(book.id, track.index)
+            val assetFile = storage.trackAssetFile(book.id, track.index)
+            val existingFinal = storage.existingTrackFinalFile(book.id, track.index)?.let { file ->
+                val storedAssetId = assetFile.takeIf { it.isFile }?.readText()
+                val replacedOnServer = track.assetId != null && storedAssetId != null && storedAssetId != track.assetId
+                if (replacedOnServer || (track.sizeBytes > 0L && file.length() != track.sizeBytes)) {
+                    check(file.delete())
+                    null
+                } else {
+                    file
+                }
+            }
             if (existingFinal != null) {
                 downloadedBytes += existingFinal.length()
                 knownTotalBytes += existingFinal.length()
@@ -394,7 +445,7 @@ class OfflineDownloadManager @Inject constructor(
                 manifestTracks += OfflineAudioTrackManifest(
                     index = track.index,
                     title = track.title,
-                    durationMs = track.durationMs,
+                    durationMs = downloadedTrackDuration(book.source, track.durationMs, existingFinal),
                     relativePath = storage.relativePath(existingFinal),
                     bytes = existingFinal.length(),
                 )
@@ -402,12 +453,26 @@ class OfflineDownloadManager @Inject constructor(
             }
 
             val tmp = storage.createTrackTempFile(book.id, track.index)
+            val validatorFile = storage.trackResumeValidatorFile(book.id, track.index)
+            val storedValidator = validatorFile.takeIf { it.isFile }?.readText()?.takeIf { it.isNotBlank() }
             var resumeOffset = tmp.takeIf { it.exists() }?.length()?.takeIf { it > 0L } ?: 0L
+            if (resumeOffset > 0L && storedValidator == null) {
+                check(tmp.delete())
+                resumeOffset = 0L
+            }
             fun requestFor(offset: Long): Request =
                 Request.Builder().url(track.url).get().apply {
                     track.httpHeaders.forEach { (name, value) -> header(name, value) }
-                    if (offset > 0L) header("Range", "bytes=$offset-")
+                    if (offset > 0L) {
+                        header("Range", "bytes=$offset-")
+                        storedValidator?.let { header("If-Range", it) }
+                    }
                 }.build()
+            fun discardPartial(message: String): Nothing {
+                tmp.delete()
+                validatorFile.delete()
+                throw TrackDownloadIntegrityException(message)
+            }
 
             var response = calls.execute(requestFor(resumeOffset))
             if (resumeOffset > 0L && response.code == 416) {
@@ -422,15 +487,25 @@ class OfflineDownloadManager @Inject constructor(
                     tmp.delete()
                     resumeOffset = 0L
                 }
-                if (!response.isSuccessful) {
-                    throw IllegalStateException("Track download failed with HTTP ${response.code}")
+                if (!response.isSuccessful) throw TrackDownloadHttpException(response.code)
+                val contentRange = response.header("Content-Range")
+                if (response.code == 206 && contentRangeStart(contentRange) != resumeOffset) {
+                    discardPartial("Track download resumed at the wrong offset")
                 }
                 val body = response.body ?: throw IllegalStateException("Empty response body")
                 val responseLength = body.contentLength().takeIf { it > 0 } ?: 0L
-                val trackLength = when {
-                    response.code == 206 && responseLength > 0L -> resumeOffset + responseLength
-                    responseLength > 0L -> responseLength
-                    else -> 0L
+                val serverLength = when {
+                    response.code == 206 -> contentRangeTotal(contentRange)
+                        ?: if (responseLength > 0L) resumeOffset + responseLength else 0L
+                    else -> responseLength
+                }
+                if (track.sizeBytes > 0L && serverLength > 0L && serverLength != track.sizeBytes) {
+                    discardPartial("Track size from the server does not match the audiobook manifest")
+                }
+                val trackLength = serverLength.takeIf { it > 0L } ?: track.sizeBytes.coerceAtLeast(0L)
+                if (resumeOffset == 0L) {
+                    val validator = strongResumeValidator(response.header("ETag"), response.header("Last-Modified"))
+                    if (validator != null) validatorFile.writeText(validator) else validatorFile.delete()
                 }
                 if (trackLength > 0) knownTotalBytes += trackLength
                 var trackDownloadedBytes = resumeOffset
@@ -489,18 +564,23 @@ class OfflineDownloadManager @Inject constructor(
                 }
 
                 currentCoroutineContext().ensureActive()
+                if (trackLength > 0L && tmp.length() != trackLength) {
+                    discardPartial("Downloaded track size does not match the server")
+                }
                 if (!tmp.renameTo(final)) {
                     tmp.copyTo(final)
                     tmp.delete()
                 }
+                validatorFile.delete()
+                track.assetId?.let(assetFile::writeText) ?: assetFile.delete()
 
                 completedTracks += 1
                 manifestTracks += OfflineAudioTrackManifest(
                     index = track.index,
                     title = track.title,
-                    durationMs = track.durationMs,
+                    durationMs = downloadedTrackDuration(book.source, track.durationMs, final),
                     relativePath = storage.relativePath(final),
-                    bytes = final.length(),
+                    bytes = trackLength.takeIf { it > 0L } ?: final.length(),
                 )
             }
         }
@@ -512,19 +592,21 @@ class OfflineDownloadManager @Inject constructor(
         val localCoverUri = downloadCover(book, calls)
         currentCoroutineContext().ensureActive()
 
-        storage.saveManifest(
-            OfflineAudioManifest(
-                bookId = book.id,
-                title = book.title,
-                author = book.author,
-                coverUrl = localCoverUri ?: book.coverUrl,
-                source = book.source.name,
-                downloadedAtEpochMs = System.currentTimeMillis(),
-                tracks = manifestTracks,
+        synchronized(commitLock) {
+            if (cancelSignal.get()) throw CancellationException("Cancelled")
+            storage.saveManifest(
+                OfflineAudioManifest(
+                    bookId = book.id,
+                    title = book.title,
+                    author = book.author,
+                    coverUrl = localCoverUri ?: book.coverUrl,
+                    source = book.source.name,
+                    downloadedAtEpochMs = System.currentTimeMillis(),
+                    tracks = manifestTracks,
+                )
             )
-        )
-
-        _downloadedBookIds.update { it + book.id }
+            _downloadedBookIds.update { it + book.id }
+        }
         val updatedRows = bookCacheDao.updateDownloadedStatus(
             bookId = book.id,
             connectionId = book.connectionId,
@@ -551,6 +633,12 @@ class OfflineDownloadManager @Inject constructor(
                     totalTracks = plannedTracks.size,
                 )
             )
+        }
+        if (!storage.isDownloaded(book.id)) {
+            _downloadedBookIds.update { it - book.id }
+            bookCacheDao.updateDownloadedStatusById(book.id, downloaded = false, nowMs = System.currentTimeMillis())
+            if (cancelSignal.get()) throw CancellationException("Cancelled")
+            throw TrackDownloadIntegrityException("Downloaded audio failed validation")
         }
     }
 

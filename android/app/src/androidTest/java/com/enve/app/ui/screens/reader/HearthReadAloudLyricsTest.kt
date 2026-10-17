@@ -6,6 +6,10 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.doubleClick
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.enve.app.viewmodel.ReadAloudClipRow
 import com.enve.hearth.design.HearthTheme
@@ -41,10 +45,11 @@ class HearthReadAloudLyricsTest {
         activeIndex: Int,
         onSelect: (ReadAloudClipRow) -> Unit = {},
         onClose: () -> Unit = {},
+        onToggleControls: () -> Unit = {},
     ) {
         compose.setContent {
             HearthTheme {
-                HearthReadAloudLyrics(rows, activeIndex, onSelect, onClose)
+                HearthReadAloudLyrics(rows, activeIndex, onSelect, onClose, onToggleControls = onToggleControls)
             }
         }
     }
@@ -58,11 +63,34 @@ class HearthReadAloudLyricsTest {
     }
 
     @Test
-    fun tappingASentenceReportsThatRow() {
+    fun tappingASentenceTogglesControlsWithoutSeeking() {
+        val selected = mutableListOf<ReadAloudClipRow>()
+        var toggles = 0
+        show(rows, activeIndex = 1, onSelect = { selected += it }, onToggleControls = { toggles++ })
+
+        compose.onNodeWithText(rows[2].text).performClick()
+        compose.waitUntil(timeoutMillis = 1_000) { toggles == 1 }
+
+        assertEquals(1, toggles)
+        assertEquals(emptyList<ReadAloudClipRow>(), selected)
+    }
+
+    @Test
+    fun doubleTappingASentenceReportsThatRow() {
         val selected = mutableListOf<ReadAloudClipRow>()
         show(rows, activeIndex = 0, onSelect = { selected += it })
 
-        compose.onNodeWithText(rows[2].text).performClick()
+        compose.onNodeWithText(rows[2].text).performTouchInput { doubleClick() }
+
+        assertEquals(listOf(2), selected.map { it.index })
+    }
+
+    @Test
+    fun accessibilityActionCanPlayFromASentence() {
+        val selected = mutableListOf<ReadAloudClipRow>()
+        show(rows, activeIndex = 0, onSelect = { selected += it })
+
+        compose.onNodeWithText(rows[2].text).performSemanticsAction(SemanticsActions.OnLongClick) { it() }
 
         assertEquals(listOf(2), selected.map { it.index })
     }

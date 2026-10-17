@@ -31,6 +31,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -94,16 +95,20 @@ internal fun HearthReadNextButton(
                 }
                 Spacer(Modifier.width(10.dp))
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(
-                        Icons.Outlined.Close,
-                        contentDescription = "Dismiss Read Next",
-                        tint = palette.textSecondary,
+                    Box(
                         modifier = Modifier
-                            .size(32.dp)
+                            .size(48.dp)
                             .clip(CircleShape)
-                            .clickable { visible.value = false }
-                            .padding(7.dp),
-                    )
+                            .clickable(role = Role.Button) { visible.value = false },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.Outlined.Close,
+                            contentDescription = "Dismiss Read Next",
+                            tint = palette.textSecondary,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
                     Box(
                         modifier = Modifier
                             .size(36.dp)

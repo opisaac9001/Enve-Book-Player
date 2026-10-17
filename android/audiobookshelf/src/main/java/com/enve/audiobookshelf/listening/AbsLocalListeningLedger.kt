@@ -25,6 +25,7 @@ data class AbsLocalListeningSession(
     val accountId: String? = null,
     val historicalBackfill: Boolean = false,
     val sourceBookKey: String? = null,
+    val recordedAccountId: String? = null,
 )
 
 data class AbsListeningEntry(
@@ -36,6 +37,7 @@ data class AbsListeningEntry(
     val durationSec: Double,
     val currentTimeSec: Double,
     val listenedMs: Long,
+    val recordedAccountId: String? = null,
 )
 
 object AbsLocalListeningLedger {
@@ -52,7 +54,8 @@ object AbsLocalListeningLedger {
         val day = today.toString()
         val listenedSec = entry.listenedMs / 1_000.0
         val existing = sessions.indexOfFirst {
-            it.accountId == null && it.connectionId == entry.connectionId && it.libraryItemId == entry.libraryItemId &&
+            it.accountId == null && it.recordedAccountId == entry.recordedAccountId &&
+                it.connectionId == entry.connectionId && it.libraryItemId == entry.libraryItemId &&
                 it.episodeId == entry.episodeId && it.day == day
         }
         val updated = if (existing >= 0) {
@@ -81,10 +84,21 @@ object AbsLocalListeningLedger {
                 currentTimeSec = entry.currentTimeSec,
                 startedAtMs = nowMs - entry.listenedMs,
                 updatedAtMs = nowMs,
+                recordedAccountId = entry.recordedAccountId,
             )
         }
         val cutoff = today.minusDays(RETENTION_DAYS).toString()
         return updated.filter { it.needsUpload || it.day >= cutoff }
+    }
+
+    fun pendingFor(
+        sessions: List<AbsLocalListeningSession>,
+        connectionId: String,
+        accountId: String?,
+    ): List<AbsLocalListeningSession> = sessions.filter { session ->
+        if (session.connectionId != connectionId || !session.needsUpload) return@filter false
+        val owner = session.accountId ?: session.recordedAccountId
+        if (owner != null) owner == accountId else connectionId.isNotEmpty()
     }
 
     fun markUploaded(

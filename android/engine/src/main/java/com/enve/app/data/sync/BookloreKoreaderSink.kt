@@ -1,12 +1,17 @@
 package com.enve.app.data.sync
-import com.enve.core.data.sync.CfiLocatorConverter
-import com.enve.core.data.sync.SyncSnapshot
-import com.enve.core.data.local.ConnectionRegistry
+
+import com.enve.app.data.offline.ComicOfflineStorage
 import com.enve.core.auth.CredentialVault
+import com.enve.core.data.local.ConnectionRegistry
 import com.enve.core.data.local.PreferencesManager
+import com.enve.core.data.local.ProfileStorageLocations
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
 import com.enve.core.data.remote.ConnectionScope
+import com.enve.core.data.sync.SyncSnapshot
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -18,6 +23,8 @@ class BookloreKoreaderSink @Inject constructor(
     private val deviceIdentity: DeviceIdentity,
     private val connectionRegistry: ConnectionRegistry,
     private val serverSync: com.enve.core.data.local.ProfileServerSyncStore,
+    private val offlineStorage: ComicOfflineStorage,
+    private val locations: ProfileStorageLocations,
 ) {
     data class KoreaderCredentials(
         val username: String,
@@ -75,22 +82,11 @@ class BookloreKoreaderSink @Inject constructor(
         val target = targetForBook(book) ?: return Result.failure(Exception("No server URL"))
         val creds = credentialsForTarget(target) ?: return Result.success(Unit)
 
-        val positionData = locatorJson?.let { json ->
-            KOReaderXPointerConverter.xpointer(json) ?: CfiLocatorConverter.buildLocatorJson(
-                CfiLocatorConverter.extractCfi(json) ?: return@let null
-            )
-        } ?: ""
-
-        val localFile = runCatching {
-            val downloads = android.os.Environment.getExternalStoragePublicDirectory(
-                android.os.Environment.DIRECTORY_DOWNLOADS,
-            )
-            java.io.File(downloads, book.id)
-        }.getOrNull()
-
-        val hash = localFile?.takeIf { it.exists() }?.let {
-            runCatching { PartialMd5.compute(it) }.getOrNull()
-        } ?: return Result.success(Unit)
+        val file = localEbookFile(book) ?: return Result.success(Unit)
+        val positionData = locatorJson
+            ?.let { withContext(Dispatchers.IO) { KOReaderHubXPointerConverter.xpointer(it, file) } }
+            ?: return Result.success(Unit)
+        val hash = partialMd5(file) ?: return Result.success(Unit)
 
         if (!serverSync.accepts(syncStartedAt)) return Result.success(Unit)
         return kosyncClient.pushProgress(
@@ -114,16 +110,8 @@ class BookloreKoreaderSink @Inject constructor(
         val target = targetForBook(book) ?: return null
         val creds = credentialsForTarget(target) ?: return null
 
-        val localFile = runCatching {
-            val downloads = android.os.Environment.getExternalStoragePublicDirectory(
-                android.os.Environment.DIRECTORY_DOWNLOADS,
-            )
-            java.io.File(downloads, book.id)
-        }.getOrNull()
-
-        val hash = localFile?.takeIf { it.exists() }?.let {
-            runCatching { PartialMd5.compute(it) }.getOrNull()
-        } ?: return null
+        val file = localEbookFile(book) ?: return null
+        val hash = partialMd5(file) ?: return null
 
         val response = kosyncClient.pullProgress(target.serverUrl, creds.username, creds.password, hash)
             .getOrNull() ?: return null
@@ -132,7 +120,7 @@ class BookloreKoreaderSink @Inject constructor(
         if (pct <= 0f) return null
 
         val locatorJson = response.positionData?.let { pos ->
-            KOReaderXPointerConverter.locatorJson(pos, pct)
+            withContext(Dispatchers.IO) { KOReaderHubXPointerConverter.locatorJson(pos, pct.toDouble(), file) }
                 ?: pos.takeIf { it.startsWith("epubcfi(") }
         }
 
@@ -142,6 +130,21 @@ class BookloreKoreaderSink @Inject constructor(
             locatorJson = locatorJson,
             source = response.device ?: "KOReader",
         )
+    }
+
+    private fun localEbookFile(book: Book): File? {
+        offlineStorage.getDownloadedFile(book.id)?.takeIf { it.isFile && it.length() > 0L }?.let { return it }
+        val safeName = book.id.replace(Regex("[^a-zA-Z0-9_-]"), "_")
+        return File(locations.cacheDirectory, "ebooks").listFiles()
+            ?.filter {
+                it.isFile && it.length() > 0L && it.name.startsWith("$safeName.") &&
+                    !it.name.endsWith(".tmp") && !it.name.startsWith("$safeName.readaloud.")
+            }
+            ?.maxByOrNull(File::lastModified)
+    }
+
+    private suspend fun partialMd5(file: File): String? = withContext(Dispatchers.IO) {
+        runCatching { PartialMd5.compute(file) }.getOrNull()
     }
 
     private fun targetForBook(book: Book?): KoreaderTarget? {

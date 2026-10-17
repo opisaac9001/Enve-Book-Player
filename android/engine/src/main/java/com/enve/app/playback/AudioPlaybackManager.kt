@@ -226,6 +226,8 @@ class AudioPlaybackManager @Inject constructor(
         startPositionMs: Long = 0L,
         mediaId: String = "",
         authToken: String? = null,
+        format: String? = null,
+        connectionId: String? = null,
     ) {
         resetTransientStateForNewBook(bookId)
         currentBookId = bookId
@@ -239,6 +241,8 @@ class AudioPlaybackManager @Inject constructor(
             startPositionMs = startPositionMs,
             mediaId = mediaId,
             authToken = authToken,
+            format = format,
+            connectionId = connectionId,
         )
         if (controller == null) {
             pendingPlayback = pending
@@ -258,6 +262,8 @@ class AudioPlaybackManager @Inject constructor(
         startPositionMs: Long,
         mediaId: String,
         authToken: String?,
+        format: String?,
+        connectionId: String?,
     ) {
         activeTrackDurationsMs = emptyList()
         activeTrackOffsetsMs = emptyList()
@@ -272,11 +278,11 @@ class AudioPlaybackManager @Inject constructor(
             .apply { cachedArtwork?.let(::setArtworkUri) }
             .build()
 
-        val resolvedUrl = withAuthToken(streamUrl, authToken)
+        val resolvedUrl = connectionStreamUrl(withAuthToken(streamUrl, authToken), connectionId)
         val mediaItem = MediaItem.Builder()
             .setMediaId(mediaId)
             .setUri(resolvedUrl)
-            .setMimeType(guessMimeType(resolvedUrl))
+            .setMimeType(mimeTypeForAudioFormat(format) ?: guessMimeType(resolvedUrl))
             .setMediaMetadata(metadata)
             .build()
 
@@ -301,6 +307,7 @@ class AudioPlaybackManager @Inject constructor(
         startPositionMs: Long = 0L,
         mediaId: String = "",
         authToken: String? = null,
+        connectionId: String? = null,
     ) {
         resetTransientStateForNewBook(bookId)
         currentBookId = bookId
@@ -314,6 +321,7 @@ class AudioPlaybackManager @Inject constructor(
             startPositionMs = startPositionMs,
             mediaId = mediaId,
             authToken = authToken,
+            connectionId = connectionId,
         )
         if (controller == null) {
             pendingPlayback = pending
@@ -333,6 +341,7 @@ class AudioPlaybackManager @Inject constructor(
         startPositionMs: Long,
         mediaId: String,
         authToken: String?,
+        connectionId: String?,
     ) {
         activeTrackDurationsMs = tracks.map { it.durationMs.coerceAtLeast(0L) }
         activeTrackOffsetsMs = cumulativeTrackOffsets(activeTrackDurationsMs)
@@ -343,11 +352,11 @@ class AudioPlaybackManager @Inject constructor(
         val cachedArtwork = autoArtworkCache.cachedUriFor(bookId, cacheKey, coverUrl)
         val mediaItems = tracks.mapIndexed { index, track ->
             val itemMediaId = if (mediaId.isNotBlank() && tracks.size > 1) "$mediaId#track=$index" else mediaId
-            val resolvedUrl = withAuthToken(track.url, authToken)
+            val resolvedUrl = connectionStreamUrl(withAuthToken(track.url, authToken), connectionId)
             MediaItem.Builder()
                 .setMediaId(itemMediaId)
                 .setUri(resolvedUrl)
-                .setMimeType(guessMimeType(resolvedUrl))
+                .setMimeType(mimeTypeForAudioFormat(track.format) ?: guessMimeType(resolvedUrl))
                 .setMediaMetadata(
                     MediaMetadata.Builder()
                         .setTitle(track.title ?: title)
@@ -687,6 +696,8 @@ class AudioPlaybackManager @Inject constructor(
                 startPositionMs = pending.startPositionMs,
                 mediaId = pending.mediaId,
                 authToken = pending.authToken,
+                format = pending.format,
+                connectionId = pending.connectionId,
             )
             is PendingPlayback.Multi -> playMultiTrackOnController(
                 player = player,
@@ -698,6 +709,7 @@ class AudioPlaybackManager @Inject constructor(
                 startPositionMs = pending.startPositionMs,
                 mediaId = pending.mediaId,
                 authToken = pending.authToken,
+                connectionId = pending.connectionId,
             )
         }
     }
@@ -706,6 +718,7 @@ class AudioPlaybackManager @Inject constructor(
         val url: String,
         val title: String?,
         val durationMs: Long,
+        val format: String? = null,
     )
 
     private sealed interface PendingPlayback {
@@ -720,6 +733,8 @@ class AudioPlaybackManager @Inject constructor(
             val startPositionMs: Long,
             val mediaId: String,
             val authToken: String?,
+            val format: String?,
+            val connectionId: String?,
         ) : PendingPlayback
 
         data class Multi(
@@ -731,6 +746,7 @@ class AudioPlaybackManager @Inject constructor(
             val startPositionMs: Long,
             val mediaId: String,
             val authToken: String?,
+            val connectionId: String?,
         ) : PendingPlayback
     }
 
@@ -754,15 +770,21 @@ class AudioPlaybackManager @Inject constructor(
                 return MimeTypes.AUDIO_MP4
             }
             val path = url.substringBefore('?').substringBefore('#').lowercase()
-            return when {
-                path.endsWith(".mp3") -> MimeTypes.AUDIO_MPEG
-                path.endsWith(".m4a") || path.endsWith(".m4b") ||
-                    path.endsWith(".mp4") || path.endsWith(".aac") -> MimeTypes.AUDIO_MP4
-                path.endsWith(".flac") -> MimeTypes.AUDIO_FLAC
-                path.endsWith(".ogg") || path.endsWith(".opus") -> MimeTypes.AUDIO_OGG
-                path.endsWith(".wav") -> MimeTypes.AUDIO_WAV
-                path.endsWith(".m3u8") -> MimeTypes.APPLICATION_M3U8
-                else -> MimeTypes.AUDIO_MPEG
+            val extension = path.substringAfterLast('/').substringAfterLast('.', missingDelimiterValue = "")
+            return mimeTypeForAudioFormat(extension) ?: MimeTypes.AUDIO_MPEG
+        }
+
+        internal fun mimeTypeForAudioFormat(format: String?): String? {
+            val normalized = format?.trim()?.lowercase()?.removePrefix(".")?.takeIf { it.isNotEmpty() } ?: return null
+            if ('/' in normalized) return normalized
+            return when (normalized) {
+                "mp3" -> MimeTypes.AUDIO_MPEG
+                "m4a", "m4b", "mp4", "aac" -> MimeTypes.AUDIO_MP4
+                "flac" -> MimeTypes.AUDIO_FLAC
+                "ogg", "opus" -> MimeTypes.AUDIO_OGG
+                "wav" -> MimeTypes.AUDIO_WAV
+                "m3u8" -> MimeTypes.APPLICATION_M3U8
+                else -> null
             }
         }
     }

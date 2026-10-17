@@ -18,6 +18,7 @@ import com.enve.komga.dto.KomgaBookDto
 import com.enve.komga.dto.KomgaReadProgressUpdateDto
 import com.enve.komga.dto.KomgaUserDto
 import com.enve.komga.dto.displayMetadata
+import com.enve.komga.dto.readerFileType
 import com.enve.core.di.RefreshClient
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -492,13 +493,6 @@ class KomgaRepository @Inject constructor(
         val authors = dto.metadata?.authors?.map { it.name }.orEmpty()
         val mediaTypeStr = dto.media?.mediaType?.lowercase(java.util.Locale.US).orEmpty()
         val mediaType = if (mediaTypeStr.contains("audio")) AppMediaType.AUDIOBOOK else AppMediaType.EBOOK
-        val primaryFileType = when {
-            mediaTypeStr.contains("epub") -> "EPUB"
-            mediaTypeStr.contains("pdf") -> "PDF"
-            mediaTypeStr.contains("cbz") || mediaTypeStr.contains("zip") -> "CBZ"
-            mediaTypeStr.contains("cbr") || mediaTypeStr.contains("rar") -> "CBR"
-            else -> null
-        }
         val addedOn = runCatching {
             dto.created?.let { OffsetDateTime.parse(it).toInstant().toEpochMilli() } ?: 0L
         }.getOrDefault(0L)
@@ -528,7 +522,7 @@ class KomgaRepository @Inject constructor(
             seriesNumber = displayMetadata.seriesNumber,
             readProgress = progress,
             readStatus = readStatus,
-            primaryFileType = primaryFileType,
+            primaryFileType = dto.readerFileType(),
             mediaType = mediaType,
             addedOn = addedOn,
             lastReadTime = lastReadTime,
@@ -548,14 +542,6 @@ class KomgaRepository @Inject constructor(
             AppMediaType.AUDIOBOOK
         } else {
             AppMediaType.EBOOK
-        }
-
-        val primaryFileType = when {
-            mediaTypeStr.contains("epub") -> "EPUB"
-            mediaTypeStr.contains("pdf") -> "PDF"
-            mediaTypeStr.contains("cbz") || mediaTypeStr.contains("zip") -> "CBZ"
-            mediaTypeStr.contains("cbr") || mediaTypeStr.contains("rar") -> "CBR"
-            else -> null
         }
 
         val addedOn = runCatching {
@@ -581,7 +567,7 @@ class KomgaRepository @Inject constructor(
             description = dto.metadata?.summary,
             coverUrl = "${serverUrl.trimEnd('/')}/api/v1/books/$id/thumbnail",
             mediaType = mediaType,
-            primaryFileType = primaryFileType,
+            primaryFileType = dto.readerFileType(),
             pageCount = dto.media?.pagesCount,
             libraryId = libraryId,
             seriesName = displayMetadata.seriesName,
@@ -679,24 +665,20 @@ class KomgaRepository @Inject constructor(
         }
     }
 
-    suspend fun getSeriesReadingDirection(seriesId: String): String? = runSuspendCatching {
-        val response = api.getSeriesDetail(seriesId)
-        if (!response.isSuccessful) return@runSuspendCatching null
-        response.body()?.metadata?.readingDirection
-    }.getOrNull()
-
     suspend fun getSeriesIdForBook(bookId: String): String? = runSuspendCatching {
         val resp = api.getBook(bookId)
         if (!resp.isSuccessful) return@runSuspendCatching null
         resp.body()?.seriesId
     }.getOrNull()
 
-    suspend fun getReadingDirectionForBook(bookId: String): String? = runSuspendCatching {
-        val response = api.getBook(bookId)
-        if (!response.isSuccessful) return@runSuspendCatching null
-        val book = response.body() ?: return@runSuspendCatching null
-        getSeriesReadingDirection(book.seriesId)?.takeIf { it.isNotBlank() }
-    }.getOrNull()
+    suspend fun getReadingDirectionForBook(bookId: String): String? {
+        val book = api.getBook(bookId)
+        if (!book.isSuccessful) error("getBook HTTP ${book.code()}")
+        val seriesId = book.body()?.seriesId ?: error("Komga returned an empty book")
+        val series = api.getSeriesDetail(seriesId)
+        if (!series.isSuccessful) error("getSeriesDetail HTTP ${series.code()}")
+        return series.body()?.metadata?.readingDirection?.takeIf { it.isNotBlank() }
+    }
 
     suspend fun markBookUnread(bookId: String): Result<Unit> = runSuspendCatching {
         val resp = api.deleteReadProgress(bookId)

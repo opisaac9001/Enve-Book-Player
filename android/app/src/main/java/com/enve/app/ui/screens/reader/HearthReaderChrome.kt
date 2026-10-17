@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -61,7 +62,9 @@ import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -79,6 +82,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -136,6 +140,7 @@ fun HearthReaderChrome(
         state.showAnnotationDialog,
         state.showAnnotationsSheet,
         state.showReadAloudSheet,
+        state.showReadAloudLyrics,
         state.showMoreMenu,
         state.readAlongPreparing,
     ) {
@@ -147,6 +152,7 @@ fun HearthReaderChrome(
             !state.showAnnotationDialog &&
             !state.showAnnotationsSheet &&
             !state.showReadAloudSheet &&
+            !state.showReadAloudLyrics &&
             !state.showMoreMenu &&
             !state.readAlongPreparing
         ) {
@@ -158,6 +164,15 @@ fun HearthReaderChrome(
         val message = state.transientMessage ?: return@LaunchedEffect
         snackbarHostState.showSnackbar(message = message, duration = SnackbarDuration.Short)
         vm.consumeTransientMessage()
+    }
+    LaunchedEffect(state.linkReturnLocator) {
+        if (state.linkReturnLocator == null) return@LaunchedEffect
+        val result = snackbarHostState.showSnackbar(
+            message = "Opened linked section.",
+            actionLabel = "Back to reading",
+            duration = SnackbarDuration.Long,
+        )
+        if (result == SnackbarResult.ActionPerformed) vm.returnFromInternalLink() else vm.dismissInternalLinkReturn()
     }
 
     CompositionLocalProvider(
@@ -206,6 +221,8 @@ fun HearthReaderChrome(
                             onAppearance = { vm.showAppearance(true) },
                             onSearch = { vm.showSearch(true) },
                             onLibrarian = onAskLibrarian,
+                            showContents = state.readAlongActive,
+                            onContents = { vm.showToc(true) },
                         )
                     }
                 }
@@ -230,6 +247,8 @@ fun HearthReaderChrome(
                         onAppearance = { vm.showAppearance(true) },
                         onSearch = { vm.showSearch(true) },
                         onLibrarian = onAskLibrarian,
+                        showContents = state.readAlongActive,
+                        onContents = { vm.showToc(true) },
                     )
                 }
             }
@@ -240,6 +259,7 @@ fun HearthReaderChrome(
                     activeIndex = state.readAlongClipIndex,
                     onSelect = { vm.jumpToReadAlongClip(it) },
                     onClose = { vm.showReadAloudLyrics(false) },
+                    onToggleControls = vm::toggleChrome,
                     modifier = Modifier.matchParentSize(),
                 )
             }
@@ -430,6 +450,13 @@ fun HearthReaderChrome(
                 Snackbar(
                     containerColor = palette.bgElevated,
                     contentColor = palette.text,
+                    action = data.visuals.actionLabel?.let { label ->
+                        {
+                            TextButton(onClick = data::performAction) {
+                                Text(label, color = if (Hearth.eink.monochrome) palette.text else palette.ember)
+                            }
+                        }
+                    },
                 ) {
                     Text(data.visuals.message)
                 }
@@ -450,13 +477,15 @@ private fun TopVeil(
     onAppearance: () -> Unit,
     onSearch: () -> Unit,
     onLibrarian: () -> Unit,
+    showContents: Boolean,
+    onContents: () -> Unit,
 ) {
     val palette = Hearth.palette
     val eink = Hearth.eink
     Column(Modifier.fillMaxWidth().background(palette.bg.copy(alpha = if (eink.active) 1f else 0.94f))) {
         Row(
             Modifier.fillMaxWidth().statusBarsPadding()
-                .padding(horizontal = Hearth.Spacing.S, vertical = Hearth.Spacing.S),
+                .padding(horizontal = Hearth.Spacing.S, vertical = Hearth.Spacing.XS),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             GlyphBtn(Icons.AutoMirrored.Outlined.ArrowBack, "Close", onBack, palette.text)
@@ -465,6 +494,13 @@ private fun TopVeil(
             Box {
                 GlyphBtn(Icons.Outlined.MoreHoriz, "More", { onMenuExpandedChange(true) }, palette.textSecondary)
                 DropdownMenu(expanded = menuExpanded, onDismissRequest = { onMenuExpandedChange(false) }) {
+                    if (showContents) {
+                        DropdownMenuItem(
+                            text = { Text("Contents") },
+                            leadingIcon = { Icon(Icons.AutoMirrored.Outlined.List, contentDescription = null) },
+                            onClick = { onMenuExpandedChange(false); onContents() },
+                        )
+                    }
                     DropdownMenuItem(
                         text = { Text("Add bookmark") },
                         leadingIcon = { Icon(Icons.Outlined.Bookmark, contentDescription = null) },
@@ -568,19 +604,30 @@ private fun ReadAloudBar(
     val palette = Hearth.palette
     val shape = RoundedCornerShape(Hearth.Radius.Bar)
     Row(
-        Modifier.padding(horizontal = Hearth.Spacing.XL).fillMaxWidth().clip(shape)
+        Modifier.padding(horizontal = Hearth.Spacing.M).fillMaxWidth().clip(shape)
             .background(palette.bgElevated).border(1.dp, palette.hairline, shape)
-            .padding(horizontal = Hearth.Spacing.M, vertical = Hearth.Spacing.S),
+            .padding(horizontal = Hearth.Spacing.S, vertical = Hearth.Spacing.XS),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
     ) {
-        Text(if (preparing) "Preparing read aloud…" else "Clip ${clip + 1} / ${clipCount.coerceAtLeast(1)}", style = HearthText.Caption, color = palette.textSecondary, modifier = Modifier.weight(1f))
-        GlyphBtn(Icons.Filled.SkipPrevious, "Previous clip", onBack, palette.text, enabled = !preparing)
-        Icon(
-            if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow, "Play/Pause", tint = palette.ember,
-            modifier = Modifier.clip(CircleShape).clickable(enabled = !preparing, onClick = onToggle).size(30.dp)
-                .alpha(if (preparing) 0.38f else 1f),
+        Text(
+            if (preparing) "Preparing read aloud…" else "Clip ${clip + 1} / ${clipCount.coerceAtLeast(1)}",
+            style = HearthText.Caption,
+            color = palette.textSecondary,
+            modifier = Modifier.weight(1f).padding(start = Hearth.Spacing.XS, end = Hearth.Spacing.XS),
         )
+        GlyphBtn(Icons.Filled.SkipPrevious, "Previous clip", onBack, palette.text, enabled = !preparing)
+        Box(
+            Modifier.size(48.dp).clip(CircleShape)
+                .clickable(enabled = !preparing, role = Role.Button, onClick = onToggle),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                if (playing) "Pause read aloud" else "Play read aloud",
+                tint = palette.ember,
+                modifier = Modifier.size(30.dp).alpha(if (preparing) 0.38f else 1f),
+            )
+        }
         GlyphBtn(Icons.Filled.SkipNext, "Next clip", onForward, palette.text, enabled = !preparing)
         GlyphBtn(Icons.AutoMirrored.Outlined.Subject, "Read mode", onLyrics, palette.textSecondary)
         GlyphBtn(Icons.Outlined.Tune, "Read aloud settings", onTune, palette.textSecondary)
@@ -672,8 +719,8 @@ private fun StyleGlyph(icon: ImageVector, cd: String, onClick: () -> Unit) {
     val eink = Hearth.eink
     val shape = RoundedCornerShape(if (eink.sharpCorners) 0.dp else Hearth.Radius.Inner)
     Box(
-        Modifier.size(44.dp).clip(shape)
-            .clickable(onClick = onClick),
+        Modifier.size(48.dp).clip(shape)
+            .clickable(role = Role.Button, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Icon(icon, cd, tint = palette.textSecondary, modifier = Modifier.size(21.dp))
@@ -687,7 +734,8 @@ private fun InkSwatch(hex: String, selected: Boolean, onClick: () -> Unit) {
     val ring = if (eink.monochrome) palette.text else palette.ember
     val label = annotationColorLabel(hex)
     Box(
-        Modifier.size(44.dp).clip(CircleShape).clickable(onClick = onClick)
+        Modifier.size(48.dp).clip(CircleShape)
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
             .semantics { contentDescription = "$label ink" },
         contentAlignment = Alignment.Center,
     ) {
@@ -734,13 +782,17 @@ private fun ChromeBtn(icon: ImageVector, label: String, onClick: () -> Unit) {
 
 @Composable
 private fun GlyphBtn(icon: ImageVector, cd: String, onClick: () -> Unit, tint: Color, enabled: Boolean = true) {
-    Icon(
-        icon,
-        cd,
-        tint = tint.copy(alpha = if (enabled) tint.alpha else tint.alpha * 0.38f),
-        modifier = Modifier.clip(CircleShape).clickable(enabled = enabled, onClick = onClick)
-            .padding(Hearth.Spacing.S).size(24.dp),
-    )
+    Box(
+        Modifier.size(48.dp).clip(CircleShape).clickable(enabled = enabled, role = Role.Button, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            icon,
+            cd,
+            tint = tint.copy(alpha = if (enabled) tint.alpha else tint.alpha * 0.38f),
+            modifier = Modifier.size(24.dp),
+        )
+    }
 }
 
 private fun pageSummary(

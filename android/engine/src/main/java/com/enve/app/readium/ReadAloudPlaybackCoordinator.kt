@@ -64,6 +64,23 @@ internal data class ReadAloudPlaybackRevocation(
     val activeSessionId: String?,
 )
 
+internal class ReadAloudSpeedSelection {
+    private var sessionId: String? = null
+    private var speed: Float = 1f
+
+    @Synchronized
+    fun select(sessionId: String, speed: Float): Float? {
+        val target = readAloudPlaybackSpeed(speed) ?: return null
+        this.sessionId = sessionId
+        this.speed = target
+        return target
+    }
+
+    @Synchronized
+    fun speedFor(sessionId: String, prepared: Float): Float =
+        if (this.sessionId == sessionId) speed else prepared
+}
+
 @Singleton
 @androidx.annotation.OptIn(UnstableApi::class)
 class ReadAloudPlaybackCoordinator @Inject constructor(
@@ -87,6 +104,7 @@ class ReadAloudPlaybackCoordinator @Inject constructor(
     private var activeBookKey: String? = null
     private var desiredSessionId: String? = null
     private var commandGeneration: Long = 0L
+    private val speedSelection = ReadAloudSpeedSelection()
     private val sessionLossHandlers = mutableMapOf<String, () -> Unit>()
     private val generationLock = Any()
     private val commandMutex = Mutex()
@@ -161,7 +179,9 @@ class ReadAloudPlaybackCoordinator @Inject constructor(
                 .setMediaMetadata(metadata)
                 .build()
 
-            player.playbackParameters = PlaybackParameters(playbackSpeed.coerceIn(0.5f, 3.0f))
+            player.playbackParameters = PlaybackParameters(
+                speedSelection.speedFor(command.sessionId, playbackSpeed.coerceIn(0.5f, 3.0f)),
+            )
             player.setMediaItem(item, startPositionMs.coerceAtLeast(0L))
             player.prepare()
             if (playWhenReady) player.play() else player.pause()
@@ -227,12 +247,15 @@ class ReadAloudPlaybackCoordinator @Inject constructor(
     }
 
     fun setPlaybackSpeed(sessionId: String, speed: Float) {
-        val generation = currentCommandGeneration(sessionId) ?: return
+        val target = speedSelection.select(sessionId, speed) ?: return
         scope.launch {
             commandMutex.withLock {
                 val player = controller ?: return@withLock
-                if (!isCommandCurrent(sessionId, generation) || !isCurrentSession(player, sessionId)) return@withLock
-                player.playbackParameters = PlaybackParameters(speed.coerceIn(0.5f, 3.0f))
+                if (!isCurrentSession(player, sessionId)) return@withLock
+                val latest = speedSelection.speedFor(sessionId, target)
+                if (player.playbackParameters.speed != latest) {
+                    player.playbackParameters = player.playbackParameters.withSpeed(latest)
+                }
             }
         }
     }

@@ -32,4 +32,11 @@ class HearthDismissedShelfStore(private val prefs: SharedPreferences) {
         mutableKeys.value = updated
         prefs.edit().putStringSet("book_keys", updated).apply()
     }
+
+    fun restore(bookKey: String) {
+        if (bookKey !in mutableKeys.value) return
+        val updated = mutableKeys.value - bookKey
+        mutableKeys.value = updated
+        prefs.edit().putStringSet("book_keys", updated).apply()
+    }
 }

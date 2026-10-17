@@ -83,12 +83,12 @@ object ReadAloudEpubBuilder {
 
         val overlays = ArrayList<MediaOverlay>()
 
-        for (chapter in alignedChapters) {
+        for ((chapterIndex, chapter) in alignedChapters.withIndex()) {
             val ranges = chapter.allSentenceRanges.filter { it.duration > 0.0 }
             if (ranges.isEmpty()) continue
             val href = chapter.manifestItem.href
             val chapterPath = underOpf(href)
-            val basename = href.substringAfterLast('/').substringBeforeLast('.')
+            val basename = "chapter-$chapterIndex"
             val manifestId = chapter.manifestItem.id
 
             val originalXhtml = chapter.manifestItem.xhtml
@@ -151,7 +151,11 @@ object ReadAloudEpubBuilder {
         Element(org.jsoup.parser.Tag.valueOf("meta"), "").attr("refines", "#$refinesId").attr("property", property).text(text)
 
     private fun addItem(doc: Document, manifest: Element, id: String, href: String, mediaType: String) {
-        if (manifest.select("item").any { it.attr("id") == id || it.attr("href") == href }) return
+        manifest.select("item").firstOrNull { it.attr("id") == id }?.let {
+            it.attr("href", href).attr("media-type", mediaType)
+            return
+        }
+        if (manifest.select("item").any { it.attr("href") == href }) return
         val item = Element(org.jsoup.parser.Tag.valueOf("item"), "")
         item.attr("id", id).attr("href", href).attr("media-type", mediaType)
         manifest.appendChild(item)

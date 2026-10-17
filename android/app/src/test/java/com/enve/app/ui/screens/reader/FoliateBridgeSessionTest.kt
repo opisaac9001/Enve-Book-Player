@@ -47,7 +47,8 @@ class FoliateBridgeSessionTest {
         assertTrue(source.contains("setTimeout(publishSelection, 75)"))
         assertTrue(source.contains("doc.addEventListener('selectionchange', scheduleSelectionPublish)"))
         assertTrue(source.contains("doc.addEventListener('touchcancel'"))
-        assertTrue(source.contains("if (mediaType.includes('html'))"))
+        assertTrue(source.contains("markup ? 'application/xhtml+xml' : 'application/xml'"))
+        assertTrue(source.contains("if (markup) {"))
         assertTrue(source.contains("doc = new DOMParser().parseFromString(value, 'text/html')"))
         assertTrue(source.contains("compatibility:Invalid ${'$'}{mediaType || 'XML'} publication resource"))
     }

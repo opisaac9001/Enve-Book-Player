@@ -10,6 +10,14 @@ import org.junit.Test
 
 class AggregatorConnectionSelectionTest {
     @Test
+    fun `same numeric id on two connections keeps both books`() {
+        val first = Book(id = "12", title = "Romeo and Juliet", mediaType = AppMediaType.EBOOK, source = BookSource.GRIMMORY, connectionId = "grimmory-a")
+        val second = first.copy(title = "Hamlet", connectionId = "grimmory-b")
+
+        assertEquals(listOf(first, second), listOf(first, second, first).distinctBy(::catalogIdentity))
+    }
+
+    @Test
     fun `storyteller book never uses audiobookshelf connection id`() {
         val storyteller = connection("storyteller", BookSource.STORYTELLER)
         val audiobookshelf = connection("abs", BookSource.AUDIOBOOKSHELF)

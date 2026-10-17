@@ -9,6 +9,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import com.enve.engine.impl.R
+import com.enve.app.data.offline.DownloadRunOutcome
 import com.enve.app.profiles.ProfileRuntimeRegistry
 import com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
 import com.enve.core.data.remote.ConnectionScope
@@ -34,12 +35,17 @@ class AudiobookDownloadWorker @AssistedInject constructor(
             setForeground(foregroundInfo(book.title))
 
             val scopeElement = book.connectionId?.let { ConnectionScope.asContextElement(it) }
-            val ok = if (scopeElement != null) {
-                withContext(scopeElement) { manager.runDownload(book, requireWifi) }
+            val finalAttempt = runAttemptCount + 1 >= MAX_ATTEMPTS
+            val outcome = if (scopeElement != null) {
+                withContext(scopeElement) { manager.runDownload(book, requireWifi, finalAttempt) }
             } else {
-                manager.runDownload(book, requireWifi)
+                manager.runDownload(book, requireWifi, finalAttempt)
             }
-            if (ok) Result.success() else Result.retry()
+            when (outcome) {
+                DownloadRunOutcome.COMPLETED -> Result.success()
+                DownloadRunOutcome.RETRY -> Result.retry()
+                DownloadRunOutcome.FAILED -> Result.failure()
+            }
         }
     }
 
@@ -64,5 +70,6 @@ class AudiobookDownloadWorker @AssistedInject constructor(
         const val KEY_PROFILE_ID = "profile_id"
         const val KEY_REQUIRE_WIFI = "require_wifi"
         private const val NOTIFICATION_ID = 0xD0
+        private const val MAX_ATTEMPTS = 5
     }
 }

@@ -18,6 +18,7 @@ import javax.inject.Singleton
 
 private const val KEY_SESSIONS = "sessions"
 private const val KEY_DEVICE_ID = "device_id"
+private const val KEY_ACCOUNT_PREFIX = "account:"
 
 @Singleton
 class AbsLocalListeningStore(private val prefs: SharedPreferences) {
@@ -63,9 +64,16 @@ class AbsLocalListeningStore(private val prefs: SharedPreferences) {
     }
 
     suspend fun pending(connectionId: String, accountId: String?): List<AbsLocalListeningSession> = mutex.withLock {
-        load().filter { it.connectionId == connectionId && it.needsUpload &&
-            (it.accountId == null || it.accountId == accountId) }
+        AbsLocalListeningLedger.pendingFor(load(), connectionId, accountId)
     }
+
+    fun rememberAccount(connectionId: String, accountId: String) {
+        if (connectionId.isEmpty() || prefs.getString(KEY_ACCOUNT_PREFIX + connectionId, null) == accountId) return
+        prefs.edit().putString(KEY_ACCOUNT_PREFIX + connectionId, accountId).apply()
+    }
+
+    fun rememberedAccount(connectionId: String): String? =
+        connectionId.takeIf { it.isNotEmpty() }?.let { prefs.getString(KEY_ACCOUNT_PREFIX + it, null) }
 
     suspend fun markUploaded(uploaded: List<AbsLocalListeningSession>, rejectedIds: Set<String>) = mutex.withLock {
         save(AbsLocalListeningLedger.markUploaded(load(), uploaded, rejectedIds))
