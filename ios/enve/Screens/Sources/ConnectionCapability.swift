@@ -349,7 +349,7 @@ extension ConnectionCapability {
         iconColor: "orange",
         supportsUsernamePassword: true,
         supportsToken: true,
-        supportsOIDC: false,
+        supportsOIDC: true,
         supportsQuickConnect: false,
         supportsWebLogin: false,
         supportsBrowserSignIn: true,

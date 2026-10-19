@@ -30,7 +30,7 @@ struct PlayerChapterRibbon: View {
     private let gap: CGFloat = 2
     private let baseHeight: CGFloat = 5
     private let currentHeight: CGFloat = 8
-    private let hitHeight: CGFloat = 30
+    private let hitHeight: CGFloat = 44
     private let bubbleWidth: CGFloat = 76
 
     var body: some View {
@@ -66,6 +66,29 @@ struct PlayerChapterRibbon: View {
             .animation(.snappy(duration: 0.18), value: currentIndex(at: time))
         }
         .frame(height: hitHeight)
+        .accessibilityElement()
+        .accessibilityLabel(scope == .chapter ? "Chapter position" : "Book position")
+        .accessibilityValue(accessibilityPosition)
+        .accessibilityAdjustableAction { direction in
+            let step: TimeInterval = 30
+            let target: TimeInterval
+            switch direction {
+            case .increment: target = currentTime + step
+            case .decrement: target = currentTime - step
+            @unknown default: return
+            }
+            var bounds = 0...max(duration, 0)
+            if scope == .chapter, let currentChapter {
+                bounds = currentChapter.start...max(currentChapter.start, currentChapter.end)
+            }
+            onCommit(min(max(target, bounds.lowerBound), bounds.upperBound))
+        }
+    }
+
+    private var accessibilityPosition: String {
+        let total = scope == .chapter ? currentChapter?.duration ?? duration : duration
+        let elapsed = scope == .chapter ? currentTime - (currentChapter?.start ?? 0) : currentTime
+        return "\(HearthFormat.clock(max(elapsed, 0))) of \(HearthFormat.clock(total))"
     }
 
     private func segment(width: CGFloat, height: CGFloat, fill: Double) -> some View {

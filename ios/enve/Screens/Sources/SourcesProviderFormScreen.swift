@@ -129,12 +129,7 @@ struct SourcesProviderFormScreen: View {
                 if availableAuthMethods.contains(pending) {
                     authMethod = pending
                     if pending == .oidc || pending == .webLogin {
-
-                        connectTask = Task {
-                            try? await Task.sleep(for: .milliseconds(400))
-                            guard !Task.isCancelled else { return }
-                            await connect()
-                        }
+                        startConnect(after: .milliseconds(400))
                     }
                 }
             }
@@ -504,7 +499,7 @@ struct SourcesProviderFormScreen: View {
 
     private var connectButton: some View {
         Button {
-            connectTask = Task { await connect() }
+            startConnect()
         } label: {
             HStack(spacing: 8) {
                 if isConnecting {
@@ -597,6 +592,7 @@ struct SourcesProviderFormScreen: View {
 
     private var connectDisabled: Bool {
         if isConnecting { return true }
+        if EnveProvenance.serverAttribution(for: normalizedURL) != nil { return false }
         if normalizedURL.isEmpty { return true }
         switch authMethod {
         case .usernamePassword:
@@ -622,13 +618,31 @@ struct SourcesProviderFormScreen: View {
         capability.supportsBrowserSignIn || capability.supportsCustomHeaders || capability.supportsServiceTokens || capability.supportsMTLS
     }
 
+    private func startConnect(after delay: Duration? = nil) {
+        guard !isConnecting else { return }
+        isConnecting = true
+        connectTask = Task {
+            defer {
+                isConnecting = false
+                connectTask = nil
+            }
+            if let delay {
+                try? await Task.sleep(for: delay)
+                guard !Task.isCancelled else { return }
+            }
+            await connect()
+        }
+    }
+
     private func connect() async {
         errorMessage = nil
+        if let message = EnveProvenance.serverAttribution(for: normalizedURL) {
+            errorMessage = message
+            return
+        }
         statusMessage = "Connecting…"
-        isConnecting = true
 
         defer {
-            isConnecting = false
             statusMessage = nil
         }
 
@@ -672,6 +686,7 @@ struct SourcesProviderFormScreen: View {
                     serverURL: url,
                     customHeaders: headers.isEmpty ? nil : headers
                 )
+                try Task.checkCancellation()
                 quickConnectCode = result.code
                 isPollingQuickConnect = true
                 statusMessage = "Waiting for approval…"
@@ -695,6 +710,8 @@ struct SourcesProviderFormScreen: View {
                 )
             }
 
+            try Task.checkCancellation()
+
             if !connectionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 connection.name = connectionName
             }
@@ -713,6 +730,7 @@ struct SourcesProviderFormScreen: View {
             if capability.supportsLibrarySelection {
                 statusMessage = "Fetching libraries…"
                 let libs = try await delegate.fetchLibraries(connection: connection)
+                try Task.checkCancellation()
                 availableLibraries = libs
                 pendingConnection = connection
                 showingLibrarySelection = true
@@ -721,6 +739,7 @@ struct SourcesProviderFormScreen: View {
             }
         } catch is CancellationError {
         } catch {
+            guard !Task.isCancelled else { return }
             errorMessage = error.localizedDescription
         }
     }
@@ -730,6 +749,7 @@ struct SourcesProviderFormScreen: View {
         pendingConnection = nil
         var final = conn
         final.selectedLibraryIds = selectedLibraryIds.isEmpty ? nil : selectedLibraryIds
+        final.knownLibraryIds = Set(availableLibraries.map(\.id))
         finish(final)
     }
 

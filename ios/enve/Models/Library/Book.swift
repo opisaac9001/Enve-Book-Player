@@ -29,6 +29,7 @@ nonisolated public struct Book: Identifiable, Codable, Equatable, Sendable {
 
     var mediaType: AppMediaType = .audiobook
     var ebookFormat: String?
+    var comicMetadata: ComicMetadata?
     var epubLocator: String?
     var ebookProgress: Double?
     var ebookFileURL: URL?
@@ -115,6 +116,8 @@ nonisolated public struct Book: Identifiable, Codable, Equatable, Sendable {
     }
 
     nonisolated var isComic: Bool {
+        guard mediaType == .ebook else { return false }
+        if comicMetadata != nil { return true }
         let formats = [
             ebookFormat,
             ebookFileURL?.pathExtension,
@@ -263,6 +266,7 @@ nonisolated public struct Book: Identifiable, Codable, Equatable, Sendable {
         podcastName: String? = nil,
         mediaType: AppMediaType = .audiobook,
         ebookFormat: String? = nil,
+        comicMetadata: ComicMetadata? = nil,
         epubLocator: String? = nil,
         ebookProgress: Double? = nil,
         ebookFileURL: URL? = nil,
@@ -320,6 +324,7 @@ nonisolated public struct Book: Identifiable, Codable, Equatable, Sendable {
         self.podcastName = podcastName
         self.mediaType = mediaType
         self.ebookFormat = ebookFormat
+        self.comicMetadata = comicMetadata
         self.epubLocator = epubLocator
         self.ebookProgress = Self.normalizedFractionProgress(ebookProgress)
         self.ebookFileURL = ebookFileURL
@@ -381,6 +386,7 @@ nonisolated public struct Book: Identifiable, Codable, Equatable, Sendable {
         podcastName: String? = nil,
         mediaType: AppMediaType = .audiobook,
         ebookFormat: String? = nil,
+        comicMetadata: ComicMetadata? = nil,
         epubLocator: String? = nil,
         ebookProgress: Double? = nil,
         ebookFileURL: URL? = nil,
@@ -433,6 +439,7 @@ nonisolated public struct Book: Identifiable, Codable, Equatable, Sendable {
         self.podcastName = podcastName
         self.mediaType = mediaType
         self.ebookFormat = ebookFormat
+        self.comicMetadata = comicMetadata
         self.epubLocator = epubLocator
         self.ebookProgress = Self.normalizedFractionProgress(ebookProgress)
         self.ebookFileURL = ebookFileURL
@@ -519,6 +526,7 @@ nonisolated public struct Book: Identifiable, Codable, Equatable, Sendable {
 
         mediaType = try c.decodeIfPresent(AppMediaType.self, forKey: .mediaType) ?? .audiobook
         ebookFormat = try c.decodeIfPresent(String.self, forKey: .ebookFormat)
+        comicMetadata = try c.decodeIfPresent(ComicMetadata.self, forKey: .comicMetadata)
         epubLocator = try c.decodeIfPresent(String.self, forKey: .epubLocator)
         ebookProgress = Self.normalizedFractionProgress(try c.decodeIfPresent(Double.self, forKey: .ebookProgress))
         ebookFileURL = try c.decodeIfPresent(URL.self, forKey: .ebookFileURL)
@@ -772,6 +780,7 @@ nonisolated public struct Book: Identifiable, Codable, Equatable, Sendable {
             podcastName: podcastName,
             mediaType: mediaType,
             ebookFormat: ebookFormat,
+            comicMetadata: comicMetadata,
             epubLocator: epubLocator,
             ebookProgress: ebookProgress,
             ebookFileURL: ebookFileURL,

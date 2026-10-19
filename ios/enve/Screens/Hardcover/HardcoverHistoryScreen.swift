@@ -49,6 +49,7 @@ struct HardcoverHistoryScreen: View {
         .scrollIndicators(.hidden)
         .background(HearthBackground())
         .toolbar(.hidden, for: .navigationBar)
+        .hearthInteractiveBack()
         .task { await hardcoverLoadHistory() }
         .refreshable { await hardcoverLoadHistory() }
     }

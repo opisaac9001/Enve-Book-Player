@@ -46,6 +46,7 @@ struct HardcoverTrendingScreen: View {
         .scrollIndicators(.hidden)
         .background(HearthBackground())
         .toolbar(.hidden, for: .navigationBar)
+        .hearthInteractiveBack()
         .task { await hardcoverLoadTrending() }
         .refreshable { await hardcoverLoadTrending() }
     }

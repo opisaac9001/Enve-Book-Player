@@ -96,8 +96,7 @@ struct DownloadedEpubNarrationTests {
             let locations = ProfileStorageLocations(profileID: profile.id,
                 documentsDirectory: root.appendingPathComponent("Documents"),
                 applicationSupportDirectory: root.appendingPathComponent("Support"),
-                cachesDirectory: root.appendingPathComponent("Caches"),
-                legacyPlaybackStoreURL: root.appendingPathComponent("Playback.store"))
+                cachesDirectory: root.appendingPathComponent("Caches"))
             return try ProfileSession(profile: profile, storage: locations, defaults: UserDefaults(suiteName: domain))
         }
         func writeNarratedEpub(in directory: URL) throws -> URL {

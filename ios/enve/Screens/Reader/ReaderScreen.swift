@@ -9,10 +9,10 @@ struct ReaderScreen: View {
     let book: Book
 
     private let profileSession: ProfileSession
+    private var engine: EnveEngine { profileSession.engine }
     @StateObject private var model: ClassicReaderModel
     @Environment(\.hearth) private var hearth
     @Environment(\.shellNavigationStyle) private var shellNavigationStyle
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
 
@@ -29,7 +29,7 @@ struct ReaderScreen: View {
     @State private var ttsControlsVisible = false
     @State private var ttsControlsPresentedForSession = false
     @State private var initialChromeHideTask: Task<Void, Never>?
-    @State private var ttsControlsHideToken = UUID()
+    @State private var ttsControlsHideTask: Task<Void, Never>?
     @State private var defineRequest: ReaderDefineRequest?
     @State private var progressConflict: EbookSyncConflict?
     @State private var linkedAudiobook: Book?
@@ -46,6 +46,7 @@ struct ReaderScreen: View {
     @State private var footnoteFixtureTriggered = false
     @State private var readAloudFixtureTriggered = false
     @State private var ttsPlaybackFixtureTriggered = false
+    @State private var readerFontProbe: String?
     #endif
 
     init(book: Book, providerResolver: any LibraryProviderResolving, profileSession: ProfileSession = .owner) {
@@ -79,6 +80,16 @@ struct ReaderScreen: View {
             readerDimmer
         }
         .accessibilityIdentifier("reader-screen")
+        #if DEBUG
+        .overlay(alignment: .topLeading) {
+            if let readerFontProbe {
+                Text(readerFontProbe)
+                    .font(.caption2)
+                    .opacity(0.01)
+                    .accessibilityIdentifier("reader-font-probe")
+            }
+        }
+        #endif
         .overlay(alignment: .top) {
             if chromeVisible, model.state.isReady {
                 topVeil
@@ -228,7 +239,8 @@ struct ReaderScreen: View {
             }
             .enveEnvironment()
         }
-        .sheet(item: $tray) { presented in
+        // Explicit captures avoid the reproduced iOS 17 sheet update loop.
+        .sheet(item: $tray) { [model, ambient, book] presented in
             Group {
                 switch presented {
                 case .contents:
@@ -410,12 +422,20 @@ struct ReaderScreen: View {
             if model.isReadAloudMode {
                 showReadAloudControls(autoHide: !active)
             }
+            if !active, ttsControlsVisible {
+                showTTSControls(autoHide: true)
+            }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active, model.isReadAloudMode {
                 showReadAloudControls(autoHide: model.pendingSelection == nil)
             } else {
                 readAloudControlsHideTask?.cancel()
+            }
+            if phase == .active, ttsControlsVisible {
+                showTTSControls(autoHide: model.pendingSelection == nil)
+            } else if phase != .active {
+                ttsControlsHideTask?.cancel()
             }
         }
         .onChange(of: tray) { _, presented in
@@ -425,9 +445,7 @@ struct ReaderScreen: View {
             withAnimation(.smooth(duration: 0.35)) {
                 chromeVisible = false
             }
-            if !ttsControlsVisible {
-                showTTSControls(autoHide: true)
-            }
+            showTTSControls(autoHide: true)
         }
         .onChange(of: model.state.isReady) { _, ready in
             guard ready else { return }
@@ -448,6 +466,9 @@ struct ReaderScreen: View {
             {
                 footnoteFixtureTriggered = true
                 Task { await model.activateFirstFootnoteForTesting() }
+            }
+            if readerFontProbe == nil, ProcessInfo.processInfo.arguments.contains("--probe-reader-font") {
+                probeOpenDyslexicFont()
             }
             if !readAloudFixtureTriggered,
                 ProcessInfo.processInfo.arguments.contains("--exercise-read-aloud")
@@ -470,7 +491,7 @@ struct ReaderScreen: View {
                 #if DEBUG
                 if UserDefaults.standard.string(forKey: "imagineScreen") == "readerchrome" { return }
                 #endif
-                if tray == nil, model.pendingSelection == nil {
+                if tray == nil, model.pendingSelection == nil, !UIAccessibility.isVoiceOverRunning {
                     withAnimation(.smooth) { chromeVisible = false }
                 }
             }
@@ -635,6 +656,7 @@ struct ReaderScreen: View {
         case .readyComic:
             ComicReaderBridge(
                 pages: model.comicPages,
+                pageData: { try await model.comicPageData(at: $0) },
                 currentPageIndex: Binding(
                     get: { model.currentComicPageIndex },
                     set: { model.setComicPage($0) }
@@ -689,9 +711,13 @@ struct ReaderScreen: View {
                 .font(.hearthBookTitle)
                 .foregroundStyle(hearth.text)
                 .multilineTextAlignment(.center)
-            Text("Finding your page…")
+            Text(book.isComic ? "Opening comic…" : "Opening book…")
                 .font(.hearthCaption)
                 .foregroundStyle(hearth.textSecondary)
+            ReaderCloseControl { dismiss in
+                QuietButton(title: "Cancel", systemImage: "xmark") { dismiss() }
+            }
+            .padding(.top, 6)
         }
         .padding(.horizontal, 40)
     }
@@ -708,16 +734,22 @@ struct ReaderScreen: View {
                 .font(.hearthCaption)
                 .foregroundStyle(hearth.textSecondary)
                 .multilineTextAlignment(.center)
-            QuietButton(title: "Close") { dismiss() }
+            EmberButton(title: "Try again", systemImage: "arrow.clockwise") { model.retryOpen() }
+            ReaderCloseControl { dismiss in
+                QuietButton(title: "Close") { dismiss() }
+            }
                 .padding(.top, 6)
         }
         .padding(.horizontal, 40)
     }
 
     private var topVeil: some View {
-        ZStack {
+        ZStack(alignment: .top) {
             Overline(book.title)
-                .lineLimit(1)
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityLabel(book.title)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 13)
                 .background {
@@ -728,13 +760,16 @@ struct ReaderScreen: View {
                         tint: hearth.bgElevated
                     )
                 }
+                .frame(minHeight: 44)
                 .padding(.horizontal, 76)
             HStack {
                 Spacer()
-                GlyphButton(systemImage: "xmark", label: "Close") {
-                    Task { @MainActor in
-                        await model.saveProgressResolvingVisibleOverlay()
-                        dismiss()
+                ReaderCloseControl { dismiss in
+                    GlyphButton(systemImage: "xmark", label: "Close") {
+                        Task { @MainActor in
+                            await model.saveProgressResolvingVisibleOverlay()
+                            dismiss()
+                        }
                     }
                 }
             }
@@ -748,12 +783,16 @@ struct ReaderScreen: View {
         VStack(spacing: 12) {
             if isComicReader {
                 comicPositionControls
-            } else if !(model.isReadAloudMode && model.overlayPlayer != nil) {
-                ReaderFooterProgressPill(
+            } else {
+                ReaderFooterProgressRail(
                     progress: epubScrubProgress ?? model.currentProgress ?? 0,
                     tint: ambient,
                     ticks: ribbonTicks,
                     statusLine: epubScrubProgress.map { model.positionSummaryText(atProgress: $0) } ?? statusLine,
+                    chapterStatusLine: model.chapterPageSummaryText.flatMap { composedStatusLine(pages: $0) },
+                    // Narration keeps its own audio scrubber; a second book scrubber would compete with it.
+                    showsTrack: !(model.isReadAloudMode && model.overlayPlayer != nil),
+                    isScrubbing: epubScrubProgress != nil,
                     onScrub: { epubScrubProgress = $0 },
                     onCommit: { progress in
                         PlatformHaptics.selection()
@@ -967,8 +1006,12 @@ struct ReaderScreen: View {
     }
 
     private var statusLine: String? {
+        composedStatusLine(pages: model.pageSummaryText)
+    }
+
+    private func composedStatusLine(pages: String?) -> String? {
         var parts: [String] = []
-        if !model.isReadAloudMode, let pages = model.pageSummaryText {
+        if let pages {
             parts.append(pages)
         }
         if let minutes = model.minutesLeftInChapter, minutes > 0 {
@@ -990,13 +1033,17 @@ struct ReaderScreen: View {
     }
 
     private var comicStatusLine: String {
+        if comicScrubTargetIndex == nil, let spread = model.visiblePageRange, spread.count > 1, spread.upperBound <= comicPageTotal {
+            let progress = Double(spread.upperBound - 1) / Double(max(comicPageTotal - 1, 1))
+            return "Pages \(spread.lowerBound)–\(spread.upperBound) of \(comicPageTotal) · \(Int(progress * 100))%"
+        }
         let displayIndex = min(max(0, comicScrubTargetIndex ?? comicCurrentPageIndex), max(0, comicPageTotal - 1))
         let progress = comicPageTotal > 1 ? Double(displayIndex) / Double(comicPageTotal - 1) : 1
         return "Page \(displayIndex + 1) of \(comicPageTotal) · \(Int(progress * 100))%"
     }
 
     private var isComicAtEnd: Bool {
-        comicPageTotal > 0 && comicCurrentPageIndex >= comicPageTotal - 1
+        comicPageTotal > 0 && max(comicCurrentPageIndex, model.lastVisibleComicPageIndex) >= comicPageTotal - 1
     }
 
     private var showsNextSeriesPrompt: Bool {
@@ -1072,6 +1119,9 @@ struct ReaderScreen: View {
     @ViewBuilder
     private var floatingPills: some View {
         VStack(spacing: 10) {
+            if model.linkReturnLocatorJSON != nil {
+                linkReturnPill
+            }
             if !chromeVisible, readAloudControlsVisible, model.isReadAloudMode, model.overlayPlayer != nil {
                 ReaderNarratePill(
                     model: model,
@@ -1091,6 +1141,46 @@ struct ReaderScreen: View {
             }
         }
         .animation(.smooth(duration: 0.3), value: model.isReadAloudMode)
+        .animation(.smooth(duration: 0.25), value: model.linkReturnLocatorJSON != nil)
+    }
+
+    private var linkReturnPill: some View {
+        HStack(spacing: 0) {
+            Button {
+                PlatformHaptics.selection()
+                Task { await model.returnFromLinkJump() }
+            } label: {
+                Label("Back to reading", systemImage: "arrow.uturn.backward")
+                    .font(.hearthUI(14, weight: .semibold))
+                    .foregroundStyle(hearth.text)
+                    .padding(.leading, 16)
+                    .padding(.trailing, 8)
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(PressableStyle())
+            Button {
+                model.dismissLinkReturn()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.hearthUI(12, weight: .semibold))
+                    .foregroundStyle(hearth.textSecondary)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(PressableStyle())
+            .accessibilityLabel("Stay here")
+        }
+        .background {
+            HearthChromeBackground(
+                shape: .capsule,
+                fill: hearth.bgElevated,
+                stroke: hearth.hairline,
+                tint: hearth.bgElevated,
+                shadow: true
+            )
+        }
+        .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 
     private func annotateLayer(
@@ -1314,6 +1404,24 @@ struct ReaderScreen: View {
             }
     }
 
+    #if DEBUG
+    private func probeOpenDyslexicFont() {
+        readerFontProbe = "pending"
+        let previous = model.appearance.fontFamily
+        model.appearance.fontFamily = .openDyslexic
+        Task { @MainActor in
+            var result: String?
+            for _ in 0..<40 {
+                try? await Task.sleep(for: .milliseconds(250))
+                result = await model.readerFontProbeForTesting()
+                if result?.contains("Enve OpenDyslexic") == true, result?.contains("loaded") == true { break }
+            }
+            readerFontProbe = result ?? "unavailable"
+            model.appearance.fontFamily = previous
+        }
+    }
+    #endif
+
     private func toggleChrome() {
         initialChromeHideTask?.cancel()
         withAnimation(.smooth(duration: 0.35)) {
@@ -1333,7 +1441,8 @@ struct ReaderScreen: View {
                 model.overlayPlayer?.isPlaying == true,
                 model.pendingSelection == nil,
                 tray == nil,
-                bookmarkDraft == nil
+                bookmarkDraft == nil,
+                !UIAccessibility.isVoiceOverRunning
             else { return }
             withAnimation(.smooth(duration: 0.25)) { readAloudControlsVisible = false }
         }
@@ -1345,15 +1454,28 @@ struct ReaderScreen: View {
     }
 
     private func showTTSControls(autoHide: Bool) {
-        guard !ttsControlsVisible else { return }
-        withAnimation(.smooth(duration: 0.25)) {
-            ttsControlsVisible = true
+        ttsControlsHideTask?.cancel()
+        if !ttsControlsVisible {
+            withAnimation(.smooth(duration: 0.25)) {
+                ttsControlsVisible = true
+            }
         }
         guard autoHide else { return }
-        let token = UUID()
-        ttsControlsHideToken = token
-        DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
-            guard token == ttsControlsHideToken else { return }
+        ttsControlsHideTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(4))
+            guard !Task.isCancelled,
+                scenePhase == .active,
+                model.ttsService.isPlaying,
+                model.pendingSelection == nil,
+                tray == nil,
+                noteDraft == nil,
+                bookmarkDraft == nil,
+                defineRequest == nil,
+                progressConflict == nil,
+                !showingRestReminderSettings,
+                !showingLibrarian,
+                !UIAccessibility.isVoiceOverRunning
+            else { return }
             withAnimation(.smooth(duration: 0.25)) {
                 ttsControlsVisible = false
             }
@@ -1361,7 +1483,7 @@ struct ReaderScreen: View {
     }
 
     private func hideTTSControls() {
-        ttsControlsHideToken = UUID()
+        ttsControlsHideTask?.cancel()
         withAnimation(.smooth(duration: 0.25)) {
             ttsControlsVisible = false
         }
@@ -1436,6 +1558,7 @@ struct ReaderScreen: View {
         restReminder.stop()
         initialChromeHideTask?.cancel()
         readAloudControlsHideTask?.cancel()
+        ttsControlsHideTask?.cancel()
         model.tapHandler = nil
         model.doubleTapHandler = nil
         NotificationCenter.default.post(name: .ebookReaderDismissed, object: nil)
@@ -1521,7 +1644,28 @@ struct ReaderScreen: View {
     }
 
     private func findNextSeriesIssue() async -> Book? {
+        if let sequence = engine.readerOpen.readingSequence,
+            let index = sequence.firstIndex(of: book.uniqueId) {
+            for id in sequence.dropFirst(index + 1) {
+                if let next = await engine.library.book(uniqueId: id) { return next }
+            }
+            return nil
+        }
         guard book.mediaType == .ebook, let series = book.series else { return nil }
+        if book.isComic, let aggregate = await engine.library.seriesAggregate(for: book) {
+            var offset = 0
+            var foundCurrent = false
+            while !Task.isCancelled {
+                let page = await engine.library.seriesBooksPage(for: aggregate, mediaScope: ["ebook"], offset: offset, limit: 200)
+                for issue in page {
+                    if foundCurrent { return issue }
+                    if issue.uniqueId == book.uniqueId { foundCurrent = true }
+                }
+                if page.count < 200 { return nil }
+                offset += page.count
+            }
+            return nil
+        }
         let siblings = DetailSeriesOrder.sorted(await profileSession.appState.bookStore.books(inSeries: series))
             .filter { $0.mediaType == .ebook && (!isComicBook(book) || isComicBook($0)) }
         guard let currentIndex = siblings.firstIndex(where: { $0.stableId == book.stableId }) else {
@@ -1534,7 +1678,7 @@ struct ReaderScreen: View {
         model.saveProgress()
         dismissedNextSeriesPrompt = true
         PlatformHaptics.selection()
-        profileSession.appState.presentation.selectedEbookForDetail = issue
+        engine.playback.openEbook(issue, readingSequence: engine.readerOpen.readingSequence)
     }
 
     private func dismissNextSeriesPrompt() {
@@ -1543,11 +1687,22 @@ struct ReaderScreen: View {
     }
 
     private func isComicBook(_ book: Book) -> Bool {
+        if book.isComic { return true }
         if let format = book.ebookFormat?.lowercased(), ["cbz", "cbr", "cb7", "cbt"].contains(format) {
             return true
         }
         guard let ext = book.ebookFileURL?.pathExtension.lowercased() else { return false }
         return ["cbz", "cbr", "cb7", "cbt"].contains(ext)
+    }
+}
+
+// Keep dismiss out of the sheet presenter to avoid an iOS 17 update loop.
+private struct ReaderCloseControl<Content: View>: View {
+    @Environment(\.dismiss) private var dismiss
+    let content: (DismissAction) -> Content
+
+    var body: some View {
+        content(dismiss)
     }
 }
 
@@ -1561,84 +1716,100 @@ private struct ReaderNoteDraft: Identifiable {
     let text: String
 }
 
-private struct ReaderFooterProgressPill: View {
+private struct ReaderFooterProgressRail: View {
     let progress: Double
     let tint: SwiftUI.Color
     let ticks: [Double]
     let statusLine: String?
+    let chapterStatusLine: String?
+    let showsTrack: Bool
+    let isScrubbing: Bool
     let onScrub: (Double) -> Void
     let onCommit: (Double) -> Void
 
     @Environment(\.hearth) private var hearth
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @AppStorage("reader.showsChapterPages") private var showsChapterPages = false
 
     var body: some View {
-        VStack(spacing: 7) {
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule()
-                        .fill(trackColor)
-                        .frame(height: 5)
-                    Capsule()
-                        .fill(tint)
-                        .frame(width: max(4, geo.size.width * clamped), height: 5)
-                    ForEach(ticks.filter { $0 > 0.005 && $0 < 0.995 }, id: \.self) { tick in
-                        Rectangle()
-                            .fill(hearth.bgElevated.opacity(0.9))
-                            .frame(width: 1.5, height: 5)
-                            .offset(x: geo.size.width * tick)
+        VStack(spacing: 0) {
+            if showsTrack {
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(trackColor)
+                            .frame(height: 3)
+                        Capsule()
+                            .fill(tint)
+                            .frame(width: max(3, geo.size.width * clamped), height: 3)
+                        ForEach(ticks.filter { $0 > 0.005 && $0 < 0.995 }, id: \.self) { tick in
+                            Rectangle()
+                                .fill(hearth.bgElevated.opacity(0.9))
+                                .frame(width: 1.5, height: 3)
+                                .offset(x: geo.size.width * tick)
+                        }
+                        Circle()
+                            .fill(tint)
+                            .stroke(hearth.bgElevated, lineWidth: 2)
+                            .frame(width: 11, height: 11)
+                            .offset(x: thumbOffset(width: geo.size.width))
                     }
-                    Circle()
-                        .fill(tint)
-                        .stroke(hearth.bgElevated, lineWidth: 2)
-                        .frame(width: 13, height: 13)
-                        .offset(x: thumbOffset(width: geo.size.width))
+                    .frame(maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                onScrub(ReaderScrubGeometry.progress(at: value.location.x, width: geo.size.width))
+                            }
+                            .onEnded { value in
+                                onCommit(ReaderScrubGeometry.progress(at: value.location.x, width: geo.size.width))
+                            }
+                    )
                 }
-                .frame(maxHeight: .infinity)
-                .contentShape(Rectangle())
-                .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .onChanged { value in
-                            onScrub(ReaderScrubGeometry.progress(at: value.location.x, width: geo.size.width))
-                        }
-                        .onEnded { value in
-                            onCommit(ReaderScrubGeometry.progress(at: value.location.x, width: geo.size.width))
-                        }
-                )
-            }
-            .frame(height: 20)
-            .accessibilityElement()
-            .accessibilityLabel("Reading progress")
-            .accessibilityValue(statusLine ?? "\(Int(clamped * 100)) percent")
-            .accessibilityAdjustableAction { direction in
-                let step = 0.02
-                switch direction {
-                case .increment: onCommit(min(1, clamped + step))
-                case .decrement: onCommit(max(0, clamped - step))
-                @unknown default: break
+                .frame(height: 44)
+                .accessibilityElement()
+                .accessibilityLabel("Reading progress")
+                .accessibilityValue(statusLine ?? "\(Int(clamped * 100)) percent")
+                .accessibilityAdjustableAction { direction in
+                    let step = 0.02
+                    switch direction {
+                    case .increment: onCommit(min(1, clamped + step))
+                    case .decrement: onCommit(max(0, clamped - step))
+                    @unknown default: break
+                    }
                 }
+                .accessibilityIdentifier("reader-progress-slider")
             }
-            .accessibilityIdentifier("reader-progress-slider")
 
-            if let statusLine {
-                Text(statusLine)
-                    .font(.hearthUI(13, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(hearth.text)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.82)
+            if let chapterStatusLine {
+                let showsChapter = showsChapterPages && !isScrubbing
+                Button {
+                    guard !isScrubbing else { return }
+                    showsChapterPages.toggle()
+                } label: {
+                    caption(showsChapter ? chapterStatusLine : statusLine ?? chapterStatusLine)
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .top)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(isScrubbing)
+                .accessibilityValue(showsChapter ? "Pages in chapter" : "Pages in book")
+                .accessibilityHint(showsChapterPages ? "Show pages in book" : "Show pages in chapter")
+                .accessibilityIdentifier("reader-page-scope-toggle")
+            } else if let statusLine {
+                caption(statusLine)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 11)
-        .background {
-            HearthChromeBackground(
-                shape: .capsule,
-                fill: hearth.bgElevated.opacity(hearth.isInk ? 0.92 : 0.96),
-                stroke: hearth.hairline,
-                tint: tint,
-                interactive: false,
-                shadow: true
-            )
-        }
+    }
+
+    private func caption(_ text: String) -> some View {
+        Text(text)
+            .font(.hearthUI(13, weight: .semibold).monospacedDigit())
+            .foregroundStyle(hearth.text)
+            .multilineTextAlignment(.center)
+            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+            .minimumScaleFactor(dynamicTypeSize.isAccessibilitySize ? 1 : 0.82)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     private var clamped: Double {
@@ -1650,7 +1821,7 @@ private struct ReaderFooterProgressPill: View {
     }
 
     private func thumbOffset(width: CGFloat) -> CGFloat {
-        let diameter: CGFloat = 13
+        let diameter: CGFloat = 11
         return (width - diameter) * clamped
     }
 }
@@ -1727,7 +1898,8 @@ private struct ReaderNextSeriesPrompt: View {
                     Image(systemName: "xmark")
                         .font(.hearthUI(12, weight: .semibold))
                         .foregroundStyle(hearth.textSecondary)
-                        .frame(width: 34, height: 34)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(PressableStyle())
                 .accessibilityLabel("Dismiss next issue")
@@ -1789,7 +1961,8 @@ private struct ReaderRestPrompt: View {
                     Image(systemName: "xmark")
                         .font(.hearthUI(12, weight: .semibold))
                         .foregroundStyle(colors.text.opacity(0.65))
-                        .frame(width: 34, height: 34)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(PressableStyle())
                 .accessibilityLabel("Dismiss rest reminder")
@@ -1807,7 +1980,8 @@ private struct ReaderRestPrompt: View {
                         .padding(.horizontal, 16)
                         .padding(.vertical, 10)
                         .overlay(Capsule().strokeBorder(colors.text.opacity(0.28), lineWidth: 1))
-                        .contentShape(Capsule())
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(PressableStyle())
             }
@@ -1869,7 +2043,7 @@ private struct ComicPageScrubber: View {
                     }
             )
         }
-        .frame(height: 28)
+        .frame(height: 44)
         .accessibilityLabel("Page scrubber")
         .accessibilityValue("Page \(bounded(targetIndex ?? currentIndex) + 1) of \(totalPages)")
     }
@@ -1928,6 +2102,7 @@ private struct ReaderReadAloudBar: View {
                                 .frame(width: geo.size.width * progress, height: 4)
                                 .animation(.easeInOut(duration: 0.25), value: progress)
                         }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .contentShape(Rectangle())
                         .gesture(
                             DragGesture(minimumDistance: 0)
@@ -1951,7 +2126,7 @@ private struct ReaderReadAloudBar: View {
                                 }
                         )
                     }
-                    .frame(height: 18)
+                    .frame(height: 44)
                     .accessibilityElement()
                     .accessibilityLabel("Read Aloud position")
                     .accessibilityValue("\(timeText(displayTime)) elapsed, \(timeText(remainingTime)) remaining")
@@ -1992,7 +2167,8 @@ private struct ReaderReadAloudBar: View {
                         .foregroundStyle(hearth.bg)
                         .frame(width: 42, height: 42)
                         .background(Circle().fill(hearth.ember))
-                        .contentShape(Circle())
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(PressableStyle())
                 .accessibilityLabel(player.isPlaying ? "Pause Read Aloud" : "Play Read Aloud")
@@ -2008,30 +2184,15 @@ private struct ReaderReadAloudBar: View {
                 .accessibilityIdentifier("Reader.ReadAloud.Next")
             }
 
-            HStack(spacing: 8) {
-                readAloudIconButton("bookmark", label: "Bookmark current Read Aloud position") {
-                    onBookmark()
+            // Narrow widths such as compact Slide Over cannot fit six 44pt targets in one row.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    positionControls
+                    playbackOptionControls
                 }
-
-                readAloudIconButton("arrow.triangle.2.circlepath", label: "Sync audio to visible page") {
-                    model.syncAudioToVisiblePage()
-                }
-
-                readAloudIconButton(
-                    model.appearance.readAloudHighlightEnabled ? "eye.slash" : "eye",
-                    label: model.appearance.readAloudHighlightEnabled ? "Hide Read Aloud highlight" : "Show Read Aloud highlight"
-                ) {
-                    model.toggleReadAloudHighlighting()
-                }
-
-                speedMenu
-
-                readAloudIconButton("slider.horizontal.3", label: "Read Aloud settings") {
-                    onSettings()
-                }
-
-                readAloudIconButton("xmark", label: "Stop Read Aloud") {
-                    onStop()
+                VStack(spacing: 8) {
+                    HStack(spacing: 8) { positionControls }
+                    HStack(spacing: 8) { playbackOptionControls }
                 }
             }
         }
@@ -2047,6 +2208,37 @@ private struct ReaderReadAloudBar: View {
             )
         }
         .accessibilityIdentifier("Reader.ReadAloud")
+    }
+
+    @ViewBuilder
+    private var positionControls: some View {
+        readAloudIconButton("bookmark", label: "Bookmark current Read Aloud position") {
+            onBookmark()
+        }
+
+        readAloudIconButton("arrow.triangle.2.circlepath", label: "Sync audio to visible page") {
+            model.syncAudioToVisiblePage()
+        }
+
+        readAloudIconButton(
+            model.appearance.readAloudHighlightEnabled ? "eye.slash" : "eye",
+            label: model.appearance.readAloudHighlightEnabled ? "Hide Read Aloud highlight" : "Show Read Aloud highlight"
+        ) {
+            model.toggleReadAloudHighlighting()
+        }
+    }
+
+    @ViewBuilder
+    private var playbackOptionControls: some View {
+        speedMenu
+
+        readAloudIconButton("slider.horizontal.3", label: "Read Aloud settings") {
+            onSettings()
+        }
+
+        readAloudIconButton("xmark", label: "Stop Read Aloud") {
+            onStop()
+        }
     }
 
     private var speedMenu: some View {
@@ -2082,6 +2274,8 @@ private struct ReaderReadAloudBar: View {
                     Capsule()
                         .fill(hearth.text.opacity(0.10))
                 }
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
         }
         .accessibilityLabel("Read Aloud speed")
         .accessibilityIdentifier("Reader.ReadAloud.Speed")
@@ -2105,7 +2299,7 @@ private struct ReaderReadAloudBar: View {
             Image(systemName: systemImage)
                 .font(.hearthUI(14, weight: .semibold))
                 .foregroundStyle(hearth.text)
-                .frame(width: 34, height: 34)
+                .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
         }
         .buttonStyle(PressableStyle())
@@ -2141,7 +2335,7 @@ private struct ReaderReadAloudBar: View {
     }
 
     private func speedLabel(_ speed: Double) -> String {
-        String(format: "%.2gx", speed)
+        String(format: "%gx", speed)
     }
 }
 
@@ -2245,7 +2439,7 @@ private struct ReaderNarratePill: View {
             Image(systemName: systemImage)
                 .font(.hearthUI(primary ? 15 : 13, weight: .semibold))
                 .foregroundStyle(primary ? hearth.text : hearth.textSecondary)
-                .frame(width: 38, height: 42)
+                .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
         }
         .accessibilityLabel(label)

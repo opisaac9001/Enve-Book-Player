@@ -71,6 +71,7 @@ struct HardcoverSearchScreen: View {
         .scrollIndicators(.hidden)
         .background(HearthBackground())
         .toolbar(.hidden, for: .navigationBar)
+        .hearthInteractiveBack()
         .onChange(of: query) { _, newValue in
             hardcoverDebounce(newValue)
         }

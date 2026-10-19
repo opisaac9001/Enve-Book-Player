@@ -77,6 +77,7 @@ struct SourcesQuickConnectScreen: View {
         }
         .background(HearthBackground())
         .toolbar(.hidden, for: .navigationBar)
+        .hearthInteractiveBack()
         .onDisappear { probeTask?.cancel() }
         .sheet(item: $detected, onDismiss: {
             guard didAddSource else { return }
@@ -141,6 +142,8 @@ struct SourcesQuickConnectScreen: View {
         guard !Task.isCancelled else { return }
 
         switch outcome {
+        case .attribution(let message):
+            errorMessage = message
         case .identified(let server):
             detected = server
         case .oidcIssuerOnly:

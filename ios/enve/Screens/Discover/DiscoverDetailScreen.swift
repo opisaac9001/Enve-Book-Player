@@ -49,6 +49,7 @@ struct DiscoverDetailScreen: View {
         .scrollIndicators(.hidden)
         .background(HearthBackground())
         .toolbar(.hidden, for: .navigationBar)
+        .hearthInteractiveBack()
         .task { await discoverFindInLibrary() }
         .sheet(isPresented: $showsHardcoverPicker) {
             if let pendingHardcoverStatus {

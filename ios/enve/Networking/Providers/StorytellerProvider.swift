@@ -53,7 +53,7 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
         streamingServer = StorytellerStreamingServer(isolatesCredentials: profileSession != nil)
         if let profileSession {
             positions = { [unowned profileSession] in profileSession.playback.storytellerPositions }
-            metadataLayering = MetadataLayeringManager(playbackStateManager: profileSession.playbackState, localStorage: profileSession.localStorage, providerConnections: profileSession.providerConnections)
+            metadataLayering = MetadataLayeringManager(localStorage: profileSession.localStorage, providerConnections: profileSession.providerConnections)
         } else {
             positions = { .shared }
             metadataLayering = .shared
@@ -239,6 +239,7 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
     }
 
     func loginWithCredentials(usernameOrEmail: String, password: String) async throws -> String {
+        try EnveProvenance.checkServerAddress(connection.url)
         let boundary = UUID().uuidString
         var bodyData = Data()
         func appendField(_ name: String, _ value: String) {
@@ -287,6 +288,7 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
     }
 
     func validateConnection() async throws -> Bool {
+        try EnveProvenance.checkServerAddress(connection.url)
         let request = try makeRequest(path: "/api/v2/user")
         let (_, http) = try await send(request)
         if http.statusCode == 200 {

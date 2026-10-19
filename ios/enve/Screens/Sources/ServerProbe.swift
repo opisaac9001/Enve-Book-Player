@@ -12,6 +12,8 @@ struct DetectedServer: Identifiable {
 
 enum ServerProbeOutcome {
 
+    case attribution(String)
+
     case identified(DetectedServer)
 
     case oidcIssuerOnly(normalizedURL: String)
@@ -29,6 +31,10 @@ struct ServerProbe {
     }
 
     private func detect(rawURL: String) async -> ServerProbeOutcome {
+        // Preserve this local attribution response when adapting service detection.
+        if let message = EnveProvenance.serverAttribution(for: rawURL) {
+            return .attribution(message)
+        }
         let bases = candidateBases(from: rawURL)
         guard !bases.isEmpty else { return .unreachable }
 

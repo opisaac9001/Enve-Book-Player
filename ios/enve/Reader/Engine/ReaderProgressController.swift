@@ -16,6 +16,7 @@ protocol ReaderProgressHosting: AnyObject {
     var progressSectionTitle: String? { get }
     var progressTotalPages: Int { get }
     var progressComicPageIndex: Int { get }
+    var progressLastVisibleComicPageIndex: Int { get }
     var progressStablePDFPageIndex: Int { get }
     var progressPDFController: PDFReaderController? { get }
     func progressLocatorAtOrBefore(progression: Double) -> Locator?
@@ -410,12 +411,14 @@ final class ReaderProgressController {
         guard profileSession.serverSyncEnabled, let adapter else { return }
         let usesMediaOverlayPosition = book.hasEPUB3MediaOverlay || readAloud.hasMediaOverlay
 
-        let currentLocation = adapter.currentLocatorJSON.flatMap {
-            try? Locator(jsonString: $0)
+        func readerMovedSinceOpen() -> Bool {
+            let currentLocation = adapter.currentLocatorJSON.flatMap {
+                try? Locator(jsonString: $0)
+            }
+            return userNavigatedEPUBBeforeHydration
+                || ReaderLocationController.locationsDiffer(initialEPUBLocationAtOpen, currentLocation)
         }
-        if userNavigatedEPUBBeforeHydration
-            || ReaderLocationController.locationsDiffer(initialEPUBLocationAtOpen, currentLocation)
-        {
+        if readerMovedSinceOpen() {
             AppLogger.sync.debug("Skipping server jump bookDiagnosticID=\(bookDiagnosticID): user moved")
             return
         }
@@ -454,7 +457,8 @@ final class ReaderProgressController {
             }
             targetJSON = try? targetLocator.jsonString()
         }
-        guard profileSession.serverSyncEnabled else { return }
+        // Resolving a media-overlay target awaits; the reader may have been paged meanwhile.
+        guard profileSession.serverSyncEnabled, !readerMovedSinceOpen() else { return }
         bridgeSession?.setRestoreTarget(
             locatorJSON: targetJSON,
             fallbackProgression: fallbackProgression
@@ -491,6 +495,7 @@ final class ReaderProgressController {
                 state: state,
                 currentProgress: observedProgression ?? currentProgress,
                 currentComicPageIndex: host?.progressComicPageIndex ?? 0,
+                lastVisibleComicPageIndex: host?.progressLastVisibleComicPageIndex ?? 0,
                 lastStablePDFPageIndex: host?.progressStablePDFPageIndex ?? 0,
                 totalPages: host?.progressTotalPages ?? 0,
                 pdfController: host?.progressPDFController
@@ -609,8 +614,10 @@ final class ReaderProgressController {
             }
             try? await Task.sleep(for: .milliseconds(100))
         }
+        // User interaction clears the session's restore target; never jump after the reader moved.
         guard !Task.isCancelled,
             isJavaScriptReady,
+            bridgeSession?.restoreTargetLocatorJSON != nil,
             let script = ReadiumPortableAnchorScript.restore(
                 locatorJSON: targetLocatorJSON
             ),
@@ -707,6 +714,13 @@ final class ReaderProgressController {
     }
 
     func saveProgressResolvingVisibleOverlay() async {
+        switch state {
+        case .readyComic, .readyPDF:
+            saveProgress()
+            return
+        default:
+            break
+        }
         if readAloud.isActive {
             readAloud.syncPositionNow(allowRegression: true)
             return

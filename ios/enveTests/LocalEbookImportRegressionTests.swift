@@ -49,6 +49,24 @@ struct LocalEbookImportRegressionTests {
         #expect(metadata.epub3Features?.smilFileCount == 1)
     }
 
+    @Test func kepubOpensAsEpubAndRetainsArchiveFeatures() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let epubURL = try await makeReadAloudEPUB(in: directory)
+        let kepubURL = directory.appendingPathComponent("read-aloud.kepub")
+        try FileManager.default.moveItem(at: epubURL, to: kepubURL)
+
+        #expect(EbookFormat.from(fileExtension: kepubURL.pathExtension) == .epub)
+        #expect(EbookFormat.allExtensions.contains("kepub"))
+
+        let metadata = try await LocalEbookImporter.shared.extractMetadata(from: kepubURL)
+
+        #expect(metadata.title == "Read Aloud Regression")
+        #expect(metadata.epub3Features?.hasMediaOverlay == true)
+        #expect(metadata.epub3Features?.smilFileCount == 1)
+    }
+
     private func makeReadAloudEPUB(in root: URL) async throws -> URL {
         let contents = root.appendingPathComponent("contents", isDirectory: true)
         let write: (String, Data) throws -> Void = { path, data in

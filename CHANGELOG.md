@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-10-19
+
+Source update for iOS 1.2.6 and Android 1.2 build 55.
+
+- iOS adds comic series, volumes, and specials; streamed Kavita and Komga pages; consistent offline availability; and bounded reading cache.
+- iOS includes reader, playback, authentication, profile, and download fixes, plus an Audiobooks only preference.
+- Prevent a crash when queued library updates finish after switching profiles.
+- Android keeps skip-button numbers proportional to their icons at larger text sizes.
+- Series queries and presentation state have separate files. Unused helpers, duplicate logic, and temporary implementation notes were removed.
+
+### Verification
+
+- iOS: 1,518 tests passed, 32 skipped. Comic navigation and accessibility checks passed on iPhone Air and iPad; tvOS and Watch builds passed.
+- Android: 1,287 unit tests passed, one skipped; debug and minified release builds passed. Pixel playback and skip controls were exercised at enlarged text size.
+- Sensitive-source and provenance checks passed on both platforms.
+
+Existing SMB dependency compiler warnings remain. Live-provider tests requiring local configuration and physical-device comic performance checks remain outside this verification.
+
 ## 2026-10-09
 
 Public source update to iOS 1.2.6 and Android 1.2 build 53.

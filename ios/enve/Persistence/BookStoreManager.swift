@@ -17,7 +17,7 @@ final class BookStoreManager {
 
     private static let appliedSchemaVersionKey = "enve.bookstore.appliedSchemaVersion"
 
-    static var currentSchemaVersionString: String { BookStoreSchemaV1.versionString }
+    static var currentSchemaVersionString: String { BookStoreSchemaV2.versionString }
 
     static var lastAppliedSchemaVersionString: String? {
         UserDefaults.standard.string(forKey: appliedSchemaVersionKey)
@@ -47,7 +47,7 @@ final class BookStoreManager {
     }
 
     private init() {
-        let schema = Schema(versionedSchema: BookStoreSchemaV1.self)
+        let schema = Schema(versionedSchema: BookStoreSchemaV2.self)
         let config = Self.configuration(schema: schema, storeURL: Self.storeURL)
         databaseURL = Self.storeURL
         defaults = .standard
@@ -144,10 +144,10 @@ final class BookStoreManager {
             at: databaseURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        let schema = Schema(versionedSchema: BookStoreSchemaV1.self)
+        let schema = Schema(versionedSchema: BookStoreSchemaV2.self)
         let configuration = Self.configuration(schema: schema, storeURL: databaseURL)
         container = try Self.openContainer(schema: schema, configuration: configuration)
-        repository = SwiftDataBookStore(container: container)
+        repository = SwiftDataBookStore(container: container, ebookImporter: try LocalEbookImporter(storage: storage))
         _ = try BookStoreSQLTuner.apply(to: databaseURL)
         defaults.set(Self.currentSchemaVersionString, forKey: Self.appliedSchemaVersionKey)
     }

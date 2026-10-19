@@ -2,19 +2,18 @@ import Foundation
 import ReadiumZIPFoundation
 import UnrarKit
 
-enum ComicReadingDirection: Sendable {
-    case leftToRight
-    case rightToLeft
-}
-
-final class ComicArchiveService: @unchecked Sendable {
+nonisolated final class ComicArchiveService: @unchecked Sendable {
     static let shared = ComicArchiveService()
 
     private let fileManager = FileManager.default
     private let imageExtensions: Set<String> = ["jpg", "jpeg", "png", "webp", "gif", "bmp", "avif"]
 
     private let lock = NSLock()
-    private var inFlightExtractions: [String: Task<[URL], any Error>] = [:]
+    private struct Extraction {
+        let id: UUID
+        let task: Task<[URL], Error>
+    }
+    private var inFlightExtractions: [String: Extraction] = [:]
 
     private let cachesDirectory: URL
 
@@ -23,28 +22,32 @@ final class ComicArchiveService: @unchecked Sendable {
     }
 
     func extractedPages(from archiveURL: URL, bookId: String) async throws -> [URL] {
-        let existing: Task<[URL], any Error>? = lock.withLock { inFlightExtractions[bookId] }
-        if let existing {
-            return try await existing.value
+        try Task.checkCancellation()
+        let extraction = lock.withLock {
+            if let existing = inFlightExtractions[bookId] { return existing }
+            let task = Task.detached(priority: .userInitiated) { [self] in
+                try await performExtraction(from: archiveURL, bookId: bookId)
+            }
+            let pending = Extraction(id: UUID(), task: task)
+            inFlightExtractions[bookId] = pending
+            return pending
         }
-
-        let archiveURL = archiveURL
-        let task = Task.detached(priority: .userInitiated) { [self] in
-            try await self.performExtraction(from: archiveURL, bookId: bookId)
+        defer {
+            lock.withLock {
+                if inFlightExtractions[bookId]?.id == extraction.id { inFlightExtractions[bookId] = nil }
+            }
         }
-
-        lock.withLock { inFlightExtractions[bookId] = task }
-        do {
-            let pages = try await task.value
-            _ = lock.withLock { inFlightExtractions.removeValue(forKey: bookId) }
-            return pages
-        } catch {
-            _ = lock.withLock { inFlightExtractions.removeValue(forKey: bookId) }
-            throw error
+        let pages = try await withTaskCancellationHandler {
+            try await extraction.task.value
+        } onCancel: {
+            extraction.task.cancel()
         }
+        try Task.checkCancellation()
+        return pages
     }
 
     private func performExtraction(from archiveURL: URL, bookId: String) async throws -> [URL] {
+        try Task.checkCancellation()
         let extractionDirectory = try extractionDirectory(for: bookId)
         let manifestURL = extractionDirectory.appendingPathComponent("manifest.json")
         let currentSignature = try sourceSignature(for: archiveURL)
@@ -106,6 +109,7 @@ final class ComicArchiveService: @unchecked Sendable {
 
         var extractedPages: [URL] = []
         for (index, entry) in imageEntries.enumerated() {
+            try Task.checkCancellation()
             let ext = (entry.path as NSString).pathExtension.lowercased()
             let sanitizedName = sanitizeFilename((entry.path as NSString).lastPathComponent)
             let outputURL = extractionDirectory.appendingPathComponent(
@@ -166,6 +170,15 @@ final class ComicArchiveService: @unchecked Sendable {
         return extractedPages
     }
 
+    // Older Komga downloads saved CBZ and CBR files under an .epub name.
+    func isComicArchiveWithoutEPUBContainer(_ url: URL) async -> Bool {
+        if isRARArchive(at: url) { return true }
+        guard let archive = try? await Archive(url: url, accessMode: .read),
+            let entries = try? await archive.entries()
+        else { return false }
+        return !entries.contains { $0.path.caseInsensitiveCompare("META-INF/container.xml") == .orderedSame }
+    }
+
     func readingDirection(from archiveURL: URL) async -> ComicReadingDirection? {
         let data: Data?
         if isRARArchive(at: archiveURL) {
@@ -215,7 +228,8 @@ final class ComicArchiveService: @unchecked Sendable {
         let parser = XMLParser(data: data)
         let delegate = MangaElementParser()
         parser.delegate = delegate
-        guard parser.parse() else { return nil }
+        // The delegate aborts once Manga is read, which makes parse() report failure.
+        _ = parser.parse()
 
         switch delegate.value?.lowercased() {
         case "yesandrighttoleft": return .rightToLeft
@@ -322,12 +336,14 @@ final class ComicArchiveService: @unchecked Sendable {
         return outputURL
     }
 
-    private func extractionDirectory(for bookId: String) throws -> URL {
-
-        let directory =
-            cachesDirectory
+    func cacheDirectory(for bookId: String) -> URL {
+        cachesDirectory
             .appendingPathComponent("ComicPages", isDirectory: true)
             .appendingPathComponent(sanitizeFilename(bookId), isDirectory: true)
+    }
+
+    private func extractionDirectory(for bookId: String) throws -> URL {
+        let directory = cacheDirectory(for: bookId)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
     }
@@ -399,12 +415,12 @@ final class ComicArchiveService: @unchecked Sendable {
     }
 }
 
-private struct ArchiveManifest: Codable, Equatable, Sendable {
+nonisolated private struct ArchiveManifest: Codable, Equatable, Sendable {
     let modifiedAt: TimeInterval
     let fileSize: Int64
 }
 
-private final class MangaElementParser: NSObject, XMLParserDelegate {
+nonisolated private final class MangaElementParser: NSObject, XMLParserDelegate {
     private(set) var value: String?
     private var capturing = false
     private var buffer = ""
@@ -435,7 +451,7 @@ private final class MangaElementParser: NSObject, XMLParserDelegate {
     }
 }
 
-private enum ComicArchiveError: LocalizedError {
+nonisolated private enum ComicArchiveError: LocalizedError {
     case cacheDirectoryUnavailable
     case invalidArchive(String)
     case noImagesFound(String)

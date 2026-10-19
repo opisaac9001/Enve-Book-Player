@@ -145,7 +145,10 @@ enum ReaderNotebookMerge {
                         isRemotePlaceholder: true
                     )
                 )
-            case .highlight, .note:
+            case .note:
+                // Note ids belong to the book-notes table; those merge through applyingGrimmoryBookNotes.
+                continue
+            case .highlight:
                 if mergedAnnotations.contains(where: { $0.remoteID == entry.id }) { continue }
                 mergedAnnotations.append(
                     ReaderAnnotation(
@@ -215,6 +218,74 @@ enum ReaderNotebookMerge {
         }
 
         return Snapshot(bookmarks: mergedBookmarks, annotations: mergedAnnotations)
+    }
+
+    @MainActor
+    static func applyingGrimmoryBookNotes(
+        _ records: [BookloreProvider.RemoteBookNoteRecord],
+        to snapshot: Snapshot,
+        bookID: String,
+        bookStableID: String,
+        connectionID: UUID,
+        idMap: any GrimmoryBookNoteIDMapping
+    ) -> Snapshot {
+        var mergedAnnotations = snapshot.annotations
+
+        for record in records {
+            let remoteDate = providerDate(record.updatedAt) ?? providerDate(record.createdAt) ?? Date()
+            let note = record.noteContent.flatMap { $0.isEmpty ? nil : $0 }
+            let mappedLocalID = idMap.localID(connectionID: connectionID, bookID: bookStableID, noteID: record.id)
+            if let mappedLocalID, let index = mergedAnnotations.firstIndex(where: { $0.id == mappedLocalID }) {
+                guard remoteDate > mergedAnnotations[index].updatedAt else { continue }
+                let existing = mergedAnnotations[index]
+                let locator = locatorJSON(fromCFI: record.cfi, existingLocator: existing.locator)
+                mergedAnnotations[index] = ReaderAnnotation(
+                    id: existing.id,
+                    bookId: existing.bookId,
+                    locator: locator,
+                    position: existing.position,
+                    text: record.selectedText.flatMap { $0.isEmpty ? nil : $0 } ?? existing.text,
+                    note: note,
+                    colorHex: record.color ?? existing.colorHex,
+                    style: existing.style,
+                    chapterTitle: record.chapterTitle ?? existing.chapterTitle,
+                    createdAt: existing.createdAt,
+                    updatedAt: remoteDate,
+                    remoteID: existing.remoteID,
+                    isRemotePlaceholder: locator == nil
+                )
+                continue
+            }
+
+            if let mappedLocalID {
+                idMap.removeNoteID(connectionID: connectionID, bookID: bookStableID, localID: mappedLocalID)
+            }
+            let locator = locatorJSON(fromCFI: record.cfi, existingLocator: nil)
+            let annotation = ReaderAnnotation(
+                bookId: bookID,
+                locator: locator,
+                text: record.selectedText.flatMap { $0.isEmpty ? nil : $0 } ?? note ?? "Synced note",
+                note: note,
+                colorHex: record.color ?? "#FFF59D",
+                chapterTitle: record.chapterTitle,
+                createdAt: providerDate(record.createdAt) ?? Date(),
+                updatedAt: remoteDate,
+                isRemotePlaceholder: locator == nil
+            )
+            idMap.setNoteID(record.id, connectionID: connectionID, bookID: bookStableID, localID: annotation.id)
+            mergedAnnotations.append(annotation)
+        }
+
+        let remoteIDs = Set(records.map(\.id))
+        mergedAnnotations.removeAll { annotation in
+            guard let noteID = idMap.noteID(connectionID: connectionID, bookID: bookStableID, localID: annotation.id),
+                !remoteIDs.contains(noteID)
+            else { return false }
+            idMap.removeNoteID(connectionID: connectionID, bookID: bookStableID, localID: annotation.id)
+            return true
+        }
+
+        return Snapshot(bookmarks: snapshot.bookmarks, annotations: mergedAnnotations)
     }
 
     static func providerDate(_ rawValue: String?) -> Date? {

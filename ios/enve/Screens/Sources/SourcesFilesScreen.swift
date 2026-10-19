@@ -191,8 +191,11 @@ struct SourcesDocumentPicker: UIViewControllerRepresentable {
             let types: [UTType] = [
                 .audio,
                 UTType("org.idpf.epub-container") ?? .epub,
+                UTType(filenameExtension: "kepub") ?? .data,
                 .pdf,
                 .zip,
+                UTType(filenameExtension: "cbz") ?? .zip,
+                UTType(filenameExtension: "cbr") ?? .archive,
                 UTType(filenameExtension: "mp3") ?? .audio,
                 UTType(filenameExtension: "m4b") ?? .audio,
                 UTType(filenameExtension: "m4a") ?? .audio,

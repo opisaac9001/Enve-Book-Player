@@ -128,8 +128,7 @@ struct ProfileOfflineStorageTests {
             profileID: profileID,
             documentsDirectory: root.appendingPathComponent("Documents", isDirectory: true),
             applicationSupportDirectory: root.appendingPathComponent("ApplicationSupport", isDirectory: true),
-            cachesDirectory: root.appendingPathComponent("Caches", isDirectory: true),
-            legacyPlaybackStoreURL: root.appendingPathComponent("ApplicationSupport/default.store")
+            cachesDirectory: root.appendingPathComponent("Caches", isDirectory: true)
         )
     }
 }

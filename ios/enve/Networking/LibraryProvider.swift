@@ -138,8 +138,17 @@ protocol EbookDownloadProvider: ProviderConnectionHandling {
 }
 
 protocol ServerPageProvider: ProviderConnectionHandling {
+    func canStreamPages(for book: Book) -> Bool
     func fetchPageCount(for book: Book) async throws -> Int
     func fetchPage(_ pageNumber: Int, for book: Book) async throws -> Data
+}
+
+extension ServerPageProvider {
+    func canStreamPages(for book: Book) -> Bool { book.isComic }
+}
+
+protocol ComicReadingDirectionProvider: ProviderConnectionHandling {
+    func fetchComicReadingDirection(for book: Book) async throws -> ComicReadingDirection?
 }
 
 protocol PersonalRatingProvider: ProviderConnectionHandling {

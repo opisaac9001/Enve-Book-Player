@@ -58,6 +58,7 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
     }
 
     func validateConnection() async throws -> Bool {
+        try EnveProvenance.checkServerAddress(connection.url)
         AppLogger.network.info("[JellyfinProvider] URL: \(URL(string: connection.url)?.redacted.absoluteString ?? "<invalid>")")
         AppLogger.network.info("[JellyfinProvider] Has username: \(connection.username != nil ? "YES" : "NO")")
         AppLogger.network.info("[JellyfinProvider] Has userId: \(connection.userId != nil ? "YES" : "NO")")

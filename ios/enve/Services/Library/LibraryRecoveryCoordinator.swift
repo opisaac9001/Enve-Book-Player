@@ -832,9 +832,11 @@ final class LibraryRecoveryCoordinator {
     func pruneStaleBooksCacheEarly() {
         guard !library.books.isEmpty else { return }
         let activeConnections = providerConnections.connections.filter { !$0.isArchived }
+        guard !activeConnections.isEmpty else { return }
         let validProviderIds = Set(activeConnections.map { $0.id })
-        guard !validProviderIds.isEmpty || !activeConnections.isEmpty else { return }
-
+        #if DEBUG && os(iOS)
+            .union(SyntheticLibrarySeeder.providerIds)
+        #endif
         let allowedLibraryIdsByProvider: [UUID: Set<String>?] = Dictionary(
             activeConnections.map { ($0.id, $0.selectedLibraryIds) },
             uniquingKeysWith: { _, new in new }
@@ -867,6 +869,9 @@ final class LibraryRecoveryCoordinator {
 
         let activeConnections = providerConnections.connections.filter { !$0.isArchived }
         let validProviderIds = Set(activeConnections.map { $0.id })
+        #if DEBUG && os(iOS)
+            .union(SyntheticLibrarySeeder.providerIds)
+        #endif
         stores.mirrorCheckpoints.retainConnections(validProviderIds)
         stores.opdsProgressionEndpoints.retainConnections(validProviderIds)
         stores.opdsAuthentication.retainConnections(validProviderIds)
@@ -967,7 +972,7 @@ final class LibraryRecoveryCoordinator {
             )
         }
 
-        let activeProviderIdStrings: Set<String> = Set(activeConnections.map { $0.id.uuidString })
+        let activeProviderIdStrings = Set(validProviderIds.map(\.uuidString))
         let restrictedLibraryIds: [String: Set<String>] = Dictionary(
             uniqueKeysWithValues: activeConnections.compactMap { connection in
                 guard let allowed = connection.selectedLibraryIds, !allowed.isEmpty else { return nil }

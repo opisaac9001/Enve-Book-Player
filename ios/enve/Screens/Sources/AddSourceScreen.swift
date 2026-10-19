@@ -199,6 +199,7 @@ private struct AddSourceTile: View {
     let action: () -> Void
 
     @Environment(\.hearth) private var hearth
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         Button(action: action) {
@@ -207,8 +208,9 @@ private struct AddSourceTile: View {
                 Text(provider.title)
                     .font(.hearthUI(12, weight: .medium))
                     .foregroundStyle(hearth.text)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                    .minimumScaleFactor(dynamicTypeSize.isAccessibilitySize ? 1 : 0.8)
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 16)

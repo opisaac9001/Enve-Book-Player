@@ -342,6 +342,8 @@ final class LocalStorageManager {
     func localAudiobookFilesIfExists(for book: Book) -> [URL]? {
         for id in ownedCandidateBookIds(for: book) {
             if let files = localAudiobookFilesIfExists(bookId: id), !files.isEmpty {
+                if book.source == .plex, let tracks = book.audioTracks, tracks.count > 1,
+                    files.count != tracks.count { continue }
                 return files
             }
         }
@@ -515,6 +517,7 @@ final class LocalStorageManager {
                 let rootIds =
                     items
                     .filter { url in
+                        guard !url.lastPathComponent.hasPrefix(".enve-download-") else { return false }
                         var isDir: ObjCBool = false
                         return fileManager.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
                     }
@@ -556,6 +559,7 @@ final class LocalStorageManager {
             }
 
             for item in items {
+                guard !item.lastPathComponent.hasPrefix(".enve-download-") else { continue }
                 if let values = try? item.resourceValues(forKeys: [.isDirectoryKey]),
                     values.isDirectory == true
                 {

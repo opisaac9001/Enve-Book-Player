@@ -110,25 +110,61 @@ struct BrowseNarratorAggregate: Sendable, Hashable {
     let representativeThumb: String?
 }
 
-struct BrowseSeriesAggregate: Sendable, Hashable {
+struct BrowseSeriesAggregate: Sendable, Hashable, Identifiable {
+    let id: String
     let name: String
     let bookCount: Int
     let completedBookCount: Int
     let representativeThumb: String?
     let matchingNames: [String]
+    let isComic: Bool
+    let providerId: UUID?
+    let libraryId: String?
+    let comicSeriesID: String?
+    let resumeBookUniqueID: String?
+    let resumeBookLastUpdate: Date?
+    let sections: [ComicSeriesSectionSummary]
+    let volumes: [ComicVolumeSummary]
+    let standaloneBookUniqueID: String?
 
+    // Comic identity is scoped to connection and library; legacy comics without a server series ID use the exact title.
     nonisolated init(
         name: String,
         bookCount: Int,
         completedBookCount: Int = 0,
         representativeThumb: String?,
-        matchingNames: [String]? = nil
+        matchingNames: [String]? = nil,
+        isComic: Bool = false,
+        providerId: UUID? = nil,
+        libraryId: String? = nil,
+        comicSeriesID: String? = nil,
+        resumeBookUniqueID: String? = nil,
+        resumeBookLastUpdate: Date? = nil,
+        sections: [ComicSeriesSectionSummary] = [],
+        volumes: [ComicVolumeSummary] = [],
+        standaloneBookUniqueID: String? = nil
     ) {
+        if isComic {
+            let scope = "\(providerId?.uuidString ?? "")|\(libraryId ?? "")"
+            id = standaloneBookUniqueID.map { "comic|\(scope)|book:\($0)" }
+                ?? comicSeriesID.map { "comic|\(scope)|id:\($0)" } ?? "comic|\(scope)|title:\(name)"
+        } else {
+            id = "series|\(providerId?.uuidString ?? "")|\(libraryId ?? "")|\(name)"
+        }
         self.name = name
         self.bookCount = bookCount
         self.completedBookCount = min(max(completedBookCount, 0), bookCount)
         self.representativeThumb = representativeThumb
         self.matchingNames = matchingNames ?? [name]
+        self.isComic = isComic
+        self.providerId = providerId
+        self.libraryId = libraryId
+        self.comicSeriesID = comicSeriesID
+        self.resumeBookUniqueID = resumeBookUniqueID
+        self.resumeBookLastUpdate = resumeBookLastUpdate
+        self.sections = sections
+        self.volumes = volumes
+        self.standaloneBookUniqueID = standaloneBookUniqueID
     }
 
     nonisolated var unreadBookCount: Int {
@@ -137,6 +173,16 @@ struct BrowseSeriesAggregate: Sendable, Hashable {
 
     nonisolated var readingStatusText: String {
         unreadBookCount == 0 ? "All read" : "\(unreadBookCount) unread"
+    }
+
+    nonisolated func includes(_ book: Book) -> Bool {
+        if let providerId, book.providerId != providerId { return false }
+        if let libraryId, book.libraryId != libraryId { return false }
+        guard isComic else { return !book.isComic }
+        guard book.isComic else { return false }
+        if let standaloneBookUniqueID { return book.uniqueId == standaloneBookUniqueID }
+        if let comicSeriesID { return book.comicMetadata?.seriesID == comicSeriesID }
+        return book.comicMetadata == nil
     }
 }
 
@@ -267,6 +313,12 @@ protocol BookQuerying: Sendable {
     func browseNarratorAggregates(mediaType: String) async -> [BrowseNarratorAggregate]
     func browseSeriesAggregates(mediaType: String) async -> [BrowseSeriesAggregate]
     func browseSeriesAggregates(mediaType: String, providerId: UUID, libraryId: String?) async -> [BrowseSeriesAggregate]
+    func seriesAggregate(for aggregate: BrowseSeriesAggregate) async -> BrowseSeriesAggregate?
+    func seriesBooksPage(for aggregate: BrowseSeriesAggregate, mediaScope: [String], offset: Int, limit: Int) async -> [Book]
+    func seriesBooksPage(for aggregate: BrowseSeriesAggregate, mediaScope: [String], offset: Int, limit: Int, slice: ComicSeriesSlice) async -> [Book]
+    func comicBooksPage(sourceFilter: LibrarySourceFilter, offset: Int, limit: Int) async -> [Book]
+    func comicBookCount(sourceFilter: LibrarySourceFilter) async -> Int
+    func comicBooksPage(sourceFilter: LibrarySourceFilter, offset: Int, limit: Int, sort: [BookStoreSortDescriptor]) async -> [Book]
     func books(byAuthor author: String, mediaType: String, limit: Int) async -> [Book]
     func books(byAuthorNames authorNames: [String], mediaType: String, limit: Int) async -> [Book]
     func books(byNarrator narrator: String, mediaType: String, limit: Int) async -> [Book]
@@ -278,6 +330,95 @@ protocol BookQuerying: Sendable {
     func bookCount(providerId: UUID, mediaType: String?) async -> Int
     func hasData() async -> Bool
     func searchBooks(query: String, libraryId: String?, providerId: UUID?, limit: Int) async -> [Book]
+}
+
+// In-memory defaults for fakes; SwiftDataBookStore filters, orders and pages in the store.
+extension BookQuerying {
+    func seriesBooksPage(for aggregate: BrowseSeriesAggregate, mediaScope: [String], offset: Int, limit: Int, slice: ComicSeriesSlice) async -> [Book] {
+        guard limit > 0 else { return [] }
+        let books = await seriesBooksPage(for: aggregate, mediaScope: mediaScope, offset: 0, limit: await bookCount())
+        return Array(books.filter { slice.includes($0.comicMetadata) }.dropFirst(max(0, offset)).prefix(limit))
+    }
+    func seriesAggregate(for aggregate: BrowseSeriesAggregate) async -> BrowseSeriesAggregate? {
+        let groups = await browseSeriesAggregates(mediaType: "ebook")
+        return groups.first { $0.id == aggregate.id }
+    }
+    func seriesBooksPage(for aggregate: BrowseSeriesAggregate, mediaScope: [String], offset: Int, limit: Int) async -> [Book] {
+        guard limit > 0 else { return [] }
+        if let id = aggregate.standaloneBookUniqueID {
+            guard offset == 0, let book = await book(uniqueId: id),
+                aggregate.includes(book),
+                mediaScope.isEmpty || mediaScope.contains(book.mediaType.rawValue) else { return [] }
+            return [book]
+        }
+        let members = await books(inSeriesNames: aggregate.matchingNames)
+            .filter { aggregate.includes($0) && (mediaScope.isEmpty || mediaScope.contains($0.mediaType.rawValue)) }
+            .sorted(by: seriesMemberOrder)
+        return Array(members.dropFirst(max(0, offset)).prefix(limit))
+    }
+
+    func comicBooksPage(sourceFilter: LibrarySourceFilter, offset: Int, limit: Int) async -> [Book] {
+        guard limit > 0 else { return [] }
+        let comics = await allBooks()
+            .filter { $0.isComic && sourceFilter.includes($0) }
+            .sorted { lhs, rhs in
+                let order = (lhs.series ?? "").localizedStandardCompare(rhs.series ?? "")
+                if order != .orderedSame { return order == .orderedAscending }
+                if lhs.comicMetadata?.seriesID != rhs.comicMetadata?.seriesID {
+                    return (lhs.comicMetadata?.seriesID ?? "") < (rhs.comicMetadata?.seriesID ?? "")
+                }
+                return seriesMemberOrder(lhs, rhs)
+            }
+        return Array(comics.dropFirst(max(0, offset)).prefix(limit))
+    }
+
+    func comicBooksPage(sourceFilter: LibrarySourceFilter, offset: Int, limit: Int, sort: [BookStoreSortDescriptor]) async -> [Book] {
+        guard limit > 0 else { return [] }
+        let count = await bookCount()
+        let sorted: [Book]
+        switch sourceFilter {
+        case .library(let providerId, let libraryId):
+            sorted = await sortedPagedBooks(libraryId: libraryId, providerId: providerId, offset: 0, limit: count, mediaType: "ebook", sort: sort)
+        case .connection(let id):
+            sorted = await sortedPagedBooks(providerId: id, offset: 0, limit: count, mediaType: "ebook", sort: sort)
+        case .all, .device:
+            sorted = await sortedPagedBooks(offset: 0, limit: count, mediaType: "ebook", sort: sort)
+        }
+        return Array(sorted.filter { $0.isComic && sourceFilter.includes($0) }.dropFirst(max(0, offset)).prefix(limit))
+    }
+
+    func comicBookCount(sourceFilter: LibrarySourceFilter) async -> Int {
+        await allBooks().count { $0.isComic && sourceFilter.includes($0) }
+    }
+}
+
+private nonisolated func seriesMemberOrder(_ lhs: Book, _ rhs: Book) -> Bool {
+    func key(_ book: Book) -> [Double] {
+        let metadata = book.comicMetadata
+        return [
+            Double(metadata?.section.sortOrder ?? 0),
+            metadata?.volumeOrder ?? .greatestFiniteMagnitude,
+            metadata?.issueOrder ?? .greatestFiniteMagnitude,
+            BookSortKeys.seriesNumber(book.seriesSequence),
+        ]
+    }
+    let l = key(lhs)
+    let r = key(rhs)
+    if l != r { return l.lexicographicallyPrecedes(r) }
+    let title = lhs.title.localizedStandardCompare(rhs.title)
+    if title != .orderedSame { return title == .orderedAscending }
+    return lhs.uniqueId < rhs.uniqueId
+}
+
+private extension LibrarySourceFilter {
+    nonisolated func includes(_ book: Book) -> Bool {
+        switch self {
+        case .all: true
+        case .device: book.source == .local || book.source == .smb
+        case .connection(let id): book.providerId == id
+        case .library(let providerId, let libraryId): book.providerId == providerId && book.libraryId == libraryId
+        }
+    }
 }
 
 protocol BookWriting: Sendable {

@@ -70,6 +70,7 @@ struct PlayerScreen: View {
             rebuildChapters()
         }
         .onChange(of: playerVM.chapters) { rebuildChapters() }
+        .onChange(of: profileSession.preferences.readingEnabled) { refreshReadAloudAvailability() }
         .onChange(of: playerVM.currentBook?.chapters) { rebuildChapters() }
         .onChange(of: engine.playback.currentBook?.chapters) { rebuildChapters() }
         .onChange(of: playerVM.duration) {
@@ -143,13 +144,14 @@ struct PlayerScreen: View {
         } message: {
             Text("This device and the server remember different positions. Choose where to pick up.")
         }
+        .hearthDismissGesture(.cover) { dismiss() }
     }
 
     private func content(book: Book) -> some View {
         GeometryReader { geo in
             let coverWidth = dynamicTypeSize.isAccessibilitySize
                 ? min(geo.size.width * 0.56, 220)
-                : min(geo.size.width * 0.78, (geo.size.height * 0.42) / book.hearthCoverRatio)
+                : min(geo.size.width * 0.78, (geo.size.height * (playerVM.error == nil ? 0.42 : 0.31)) / book.hearthCoverRatio)
             if dynamicTypeSize.isAccessibilitySize {
                 ScrollView {
                     playerLayout(book: book, coverWidth: coverWidth)
@@ -189,6 +191,20 @@ struct PlayerScreen: View {
                 .padding(.horizontal, 28)
             Spacer(minLength: 20)
             transportRow(book: book)
+            if let error = playerVM.error, !playerVM.isLoading {
+                VStack(spacing: 8) {
+                    Text(error.localizedDescription)
+                        .font(.hearthUI(13))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .multilineTextAlignment(.center)
+                    Button("Retry") { engine.playback.play(book) }
+                        .font(.hearthUI(15, weight: .semibold))
+                        .accessibilityIdentifier("playback-retry")
+                }
+                .foregroundStyle(hearth.text)
+                .padding(.horizontal, 24)
+                .padding(.top, 10)
+            }
             Spacer(minLength: 18)
             utilityRow(book: book)
                 .padding(.horizontal, 20)
@@ -201,7 +217,7 @@ struct PlayerScreen: View {
         HStack {
             GlyphButton(systemImage: "chevron.down", label: "Close player") { dismiss() }
             Spacer()
-            if engine.playback.currentBook?.mediaType == .audiobook {
+            if engine.playback.currentBook?.mediaType == .audiobook, profileSession.preferences.readingEnabled {
                 Menu {
                     if linkedEbook != nil {
                         Button("Switch to reading", systemImage: "book", action: switchToReading)
@@ -218,10 +234,13 @@ struct PlayerScreen: View {
                     }
                 } label: {
                     Image(systemName: "book")
+                        .font(.system(size: 17 * Hearth.visionFactor))
                         .frame(width: 44, height: 44)
                         .foregroundStyle(hearth.text)
+                        .contentShape(Rectangle())
                 }
                 .accessibilityLabel("Reading options")
+                .accessibilityShowsLargeContentViewer()
             }
             queueButton
             PlayerAirPlayButton(tint: hearth.text, activeTint: ambient)
@@ -303,6 +322,7 @@ struct PlayerScreen: View {
                 guard playerVM.isPlaybackLoaded else { return }
                 playerVM.seek(to: playerVM.duration > 0 ? min(time, playerVM.duration) : time)
             }
+            .hearthDismissGestureExclusion()
             PlayerScrubScopeToggle(
                 selection: Binding(
                     get: { activeScrubScope },
@@ -311,7 +331,10 @@ struct PlayerScreen: View {
                 chapterEnabled: chapterScrubbingAvailable,
                 tint: ambient
             )
-            HStack(spacing: 8) {
+            let labelLayout = dynamicTypeSize.isAccessibilitySize
+                ? AnyLayout(VStackLayout(spacing: 0))
+                : AnyLayout(HStackLayout(spacing: 8))
+            labelLayout {
                 Text(scrubLeftLabel)
                 Spacer()
                 if let centerLabel = scrubCenterLabel {
@@ -363,6 +386,7 @@ struct PlayerScreen: View {
                     playerVM.togglePlay()
                 }
             }
+            .disabled(playerVM.isLoading)
             GlyphButton(
                 systemImage: skipForwardGlyph,
                 size: 56,
@@ -453,8 +477,8 @@ struct PlayerScreen: View {
         // Check the book here. The overlay session may not be ready yet, which can hide the toggle.
         let available = engine.playback.currentBook?.epub3Features?.hasMediaOverlay == true
             || profileSession.playback.mediaOverlay.activeResult != nil
-        isReadAloudBook = available
-        if !available { readModeOn = false }
+        isReadAloudBook = available && profileSession.preferences.readingEnabled
+        if !isReadAloudBook { readModeOn = false }
     }
 
     private var scrubScope: PlayerScrubScope {
@@ -615,18 +639,20 @@ private struct PlayerScrubScopeToggle: View {
                     Text(scope.title)
                         .font(.hearthUI(12, weight: selection == scope ? .semibold : .medium))
                         .foregroundStyle(foreground(for: scope))
-                        .frame(minWidth: 76)
-                        .padding(.vertical, 7)
+                        .frame(minWidth: 76, minHeight: 36)
                         .background {
                             Capsule()
                                 .fill(selection == scope ? tint : .clear)
                         }
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(PressableStyle())
                 .disabled(scope == .chapter && !chapterEnabled)
+                .accessibilityAddTraits(selection == scope ? .isSelected : [])
             }
         }
-        .padding(3)
+        .padding(.horizontal, 4)
         .background {
             HearthChromeBackground(
                 shape: .capsule,

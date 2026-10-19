@@ -12,6 +12,8 @@ struct ReaderAnnotateBar: View {
 
     @Environment(\.hearth) private var hearth
 
+    private static let target: CGFloat = 44
+
     private static let inks: [(hex: String, label: String)] = [
         ("#FFF59D", "Yellow highlight"),
         ("#A5D6A7", "Green highlight"),
@@ -22,7 +24,7 @@ struct ReaderAnnotateBar: View {
     var body: some View {
         GeometryReader { proxy in
             let compact = proxy.size.width < 390
-            HStack(spacing: compact ? 5 : 10) {
+            HStack(spacing: compact ? 4 : 8) {
                 selectedColorButton(compact: compact)
                 colorMenu(compact: compact)
 
@@ -35,8 +37,8 @@ struct ReaderAnnotateBar: View {
                 barGlyph("character.book.closed", label: "Define", compact: compact, action: onDefine)
                 styleMenu(compact: compact)
             }
-            .padding(.horizontal, compact ? 9 : 14)
-            .padding(.vertical, compact ? 8 : 10)
+            .padding(.horizontal, compact ? 6 : 10)
+            .padding(.vertical, (ReaderAnnotationToolbarLayout.barHeight - Self.target) / 2)
             .frame(maxWidth: proxy.size.width - 28)
             .background {
                 HearthChromeBackground(
@@ -62,7 +64,7 @@ struct ReaderAnnotateBar: View {
                 .overlay {
                     Circle().strokeBorder(hearth.text, lineWidth: 2)
                 }
-                .frame(width: compact ? 32 : 38, height: compact ? 32 : 38)
+                .frame(width: Self.target, height: Self.target)
                 .contentShape(Rectangle())
         }
         .buttonStyle(PressableStyle())
@@ -98,7 +100,7 @@ struct ReaderAnnotateBar: View {
                     .strokeBorder(hearth.hairline, lineWidth: 1)
                     .frame(width: compact ? 23 : 26, height: compact ? 23 : 26)
             }
-            .frame(width: compact ? 32 : 38, height: compact ? 32 : 38)
+            .frame(width: Self.target, height: Self.target)
             .contentShape(Rectangle())
         }
         .buttonStyle(PressableStyle())
@@ -120,7 +122,7 @@ struct ReaderAnnotateBar: View {
             Image(systemName: "ellipsis")
                 .font(.hearthUI(compact ? 15 : 17, weight: .medium))
                 .foregroundStyle(hearth.text)
-                .frame(width: compact ? 27 : 31, height: compact ? 31 : 34)
+                .frame(width: Self.target, height: Self.target)
                 .contentShape(Rectangle())
         }
         .buttonStyle(PressableStyle())
@@ -136,7 +138,8 @@ struct ReaderAnnotateBar: View {
             Image(systemName: systemImage)
                 .font(.hearthUI(compact ? 14 : 16, weight: .medium))
                 .foregroundStyle(hearth.text)
-                .frame(width: compact ? 27 : 31, height: compact ? 31 : 34)
+                .frame(width: Self.target, height: Self.target)
+                .contentShape(Rectangle())
         }
         .buttonStyle(PressableStyle())
         .accessibilityLabel(label)

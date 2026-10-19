@@ -454,7 +454,8 @@ enum EbookFormat: String, CaseIterable {
     }
 
     nonisolated static func from(fileExtension: String) -> EbookFormat? {
-        return EbookFormat(rawValue: fileExtension.lowercased())
+        let normalized = fileExtension.lowercased()
+        return normalized == "kepub" ? .epub : EbookFormat(rawValue: normalized)
     }
 
     nonisolated static func isImagePageExtension(_ ext: String) -> Bool {
@@ -472,27 +473,27 @@ enum EbookFormat: String, CaseIterable {
         }
     }
 
+    // Returns canonical raw values only, so KEPUB downloads are stored with an `epub` extension.
     static func detectedExtension(inDownloadResponse response: HTTPURLResponse) -> String? {
         if let mimeType = response.mimeType, let format = from(downloadMimeType: mimeType) {
             return format.rawValue
         }
 
-        if let suggested = response.suggestedFilename {
-            let suggestedExtension = (suggested as NSString).pathExtension.lowercased()
-            if allExtensions.contains(suggestedExtension) {
-                return suggestedExtension
-            }
+        if let suggested = response.suggestedFilename,
+            let format = from(fileExtension: (suggested as NSString).pathExtension)
+        {
+            return format.rawValue
         }
 
         if let disposition = response.value(forHTTPHeaderField: "Content-Disposition")?.lowercased() {
-            return allExtensions.first { disposition.contains(".\($0)") }
+            return allExtensions.first { disposition.contains(".\($0)") }.flatMap { from(fileExtension: $0)?.rawValue }
         }
 
         return nil
     }
 
     static var allExtensions: [String] {
-        return allCases.map { $0.rawValue }
+        return allCases.map { $0.rawValue } + ["kepub"]
     }
 }
 

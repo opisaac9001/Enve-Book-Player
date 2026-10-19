@@ -4,6 +4,7 @@ Release notes for the Android app. Versions are `<name> build <code>`, matching 
 
 ## Unreleased
 
+- Keep skip-button numbers proportional to their icons at larger text sizes.
 - Hide download actions for local files in book details, library menus, and bulk selection.
 - Load TorBox source lists concurrently, use its normal API cache, and skip WebDAV folders outside selected roots.
 - Exclude expired TorBox files even when their downloads previously completed.

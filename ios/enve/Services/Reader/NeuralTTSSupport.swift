@@ -128,8 +128,13 @@ final class EbookTTSStartAnchor {
 }
 
 @MainActor
-final class AnchoredAVTTSEngine: NSObject, @preconcurrency TTSEngine, @preconcurrency AVSpeechSynthesizerDelegate, @unchecked Sendable {
-    var currentRate: Float
+final class AnchoredAVTTSEngine: NSObject, @preconcurrency TTSEngine, AVSpeechSynthesizerDelegate, @unchecked Sendable {
+    var currentRate: Float {
+        didSet {
+            guard currentRate != oldValue else { return }
+            respeakRemainderAtCurrentRate()
+        }
+    }
     private let anchor: EbookTTSStartAnchor
     private let synthesizer = AVSpeechSynthesizer()
     private var playback: Playback?
@@ -163,27 +168,36 @@ final class AnchoredAVTTSEngine: NSObject, @preconcurrency TTSEngine, @preconcur
         slice: SpokenTextSlice,
         onSpeakRange: @escaping (Range<String.Index>) -> Void
     ) async -> Result<Void, ReadiumNavigator.TTSError> {
+        let voice: AVSpeechSynthesisVoice? =
+            switch utterance.voiceOrLanguage {
+            case let .left(voice): AVSpeechSynthesisVoice(identifier: voice.identifier)
+            case let .right(language): AVSpeechSynthesisVoice(language: language.code.bcp47)
+            }
+        return await speak(slice, voice: voice, delay: utterance.delay, onSpeakRange: onSpeakRange)
+    }
+
+    func speak(
+        _ slice: SpokenTextSlice,
+        voice: AVSpeechSynthesisVoice?,
+        delay: TimeInterval,
+        onSpeakRange: @escaping (Range<String.Index>) -> Void
+    ) async -> Result<Void, ReadiumNavigator.TTSError> {
         guard !slice.spoken.isEmpty else { return .success(()) }
         let id = UUID()
 
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
-                let playback = Playback(
+                // Readium's cancellation of the previous utterance reaches us asynchronously, so it can still be playing.
+                supersedeCurrentPlayback()
+                let speech = makeSpeech(slice.spoken, voice: voice, delay: delay)
+                playback = Playback(
                     id: id,
                     slice: slice,
+                    speech: speech,
+                    voice: voice,
                     onSpeakRange: onSpeakRange,
                     continuation: continuation
                 )
-                self.playback = playback
-                let speech = AVSpeechUtterance(string: slice.spoken)
-                speech.preUtteranceDelay = utterance.delay
-                speech.rate = appleSpeechRate
-                switch utterance.voiceOrLanguage {
-                case let .left(voice):
-                    speech.voice = AVSpeechSynthesisVoice(identifier: voice.identifier)
-                case let .right(language):
-                    speech.voice = AVSpeechSynthesisVoice(language: language.code.bcp47)
-                }
                 synthesizer.speak(speech)
             }
         } onCancel: {
@@ -193,36 +207,85 @@ final class AnchoredAVTTSEngine: NSObject, @preconcurrency TTSEngine, @preconcur
         }
     }
 
-    func speechSynthesizer(
+    nonisolated func speechSynthesizer(
         _ synthesizer: AVSpeechSynthesizer,
         willSpeakRangeOfSpeechString characterRange: NSRange,
         utterance: AVSpeechUtterance
     ) {
-        guard let playback,
-            let range = Range(characterRange, in: playback.slice.spoken)
-        else { return }
-        let sentenceRange = playback.slice.sentenceRange(containing: range)
-        playback.onSpeakRange(playback.slice.originalRange(for: sentenceRange))
+        nonisolated(unsafe) let utterance = utterance
+        Task { @MainActor [weak self] in
+            self?.didSpeak(characterRange, of: utterance)
+        }
     }
 
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        guard let playback else { return }
-        finish(id: playback.id)
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        nonisolated(unsafe) let utterance = utterance
+        Task { @MainActor [weak self] in
+            self?.didEnd(utterance)
+        }
     }
 
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        guard let playback else { return }
-        finish(id: playback.id)
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        nonisolated(unsafe) let utterance = utterance
+        Task { @MainActor [weak self] in
+            self?.didEnd(utterance)
+        }
     }
 
-    private var appleSpeechRate: Float {
+    nonisolated static func appleSpeechRate(for rate: Float) -> Float {
         let minimum = AVSpeechUtteranceMinimumSpeechRate
         let maximum = AVSpeechUtteranceMaximumSpeechRate
         let standard = AVSpeechUtteranceDefaultSpeechRate
-        if currentRate >= 1 {
-            return standard + (currentRate - 1) / 2 * (maximum - standard)
-        }
-        return minimum + (currentRate - 0.5) / 0.5 * (standard - minimum)
+        guard rate.isFinite else { return standard }
+        let mapped =
+            rate >= 1
+            ? standard + (rate - 1) / 2 * (maximum - standard)
+            : minimum + (rate - 0.5) / 0.5 * (standard - minimum)
+        return min(max(mapped, minimum), maximum)
+    }
+
+    private func makeSpeech(_ text: String, voice: AVSpeechSynthesisVoice?, delay: TimeInterval) -> AVSpeechUtterance {
+        let speech = AVSpeechUtterance(string: text)
+        speech.preUtteranceDelay = delay
+        speech.rate = Self.appleSpeechRate(for: currentRate)
+        speech.voice = voice
+        return speech
+    }
+
+    private func didSpeak(_ characterRange: NSRange, of utterance: AVSpeechUtterance) {
+        guard let playback, playback.speech === utterance,
+            let range = Range(characterRange, in: playback.speech.speechString)
+        else { return }
+        let spokenRange = playback.spokenRange(forSpeechRange: range)
+        playback.lastSpokenOffset = playback.slice.spoken.distance(
+            from: playback.slice.spoken.startIndex,
+            to: spokenRange.lowerBound
+        )
+        let sentenceRange = playback.slice.sentenceRange(containing: spokenRange)
+        playback.onSpeakRange(playback.slice.originalRange(for: sentenceRange))
+    }
+
+    private func didEnd(_ utterance: AVSpeechUtterance) {
+        guard let playback, playback.speech === utterance else { return }
+        finish(id: playback.id)
+    }
+
+    // AVSpeechUtterance rates are fixed once queued, so the unspoken remainder is re-queued at the new rate.
+    private func respeakRemainderAtCurrentRate() {
+        guard let playback, synthesizer.isSpeaking, !synthesizer.isPaused else { return }
+        let remainder = String(playback.slice.spoken.dropFirst(playback.lastSpokenOffset))
+        guard !remainder.isEmpty else { return }
+        let speech = makeSpeech(remainder, voice: playback.voice, delay: 0)
+        playback.speech = speech
+        playback.speechStartOffset = playback.lastSpokenOffset
+        synthesizer.stopSpeaking(at: .immediate)
+        synthesizer.speak(speech)
+    }
+
+    private func supersedeCurrentPlayback() {
+        guard let playback else { return }
+        synthesizer.stopSpeaking(at: .immediate)
+        finish(id: playback.id)
     }
 
     private func cancel(id: UUID) {
@@ -240,19 +303,35 @@ final class AnchoredAVTTSEngine: NSObject, @preconcurrency TTSEngine, @preconcur
     private final class Playback {
         let id: UUID
         let slice: SpokenTextSlice
+        let voice: AVSpeechSynthesisVoice?
         let onSpeakRange: (Range<String.Index>) -> Void
         let continuation: CheckedContinuation<Result<Void, ReadiumNavigator.TTSError>, Never>
+        var speech: AVSpeechUtterance
+        var speechStartOffset = 0
+        var lastSpokenOffset = 0
 
         init(
             id: UUID,
             slice: SpokenTextSlice,
+            speech: AVSpeechUtterance,
+            voice: AVSpeechSynthesisVoice?,
             onSpeakRange: @escaping (Range<String.Index>) -> Void,
             continuation: CheckedContinuation<Result<Void, ReadiumNavigator.TTSError>, Never>
         ) {
             self.id = id
             self.slice = slice
+            self.speech = speech
+            self.voice = voice
             self.onSpeakRange = onSpeakRange
             self.continuation = continuation
+        }
+
+        func spokenRange(forSpeechRange range: Range<String.Index>) -> Range<String.Index> {
+            let text = speech.speechString
+            let lower = speechStartOffset + text.distance(from: text.startIndex, to: range.lowerBound)
+            let upper = speechStartOffset + text.distance(from: text.startIndex, to: range.upperBound)
+            let spoken = slice.spoken
+            return spoken.index(spoken.startIndex, offsetBy: lower)..<spoken.index(spoken.startIndex, offsetBy: upper)
         }
     }
 }
@@ -310,7 +389,8 @@ final class NeuralTTSAudioPlayer {
             }
 
             playbackContinuation = continuation
-            playerNode.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+            // The completion handler runs on an AVAudioEngine render thread and must not inherit MainActor isolation.
+            playerNode.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { @Sendable [weak self] _ in
                 Task { @MainActor in
                     self?.finishPlayback(id: id)
                 }

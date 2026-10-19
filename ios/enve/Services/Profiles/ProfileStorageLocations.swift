@@ -1,5 +1,4 @@
 import Foundation
-import SwiftData
 
 nonisolated struct ProfileStorageLocations: Sendable {
     static var owner: ProfileStorageLocations {
@@ -10,7 +9,6 @@ nonisolated struct ProfileStorageLocations: Sendable {
     let documentsDirectory: URL
     let applicationSupportDirectory: URL
     let cachesDirectory: URL
-    let playbackStoreURL: URL
 
     var bookStoreURL: URL {
         documentsDirectory.appendingPathComponent("BookStore.sqlite")
@@ -36,8 +34,7 @@ nonisolated struct ProfileStorageLocations: Sendable {
         profileID: String,
         documentsDirectory: URL = .documentsDirectory,
         applicationSupportDirectory: URL = .applicationSupportDirectory,
-        cachesDirectory: URL = .cachesDirectory,
-        legacyPlaybackStoreURL: URL = ModelConfiguration().url
+        cachesDirectory: URL = .cachesDirectory
     ) {
         precondition(FamilyProfile.validID(profileID))
         self.profileID = profileID
@@ -45,7 +42,6 @@ nonisolated struct ProfileStorageLocations: Sendable {
             self.documentsDirectory = documentsDirectory
             self.applicationSupportDirectory = applicationSupportDirectory
             self.cachesDirectory = cachesDirectory
-            playbackStoreURL = legacyPlaybackStoreURL
         } else {
             let root = applicationSupportDirectory
                 .appendingPathComponent("Profiles", isDirectory: true)
@@ -55,7 +51,6 @@ nonisolated struct ProfileStorageLocations: Sendable {
             self.cachesDirectory = cachesDirectory
                 .appendingPathComponent("Profiles", isDirectory: true)
                 .appendingPathComponent(profileID, isDirectory: true)
-            playbackStoreURL = self.applicationSupportDirectory.appendingPathComponent("PlaybackState.store")
         }
     }
 }

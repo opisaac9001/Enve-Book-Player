@@ -155,8 +155,7 @@ struct ProfileMetadataStorageTests {
                 ProfileStorageLocations(
                     profileID: id, documentsDirectory: fixtureRoot.appendingPathComponent("Documents"),
                     applicationSupportDirectory: fixtureRoot.appendingPathComponent("ApplicationSupport"),
-                    cachesDirectory: fixtureRoot.appendingPathComponent("Caches"),
-                    legacyPlaybackStoreURL: fixtureRoot.appendingPathComponent("default.store")
+                    cachesDirectory: fixtureRoot.appendingPathComponent("Caches")
                 )
             }
             ownerStorage = storage(FamilyProfile.ownerID)

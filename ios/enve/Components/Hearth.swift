@@ -64,11 +64,11 @@ enum Hearth {
     }
 
     static func scaled(_ size: CGFloat) -> CGFloat {
-        var scaled = UIFontMetrics(forTextStyle: .body).scaledValue(for: size)
-        if ThemeManager.shared.isVisionMode {
-            scaled *= 1.15
-        }
-        return scaled
+        UIFontMetrics(forTextStyle: .body).scaledValue(for: size) * visionFactor
+    }
+
+    static var visionFactor: CGFloat {
+        ThemeManager.shared.isVisionMode ? 1.15 : 1
     }
 
     static let radiusCover: CGFloat = 12
@@ -268,11 +268,49 @@ extension View {
 extension Font {
 
     static func hearthDisplay(_ size: CGFloat, weight: Font.Weight = .bold) -> Font {
-        .system(size: Hearth.scaled(size), weight: weight, design: .serif)
+        hearth(size, weight: weight, design: .serif)
     }
 
     static func hearthUI(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        .system(size: Hearth.scaled(size), weight: weight)
+        hearth(size, weight: weight, design: .default)
+    }
+
+    private struct ScalingAnchor {
+        let style: Font.TextStyle
+        let metrics: UIFontMetrics
+        let defaultSize: CGFloat
+
+        init(_ style: Font.TextStyle, _ uiStyle: UIFont.TextStyle) {
+            self.style = style
+            metrics = UIFontMetrics(forTextStyle: uiStyle)
+            defaultSize = UIFont.preferredFont(
+                forTextStyle: uiStyle,
+                compatibleWith: UITraitCollection(preferredContentSizeCategory: .large)
+            ).pointSize
+        }
+    }
+
+    private static let scalingAnchors = [
+        ScalingAnchor(.caption2, .caption2),
+        ScalingAnchor(.caption, .caption1),
+        ScalingAnchor(.footnote, .footnote),
+        ScalingAnchor(.subheadline, .subheadline),
+        ScalingAnchor(.callout, .callout),
+        ScalingAnchor(.body, .body),
+        ScalingAnchor(.title3, .title3),
+        ScalingAnchor(.title2, .title2),
+        ScalingAnchor(.title, .title1),
+        ScalingAnchor(.largeTitle, .largeTitle),
+    ]
+
+    // Scaling a text style tracks Dynamic Type live; system(size:) only updates on re-render.
+    private static func hearth(_ size: CGFloat, weight: Font.Weight, design: Font.Design) -> Font {
+        let anchor = scalingAnchors.min { abs($0.defaultSize - size) < abs($1.defaultSize - size) }!
+        if #available(iOS 26.0, *) {
+            return .system(anchor.style, design: design, weight: weight)
+                .scaled(by: size / anchor.defaultSize * Hearth.visionFactor)
+        }
+        return .system(size: anchor.metrics.scaledValue(for: size) * Hearth.visionFactor, weight: weight, design: design)
     }
 
     static var hearthScreenTitle: Font { .hearthDisplay(32) }
@@ -294,7 +332,7 @@ struct Overline: View {
     var body: some View {
         Text(text.uppercased())
             .font(.hearthUI(11, weight: .semibold))
-            .tracking(1.6)
+            .kerning(1.6)
             .foregroundStyle(color ?? hearth.textSecondary)
     }
 }

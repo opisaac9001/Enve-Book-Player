@@ -41,6 +41,7 @@ struct HardcoverActivityScreen: View {
         .scrollIndicators(.hidden)
         .background(HearthBackground())
         .toolbar(.hidden, for: .navigationBar)
+        .hearthInteractiveBack()
         .task { await hardcoverLoadFeed() }
         .refreshable { await hardcoverLoadFeed() }
     }

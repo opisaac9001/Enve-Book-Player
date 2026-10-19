@@ -97,6 +97,7 @@ actor ABSCredentialsActor {
 
     var freshCredentials: ABSCredentials {
         get async throws {
+            try Task.checkCancellation()
             guard !isRetired else { throw CancellationError() }
             guard let provider else {
                 throw ProviderError.unauthorized
@@ -136,15 +137,20 @@ actor ABSCredentialsActor {
         }
     }
 
-    func forceRefresh() async throws -> ABSCredentials {
-        guard !isRetired else { throw CancellationError() }
-        let pending = refreshTask
-        pending?.cancel()
-        _ = try? await pending?.value
+    func forceRefresh(rejectedToken: String? = nil) async throws -> ABSCredentials {
+        try Task.checkCancellation()
         guard !isRetired else { throw CancellationError() }
         if let refreshTask { return try await refreshTask.value }
 
         guard let provider else { throw ProviderError.unauthorized }
+        if let rejectedToken {
+            let snapshot = await provider.tokenSnapshot
+            guard !isRetired else { throw CancellationError() }
+            if let token = snapshot.token, token != rejectedToken {
+                return try await freshCredentials
+            }
+            if let refreshTask { return try await refreshTask.value }
+        }
 
         let task = Task<ABSCredentials, Error> {
             defer { refreshTask = nil }

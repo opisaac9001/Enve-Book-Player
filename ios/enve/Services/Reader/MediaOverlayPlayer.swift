@@ -48,6 +48,7 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
     private var audioFileGroups: [(audioSrc: String, startIdx: Int, endIdx: Int)] = []
     private var clipToGroupIdx: [Int] = []
     private var groupItems: [AVPlayerItem?] = []
+    private var unavailableGroupAfterQueue: Int?
     private var itemToGroup: [ObjectIdentifier: Int] = [:]
     private var groupDurations: [Double] = []
     private var groupCumulativeStarts: [Double] = []
@@ -58,6 +59,9 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
     private var pendingSeek: (id: UUID, audioTime: TimeInterval)?
     private var reachedEnd = false
     private var handledFailedItems: Set<ObjectIdentifier> = []
+    private var playbackGeneration = 0
+    private var observerGeneration = 0
+    private var isStartPending = false
 
     var bookTitle: String?
     var bookAuthor: String?
@@ -80,9 +84,13 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
     }
 
     private static let speedDefaultsKey = "readAloud.speed"
+    private static let speedRange = 0.5...3.0
     private static let maxBoundaryObserverTimes = 160
 
     func load(clips: [AudioOverlayClip], timeline: MediaOverlayTimeline, audioDir: URL) {
+        playbackGeneration &+= 1
+        isStartPending = false
+        isPlaying = false
         self.clips = clips
         self.timeline = timeline
         self.audioDir = audioDir
@@ -102,15 +110,20 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
             currentClipIdx = idx
         }
         loadPersistedSpeed()
-        activateAudioSession()
+        isPlaying = true
         reactivateNowPlayingSessionIfNeeded()
         NowPlayingCoordinator.shared.setActive(self)
-        beginBackgroundTask()
-        startPlayback()
-        updateNowPlayingInfo()
+        activateAudioSession { [weak self] in
+            guard let self else { return }
+            self.beginBackgroundTask()
+            self.startPlayback()
+            self.updateNowPlayingInfo()
+        }
     }
 
     func pause() {
+        playbackGeneration &+= 1
+        isStartPending = false
         resyncClipFromPlayhead(forcePublish: true)
         player?.pause()
         isPlaying = false
@@ -130,14 +143,17 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
             seekToCurrentClip()
         }
         guard player != nil else { return }
-        activateAudioSession()
+        isPlaying = true
         reactivateNowPlayingSessionIfNeeded()
         NowPlayingCoordinator.shared.setActive(self)
-        beginBackgroundTask()
-        isPlaying = true
-        applyRate()
-        startDisplayObservers()
-        updateNowPlayingInfo()
+        activateAudioSession { [weak self] in
+            guard let self else { return }
+            self.beginBackgroundTask()
+            self.isPlaying = true
+            self.applyRate()
+            self.startDisplayObservers()
+            self.updateNowPlayingInfo()
+        }
     }
 
     func syncToPlayhead() {
@@ -191,7 +207,9 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
     }
 
     func setSpeed(_ rate: Double) {
-        let clamped = min(max(rate, 0.5), 3.0)
+        // min/max propagate NaN when it is the first argument, so it must be rejected before clamping.
+        guard rate.isFinite else { return }
+        let clamped = min(max(rate, Self.speedRange.lowerBound), Self.speedRange.upperBound)
         playbackRate = clamped
         applyRate()
         defaults.set(clamped, forKey: Self.speedDefaultsKey)
@@ -200,10 +218,14 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
 
     func loadPersistedSpeed() {
         let stored = defaults.double(forKey: Self.speedDefaultsKey)
-        if stored > 0 { setSpeed(stored) }
+        guard Self.speedRange.contains(stored) else { return }
+        playbackRate = stored
+        applyRate()
     }
 
     func stop() {
+        playbackGeneration &+= 1
+        isStartPending = false
         frozenElapsed = globalElapsed()
         teardownObservers()
         player?.pause()
@@ -325,6 +347,8 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
 
         groupItems = Array(repeating: nil, count: audioFileGroups.count)
         itemToGroup = [:]
+        handledFailedItems = []
+        unavailableGroupAfterQueue = nil
         var items: [AVPlayerItem] = []
 
         for groupIdx in startingGroup..<audioFileGroups.count {
@@ -332,8 +356,13 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
             let fileURL = EPUB3SMILParser.localAudioURL(for: group.audioSrc, in: audioDir)
             guard FileManager.default.fileExists(atPath: fileURL.path) else {
                 AppLogger.library.error(
-                    "Audio file missing pathId=\(DiagnosticLogSanitizer.identifier(for: fileURL.standardizedFileURL.path)) sourceId=\(DiagnosticLogSanitizer.identifier(for: group.audioSrc))"
+                    "Audio file missing group=\(groupIdx) pathId=\(DiagnosticLogSanitizer.identifier(for: fileURL.standardizedFileURL.path)) sourceId=\(DiagnosticLogSanitizer.identifier(for: group.audioSrc))"
                 )
+                // End the queue at a gap so playback pauses there instead of silently jumping a chapter.
+                guard items.isEmpty else {
+                    unavailableGroupAfterQueue = groupIdx
+                    break
+                }
                 continue
             }
             let item = AVPlayerItem(asset: AVURLAsset(url: fileURL))
@@ -443,7 +472,7 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
 
     private func applyRate() {
         guard let player else { return }
-        player.rate = isPlaying ? Float(playbackRate) : 0
+        player.rate = isPlaying && !isStartPending ? Float(playbackRate) : 0
     }
 
     private func advanceToNextGroup() {
@@ -455,7 +484,7 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
             completePlayback()
             return
         }
-        startPlayback()
+        if isPlaying { startPlayback() } else { seekToCurrentClip(); publishCurrentFragment(force: true) }
     }
 
     private func startDisplayObservers() {
@@ -487,30 +516,37 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
         }
         guard let groupIdx = currentGroupIndex() else { return }
         let group = audioFileGroups[groupIdx]
-        let firstBoundaryIndex: Int
-        if currentClipIdx >= group.startIdx, currentClipIdx <= group.endIdx {
-            firstBoundaryIndex = currentClipIdx + 1
-        } else {
-            firstBoundaryIndex = group.startIdx
-        }
-        guard firstBoundaryIndex <= group.endIdx else { return }
-
-        var times: [NSValue] = []
-        for idx in firstBoundaryIndex...group.endIdx {
-            let boundary = max(0, clips[idx - 1].clipEnd - syncOffset)
-            times.append(NSValue(time: CMTime(seconds: boundary, preferredTimescale: 600)))
-        }
-        guard !times.isEmpty else { return }
-        guard times.count <= Self.maxBoundaryObserverTimes else {
-            AppLogger.library.info("MediaOverlayPlayer: Skipping \(times.count) boundary observers for dense Read Aloud group")
-            return
-        }
+        let boundaries = Self.boundaryTimes(
+            clips: clips,
+            group: group.startIdx...group.endIdx,
+            currentClipIndex: currentClipIdx,
+            syncOffset: syncOffset,
+            limit: Self.maxBoundaryObserverTimes
+        )
+        guard !boundaries.isEmpty else { return }
 
         boundaryObserver = player.addBoundaryTimeObserver(
-            forTimes: times,
+            forTimes: boundaries.map { NSValue(time: CMTime(seconds: $0, preferredTimescale: 600)) },
             queue: .main
         ) { [weak self] in
             MainActor.assumeIsolated { self?.boundaryCrossed() }
+        }
+    }
+
+    nonisolated static func boundaryTimes(
+        clips: [AudioOverlayClip],
+        group: ClosedRange<Int>,
+        currentClipIndex: Int,
+        syncOffset: TimeInterval,
+        limit: Int
+    ) -> [TimeInterval] {
+        let first = group.contains(currentClipIndex) ? currentClipIndex + 1 : group.lowerBound
+        guard limit > 0, first <= group.upperBound else { return [] }
+        let last = min(group.upperBound, first + limit - 1)
+        return (first...last).map { idx in
+            // The clip before a group's first clip belongs to another audio file, so its end is not a time in this file.
+            let start = idx > group.lowerBound ? clips[idx - 1].clipEnd : clips[idx].clipBegin
+            return max(0, start - syncOffset)
         }
     }
 
@@ -548,9 +584,14 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
     }
 
     private func resyncClipFromPlayhead(forcePublish: Bool = false) {
-        guard pendingSeek == nil, let timeline,
-            let idx = timeline.clipIndex(atAudioTime: globalElapsed() + syncOffset)
-        else { return }
+        guard pendingSeek == nil, let timeline else { return }
+        let position = playheadPosition()
+        guard var idx = timeline.clipIndex(atAudioTime: (position?.audioTime ?? globalElapsed()) + syncOffset) else { return }
+        // Keep estimated timeline overflow inside the audio file that is still playing.
+        if let position {
+            let group = audioFileGroups[position.groupIndex]
+            idx = min(max(idx, group.startIdx), group.endIdx)
+        }
         if idx != currentClipIdx {
             currentClipIdx = idx
             guard advancePastSkippables() else {
@@ -567,14 +608,21 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
     }
 
     private func observeCurrentItem() {
+        let generation = observerGeneration
         currentItemObservation = player?.observe(\.currentItem, options: [.new]) { [weak self] _, _ in
-            Task { @MainActor [weak self] in self?.currentItemChanged() }
+            Task { @MainActor [weak self] in self?.currentItemChanged(generation: generation) }
         }
     }
 
-    private func currentItemChanged() {
+    private func currentItemChanged(generation: Int) {
+        guard generation == observerGeneration else { return }
         guard currentGroupIndex() != nil else {
-            if isPlaying { completePlayback() }
+            guard isPlaying else { return }
+            if let unavailableGroupAfterQueue {
+                pauseAtUnavailableGroup(unavailableGroupAfterQueue)
+            } else {
+                completePlayback()
+            }
             return
         }
         resyncClipFromPlayhead(forcePublish: true)
@@ -584,13 +632,14 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
     }
 
     private func observeItemStatus() {
+        let generation = observerGeneration
         itemStatusObservation = player?.observe(\.currentItem?.status, options: [.new]) { [weak self] player, _ in
             guard player.currentItem?.status == .failed, let item = player.currentItem else { return }
             let itemIdentifier = ObjectIdentifier(item)
             let errorDescription = player.currentItem?.error?.localizedDescription ?? "unknown"
             Task { @MainActor [weak self] in
                 AppLogger.library.error("Media overlay item failed: \(errorDescription)")
-                self?.handleFailedItem(itemIdentifier)
+                self?.handleFailedItem(itemIdentifier, generation: generation)
             }
         }
         failedToEndObserver = NotificationCenter.default.addObserver(
@@ -601,13 +650,15 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
             guard let object = notification.object as AnyObject? else { return }
             let itemIdentifier = ObjectIdentifier(object)
             Task { @MainActor [weak self] in
-                self?.handleFailedItem(itemIdentifier)
+                self?.handleFailedItem(itemIdentifier, generation: generation)
             }
         }
     }
 
-    private func handleFailedItem(_ identifier: ObjectIdentifier) {
-        guard handledFailedItems.insert(identifier).inserted,
+    private func handleFailedItem(_ identifier: ObjectIdentifier, generation: Int) {
+        // An identifier from a torn-down queue may match a newer item allocated at the same address.
+        guard generation == observerGeneration,
+            handledFailedItems.insert(identifier).inserted,
             let failedGroup = itemToGroup[identifier],
             failedGroup == currentGroupIndex()
         else { return }
@@ -615,6 +666,7 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
     }
 
     private func teardownObservers() {
+        observerGeneration &+= 1
         pendingSeek = nil
         if let boundaryObserver { player?.removeTimeObserver(boundaryObserver) }
         if let periodicObserver { player?.removeTimeObserver(periodicObserver) }
@@ -632,15 +684,25 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
         failedToEndObserver = nil
     }
 
-    private func activateAudioSession() {
+    private func activateAudioSession(then start: @escaping @MainActor @Sendable () -> Void) {
         #if os(iOS)
-        do {
+        playbackGeneration &+= 1
+        let generation = playbackGeneration
+        isStartPending = true
+        AudioSessionQueue.perform {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playback, mode: .spokenAudio, policy: .longFormAudio, options: [])
             try session.setActive(true)
-        } catch {
-            AppLogger.library.error("MediaOverlayPlayer: Failed to activate audio session: \(error)")
+        } completion: { [weak self] failure in
+            guard let self, self.playbackGeneration == generation else { return }
+            self.isStartPending = false
+            if let failure {
+                AppLogger.library.error("MediaOverlayPlayer: Failed to activate audio session: \(failure)")
+            }
+            start()
         }
+        #else
+        start()
         #endif
     }
 
@@ -648,10 +710,12 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
         #if os(iOS)
         guard !playbackState().isLoaded else { return }
 
-        do {
-            try AVAudioSession.sharedInstance().setActive(false)
-        } catch {
-            AppLogger.library.error("MediaOverlayPlayer: Failed to deactivate audio session: \(error)")
+        AudioSessionQueue.shared.async {
+            do {
+                try AVAudioSession.sharedInstance().setActive(false)
+            } catch {
+                AppLogger.library.error("MediaOverlayPlayer: Failed to deactivate audio session: \(error)")
+            }
         }
         #endif
     }
@@ -675,24 +739,38 @@ final class MediaOverlayPlayer: NSObject, ObservableObject {
 
     private func globalElapsed() -> Double {
         if let pendingSeek { return pendingSeek.audioTime }
-        if player == nil, let frozenElapsed { return frozenElapsed }
-        guard let groupIdx = currentGroupIndex(),
-            groupIdx < groupCumulativeStarts.count
-        else {
-            if currentClipIdx < clips.count, !groupCumulativeStarts.isEmpty {
-                let g = clipToGroupIdx[currentClipIdx]
-                let base = g < groupCumulativeStarts.count ? groupCumulativeStarts[g] : 0
-                return base + clips[currentClipIdx].clipBegin
-            }
-            return 0
+        if let position = playheadPosition() { return position.audioTime }
+        if let frozenElapsed { return frozenElapsed }
+        if currentClipIdx < clips.count, !groupCumulativeStarts.isEmpty {
+            let group = clipToGroupIdx[currentClipIdx]
+            return groupCumulativeStarts[group] + clips[currentClipIdx].clipBegin
         }
-        let base = groupCumulativeStarts[groupIdx]
-        let t = player?.currentItem.map { CMTimeGetSeconds($0.currentTime()) } ?? 0
-        let withinFile = (t.isFinite && t > 0) ? t : 0
-        return base + withinFile
+        return 0
+    }
+
+    private func playheadPosition() -> (groupIndex: Int, audioTime: TimeInterval)? {
+        // The queue can advance between reads, so the file offset and time must use the same item.
+        guard let item = player?.currentItem,
+            let group = itemToGroup[ObjectIdentifier(item)]
+        else { return nil }
+        let seconds = CMTimeGetSeconds(item.currentTime())
+        let withinFile = seconds.isFinite && seconds > 0 ? seconds : 0
+        let audioTime = groupCumulativeStarts[group] + withinFile
+        frozenElapsed = audioTime
+        return (group, audioTime)
+    }
+
+    // Resuming rebuilds the queue from this group, which continues with the next playable file.
+    private func pauseAtUnavailableGroup(_ groupIdx: Int) {
+        AppLogger.library.error("MediaOverlayPlayer: Paused before unavailable audio group=\(groupIdx)")
+        currentClipIdx = audioFileGroups[groupIdx].startIdx
+        stop()
+        publishCurrentFragment(force: true)
     }
 
     private func completePlayback() {
+        playbackGeneration &+= 1
+        isStartPending = false
         frozenElapsed = totalAudioDuration
         reachedEnd = true
         currentClipIdx = max(clips.count - 1, 0)

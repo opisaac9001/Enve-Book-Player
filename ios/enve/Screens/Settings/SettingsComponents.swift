@@ -8,13 +8,12 @@ struct SettingsScaffold<Content: View>: View {
 
     @Environment(\.hearth) private var hearth
     @Environment(\.mantelInset) private var mantelInset
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 HStack(alignment: .top, spacing: 14) {
-                    GlyphButton(systemImage: "chevron.left", size: 40, glyphSize: 15, label: "Back") { dismiss() }
+                    SettingsBackButton()
                     VStack(alignment: .leading, spacing: 6) {
                         Overline(overline)
                         Text(title)
@@ -42,6 +41,15 @@ struct SettingsScaffold<Content: View>: View {
     }
 }
 
+// Isolate dismiss from the navigation tree to avoid an iOS 17 update loop.
+struct SettingsBackButton: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        GlyphButton(systemImage: "chevron.left", size: 40, glyphSize: 15, label: "Back") { dismiss() }
+    }
+}
+
 struct SettingsLinkRow: View {
     let title: String
     var subtitle: String? = nil
@@ -54,7 +62,7 @@ struct SettingsLinkRow: View {
         HStack(spacing: 12) {
             if let systemImage {
                 Image(systemName: systemImage)
-                    .font(.hearthUI(15, weight: .medium))
+                    .font(.system(size: 15 * Hearth.visionFactor, weight: .medium))
                     .foregroundStyle(hearth.ember)
                     .frame(width: 34, height: 34)
                     .background(Circle().fill(hearth.ember.opacity(0.14)))
@@ -71,6 +79,7 @@ struct SettingsLinkRow: View {
                         .accessibilityHidden(true)
                 }
             }
+            .multilineTextAlignment(.leading)
             Spacer(minLength: 8)
             if let detail {
                 Text(detail)

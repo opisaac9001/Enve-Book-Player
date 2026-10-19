@@ -11,6 +11,7 @@ struct SourceDetailScreen: View {
     private var profileSession: ProfileSession { capturedSession ?? .owner }
     @Environment(ProfileSwitchCoordinator.self) private var profiles
     @Environment(\.hearth) private var hearth
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.mantelInset) private var mantelInset
     @Environment(\.dismiss) private var dismiss
 
@@ -106,6 +107,7 @@ struct SourceDetailScreen: View {
         .scrollIndicators(.hidden)
         .background(HearthBackground())
         .toolbar(.hidden, for: .navigationBar)
+        .hearthInteractiveBack()
         .onAppear {
             guard !loaded, let connection else { return }
             loaded = true
@@ -172,13 +174,6 @@ struct SourceDetailScreen: View {
                 )
                 .enveEnvironment()
             }
-        }
-        .confirmationDialog("Remove this source?", isPresented: $showingDeleteConfirm, titleVisibility: .visible) {
-            Button("Archive source") { archive() }
-            Button("Remove completely", role: .destructive) { delete() }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Archiving keeps your sign-in for later. Removing deletes everything.")
         }
     }
 
@@ -399,7 +394,7 @@ struct SourceDetailScreen: View {
                     Text(path)
                         .font(.hearthBody)
                         .foregroundStyle(hearth.text)
-                        .lineLimit(1)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                         .truncationMode(.middle)
                 }
             }
@@ -532,6 +527,13 @@ struct SourceDetailScreen: View {
                     Label("Remove this source", systemImage: "trash")
                         .font(.hearthBody.weight(.medium))
                         .foregroundStyle(hearth.statusError)
+                }
+                .confirmationDialog("Remove this source?", isPresented: $showingDeleteConfirm, titleVisibility: .visible) {
+                    Button("Archive source") { archive() }
+                    Button("Remove completely", role: .destructive) { delete() }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("Archiving keeps your sign-in for later. Removing deletes everything.")
                 }
             }
         }
@@ -810,6 +812,13 @@ struct SourceDetailScreen: View {
                         customHeaders: connection.customHeaders
                     )
                     refreshKeyPrefix = "bookorbit_refresh_"
+                } else if connection.type == .silo {
+                    fresh = try await SiloLoginDelegate(appState: appState, profileSession: profileSession).authenticateWithOIDC(
+                        serverURL: connection.url,
+                        redirectURIOverride: nil,
+                        customHeaders: connection.customHeaders
+                    )
+                    refreshKeyPrefix = "silo_refresh_"
                 } else if connection.type == .komga {
                     fresh = try await KomgaLoginDelegate(appState: appState, profileSession: profileSession).authenticateWithOIDC(
                         serverURL: connection.url,
@@ -865,6 +874,7 @@ struct SourceDetailScreen: View {
             || connection.type == .booklore
             || connection.type == .bookOrbit
             || connection.type == .komga
+            || connection.type == .silo
             || connection.type == .oneDrive
     }
 
@@ -972,6 +982,7 @@ struct SourceDetailScreen: View {
         guard (try? profiles.authorizeChanges(in: profileSession)) != nil else { return }
         mutateConnection {
             $0.selectedLibraryIds = draftSelectedLibraryIds
+            $0.knownLibraryIds = ($0.knownLibraryIds ?? []).union(availableLibraries.map(\.id))
         }
         librarySelectionDirty = false
         librarySelectionStatus = "Library choices saved."

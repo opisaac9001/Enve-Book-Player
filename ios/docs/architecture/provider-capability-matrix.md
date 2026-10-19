@@ -6,7 +6,7 @@ This document must match those overrides exactly. Update the table whenever a pr
 
 `LibraryProvider` is the catalog identity. Optional behavior is exposed through narrow protocols such as
 `PlaybackSessionProvider`, `AudiobookProgressPulling`, `AudiobookProgressPushing`, `EbookProgressPulling`,
-`EbookProgressPushing`, `EbookDownloadProvider`, `ServerPageProvider`, and `PersonalRatingProvider`. Feature code
+`EbookProgressPushing`, `EbookDownloadProvider`, `ServerPageProvider`, `ComicReadingDirectionProvider`, and `PersonalRatingProvider`. Feature code
 must resolve the protocol it needs. The flags describe runtime support within that typed capability; they do not
 make an unsupported provider conform.
 
@@ -61,7 +61,7 @@ Legend: ✓ supported, ✗ not supported, ⚠ partial / capped (note in §3 belo
 | Jellyfin        | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ | ✓ |
 | Emby            | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ | ✓ |
 | Komga           | ✓ | ⚠¹ | ✗ | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
-| Kavita          | ✓ | ⚠¹ | ✗ | ✗ | ✓ | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ |
+| Kavita          | ✓ | ⚠¹ | ✗ | ✗ | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
 | Booklore        | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ |
 | BookOrbit       | ✓ | ✓ | ✗ | ✗ | ✗³ | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ |
 | Silo            | ✓ | ✓ | ✓ | ✗ | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ |
@@ -87,8 +87,8 @@ Columns: **full** = fullImport, **paged** = pagedImport, **stream** = streamingI
 - **Audiobookshelf** — reference provider for streaming through `fetchBookBatches`. Cover auth uses a `?token=` query item. Ebook updates submit `ebookProgress` without audio time or duration fields. Audio updates include the full book duration and omit `isFinished: false` for nonzero playback positions because ABS otherwise resets the position when reopening a finished item. ABS creates one record per item and defaults an untouched side to zero, so for an item with both audio and an ebook a record without `ebookLocation` or a positive `ebookProgress` has no ebook position, and one without `currentTime`, `progress`, or `isFinished` has no audio position; neither side is ever pulled from an empty record.
 - **Plex** — paged via `X-Plex-Container-Start/Size`. Series and collections are inferred from paths. Progress pushes use `:/timeline`; progress pulls combine track offsets into the book timeline.
 - **Jellyfin** / **Emby** — server-paged via `StartIndex` / `Limit`. Cover URLs require `X-Emby-Token` headers and must use the authenticated cover loader. Audio positions are saved through user-data updates. Neither provider advertises native ebook-position sync: Jellyfin accepts but does not persist `PlayedPercentage` for ebooks. Ebook download/reading remains available.
-- **Komga** — comic-server: only provider with `serverPageStreaming` today. Delta uses `sort=created,desc`. Cover URL uses HTTP Basic — fine for the iOS `URLSession` cover loader but not for `AsyncImage` without a header rewrite.
-- **Kavita** — POST requests use one-based query pagination and a library-filter statement in the JSON body. JWT cover auth via Bearer header. No series exposed (returns `[]`). Ebook progress uses the same first chapter as the downloaded ebook and the native Reader progress endpoints.
+- **Komga** — streams comic pages and reuses the opened book's page count and series identity for reader setup. Delta uses `sort=created,desc`. Cover URL uses HTTP Basic — fine for the iOS `URLSession` cover loader but not for `AsyncImage` without a header rewrite.
+- **Kavita** — POST requests use one-based query pagination and a library-filter statement in the JSON body. Catalog pages load up to six series' volumes concurrently and persist legacy issue identities once per batch. Each issue has its own book identity; streaming, downloads, and progress resolve the same chapter. Comic pages stream through the native Reader image endpoint with zero-based page numbers and its required `apiKey` query parameter. Password connections obtain the image key from login or the current-user endpoint; ordinary API and cover requests keep header authentication.
 - **Booklore** — three-tier (app-tier `/api/v1/app/*`, legacy REST `/api/v1/rest/*`, Komga fallback). Carries both header and query auth for covers. Full progress matrix.
 - **BookOrbit** — JWT (15-min access / 7-day refresh httpOnly cookie). Header-only auth. Catalog import stays pagination-only for compatibility with releases that reject `filter`/`sort`; activity sync behaviorally probes the newer paginated `readStatus` filter and falls back to the bounded dashboard endpoint when unavailable. Collections support complete definition and membership snapshots. No universally available sort or recent-books endpoint exists across supported releases.
 - **Silo** — profile-scoped API with snapshot-fenced catalog pagination and cursor-based progress sync. Ebook resets and rereads clear the server’s latched watched state before applying a new position. Collections include complete personal/manual/smart definitions and memberships plus visible server library collections.

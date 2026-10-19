@@ -131,7 +131,10 @@ final class LibraryEngine {
         }
 
         let siblings: [Book]
-        if let series = fresh.series {
+        if fresh.isComic, let aggregate = Self.seriesIdentity(for: fresh) {
+            siblings = await seriesBooksPage(for: aggregate, mediaScope: ["ebook"], offset: 0, limit: 7)
+                .filter { $0.uniqueId != fresh.uniqueId }
+        } else if let series = fresh.series {
             siblings = await appState.bookStore.books(inSeries: series).filter { $0.stableId != fresh.stableId }
         } else {
             siblings = []
@@ -378,7 +381,7 @@ final class LibraryEngine {
         #if os(iOS)
         let downloads = profileSession?.downloads ?? UnifiedDownloadService.shared
         if let fileURL = downloads.existingReaderAsset(for: book),
-            fileURL.pathExtension.caseInsensitiveCompare("epub") == .orderedSame
+            EbookFormat.from(fileExtension: fileURL.pathExtension) == .epub
         {
             features = await EPUB3SMILParser.detectFeatures(epubFileURL: fileURL)
         }
@@ -459,6 +462,31 @@ final class LibraryEngine {
         Task {
             await (profileSession?.linkedProgress ?? LinkedBookProgressCoordinator.shared).resetPair(from: book)
         }
+    }
+
+    private var unreadMarker: BookUnreadMarker {
+        let session = profileSession ?? .owner
+        return BookUnreadMarker(
+            lastOpened: session.lastOpened,
+            playerState: session.playerState,
+            session: appState,
+            playback: session.playback.composition.controller,
+            forgetRestoredBook: { session.playback.player.forgetRestoredBook(stableId: $0) },
+            pairedStableId: { await session.linkedProgress.pairedStableId(for: $0) },
+            resetProgress: { [self] in resetProgressToBeginning(for: $0) }
+        )
+    }
+
+    func canMarkUnread(_ book: Book) -> Bool {
+        unreadMarker.canMarkUnread(book)
+    }
+
+    func markUnreadNeedsConfirmation(_ book: Book) -> Bool {
+        unreadMarker.needsConfirmation(book)
+    }
+
+    func markUnread(_ book: Book) async {
+        await unreadMarker.markUnread(book)
     }
 
     func hide(_ book: Book) async {
@@ -587,6 +615,54 @@ final class LibraryEngine {
         recovery.permanentlyDeleteBook(book)
     }
 
+    func book(uniqueId: String) async -> Book? {
+        await appState.bookStore.book(uniqueId: uniqueId)
+    }
+
+    func comicBooksPage(sourceFilter: LibrarySourceFilter, offset: Int, limit: Int, sort: [BookStoreSortDescriptor] = []) async -> [Book] {
+        await appState.bookStore.comicBooksPage(sourceFilter: sourceFilter, offset: offset, limit: limit, sort: sort)
+    }
+
+    func comicBookCount(sourceFilter: LibrarySourceFilter) async -> Int {
+        await appState.bookStore.comicBookCount(sourceFilter: sourceFilter)
+    }
+
+    func offlineBookIDs(in books: [Book]) async -> Set<String> {
+        let availability = await (profileSession?.ebooks ?? LocalEbookImporter.shared).offlineAvailability()
+        return Set(await availability.existingBooks(in: books).map(\.uniqueId))
+    }
+
+    nonisolated static func seriesIdentity(for book: Book) -> BrowseSeriesAggregate? {
+        let series = book.series?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard book.isComic || series?.isEmpty == false else { return nil }
+        let name = series?.isEmpty == false ? series! : book.title
+        let standalone = book.isComic && book.comicMetadata == nil && series?.isEmpty != false
+        return BrowseSeriesAggregate(
+            name: book.isComic ? name : NameNormalizer.normalizeSeriesName(name),
+            bookCount: 1, representativeThumb: book.thumb, matchingNames: [name],
+            isComic: book.isComic, providerId: book.isComic ? book.providerId : nil,
+            libraryId: book.isComic ? book.libraryId : nil, comicSeriesID: book.comicMetadata?.seriesID,
+            standaloneBookUniqueID: standalone ? book.uniqueId : nil
+        )
+    }
+
+    func seriesAggregate(for book: Book) async -> BrowseSeriesAggregate? {
+        guard let identity = Self.seriesIdentity(for: book) else { return nil }
+        return await seriesAggregate(for: identity)
+    }
+
+    func seriesAggregate(for identity: BrowseSeriesAggregate) async -> BrowseSeriesAggregate {
+        await appState.bookStore.seriesAggregate(for: identity) ?? identity
+    }
+
+    func seriesBooksPage(for aggregate: BrowseSeriesAggregate, mediaScope: [String], offset: Int, limit: Int, slice: ComicSeriesSlice) async -> [Book] {
+        await appState.bookStore.seriesBooksPage(for: aggregate, mediaScope: mediaScope, offset: offset, limit: limit, slice: slice)
+    }
+
+    func seriesBooksPage(for aggregate: BrowseSeriesAggregate, mediaScope: [String], offset: Int, limit: Int) async -> [Book] {
+        await appState.bookStore.seriesBooksPage(for: aggregate, mediaScope: mediaScope, offset: offset, limit: limit)
+    }
+
     func book(stableId: String) async -> Book? {
         await appState.bookStore.book(stableId: stableId)
     }
@@ -639,12 +715,32 @@ final class LibraryEngine {
         {
             return await mergingStoredRecords(results)
         }
+        var results: [Book]
         switch sourceFilter {
         case let .library(providerId, libraryId):
             return await appState.bookStore.searchBooks(query: query, libraryId: libraryId, providerId: providerId, limit: limit)
-        case .all, .device, .connection:
-            return await appState.bookStore.searchBooks(query: query, limit: limit)
+        case let .connection(providerId):
+            results = await appState.bookStore.searchBooks(query: query, libraryId: nil, providerId: providerId, limit: limit)
+        case .all, .device:
+            results = await appState.bookStore.searchBooks(query: query, limit: limit)
         }
+        guard sourceFilter != .device else { return results }
+        let browse = profileSession?.remoteLibraryBrowse ?? RemoteLibraryBrowseStore.shared
+        var seen = Set(results.map(\.uniqueId))
+        for connection in appState.providerConnections.connections where connection.isConnected && !connection.isArchived {
+            if let selected = sourceFilter.providerId, selected != connection.id { continue }
+            guard let provider = appState.getProvider(connection.id) as? BookloreProvider,
+                provider.supportsRemoteBrowsing else { continue }
+            for libraryId in browse.libraryIds(providerId: connection.id) {
+                if let selected = connection.selectedLibraryIds, !selected.contains(libraryId) { continue }
+                guard !Task.isCancelled else { return [] }
+                guard let remote = try? await provider.remoteSearchBooks(libraryId: libraryId, query: query, limit: limit) else { continue }
+                for book in await mergingStoredRecords(remote) where seen.insert(book.uniqueId).inserted {
+                    results.append(book)
+                }
+            }
+        }
+        return Array(results.prefix(limit))
     }
 
     func usesRemoteBrowsing(sourceFilter: LibrarySourceFilter) -> Bool {
@@ -1352,7 +1448,7 @@ final class LibraryEngine {
     }
 
     func searchBooks(query: String, limit: Int) async -> [Book] {
-        await appState.bookStore.searchBooks(query: query, limit: limit)
+        await searchBooks(query: query, sourceFilter: .all, limit: limit)
     }
 
     func titleAuthorPairs() async -> [(title: String, author: String)] {
@@ -1534,7 +1630,7 @@ final class LibraryEngine {
     }
 
     func seriesAggregates(mediaScope: [String], providerId: UUID? = nil, libraryId: String? = nil) async -> [BrowseSeriesAggregate] {
-        var bucket: [String: (count: Int, completedCount: Int, thumb: String?, matchingNames: Set<String>)] = [:]
+        var bucket: [String: BrowseSeriesAggregate] = [:]
         for raw in mediaScope {
             let aggregates =
                 if let providerId {
@@ -1543,60 +1639,70 @@ final class LibraryEngine {
                     await appState.bookStore.browseSeriesAggregates(mediaType: raw)
                 }
             for aggregate in aggregates {
-                var entry = bucket[aggregate.name] ?? (0, 0, nil, [])
-                entry.count += aggregate.bookCount
-                entry.completedCount += aggregate.completedBookCount
-                if entry.thumb == nil { entry.thumb = aggregate.representativeThumb }
-                entry.matchingNames.formUnion(aggregate.matchingNames)
-                bucket[aggregate.name] = entry
+                bucket[aggregate.id] = mergingSeriesAggregate(bucket[aggregate.id], with: aggregate)
             }
         }
-        return
-            bucket
-            .map {
-                BrowseSeriesAggregate(
-                    name: $0.key,
-                    bookCount: $0.value.count,
-                    completedBookCount: $0.value.completedCount,
-                    representativeThumb: $0.value.thumb,
-                    matchingNames: $0.value.matchingNames.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
-                )
-            }
-            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        return bucket.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
     func seriesAggregates(from books: [Book]) -> [BrowseSeriesAggregate] {
-        struct Acc {
-            var count = 0
-            var completedCount = 0
-            var thumb: String?
-            var matchingNames = Set<String>()
-        }
-
-        var bucket: [String: Acc] = [:]
+        var groups: [String: (seed: BrowseSeriesAggregate, books: [Book])] = [:]
         for book in books {
-            guard let raw = book.series?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { continue }
-            let displayName = NameNormalizer.normalizeSeriesName(raw)
-            var acc = bucket[displayName, default: Acc()]
-            acc.count += 1
-            if book.isCompleted { acc.completedCount += 1 }
-            acc.matchingNames.insert(raw)
-            if acc.thumb == nil { acc.thumb = book.thumb }
-            bucket[displayName] = acc
+            guard let seed = Self.seriesIdentity(for: book) else { continue }
+            if groups[seed.id] == nil { groups[seed.id] = (seed, []) }
+            groups[seed.id]?.books.append(book)
         }
-
-        return
-            bucket
-            .map {
-                BrowseSeriesAggregate(
-                    name: $0.key,
-                    bookCount: $0.value.count,
-                    completedBookCount: $0.value.completedCount,
-                    representativeThumb: $0.value.thumb,
-                    matchingNames: $0.value.matchingNames.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
-                )
+        return groups.values.map { group in
+            let seed = group.seed
+            let unread = group.books.filter { !$0.isCompleted }
+            let started = unread.filter { $0.progressPercentage > 0 }.max { $0.lastUpdate < $1.lastUpdate }
+            let first = unread.min { lhs, rhs in
+                let l = lhs.comicMetadata
+                let r = rhs.comicMetadata
+                if l?.section.sortOrder != r?.section.sortOrder { return (l?.section.sortOrder ?? 0) < (r?.section.sortOrder ?? 0) }
+                if l?.volumeOrder != r?.volumeOrder { return (l?.volumeOrder ?? 0) < (r?.volumeOrder ?? 0) }
+                if l?.issueOrder != r?.issueOrder { return (l?.issueOrder ?? 0) < (r?.issueOrder ?? 0) }
+                if lhs.seriesSequence != rhs.seriesSequence { return BookSortKeys.seriesNumber(lhs.seriesSequence) < BookSortKeys.seriesNumber(rhs.seriesSequence) }
+                return lhs.uniqueId < rhs.uniqueId
             }
-            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            return BrowseSeriesAggregate(
+                name: seed.name,
+                bookCount: group.books.count,
+                completedBookCount: group.books.count - unread.count,
+                representativeThumb: group.books.first(where: { $0.thumb != nil })?.thumb,
+                matchingNames: Array(Set(group.books.compactMap(\.series))).sorted(),
+                isComic: seed.isComic, providerId: seed.providerId, libraryId: seed.libraryId,
+                comicSeriesID: seed.comicSeriesID, resumeBookUniqueID: (started ?? first)?.uniqueId,
+                resumeBookLastUpdate: (started ?? first)?.lastUpdate,
+                sections: ComicSection.allCases.compactMap { section in
+                    let count = group.books.count { $0.isComic && ($0.comicMetadata?.section ?? .issues) == section }
+                    return count > 0 ? ComicSeriesSectionSummary(section: section, count: count) : nil
+                },
+                volumes: ComicVolumeSummary.grouped(group.books.compactMap(\.comicMetadata)),
+                standaloneBookUniqueID: seed.standaloneBookUniqueID
+            )
+        }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    private func mergingSeriesAggregate(_ previous: BrowseSeriesAggregate?, with next: BrowseSeriesAggregate) -> BrowseSeriesAggregate {
+        guard let previous else { return next }
+        return BrowseSeriesAggregate(
+            name: previous.name,
+            bookCount: previous.bookCount + next.bookCount,
+            completedBookCount: previous.completedBookCount + next.completedBookCount,
+            representativeThumb: previous.representativeThumb ?? next.representativeThumb,
+            matchingNames: Array(Set(previous.matchingNames + next.matchingNames)).sorted(),
+            isComic: previous.isComic, providerId: previous.providerId, libraryId: previous.libraryId,
+            comicSeriesID: previous.comicSeriesID,
+            resumeBookUniqueID: previous.resumeBookUniqueID ?? next.resumeBookUniqueID,
+            resumeBookLastUpdate: previous.resumeBookUniqueID == nil ? next.resumeBookLastUpdate : previous.resumeBookLastUpdate,
+            sections: ComicSection.allCases.compactMap { section in
+                let count = (previous.sections + next.sections).filter { $0.section == section }.reduce(0) { $0 + $1.count }
+                return count > 0 ? ComicSeriesSectionSummary(section: section, count: count) : nil
+            },
+            volumes: previous.volumes + next.volumes,
+            standaloneBookUniqueID: previous.standaloneBookUniqueID
+        )
     }
 
     func genreAggregates(mediaScope: [String]) async -> [BrowseGenreAggregate] {
@@ -1777,22 +1883,17 @@ final class LibraryEngine {
     }
 
     func seriesFan(for aggregate: BrowseSeriesAggregate, mediaScope: [String]) async -> [Book] {
-        var collected: [Book] = []
-        for raw in mediaScope where collected.count < 3 {
-            collected += await appState.bookStore.books(
-                bySeriesNames: aggregate.matchingNames,
-                mediaType: raw,
-                limit: 3 - collected.count
-            )
-        }
-        return collected
+        await seriesBooksPage(for: aggregate, mediaScope: mediaScope, offset: 0, limit: 3)
     }
 
     func books(forSeries aggregate: BrowseSeriesAggregate, mediaScope: [String]) async -> [Book] {
-        if mediaScope.count == 1, let raw = mediaScope.first {
-            return await appState.bookStore.books(bySeriesNames: aggregate.matchingNames, mediaType: raw, limit: 500)
+        var books: [Book] = []
+        while !Task.isCancelled {
+            let page = await seriesBooksPage(for: aggregate, mediaScope: mediaScope, offset: books.count, limit: 200)
+            books += page
+            if page.count < 200 { break }
         }
-        return await appState.bookStore.books(inSeriesNames: aggregate.matchingNames)
+        return books
     }
 
     func books(forGenre aggregate: BrowseGenreAggregate, mediaScope: [String]) async -> [Book] {

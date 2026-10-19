@@ -50,19 +50,21 @@ final class BookDownloadManager: NSObject, ObservableObject {
 
     nonisolated private final class MultiTrackDownloadState: @unchecked Sendable {
         let bookId: String
-        let bookDir: URL
+        let id = UUID()
+        let directory: AtomicDownloadDirectory
         let total: Int
+        var published = false
         var completedCount: Int = 0
         var failed: Bool = false
         var firstErrorMessage: String?
-        init(bookId: String, bookDir: URL, total: Int) {
+        init(bookId: String, directory: AtomicDownloadDirectory, total: Int) {
             self.bookId = bookId
-            self.bookDir = bookDir
+            self.directory = directory
             self.total = total
         }
     }
     nonisolated(unsafe) private var multiTrackStateByBookId: [String: MultiTrackDownloadState] = [:]
-    nonisolated(unsafe) private var multiTrackTaskIdToContext: [Int: (bookId: String, chapterIndex: Int)] = [:]
+    nonisolated(unsafe) private var multiTrackTaskIdToContext: [Int: (bookId: String, chapterIndex: Int, generation: UUID)] = [:]
     nonisolated(unsafe) private var multiTrackTasksByBookId: [String: [URLSessionDownloadTask]] = [:]
 
     private let storage: LocalStorageManager
@@ -298,35 +300,22 @@ final class BookDownloadManager: NSObject, ObservableObject {
 
     func cancelDownload(bookId: String) {
         runningJobs[bookId]?.cancel()
-        var taskToCancel: URLSessionDownloadTask?
-        var collectedMultiTrackTasks: [URLSessionDownloadTask] = []
-        stateQueue.sync {
-            taskToCancel = bookIdToTask[bookId]
-            collectedMultiTrackTasks = multiTrackTasksByBookId[bookId] ?? []
-        }
-
-        let multiTrackTasksToCancel = collectedMultiTrackTasks
-        if !multiTrackTasksToCancel.isEmpty {
-            for t in multiTrackTasksToCancel { t.cancel() }
-        } else {
-            taskToCancel?.cancel()
-        }
-
-        stateQueue.async(flags: .barrier) { [weak self] in
-            guard let self else { return }
-            self.bookIdToTask.removeValue(forKey: bookId)
-            self.multiTrackStateByBookId.removeValue(forKey: bookId)
-            self.multiTrackTasksByBookId.removeValue(forKey: bookId)
-            for t in multiTrackTasksToCancel {
-                self.taskIdToBookId.removeValue(forKey: t.taskIdentifier)
-                self.multiTrackTaskIdToContext.removeValue(forKey: t.taskIdentifier)
+        var tasksToCancel: [URLSessionDownloadTask] = []
+        stateQueue.sync(flags: .barrier) {
+            tasksToCancel = multiTrackTasksByBookId.removeValue(forKey: bookId) ?? []
+            if let task = bookIdToTask.removeValue(forKey: bookId), tasksToCancel.isEmpty { tasksToCancel = [task] }
+            if let state = multiTrackStateByBookId.removeValue(forKey: bookId) {
+                state.failed = true
+                state.directory.discard()
+            }
+            for task in tasksToCancel {
+                taskIdToBookId.removeValue(forKey: task.taskIdentifier)
+                multiTrackTaskIdToContext.removeValue(forKey: task.taskIdentifier)
             }
         }
-
-        Task { @MainActor in
-            activeBookIds.remove(bookId)
-            progressByBookId.removeValue(forKey: bookId)
-        }
+        tasksToCancel.forEach { $0.cancel() }
+        activeBookIds.remove(bookId)
+        progressByBookId.removeValue(forKey: bookId)
     }
 
     func startSMBDownload(bookId: String, smbBook: SMBBook, source: SMBLibrarySource, password: String) async {
@@ -464,25 +453,18 @@ final class BookDownloadManager: NSObject, ObservableObject {
             completedBookIds.remove(bookId)
         }
 
-        let fm = FileManager.default
-        let bookDir = storage.bookAudioDirectory(for: bookId)
-
-        do {
-            if fm.fileExists(atPath: bookDir.path) {
-                try fm.removeItem(at: bookDir)
-            }
-            try fm.createDirectory(at: bookDir, withIntermediateDirectories: true)
-        } catch {
-            await failMultiTrackDownload(bookId: bookId, errorMessage: error.localizedDescription)
-            return
-        }
-
         guard !requests.isEmpty else {
             await failMultiTrackDownload(bookId: bookId, errorMessage: "No tracks to download")
             return
         }
-
-        let state = MultiTrackDownloadState(bookId: bookId, bookDir: bookDir, total: requests.count)
+        let state: MultiTrackDownloadState
+        do {
+            let directory = try AtomicDownloadDirectory(destination: storage.bookAudioDirectory(for: bookId))
+            state = MultiTrackDownloadState(bookId: bookId, directory: directory, total: requests.count)
+        } catch {
+            await failMultiTrackDownload(bookId: bookId, errorMessage: error.localizedDescription)
+            return
+        }
 
         let scheduledTasks: [URLSessionDownloadTask] = requests.map { entry in
             var req = entry.request
@@ -493,12 +475,11 @@ final class BookDownloadManager: NSObject, ObservableObject {
             (task.taskIdentifier, index)
         }
 
-        stateQueue.async(flags: .barrier) { [weak self] in
-            guard let self else { return }
+        stateQueue.sync(flags: .barrier) {
             self.multiTrackStateByBookId[bookId] = state
             self.multiTrackTasksByBookId[bookId] = scheduledTasks
             for entry in contextEntries {
-                self.multiTrackTaskIdToContext[entry.taskId] = (bookId, entry.chapterIndex)
+                self.multiTrackTaskIdToContext[entry.taskId] = (bookId, entry.chapterIndex, state.id)
                 self.taskIdToBookId[entry.taskId] = bookId
             }
 
@@ -534,6 +515,19 @@ final class BookDownloadManager: NSObject, ObservableObject {
         progressByBookId.removeValue(forKey: bookId)
         completedBookIds.remove(bookId)
         lastErrorByBookId.removeValue(forKey: bookId)
+    }
+
+    // A dropped connection can still finish a task without error; compare against the declared full-body length.
+    nonisolated static func validateDownloadedFileLength(at url: URL, response: URLResponse?) throws {
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200, http.expectedContentLength > 0,
+            (http.value(forHTTPHeaderField: "Content-Encoding") ?? "identity").lowercased() == "identity"
+        else { return }
+        let size = ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? NSNumber)?.int64Value ?? 0
+        guard size == http.expectedContentLength else {
+            throw NSError(domain: "BookDownloadManager", code: -4, userInfo: [
+                NSLocalizedDescriptionKey: "Download incomplete: received \(size) of \(http.expectedContentLength) bytes"
+            ])
+        }
     }
 
     nonisolated private func persistDownloadedTempFile(tempURL: URL, destinationURL: URL) throws {
@@ -779,7 +773,7 @@ extension BookDownloadManager: URLSessionDownloadDelegate {
         let taskId = downloadTask.taskIdentifier
 
         var bookId: String?
-        var multiTrackContext: (bookId: String, chapterIndex: Int)?
+        var multiTrackContext: (bookId: String, chapterIndex: Int, generation: UUID)?
         stateQueue.sync {
             bookId = taskIdToBookId[taskId]
             multiTrackContext = multiTrackTaskIdToContext[taskId]
@@ -851,6 +845,8 @@ extension BookDownloadManager: URLSessionDownloadDelegate {
                     userInfo: [NSLocalizedDescriptionKey: "Temp download file missing at \(location.path)"]
                 )
             }
+
+            try Self.validateDownloadedFileLength(at: location, response: downloadTask.response)
 
             let bookDir = storage.bookAudioDirectory(for: bookId)
             try fm.createDirectory(at: bookDir, withIntermediateDirectories: true, attributes: nil)
@@ -925,15 +921,15 @@ extension BookDownloadManager: URLSessionDownloadDelegate {
 
         let taskId = task.taskIdentifier
         var bookId: String?
-        var multiTrackContext: (bookId: String, chapterIndex: Int)?
+        var multiTrackContext: (bookId: String, chapterIndex: Int, generation: UUID)?
         stateQueue.sync {
             bookId = taskIdToBookId[taskId]
             multiTrackContext = multiTrackTaskIdToContext[taskId]
         }
         guard let bookId else { return }
 
-        if multiTrackContext != nil {
-            handleMultiTrackChapterFailure(bookId: bookId, taskId: taskId, error: error)
+        if let context = multiTrackContext {
+            handleMultiTrackChapterFailure(bookId: bookId, taskId: taskId, generation: context.generation, error: error)
             return
         }
 
@@ -957,148 +953,96 @@ extension BookDownloadManager: URLSessionDownloadDelegate {
     }
 
     nonisolated private func handleMultiTrackChapterFinished(
-        taskId: Int,
-        downloadTask: URLSessionDownloadTask,
-        location: URL,
-        context: (bookId: String, chapterIndex: Int)
+        taskId: Int, downloadTask: URLSessionDownloadTask, location: URL,
+        context: (bookId: String, chapterIndex: Int, generation: UUID)
     ) {
         let bookId = context.bookId
-        let chapterIndex = context.chapterIndex
-
-        var state: MultiTrackDownloadState?
-        stateQueue.sync { state = multiTrackStateByBookId[bookId] }
-        guard let state else {
-            try? FileManager.default.removeItem(at: location)
-            return
-        }
-
         do {
-
-            if state.failed {
-                try? FileManager.default.removeItem(at: location)
-                return
-            }
-
-            if let http = downloadTask.response as? HTTPURLResponse,
-                !(200...299).contains(http.statusCode)
-            {
-                try? FileManager.default.removeItem(at: location)
-                throw NSError(
-                    domain: NSURLErrorDomain,
-                    code: http.statusCode,
-                    userInfo: [NSLocalizedDescriptionKey: "Track \(chapterIndex) HTTP \(http.statusCode)"]
-                )
-            }
-
-            let ext = UnifiedDownloadService.detectAudioExtension(
-                urlPathExtension: downloadTask.originalRequest?.url?.pathExtension.lowercased(),
-                response: downloadTask.response,
-                fileURL: location
-            )
-            let destURL = state.bookDir.appendingPathComponent("chapter_\(chapterIndex).\(ext)")
-            try persistDownloadedTempFile(tempURL: location, destinationURL: destURL)
-
-            guard let attrs = try? FileManager.default.attributesOfItem(atPath: destURL.path),
-                let size = attrs[.size] as? Int64, size > 1024
-            else {
-                try? FileManager.default.removeItem(at: destURL)
-                throw NSError(
-                    domain: "BookDownloadManager",
-                    code: -1,
-                    userInfo: [NSLocalizedDescriptionKey: "Track \(chapterIndex) too small after persist"]
-                )
-            }
-
-            let progressTuple: (newCompleted: Int, total: Int, shouldFinalize: Bool) = stateQueue.sync(flags: .barrier) {
-                state.completedCount += 1
-                self.multiTrackTaskIdToContext.removeValue(forKey: taskId)
-                self.taskIdToBookId.removeValue(forKey: taskId)
-                return (state.completedCount, state.total, state.completedCount >= state.total)
-            }
-            let newCompleted = progressTuple.newCompleted
-            let total = progressTuple.total
-            let shouldFinalize = progressTuple.shouldFinalize
-
-            let progress = Double(newCompleted) / Double(total)
-            AppLogger.network.info("[MultiTrack] \(newCompleted)/\(total) chapters done for \(bookId)")
-
-            Task { @MainActor in
-                if self.shouldEmitProgressUpdate(bookId: bookId, progress: progress) {
-                    self.progressByBookId[bookId] = progress
+            let update: (completed: Int, total: Int, finalized: Bool)? = try stateQueue.sync(flags: .barrier) {
+                guard let state = multiTrackStateByBookId[bookId], state.id == context.generation,
+                    !state.failed, !state.published else { return nil }
+                if let http = downloadTask.response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                    throw NSError(domain: NSURLErrorDomain, code: http.statusCode,
+                        userInfo: [NSLocalizedDescriptionKey: "Track \(context.chapterIndex) HTTP \(http.statusCode)"])
                 }
-                if shouldFinalize {
+                let ext = UnifiedDownloadService.detectAudioExtension(
+                    urlPathExtension: downloadTask.originalRequest?.url?.pathExtension.lowercased(),
+                    response: downloadTask.response, fileURL: location)
+                let destination = state.directory.staging.appendingPathComponent("chapter_\(context.chapterIndex).\(ext)")
+                try persistDownloadedTempFile(tempURL: location, destinationURL: destination)
+                guard let attrs = try? FileManager.default.attributesOfItem(atPath: destination.path),
+                    let size = attrs[.size] as? Int64, size > 1024 else {
+                    throw NSError(domain: "BookDownloadManager", code: -1,
+                        userInfo: [NSLocalizedDescriptionKey: "Downloaded track is too small"])
+                }
+                try Self.validateDownloadedFileLength(at: destination, response: downloadTask.response)
+                state.completedCount += 1
+                multiTrackTaskIdToContext.removeValue(forKey: taskId)
+                taskIdToBookId.removeValue(forKey: taskId)
+                let finalized = state.completedCount == state.total
+                if finalized {
+                    try state.directory.publish()
+                    state.published = true
+                }
+                return (state.completedCount, state.total, finalized)
+            }
+            guard let update else { try? FileManager.default.removeItem(at: location); return }
+            Task { @MainActor in
+                guard self.isCurrentMultiTrackAttempt(bookId, generation: context.generation) else { return }
+                let progress = Double(update.completed) / Double(update.total)
+                if self.shouldEmitProgressUpdate(bookId: bookId, progress: progress) { self.progressByBookId[bookId] = progress }
+                if update.finalized {
                     self.activeBookIds.remove(bookId)
                     self.progressByBookId[bookId] = 1
                     self.completedBookIds.insert(bookId)
                     self.lastErrorByBookId.removeValue(forKey: bookId)
                     self.lastProgressEmissionByBookId.removeValue(forKey: bookId)
-                    NotificationCenter.default.post(
-                        name: Self.downloadDidCompleteNotification,
-                        object: nil,
-                        userInfo: ["bookId": bookId]
-                    )
-                }
-            }
-
-            if shouldFinalize {
-                stateQueue.async(flags: .barrier) { [weak self] in
-                    guard let self else { return }
-                    self.multiTrackStateByBookId.removeValue(forKey: bookId)
-                    self.multiTrackTasksByBookId.removeValue(forKey: bookId)
-                    self.bookIdToTask.removeValue(forKey: bookId)
+                    self.finishMultiTrackAttempt(bookId, generation: context.generation)
+                    NotificationCenter.default.post(name: Self.downloadDidCompleteNotification,
+                        object: nil, userInfo: ["bookId": bookId])
                 }
             }
         } catch {
-            handleMultiTrackChapterFailure(bookId: bookId, taskId: taskId, error: error)
+            try? FileManager.default.removeItem(at: location)
+            handleMultiTrackChapterFailure(bookId: bookId, taskId: taskId, generation: context.generation, error: error)
         }
     }
 
-    nonisolated private func handleMultiTrackChapterFailure(bookId: String, taskId: Int, error: Error) {
-        var collectedSiblingTasks: [URLSessionDownloadTask] = []
-        var alreadyFailed = false
+    nonisolated private func isCurrentMultiTrackAttempt(_ bookId: String, generation: UUID) -> Bool {
+        stateQueue.sync { multiTrackStateByBookId[bookId]?.id == generation }
+    }
+
+    nonisolated private func finishMultiTrackAttempt(_ bookId: String, generation: UUID) {
         stateQueue.sync(flags: .barrier) {
-            if let state = multiTrackStateByBookId[bookId] {
-                alreadyFailed = state.failed
-                state.failed = true
-                if state.firstErrorMessage == nil {
-                    state.firstErrorMessage = error.localizedDescription
-                }
+            guard multiTrackStateByBookId[bookId]?.id == generation else { return }
+            multiTrackStateByBookId.removeValue(forKey: bookId)?.directory.discard()
+            let tasks = multiTrackTasksByBookId.removeValue(forKey: bookId) ?? []
+            bookIdToTask.removeValue(forKey: bookId)
+            for task in tasks {
+                taskIdToBookId.removeValue(forKey: task.taskIdentifier)
+                multiTrackTaskIdToContext.removeValue(forKey: task.taskIdentifier)
             }
-            collectedSiblingTasks = multiTrackTasksByBookId[bookId] ?? []
-            multiTrackTaskIdToContext.removeValue(forKey: taskId)
-            taskIdToBookId.removeValue(forKey: taskId)
         }
-        guard !alreadyFailed else { return }
+    }
 
-        let siblingTasks = collectedSiblingTasks
-
-        AppLogger.network.error("[MultiTrack] Chapter \(taskId) failed for \(bookId): \(error.localizedDescription); cancelling siblings")
-        for t in siblingTasks where t.taskIdentifier != taskId {
-            t.cancel()
+    nonisolated private func handleMultiTrackChapterFailure(bookId: String, taskId: Int, generation: UUID, error: Error) {
+        let siblings: [URLSessionDownloadTask]? = stateQueue.sync(flags: .barrier) {
+            guard let state = multiTrackStateByBookId[bookId], state.id == generation,
+                !state.failed, !state.published else { return nil }
+            state.failed = true
+            state.directory.discard()
+            return multiTrackTasksByBookId[bookId] ?? []
         }
-
+        guard let siblings else { return }
+        siblings.forEach { $0.cancel() }
         let message = error.localizedDescription
         Task { @MainActor in
+            guard self.isCurrentMultiTrackAttempt(bookId, generation: generation) else { return }
             self.activeBookIds.remove(bookId)
             self.progressByBookId.removeValue(forKey: bookId)
             self.lastErrorByBookId[bookId] = message
             self.lastProgressEmissionByBookId.removeValue(forKey: bookId)
-        }
-
-        stateQueue.async(flags: .barrier) { [weak self] in
-            guard let self else { return }
-            self.multiTrackStateByBookId.removeValue(forKey: bookId)
-            self.multiTrackTasksByBookId.removeValue(forKey: bookId)
-            self.bookIdToTask.removeValue(forKey: bookId)
-            for t in siblingTasks {
-                self.taskIdToBookId.removeValue(forKey: t.taskIdentifier)
-                self.multiTrackTaskIdToContext.removeValue(forKey: t.taskIdentifier)
-            }
-        }
-
-        let storageCopy = storage
-        Task { @MainActor in
-            _ = storageCopy.deleteAudiobook(bookId)
+            self.finishMultiTrackAttempt(bookId, generation: generation)
         }
     }
 }

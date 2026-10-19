@@ -1,19 +1,28 @@
 import Foundation
+import ImageIO
 
 final class ServerPageStreamingService: @unchecked Sendable {
     static let shared = ServerPageStreamingService()
 
-    private let fileManager = FileManager.default
+    private static let windowRadius = 3
+    private static let prefetchBatchSize = 4
+
+    private let cache: ReadingCacheStore
     private var sources: [String: StreamSource] = [:]
     private var streamIDsByBook: [String: String] = [:]
-    private var fullCacheTasks: [String: Task<Void, Never>] = [:]
-    private var pageTasks: [String: Task<Data, Error>] = [:]
+    private var prefetches: [String: Prefetch] = [:]
+    private var pageTasks: [String: PageTask] = [:]
+    private var nextTaskID = 0
+    private var windowRevisions: [String: Int] = [:]
 
     private let cacheRoot: URL
 
-    init(cachesDirectory: URL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]) {
+    init(
+        cachesDirectory: URL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0],
+        cache: ReadingCacheStore? = nil
+    ) {
         cacheRoot = cachesDirectory.appendingPathComponent("StreamedPages", isDirectory: true)
-        try? fileManager.createDirectory(at: cacheRoot, withIntermediateDirectories: true)
+        self.cache = cache ?? ReadingCacheStore(cachesDirectory: cachesDirectory)
     }
 
     func streamedPages(
@@ -23,36 +32,30 @@ final class ServerPageStreamingService: @unchecked Sendable {
     ) async throws -> [URL] {
         let cacheKey = sanitize("\(book.providerId)-\(book.id)")
         let bookDir = cacheRoot.appendingPathComponent(cacheKey, isDirectory: true)
-        try fileManager.createDirectory(at: bookDir, withIntermediateDirectories: true)
 
         let pageCount = try await provider.fetchPageCount(for: book)
+        try Task.checkCancellation()
         guard pageCount > 0 else {
             throw StreamingError.noPagesFound
         }
 
-        let streamID: String
-        if let existing = streamIDsByBook[cacheKey] {
-            streamID = existing
-        } else {
-            streamID = UUID().uuidString.lowercased()
-            streamIDsByBook[cacheKey] = streamID
+        if let previousID = streamIDsByBook[cacheKey], let previous = sources.removeValue(forKey: previousID) {
+            retire(streamID: previousID, source: previous, releasingProtection: true)
         }
-        fullCacheTasks.removeValue(forKey: streamID)?.cancel()
+        let streamID = UUID().uuidString.lowercased()
+        streamIDsByBook[cacheKey] = streamID
         sources[streamID] = StreamSource(
             book: book,
             provider: provider,
             cacheDirectory: bookDir,
             pageCount: pageCount,
-            mode: mode
+            mode: mode,
+            lease: ReadingCacheWriteLease()
         )
 
-        let pages = (0..<pageCount).compactMap { index in
+        return (0..<pageCount).compactMap { index in
             URL(string: "enve-comic-page://\(streamID)/\(index)")
         }
-        if mode == .sessionCache {
-            startFullCache(streamID: streamID)
-        }
-        return pages
     }
 
     func pageData(at url: URL) async throws -> Data {
@@ -62,57 +65,53 @@ final class ServerPageStreamingService: @unchecked Sendable {
             }.value
         }
 
-        guard let streamID = url.host,
-            let source = sources[streamID],
-            let pageIndex = Int(url.lastPathComponent),
-            pageIndex >= 0
+        guard let (streamID, pageIndex) = streamLocation(for: url),
+            sources[streamID] != nil
         else {
             throw StreamingError.invalidPageURL
         }
-
-        let cachedURL = cachedPageURL(index: pageIndex, in: source.cacheDirectory)
-        if fileManager.fileExists(atPath: cachedURL.path) {
-            return try await Task.detached(priority: .userInitiated) {
-                try Data(contentsOf: cachedURL)
-            }.value
-        }
-
-        let taskKey = cachedURL.path
-        if let existing = pageTasks[taskKey] {
-            return try await existing.value
-        }
-
-        let task = Task<Data, Error> {
-            let data = try await source.provider.fetchPage(pageIndex + 1, for: source.book)
-            try await Task.detached(priority: .utility) {
-                try data.write(to: cachedURL, options: .atomic)
-            }.value
-            return data
-        }
-        pageTasks[taskKey] = task
-        defer { pageTasks.removeValue(forKey: taskKey) }
-        return try await task.value
+        return try await loadPage(pageIndex, streamID: streamID, request: .demand).data
     }
 
     func preparePageWindow(around url: URL) async {
         guard let (streamID, pageIndex) = streamLocation(for: url),
             let source = sources[streamID],
-            source.mode == .onDemand
+            pageIndex < source.pageCount
         else { return }
+        let revision = (windowRevisions[streamID] ?? 0) + 1
+        windowRevisions[streamID] = revision
 
-        let lowerBound = max(0, pageIndex - 3)
-        let upperBound = min(source.pageCount - 1, pageIndex + 3)
+        let window =
+            max(0, pageIndex - Self.windowRadius)...min(source.pageCount - 1, pageIndex + Self.windowRadius)
+        let wanted = source.mode == .sessionCache ? window.lowerBound...(source.pageCount - 1) : window
+        for (key, pageTask) in pageTasks
+        where pageTask.streamID == streamID && pageTask.request != .demand && !wanted.contains(pageTask.index) {
+            pageTask.task.cancel()
+            pageTasks[key] = nil
+        }
+        if source.mode == .sessionCache {
+            let prefetch = prefetches[streamID]
+            let filling = window.lowerBound...(window.upperBound + Self.prefetchBatchSize)
+            if prefetch.map({ !$0.isFinished && !filling.contains($0.nextIndex) }) ?? true {
+                startPrefetch(streamID: streamID, from: window.lowerBound)
+            }
+        }
+
+        let owner = protectionOwner(streamID)
+        await cache.protect(window.map { cachedPageURL(index: $0, in: source.cacheDirectory) }, owner: owner)
+        guard isCurrent(source, streamID: streamID) else {
+            await cache.release(owner: owner)
+            return
+        }
+        guard windowRevisions[streamID] == revision else { return }
+
         await withTaskGroup(of: Void.self) { group in
-            for index in lowerBound...upperBound {
+            for index in window {
                 group.addTask { [weak self] in
-                    guard let self,
-                        let pageURL = URL(string: "enve-comic-page://\(streamID)/\(index)")
-                    else { return }
-                    _ = try? await self.pageData(at: pageURL)
+                    _ = await self?.prefetchPage(index, streamID: streamID, request: .window)
                 }
             }
         }
-        trimCache(in: source.cacheDirectory, keeping: lowerBound...upperBound)
     }
 
     func endSession(for book: Book) {
@@ -120,72 +119,136 @@ final class ServerPageStreamingService: @unchecked Sendable {
         guard let streamID = streamIDsByBook.removeValue(forKey: cacheKey),
             let source = sources.removeValue(forKey: streamID)
         else { return }
-        fullCacheTasks.removeValue(forKey: streamID)?.cancel()
-        cancelPageTasks(in: source.cacheDirectory)
-        if source.mode == .sessionCache {
-            try? fileManager.removeItem(at: source.cacheDirectory)
+        retire(streamID: streamID, source: source, releasingProtection: true)
+    }
+
+    func retire() async {
+        let active = sources
+        sources.removeAll()
+        streamIDsByBook.removeAll()
+        for (streamID, source) in active {
+            retire(streamID: streamID, source: source, releasingProtection: false)
+            await cache.release(owner: protectionOwner(streamID))
         }
     }
 
-    func clearCache(for bookId: String) {
-        let matchingSources = sources.filter { $0.value.book.id == bookId }
-        for (streamID, source) in matchingSources {
-            fullCacheTasks.removeValue(forKey: streamID)?.cancel()
-            cancelPageTasks(in: source.cacheDirectory)
-            try? fileManager.removeItem(at: source.cacheDirectory)
-            sources.removeValue(forKey: streamID)
-            streamIDsByBook.removeValue(forKey: source.cacheDirectory.lastPathComponent)
+    private func loadPage(_ index: Int, streamID: String, request: PageRequest) async throws -> PageLoad {
+        guard let source = sources[streamID], index >= 0, index < source.pageCount else {
+            throw StreamingError.invalidPageURL
         }
-        let legacyDirectory = cacheRoot.appendingPathComponent(sanitize(bookId), isDirectory: true)
-        try? fileManager.removeItem(at: legacyDirectory)
-    }
-
-    private func startFullCache(streamID: String) {
-        fullCacheTasks.removeValue(forKey: streamID)?.cancel()
-        fullCacheTasks[streamID] = Task { [weak self] in
-            await self?.cacheAllPages(streamID: streamID)
+        let fileURL = cachedPageURL(index: index, in: source.cacheDirectory)
+        let key = fileURL.path
+        if var existing = pageTasks[key] {
+            if request.rank > existing.request.rank {
+                existing.request = request
+                pageTasks[key] = existing
+            }
+            return try await existing.task.value
         }
-    }
 
-    private func cacheAllPages(streamID: String) async {
-        guard let source = sources[streamID] else { return }
-        for batchStart in stride(from: 0, to: source.pageCount, by: 4) {
-            guard !Task.isCancelled else { return }
-            let batchEnd = min(batchStart + 3, source.pageCount - 1)
-            await withTaskGroup(of: Void.self) { group in
-                for index in batchStart...batchEnd {
-                    group.addTask { [weak self] in
-                        guard let self,
-                            let pageURL = URL(string: "enve-comic-page://\(streamID)/\(index)")
-                        else { return }
-                        _ = try? await self.pageData(at: pageURL)
-                    }
-                }
+        nextTaskID += 1
+        let id = nextTaskID
+        let cache = cache
+        let generation = cache.clearGeneration
+        let task = Task<PageLoad, Error> { [weak self] in
+            if let cached = await cache.data(at: fileURL) {
+                try Task.checkCancellation()
+                guard source.lease.isValid else { throw CancellationError() }
+                return PageLoad(data: cached, isCached: true)
+            }
+            let data = try await source.provider.fetchPage(index + 1, for: source.book)
+            // Some providers ignore cancellation; never hand back or store a page for retired work.
+            try Task.checkCancellation()
+            guard !data.isEmpty, Self.isImage(data) else { throw StreamingError.invalidPageData }
+
+            let current = self?.pageTasks[key].flatMap { $0.id == id ? $0.request : nil } ?? request
+            let admission: ReadingCacheAdmission =
+                current == .budgetedPrefetch ? .ifRoom(sparing: source.cacheDirectory) : .required
+            let isCached =
+                (try? await cache.write(data, to: fileURL, lease: source.lease, generation: generation, admission: admission))
+                ?? false
+            return PageLoad(data: data, isCached: isCached)
+        }
+        pageTasks[key] = PageTask(id: id, streamID: streamID, index: index, request: request, task: task)
+        defer {
+            if pageTasks[key]?.id == id {
+                pageTasks[key] = nil
             }
         }
+        return try await task.value
     }
 
-    private func cancelPageTasks(in directory: URL) {
-        let taskKeys = pageTasks.keys.filter { $0.hasPrefix(directory.path + "/") }
-        for key in taskKeys {
-            pageTasks.removeValue(forKey: key)?.cancel()
+    // Stop prefetching when the session ends, cancellation arrives or the cache refuses a page.
+    private func prefetchPage(_ index: Int, streamID: String, request: PageRequest) async -> Bool {
+        guard let source = sources[streamID], index < source.pageCount else { return false }
+        let fileURL = cachedPageURL(index: index, in: source.cacheDirectory)
+        if pageTasks[fileURL.path] == nil, await cache.hasFile(at: fileURL) {
+            return true
+        }
+        guard !Task.isCancelled, isCurrent(source, streamID: streamID) else { return false }
+        do {
+            return try await loadPage(index, streamID: streamID, request: request).isCached
+        } catch is CancellationError {
+            return false
+        } catch {
+            return isCurrent(source, streamID: streamID)
         }
     }
 
-    private func trimCache(in directory: URL, keeping range: ClosedRange<Int>) {
-        guard
-            let files = try? fileManager.contentsOfDirectory(
-                at: directory,
-                includingPropertiesForKeys: nil,
-                options: .skipsHiddenFiles
-            )
-        else { return }
-        for file in files where file.pathExtension == "page" {
-            guard let index = Int(file.deletingPathExtension().lastPathComponent),
-                !range.contains(index)
-            else { continue }
-            try? fileManager.removeItem(at: file)
+    private func startPrefetch(streamID: String, from start: Int) {
+        prefetches.removeValue(forKey: streamID)?.task.cancel()
+        guard let lease = sources[streamID]?.lease else { return }
+        nextTaskID += 1
+        let id = nextTaskID
+        let task = Task { [weak self] in
+            var batchStart = start
+            while let self, let source = self.sources[streamID], source.lease === lease,
+                batchStart < source.pageCount, !Task.isCancelled
+            {
+                let batch = batchStart...min(batchStart + Self.prefetchBatchSize - 1, source.pageCount - 1)
+                let shouldContinue = await withTaskGroup(of: Bool.self) { group in
+                    for index in batch {
+                        group.addTask { [weak self] in
+                            await self?.prefetchPage(index, streamID: streamID, request: .budgetedPrefetch) ?? false
+                        }
+                    }
+                    var admitted = true
+                    for await result in group { admitted = admitted && result }
+                    return admitted
+                }
+                guard shouldContinue else { break }
+                batchStart = batch.upperBound + 1
+                if self.prefetches[streamID]?.id == id {
+                    self.prefetches[streamID]?.nextIndex = batchStart
+                }
+            }
+            if self?.prefetches[streamID]?.id == id {
+                self?.prefetches[streamID]?.isFinished = true
+            }
         }
+        prefetches[streamID] = Prefetch(id: id, nextIndex: start, task: task)
+    }
+
+    private func retire(streamID: String, source: StreamSource, releasingProtection: Bool) {
+        windowRevisions[streamID] = nil
+        source.lease.revoke()
+        prefetches.removeValue(forKey: streamID)?.task.cancel()
+        for (key, pageTask) in pageTasks where pageTask.streamID == streamID {
+            pageTask.task.cancel()
+            pageTasks[key] = nil
+        }
+        guard releasingProtection else { return }
+        let cache = cache
+        let owner = protectionOwner(streamID)
+        Task { await cache.release(owner: owner) }
+    }
+
+    private func isCurrent(_ source: StreamSource, streamID: String) -> Bool {
+        sources[streamID]?.lease === source.lease
+    }
+
+    private func protectionOwner(_ streamID: String) -> String {
+        "comic-stream-\(streamID)"
     }
 
     private func streamLocation(for url: URL) -> (streamID: String, pageIndex: Int)? {
@@ -205,16 +268,57 @@ final class ServerPageStreamingService: @unchecked Sendable {
         value.replacingOccurrences(of: "[^A-Za-z0-9._-]", with: "-", options: .regularExpression)
     }
 
+    // Reject non-image responses before caching them as comic pages.
+    private nonisolated static func isImage(_ data: Data) -> Bool {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return false }
+        return CGImageSourceGetType(source) != nil && CGImageSourceGetCount(source) > 0
+    }
+
     enum StreamingError: LocalizedError {
         case noPagesFound
         case invalidPageURL
+        case invalidPageData
 
         var errorDescription: String? {
             switch self {
             case .noPagesFound: return "Server returned no pages for this book"
             case .invalidPageURL: return "The streamed comic page URL is invalid"
+            case .invalidPageData: return "The server didn't return a readable comic page."
             }
         }
+    }
+
+    // Only window prefetch can evict pages; demand survives window changes and budgeted prefetch uses free space.
+    private enum PageRequest {
+        case budgetedPrefetch, window, demand
+
+        var rank: Int {
+            switch self {
+            case .budgetedPrefetch: 0
+            case .window: 1
+            case .demand: 2
+            }
+        }
+    }
+
+    private struct PageLoad {
+        let data: Data
+        let isCached: Bool
+    }
+
+    private struct PageTask {
+        let id: Int
+        let streamID: String
+        let index: Int
+        var request: PageRequest
+        let task: Task<PageLoad, Error>
+    }
+
+    private struct Prefetch {
+        let id: Int
+        var nextIndex: Int
+        var isFinished = false
+        let task: Task<Void, Never>
     }
 
     private struct StreamSource {
@@ -222,6 +326,7 @@ final class ServerPageStreamingService: @unchecked Sendable {
         let provider: any ServerPageProvider
         let cacheDirectory: URL
         let pageCount: Int
-        var mode: ComicPageLoadingMode
+        let mode: ComicPageLoadingMode
+        let lease: ReadingCacheWriteLease
     }
 }

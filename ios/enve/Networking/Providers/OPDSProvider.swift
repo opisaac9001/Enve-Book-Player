@@ -45,6 +45,7 @@ class OPDSProvider: WholeSnapshotCatalogProvider, EbookDownloadProvider, Playbac
     func retire() async { await authentication.retire() }
 
     func validateConnection() async throws -> Bool {
+        try EnveProvenance.checkServerAddress(connection.url)
         let url = feedURL()
         AppLogger.network.info("[OPDS] validateConnection at \(url.redacted)")
         let (data, response) = try await send(makeRequest(url: url))

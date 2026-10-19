@@ -48,6 +48,7 @@ final class ReaderLocatorProgress {
         state: ClassicReaderModel.State,
         currentProgress: Double?,
         currentComicPageIndex: Int,
+        lastVisibleComicPageIndex: Int,
         lastStablePDFPageIndex: Int,
         totalPages: Int,
         pdfController: PDFReaderController?
@@ -113,7 +114,7 @@ final class ReaderLocatorProgress {
 
         case .readyComic:
             return Snapshot(
-                progression: Self.comicProgress(pageIndex: currentComicPageIndex, totalPages: totalPages),
+                progression: Self.comicProgress(pageIndex: lastVisibleComicPageIndex, totalPages: totalPages),
                 locatorJSON: Self.makeComicLocator(pageIndex: currentComicPageIndex),
                 source: .comic
             )

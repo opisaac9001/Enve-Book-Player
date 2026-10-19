@@ -44,6 +44,8 @@ struct ReaderContentsTray: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("reader-contents-tray")
         .background(hearth.bg)
         .hearthPresentationBackground()
         .sheet(item: $bookmarkEditor) { presentation in
@@ -87,6 +89,19 @@ struct ReaderContentsTray: View {
         if model.tocEntries.isEmpty {
             emptyNote("This book keeps no table of contents.")
         } else {
+            let lengths = model.tocEntryLengths
+            if !lengths.starts.isEmpty || !lengths.pages.isEmpty {
+                Text(
+                    lengths.isEstimated
+                        ? "Pages marked ~ are estimates; screen page counts may differ."
+                        : "Print page numbers; screen page counts may differ."
+                )
+                .font(.hearthCaption)
+                .foregroundStyle(hearth.textTertiary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 20)
+                .padding(.bottom, 4)
+            }
             ScrollViewReader { proxy in
                 List(model.tocEntries) { entry in
                     Button {
@@ -95,11 +110,29 @@ struct ReaderContentsTray: View {
                             dismiss()
                         }
                     } label: {
-                        Text(entry.displayTitle)
-                            .font(.hearthDisplay(entry.depth == 0 ? 17 : 15, weight: .regular))
-                            .foregroundStyle(isCurrent(entry) ? ambient : hearth.text)
-                            .padding(.leading, CGFloat(entry.depth) * 16)
-                            .padding(.vertical, 4)
+                        HStack(alignment: .firstTextBaseline, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(entry.displayTitle)
+                                    .font(.hearthDisplay(entry.depth == 0 ? 17 : 15, weight: .regular))
+                                    .foregroundStyle(isCurrent(entry) ? ambient : hearth.text)
+                                if let pages = lengths.pages[entry.id] {
+                                    tocLengthText(pages: pages, isEstimated: lengths.isEstimated)
+                                }
+                            }
+                            Spacer(minLength: 0)
+                            if let start = lengths.starts[entry.id] {
+                                Text(start.isEstimated ? "~p. \(start.label)" : "p. \(start.label)")
+                                    .font(.hearthUI(14, weight: .medium).monospacedDigit())
+                                    .foregroundStyle(isCurrent(entry) ? ambient : hearth.textSecondary)
+                                    .lineLimit(1)
+                                    .fixedSize()
+                                    .accessibilityLabel(start.isEstimated ? "Starts around page \(start.label)" : "Starts on page \(start.label)")
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                        .padding(.leading, CGFloat(entry.depth) * 16)
+                        .padding(.vertical, 4)
                     }
                     .listRowBackground(Color.clear)
                     .listRowSeparatorTint(hearth.hairline)
@@ -114,6 +147,14 @@ struct ReaderContentsTray: View {
                 }
             }
         }
+    }
+
+    private func tocLengthText(pages: Int, isEstimated: Bool) -> some View {
+        let unit = pages == 1 ? "page" : "pages"
+        return Text(isEstimated ? "~\(pages) \(unit)" : "\(pages) \(unit)")
+            .font(.hearthCaption)
+            .foregroundStyle(hearth.textSecondary)
+            .accessibilityLabel(isEstimated ? "About \(pages) \(unit), estimated" : "\(pages) \(unit)")
     }
 
     private func isCurrent(_ entry: ClassicTOCEntry) -> Bool {
@@ -354,8 +395,11 @@ struct ReaderContentsTray: View {
                             Text("All colors")
                                 .font(.hearthUI(13, weight: annotationColorFilter == nil ? .semibold : .medium))
                                 .foregroundStyle(annotationColorFilter == nil ? hearth.ember : hearth.textSecondary)
+                                .frame(minHeight: 44)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(PressableStyle())
+                        .accessibilityAddTraits(annotationColorFilter == nil ? .isSelected : [])
 
                         ForEach(annotationColorFilters, id: \.self) { hex in
                             Button {
@@ -371,10 +415,12 @@ struct ReaderContentsTray: View {
                                             lineWidth: annotationColorFilter == hex ? 2 : 1
                                         )
                                     }
-                                    .frame(width: 34, height: 34)
+                                    .frame(width: 44, height: 44)
+                                    .contentShape(Rectangle())
                             }
                             .buttonStyle(PressableStyle())
-                            .accessibilityLabel("Filter color")
+                            .accessibilityLabel("Show \(readerInkName(hex).lowercased()) annotations")
+                            .accessibilityAddTraits(annotationColorFilter == hex ? .isSelected : [])
                         }
                     }
                     .padding(.horizontal, 20)
@@ -443,7 +489,12 @@ struct ReaderContentsTray: View {
                     Image(systemName: "xmark.circle.fill")
                         .font(.hearthUI(15))
                         .foregroundStyle(hearth.textTertiary)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
+                .accessibilityLabel("Clear search")
+                .padding(.vertical, -11)
+                .padding(.trailing, -14)
             }
         }
         .padding(.horizontal, 16)
@@ -669,7 +720,7 @@ struct ReaderAnnotationEditorSheet: View {
 
                 VStack(alignment: .leading, spacing: 10) {
                     Overline("Color")
-                    HStack(spacing: 10) {
+                    HStack(spacing: 6) {
                         ForEach(colorOptions, id: \.self) { hex in
                             Button {
                                 PlatformHaptics.selection()
@@ -684,9 +735,12 @@ struct ReaderAnnotationEditorSheet: View {
                                             lineWidth: colorHex == hex ? 2 : 1
                                         )
                                     }
-                                    .frame(width: 40, height: 40)
+                                    .frame(width: 44, height: 44)
+                                    .contentShape(Rectangle())
                             }
                             .buttonStyle(PressableStyle())
+                            .accessibilityLabel(readerInkName(hex))
+                            .accessibilityAddTraits(colorHex == hex ? .isSelected : [])
                         }
                     }
                 }
@@ -771,7 +825,12 @@ struct ReaderSearchTray: View {
                         Image(systemName: "xmark.circle.fill")
                             .font(.hearthUI(15))
                             .foregroundStyle(hearth.textTertiary)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
                     }
+                    .accessibilityLabel("Clear search")
+                    .padding(.vertical, -12)
+                    .padding(.trailing, -14)
                 }
             }
             .padding(.horizontal, 16)
@@ -847,5 +906,15 @@ struct ReaderSearchTray: View {
                 model.clearSearchDecoration()
             }
         }
+    }
+}
+
+private func readerInkName(_ hex: String) -> String {
+    switch hex.uppercased() {
+    case "#FFF59D": "Yellow"
+    case "#A5D6A7": "Green"
+    case "#90CAF9": "Blue"
+    case "#F8BBD0": "Pink"
+    default: "Custom color"
     }
 }

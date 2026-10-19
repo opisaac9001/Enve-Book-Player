@@ -47,14 +47,7 @@ private struct ProgressFixture {
     let defaults: UserDefaults
 
     init() throws {
-        let schema = Schema([
-            BookRecord.self,
-            MediaProgressRecord.self,
-            LinkedBookPairRecord.self,
-            BookmarkRecord.self,
-            AnnotationRecord.self,
-            ChapterCacheRecord.self,
-        ])
+        let schema = Schema(versionedSchema: BookStoreSchemaV2.self)
         let configuration = ModelConfiguration(
             "UserProgressStoreTests-\(UUID().uuidString)",
             schema: schema,

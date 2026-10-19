@@ -5,9 +5,9 @@ enum ReadAloudOverlayTransform {
     static func hrefMatches(_ smilHref: String, _ readerHref: String) -> Bool {
         if smilHref == readerHref { return true }
 
-        let smil = smilHref.hasPrefix("/") ? String(smilHref.dropFirst()) : smilHref
-        let reader = readerHref.hasPrefix("/") ? String(readerHref.dropFirst()) : readerHref
-        if smil == reader || smil.hasSuffix(reader) || reader.hasSuffix(smil) { return true }
+        let smil = EPUB3SMILParser.normalizedResourcePath(smilHref)
+        let reader = EPUB3SMILParser.normalizedResourcePath(readerHref)
+        if EPUB3SMILParser.pathsShareSuffix(smil, reader) { return true }
 
         let smilFile = (smil as NSString).lastPathComponent
         let readerFile = (reader as NSString).lastPathComponent

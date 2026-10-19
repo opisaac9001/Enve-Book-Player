@@ -11,6 +11,10 @@ enum AudiobookPlaybackPolicy {
         return chapters.count == 1 && duration > 1_800
     }
 
+    static func hasPlaceholderChapter(_ book: Book) -> Bool {
+        book.chapters?.count == 1 && book.chapters?.first?.id == "full_book"
+    }
+
     static func chaptersAreInadequateForExtraction(_ book: Book) -> Bool {
         guard let duration = book.duration, duration > 1_800 else { return false }
         return (book.chapters?.count ?? 0) <= 1
@@ -28,6 +32,7 @@ final class AudiobookPlaybackCoordinator: BookPlaybackStarting {
 
     private let appState: AppState
     private let playback: PlaybackManager
+    private let detailsTimeout: TimeInterval
     private var playTask: Task<Void, Never>?
     private var isRetired = false
 
@@ -36,11 +41,13 @@ final class AudiobookPlaybackCoordinator: BookPlaybackStarting {
     init(
         appState: AppState = .shared,
         playback: PlaybackManager = .shared,
-        profileSession: ProfileSession = .owner
+        profileSession: ProfileSession = .owner,
+        detailsTimeout: TimeInterval = 8
     ) {
         self.profileSession = profileSession
         self.appState = appState
         self.playback = playback
+        self.detailsTimeout = detailsTimeout
     }
 
     func play(_ book: Book, presentPlayer: Bool = true) {
@@ -159,12 +166,17 @@ final class AudiobookPlaybackCoordinator: BookPlaybackStarting {
 
             if NetworkPolicyService.shared.isConnected {
                 do {
+                    // A server-less placeholder chapter would otherwise block every play; it refreshes after playback starts.
                     let fetchedBook =
-                        if AudiobookPlaybackPolicy.chaptersNeedRefresh(for: freshestCachedBook) {
-                            try await catalogProvider.fetchFullBookDetails(
-                                bookId: freshestCachedBook.id,
-                                libraryId: freshestCachedBook.libraryId
-                            )
+                        if AudiobookPlaybackPolicy.chaptersNeedRefresh(for: freshestCachedBook),
+                            !AudiobookPlaybackPolicy.hasPlaceholderChapter(freshestCachedBook)
+                        {
+                            try await PlaybackStartupDeadline.run(seconds: detailsTimeout) {
+                                try await catalogProvider.fetchFullBookDetails(
+                                    bookId: freshestCachedBook.id,
+                                    libraryId: freshestCachedBook.libraryId
+                                )
+                            }
                         } else {
                             freshestCachedBook
                         }
@@ -202,13 +214,14 @@ final class AudiobookPlaybackCoordinator: BookPlaybackStarting {
                     AppLogger.player.error(
                         "Playback metadata refresh failed bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId)): \(error)"
                     )
-                    bookToPlay = await profileSession.metadataManager.enrichBookWithStoredMetadata(book)
+                    bookToPlay = await profileSession.metadataManager.enrichBookWithStoredMetadata(freshestCachedBook)
                     restoreCachedChaptersIfNeeded(to: &bookToPlay)
                 }
             } else {
                 bookToPlay = await profileSession.metadataManager.enrichBookWithStoredMetadata(freshestCachedBook)
                 restoreCachedChaptersIfNeeded(to: &bookToPlay)
             }
+            guard !Task.isCancelled, !isRetired else { return }
 
             appState.currentBook = bookToPlay
             _ = appState.libraryCache.replaceExisting(bookToPlay)

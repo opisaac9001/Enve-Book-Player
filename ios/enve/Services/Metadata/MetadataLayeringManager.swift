@@ -6,13 +6,11 @@ import Logging
 final class MetadataLayeringManager {
     static let shared = MetadataLayeringManager()
 
-    private let playbackStateManager: PlaybackStateManager
     private let localStorage: LocalStorageManager
     private let providerConnections: any ProviderConnectionAccessing
 
-    init(playbackStateManager: PlaybackStateManager = .shared, localStorage: LocalStorageManager = .shared,
+    init(localStorage: LocalStorageManager = .shared,
         providerConnections: any ProviderConnectionAccessing = AppState.shared.providerConnections) {
-        self.playbackStateManager = playbackStateManager
         self.localStorage = localStorage
         self.providerConnections = providerConnections
     }

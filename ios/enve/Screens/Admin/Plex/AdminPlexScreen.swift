@@ -43,6 +43,7 @@ struct AdminPlexScreen: View {
         }
         .scrollIndicators(.hidden)
         .background(HearthBackground())
+        .hearthBackBar()
         .toolbar(.hidden, for: .navigationBar)
         .refreshable { await model.refreshAll() }
         .task {

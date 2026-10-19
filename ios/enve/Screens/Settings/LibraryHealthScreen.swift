@@ -154,7 +154,7 @@ struct LibraryHealthScreen: View {
         SourcesCard {
             Text("ACTIVITY & STORAGE")
                 .font(.hearthUI(13, weight: .bold))
-                .tracking(1.2)
+                .kerning(1.2)
                 .foregroundStyle(hearth.text)
                 .accessibilityAddTraits(.isHeader)
             if session.isOwner {
@@ -229,8 +229,7 @@ struct LibraryHealthScreen: View {
             Text(value)
                 .font(.hearthDisplay(20, weight: .semibold))
                 .foregroundStyle(hearth.text)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
+                .fixedSize(horizontal: false, vertical: true)
             Text(label)
                 .font(.hearthCaption)
                 .foregroundStyle(hearth.text)

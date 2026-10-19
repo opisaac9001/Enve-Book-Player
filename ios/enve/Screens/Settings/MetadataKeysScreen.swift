@@ -66,6 +66,7 @@ struct MetadataKeysScreen: View {
         .scrollIndicators(.hidden)
         .background(HearthBackground())
         .toolbar(.hidden, for: .navigationBar)
+        .hearthInteractiveBack()
         .onAppear {
             googleBooksKey = SettingsManager.shared.googleBooksApiKey ?? ""
             comicVineKey = SettingsManager.shared.comicVineApiKey ?? ""

@@ -131,6 +131,7 @@ struct ServerConnection: Identifiable, Codable, Hashable {
     var isConnected: Bool = false
     var lastVerified: Date?
     var selectedLibraryIds: Set<String>?
+    var knownLibraryIds: Set<String>?
     var isArchived: Bool = false
     var rootPath: String?
     var customHeaders: [String: String]?
@@ -153,6 +154,18 @@ struct ServerConnection: Identifiable, Codable, Hashable {
             return homeToken
         }
         return token
+    }
+
+    // A library the user has never seen joins an explicit selection; only deliberate exclusions persist.
+    mutating func includeNewLibraries(fetchedIds: Set<String>, previouslySeenIds: Set<String>) {
+        guard !fetchedIds.isEmpty else { return }
+        let known =
+            knownLibraryIds
+            ?? (previouslySeenIds.isEmpty ? fetchedIds : previouslySeenIds.union(selectedLibraryIds ?? []))
+        if let selected = selectedLibraryIds, !selected.isEmpty {
+            selectedLibraryIds = selected.union(fetchedIds.subtracting(known))
+        }
+        knownLibraryIds = known.union(fetchedIds)
     }
 
     init(
@@ -210,8 +223,8 @@ struct ServerConnection: Identifiable, Codable, Hashable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, name, url, type, username, password, token, userId, isConnected, lastVerified, selectedLibraryIds, isArchived, rootPath,
-            customHeaders, secretCustomHeaderNames, authMode, mtlsEnabled
+        case id, name, url, type, username, password, token, userId, isConnected, lastVerified, selectedLibraryIds, knownLibraryIds,
+            isArchived, rootPath, customHeaders, secretCustomHeaderNames, authMode, mtlsEnabled
         case grimmoryOIDCRedirectURI, komgaOAuthProviderId
         case plexHomeUserId, plexHomeUserName, plexHomeUserThumb, plexHomeUserToken, plexHomeUserIsManaged, plexOwnerToken
     }
@@ -229,6 +242,7 @@ struct ServerConnection: Identifiable, Codable, Hashable {
         isConnected = try container.decodeIfPresent(Bool.self, forKey: .isConnected) ?? false
         lastVerified = try container.decodeIfPresent(Date.self, forKey: .lastVerified)
         selectedLibraryIds = try container.decodeIfPresent(Set<String>.self, forKey: .selectedLibraryIds)
+        knownLibraryIds = try container.decodeIfPresent(Set<String>.self, forKey: .knownLibraryIds)
         isArchived = try container.decodeIfPresent(Bool.self, forKey: .isArchived) ?? false
         rootPath = try container.decodeIfPresent(String.self, forKey: .rootPath)
         customHeaders = try container.decodeIfPresent([String: String].self, forKey: .customHeaders)
@@ -278,6 +292,7 @@ struct ServerConnection: Identifiable, Codable, Hashable {
         try container.encode(isConnected, forKey: .isConnected)
         try container.encodeIfPresent(lastVerified, forKey: .lastVerified)
         try container.encodeIfPresent(selectedLibraryIds, forKey: .selectedLibraryIds)
+        try container.encodeIfPresent(knownLibraryIds, forKey: .knownLibraryIds)
         try container.encode(isArchived, forKey: .isArchived)
         try container.encodeIfPresent(rootPath, forKey: .rootPath)
         try container.encodeIfPresent(publicCustomHeadersForPersistence(), forKey: .customHeaders)

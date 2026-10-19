@@ -165,6 +165,9 @@ enum FoliateReaderError: LocalizedError {
 }
 
 enum FoliateBuiltInFontCSS {
+    // Publishers sometimes embed their own "OpenDyslexic" faces; a private family name keeps them from replacing ours.
+    static let openDyslexicFamily = "Enve OpenDyslexic"
+
     private struct Face {
         let fileName: String
         let style: String
@@ -196,7 +199,7 @@ enum FoliateBuiltInFontCSS {
             }
             return """
                 @font-face {
-                    font-family: 'OpenDyslexic';
+                    font-family: '\(openDyslexicFamily)';
                     src: url('data:font/otf;base64,\(data.base64EncodedString())') format('opentype');
                     font-style: \(face.style);
                     font-weight: \(face.weight);
@@ -618,7 +621,10 @@ private struct FoliatePositionPayload {
     }
 
     var locatorJSON: String {
-        var locations: [String: Any] = ["totalProgression": totalProgression]
+        var locations: [String: Any] = [
+            "totalProgression": totalProgression,
+            EpubLocationBridge.sourceEngineLocationKey: ReaderEngineKind.foliate.rawValue,
+        ]
         if let resourceProgression {
             locations["progression"] = resourceProgression
         }
@@ -797,6 +803,7 @@ final class FoliateReaderEngineAdapter: UIViewController, ReaderEngineAdapter {
     var onAnnotationActivated: ((String) -> Void)?
     var onTap: ((CGPoint, CGSize) -> Void)?
     var onExternalLink: ((URL) -> Void)?
+    var onInternalLinkNavigation: ((String) -> Void)?
 
     var kind: ReaderEngineKind { .foliate }
     var viewController: UIViewController { self }
@@ -1140,6 +1147,15 @@ final class FoliateReaderEngineAdapter: UIViewController, ReaderEngineAdapter {
             }
             onExternalLink?(url)
 
+        case "internalLink":
+            guard Set(payload.keys) == ["locator"],
+                let object = payload["locator"] as? [String: Any],
+                let relocation = try FoliatePositionPayload(json: object).relocation
+            else {
+                throw FoliateReaderError.invalidRuntimeMessage
+            }
+            onInternalLinkNavigation?(relocation.locatorJSON)
+
         case "error":
             guard Set(payload.keys) == ["message"],
                 let message = payload["message"] as? String
@@ -1266,6 +1282,17 @@ final class FoliateReaderEngineAdapter: UIViewController, ReaderEngineAdapter {
             return nil
         }
         return result["id"] as? String
+    }
+
+    /// Activates a link or dismisses the note popup under the tap; returns whether the tap was consumed.
+    func activateLink(at point: CGPoint) async -> Bool {
+        let webPoint = webView.convert(point, from: view)
+        guard let result = try? await command("activateLinkAt", payload: ["x": webPoint.x, "y": webPoint.y]),
+            Set(result.keys) == ["handled"]
+        else {
+            return false
+        }
+        return result["handled"] as? Bool == true
     }
 
     func refreshSelection() async -> Bool {
@@ -1436,6 +1463,7 @@ final class FoliateReaderEngineAdapter: UIViewController, ReaderEngineAdapter {
         onAnnotationResolution = nil
         onTap = nil
         onExternalLink = nil
+        onInternalLinkNavigation = nil
     }
 
     private func command(
@@ -1532,6 +1560,25 @@ final class FoliateReaderEngineAdapter: UIViewController, ReaderEngineAdapter {
             try? await Task.sleep(for: .milliseconds(100))
         }
         return false
+    }
+
+    func readerFontProbeForTesting() async -> String? {
+        try? await webView.callAsyncJavaScript(
+            """
+            const content = document.querySelector('foliate-view')?.renderer?.getContents?.()[0];
+            const probe = content?.doc?.querySelector('#font-probe');
+            if (!probe) return null;
+            await content.doc.fonts.ready;
+            const faces = Array.from(content.doc.fonts)
+                .filter(face => face.family.replace(/["']/g, '') === 'Enve OpenDyslexic')
+                .map(face => face.status);
+            const family = content.doc.defaultView.getComputedStyle(probe).fontFamily;
+            return `${family}|${faces.join(',')}`;
+            """,
+            arguments: [:],
+            in: nil,
+            contentWorld: .page
+        ) as? String
     }
     #endif
 

@@ -63,12 +63,12 @@ foliate-view::part(foot) {
     top: 10px;
     right: 10px;
     z-index: 2;
-    width: 34px;
-    height: 34px;
+    width: 44px;
+    height: 44px;
     padding: 0;
     border: 1px solid var(--footnote-border, #414141);
     border-radius: 50%;
     background: var(--footnote-background, #202020);
     color: var(--footnote-foreground, #e8e8e8);
-    font: 24px/30px system-ui, sans-serif;
+    font: 26px/40px system-ui, sans-serif;
 }

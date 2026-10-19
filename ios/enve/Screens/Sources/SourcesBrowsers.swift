@@ -84,7 +84,8 @@ struct SourcesWebDAVBrowser: View {
                                 Image(systemName: "chevron.right")
                                     .font(.hearthUI(18, weight: .semibold))
                                     .foregroundStyle(hearth.textTertiary)
-                                    .frame(width: 38, height: 38)
+                                    .frame(width: 44, height: 44)
+                                    .contentShape(Rectangle())
                             }
                             .accessibilityLabel("Open \(entry.name)")
                         }

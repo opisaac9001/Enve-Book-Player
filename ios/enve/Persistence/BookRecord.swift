@@ -25,6 +25,12 @@ final class BookRecord {
 
     var series: String?
 
+    var comicSeriesID: String?
+    var comicMetadataJSON: Data?
+    var comicSectionOrder: Int?
+    var comicVolumeOrder: Double?
+    var comicIssueOrder: Double?
+
     var searchText: String = ""
     var titleSortKey: String = ""
     var titleMissingRank: Int = 0
@@ -115,9 +121,10 @@ final class BookRecord {
         self.filePath = book.filePath
         self.audioFileIno = book.audioFileIno
         self.mediaType = book.mediaType.rawValue
-        self.ebookFormat = book.ebookFormat
+        self.ebookFormat = book.ebookFormat ?? (book.isComic ? (book.ebookFileURL?.pathExtension.lowercased() ?? book.filePath.map { URL(fileURLWithPath: $0).pathExtension.lowercased() }) : nil)
 
         self.series = book.series
+        applyComicMetadata(book.comicMetadata)
         self.searchText = BookRecord.makeSearchText(title: book.title, author: book.author, narrator: book.narrator, series: book.series)
         self.workKey = WorkIdentity.workKey(for: book)
         self.editionKey = WorkIdentity.editionKey(for: book)
@@ -244,6 +251,7 @@ final class BookRecord {
             libraryId: libraryId
         )
         result.serverReadStatus = serverReadStatus
+        result.comicMetadata = comicMetadataJSON.flatMap { try? JSONDecoder().decode(ComicMetadata.self, from: $0) }
 
         result.seriesSequence = seriesSequence
         return result
@@ -261,6 +269,7 @@ final class BookRecord {
         self.audioFileIno = book.audioFileIno
 
         self.series = book.series
+        applyComicMetadata(book.comicMetadata)
         self.searchText = BookRecord.makeSearchText(title: book.title, author: book.author, narrator: book.narrator, series: book.series)
         self.workKey = WorkIdentity.workKey(for: book)
         self.editionKey = WorkIdentity.editionKey(for: book)
@@ -300,7 +309,7 @@ final class BookRecord {
         self.podcastName = book.podcastName
 
         self.ebookFileURLPath = book.ebookFileURL?.path
-        self.ebookFormat = book.ebookFormat
+        self.ebookFormat = book.ebookFormat ?? (book.isComic ? (book.ebookFileURL?.pathExtension.lowercased() ?? book.filePath.map { URL(fileURLWithPath: $0).pathExtension.lowercased() }) : nil)
         self.epub3HasMediaOverlay = book.epub3Features?.hasMediaOverlay ?? false
         if let tracks = book.audioTracks {
             self.audioTracksJSON = try? JSONEncoder().encode(tracks)
@@ -308,6 +317,15 @@ final class BookRecord {
 
         self.lastSyncDate = Date()
         refreshSortKeys()
+    }
+
+    // Order columns use the largest finite value for missing numbers so unnumbered entries sort last.
+    private func applyComicMetadata(_ metadata: ComicMetadata?) {
+        comicSeriesID = metadata?.seriesID
+        comicMetadataJSON = metadata.flatMap { try? JSONEncoder().encode($0) }
+        comicSectionOrder = metadata?.section.sortOrder
+        comicVolumeOrder = metadata.map { $0.volumeOrder ?? .greatestFiniteMagnitude }
+        comicIssueOrder = metadata.map { $0.issueOrder ?? .greatestFiniteMagnitude }
     }
 
     func refreshSortKeys() {

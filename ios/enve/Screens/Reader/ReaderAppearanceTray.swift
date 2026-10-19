@@ -482,9 +482,9 @@ struct ReaderAppearanceTray: View {
     private func builtinPreviewFont(_ option: ReaderFontFamilyOption) -> Font {
         switch option {
         case .serif: .hearthDisplay(17, weight: .regular)
-        case .sansSerif: .system(size: 17)
-        case .openDyslexic: .system(size: 17, design: .rounded)
-        case .duospace: .system(size: 17, design: .monospaced)
+        case .sansSerif: .system(.body)
+        case .openDyslexic: .system(.body, design: .rounded)
+        case .duospace: .system(.body, design: .monospaced)
         }
     }
 
@@ -492,10 +492,34 @@ struct ReaderAppearanceTray: View {
     private var comicControls: some View {
         VStack(alignment: .leading, spacing: 12) {
             Overline("Page flow")
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    HearthChip(
+                        title: model.comicLayoutOverride == nil ? "Auto · \(Self.comicLayoutTitle(model.autoComicLayout))" : "Auto",
+                        isSelected: model.comicLayoutOverride == nil
+                    ) {
+                        PlatformHaptics.selection()
+                        model.setComicLayoutOverride(nil)
+                    }
+                    ForEach(ReaderComicLayoutOption.allCases) { layout in
+                        HearthChip(title: Self.comicLayoutTitle(layout), isSelected: model.comicLayoutOverride == layout) {
+                            PlatformHaptics.selection()
+                            model.setComicLayoutOverride(layout)
+                        }
+                    }
+                }
+            }
+            Text("Auto follows the series or the file, then your default.")
+                .font(.hearthCaption)
+                .foregroundStyle(hearth.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        VStack(alignment: .leading, spacing: 12) {
+            Overline("Default page flow")
             HStack(spacing: 8) {
-                comicLayoutChip(.scroll, title: "Scroll")
-                comicLayoutChip(.leftToRight, title: "Left to right")
-                comicLayoutChip(.rightToLeft, title: "Right to left")
+                ForEach(ReaderComicLayoutOption.allCases) { layout in
+                    comicLayoutChip(layout, title: Self.comicLayoutTitle(layout))
+                }
             }
         }
         VStack(alignment: .leading, spacing: 12) {
@@ -551,7 +575,7 @@ struct ReaderAppearanceTray: View {
             Overline("Landscape")
             comicToggleRow(
                 title: "Two-page spread",
-                note: "Open paired pages when the device turns sideways.",
+                note: "Pair facing pages when the device turns sideways. Wide pages stay full width.",
                 isOn: Binding(
                     get: { model.appearance.comicLandscapeSpread },
                     set: { value in
@@ -579,6 +603,14 @@ struct ReaderAppearanceTray: View {
                     }
                 }
             }
+        }
+    }
+
+    private static func comicLayoutTitle(_ layout: ReaderComicLayoutOption) -> String {
+        switch layout {
+        case .scroll: "Scroll"
+        case .leftToRight: "Left to right"
+        case .rightToLeft: "Right to left"
         }
     }
 
@@ -757,9 +789,9 @@ private struct ReaderStepperRow: View {
             Text(display)
                 .font(.hearthUI(14, weight: .medium).monospacedDigit())
                 .foregroundStyle(hearth.textSecondary)
-            GlyphButton(systemImage: "minus", size: 36, glyphSize: 13, label: decreaseLabel, action: onDecrease)
-            GlyphButton(systemImage: "plus", size: 36, glyphSize: 13, label: increaseLabel, action: onIncrease)
+            GlyphButton(systemImage: "minus", size: 44, glyphSize: 13, label: decreaseLabel, action: onDecrease)
+            GlyphButton(systemImage: "plus", size: 44, glyphSize: 13, label: increaseLabel, action: onIncrease)
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, 2)
     }
 }

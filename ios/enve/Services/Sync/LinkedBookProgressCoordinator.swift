@@ -404,6 +404,11 @@ final class LinkedBookProgressCoordinator {
         await setPairFinished(from: book, finished: false, observedAt: observedAt)
     }
 
+    func pairedStableId(for book: Book) async -> String? {
+        guard let pair = await resolvePair(for: book) else { return nil }
+        return book.mediaType == .audiobook ? pair.ebook.stableId : pair.audiobook.stableId
+    }
+
     func setPairFinished(
         from book: Book,
         finished: Bool,

@@ -8,16 +8,37 @@ final class ReaderTOCIndex {
         let progression: Double
     }
 
+    struct StartPage: Equatable {
+        let label: String
+        let isEstimated: Bool
+    }
+
+    struct EntryLengths: Equatable {
+        var pages: [String: Int] = [:]
+        /// One-based book pages, matching `visiblePageRange`.
+        var pageRanges: [String: ClosedRange<Int>] = [:]
+        /// Publisher page labels where the book has a page list, otherwise one-based positions.
+        var starts: [String: StartPage] = [:]
+        var isEstimated = true
+    }
+
     var onEntriesChange: (() -> Void)?
 
     var entries: [ClassicTOCEntry] = [] {
+        willSet { onEntriesChange?() }
+        didSet {
+            if entryLengths != EntryLengths() { entryLengths = EntryLengths() }
+        }
+    }
+
+    private(set) var entryLengths = EntryLengths() {
         willSet { onEntriesChange?() }
     }
 
     private(set) var progressions: [(entry: ClassicTOCEntry, progression: Double)] = []
     private(set) var positionLocators: [Locator] = []
     private(set) var pageMarkers: [PageMarker] = []
-    /// Where each anchored entry starts inside its resource, for resources that hold several entries.
+    /// Where each anchored entry starts inside its resource, for resources that hold several entries or a fragment.
     private(set) var anchorFractions: [String: Double] = [:]
 
     var pageCount: Int {
@@ -39,7 +60,7 @@ final class ReaderTOCIndex {
     static func resolveAnchorFractions(for entries: [ClassicTOCEntry], in publication: Publication) async -> [String: Double] {
         let byResource = Dictionary(grouping: entries) { normalizedResourcePath($0.href) }
         var fractions: [String: Double] = [:]
-        for (resourcePath, siblings) in byResource where siblings.count > 1 {
+        for (resourcePath, siblings) in byResource where siblings.count > 1 || anchor(of: siblings[0].href) != nil {
             guard !Task.isCancelled,
                 let resource = publication.get(Link(href: resourcePath)),
                 let data = try? await resource.read().get(),
@@ -74,6 +95,7 @@ final class ReaderTOCIndex {
     func clearPositions() {
         positionLocators = []
         pageMarkers = []
+        if entryLengths != EntryLengths() { entryLengths = EntryLengths() }
     }
 
     @discardableResult
@@ -98,6 +120,9 @@ final class ReaderTOCIndex {
         }
 
         var result: [(entry: ClassicTOCEntry, progression: Double)] = []
+        // Starts spread evenly across a shared resource are guesses and must not bound a length.
+        var knownStarts: [String: Double] = [:]
+        var approximateStarts: Set<String> = []
 
         for (file, entryIndices) in entriesByFile {
             let matchKey = roMap.keys.first(where: { key in
@@ -122,14 +147,27 @@ final class ReaderTOCIndex {
             let fileStartPosition = positions.first?.locations.totalProgression ?? 0
             let fileEndPosition = positions.last?.locations.totalProgression ?? fileStartPosition
 
+            let span = fileEndPosition - fileStartPosition
             if entryIndices.count == 1 {
-                result.append((entries[entryIndices[0]], fileStartPosition))
+                let entry = entries[entryIndices[0]]
+                result.append((entry, fileStartPosition))
+                if Self.anchor(of: entry.href) == nil {
+                    knownStarts[entry.id] = fileStartPosition
+                } else if let fraction = anchorFractions[entry.id] {
+                    knownStarts[entry.id] = fileStartPosition + fraction * span
+                    approximateStarts.insert(entry.id)
+                }
             } else {
-                let span = fileEndPosition - fileStartPosition
                 for (slotIdx, entryIdx) in entryIndices.enumerated() {
-                    let fraction = anchorFractions[entries[entryIdx].id] ?? Double(slotIdx) / Double(entryIndices.count)
+                    let anchorFraction = anchorFractions[entries[entryIdx].id]
+                    let fraction = anchorFraction ?? Double(slotIdx) / Double(entryIndices.count)
                     let prog = fileStartPosition + fraction * span
                     result.append((entries[entryIdx], prog))
+                    if let anchorFraction {
+                        knownStarts[entries[entryIdx].id] = prog
+                        // Zero means the entry has no fragment; anything else is a byte-offset estimate.
+                        if anchorFraction > 0 { approximateStarts.insert(entries[entryIdx].id) }
+                    }
                 }
             }
         }
@@ -138,7 +176,82 @@ final class ReaderTOCIndex {
             result
             .filter { $0.progression >= 0 }
             .sorted { $0.progression < $1.progression }
+        entryLengths = resolveEntryLengths(knownStarts: knownStarts, approximateStarts: approximateStarts)
         return progressions
+    }
+
+    // An entry ends where the next entry at its depth or shallower starts, so children do not shorten their parent.
+    private func resolveEntryLengths(knownStarts: [String: Double], approximateStarts: Set<String>) -> EntryLengths {
+        let usesPageMarkers = !pageMarkers.isEmpty
+        let markers = pageMarkers
+            .filter { $0.progression.isFinite && (0...1).contains($0.progression) }
+            .sorted { $0.progression < $1.progression }
+        let boundaries =
+            usesPageMarkers
+            ? markers.map(\.progression)
+            : positionLocators.compactMap(\.locations.totalProgression)
+                .filter { $0.isFinite && (0...1).contains($0) }
+                .sorted()
+        guard !boundaries.isEmpty else { return EntryLengths() }
+
+        var nextIndices: [Int?] = Array(repeating: nil, count: entries.count)
+        var open: [Int] = []
+        for (index, entry) in entries.enumerated() {
+            while let last = open.last, entries[last].depth >= entry.depth {
+                nextIndices[last] = index
+                open.removeLast()
+            }
+            open.append(index)
+        }
+
+        let tolerance = 0.000_001
+        var pages: [String: Int] = [:]
+        var pageRanges: [String: ClosedRange<Int>] = [:]
+        var starts: [String: StartPage] = [:]
+        var usesApproximateStart = false
+        for (index, entry) in entries.enumerated() {
+            guard let start = knownStarts[entry.id], start.isFinite, start >= 0 else { continue }
+            let lower: Int
+            if usesPageMarkers {
+                // Count the published page already open at the start; nothing before the first marker is a page.
+                lower = max(Self.firstIndex(in: boundaries, notBelow: start + tolerance) - 1, 0)
+            } else {
+                lower = Self.firstIndex(in: boundaries, notBelow: start - tolerance)
+            }
+            // Front matter before the first printed page has no page number of its own.
+            if lower < boundaries.count, !usesPageMarkers || boundaries[0] <= start + tolerance {
+                starts[entry.id] = StartPage(
+                    label: usesPageMarkers ? markers[lower].label : String(lower + 1),
+                    isEstimated: !usesPageMarkers || approximateStarts.contains(entry.id)
+                )
+            }
+            let endID = nextIndices[index].map { entries[$0].id }
+            let knownEnd: Double? = if let endID { knownStarts[endID] } else { 1 }
+            guard let end = knownEnd, end.isFinite, end <= 1 + tolerance, end - start > tolerance else { continue }
+            let upper = end >= 1 ? boundaries.count : Self.firstIndex(in: boundaries, notBelow: end - tolerance)
+            guard upper > lower else { continue }
+            pages[entry.id] = upper - lower
+            pageRanges[entry.id] = (lower + 1)...upper
+            if approximateStarts.contains(entry.id) || endID.map(approximateStarts.contains) == true {
+                usesApproximateStart = true
+            }
+        }
+        return EntryLengths(
+            pages: pages,
+            pageRanges: pageRanges,
+            starts: starts,
+            isEstimated: !usesPageMarkers || usesApproximateStart || starts.values.contains(where: \.isEstimated)
+        )
+    }
+
+    private static func firstIndex(in sorted: [Double], notBelow value: Double) -> Int {
+        var low = 0
+        var high = sorted.count
+        while low < high {
+            let mid = (low + high) / 2
+            if sorted[mid] < value { low = mid + 1 } else { high = mid }
+        }
+        return low
     }
 
     static func resolvePageMarkers(in publication: Publication) async -> [PageMarker] {

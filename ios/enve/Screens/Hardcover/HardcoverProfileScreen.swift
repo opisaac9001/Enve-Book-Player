@@ -31,6 +31,7 @@ struct HardcoverProfileScreen: View {
         .scrollIndicators(.hidden)
         .background(HearthBackground())
         .toolbar(.hidden, for: .navigationBar)
+        .hearthInteractiveBack()
         .task { await hardcoverLoadProfile() }
         .refreshable { await hardcoverLoadProfile() }
     }

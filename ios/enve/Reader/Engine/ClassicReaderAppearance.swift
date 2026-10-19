@@ -229,8 +229,8 @@ enum ComicPageLoadingMode: String, CaseIterable, Identifiable, Codable {
 
     var description: String {
         switch self {
-        case .onDemand: "Keeps only nearby pages cached, best for very large comics."
-        case .sessionCache: "Caches the whole comic for this reading session, then removes it when you close the reader."
+        case .onDemand: "Loads nearby pages as you read and keeps them within your reading cache limit."
+        case .sessionCache: "Preloads ahead while your reading cache has space. Recently read pages remain available until evicted."
         }
     }
 }

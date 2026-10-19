@@ -51,6 +51,7 @@ struct LibraryDetailListScreen: View {
         }
         .background(HearthBackground())
         .toolbar(.hidden, for: .navigationBar)
+        .hearthInteractiveBack()
         .task {
             await load()
             loaded = true

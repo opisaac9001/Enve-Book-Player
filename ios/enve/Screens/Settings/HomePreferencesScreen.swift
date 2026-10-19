@@ -115,6 +115,7 @@ struct HomePreferencesScreen: View {
         .scrollIndicators(.hidden)
         .background(HearthBackground())
         .toolbar(.hidden, for: .navigationBar)
+        .hearthInteractiveBack()
     }
 
     private var header: some View {

@@ -245,6 +245,7 @@ struct CachedAsyncCoverImage: View {
     var headers: [String: String] = [:]
 
     var book: Book? = nil
+    var onImageSizeChange: ((CGSize?) -> Void)? = nil
     @State private var image: UIImage?
     @State private var isLoading = false
 
@@ -261,9 +262,11 @@ struct CachedAsyncCoverImage: View {
                 #if os(macOS)
                 Image(nsImage: image)
                     .resizable()
+                    .scaledToFill()
                 #else
                 Image(uiImage: image)
                     .resizable()
+                    .scaledToFill()
                 #endif
             } else if url != nil {
                 ZStack {
@@ -281,6 +284,9 @@ struct CachedAsyncCoverImage: View {
             } else {
                 CoverImage(colorName: fallbackColor)
             }
+        }
+        .onChange(of: image?.size) { _, size in
+            onImageSizeChange?(size)
         }
         .task(id: reloadKey) {
             image = nil

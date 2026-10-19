@@ -12,6 +12,7 @@ struct StorageScreen: View {
     @State private var coversBytes: Int64 = 0
     @State private var metadataBytes: Int64 = 0
     @State private var downloadsBytes: Int64 = 0
+    @State private var readingCacheBytes: Int64 = 0
     @State private var otherCacheBytes: Int64 = 0
     @State private var availableBytes: Int64 = 0
     @State private var sizesLoaded = false
@@ -26,10 +27,10 @@ struct StorageScreen: View {
     }
 
     private var session: ProfileSession { profileSession ?? .owner }
-    private var totalBytes: Int64 { coversBytes + metadataBytes + downloadsBytes + otherCacheBytes }
+    private var totalBytes: Int64 { coversBytes + metadataBytes + downloadsBytes + readingCacheBytes + otherCacheBytes }
 
     private enum StorageAction: String, Identifiable {
-        case clearCovers, clearMetadata, clearCache
+        case clearCovers, clearMetadata, clearReadingCache, clearCache
 
         var id: String { rawValue }
 
@@ -37,7 +38,8 @@ struct StorageScreen: View {
             switch self {
             case .clearCovers: "Clear cover cache"
             case .clearMetadata: "Clear metadata cache"
-            case .clearCache: "Clear all caches"
+            case .clearReadingCache: "Clear reading cache"
+            case .clearCache: "Clear other caches"
             }
         }
 
@@ -45,7 +47,10 @@ struct StorageScreen: View {
             switch self {
             case .clearCovers: "Covers are fetched again as you browse."
             case .clearMetadata: "Cached metadata is fetched again from your servers."
-            case .clearCache: "Everything cached is rebuilt as needed. Downloads stay."
+            case .clearReadingCache:
+                "Recently read pages and books are fetched again when you open them. Offline downloads stay, and a book that is open keeps its current pages."
+            case .clearCache:
+                "Covers, cached metadata and other temporary files are rebuilt as needed. Reading cache and offline downloads stay."
             }
         }
     }
@@ -155,8 +160,13 @@ struct StorageScreen: View {
             Overline("Where it goes")
             storageRow("Covers", bytes: coversBytes) { pendingAction = .clearCovers }
             storageRow("Cached metadata", bytes: metadataBytes) { pendingAction = .clearMetadata }
-            storageRow("Downloads", bytes: downloadsBytes, clearAction: nil)
+            storageRow("Offline downloads", bytes: downloadsBytes, clearAction: nil)
+            storageRow("Reading cache", bytes: readingCacheBytes) { pendingAction = .clearReadingCache }
             storageRow("Other caches", bytes: otherCacheBytes) { pendingAction = .clearCache }
+            Text("Offline downloads are saved for reading without a connection. Reading cache holds temporary files that can be rebuilt.")
+                .font(.hearthCaption)
+                .foregroundStyle(hearth.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
             if isWorking {
                 HStack(spacing: 10) {
                     ProgressView().tint(hearth.ember)
@@ -189,6 +199,20 @@ struct StorageScreen: View {
     private var cleanupPoliciesCard: some View {
         SourcesCard {
             Overline("Cache policies")
+            SettingsMenuRow(
+                title: "Reading cache limit",
+                value: readingCacheLimitLabel(session.readingCache.limitMegabytes)
+            ) {
+                ForEach(ReadingCacheStore.limitOptionsMegabytes, id: \.self) { megabytes in
+                    Button(readingCacheLimitLabel(megabytes)) {
+                        Task { await setReadingCacheLimit(megabytes) }
+                    }
+                }
+            }
+            Text("Older pages and books are removed automatically once the reading cache passes its limit.")
+                .font(.hearthCaption)
+                .foregroundStyle(hearth.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
             SourcesToggleRow(
                 title: "Tidy caches automatically",
                 isOn: Binding(
@@ -284,6 +308,16 @@ struct StorageScreen: View {
         Task { await session.appCache.setPreferredScope(scope) }
     }
 
+    private func readingCacheLimitLabel(_ megabytes: Int) -> String {
+        megabytes >= 1024 ? "\(megabytes / 1024) GB" : "\(megabytes) MB"
+    }
+
+    private func setReadingCacheLimit(_ megabytes: Int) async {
+        guard (try? profiles.authorizeChanges(in: session)) != nil else { return }
+        await session.readingCache.setLimit(megabytes: megabytes)
+        await loadSizes()
+    }
+
     private var legacyCoversDirectory: URL {
         session.storage.documentsDirectory.appendingPathComponent("Covers")
     }
@@ -305,16 +339,14 @@ struct StorageScreen: View {
             otherProfilesBytes = await SourcesCacheMetrics.size(at: otherProfilesCachesDirectory)
         }
 
-        var downloadedCacheBytes: Int64 = 0
-        for name in ["ReaderEbooks", "StreamedEpubs"] {
-            downloadedCacheBytes += await SourcesCacheMetrics.size(at: session.storage.cachesDirectory.appendingPathComponent(name))
-        }
+        let readingBytes = await session.readingCache.sizeBytes()
         let appCacheSizes = await appCacheSizesRequest
         let diskCoverBytes = await diskCoverBytesRequest
         coversBytes = appCacheSizes.coversBytes + diskCoverBytes + (await coverOverrideBytesRequest) + (await legacyCoverBytesRequest)
         metadataBytes = appCacheSizes.metadataBytes
         downloadsBytes = await downloadsBytesRequest
-        otherCacheBytes = max((await cachesDirectoryBytesRequest) - otherProfilesBytes - diskCoverBytes - downloadedCacheBytes, 0)
+        readingCacheBytes = readingBytes
+        otherCacheBytes = max((await cachesDirectoryBytesRequest) - otherProfilesBytes - diskCoverBytes - readingBytes, 0)
         if let attrs = try? FileManager.default.attributesOfFileSystem(forPath: NSHomeDirectory()),
             let free = attrs[.systemFreeSize] as? NSNumber
         {
@@ -341,6 +373,12 @@ struct StorageScreen: View {
         case .clearMetadata:
             await session.appCache.clearMetadataCache()
             resultMessage = "Metadata cache cleared."
+        case .clearReadingCache:
+            let result = await session.readingCache.clear()
+            resultMessage =
+                result.retainsActiveAssets
+                ? "Reading cache cleared. \(storageFormatBytes(result.activeBytes)) is still in use by the open book."
+                : (result.remainingBytes > 0 ? "Some cached files couldn't be removed. Try again after closing the reader." : "Reading cache cleared.")
         case .clearCache:
             await session.imageCache.clearAllCache()
             guard (try? profiles.authorizeChanges(in: session)) != nil else { return }
@@ -348,7 +386,7 @@ struct StorageScreen: View {
             guard (try? profiles.authorizeChanges(in: session)) != nil else { return }
             await session.localStorage.clearCoverOverrides()
             guard (try? profiles.authorizeChanges(in: session)) != nil else { return }
-            let preservedDirectories: Set<String> = ["Profiles", "ReaderEbooks", "StreamedEpubs", "ConvertedEbooks"]
+            let preservedDirectories = ReadingCacheStore.managedDirectoryNames.union(["Profiles"])
             if let contents = try? FileManager.default.contentsOfDirectory(at: session.storage.cachesDirectory, includingPropertiesForKeys: nil) {
                 for item in contents where !preservedDirectories.contains(item.lastPathComponent) {
                     try? FileManager.default.removeItem(at: item)

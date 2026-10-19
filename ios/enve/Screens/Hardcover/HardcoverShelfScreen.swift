@@ -78,6 +78,7 @@ struct HardcoverShelfScreen: View {
         .scrollIndicators(.hidden)
         .background(HearthBackground())
         .toolbar(.hidden, for: .navigationBar)
+        .hearthInteractiveBack()
         .task { await hardcoverLoadShelf() }
         .refreshable { await hardcoverLoadShelf() }
         .sheet(item: $matching) { userBook in

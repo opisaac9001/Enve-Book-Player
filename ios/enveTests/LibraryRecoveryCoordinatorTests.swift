@@ -25,6 +25,11 @@ private final class RecoveryConnectionStub: ProviderConnectionEditing, ProviderC
 
     func markNeedsReauthentication(providerId: UUID, error: Error) {}
     func clearReauthentication(connectionId: UUID) {}
+    func includeNewLibraries(connectionId: UUID, fetchedIds: Set<String>, previouslySeenIds: Set<String>) {
+        guard let index = connections.firstIndex(where: { $0.id == connectionId }) else { return }
+        connections[index].includeNewLibraries(fetchedIds: fetchedIds, previouslySeenIds: previouslySeenIds)
+        allProviders[connectionId]?.connection = connections[index]
+    }
     func backend(id: String) -> BackendConfig? { nil }
     func allBackends() -> [BackendConfig] { [] }
     func provider(for providerId: UUID) -> LibraryProvider? { allProviders[providerId] }
@@ -85,14 +90,7 @@ private final class RecoveryFixture {
     private let progressFileURL: URL
 
     init() throws {
-        let schema = Schema([
-            BookRecord.self,
-            MediaProgressRecord.self,
-            LinkedBookPairRecord.self,
-            BookmarkRecord.self,
-            AnnotationRecord.self,
-            ChapterCacheRecord.self,
-        ])
+        let schema = Schema(versionedSchema: BookStoreSchemaV2.self)
         let configuration = ModelConfiguration(
             "LibraryRecoveryCoordinatorTests-\(UUID().uuidString)",
             schema: schema,

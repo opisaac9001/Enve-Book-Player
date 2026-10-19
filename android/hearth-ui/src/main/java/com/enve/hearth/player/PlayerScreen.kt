@@ -448,7 +448,7 @@ private fun SkipIntervalButton(
         Text(
             text = seconds.toString(),
             color = tint,
-            fontSize = (iconSize.value * 0.28f).sp,
+            fontSize = with(LocalDensity.current) { (iconSize * 0.28f).toSp() },
             fontWeight = FontWeight.Bold,
             maxLines = 1,
             modifier = Modifier.offset(y = iconSize / 24),

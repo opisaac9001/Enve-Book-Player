@@ -60,7 +60,7 @@ struct ABSCrossProviderHistoryTests {
         store.enqueueHistory(session)
         #expect(store.pendingUploads(connectionId: connection, verifiedAccountId: "user-a").count == 1)
         #expect(store.pendingUploads(connectionId: connection, verifiedAccountId: "user-b").isEmpty)
-        #expect(store.pendingUploads(connectionId: connection).isEmpty)
+        #expect(store.pendingUploads(connectionId: connection).count == 1)
     }
     @Test func retryRefreshesProgressAndKeepsNativeUploadWhenHistoryLookupFails() async throws {
         let history = try #require(ABSCrossProviderHistory.session(
@@ -107,6 +107,7 @@ struct ABSCrossProviderHistoryTests {
             targetBook: book(), currentProgress: 500
         ))
         store.enqueueHistory(history)
+        store.rememberAccount("user-a", connectionId: connection)
         store.record(
             connectionId: connection, libraryItemId: history.libraryItemId, episodeId: nil,
             displayTitle: history.displayTitle, displayAuthor: nil, duration: 3_600,

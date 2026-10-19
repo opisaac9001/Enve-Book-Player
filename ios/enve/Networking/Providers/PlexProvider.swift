@@ -79,11 +79,31 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         let partKey: String?
     }
 
+    private struct PlexRendition {
+        let media: PlexMedia
+        let part: PlexPart
+
+        var format: String? {
+            media.container ?? media.audioCodec ?? part.container
+                ?? part.file.map { URL(fileURLWithPath: $0).pathExtension }
+        }
+    }
+
+    private static let avPlayerFormats: Set<String> = [
+        "mp3", "mp4", "m4a", "m4b", "aac", "alac", "flac", "wav", "wave", "aif", "aiff", "caf",
+    ]
+
+    // Catalog, sessions and downloads must agree on one Media version or offsets and formats drift.
+    private func rendition(of item: PlexMetadata) -> PlexRendition? {
+        let renditions = (item.media ?? []).compactMap { media in
+            media.part?.first { !$0.key.isEmpty }.map { PlexRendition(media: media, part: $0) }
+        }
+        return renditions.first { Self.avPlayerFormats.contains($0.format?.lowercased() ?? "") } ?? renditions.first
+    }
+
     private func durationMilliseconds(from metadata: PlexMetadata) -> Double {
-        if let duration = metadata.duration { return duration }
-        if let mediaDuration = metadata.media?.first?.duration { return mediaDuration }
-        if let partDuration = metadata.media?.first?.part?.first?.duration { return partDuration }
-        return 0
+        let selected = rendition(of: metadata)
+        return selected?.media.duration ?? selected?.part.duration ?? metadata.duration ?? 0
     }
 
     private func durationSeconds(from metadata: PlexMetadata) -> Double {
@@ -107,13 +127,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
     }
 
     private func mimeType(from track: PlexMetadata) -> String {
-        let format = track.media?.first?.container
-            ?? track.media?.first?.audioCodec
-            ?? track.media?.first?.part?.first?.container
-            ?? track.media?.first?.part?.first?.file.map { URL(fileURLWithPath: $0).pathExtension }
-            ?? ""
-
-        return AudioFileSupport.mimeType(forExtension: format) ?? "application/octet-stream"
+        AudioFileSupport.mimeType(forExtension: rendition(of: track)?.format ?? "") ?? "application/octet-stream"
     }
 
     private func trackTimeline(from tracks: [PlexMetadata], preserveOrder: Bool = false) -> PlexTrackTimeline {
@@ -129,7 +143,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
                     id: track.ratingKey,
                     index: index,
                     title: track.title,
-                    contentUrl: track.media?.first?.part?.first?.key,
+                    contentUrl: rendition(of: track)?.part.key,
                     duration: duration,
                     startOffset: offset,
                     format: mimeType(from: track)
@@ -151,7 +165,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
             audioTracks: audioTracks,
             chapters: normalizeChapters(chapters, bookDuration: offset),
             duration: offset,
-            partKey: sorted.first?.media?.first?.part?.first?.key
+            partKey: sorted.first.flatMap { rendition(of: $0)?.part.key }
         )
     }
 
@@ -189,7 +203,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         if let fromTitle = parseSeriesFromTitle(metadata.title) {
             return fromTitle
         }
-        if let filePath = metadata.media?.first?.part?.first?.file {
+        if let filePath = rendition(of: metadata)?.part.file {
             if let fromPath = parseSeriesFromPath(filePath, author: author, title: metadata.title) {
                 return fromPath
             }
@@ -959,7 +973,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
                     title: title,
                     author: author,
                     narrator: extractNarrator(from: primary, author: author),
-                    seriesInfo: primary.media?.first?.part?.first?.file.flatMap { parseSeriesFromPath($0, author: author, title: title) }
+                    seriesInfo: rendition(of: primary)?.part.file.flatMap { parseSeriesFromPath($0, author: author, title: title) }
                         ?? parseSeriesFromTitle(title),
                     duration: timeline.duration,
                     coverURL: coverURL,
@@ -1080,7 +1094,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         guard !tracks.isEmpty else { return [mapPlexMetadataToBook(album, libraryId: libraryId)] }
         let sorted = orderedTracks(tracks)
         guard Self.isUnknownAlbumTitle(album.title), !libraryRoots.isEmpty,
-            sorted.allSatisfy({ $0.media?.first?.part?.first?.file?.isEmpty == false }) else {
+            sorted.allSatisfy({ rendition(of: $0)?.part.file?.isEmpty == false }) else {
             let timeline = trackTimeline(from: sorted)
             return [mapPlexMetadataToBook(album, libraryId: libraryId, overrideDuration: timeline.duration,
                 partKey: timeline.partKey, audioTracks: timeline.audioTracks, chapters: timeline.chapters)]
@@ -1088,7 +1102,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
 
         let roots = Set(libraryRoots.map { URL(fileURLWithPath: $0).standardizedFileURL.path })
         func bookFolder(_ track: PlexMetadata) -> URL? {
-            guard let path = track.media?.first?.part?.first?.file else { return nil }
+            guard let path = rendition(of: track)?.part.file else { return nil }
             var folder = URL(fileURLWithPath: path).standardizedFileURL.deletingLastPathComponent()
             if folder.lastPathComponent.range(of: #"(?i)^(?:cd|disc|disk)[ ._-]*[0-9]+$"#, options: .regularExpression) != nil,
                 !roots.contains(folder.path) {
@@ -1105,8 +1119,8 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         }
         return groups.values.sorted { $0[0].ratingKey < $1[0].ratingKey }.map { group in
             let tracks = group.sorted { lhs, rhs in
-                let left = lhs.media?.first?.part?.first?.file ?? lhs.ratingKey
-                let right = rhs.media?.first?.part?.first?.file ?? rhs.ratingKey
+                let left = rendition(of: lhs)?.part.file ?? lhs.ratingKey
+                let right = rendition(of: rhs)?.part.file ?? rhs.ratingKey
                 if URL(fileURLWithPath: left).deletingLastPathComponent() == URL(fileURLWithPath: right).deletingLastPathComponent(),
                     let leftIndex = lhs.index, let rightIndex = rhs.index, leftIndex != rightIndex {
                     return leftIndex < rightIndex
@@ -1118,12 +1132,12 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
             let timeline = trackTimeline(from: tracks, preserveOrder: true)
             var book = mapPlexMetadataToBook(album, libraryId: libraryId, overrideID: groups.count > 1 ? first.ratingKey : nil, overrideDuration: timeline.duration,
                 partKey: timeline.partKey, audioTracks: timeline.audioTracks, chapters: timeline.chapters)
-            if let path = first.media?.first?.part?.first?.file {
+            if let path = rendition(of: first)?.part.file {
                 let file = URL(fileURLWithPath: path)
                 let folder = file.deletingLastPathComponent()
                 let parent = bookFolder(first) ?? folder
                 if parent != folder {
-                    let discs = Set(tracks.compactMap { $0.media?.first?.part?.first?.file }.map {
+                    let discs = Set(tracks.compactMap { rendition(of: $0)?.part.file }.map {
                         URL(fileURLWithPath: $0).deletingLastPathComponent().lastPathComponent
                     })
                     book.title = discs.count == 1 ? "\(parent.lastPathComponent) — \(folder.lastPathComponent)" : parent.lastPathComponent
@@ -1181,8 +1195,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
             }
 
             if areChaptersInadequate(chapters, bookDuration: bookDuration),
-                let media = item.media?.first,
-                let part = media.part?.first,
+                let part = rendition(of: item)?.part,
                 let streamURL = buildStreamingURL(partKey: part.key)
             {
                 AppLogger.network.info("Inadequate chapters from Plex (\(chapters.count)), attempting extraction from audio file")
@@ -1241,8 +1254,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
 
         if areChaptersInadequate(normalizedChapters, bookDuration: finalDuration),
             let firstTrack = allTracks.first,
-            let media = firstTrack.media?.first,
-            let part = media.part?.first,
+            let part = rendition(of: firstTrack)?.part,
             let streamURL = buildStreamingURL(partKey: part.key)
         {
             AppLogger.network.info(
@@ -1380,7 +1392,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         }
 
         let duration = durationSeconds(from: track)
-        let partKey = track.media?.first?.part?.first?.key
+        let partKey = rendition(of: track)?.part.key
         let audioTracks = [
             AudioTrack(
                 id: track.ratingKey,
@@ -1396,7 +1408,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         let author = track.grandparentTitle ?? track.parentTitle ?? "Unknown Author"
         let bookTitle: String
         if Self.isUnknownAlbumTitle(track.parentTitle ?? ""),
-            let file = track.media?.first?.part?.first?.file {
+            let file = rendition(of: track)?.part.file {
             bookTitle = URL(fileURLWithPath: file).deletingPathExtension().lastPathComponent
         } else {
             bookTitle = track.title
@@ -1520,11 +1532,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
     }
 
     func startPlaybackSession(for book: Book) async throws -> PlaybackSessionInfo {
-        guard let baseURL = URL(string: connection.url) else {
-            throw ProviderError.invalidURL
-        }
-
-        let token = connection.effectivePlexToken ?? ""
+        try Task.checkCancellation()
         var audioTracks: [AudioTrackInfo] = []
 
         if let storedTracks = book.audioTracks, storedTracks.count > 1 {
@@ -1533,14 +1541,10 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
             )
             var partKeys: [String: String] = [:]
             for start in stride(from: 0, to: storedTracks.count, by: 100) {
+                try Task.checkCancellation()
                 let ids = storedTracks[start..<min(start + 100, storedTracks.count)].map(\.id).joined(separator: ",")
-                let request = try buildRequest(path: "library/metadata/\(ids)")
-                let (data, response) = try await performDataTask(for: request)
-                guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-                    throw ProviderError.invalidResponse
-                }
-                for item in try decodeItemsContainer(from: data).metadata ?? [] {
-                    partKeys[item.ratingKey] = item.media?.first?.part?.first?.key
+                for item in try await playbackMetadata(path: "library/metadata/\(ids)") {
+                    partKeys[item.ratingKey] = rendition(of: item)?.part.key
                 }
             }
             for track in storedTracks {
@@ -1569,11 +1573,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
             )
         }
 
-        let metadataRequest = try buildRequest(path: "library/metadata/\(book.id)")
-        let (metadataData, _) = try await performDataTask(for: metadataRequest)
-        let metadataContainer = try decodeItemsContainer(from: metadataData)
-
-        guard let item = metadataContainer.metadata?.first else {
+        guard let item = try await playbackMetadata(path: "library/metadata/\(book.id)").first else {
             throw ProviderError.invalidResponse
         }
 
@@ -1584,24 +1584,17 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
                 "Starting track playback bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId))"
             )
 
-            guard let media = item.media?.first, let part = media.part?.first else {
+            guard let part = rendition(of: item)?.part,
+                  let url = buildStreamingURL(partKey: part.key) else {
                 throw ProviderError.invalidResponse
             }
-
-            guard var components = URLComponents(url: baseURL.appendingPathComponent(part.key), resolvingAgainstBaseURL: false) else {
-                throw ProviderError.invalidURL
-            }
-            components.queryItems = [
-                URLQueryItem(name: "X-Plex-Token", value: token),
-                URLQueryItem(name: "download", value: "1"),
-            ]
 
             let trackInfo = AudioTrackInfo(
                 id: item.ratingKey,
                 index: 0,
                 startOffset: 0,
-                duration: (item.duration ?? 0) / 1000.0,
-                contentUrl: components.url?.absoluteString ?? part.key,
+                duration: durationSeconds(from: item),
+                contentUrl: url.absoluteString,
                 mimeType: mimeType(from: item),
                 title: item.title
             )
@@ -1612,30 +1605,23 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
                 "Starting album playback bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId))"
             )
 
-            let request = try buildRequest(path: "library/metadata/\(book.id)/children")
-            let (data, _) = try await performDataTask(for: request)
-            let container = try decodeItemsContainer(from: data)
-            let allTracks = orderedTracks(container.metadata ?? [])
+            let allTracks = orderedTracks(try await playbackMetadata(path: "library/metadata/\(book.id)/children"))
+            guard !allTracks.isEmpty else { throw ProviderError.invalidResponse }
 
             var cumulativeOffset: Double = 0
 
             for (index, track) in allTracks.enumerated() {
-                guard let media = track.media?.first, let part = media.part?.first else { continue }
-
-                guard var components = URLComponents(url: baseURL.appendingPathComponent(part.key), resolvingAgainstBaseURL: false) else {
-                    continue
+                guard let part = rendition(of: track)?.part,
+                      let url = buildStreamingURL(partKey: part.key) else {
+                    throw ProviderError.invalidResponse
                 }
-                components.queryItems = [
-                    URLQueryItem(name: "X-Plex-Token", value: token),
-                    URLQueryItem(name: "download", value: "1"),
-                ]
 
                 let trackInfo = AudioTrackInfo(
                     id: track.ratingKey,
                     index: index,
                     startOffset: cumulativeOffset,
-                    duration: (track.duration ?? 0) / 1000.0,
-                    contentUrl: components.url?.absoluteString ?? part.key,
+                    duration: durationSeconds(from: track),
+                    contentUrl: url.absoluteString,
                     mimeType: mimeType(from: track),
                     title: track.title
                 )
@@ -1653,6 +1639,19 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         )
     }
 
+    private func playbackMetadata(path: String) async throws -> [PlexMetadata] {
+        try Task.checkCancellation()
+        var request = try buildRequest(path: path)
+        // Two attempts plus backoff stay inside PlaybackManager's 20s startup deadline after its 5s progress pull.
+        request.timeoutInterval = 6
+        let (data, response) = try await performDataTask(for: request, retryCount: 1)
+        try Task.checkCancellation()
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw ProviderError.invalidResponse
+        }
+        return try decodeItemsContainer(from: data).metadata ?? []
+    }
+
     func fetchAudiobookProgress(
         for book: Book
     ) async throws -> (positionSeconds: TimeInterval, percentage: Double, trackIndex: Int?, updatedAt: Date?, isFinished: Bool)? {
@@ -1661,12 +1660,24 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         var latest: (position: TimeInterval, date: Date)?
         var allFinished = true
         var duration = book.duration ?? 0
-        for (index, id) in ids.enumerated() {
-            let request = try buildRequest(path: "library/metadata/\(id)")
+        var metadataByID: [String: PlexMetadata] = [:]
+        for start in stride(from: 0, to: ids.count, by: 100) {
+            try Task.checkCancellation()
+            let batchIDs = ids[start..<min(start + 100, ids.count)].joined(separator: ",")
+            let request = try buildRequest(path: "library/metadata/\(batchIDs)")
             let (data, response) = try await performDataTask(for: request)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200,
-                let item = try decodeItemsContainer(from: data).metadata?.first
-            else { throw ProviderError.invalidResponse }
+            try Task.checkCancellation()
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                throw ProviderError.invalidResponse
+            }
+            for item in try decodeItemsContainer(from: data).metadata ?? [] {
+                if metadataByID[item.ratingKey] == nil {
+                    metadataByID[item.ratingKey] = item
+                }
+            }
+        }
+        for (index, id) in ids.enumerated() {
+            guard let item = metadataByID[id] else { throw ProviderError.invalidResponse }
             let offset = (item.viewOffset ?? 0) / 1000
             let finished = (item.viewCount ?? 0) > 0 && offset <= 0
             allFinished = allFinished && finished
@@ -1683,8 +1694,10 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         }
         // Older Android builds saved the resume point on the album rather than its tracks.
         if latest == nil, !tracks.isEmpty, !allFinished {
+            try Task.checkCancellation()
             let request = try buildRequest(path: "library/metadata/\(book.id)")
             let (data, response) = try await performDataTask(for: request)
+            try Task.checkCancellation()
             if let http = response as? HTTPURLResponse, http.statusCode == 200,
                 let album = try decodeItemsContainer(from: data).metadata?.first,
                 let offset = album.viewOffset, offset > 0
@@ -1774,14 +1787,14 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         }
 
         let duration = overrideDuration ?? durationSeconds(from: item)
-        let itemFilePath = item.media?.first?.part?.first?.file
+        let itemFilePath = rendition(of: item)?.part.file
 
         let bookTitle = item.title
         let author = item.grandparentTitle ?? item.parentTitle ?? "Unknown Author"
         let narrator = extractNarrator(from: item, author: author)
         let seriesInfo = extractSeriesInfo(from: item, author: author)
 
-        let finalPartKey = partKey ?? item.media?.first?.part?.first?.key
+        let finalPartKey = partKey ?? rendition(of: item)?.part.key
         AppLogger.network.debug("Mapping book: ID=\(item.ratingKey), Title=\"\(bookTitle)\", partKey=\(finalPartKey ?? "nil")")
 
         return Book(

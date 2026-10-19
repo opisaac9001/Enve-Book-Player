@@ -2,6 +2,79 @@ import Logging
 import SwiftUI
 import UIKit
 
+private final class ComicPageLoadingOverlay: UIView {
+    private let spinner = UIActivityIndicatorView(style: .medium)
+    private let message = UILabel()
+    private let retry = UIButton(type: .system)
+
+    init(onRetry: @escaping () -> Void) {
+        super.init(frame: .zero)
+        let panel = UIStackView(arrangedSubviews: [spinner, message, retry])
+        panel.axis = .vertical
+        panel.alignment = .center
+        panel.spacing = 12
+        panel.isLayoutMarginsRelativeArrangement = true
+        panel.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 20, leading: 20, bottom: 20, trailing: 20)
+        let palette = Hearth.palette(for: .dark)
+        panel.backgroundColor = UIColor(palette.bgElevated)
+        panel.layer.cornerRadius = 16
+        panel.translatesAutoresizingMaskIntoConstraints = false
+        message.textColor = UIColor(palette.text)
+        message.font = .preferredFont(forTextStyle: .body)
+        message.adjustsFontForContentSizeCategory = true
+        message.numberOfLines = 0
+        message.textAlignment = .center
+        spinner.color = UIColor(palette.textSecondary)
+        retry.setTitle("Retry page", for: .normal)
+        retry.setTitleColor(UIColor(Hearth.accent), for: .normal)
+        retry.titleLabel?.font = .preferredFont(forTextStyle: .headline)
+        retry.titleLabel?.adjustsFontForContentSizeCategory = true
+        retry.accessibilityIdentifier = "comic-page-retry"
+        retry.addAction(UIAction { _ in onRetry() }, for: .touchUpInside)
+        addSubview(panel)
+        NSLayoutConstraint.activate([
+            panel.centerXAnchor.constraint(equalTo: centerXAnchor),
+            panel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            panel.widthAnchor.constraint(lessThanOrEqualToConstant: 320),
+            panel.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 24),
+            panel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -24),
+            retry.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    func install(in parent: UIView) {
+        frame = parent.bounds
+        autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        parent.addSubview(self)
+    }
+
+    func showLoading() {
+        isHidden = false
+        message.text = "Loading page…"
+        retry.isHidden = true
+        spinner.startAnimating()
+    }
+
+    func showFailure() {
+        isHidden = false
+        message.text = "Couldn't load this page. Check your connection and try again."
+        spinner.stopAnimating()
+        retry.isHidden = false
+    }
+
+    func hide() {
+        spinner.stopAnimating()
+        isHidden = true
+    }
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        !retry.isHidden && retry.bounds.contains(convert(point, to: retry))
+    }
+}
+
 private enum ComicHorizontalEdge {
     case left
     case right
@@ -42,6 +115,7 @@ private struct ComicEdgePagingTracker {
 
 struct ComicReaderBridge: View {
     let pages: [URL]
+    let pageData: (URL) async throws -> Data
     @Binding var currentPageIndex: Int
     let layout: ReaderComicLayoutOption
     let pageFit: ComicPageFit
@@ -57,6 +131,7 @@ struct ComicReaderBridge: View {
         if layout == .scroll {
             ComicScrollReader(
                 pages: pages,
+                pageData: pageData,
                 currentPageIndex: $currentPageIndex,
                 backgroundColor: backgroundColor,
                 zoomEnabled: zoomEnabled,
@@ -66,12 +141,14 @@ struct ComicReaderBridge: View {
         } else {
             ComicPagedReader(
                 pages: pages,
+                pageData: pageData,
                 currentPageIndex: $currentPageIndex,
                 layout: layout,
                 backgroundColor: backgroundColor,
                 zoomEnabled: zoomEnabled,
                 oneHandedZoom: oneHandedZoom,
                 spreadEnabled: spreadEnabled,
+                onLayoutChange: onVisiblePageChange,
                 onTap: onTap
             )
         }
@@ -80,12 +157,14 @@ struct ComicReaderBridge: View {
 
 private struct ComicPagedReader: UIViewControllerRepresentable {
     let pages: [URL]
+    let pageData: (URL) async throws -> Data
     @Binding var currentPageIndex: Int
     let layout: ReaderComicLayoutOption
     let backgroundColor: ComicBackgroundColor
     let zoomEnabled: Bool
     let oneHandedZoom: Bool
     let spreadEnabled: Bool
+    let onLayoutChange: (Int) -> Void
     let onTap: (CGPoint, CGSize) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -93,6 +172,7 @@ private struct ComicPagedReader: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> ComicPagedViewController {
         let vc = ComicPagedViewController(
             pages: pages,
+            pageData: pageData,
             initialIndex: currentPageIndex,
             isRTL: layout == .rightToLeft,
             backgroundColor: backgroundColor.uiColor,
@@ -104,6 +184,9 @@ private struct ComicPagedReader: UIViewControllerRepresentable {
         let coordinator = context.coordinator
         vc.pageChangeHandler = { index in
             coordinator.parent.currentPageIndex = index
+        }
+        vc.layoutChangeHandler = { index in
+            coordinator.parent.onLayoutChange(index)
         }
         return vc
     }
@@ -131,6 +214,7 @@ private struct ComicPagedReader: UIViewControllerRepresentable {
 private final class ComicPagedViewController: UIViewController, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
 
     let pages: [URL]
+    let pageData: (URL) async throws -> Data
     private(set) var currentIndex: Int
     private var isRTL: Bool
     private var bgColor: UIColor
@@ -140,15 +224,15 @@ private final class ComicPagedViewController: UIViewController, UIPageViewContro
     private var isLandscape = false
     private var onTap: (CGPoint, CGSize) -> Void
     var pageChangeHandler: ((Int) -> Void)?
+    var layoutChangeHandler: ((Int) -> Void)?
 
     private var pageVC: UIPageViewController!
 
     private var isSpreadActive: Bool { spreadEnabled && isLandscape }
 
-    private var spreadCount: Int { (pages.count + 1) / 2 }
-
     init(
         pages: [URL],
+        pageData: @escaping (URL) async throws -> Data,
         initialIndex: Int,
         isRTL: Bool,
         backgroundColor: UIColor,
@@ -158,6 +242,7 @@ private final class ComicPagedViewController: UIViewController, UIPageViewContro
         onTap: @escaping (CGPoint, CGSize) -> Void
     ) {
         self.pages = pages
+        self.pageData = pageData
         self.currentIndex = max(0, min(initialIndex, pages.count - 1))
         self.isRTL = isRTL
         self.bgColor = backgroundColor
@@ -210,24 +295,31 @@ private final class ComicPagedViewController: UIViewController, UIPageViewContro
             showCurrentPage(animated: false)
         } else if wasSpread != nowSpread {
             showCurrentPage(animated: false)
+            notifyLayoutChange()
         }
     }
 
+    // The current page survives rotation; a spread only decides which neighbour shares the screen.
     func navigateTo(index: Int, animated: Bool) {
         let bounded = max(0, min(index, pages.count - 1))
         guard bounded != currentIndex else { return }
         let direction: UIPageViewController.NavigationDirection = bounded > currentIndex ? .forward : .reverse
+        currentIndex = bounded
         if isSpreadActive {
-            let spreadIdx = bounded / 2
-            currentIndex = spreadIdx * 2
-            if let vc = makeSpreadVC(for: spreadIdx) {
-                pageVC.setViewControllers([vc], direction: direction, animated: animated)
-            }
-        } else {
-            currentIndex = bounded
-            if let vc = makeSingleVC(for: bounded) {
-                pageVC.setViewControllers([vc], direction: direction, animated: animated)
-            }
+            let visibleRange = (pageVC.viewControllers?.first as? ComicSpreadPageViewController)?.pageRange
+            guard spreadRange(containing: bounded) != visibleRange,
+                let vc = makeSpreadVC(containing: bounded)
+            else { return }
+            pageVC.setViewControllers([vc], direction: direction, animated: animated)
+        } else if let vc = makeSingleVC(for: bounded) {
+            pageVC.setViewControllers([vc], direction: direction, animated: animated)
+        }
+    }
+
+    private func notifyLayoutChange() {
+        let index = currentIndex
+        Task { @MainActor [weak self] in
+            self?.layoutChangeHandler?(index)
         }
     }
 
@@ -266,9 +358,7 @@ private final class ComicPagedViewController: UIViewController, UIPageViewContro
 
     private func showCurrentPage(animated: Bool) {
         if isSpreadActive {
-            let spreadIdx = currentIndex / 2
-            currentIndex = spreadIdx * 2
-            if let vc = makeSpreadVC(for: spreadIdx) {
+            if let vc = makeSpreadVC(containing: currentIndex) {
                 pageVC.setViewControllers([vc], direction: .forward, animated: animated)
             }
         } else {
@@ -291,6 +381,7 @@ private final class ComicPagedViewController: UIViewController, UIPageViewContro
         guard index >= 0, index < pages.count else { return nil }
         let vc = ComicSinglePageViewController(
             pageURL: pages[index],
+            pageData: pageData,
             pageIndex: index,
             backgroundColor: bgColor,
             zoomEnabled: zoomEnabled,
@@ -306,26 +397,35 @@ private final class ComicPagedViewController: UIViewController, UIPageViewContro
         return vc
     }
 
-    private func makeSpreadVC(for spreadIndex: Int) -> ComicSpreadPageViewController? {
-        guard spreadIndex >= 0, spreadIndex < spreadCount else { return nil }
-        let firstIdx = spreadIndex * 2
-        guard firstIdx < pages.count else { return nil }
-        let secondIdx = firstIdx + 1 < pages.count ? firstIdx + 1 : nil
+    private func spreadRange(containing index: Int) -> ClosedRange<Int> {
+        ReaderPagedPagePolicy.comicSpread(
+            containing: index,
+            pageCount: pages.count,
+            step: 2,
+            isWidePage: { [pages] in ComicWidePageRegistry.shared.isWide(pages[$0]) }
+        )
+    }
+
+    private func makeSpreadVC(containing index: Int) -> ComicSpreadPageViewController? {
+        guard pages.indices.contains(index) else { return nil }
+        let range = spreadRange(containing: index)
+        let isPair = range.count == 2
 
         let leftURL: URL
         let rightURL: URL?
-        if isRTL {
-            leftURL = secondIdx != nil ? pages[secondIdx!] : pages[firstIdx]
-            rightURL = secondIdx != nil ? pages[firstIdx] : nil
+        if isRTL && isPair {
+            leftURL = pages[range.upperBound]
+            rightURL = pages[range.lowerBound]
         } else {
-            leftURL = pages[firstIdx]
-            rightURL = secondIdx.map { pages[$0] }
+            leftURL = pages[range.lowerBound]
+            rightURL = isPair ? pages[range.upperBound] : nil
         }
 
         let vc = ComicSpreadPageViewController(
             leftPageURL: leftURL,
             rightPageURL: rightURL,
-            spreadIndex: spreadIndex,
+            pageRange: range,
+            pageData: pageData,
             backgroundColor: bgColor,
             zoomEnabled: zoomEnabled,
             oneHandedZoom: oneHandedZoom,
@@ -337,14 +437,35 @@ private final class ComicPagedViewController: UIViewController, UIPageViewContro
         vc.edgePageHandler = { [weak self] edge in
             self?.turnPage(from: edge)
         }
+        vc.widePageHandler = { [weak self] in
+            self?.refreshSpreadsAfterWidePageDiscovery()
+        }
         return vc
+    }
+
+    // Streamed page dimensions arrive after decoding, so refresh an outdated pair.
+    private func refreshSpreadsAfterWidePageDiscovery() {
+        guard isSpreadActive,
+            let visible = pageVC.viewControllers?.first as? ComicSpreadPageViewController
+        else { return }
+        if spreadRange(containing: currentIndex) != visible.pageRange {
+            showCurrentPage(animated: false)
+            notifyLayoutChange()
+        } else {
+            pageVC.setViewControllers([visible], direction: .forward, animated: false)
+        }
     }
 
     private func turnPage(from edge: ComicHorizontalEdge) {
         let advances = isRTL ? edge == .left : edge == .right
-        let step = isSpreadActive ? 2 : 1
-        let targetIndex = currentIndex + (advances ? step : -step)
-        guard pages.indices.contains(targetIndex) else { return }
+        let targetIndex = ReaderPagedPagePolicy.adjacentComicPageIndex(
+            from: currentIndex,
+            by: advances ? 1 : -1,
+            pageCount: pages.count,
+            step: isSpreadActive ? 2 : 1,
+            isWidePage: { [pages] in ComicWidePageRegistry.shared.isWide(pages[$0]) }
+        )
+        guard targetIndex != currentIndex else { return }
         setPageSwipeEnabled(true)
         navigateTo(index: targetIndex, animated: true)
         pageChangeHandler?(currentIndex)
@@ -360,7 +481,7 @@ private final class ComicPagedViewController: UIViewController, UIPageViewContro
 
     func pageViewController(_ pvc: UIPageViewController, viewControllerBefore viewController: UIViewController) -> UIViewController? {
         if let spread = viewController as? ComicSpreadPageViewController {
-            return makeSpreadVC(for: spread.spreadIndex - 1)
+            return makeSpreadVC(containing: spread.pageRange.lowerBound - 1)
         }
         guard let page = viewController as? ComicSinglePageViewController else { return nil }
         return makeSingleVC(for: page.pageIndex - 1)
@@ -368,7 +489,7 @@ private final class ComicPagedViewController: UIViewController, UIPageViewContro
 
     func pageViewController(_ pvc: UIPageViewController, viewControllerAfter viewController: UIViewController) -> UIViewController? {
         if let spread = viewController as? ComicSpreadPageViewController {
-            return makeSpreadVC(for: spread.spreadIndex + 1)
+            return makeSpreadVC(containing: spread.pageRange.upperBound + 1)
         }
         guard let page = viewController as? ComicSinglePageViewController else { return nil }
         return makeSingleVC(for: page.pageIndex + 1)
@@ -382,7 +503,7 @@ private final class ComicPagedViewController: UIViewController, UIPageViewContro
     ) {
         guard completed else { return }
         if let spread = pvc.viewControllers?.first as? ComicSpreadPageViewController {
-            currentIndex = spread.spreadIndex * 2
+            currentIndex = spread.pageRange.lowerBound
             pageChangeHandler?(currentIndex)
         } else if let current = pvc.viewControllers?.first as? ComicSinglePageViewController {
             currentIndex = current.pageIndex
@@ -393,7 +514,8 @@ private final class ComicPagedViewController: UIViewController, UIPageViewContro
 
 private final class ComicSpreadPageViewController: UIViewController, UIScrollViewDelegate, UIGestureRecognizerDelegate {
 
-    let spreadIndex: Int
+    let pageRange: ClosedRange<Int>
+    private let pageData: (URL) async throws -> Data
     private let leftPageURL: URL
     private let rightPageURL: URL?
 
@@ -407,26 +529,33 @@ private final class ComicSpreadPageViewController: UIViewController, UIScrollVie
     private var onTap: (CGPoint, CGSize) -> Void
     var zoomChangeHandler: ((Bool) -> Void)?
     var edgePageHandler: ((ComicHorizontalEdge) -> Void)?
+    var widePageHandler: (() -> Void)?
 
     private var oneHandedZoomGesture: UILongPressGestureRecognizer?
     private var oneHandedZoomStartY: CGFloat = 0
     private var oneHandedZoomStartScale: CGFloat = 1.0
     private var isOneHandedZooming = false
     private var pendingImages = 0
+    private var imageTasks: [Task<Void, Never>] = []
+    private var imageGeneration = 0
+    private var hasPageFailure = false
+    private lazy var pageLoading = ComicPageLoadingOverlay { [weak self] in self?.loadImages() }
     private var edgePagingTracker = ComicEdgePagingTracker()
 
     init(
         leftPageURL: URL,
         rightPageURL: URL?,
-        spreadIndex: Int,
+        pageRange: ClosedRange<Int>,
+        pageData: @escaping (URL) async throws -> Data,
         backgroundColor: UIColor,
         zoomEnabled: Bool,
         oneHandedZoom: Bool,
         onTap: @escaping (CGPoint, CGSize) -> Void
     ) {
+        self.pageData = pageData
         self.leftPageURL = leftPageURL
         self.rightPageURL = rightPageURL
-        self.spreadIndex = spreadIndex
+        self.pageRange = pageRange
         self.bgColor = backgroundColor
         self.zoomEnabled = zoomEnabled
         self.oneHandedZoom = oneHandedZoom
@@ -476,6 +605,7 @@ private final class ComicSpreadPageViewController: UIViewController, UIScrollVie
         scrollView.addGestureRecognizer(singleTap)
 
         applyOneHandedZoom()
+        pageLoading.install(in: view)
         loadImages()
     }
 
@@ -485,28 +615,47 @@ private final class ComicSpreadPageViewController: UIViewController, UIScrollVie
         layoutSpread()
     }
 
+    deinit { imageTasks.forEach { $0.cancel() } }
+
     private func loadImages() {
+        imageTasks.forEach { $0.cancel() }
+        imageGeneration += 1
+        let generation = imageGeneration
         pendingImages = rightPageURL != nil ? 2 : 1
-
-        Task { [weak self, leftPageURL] in
-            guard let data = try? await ServerPageStreamingService.shared.pageData(at: leftPageURL),
-                let image = UIImage(data: data)
-            else { return }
-            self?.leadingImageView.image = image
-            self?.pendingImages -= 1
-            if self?.pendingImages == 0 { self?.layoutSpread() }
-        }
-
-        if let rightPageURL {
-            Task { [weak self] in
-                guard let data = try? await ServerPageStreamingService.shared.pageData(at: rightPageURL),
-                    let image = UIImage(data: data)
-                else { return }
-                self?.trailingImageView.image = image
-                self?.pendingImages -= 1
-                if self?.pendingImages == 0 { self?.layoutSpread() }
+        hasPageFailure = false
+        pageLoading.showLoading()
+        var pages = [(leftPageURL, leadingImageView)]
+        if let rightPageURL { pages.append((rightPageURL, trailingImageView)) }
+        imageTasks = pages.map { url, imageView in
+            Task { [weak self, pageData] in
+                do {
+                    let data = try await pageData(url)
+                    try Task.checkCancellation()
+                    guard let image = UIImage(data: data) else { throw ServerPageStreamingService.StreamingError.invalidPageData }
+                    guard let self, imageGeneration == generation else { return }
+                    recordShape(of: image, at: url)
+                    imageView.image = image
+                    pendingImages -= 1
+                    if pendingImages == 0 {
+                        if !hasPageFailure { pageLoading.hide() }
+                        layoutSpread()
+                    }
+                } catch is CancellationError {
+                    return
+                } catch {
+                    guard let self, imageGeneration == generation else { return }
+                    pendingImages -= 1
+                    hasPageFailure = true
+                    pageLoading.showFailure()
+                    layoutSpread()
+                }
             }
         }
+    }
+
+    private func recordShape(of image: UIImage, at url: URL) {
+        let isWide = ComicWidePageRegistry.shared.record(image.size, for: url)
+        if isWide && rightPageURL != nil { widePageHandler?() }
     }
 
     private func layoutSpread() {
@@ -646,6 +795,7 @@ private final class ComicSinglePageViewController: UIViewController, UIScrollVie
 
     let pageIndex: Int
     private let pageURL: URL
+    private let pageData: (URL) async throws -> Data
     private let scrollView = UIScrollView()
     private let imageView = UIImageView()
     private var bgColor: UIColor
@@ -661,8 +811,12 @@ private final class ComicSinglePageViewController: UIViewController, UIScrollVie
     private var isOneHandedZooming = false
     private var edgePagingTracker = ComicEdgePagingTracker()
 
+    private var imageTask: Task<Void, Never>?
+    private lazy var pageLoading = ComicPageLoadingOverlay { [weak self] in self?.loadImage() }
+
     init(
         pageURL: URL,
+        pageData: @escaping (URL) async throws -> Data,
         pageIndex: Int,
         backgroundColor: UIColor,
         zoomEnabled: Bool,
@@ -670,6 +824,7 @@ private final class ComicSinglePageViewController: UIViewController, UIScrollVie
         onTap: @escaping (CGPoint, CGSize) -> Void
     ) {
         self.pageURL = pageURL
+        self.pageData = pageData
         self.pageIndex = pageIndex
         self.bgColor = backgroundColor
         self.zoomEnabled = zoomEnabled
@@ -716,6 +871,7 @@ private final class ComicSinglePageViewController: UIViewController, UIScrollVie
         scrollView.addGestureRecognizer(singleTap)
 
         applyOneHandedZoom()
+        pageLoading.install(in: view)
         loadImage()
     }
 
@@ -744,13 +900,25 @@ private final class ComicSinglePageViewController: UIViewController, UIScrollVie
         applyOneHandedZoom()
     }
 
+    deinit { imageTask?.cancel() }
+
     private func loadImage() {
-        Task { [weak self, pageURL] in
-            guard let data = try? await ServerPageStreamingService.shared.pageData(at: pageURL),
-                let image = UIImage(data: data)
-            else { return }
-            self?.imageView.image = image
-            self?.layoutImageForCurrentZoom()
+        imageTask?.cancel()
+        pageLoading.showLoading()
+        imageTask = Task { [weak self, pageURL, pageData] in
+            do {
+                let data = try await pageData(pageURL)
+                try Task.checkCancellation()
+                guard let image = UIImage(data: data) else { throw ServerPageStreamingService.StreamingError.invalidPageData }
+                ComicWidePageRegistry.shared.record(image.size, for: pageURL)
+                self?.imageView.image = image
+                self?.layoutImageForCurrentZoom()
+                self?.pageLoading.hide()
+            } catch is CancellationError {
+                return
+            } catch {
+                self?.pageLoading.showFailure()
+            }
         }
     }
 
@@ -899,6 +1067,7 @@ private final class ComicSinglePageViewController: UIViewController, UIScrollVie
 
 private struct ComicScrollReader: View {
     let pages: [URL]
+    let pageData: (URL) async throws -> Data
     @Binding var currentPageIndex: Int
     let backgroundColor: ComicBackgroundColor
     let zoomEnabled: Bool
@@ -913,6 +1082,7 @@ private struct ComicScrollReader: View {
                     ForEach(Array(pages.enumerated()), id: \.offset) { index, pageURL in
                         ComicScrollZoomablePageView(
                             pageURL: pageURL,
+                            pageData: pageData,
                             backgroundColor: backgroundColor,
                             zoomEnabled: zoomEnabled,
                             onTap: onTap
@@ -963,11 +1133,12 @@ private final class ZoomScrollView: UIScrollView {
 
 private struct ComicScrollZoomablePageView: UIViewRepresentable {
     let pageURL: URL
+    let pageData: (URL) async throws -> Data
     let backgroundColor: ComicBackgroundColor
     let zoomEnabled: Bool
     let onTap: (CGPoint, CGSize) -> Void
 
-    func makeCoordinator() -> Coordinator { Coordinator(onTap: onTap) }
+    func makeCoordinator() -> Coordinator { Coordinator(pageData: pageData, onTap: onTap) }
 
     func makeUIView(context: Context) -> ZoomScrollView {
         let coordinator = context.coordinator
@@ -999,6 +1170,7 @@ private struct ComicScrollZoomablePageView: UIViewRepresentable {
         scrollView.addGestureRecognizer(doubleTap)
         scrollView.addGestureRecognizer(singleTap)
 
+        coordinator.pageLoading.install(in: scrollView)
         coordinator.loadImage(from: pageURL)
         return scrollView
     }
@@ -1013,21 +1185,42 @@ private struct ComicScrollZoomablePageView: UIViewRepresentable {
     }
 
     final class Coordinator: NSObject, UIScrollViewDelegate {
+        let pageData: (URL) async throws -> Data
         var onTap: (CGPoint, CGSize) -> Void
         weak var imageView: UIImageView?
         weak var scrollView: ZoomScrollView?
 
-        init(onTap: @escaping (CGPoint, CGSize) -> Void) {
+        init(pageData: @escaping (URL) async throws -> Data, onTap: @escaping (CGPoint, CGSize) -> Void) {
+            self.pageData = pageData
             self.onTap = onTap
         }
 
+        private var imageTask: Task<Void, Never>?
+        private var pageURL: URL?
+        lazy var pageLoading = ComicPageLoadingOverlay { [weak self] in
+            guard let self, let pageURL else { return }
+            loadImage(from: pageURL)
+        }
+
+        deinit { imageTask?.cancel() }
+
         func loadImage(from url: URL) {
-            Task { [weak self] in
-                guard let data = try? await ServerPageStreamingService.shared.pageData(at: url),
-                    let image = UIImage(data: data)
-                else { return }
-                self?.imageView?.image = image
-                self?.layoutImage()
+            imageTask?.cancel()
+            pageURL = url
+            pageLoading.showLoading()
+            imageTask = Task { [weak self, pageData] in
+                do {
+                    let data = try await pageData(url)
+                    try Task.checkCancellation()
+                    guard let image = UIImage(data: data) else { throw ServerPageStreamingService.StreamingError.invalidPageData }
+                    self?.imageView?.image = image
+                    self?.layoutImage()
+                    self?.pageLoading.hide()
+                } catch is CancellationError {
+                    return
+                } catch {
+                    self?.pageLoading.showFailure()
+                }
             }
         }
 

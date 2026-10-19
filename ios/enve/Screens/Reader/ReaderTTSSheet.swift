@@ -108,8 +108,10 @@ struct ReaderTTSSheet: View {
                             .font(.hearthUI(14, weight: .medium).monospacedDigit())
                             .foregroundStyle(hearth.textSecondary)
                     }
-                    Slider(value: $tts.rate, in: 0.5...3.0, step: 0.25)
-                        .tint(hearth.ember)
+                    Slider(value: $tts.rate, in: EbookTTSService.rateRange, step: 0.25) { isEditing in
+                        if !isEditing { tts.commitRate() }
+                    }
+                    .tint(hearth.ember)
                 }
 
                 Button {

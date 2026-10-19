@@ -525,11 +525,24 @@ final class ReadiumReaderEngineAdapter: ReaderEngineAdapter {
     }
 
     func pageForward(animated: Bool) async -> Bool {
-        await navigator.goForward(options: .init(animated: animated))
+        if navigator.settings.scroll { return await scrollPage(forward: true) }
+        return await navigator.goForward(options: .init(animated: animated))
     }
 
     func pageBackward(animated: Bool) async -> Bool {
-        await navigator.goBackward(options: .init(animated: animated))
+        if navigator.settings.scroll { return await scrollPage(forward: false) }
+        return await navigator.goBackward(options: .init(animated: animated))
+    }
+
+    private func scrollPage(forward: Bool) async -> Bool {
+        let script = """
+            (() => {
+                const before = window.scrollY;
+                window.scrollBy({ top: \(forward ? 1 : -1) * window.innerHeight * 0.9, behavior: 'instant' });
+                return window.scrollY !== before;
+            })();
+            """
+        return (try? await navigator.evaluateJavaScript(script).get()) as? Bool == true
     }
 
     func clearSelection() {
@@ -673,6 +686,8 @@ final class ReadiumReaderEngineAdapter: ReaderEngineAdapter {
                 return
             }
         }
+        // A selection that began while the visibility check ran cancels the follow.
+        guard !Task.isCancelled else { return }
         _ = await navigator.go(to: locator, options: .init(animated: false))
     }
 

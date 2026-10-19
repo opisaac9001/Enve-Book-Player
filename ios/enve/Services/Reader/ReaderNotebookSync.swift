@@ -25,6 +25,7 @@ final class ProviderReaderNotebookSync: ReaderNotebookSyncing {
     private let book: Book
     private let providerResolver: any LibraryProviderResolving
     private let siloIDMap: any SiloReaderArtifactIDMapping
+    private let bookNoteIDs: any GrimmoryBookNoteIDMapping
     private let allowsExternalSync: Bool
     private let bookOrbitQueue: BookOrbitReaderArtifactSync?
     var bookOrbitSpineHrefs: (() -> [String: String])?
@@ -37,6 +38,7 @@ final class ProviderReaderNotebookSync: ReaderNotebookSyncing {
         book: Book,
         providerResolver: any LibraryProviderResolving,
         siloIDMap: any SiloReaderArtifactIDMapping = SiloReaderArtifactIDStore.shared,
+        bookNoteIDs: any GrimmoryBookNoteIDMapping = GrimmoryBookNoteIDStore.shared,
         bookOrbitQueue: BookOrbitReaderArtifactSync? = .shared,
         allowsExternalSync: Bool = true
     ) {
@@ -44,6 +46,7 @@ final class ProviderReaderNotebookSync: ReaderNotebookSyncing {
         self.book = book
         self.providerResolver = providerResolver
         self.siloIDMap = siloIDMap
+        self.bookNoteIDs = bookNoteIDs
         self.bookOrbitQueue = bookOrbitQueue
     }
 
@@ -170,6 +173,21 @@ final class ProviderReaderNotebookSync: ReaderNotebookSyncing {
         switch book.source {
         case .booklore:
             guard let provider = bookloreProvider else { return .unchanged }
+            let connectionID = provider.connection.id
+            if let noteID = bookNoteIDs.noteID(connectionID: connectionID, bookID: book.stableId, localID: annotation.id) {
+                do {
+                    if annotation.note?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+                        _ = try await provider.updateBookNote(id: noteID, annotation: annotation)
+                        return .unchanged
+                    }
+                    // A cleared note leaves a plain highlight, which Grimmory stores as an annotation.
+                    try await provider.deleteBookNote(id: noteID)
+                    bookNoteIDs.removeNoteID(connectionID: connectionID, bookID: book.stableId, localID: annotation.id)
+                } catch {
+                    AppLogger.general.error("Failed to sync book note bookDiagnosticID=\(bookDiagnosticID): \(error.localizedDescription)")
+                    return .unchanged
+                }
+            }
             do {
                 let record: BookloreProvider.RemoteAnnotationRecord
                 if let remoteID = annotation.remoteID {
@@ -216,7 +234,14 @@ final class ProviderReaderNotebookSync: ReaderNotebookSyncing {
     func annotationRemoved(_ annotation: ReaderAnnotation) async -> ReaderNotebookSyncOutcome {
         switch book.source {
         case .booklore:
-            guard let remoteID = annotation.remoteID, let provider = bookloreProvider else { return .unchanged }
+            guard let provider = bookloreProvider else { return .unchanged }
+            let connectionID = provider.connection.id
+            if let noteID = bookNoteIDs.noteID(connectionID: connectionID, bookID: book.stableId, localID: annotation.id) {
+                try? await provider.deleteBookNote(id: noteID)
+                bookNoteIDs.removeNoteID(connectionID: connectionID, bookID: book.stableId, localID: annotation.id)
+                return .unchanged
+            }
+            guard let remoteID = annotation.remoteID else { return .unchanged }
             try? await provider.deleteRemoteAnnotation(id: remoteID)
             return .unchanged
         case .bookOrbit:
@@ -247,6 +272,11 @@ final class ProviderReaderNotebookSync: ReaderNotebookSyncing {
 
     private func pullBooklore(mergingInto localArtifacts: () -> ReaderNotebookMerge.Snapshot) async -> ReaderNotebookSyncOutcome {
         guard let provider = bookloreProvider else { return .unchanged }
+        let pullStartedAt = Date()
+        async let bookNotesTask = provider.fetchBookNotes(for: book)
+
+        var merged: ReaderNotebookMerge.Snapshot
+        var fetchedArtifacts = true
         do {
             async let remoteAnnotationsTask = provider.fetchRemoteAnnotations(for: book)
             async let remoteBookmarksTask = provider.fetchRemoteBookmarks(for: book)
@@ -254,37 +284,87 @@ final class ProviderReaderNotebookSync: ReaderNotebookSyncing {
             let remoteAnnotations = try await remoteAnnotationsTask
             let remoteBookmarks = try await remoteBookmarksTask
 
-            let merged = ReaderNotebookMerge.applyingBookloreRecords(
+            merged = ReaderNotebookMerge.applyingBookloreRecords(
                 annotations: remoteAnnotations,
                 bookmarks: remoteBookmarks,
                 to: localArtifacts(),
                 bookID: book.id,
                 bookStableID: book.stableId
             )
-            let hydrated = await hydratingReadiumLocators(in: merged)
-            return .replace(bookmarks: hydrated.bookmarks, annotations: hydrated.annotations)
         } catch {
             AppLogger.general.error("Failed to fetch annotations bookDiagnosticID=\(bookDiagnosticID): \(error.localizedDescription)")
             do {
                 let entries = try await provider.fetchNotebookEntries(for: book)
-                let merged = ReaderNotebookMerge.applyingBookloreNotebookEntries(
+                merged = ReaderNotebookMerge.applyingBookloreNotebookEntries(
                     entries,
                     to: localArtifacts(),
                     bookID: book.id,
                     bookStableID: book.stableId
                 )
-                return .replace(bookmarks: merged.bookmarks, annotations: merged.annotations)
             } catch {
                 AppLogger.general.error("Fallback notebook fetch also failed: \(error.localizedDescription)")
-                return .unchanged
+                merged = localArtifacts()
+                fetchedArtifacts = false
             }
         }
+
+        let bookNotes: [BookloreProvider.RemoteBookNoteRecord]?
+        do {
+            bookNotes = try await bookNotesTask
+        } catch {
+            AppLogger.general.error("Failed to fetch book notes bookDiagnosticID=\(bookDiagnosticID): \(error.localizedDescription)")
+            bookNotes = nil
+        }
+        guard fetchedArtifacts || bookNotes != nil else { return .unchanged }
+        if let bookNotes {
+            merged = ReaderNotebookMerge.applyingGrimmoryBookNotes(
+                bookNotes,
+                to: merged,
+                bookID: book.id,
+                bookStableID: book.stableId,
+                connectionID: provider.connection.id,
+                idMap: bookNoteIDs
+            )
+        }
+        merged = await uploadingUnsyncedAnnotations(in: merged, createdBefore: pullStartedAt, provider: provider)
+        let hydrated = await hydratingReadiumLocators(in: merged)
+        return .replace(bookmarks: hydrated.bookmarks, annotations: hydrated.annotations)
+    }
+
+    // Retries highlights whose live push failed or had no CFI yet; newer ones are still owned by annotationUpserted.
+    private func uploadingUnsyncedAnnotations(
+        in snapshot: ReaderNotebookMerge.Snapshot,
+        createdBefore cutoff: Date,
+        provider: BookloreProvider
+    ) async -> ReaderNotebookMerge.Snapshot {
+        var updated = snapshot
+        let connectionID = provider.connection.id
+        for index in updated.annotations.indices {
+            let annotation = updated.annotations[index]
+            guard annotation.remoteID == nil,
+                !annotation.isRemotePlaceholder,
+                annotation.createdAt < cutoff,
+                bookNoteIDs.noteID(connectionID: connectionID, bookID: book.stableId, localID: annotation.id) == nil,
+                EpubLocationBridge.epubCFIForProviderUpload(from: annotation.locator) != nil
+            else { continue }
+            do {
+                let record = try await provider.createRemoteAnnotation(for: book, annotation: annotation)
+                updated.annotations[index].remoteID = record.id
+                if let updatedAt = ReaderNotebookMerge.providerDate(record.updatedAt) {
+                    updated.annotations[index].updatedAt = updatedAt
+                }
+            } catch {
+                AppLogger.general.error("Failed to retry annotation upload bookDiagnosticID=\(bookDiagnosticID): \(error.localizedDescription)")
+                break
+            }
+        }
+        return updated
     }
 
     private func hydratingReadiumLocators(in snapshot: ReaderNotebookMerge.Snapshot) async -> ReaderNotebookMerge.Snapshot {
         guard activeReaderEngine?() == .readium,
             let fileURL = epubFileURL?(),
-            fileURL.pathExtension.caseInsensitiveCompare("epub") == .orderedSame
+            EbookFormat.from(fileExtension: fileURL.pathExtension) == .epub
         else {
             return snapshot
         }

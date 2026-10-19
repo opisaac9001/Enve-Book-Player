@@ -157,8 +157,9 @@ struct GlyphButton: View {
 
     var body: some View {
         Button(action: action) {
+            // Like system bar buttons, the large content viewer carries glyphs at accessibility sizes.
             Image(systemName: systemImage)
-                .font(.hearthUI(glyphSize, weight: .semibold))
+                .font(.system(size: glyphSize * Hearth.visionFactor, weight: .semibold))
                 .foregroundStyle(prominent ? hearth.readableOnEmber : hearth.text)
                 .frame(width: size, height: size)
                 .background {
@@ -177,10 +178,12 @@ struct GlyphButton: View {
                         )
                     }
                 }
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
         }
         .buttonStyle(PressableStyle())
-        .frame(minWidth: 44, minHeight: 44)
         .accessibilityLabel(label ?? systemImage)
+        .accessibilityShowsLargeContentViewer()
     }
 }
 

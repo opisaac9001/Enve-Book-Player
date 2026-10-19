@@ -11,6 +11,8 @@ struct HearthSeeAllScreen: View {
     let destination: HearthSeeAll
 
     @Environment(EnveEngine.self) private var engine
+    @Environment(\.profileSession) private var capturedSession
+    private var preferences: LibraryDisplayPreferencesStore { (capturedSession ?? .owner).preferences }
     @Environment(\.hearth) private var hearth
     @Environment(\.mantelInset) private var mantelInset
     @State private var books: [Book] = []
@@ -54,18 +56,19 @@ struct HearthSeeAllScreen: View {
         .background(HearthBackground())
         .hearthBackBar()
         .toolbarBackground(.hidden, for: .navigationBar)
-        .task { await load() }
+        .task(id: preferences.readingEnabled) { await load() }
     }
 
     private func load() async {
         switch destination.kind {
         case .reading:
-            books = await engine.library.continueReadingBooks(limit: 60)
+            books = preferences.readingEnabled ? await engine.library.continueReadingBooks(limit: 60) : []
         case .listening:
             books = await engine.library.continueListeningBooks(limit: 60)
         case .fresh:
             books = await engine.library.recentHearthBooks(limit: 60)
         }
+        books = books.filter(preferences.includesLibraryBook)
     }
 }
 

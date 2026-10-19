@@ -312,6 +312,55 @@ struct BookloreProgressClientTests {
         #expect(progress?.locator == locator)
     }
 
+    @Test func appEpubProgressWithoutCFIRestoresChapterFromBookDetail() async throws {
+        let (progress, paths) = try await fetchEpubProgress(
+            appEpubProgress: ["percentage": 42, "href": "OEBPS/Text/chapter03.xhtml"],
+            detailEpubProgress: [
+                "percentage": 42, "href": "OEBPS/Text/chapter03.xhtml", "contentSourceProgressPercent": 37.5,
+            ]
+        )
+
+        #expect(paths == ["/api/v1/app/books/42/progress", "/api/v1/books/42"])
+        #expect(progress?.progress == 0.42)
+        #expect(EpubLocationBridge.href(from: progress?.locator) == "OEBPS/Text/chapter03.xhtml")
+        #expect(EpubLocationBridge.totalProgression(from: progress?.locator) == 0.42)
+        #expect(EpubLocationBridge.canRestoreDirectly(progress?.locator))
+        let locations = try #require(Self.locations(progress?.locator))
+        #expect(locations["progression"] as? Double == 0.375)
+    }
+
+    @Test func bookDetailFileCFIWinsOverChapterProgression() async throws {
+        let (progress, _) = try await fetchEpubProgress(
+            appEpubProgress: ["percentage": 10, "href": "chapter.xhtml"],
+            detailEpubProgress: [
+                "percentage": 10, "href": "chapter.xhtml", "cfi": "epubcfi(/6/2!/4/2/2:0)",
+                "contentSourceProgressPercent": 50,
+            ]
+        )
+
+        #expect(EpubLocationBridge.epubCFI(from: progress?.locator) == "epubcfi(/6/2!/4/2/2:0)")
+        #expect(Self.locations(progress?.locator)?["progression"] == nil)
+    }
+
+    @Test func bookDetailFromAnotherChapterIsIgnored() async throws {
+        let (progress, _) = try await fetchEpubProgress(
+            appEpubProgress: ["percentage": 10, "href": "chapter.xhtml"],
+            detailEpubProgress: ["percentage": 10, "href": "other.xhtml", "contentSourceProgressPercent": 50]
+        )
+
+        #expect(progress?.progress == 0.1)
+        #expect(progress?.locator == nil)
+    }
+
+    @Test func appEpubCFISkipsTheBookDetailRequest() async throws {
+        let (_, paths) = try await fetchEpubProgress(
+            appEpubProgress: ["percentage": 10, "href": "chapter.xhtml", "cfi": "epubcfi(/6/2!/4/2/2:0)"],
+            detailEpubProgress: ["percentage": 10, "href": "chapter.xhtml", "contentSourceProgressPercent": 50]
+        )
+
+        #expect(paths == ["/api/v1/app/books/42/progress"])
+    }
+
     @Test func appComicProgressMapsServerPageToLocalPage() async throws {
         let fixture = Data(
             """
@@ -564,5 +613,56 @@ struct BookloreProgressClientTests {
         #expect(fileProgress["bookFileId"] as? Int == 108)
         #expect(fileProgress["positionData"] as? String == "5")
         #expect(fileProgress["progressPercent"] as? Double == 50)
+    }
+
+    private func fetchEpubProgress(
+        appEpubProgress: [String: Any],
+        detailEpubProgress: [String: Any]
+    ) async throws -> (ProviderEbookProgress?, [String]) {
+        let appFixture = try JSONSerialization.data(withJSONObject: [
+            "readStatus": "READING", "epubProgress": appEpubProgress,
+        ])
+        let detailFixture = try JSONSerialization.data(withJSONObject: [
+            "id": 42, "epubProgress": detailEpubProgress,
+        ])
+        var paths: [String] = []
+        let client = BookloreProgressClient(
+            makeRequest: { path in
+                URLRequest(url: URL(string: "https://example.invalid\(path)")!)
+            },
+            performAuthorizedRequest: { request in
+                let path = request.url!.path
+                paths.append(path)
+                return (
+                    path.hasSuffix("/progress") ? appFixture : detailFixture,
+                    HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                )
+            }
+        )
+        let book = Book(
+            id: "42",
+            title: "Chapter Fixture",
+            source: .booklore,
+            mediaType: .ebook,
+            providerId: UUID(),
+            libraryId: "tests"
+        )
+        let context = BookloreProgressClient.EbookProgressContext(
+            usesEpubProgress: true,
+            readProgress: nil,
+            readStatus: nil,
+            lastReadTime: nil,
+            pdfProgress: nil,
+            cbxProgress: nil
+        )
+        let progress = try await client.fetchEbookProgress(for: book, bookId: 42, context: context)
+        return (progress, paths)
+    }
+
+    private static func locations(_ locator: String?) -> [String: Any]? {
+        guard let data = locator?.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return json["locations"] as? [String: Any]
     }
 }

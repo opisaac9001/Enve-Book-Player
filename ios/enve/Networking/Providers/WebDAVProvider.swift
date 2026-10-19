@@ -131,6 +131,7 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
     }
 
     func validateConnection() async throws -> Bool {
+        try EnveProvenance.checkServerAddress(connection.url)
         let server = try await resolveServerConfig()
         AppLogger.network.info("Validating: \(server.baseURL.redacted)")
         AppLogger.network.info("Username: \(server.username ?? "<nil>")")

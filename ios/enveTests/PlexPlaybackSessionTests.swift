@@ -7,9 +7,13 @@ private final class PlexPlaybackTransportStub: PlexProvider, @unchecked Sendable
     var requests: [URLRequest] = []
     var status = 200
     var missingPart = false
+    var album = false
+    var laterMediaPart = false
+    var retryCounts: [Int] = []
 
     override func performDataTask(for request: URLRequest, retryCount: Int = 3) async throws -> (Data, URLResponse) {
         requests.append(request)
+        retryCounts.append(retryCount)
         let url = try #require(request.url)
         let metadata: [[String: Any]] = ["10", "30"].map { id in
             var item: [String: Any] = [
@@ -17,10 +21,12 @@ private final class PlexPlaybackTransportStub: PlexProvider, @unchecked Sendable
                 "key": "/library/metadata/\(id)",
                 "parentRatingKey": id == "10" ? "album-a" : "album-b",
                 "title": "Server title \(id)",
-                "type": "track",
+                "type": album && !url.path.hasSuffix("/children") ? "album" : "track",
                 "duration": 999000,
             ]
-            if !missingPart || id != "30" {
+            if laterMediaPart && id == "10" {
+                item["Media"] = [["Part": []], ["Part": [["key": "/library/parts/10/fresh.mp3"]]]]
+            } else if !missingPart || id != "30" {
                 item["Media"] = [["Part": [["key": "/library/parts/\(id)/fresh.mp3"]]]]
             }
             return item
@@ -84,6 +90,32 @@ struct PlexPlaybackSessionTests {
         await #expect(throws: (any Error).self) {
             try await provider.startPlaybackSession(for: makeBook())
         }
+    }
+
+    @Test func singleTrackRejectsUnsuccessfulMetadataAndUsesBoundedRetry() async {
+        let provider = makeProvider()
+        provider.status = 503
+        await #expect(throws: (any Error).self) {
+            try await provider.startPlaybackSession(for: Book(id: "10", title: "Fixture", source: .plex))
+        }
+        #expect(provider.retryCounts == [1])
+    }
+
+    @Test func albumRejectsMissingTrackInsteadOfShiftingTimeline() async {
+        let provider = makeProvider()
+        provider.album = true
+        provider.missingPart = true
+        await #expect(throws: (any Error).self) {
+            try await provider.startPlaybackSession(for: Book(id: "10", title: "Fixture", source: .plex))
+        }
+    }
+
+    @Test func playbackUsesLaterPlayableMediaVersion() async throws {
+        let provider = makeProvider()
+        provider.laterMediaPart = true
+        let session = try await provider.startPlaybackSession(for: Book(id: "10", title: "Fixture", source: .plex))
+        #expect(session.audioTracks.count == 1)
+        #expect(session.audioTracks.first?.contentUrl.contains("/library/parts/10/fresh.mp3") == true)
     }
 
     private func makeProvider() -> PlexPlaybackTransportStub {

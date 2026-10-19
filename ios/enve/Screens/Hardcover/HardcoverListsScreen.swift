@@ -46,6 +46,7 @@ struct HardcoverListsScreen: View {
         .scrollIndicators(.hidden)
         .background(HearthBackground())
         .toolbar(.hidden, for: .navigationBar)
+        .hearthInteractiveBack()
         .task { await hardcoverLoadLists() }
         .refreshable { await hardcoverLoadLists() }
     }
@@ -104,6 +105,7 @@ struct HardcoverListBooksScreen: View {
         .scrollIndicators(.hidden)
         .background(HearthBackground())
         .toolbar(.hidden, for: .navigationBar)
+        .hearthInteractiveBack()
         .task { await hardcoverLoadBooks() }
         .refreshable { await hardcoverLoadBooks() }
     }
