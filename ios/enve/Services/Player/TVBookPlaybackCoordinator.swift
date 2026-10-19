@@ -105,6 +105,7 @@ final class TVBookPlaybackCoordinator: BookPlaybackStarting, RestoredPlaybackPre
             )
             BookProgressStore.shared.saveRecentlyPlayed(previousBook)
             await sessionService.closeABSSession(
+                for: previousBook,
                 progress: controller.snapshot.position,
                 duration: controller.snapshot.duration
             )

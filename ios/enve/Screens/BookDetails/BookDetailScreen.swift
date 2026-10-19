@@ -5,17 +5,21 @@ struct BookDetailScreen: View {
     @Environment(\.profileSession) private var capturedSession
     private var profileSession: ProfileSession { capturedSession ?? .owner }
     let book: Book
+    var readingSequence: [String]? = nil
 
     @Environment(EnveEngine.self) private var engine
     @Environment(\.hearth) private var hearth
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.mantelInset) private var mantelInset
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.isPresented) private var isPresented
     private var savedBooks: SavedBooksStore { profileSession.savedBooks }
 
     @State private var live: Book?
     @State private var tint: Color = Hearth.accent
     @State private var counterpart: Book?
     @State private var inSeries: [Book] = []
+    @State private var comicSeries: BrowseSeriesAggregate?
     @State private var descriptionExpanded = false
     @State private var comicCredits: ComicCredits?
     @State private var showChapterEditor = false
@@ -26,6 +30,7 @@ struct BookDetailScreen: View {
     @State private var metadataTool: DetailMetadataTool?
     @State private var didAutoFetchChapters = false
     @State private var confirmDelete = false
+    @State private var confirmUnread = false
     @State private var workSummary: LibraryWorkSummary?
     @State private var bookOrbitCollectionsShown = false
     @State private var canManageBookOrbitCollections = false
@@ -119,7 +124,7 @@ struct BookDetailScreen: View {
                             .transition(.opacity.combined(with: .move(edge: .top)))
                     }
 
-                    if shown.isReadAloudBook {
+                    if shown.isReadAloudBook, profileSession.preferences.readingEnabled {
                         DetailReadAloudFormatsSection(book: shown, linkedAudiobook: counterpart, tint: tint)
                     }
 
@@ -172,6 +177,7 @@ struct BookDetailScreen: View {
         .navigationBarBackButtonHidden(true)
         .toolbar(.hidden, for: .navigationBar)
         .hearthInteractiveBack()
+        .hearthDismissGesture(.page, isEnabled: isPresented) { dismiss() }
         .animation(.smooth(duration: 0.35), value: shelf.message)
         .animation(.smooth(duration: 0.25), value: chapterFetcher.isFetching)
         .sheet(
@@ -259,6 +265,12 @@ struct BookDetailScreen: View {
         } message: {
             Text(separationError ?? "")
         }
+        .confirmationDialog("Mark as unread?", isPresented: $confirmUnread, titleVisibility: .visible) {
+            Button("Mark as unread", role: .destructive) { markUnread() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Your place in \"\(shown.title)\" goes back to the beginning wherever it syncs. Bookmarks, highlights, and downloads stay.")
+        }
     }
 
     private var personalRating: some View {
@@ -268,7 +280,7 @@ struct BookDetailScreen: View {
                 .tracking(1.4)
                 .foregroundStyle(hearth.textTertiary)
 
-            HStack(spacing: 6) {
+            HStack(spacing: 0) {
                 ForEach(1...5, id: \.self) { value in
                     Button {
                         setPersonalRating(value)
@@ -276,7 +288,7 @@ struct BookDetailScreen: View {
                         Image(systemName: value <= Int(shown.personalRating ?? 0) ? "star.fill" : "star")
                             .font(.hearthUI(25, weight: .semibold))
                             .foregroundStyle(value <= Int(shown.personalRating ?? 0) ? Hearth.accent : hearth.textTertiary)
-                            .frame(width: 34, height: 34)
+                            .frame(width: 44, height: 44)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -408,7 +420,11 @@ struct BookDetailScreen: View {
                 }
                 if let series = shown.seriesInfo {
                     NavigationLink {
-                        LibraryDetailListScreen(scope: .series(series.name))
+                        if let comicSeries {
+                            ComicSeriesScreen(aggregate: comicSeries, mediaScope: ["ebook"], filter: ComicSeriesFilter(), library: engine.library)
+                        } else {
+                            LibraryDetailListScreen(scope: .series(series.name))
+                        }
                     } label: {
                         let unit = shown.isComic ? "Issue" : "Book"
                         metaLink(series.sequence.map { "\(series.name) · \(unit) \($0)" } ?? series.name)
@@ -598,7 +614,10 @@ struct BookDetailScreen: View {
                 }
                 return
             }
-            engine.playback.openEbook(readTarget)
+            engine.playback.openEbook(readTarget, readingSequence: readingSequence)
+        }
+        if !profileSession.preferences.readingEnabled {
+            return !isEbook || counterpart != nil || alignedListenBook != nil ? [listen] : []
         }
         if isEbook {
             return counterpart != nil || alignedListenBook != nil ? [read, listen] : [read]
@@ -751,6 +770,18 @@ struct BookDetailScreen: View {
                 }
             }
 
+            if engine.library.canMarkUnread(shown) {
+                Button {
+                    if engine.library.markUnreadNeedsConfirmation(shown) {
+                        confirmUnread = true
+                    } else {
+                        markUnread()
+                    }
+                } label: {
+                    Label("Mark as unread", systemImage: "book.closed")
+                }
+            }
+
             Divider()
 
             Button(role: .destructive) {
@@ -824,6 +855,15 @@ struct BookDetailScreen: View {
         didAutoFetchChapters = true
         Task {
             await chapterFetcher.fetch(book: shown, library: engine.library, profileSession: profileSession)
+            await refresh()
+        }
+    }
+
+    private func markUnread() {
+        let book = shown
+        PlatformHaptics.impact(.light)
+        Task {
+            await engine.library.markUnread(book)
             await refresh()
         }
     }
@@ -949,7 +989,7 @@ struct BookDetailScreen: View {
                 Text(connection?.name ?? (shown.source == .local ? "On this device" : shown.source.rawValue.capitalized))
                     .font(.hearthUI(15, weight: .medium))
                     .foregroundStyle(hearth.text)
-                    .lineLimit(1)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
             }
         }
     }
@@ -1125,7 +1165,7 @@ struct BookDetailScreen: View {
             Text(chapterTitle(chapter, index: index))
                 .font(.hearthDisplay(15, weight: isCurrent ? .semibold : .regular))
                 .foregroundStyle(hearth.text)
-                .lineLimit(1)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
             Spacer(minLength: 8)
             if !isEbook {
                 Text(HearthFormat.clock(chapter.duration))
@@ -1175,6 +1215,7 @@ struct BookDetailScreen: View {
         tint = await AmbientColorStore(imageCache: profileSession.imageCache).resolve(for: fresh)
         counterpart = snapshot.counterpart
         inSeries = snapshot.inSeries
+        comicSeries = snapshot.book.isComic ? await engine.library.seriesAggregate(for: snapshot.book) : nil
         workSummary = snapshot.workSummary
     }
 }

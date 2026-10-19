@@ -46,7 +46,7 @@ final class PlayerStreamURLResolver {
         }
     }
 
-    func streamURL(for book: Book, backendOverride: BackendConfig? = nil) async throws -> URL? {
+    func streamURL(for book: Book, backendOverride: BackendConfig? = nil, opensABSSession: Bool = true) async throws -> URL? {
         let downloadKey = book.downloadKey
         AppLogger.player.debug(
             "Checking downloaded file bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: downloadKey))"
@@ -93,7 +93,7 @@ final class PlayerStreamURLResolver {
             }
         }
 
-        if let url = try await trySource(book: book, backendOverride: backendOverride) {
+        if let url = try await trySource(book: book, backendOverride: backendOverride, opensABSSession: opensABSSession) {
             return url
         }
 
@@ -104,7 +104,7 @@ final class PlayerStreamURLResolver {
         )
     }
 
-    private func trySource(book: Book, backendOverride: BackendConfig? = nil) async throws -> URL? {
+    private func trySource(book: Book, backendOverride: BackendConfig?, opensABSSession: Bool) async throws -> URL? {
         do {
             if book.source == .local, let filePath = book.filePath {
                 let fileURL = URL(fileURLWithPath: filePath)
@@ -127,14 +127,18 @@ final class PlayerStreamURLResolver {
                 }
             }
 
-            return try await remoteStreamURL(for: book, backendOverride: backendOverride)
+            return try await remoteStreamURL(for: book, backendOverride: backendOverride, opensABSSession: opensABSSession)
         } catch {
             AppLogger.player.error("Source \(book.source.rawValue) failed: \(error.localizedDescription)")
             return nil
         }
     }
 
-    func remoteStreamURL(for book: Book, backendOverride: BackendConfig? = nil) async throws -> URL? {
+    func remoteStreamURL(
+        for book: Book,
+        backendOverride: BackendConfig? = nil,
+        opensABSSession: Bool = true
+    ) async throws -> URL? {
         var effectiveSource = book.source
         let shouldResolveBackendSource =
             book.source == .audiobookshelf
@@ -432,10 +436,9 @@ final class PlayerStreamURLResolver {
             let libraryItemId = book.partKey ?? book.id
             let trackIndex = book.trackIndex ?? 0
 
-            if !profileSession.serverSyncEnabled {
-                let direct = try await audiobookshelfService.getStreamUrl(libraryItemId: libraryItemId,
-                    trackIndex: trackIndex, backend: backend)
-                return direct.map { Self.absStreamURLWithToken($0, backend: backend) }
+            // Any POST /play replaces this device's open ABS session, including the main player's.
+            if !opensABSSession || !profileSession.serverSyncEnabled {
+                return try await absFileURL(for: book, libraryItemId: libraryItemId, trackIndex: trackIndex, backend: backend)
             }
 
             let playSession = try await sessionService.startABSSession(for: book, startTime: 0)
@@ -836,6 +839,20 @@ final class PlayerStreamURLResolver {
             )
         }
         return streamUrl
+    }
+
+    private func absFileURL(for book: Book, libraryItemId: String, trackIndex: Int, backend: BackendConfig) async throws -> URL? {
+        var inos = book.audioFileInos ?? book.audioFileIno.map { [$0] } ?? []
+        if !inos.indices.contains(trackIndex) {
+            let item = try await audiobookshelfService.getLibraryItem(id: libraryItemId, backend: backend)
+            inos = (item.media?.audioFiles ?? [])
+                .filter { $0.exclude != true && $0.invalid != true }
+                .sorted { ($0.index ?? 0) < ($1.index ?? 0) }
+                .compactMap(\.ino)
+        }
+        guard inos.indices.contains(trackIndex), let baseURL = backend.baseURL else { return nil }
+        let url = baseURL.appendingPathComponent("api/items/\(libraryItemId)/file/\(inos[trackIndex])/download")
+        return Self.absStreamURLWithToken(url, backend: backend)
     }
 
     private static func absStreamURLWithToken(_ url: URL, backend: BackendConfig) -> URL {

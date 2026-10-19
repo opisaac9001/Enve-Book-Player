@@ -26,7 +26,7 @@ This repository contains both editions: the Swift app under [`ios/`](ios/) and t
 
 The public repository follows stable releases. Day-to-day development happens privately, so `main` is updated in reviewed, release-sized snapshots rather than carrying unfinished work.
 
-[Latest source changelog](CHANGELOG.md) — iOS 1.2.6 and Android 1.2 build 53.
+[Latest source changelog](CHANGELOG.md) — iOS 1.2.6 and Android 1.2 build 55.
 
 ## What it does
 
@@ -105,7 +105,7 @@ The complete iOS setup and signing notes are in [ios/DEVELOPMENT.md](ios/DEVELOP
 
 ### Android
 
-You need Android Studio, JDK 17 or newer, Android SDK 36, and Android NDK 27.2.12479018. Android 8.0 (API 26) is the minimum supported version.
+You need Android Studio, JDK 21, Android SDK 36, and Android NDK 27.2.12479018. Android 8.0 (API 26) is the minimum supported version.
 
 ```sh
 cd android

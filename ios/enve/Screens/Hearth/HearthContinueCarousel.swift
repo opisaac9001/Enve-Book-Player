@@ -68,6 +68,8 @@ struct HearthBookCard: View {
     var prominent = false
 
     @Environment(EnveEngine.self) private var engine
+    @Environment(\.profileSession) private var capturedSession
+    private var readingEnabled: Bool { (capturedSession ?? .owner).preferences.readingEnabled }
     @Environment(\.hearth) private var hearth
     @State private var tint: Color = Hearth.accent
     @State private var counterpart: Book?
@@ -213,7 +215,8 @@ struct HearthBookCard: View {
             Text(book.title)
                 .font(.hearthDisplay(prominent ? 22 : 17, weight: prominent ? .bold : .semibold))
                 .foregroundStyle(hearth.text)
-                .lineLimit(prominent ? 3 : 2)
+                .lineLimit(prominent ? nil : 2)
+                .minimumScaleFactor(0.8)
                 .multilineTextAlignment(.leading)
             if let byline {
                 Text(byline)
@@ -227,7 +230,7 @@ struct HearthBookCard: View {
                 .foregroundStyle(hearth.textSecondary)
                 .lineLimit(1)
         }
-        .frame(maxWidth: .infinity, minHeight: coverHeight, maxHeight: coverHeight, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: coverHeight, alignment: .topLeading)
     }
 
     private var positionBar: some View {
@@ -268,7 +271,10 @@ struct HearthBookCard: View {
 
     @ViewBuilder
     private var heroActions: some View {
-        if offersReadAndListen {
+        if !readingEnabled {
+            EmberButton(title: fraction > 0.001 ? "Continue listening" : "Start listening", systemImage: "play.fill", tint: tint, action: listen)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else if offersReadAndListen {
             HStack(spacing: 10) {
                 if isEbook {
                     actionButton("Read", systemImage: "book", filled: true, action: read)

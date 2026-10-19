@@ -233,6 +233,67 @@ struct ReaderTOCIndexTests {
         #expect(notifications == 3)
     }
 
+    @Test func entryStartsFallBackToEstimatedPositionsWithoutAPageList() throws {
+        let index = ReaderTOCIndex()
+        index.entries = [
+            entry(id: "a", title: "One", href: "OPS/ch1.xhtml"),
+            entry(id: "b", title: "Two", href: "OPS/ch2.xhtml"),
+        ]
+        let positions = [
+            [try locator(totalProgression: 0), try locator(totalProgression: 0.25)],
+            [try locator(totalProgression: 0.5), try locator(totalProgression: 0.75)],
+        ]
+        index.loadPositions(positions)
+        index.buildProgressions(
+            readingOrder: [Link(href: "OPS/ch1.xhtml"), Link(href: "OPS/ch2.xhtml")],
+            readingOrderPositions: positions
+        )
+
+        #expect(index.entryLengths.starts["a"] == ReaderTOCIndex.StartPage(label: "1", isEstimated: true))
+        #expect(index.entryLengths.starts["b"] == ReaderTOCIndex.StartPage(label: "3", isEstimated: true))
+        #expect(index.entryLengths.pages == ["a": 2, "b": 2])
+    }
+
+    @Test func entryStartsUsePublisherPageLabelsAndSkipFrontMatter() throws {
+        let index = ReaderTOCIndex()
+        index.entries = [
+            entry(id: "cover", title: "Cover", href: "OPS/cover.xhtml"),
+            entry(id: "a", title: "One", href: "OPS/ch1.xhtml"),
+            entry(id: "b", title: "Two", href: "OPS/ch2.xhtml"),
+        ]
+        index.loadPageMarkers([
+            ReaderTOCIndex.PageMarker(label: "ix", progression: 0.1),
+            ReaderTOCIndex.PageMarker(label: "1", progression: 0.4),
+            ReaderTOCIndex.PageMarker(label: "2", progression: 0.7),
+        ])
+        index.buildProgressions(
+            readingOrder: [Link(href: "OPS/cover.xhtml"), Link(href: "OPS/ch1.xhtml"), Link(href: "OPS/ch2.xhtml")],
+            readingOrderPositions: [
+                [try locator(totalProgression: 0)],
+                [try locator(totalProgression: 0.1)],
+                [try locator(totalProgression: 0.4)],
+            ]
+        )
+
+        #expect(index.entryLengths.starts["cover"] == nil)
+        #expect(index.entryLengths.starts["a"] == ReaderTOCIndex.StartPage(label: "ix", isEstimated: false))
+        #expect(index.entryLengths.starts["b"] == ReaderTOCIndex.StartPage(label: "1", isEstimated: false))
+        #expect(!index.entryLengths.isEstimated)
+    }
+
+    @Test func entriesWithoutAResolvedStartGetNoPageNumber() throws {
+        let index = ReaderTOCIndex()
+        index.entries = [
+            entry(id: "a", title: "One", href: "ch.xhtml#a"),
+            entry(id: "b", title: "Two", href: "ch.xhtml#b"),
+        ]
+        let positions = [[try locator(totalProgression: 0), try locator(totalProgression: 0.5)]]
+        index.loadPositions(positions)
+        index.buildProgressions(readingOrder: [Link(href: "ch.xhtml")], readingOrderPositions: positions)
+
+        #expect(index.entryLengths.starts.isEmpty)
+    }
+
     private func indexed() throws -> ReaderTOCIndex {
         let index = ReaderTOCIndex()
         index.entries = [

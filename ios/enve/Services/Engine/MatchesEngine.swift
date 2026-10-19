@@ -280,7 +280,7 @@ final class MatchesEngine {
         let backendOverride = book.source == .audiobookshelf ? audiobookshelfBackend : nil
         let url: URL
         do {
-            if let resolved = try await (profileSession?.playback.player ?? PlayerViewModel.shared).resolveStreamURL(for: book, backendOverride: backendOverride) {
+            if let resolved = try await (profileSession?.playback.player ?? PlayerViewModel.shared).resolveReadOnlyStreamURL(for: book, backendOverride: backendOverride) {
                 url = resolved
             } else if let fallback = try await previewFallbackURL(for: book) {
                 url = fallback
@@ -312,7 +312,10 @@ final class MatchesEngine {
     }
 
     private func previewFallbackURL(for book: Book) async throws -> URL? {
-        guard let provider = appState.providerConnections.capability(PlaybackSessionProvider.self, for: book) else {
+        // An ABS playback session would replace the main player's session on the server.
+        guard book.source != .audiobookshelf,
+            let provider = appState.providerConnections.capability(PlaybackSessionProvider.self, for: book)
+        else {
             return nil
         }
         let session = try await provider.startPlaybackSession(for: book)

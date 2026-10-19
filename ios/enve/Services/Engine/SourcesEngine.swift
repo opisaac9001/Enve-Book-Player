@@ -16,6 +16,7 @@ struct LibrarySourceLibrarySummary: Identifiable, Sendable {
     let id: String
     let providerId: UUID
     let name: String
+    var isComic = false
 
     var uniqueId: String { "\(providerId)_\(id)" }
 }
@@ -93,7 +94,8 @@ final class SourcesEngine {
             librariesByKey[library.uniqueId] = LibrarySourceLibrarySummary(
                 id: library.id,
                 providerId: library.providerId,
-                name: library.name
+                name: library.name,
+                isComic: ["comic", "manga"].contains(library.type.lowercased())
             )
         }
 
@@ -183,6 +185,7 @@ final class SourcesEngine {
         case .storyteller: StorytellerLoginDelegate(profileSession: profileSession ?? .owner)
         case .booklore: GrimmoryLoginDelegate(appState: appState, profileSession: profileSession ?? .owner)
         case .bookOrbit: BookOrbitLoginDelegate(appState: appState, profileSession: profileSession ?? .owner)
+        case .silo: SiloLoginDelegate(appState: appState, profileSession: profileSession ?? .owner)
         case .webdav: ValidatedConnectionLoginDelegate(appState: appState, providerType: .webdav, defaultName: "WebDAV", profileSession: profileSession ?? .owner)
         case .torbox: ValidatedConnectionLoginDelegate(appState: appState, providerType: .torbox, defaultName: "TorBox", profileSession: profileSession ?? .owner)
         case .komga: KomgaLoginDelegate(appState: appState, profileSession: profileSession ?? .owner)

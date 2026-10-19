@@ -185,14 +185,7 @@ private struct WorkerFixture {
     let store: SwiftDataBookStore
 
     init() throws {
-        let schema = Schema([
-            BookRecord.self,
-            MediaProgressRecord.self,
-            LinkedBookPairRecord.self,
-            BookmarkRecord.self,
-            AnnotationRecord.self,
-            ChapterCacheRecord.self,
-        ])
+        let schema = Schema(versionedSchema: BookStoreSchemaV2.self)
         let configuration = ModelConfiguration(
             "RecentlyPlayedSyncServiceTests-\(UUID().uuidString)",
             schema: schema,

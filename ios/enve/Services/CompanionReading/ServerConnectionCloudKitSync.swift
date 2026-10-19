@@ -60,7 +60,11 @@ final class ServerConnectionCloudKitSync {
         await ensureZone()
         do {
             let record = makeRecord(for: connection)
-            _ = try await database.save(record)
+            // A freshly built record carries no change tag, so only an all-keys save can replace an existing one.
+            let (saveResults, _) = try await database.modifyRecords(saving: [record], deleting: [], savePolicy: .allKeys)
+            if case .failure(let error) = saveResults[record.recordID] {
+                throw error
+            }
             status = .lastSyncedAt(Date())
         } catch {
             AppLogger.sync.warning("[CKSync] Failed to push \(connection.id): \(error.localizedDescription)")
@@ -156,9 +160,8 @@ final class ServerConnectionCloudKitSync {
         if let username = connection.username { record["username"] = username as CKRecordValue }
         if let userId = connection.userId { record["userId"] = userId as CKRecordValue }
         if let rootPath = connection.rootPath { record["rootPath"] = rootPath as CKRecordValue }
-        if let selectedLibraryIds = connection.selectedLibraryIds {
-            record["selectedLibraryIds"] = Array(selectedLibraryIds) as CKRecordValue
-        }
+        // An empty list is the "all libraries" state; omitting the key would leave an older selection on the server.
+        record["selectedLibraryIds"] = Array(connection.selectedLibraryIds ?? []) as CKRecordValue
         let publicCustomHeaders = connection.publicCustomHeadersForPersistence() ?? [:]
         if let data = try? JSONEncoder().encode(publicCustomHeaders) {
             record["customHeadersJSON"] = data as CKRecordValue
@@ -193,7 +196,7 @@ final class ServerConnectionCloudKitSync {
         connection.username = record["username"] as? String
         connection.userId = record["userId"] as? String
         connection.rootPath = record["rootPath"] as? String
-        if let libraryIds = record["selectedLibraryIds"] as? [String] {
+        if let libraryIds = record["selectedLibraryIds"] as? [String], !libraryIds.isEmpty {
             connection.selectedLibraryIds = Set(libraryIds)
         }
         if let data = record["customHeadersJSON"] as? Data,
@@ -233,8 +236,9 @@ final class ServerConnectionCloudKitSync {
         var merged: [ServerConnection] = []
         for remote in fetched {
             if let local = existingById[remote.id] {
-
-                merged.append(mergeSecrets(from: local, into: remote))
+                var combined = mergeSecrets(from: local, into: remote)
+                combined.knownLibraryIds = local.knownLibraryIds
+                merged.append(combined)
             } else {
                 merged.append(remote)
             }

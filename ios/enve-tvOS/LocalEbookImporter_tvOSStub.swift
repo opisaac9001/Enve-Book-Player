@@ -82,6 +82,35 @@ final class LocalEbookImporter: @unchecked Sendable {
         nil
     }
 
+    func offlineEbookURL(for book: Book) -> URL? {
+        guard let url = resolveExistingLocalEbookURL(
+            bookIdentifier: book.id,
+            ebookFileURL: book.ebookFileURL,
+            filePath: book.source == .local ? book.filePath : nil
+        ) else { return nil }
+        let path = url.resolvingSymlinksInPath().standardizedFileURL.path
+        if book.source == .local {
+            guard storage.profileID == FamilyProfile.ownerID || path.hasPrefix(
+                storage.documentsDirectory.resolvingSymlinksInPath().standardizedFileURL.path + "/"
+            ) else { return nil }
+            return url
+        }
+        let root = serverEbooksRoot.resolvingSymlinksInPath().standardizedFileURL.path
+        return path.hasPrefix(root + "/") ? url : nil
+    }
+
+    struct OfflineAvailability: Sendable {
+        let importer: LocalEbookImporter
+
+        func existingBooks(in books: [Book]) async -> [Book] {
+            books.filter { importer.offlineEbookURL(for: $0) != nil }
+        }
+    }
+
+    func offlineAvailability() async -> OfflineAvailability {
+        OfflineAvailability(importer: self)
+    }
+
     func cachedReadaloudEpub(forBookId bookId: String) -> URL? {
         nil
     }

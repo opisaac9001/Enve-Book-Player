@@ -6,6 +6,7 @@ The root [architecture guide](../../ARCHITECTURE.md) defines source ownership an
 |---|---|
 | [Deduplication](deduplication.md) | Work grouping, edition selection, and merge behavior |
 | [Download ownership](download-ownership.md) | Queue persistence, destination filesystem, and archive staging owners |
+| [Comic library and reading cache](comic-library.md) | Offline availability, comic series hierarchy, reader return behavior, and bounded reading caches |
 | [Identity contract](identity-contract.md) | Stable IDs and identity across providers, formats, and persistence |
 | [Profiles implementation plan](profiles-plan.md) | Proposed adult and child profiles, storage isolation, migration, switching, and verification |
 | [OPDS Authentication](opds-authentication.md) | Discovery, flows, token storage and retry for OPDS Authentication 1.0 |

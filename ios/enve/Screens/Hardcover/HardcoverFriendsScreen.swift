@@ -55,6 +55,7 @@ struct HardcoverFriendsScreen: View {
         .scrollIndicators(.hidden)
         .background(HearthBackground())
         .toolbar(.hidden, for: .navigationBar)
+        .hearthInteractiveBack()
         .task { await hardcoverLoadFriends() }
         .refreshable { await hardcoverLoadFriends() }
     }

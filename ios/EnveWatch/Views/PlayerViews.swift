@@ -47,7 +47,7 @@ struct LocalPlayerView: View {
                     Button {
                         showSpeed = true
                     } label: {
-                        Text(String(format: "%.2g×", player.speed))
+                        Text(String(format: "%g×", player.speed))
                             .font(.system(size: 12, weight: .semibold))
                     }
                     .buttonStyle(.plain)
@@ -141,7 +141,7 @@ struct RemotePlayerView: View {
                     Button {
                         showSpeed = true
                     } label: {
-                        Text(String(format: "%.2g×", state.speed))
+                        Text(String(format: "%g×", state.speed))
                             .font(.system(size: 12, weight: .semibold))
                     }
                     .buttonStyle(.plain)
@@ -277,7 +277,7 @@ struct SpeedSheet: View {
                 dismiss()
             } label: {
                 HStack {
-                    Text(String(format: "%.2g×", speed))
+                    Text(String(format: "%g×", speed))
                     if abs(speed - current) < 0.01 {
                         Spacer()
                         Image(systemName: "checkmark")

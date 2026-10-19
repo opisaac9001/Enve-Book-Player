@@ -37,7 +37,7 @@ public class PlayerSessionService {
         }
 
         let session = try await audiobookshelfService.startPlaySession(
-            libraryItemId: book.partKey ?? book.id,
+            libraryItemId: Self.libraryItemId(for: book),
             episodeId: nil,
             backend: backend,
             forceDirectPlay: true
@@ -53,8 +53,21 @@ public class PlayerSessionService {
         return session
     }
 
-    public func syncABSSession(progress: TimeInterval, duration: TimeInterval, timeListened: TimeInterval) async {
-        guard serverSyncEnabled(), let backend = currentBackend, duration > 0 else { return }
+    func ownsABSSession(for book: Book?) -> Bool {
+        guard currentABSSessionId != nil, let book, let sessionBook = currentBook else { return false }
+        return Self.libraryItemId(for: sessionBook) == Self.libraryItemId(for: book)
+            && sessionBook.backendId == book.backendId
+    }
+
+    /// Returns false when the listening time certainly never reached the server and should be sent again.
+    /// Progress for any book other than the session's own is dropped.
+    @discardableResult
+    public func syncABSSession(for book: Book?, progress: TimeInterval, duration: TimeInterval, timeListened: TimeInterval) async -> Bool {
+        guard serverSyncEnabled(), let backend = currentBackend, duration > 0 else { return true }
+        if currentABSSessionId != nil, !ownsABSSession(for: book) {
+            AppLogger.player.warning("Dropped ABS session sync for a book the session does not belong to")
+            return true
+        }
 
         if let sessionId = currentABSSessionId {
             do {
@@ -69,14 +82,17 @@ public class PlayerSessionService {
             } catch {
                 AppLogger.player.error("Session sync failed, trying direct update: \(error.localizedDescription)")
                 await updateProgressDirectly(progress: progress, duration: duration, backend: backend)
+                return !AudiobookshelfProvider.requestNeverReachedServer(error)
             }
         } else {
             await updateProgressDirectly(progress: progress, duration: duration, backend: backend)
         }
+        return true
     }
 
-    public func closeABSSession(progress: TimeInterval, duration: TimeInterval) async {
-        guard serverSyncEnabled() else {
+    public func closeABSSession(for book: Book?, progress: TimeInterval, duration: TimeInterval) async {
+        // A session for another book is forgotten rather than closed with this book's position.
+        guard serverSyncEnabled(), currentABSSessionId == nil || ownsABSSession(for: book) else {
             currentABSSessionId = nil
             lastServerCurrentTime = nil
             lastSession = nil
@@ -120,10 +136,9 @@ public class PlayerSessionService {
 
     private func updateProgressDirectly(progress: TimeInterval, duration: TimeInterval, backend: BackendConfig) async {
         guard serverSyncEnabled(), let book = currentBook else { return }
-        let libraryItemId = book.partKey ?? book.id
         do {
             try await audiobookshelfService.updateProgress(
-                libraryItemId: libraryItemId,
+                libraryItemId: Self.libraryItemId(for: book),
                 currentTime: progress,
                 duration: duration,
                 backend: backend
@@ -132,6 +147,10 @@ public class PlayerSessionService {
         } catch {
             AppLogger.player.error("Direct progress update failed: \(error.localizedDescription)")
         }
+    }
+
+    private static func libraryItemId(for book: Book) -> String {
+        book.partKey ?? book.id
     }
 
     public func syncHardcoverProgress(book: Book, progress: Double) async {

@@ -29,14 +29,12 @@ final class EbookTTSService: NSObject, ObservableObject {
     @Published var isPlaying = false
     @Published var isPaused = false
     @Published var currentUtteranceText: String = ""
-    @Published var rate: Float = 1.0 {
+    @Published var rate: Float {
         didSet {
-            rate = Self.clampedRate(rate)
-            appleEngine?.currentRate = rate
-            supertonicEngine?.currentRate = rate
-            kokoroEngine?.currentRate = rate
-            userDefaults.set(Double(rate), forKey: Self.rateDefaultsKey)
-            updateNowPlayingInfo()
+            let validated = Self.validatedRate(rate) ?? oldValue
+            if validated != rate { rate = validated }
+            guard validated != oldValue else { return }
+            scheduleRateCommit()
         }
     }
     @Published var selectedVoiceIdentifier: String?
@@ -54,19 +52,28 @@ final class EbookTTSService: NSObject, ObservableObject {
     private var supertonicEngine: SupertonicTTSEngine?
     private var kokoroEngine: KokoroTTSEngine?
     private let startAnchor = EbookTTSStartAnchor()
+    private var playbackGeneration = 0
+    private var needsInitialStart = false
+    private var pendingStartLocator: Locator?
     private var modelDownloadTask: Task<Void, Never>?
     private var paragraphPrewarmTask: Task<Void, Never>?
     private var nowPlayingTitle: String?
     private var nowPlayingAuthor: String?
     private var nowPlayingArtworkURL: URL?
     private var nowPlayingContentIdentifier: String?
+    private var rateCommitTask: Task<Void, Never>?
+    private var cachedVoices: [TTSVoice]?
+    private var voicesChangeObserver: AnyCancellable?
     #if !targetEnvironment(macCatalyst)
     private var liveActivity: EbookTTSActivityHandle?
     #endif
     private let userDefaults: UserDefaults
 
     var availableVoices: [TTSVoice] {
-        RateAwareAVTTSEngineDelegate.supportedVoices()
+        if let cachedVoices { return cachedVoices }
+        let voices = RateAwareAVTTSEngineDelegate.supportedVoices()
+        cachedVoices = voices
+        return voices
     }
 
     var availableLanguages: [Language] {
@@ -115,13 +122,16 @@ final class EbookTTSService: NSObject, ObservableObject {
             ?? "Book Language"
     }
 
-    override init() {
-        self.userDefaults = .standard
+    init(userDefaults: UserDefaults = .standard) {
+        self.userDefaults = userDefaults
+        let savedRate = (userDefaults.object(forKey: Self.rateDefaultsKey) as? Double).map(Float.init)
+        _rate = Published(initialValue: savedRate.flatMap(Self.validatedRate) ?? 1.0)
         super.init()
 
-        if let savedRate = userDefaults.object(forKey: Self.rateDefaultsKey) as? Double {
-            rate = Self.clampedRate(Float(savedRate))
-        }
+        voicesChangeObserver = NotificationCenter.default
+            .publisher(for: AVSpeechSynthesizer.availableVoicesDidChangeNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.cachedVoices = nil }
         selectedVoiceIdentifier = userDefaults.string(forKey: Self.voiceDefaultsKey)
         preferredLanguageIdentifier = userDefaults.string(forKey: Self.languageDefaultsKey)
         enhancedVoice =
@@ -166,21 +176,37 @@ final class EbookTTSService: NSObject, ObservableObject {
     }
 
     func startSpeaking(from locator: Locator? = nil) {
+        startSpeaking(from: locator, pauseAfterStart: false)
+    }
+
+    private func startSpeaking(from locator: Locator?, pauseAfterStart: Bool) {
         if synthesizer == nil, publication != nil {
             rebuildSynthesizer(resumeFrom: nil, shouldResume: false, shouldPauseAfterResume: false)
         }
-        guard let synth = synthesizer else { return }
-        activateAudioSession()
+        guard synthesizer != nil else { return }
         NowPlayingCoordinator.shared.setActive(self)
         startAnchor.prepare(fragment: locator?.text.highlight)
-        synth.start(from: locator)
+        needsInitialStart = true
+        pendingStartLocator = locator
         isPlaying = true
         isPaused = false
-        updateNowPlayingInfo()
-        updateLiveActivity()
+        activateAudioSession { [weak self] in
+            guard let self, let synth = self.synthesizer else { return }
+            synth.start(from: locator)
+            self.needsInitialStart = false
+            self.pendingStartLocator = nil
+            self.isPlaying = true
+            self.isPaused = false
+            self.updateNowPlayingInfo()
+            self.updateLiveActivity()
+            if pauseAfterStart {
+                self.pause()
+            }
+        }
     }
 
     func pause() {
+        cancelPendingStart()
         synthesizer?.pause()
         paragraphPrewarmTask?.cancel()
         isPaused = true
@@ -190,16 +216,27 @@ final class EbookTTSService: NSObject, ObservableObject {
     }
 
     func resume() {
-        activateAudioSession()
-        NowPlayingCoordinator.shared.setActive(self)
-        synthesizer?.resume()
-        isPaused = false
+        if needsInitialStart {
+            startSpeaking(from: pendingStartLocator)
+            return
+        }
         isPlaying = true
-        updateNowPlayingInfo()
-        updateLiveActivity()
+        isPaused = false
+        NowPlayingCoordinator.shared.setActive(self)
+        activateAudioSession { [weak self] in
+            guard let self else { return }
+            self.synthesizer?.resume()
+            self.isPaused = false
+            self.isPlaying = true
+            self.updateNowPlayingInfo()
+            self.updateLiveActivity()
+        }
     }
 
     func stop() {
+        cancelPendingStart()
+        needsInitialStart = false
+        pendingStartLocator = nil
         synthesizer?.stop()
         paragraphPrewarmTask?.cancel()
         isPlaying = false
@@ -229,7 +266,28 @@ final class EbookTTSService: NSObject, ObservableObject {
     }
 
     func setRate(_ newRate: Float) {
-        rate = Self.clampedRate(newRate)
+        rate = newRate
+        commitRate()
+    }
+
+    func commitRate() {
+        rateCommitTask?.cancel()
+        rateCommitTask = nil
+        appleEngine?.currentRate = rate
+        supertonicEngine?.currentRate = rate
+        kokoroEngine?.currentRate = rate
+        guard userDefaults.object(forKey: Self.rateDefaultsKey) as? Double != Double(rate) else { return }
+        userDefaults.set(Double(rate), forKey: Self.rateDefaultsKey)
+        updateNowPlayingInfo()
+    }
+
+    private func scheduleRateCommit() {
+        rateCommitTask?.cancel()
+        rateCommitTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            self?.commitRate()
+        }
     }
 
     func setEngineChoice(_ choice: EbookTTSEngineChoice) {
@@ -398,6 +456,10 @@ final class EbookTTSService: NSObject, ObservableObject {
     }
 
     func tearDown() {
+        commitRate()
+        cancelPendingStart()
+        needsInitialStart = false
+        pendingStartLocator = nil
         synthesizer?.delegate = nil
         synthesizer?.stop()
         paragraphPrewarmTask?.cancel()
@@ -427,29 +489,41 @@ final class EbookTTSService: NSObject, ObservableObject {
         return Language(code: .bcp47(preferredLanguageIdentifier))
     }
 
-    private static func clampedRate(_ rate: Float) -> Float {
-        min(max(rate, 0.5), 3.0)
+    static let rateRange: ClosedRange<Float> = 0.5...3.0
+
+    private static func validatedRate(_ rate: Float) -> Float? {
+        guard rate.isFinite else { return nil }
+        return min(max(rate, rateRange.lowerBound), rateRange.upperBound)
     }
 
-    private func activateAudioSession() {
-        do {
+    private func activateAudioSession(then start: @escaping @MainActor @Sendable () -> Void) {
+        playbackGeneration &+= 1
+        let generation = playbackGeneration
+        AudioSessionQueue.perform {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(
-                .playback,
-                mode: .spokenAudio,
-                policy: .longFormAudio,
-                options: [.allowAirPlay, .allowBluetoothA2DP]
-            )
-            try session.setActive(true)
-        } catch {
             do {
-                let session = AVAudioSession.sharedInstance()
-                try session.setCategory(.playback, mode: .spokenAudio)
+                try session.setCategory(
+                    .playback,
+                    mode: .spokenAudio,
+                    policy: .longFormAudio,
+                    options: [.allowAirPlay, .allowBluetoothA2DP]
+                )
                 try session.setActive(true)
             } catch {
-                AppLogger.library.error("Ebook narration audio session failed: \(error)")
+                try session.setCategory(.playback, mode: .spokenAudio)
+                try session.setActive(true)
             }
+        } completion: { [weak self] failure in
+            guard let self, self.playbackGeneration == generation else { return }
+            if let failure {
+                AppLogger.library.error("Ebook narration audio session failed: \(failure)")
+            }
+            start()
         }
+    }
+
+    private func cancelPendingStart() {
+        playbackGeneration &+= 1
     }
 
     private func updateNowPlayingInfo() {
@@ -621,6 +695,9 @@ final class EbookTTSService: NSObject, ObservableObject {
     ) {
         guard let publication else { return }
 
+        cancelPendingStart()
+        needsInitialStart = false
+        pendingStartLocator = nil
         synthesizer?.delegate = nil
         synthesizer?.stop()
         paragraphPrewarmTask?.cancel()
@@ -669,10 +746,7 @@ final class EbookTTSService: NSObject, ObservableObject {
         }
 
         guard shouldResume else { return }
-        startSpeaking(from: locator)
-        if shouldPauseAfterResume {
-            pause()
-        }
+        startSpeaking(from: locator, pauseAfterStart: shouldPauseAfterResume)
     }
 
     private static let paragraphTokenizerFactory: PublicationSpeechSynthesizer.TokenizerFactory = {

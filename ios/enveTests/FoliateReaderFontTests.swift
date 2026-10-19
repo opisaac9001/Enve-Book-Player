@@ -21,6 +21,8 @@ struct FoliateReaderFontTests {
         #expect(css.contains("font-weight: 400;"))
         #expect(css.contains("font-weight: 700;"))
         #expect(css.contains("data:font/otf;base64,"))
+        #expect(css.components(separatedBy: "font-family: 'Enve OpenDyslexic';").count - 1 == 4)
+        #expect(!css.contains("font-family: 'OpenDyslexic';"))
     }
 
     @Test func importsUploadedFontForReadiumAndFoliate() throws {

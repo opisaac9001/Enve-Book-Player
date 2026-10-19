@@ -21,43 +21,28 @@ final class PlexDownloadPlanProvider: DownloadPlanProviding {
         task: BookDownloadTask,
         book: Book
     ) async throws {
-        let connection = resolveConnection(for: book, from: service.providerConnections.connections)
-        let serverURL = connection?.url ?? PlexAuthStore.shared.loadServerUrl()
-        let token = connection?.token ?? PlexAuthStore.shared.tokenForServerRequests()
-
-        guard let serverURL, let token else {
-            throw UnifiedDownloadService.DownloadError.missingCredentials(
-                "Plex credentials not found. Please ensure the server is connected."
-            )
-        }
-
-        let streamPath = normalizedStreamPath(book.partKey ?? book.id)
-        guard var components = URLComponents(string: serverURL) else {
-            throw UnifiedDownloadService.DownloadError.invalidURL
-        }
-        components.path = streamPath
-        components.queryItems = [
-            URLQueryItem(name: "download", value: "1"),
-            URLQueryItem(name: "X-Plex-Token", value: token),
-        ]
-        guard let url = components.url else {
-            throw UnifiedDownloadService.DownloadError.invalidURL
-        }
-
-        var request = URLRequest(url: url)
-        request.setValue(token, forHTTPHeaderField: "X-Plex-Token")
-        AppLogger.network.debug(
-            "Plex download diagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId)) pathKind=\(pathKind(book.partKey ?? book.id))"
-        )
-        await service.startURLSessionDownload(taskId: task.id, bookId: task.bookId, request: request)
+        try await service.downloadAudiobookViaProvider(task: task, book: book)
     }
 
-    private static func resolveConnection(
+    static func requests(
         for book: Book,
-        from connections: [ServerConnection]
-    ) -> ServerConnection? {
-        let connected = connections.filter { $0.type == .plex && $0.isConnected }
-        return connected.first(where: { $0.id == book.providerId }) ?? connected.first
+        provider: any PlaybackSessionProvider
+    ) async throws -> [(request: URLRequest, mimeType: String?)] {
+        try Task.checkCancellation()
+        let session = try await provider.startPlaybackSession(for: book)
+        try Task.checkCancellation()
+        guard !session.audioTracks.isEmpty else { throw UnifiedDownloadService.DownloadError.invalidURL }
+        let headers = provider.getStreamingHeaders()
+        return try session.audioTracks.sorted {
+            $0.startOffset == $1.startOffset ? $0.index < $1.index : $0.startOffset < $1.startOffset
+        }.map { track in
+            guard let url = URL(string: track.contentUrl),
+                ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host != nil
+            else { throw UnifiedDownloadService.DownloadError.invalidURL }
+            var request = URLRequest(url: url)
+            for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
+            return (request, track.mimeType)
+        }
     }
 
     static func normalizedStreamPath(_ partKey: String) -> String {
@@ -73,10 +58,4 @@ final class PlexDownloadPlanProvider: DownloadPlanProviding {
         return partKey.hasPrefix("/") ? partKey : "/\(partKey)"
     }
 
-    private static func pathKind(_ partKey: String) -> String {
-        if partKey.hasPrefix("/library/parts/") { return "absolute" }
-        if partKey.hasPrefix("library/parts/") { return "relative" }
-        if partKey.allSatisfy(\.isNumber) { return "numeric" }
-        return "other"
-    }
 }

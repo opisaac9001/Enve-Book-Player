@@ -4,7 +4,6 @@ struct SettingsScreen: View {
     @Environment(EnveEngine.self) private var engine
     @Environment(\.hearth) private var hearth
     @Environment(\.mantelInset) private var mantelInset
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.profileSession) private var profileSession
     @Environment(ProfileSwitchCoordinator.self) private var profiles
 
@@ -40,7 +39,7 @@ struct SettingsScreen: View {
             }
             .padding(.horizontal, 24)
             .padding(.top, 8)
-            .padding(.bottom, mantelInset + 16)
+            .padding(.bottom, 16)
         }
         .accessibilityIdentifier("settings-screen")
         .scrollIndicators(.hidden)
@@ -74,7 +73,7 @@ struct SettingsScreen: View {
 
     private var header: some View {
         HStack(alignment: .top, spacing: 14) {
-            GlyphButton(systemImage: "chevron.left", size: 40, glyphSize: 15, label: "Back") { dismiss() }
+            SettingsBackButton()
             VStack(alignment: .leading, spacing: 6) {
                 Overline("Sources & settings")
                 Text("Settings")
@@ -223,12 +222,15 @@ struct SettingsScreen: View {
                             Image(systemName: "xmark.circle.fill")
                                 .font(.hearthUI(16))
                                 .foregroundStyle(hearth.textTertiary)
+                                .frame(minWidth: 44, minHeight: 44)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("Clear search")
                     }
                 }
-                .padding(.horizontal, 15)
+                .padding(.leading, 15)
+                .padding(.trailing, searchText.isEmpty ? 15 : 3)
                 .frame(minHeight: 50)
                 .background {
                     Capsule()
@@ -237,8 +239,12 @@ struct SettingsScreen: View {
                         .shadow(color: .black.opacity(0.12), radius: 14, y: 5)
                 }
 
-                Button("Done") {
+                Button {
                     dismissSearch()
+                } label: {
+                    Text("Done")
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
                 }
                 .font(.hearthUI(14, weight: .semibold))
                 .foregroundStyle(hearth.ember)
@@ -254,7 +260,7 @@ struct SettingsScreen: View {
                     }
                 } label: {
                     Image(systemName: "magnifyingglass")
-                        .font(.hearthUI(18, weight: .semibold))
+                        .font(.system(size: 18 * Hearth.visionFactor, weight: .semibold))
                         .foregroundStyle(hearth.text)
                         .frame(width: 52, height: 52)
                         .background {
@@ -266,6 +272,7 @@ struct SettingsScreen: View {
                 }
                 .buttonStyle(PressableStyle())
                 .accessibilityLabel("Search settings")
+                .accessibilityShowsLargeContentViewer()
             }
             .transition(.scale(scale: 0.8, anchor: .trailing).combined(with: .opacity))
         }
@@ -878,7 +885,7 @@ private struct SettingsSearchItem: Identifiable {
         item(.sources, "Sources & servers", "Connections and server libraries", "server.rack", "add source smb plex jellyfin emby audiobookshelf komga kavita booklore silo bookorbit"),
         item(.opds, "OPDS catalogue", "Browse a feed, search it, and download", "tray.and.arrow.down.fill", "catalog feed opds search"),
         item(.video, "Video player", "The companion video app", "play.tv.fill", "plex movies television"),
-        item(.libraryDisplay, "Library display", "Cards, titles, and grouping", "text.book.closed.fill", "covers shelves sort"),
+        item(.libraryDisplay, "Library display", "Cards, titles, and grouping", "text.book.closed.fill", "covers shelves sort audiobooks only reading"),
         item(.metadataMatching, "Bulk metadata matching", "Match an entire library", "wand.and.stars", "google books comicvine isbn"),
         item(.pendingMatches, "Pending matches", "Review uncertain metadata", "checklist", "metadata review"),
         item(.collections, "Collections", "Smart and handmade shelves", "rectangle.stack.fill", "groups shelves"),
@@ -938,6 +945,7 @@ private struct SettingsSourceRow: View {
     let bookCount: Int?
 
     @Environment(\.hearth) private var hearth
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         HStack(spacing: 12) {
@@ -946,7 +954,7 @@ private struct SettingsSourceRow: View {
                 Text(connection.name)
                     .font(.hearthBody.weight(.medium))
                     .foregroundStyle(hearth.text)
-                    .lineLimit(1)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                 Text(URL(string: connection.url)?.host ?? connection.url)
                     .font(.hearthCaption)
                     .foregroundStyle(hearth.textSecondary)
@@ -979,6 +987,7 @@ private struct SettingsSMBRow: View {
     let onDelete: () -> Void
 
     @Environment(\.hearth) private var hearth
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var isScanning = false
 
     var body: some View {
@@ -988,11 +997,11 @@ private struct SettingsSMBRow: View {
                 Text(source.name)
                     .font(.hearthBody.weight(.medium))
                     .foregroundStyle(hearth.text)
-                    .lineLimit(1)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                 Text("\(source.hostname)/\(source.shareName)")
                     .font(.hearthCaption)
                     .foregroundStyle(hearth.textSecondary)
-                    .lineLimit(1)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
             }
             Spacer()
             if isScanning {

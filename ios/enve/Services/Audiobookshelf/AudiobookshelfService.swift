@@ -210,6 +210,7 @@ public final class AudiobookshelfService: @unchecked Sendable {
     }
 
     func login(username: String, password: String, serverURL: String) async throws -> ABSUser {
+        try EnveProvenance.checkServerAddress(serverURL)
         guard let baseURL = URL(string: serverURL) else {
             throw AudiobookshelfError.invalidURL
         }
@@ -265,6 +266,7 @@ public final class AudiobookshelfService: @unchecked Sendable {
     }
 
     func login(username: String, password: String, serverURL: String, customHeaders: [String: String]) async throws -> ABSUser {
+        try EnveProvenance.checkServerAddress(serverURL)
         guard let baseURL = URL(string: serverURL) else {
             throw AudiobookshelfError.invalidURL
         }
@@ -546,6 +548,7 @@ public final class AudiobookshelfService: @unchecked Sendable {
 
         let url = baseURL.appendingPathComponent("auth/refresh")
         var request = URLRequest(url: url)
+        request.timeoutInterval = 10
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("true", forHTTPHeaderField: "x-return-tokens")

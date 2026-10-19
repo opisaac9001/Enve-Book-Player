@@ -20,6 +20,7 @@ protocol ProviderConnectionResolving: AnyObject {
 
     func markNeedsReauthentication(providerId: UUID, error: Error)
     func clearReauthentication(connectionId: UUID)
+    func includeNewLibraries(connectionId: UUID, fetchedIds: Set<String>, previouslySeenIds: Set<String>)
 }
 
 @Observable
@@ -206,6 +207,15 @@ final class ProviderConnectionStore: ProviderConnectionAccessing, ProviderConnec
         }
         connections[index] = updated
         providers[updatedConnection.id]?.connection = updated
+    }
+
+    func includeNewLibraries(connectionId: UUID, fetchedIds: Set<String>, previouslySeenIds: Set<String>) {
+        guard let index = connections.firstIndex(where: { $0.id == connectionId }) else { return }
+        var updated = connections[index]
+        updated.includeNewLibraries(fetchedIds: fetchedIds, previouslySeenIds: previouslySeenIds)
+        if updated != connections[index] {
+            connections[index] = updated
+        }
     }
 
     func markNeedsReauthentication(_ connection: ServerConnection) {

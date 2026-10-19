@@ -1,16 +1,44 @@
 import Foundation
+import ImageIO
 import Logging
 import PDFKit
 import UIKit
 
+extension ReaderComicLayoutOption {
+    init(_ direction: ComicReadingDirection) {
+        switch direction {
+        case .leftToRight: self = .leftToRight
+        case .rightToLeft: self = .rightToLeft
+        case .vertical: self = .scroll
+        }
+    }
+
+    var readingDirection: ComicReadingDirection {
+        switch self {
+        case .leftToRight: .leftToRight
+        case .rightToLeft: .rightToLeft
+        case .scroll: .vertical
+        }
+    }
+}
+
 enum ReaderPagedPagePolicy {
-    static func effectiveComicLayout(
-        appearanceLayout: ReaderComicLayoutOption,
-        metadataDirection: ReaderComicLayoutOption?
+    static func autoComicLayout(
+        defaultLayout: ReaderComicLayoutOption,
+        metadataDirection: ComicReadingDirection?
     ) -> ReaderComicLayoutOption {
-        guard let metadataDirection else { return appearanceLayout }
-        if appearanceLayout == .scroll { return .scroll }
-        return metadataDirection
+        guard let metadataDirection else { return defaultLayout }
+        return ReaderComicLayoutOption(metadataDirection)
+    }
+
+    static func effectiveComicLayout(
+        bookOverride: ComicReadingDirection?,
+        defaultLayout: ReaderComicLayoutOption,
+        providerDirection: ComicReadingDirection?,
+        archiveDirection: ComicReadingDirection?
+    ) -> ReaderComicLayoutOption {
+        if let bookOverride { return ReaderComicLayoutOption(bookOverride) }
+        return autoComicLayout(defaultLayout: defaultLayout, metadataDirection: providerDirection ?? archiveDirection)
     }
 
     static func comicPageStep(
@@ -25,15 +53,34 @@ enum ReaderPagedPagePolicy {
         min(max(0, index), max(pageCount - 1, 0))
     }
 
-    static func alignedComicPageIndex(_ index: Int, pageCount: Int, step: Int) -> Int {
+    // The cover stands alone, then pages pair in order and a wide page restarts the pairing after itself.
+    static func comicSpread(
+        containing index: Int,
+        pageCount: Int,
+        step: Int,
+        isWidePage: (Int) -> Bool
+    ) -> ClosedRange<Int> {
         let bounded = boundedPageIndex(index, pageCount: pageCount)
-        return step == 2 ? (bounded / 2) * 2 : bounded
+        guard step == 2, bounded > 0 else { return bounded...bounded }
+        var start = 1
+        while true {
+            let next = start + 1
+            let end = next < pageCount && !isWidePage(start) && !isWidePage(next) ? next : start
+            if bounded <= end { return start...end }
+            start = end + 1
+        }
     }
 
-    static func comicVisiblePageRange(pageIndex: Int, pageCount: Int, step: Int) -> ClosedRange<Int> {
-        guard step == 2 else { return (pageIndex + 1)...(pageIndex + 1) }
-        let endIndex = max(min(pageIndex + 1, max(pageCount - 1, 0)), pageIndex)
-        return (pageIndex + 1)...(endIndex + 1)
+    static func adjacentComicPageIndex(
+        from index: Int,
+        by direction: Int,
+        pageCount: Int,
+        step: Int,
+        isWidePage: (Int) -> Bool
+    ) -> Int {
+        let current = comicSpread(containing: index, pageCount: pageCount, step: step, isWidePage: isWidePage)
+        let target = direction > 0 ? current.upperBound + 1 : current.lowerBound - 1
+        return comicSpread(containing: target, pageCount: pageCount, step: step, isWidePage: isWidePage).lowerBound
     }
 
     static func isComicFormat(_ format: String?) -> Bool {
@@ -55,6 +102,59 @@ enum ReaderPagedPagePolicy {
         if let filePath, isDirectory(filePath) { return true }
         return ebookFileURL == nil && filePath != nil
             && EbookFormat.from(fileExtension: "imagefolder") != nil
+    }
+}
+
+@MainActor
+final class ComicWidePageRegistry {
+    static let shared = ComicWidePageRegistry()
+
+    private var isWideByURL: [URL: Bool] = [:]
+
+    func isWide(_ url: URL) -> Bool {
+        isWideByURL[url] ?? false
+    }
+
+    func prepare(_ urls: [URL]) async throws -> Set<URL> {
+        try Task.checkCancellation()
+        let task = Task.detached(priority: .userInitiated) {
+            var widePages = Set<URL>()
+            for url in urls where url.isFileURL {
+                try Task.checkCancellation()
+                if let size = Self.headerPixelSize(of: url), size.width > size.height { widePages.insert(url) }
+            }
+            return widePages
+        }
+        let pages = try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+        try Task.checkCancellation()
+        return pages
+    }
+
+    func forget(_ urls: [URL]) {
+        for url in urls { isWideByURL[url] = nil }
+    }
+
+    @discardableResult
+    func record(_ size: CGSize, for url: URL) -> Bool {
+        let wide = size.width > size.height
+        isWideByURL[url] = wide
+        return wide
+    }
+
+    private nonisolated static func headerPixelSize(of url: URL) -> CGSize? {
+        let options = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, options),
+            let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, options) as? [CFString: Any],
+            let width = properties[kCGImagePropertyPixelWidth] as? CGFloat,
+            let height = properties[kCGImagePropertyPixelHeight] as? CGFloat
+        else { return nil }
+        // EXIF orientations 5–8 rotate the stored pixels by 90 degrees.
+        let orientation = properties[kCGImagePropertyOrientation] as? Int ?? 1
+        return orientation >= 5 ? CGSize(width: height, height: width) : CGSize(width: width, height: height)
     }
 }
 
@@ -82,16 +182,22 @@ final class ReaderPagedContentController {
 
     private(set) var comicPages: [URL] = []
     private(set) var currentComicPageIndex = 0
+    private(set) var lastVisibleComicPageIndex = 0
     private(set) var currentPDFPageIndex = 0
     private(set) var lastStablePDFPageIndex = 0
     private(set) var pdfController: PDFReaderController?
     private var serverEbookFormat: String?
-    private var comicMetadataDirection: ReaderComicLayoutOption?
-    private var comicLayoutAtMetadataApply: ReaderComicLayoutOption?
+    private var providerReadingDirection: ComicReadingDirection?
+    private var archiveReadingDirection: ComicReadingDirection?
+    private var providerReadingDirectionLoad: Task<Void, Never>?
+    private(set) var comicDirectionOverride: ComicReadingDirection?
 
     private let streamingPages: ServerPageStreamingService
     private let comicArchive: ComicArchiveService
     private let profileSession: ProfileSession
+    private var cacheOwner = UUID().uuidString
+    private var archiveTask: Task<[URL], Error>?
+    private var localWidePages: Set<URL>?
 
     init(
         book: Book,
@@ -101,12 +207,14 @@ final class ReaderPagedContentController {
         profileSession: ProfileSession = .owner
     ) {
         self.profileSession = profileSession
-        streamingPages = ServerPageStreamingService(cachesDirectory: profileSession.storage.cachesDirectory)
+        streamingPages = profileSession.comicStreamingPages
         comicArchive = ComicArchiveService(cachesDirectory: profileSession.storage.cachesDirectory)
         self.book = book
         self.providerResolver = providerResolver
         self.libraryCache = libraryCache
         self.appearanceController = appearanceController
+        comicDirectionOverride = profileSession.comicReadingDirections.direction(forBookID: book.stableId)
+        providerReadingDirection = profileSession.comicReadingDirections.providerDirection(forBookID: book.stableId)
     }
 
     private var appearance: ClassicReaderAppearance { appearanceController.appearance }
@@ -114,6 +222,7 @@ final class ReaderPagedContentController {
     private var visiblePageRange: ClosedRange<Int>? { host?.pagedVisiblePageRange }
 
     var isComicBook: Bool {
+        if book.isComic { return true }
         if !comicPages.isEmpty { return true }
         if isImageFolderBook { return true }
         if ReaderPagedPagePolicy.isComicFormat(serverEbookFormat ?? book.ebookFormat) {
@@ -130,9 +239,26 @@ final class ReaderPagedContentController {
 
     var effectiveComicLayout: ReaderComicLayoutOption {
         ReaderPagedPagePolicy.effectiveComicLayout(
-            appearanceLayout: appearance.comicLayout,
-            metadataDirection: comicMetadataDirection
+            bookOverride: comicDirectionOverride,
+            defaultLayout: appearance.comicLayout,
+            providerDirection: providerReadingDirection,
+            archiveDirection: archiveReadingDirection
         )
+    }
+
+    var autoComicLayout: ReaderComicLayoutOption {
+        ReaderPagedPagePolicy.autoComicLayout(
+            defaultLayout: appearance.comicLayout,
+            metadataDirection: providerReadingDirection ?? archiveReadingDirection
+        )
+    }
+
+    func setComicDirectionOverride(_ direction: ComicReadingDirection?) {
+        guard direction != comicDirectionOverride else { return }
+        host?.pagedWillChange()
+        comicDirectionOverride = direction
+        profileSession.comicReadingDirections.setDirection(direction, forBookID: book.stableId)
+        refreshVisibleComicSpread()
     }
 
     var isRightToLeftPageProgression: Bool {
@@ -148,10 +274,6 @@ final class ReaderPagedContentController {
                 return FileManager.default.fileExists(atPath: path, isDirectory: &isDir) && isDir.boolValue
             }
         )
-    }
-
-    private var isEligibleForServerPageStreaming: Bool {
-        (book.source == .komga && book.mediaType == .ebook) || isComicBook || isImageFolderBook
     }
 
     private var comicPageStep: Int {
@@ -189,7 +311,8 @@ final class ReaderPagedContentController {
     }
 
     func refreshServerFormatIfNeeded() async {
-        guard let provider = providerResolver.provider(for: book.providerId),
+        guard !book.isComic, book.ebookFormat == nil || book.ebookFormat?.lowercased() == "epub",
+            let provider = providerResolver.provider(for: book.providerId),
             provider.capabilities.contains(.serverPageStreaming),
             let refreshed = try? await provider.fetchFullBookDetails(bookId: book.id, libraryId: book.libraryId),
             let format = refreshed.ebookFormat
@@ -200,42 +323,83 @@ final class ReaderPagedContentController {
         }
     }
 
-    func openServerStreamedComicIfAvailable() async -> Bool {
+    func openServerStreamedComicIfAvailable() async throws -> Bool {
+        try Task.checkCancellation()
         guard let provider = providerResolver.capability(ServerPageProvider.self, for: book),
-            provider.capabilities.contains(.serverPageStreaming),
-            isEligibleForServerPageStreaming
+            provider.capabilities.contains(.serverPageStreaming)
         else { return false }
-        do {
-            let pages = try await streamingPages.streamedPages(
-                for: book,
-                provider: provider,
-                mode: appearance.comicPageLoadingMode
-            )
-            guard !pages.isEmpty else { return false }
-            host?.pagedWillChange()
-            comicPages = pages
-            host?.pagedPrepareArtifacts(loadingAnnotations: false)
-            host?.pagedTotalPages = pages.count
-            let initialPageIndex = ReaderLocatorProgress.restoreComicPageIndex(book: book, totalPages: pages.count)
-            host?.pagedReaderState = .readyComic
-            setComicPage(initialPageIndex, shouldRecordStats: false)
-            return true
-        } catch {
-            AppLogger.general.error("Server page streaming failed: \(error)")
-            return false
+        var candidate = book
+        candidate.ebookFormat = serverEbookFormat ?? book.ebookFormat
+        guard provider.canStreamPages(for: candidate) || isImageFolderBook else { return false }
+        _ = loadProviderReadingDirection()
+        let pages = try await streamingPages.streamedPages(
+            for: book,
+            provider: provider,
+            mode: appearance.comicPageLoadingMode
+        )
+        try Task.checkCancellation()
+        guard !pages.isEmpty else { throw ClassicReaderError.invalidComicArchive(book.title) }
+        host?.pagedWillChange()
+        comicPages = pages
+        host?.pagedPrepareArtifacts(loadingAnnotations: false)
+        host?.pagedTotalPages = pages.count
+        let initialPageIndex = ReaderLocatorProgress.restoreComicPageIndex(book: book, totalPages: pages.count)
+        host?.pagedReaderState = .readyComic
+        setComicPage(initialPageIndex, shouldRecordStats: false)
+        return true
+    }
+
+    private func loadProviderReadingDirection() -> Task<Void, Never> {
+        if let providerReadingDirectionLoad { return providerReadingDirectionLoad }
+        let load = Task { [weak self, book, providerResolver] in
+            guard let provider = providerResolver.capability(ComicReadingDirectionProvider.self, for: book) else { return }
+            do {
+                let direction = try await provider.fetchComicReadingDirection(for: book)
+                try Task.checkCancellation()
+                self?.host?.pagedWillChange()
+                self?.providerReadingDirection = direction
+                self?.profileSession.comicReadingDirections.setProviderDirection(direction, forBookID: book.stableId)
+            } catch is CancellationError {
+                return
+            } catch {
+                AppLogger.general.warning("Comic reading direction unavailable: \(error.localizedDescription)")
+            }
         }
+        providerReadingDirectionLoad = load
+        return load
+    }
+
+    func isComicArchiveWithoutEPUBContainer(_ fileURL: URL) async -> Bool {
+        await Task.detached(priority: .userInitiated) {
+            await self.comicArchive.isComicArchiveWithoutEPUBContainer(fileURL)
+        }.value
     }
 
     func openComicArchive(at fileURL: URL, initialSelection: EbookReaderInitialSelection?) async throws {
+        try Task.checkCancellation()
         let stableId = book.stableId
-        let pages = try await Task.detached(priority: .userInitiated) {
+        let owner = cacheOwner
+        await profileSession.readingCache.protect(
+            [fileURL, comicArchive.cacheDirectory(for: stableId)], owner: owner
+        )
+        try Task.checkCancellation()
+        let extraction = Task.detached(priority: .userInitiated) {
             try await self.comicArchive.extractedPages(from: fileURL, bookId: stableId)
-        }.value
+        }
+        archiveTask = extraction
+        let pages = try await extraction.value
+        archiveTask = nil
+        localWidePages = try await ComicWidePageRegistry.shared.prepare(pages)
         guard !pages.isEmpty else {
             throw ClassicReaderError.invalidComicArchive(fileURL.path)
         }
 
-        await applyComicReadingDirectionFromMetadata(archiveURL: fileURL)
+        let archiveDirection = await Task.detached(priority: .userInitiated) {
+            await self.comicArchive.readingDirection(from: fileURL)
+        }.value
+        try Task.checkCancellation()
+        host?.pagedWillChange()
+        archiveReadingDirection = archiveDirection
 
         let initialPageIndex =
             initialSelection.map { ReaderPagedPagePolicy.boundedPageIndex($0.chapterIndex, pageCount: pages.count) }
@@ -249,12 +413,10 @@ final class ReaderPagedContentController {
     }
 
     func openImageFolder(at folderURL: URL, initialSelection: EbookReaderInitialSelection?) async throws {
-        let fm = FileManager.default
-        let contents = try fm.contentsOfDirectory(
-            at: folderURL,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        )
+        try Task.checkCancellation()
+        let contents = try await Task.detached(priority: .userInitiated) {
+            try FileManager().contentsOfDirectory(at: folderURL, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
+        }.value
         let pages =
             contents
             .filter { EbookFormat.isImagePageExtension($0.pathExtension.lowercased()) }
@@ -264,6 +426,7 @@ final class ReaderPagedContentController {
         guard !pages.isEmpty else {
             throw ClassicReaderError.invalidComicArchive(folderURL.path)
         }
+        localWidePages = try await ComicWidePageRegistry.shared.prepare(pages)
 
         let initialPageIndex =
             initialSelection.map { ReaderPagedPagePolicy.boundedPageIndex($0.chapterIndex, pageCount: pages.count) }
@@ -322,63 +485,43 @@ final class ReaderPagedContentController {
         host?.pagedReaderState = .readyPDF(document)
     }
 
-    private func applyComicReadingDirectionFromMetadata(archiveURL: URL) async {
-        let direction = await Task.detached(priority: .userInitiated) {
-            await self.comicArchive.readingDirection(from: archiveURL)
-        }.value
-
-        host?.pagedWillChange()
-        guard let direction else {
-            comicMetadataDirection = nil
-            comicLayoutAtMetadataApply = nil
-            return
-        }
-
-        let layout: ReaderComicLayoutOption
-        switch direction {
-        case .leftToRight: layout = .leftToRight
-        case .rightToLeft: layout = .rightToLeft
-        }
-        comicMetadataDirection = layout
-        comicLayoutAtMetadataApply = appearance.comicLayout
+    func appearanceDidChange(_ appearance: ClassicReaderAppearance) {
+        refreshVisibleComicSpread()
     }
 
-    func appearanceDidChange(_ appearance: ClassicReaderAppearance) {
-        guard let baseline = comicLayoutAtMetadataApply,
-            appearance.comicLayout != baseline
-        else { return }
-        host?.pagedWillChange()
-        comicMetadataDirection = nil
-        comicLayoutAtMetadataApply = nil
+    // Orientation, layout, and spread changes alter which pages share the screen.
+    private func refreshVisibleComicSpread() {
+        setComicPage(currentComicPageIndex, shouldRecordStats: false)
     }
 
     func applyAppearance(_ value: ClassicReaderAppearance) {
         pdfController?.setScrollEnabled(value.pdfScrollEnabled)
     }
 
+    // The spread's last page drives progress, so a final pair reads as finished.
     func setComicPage(_ index: Int, shouldRecordStats: Bool = true) {
         guard !comicPages.isEmpty else { return }
-        let step = comicPageStep
-        let boundedIndex = ReaderPagedPagePolicy.alignedComicPageIndex(
-            index,
+        let pageIndex = ReaderPagedPagePolicy.boundedPageIndex(index, pageCount: comicPages.count)
+        let spread = ReaderPagedPagePolicy.comicSpread(
+            containing: pageIndex,
             pageCount: comicPages.count,
-            step: step
+            step: comicPageStep,
+            isWidePage: isWideComicPage
         )
-        guard boundedIndex != currentComicPageIndex || visiblePageRange == nil else { return }
+        let visibleRange = (spread.lowerBound + 1)...(spread.upperBound + 1)
+        guard pageIndex != currentComicPageIndex || visiblePageRange != visibleRange else { return }
 
         host?.pagedWillChange()
-        currentComicPageIndex = boundedIndex
+        currentComicPageIndex = pageIndex
+        lastVisibleComicPageIndex = spread.upperBound
         host?.pagedApplyPageState(
-            visibleRange: ReaderPagedPagePolicy.comicVisiblePageRange(
-                pageIndex: boundedIndex,
-                pageCount: comicPages.count,
-                step: step
-            ),
-            progress: ReaderLocatorProgress.comicProgress(pageIndex: boundedIndex, totalPages: totalPages),
-            sectionTitle: "Page \(boundedIndex + 1)"
+            visibleRange: visibleRange,
+            progress: ReaderLocatorProgress.comicProgress(pageIndex: spread.upperBound, totalPages: totalPages),
+            sectionTitle: "Page \(pageIndex + 1)"
         )
+        let pageURL = comicPages[pageIndex]
         Task {
-            await streamingPages.preparePageWindow(around: comicPages[boundedIndex])
+            await streamingPages.preparePageWindow(around: pageURL)
         }
 
         guard shouldRecordStats else { return }
@@ -386,7 +529,20 @@ final class ReaderPagedContentController {
     }
 
     func stepComicPage(by direction: Int) {
-        setComicPage(currentComicPageIndex + direction * comicPageStep)
+        setComicPage(
+            ReaderPagedPagePolicy.adjacentComicPageIndex(
+                from: currentComicPageIndex,
+                by: direction,
+                pageCount: comicPages.count,
+                step: comicPageStep,
+                isWidePage: isWideComicPage
+            )
+        )
+    }
+
+    private func isWideComicPage(_ index: Int) -> Bool {
+        if let localWidePages { return localWidePages.contains(comicPages[index]) }
+        return ComicWidePageRegistry.shared.isWide(comicPages[index])
     }
 
     func stepPDFPage(by direction: Int) {
@@ -419,8 +575,26 @@ final class ReaderPagedContentController {
         )
     }
 
+    func comicPageData(at url: URL) async throws -> Data {
+        try await streamingPages.pageData(at: url)
+    }
+
     func endServerPageStreamingSession() {
+        ComicWidePageRegistry.shared.forget(comicPages)
+        localWidePages = nil
+        providerReadingDirectionLoad?.cancel()
+        providerReadingDirectionLoad = nil
         streamingPages.endSession(for: book)
+        let extraction = archiveTask
+        extraction?.cancel()
+        archiveTask = nil
+        let owner = cacheOwner
+        cacheOwner = UUID().uuidString
+        Task { [cache = profileSession.readingCache] in
+            _ = try? await extraction?.value
+            await cache.release(owner: owner)
+            await cache.trim()
+        }
     }
 
     private func requestPDFPage(_ index: Int, shouldRecordStats: Bool = true) {

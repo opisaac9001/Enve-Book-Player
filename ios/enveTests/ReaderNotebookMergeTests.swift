@@ -127,10 +127,8 @@ struct ReaderNotebookMergeTests {
         )
 
         #expect(merged.bookmarks.map(\.remoteID) == [1, 3])
-        #expect(merged.annotations.map(\.remoteID) == [2, 4])
+        #expect(merged.annotations.map(\.remoteID) == [2])
         #expect(merged.bookmarks[1].title == "New mark")
-        #expect(merged.annotations[1].text == "New note")
-        #expect(merged.annotations[1].isRemotePlaceholder)
     }
 
     @Test func locatorJSONFallsBackToExistingLocatorWithoutCFI() {

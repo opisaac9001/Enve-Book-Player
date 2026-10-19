@@ -205,6 +205,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
     }
 
     func performTokenRefresh() async throws -> ABSCredentials {
+        try Task.checkCancellation()
         if let refreshToken = storedRefreshToken(), !refreshToken.isEmpty {
             do {
                 let refreshed = try await absService.refreshToken(
@@ -212,6 +213,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
                     refreshToken: refreshToken,
                     customHeaders: connection.customHeaders ?? [:]
                 )
+                try Task.checkCancellation()
                 connection.token = refreshed.accessToken
                 connection.lastVerified = Date()
                 connection.isConnected = true
@@ -228,6 +230,15 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
                 }
                 return .legacy(token: refreshed.accessToken)
             } catch {
+                try Task.checkCancellation()
+                if error is CancellationError || (error as? URLError)?.code == .cancelled { throw error }
+                guard let authError = error as? AudiobookshelfError else { throw error }
+                switch authError {
+                case .unauthorized, .invalidToken, .authenticationFailed, .authenticationFailedDetailed, .notFound:
+                    break
+                default:
+                    throw error
+                }
                 AppLogger.network.error("[ABS Provider] Refresh token flow failed: \(error.localizedDescription)")
             }
         }
@@ -258,6 +269,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
 
         let loginURL = baseURL.appendingPathComponent("login")
         var loginRequest = URLRequest(url: loginURL)
+        loginRequest.timeoutInterval = 10
         loginRequest.httpMethod = "POST"
         loginRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         loginRequest.setValue("true", forHTTPHeaderField: "x-return-tokens")
@@ -266,6 +278,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         loginRequest.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await session.data(for: loginRequest)
+        try Task.checkCancellation()
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ProviderError.invalidResponse
@@ -303,6 +316,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
     }
 
     func validateConnection() async throws -> Bool {
+        try EnveProvenance.checkServerAddress(connection.url)
         guard let baseURL = URL(string: connection.url) else {
             throw ProviderError.invalidURL
         }
@@ -311,11 +325,15 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         do {
             creds = try await credentialsActor.freshCredentials
         } catch {
+            try Task.checkCancellation()
+            if error is CancellationError || (error as? URLError)?.code == .cancelled { throw error }
+            guard case ProviderError.unauthorized = error else { throw error }
             creds = connection.token.map { ABSCredentials.legacy(token: $0) } ?? ABSCredentials.legacy(token: "")
         }
 
         let validateURL = baseURL.appendingPathComponent("api/authorize")
         var validateRequest = URLRequest(url: validateURL)
+        validateRequest.timeoutInterval = 10
         validateRequest.httpMethod = "POST"
 
         if let customHeaders = connection.customHeaders {
@@ -337,7 +355,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         }
         guard validationHTTP.statusCode == 401 || validationHTTP.statusCode == 403 else { return false }
 
-        let freshCreds = try await credentialsActor.forceRefresh()
+        let freshCreds = try await credentialsActor.forceRefresh(rejectedToken: creds.accessToken)
         connection.token = freshCreds.accessToken
         validateRequest.setValue(freshCreds.authorizationHeader, forHTTPHeaderField: "Authorization")
         let (_, retryResponse) = try await session.data(for: validateRequest)
@@ -358,6 +376,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
 
     private func performRequest(_ request: URLRequest) async throws -> (Data, URLResponse) {
         var mutableRequest = request
+        var sentToken: String?
         mutableRequest.cachePolicy = .reloadIgnoringLocalCacheData
 
         if let customHeaders = connection.customHeaders {
@@ -368,13 +387,18 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
 
         do {
             let creds = try await credentialsActor.freshCredentials
+            sentToken = creds.accessToken
             mutableRequest.setValue(creds.authorizationHeader, forHTTPHeaderField: "Authorization")
             if connection.token != creds.accessToken {
                 connection.token = creds.accessToken
                 connection.isConnected = true
             }
         } catch {
+            try Task.checkCancellation()
+            if error is CancellationError || (error as? URLError)?.code == .cancelled { throw error }
+            guard case ProviderError.unauthorized = error else { throw error }
             if let token = connection.token {
+                sentToken = token
                 mutableRequest.setValue(
                     token.contains(".") ? "Bearer \(token)" : token,
                     forHTTPHeaderField: "Authorization"
@@ -387,13 +411,16 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 401 {
             AppLogger.network.info("[ABS Provider] Got 401 despite proactive refresh - forcing token refresh...")
             do {
-                let freshCreds = try await credentialsActor.forceRefresh()
+                let freshCreds = try await credentialsActor.forceRefresh(rejectedToken: sentToken)
                 var retryRequest = mutableRequest
                 retryRequest.setValue(freshCreds.authorizationHeader, forHTTPHeaderField: "Authorization")
                 connection.token = freshCreds.accessToken
                 connection.isConnected = true
                 return try await session.data(for: retryRequest)
             } catch {
+                try Task.checkCancellation()
+                if error is CancellationError || (error as? URLError)?.code == .cancelled { throw error }
+                guard case ProviderError.unauthorized = error else { throw error }
                 AppLogger.network.error("[ABS Provider] Force refresh after 401 failed: \(error.localizedDescription)")
                 connection.isConnected = false
             }
@@ -1782,6 +1809,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         struct Account: Decodable { let id: String }
         let account = try JSONDecoder().decode(Account.self, from: try await meData("api/me"))
         guard !account.id.isEmpty else { throw ProviderError.invalidResponse }
+        listeningStore.rememberAccount(account.id, connectionId: connection.id)
         return account.id
     }
 
@@ -2243,12 +2271,15 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             ]
             request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
+            // Requeueing after a timeout or 5xx could count the same seconds twice.
             let sessionStatus: Int
             do {
                 let (_, response) = try await performRequest(request)
                 sessionStatus = (response as? HTTPURLResponse)?.statusCode ?? 0
             } catch {
-                recordLocalListening(book: book, currentTime: currentTime, timeListened: timeListened)
+                if Self.requestNeverReachedServer(error) {
+                    recordLocalListening(book: book, currentTime: currentTime, timeListened: timeListened)
+                }
                 throw error
             }
             // ABS keeps sessions in memory; after a server restart the session is gone but the progress PATCH still lands.
@@ -2258,7 +2289,9 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             } else if (200...299).contains(sessionStatus) {
                 AppLogger.network.info("Synced session \(sessionId) to \(currentTime)s (listened: \(timeListened)s)")
             } else {
-                recordLocalListening(book: book, currentTime: currentTime, timeListened: timeListened)
+                if (400...499).contains(sessionStatus) {
+                    recordLocalListening(book: book, currentTime: currentTime, timeListened: timeListened)
+                }
                 throw ProviderError.invalidResponse
             }
 
@@ -2323,6 +2356,20 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
                 audioTime: currentTime,
                 forItem: NarratedAudioPositionStore.itemKey(connectionId: connection.id, itemId: Self.libraryItemId(for: book))
             )
+        }
+    }
+
+    nonisolated static func requestNeverReachedServer(_ error: Error) -> Bool {
+        guard let error = error as? URLError else { return false }
+        switch error.code {
+        case .notConnectedToInternet, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed,
+            .internationalRoamingOff, .dataNotAllowed, .callIsActive, .appTransportSecurityRequiresSecureConnection,
+            .secureConnectionFailed, .serverCertificateUntrusted, .serverCertificateHasBadDate,
+            .serverCertificateNotYetValid, .serverCertificateHasUnknownRoot,
+            .clientCertificateRejected, .clientCertificateRequired:
+            return true
+        default:
+            return false
         }
     }
 
@@ -2406,23 +2453,15 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         let allQueued = listeningStore.pendingUploads(connectionId: connection.id)
         let ineligible = allQueued.filter { !historyUploadAllowed(Date(timeIntervalSince1970: Double($0.startedAt) / 1000)) }
         listeningStore.discard(ids: Set(ineligible.map(\.id)))
-        let queued = listeningStore.pendingUploads(connectionId: connection.id)
-        guard !queued.isEmpty else { return [] }
-        // Native sessions predate account binding. Cross-provider sessions require the verified ABS account.
-        let accountId: String?
-        if queued.contains(where: { $0.accountId != nil }) {
-            do {
-                accountId = try await currentAccountId()
-            } catch is CancellationError {
-                return []
-            } catch let error as URLError where error.code == .cancelled {
-                return []
-            } catch {
-                accountId = nil
-            }
-        } else {
-            accountId = nil
+        guard listeningStore.hasUploadCandidates(connectionId: connection.id) else { return [] }
+        // Every queued session belongs to one ABS user; upload only those of the verified signed-in user.
+        let accountId: String
+        do {
+            accountId = try await currentAccountId()
+        } catch {
+            return []
         }
+        listeningStore.rememberAccount(accountId, connectionId: connection.id)
         let eligible = listeningStore.pendingUploads(
             connectionId: connection.id, verifiedAccountId: accountId
         )
@@ -2545,7 +2584,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         return headers
     }
 
-    private func directPlayback(for book: Book) async throws -> PlaybackSessionInfo {
+    func directPlayback(for book: Book) async throws -> PlaybackSessionInfo {
         guard let baseURL = URL(string: connection.url), let token = connection.token else { throw ProviderError.unauthorized }
         if book.isPodcastEpisode, let url = chapterExtractionURL(for: book) {
             return PlaybackSessionInfo(sessionId: "local-\(UUID().uuidString)", audioTracks: [
@@ -2632,12 +2671,16 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
 
         struct PlaybackResponse: Codable {
             let id: String
+            let userId: String?
             let audioTracks: [PlaybackAudioTrack]
             let chapters: [PlaybackChapter]?
             let currentTime: Double?
         }
 
         let sessionResponse = try JSONDecoder().decode(PlaybackResponse.self, from: data)
+        if let userId = sessionResponse.userId {
+            listeningStore.rememberAccount(userId, connectionId: connection.id)
+        }
 
         AppLogger.network.info("Playback session started: \(sessionResponse.id)")
         AppLogger.network.info("Audio tracks: \(sessionResponse.audioTracks.count)")

@@ -4,9 +4,11 @@ import SwiftData
 
 final class SwiftDataBookStore: BookStoreRepository, @unchecked Sendable {
     private let container: ModelContainer
+    private let ebookImporter: LocalEbookImporter
 
-    init(container: ModelContainer) {
+    init(container: ModelContainer, ebookImporter: LocalEbookImporter = .shared) {
         self.container = container
+        self.ebookImporter = ebookImporter
     }
 
     @ModelActor
@@ -300,76 +302,6 @@ final class SwiftDataBookStore: BookStoreRepository, @unchecked Sendable {
                 bucket[raw] = acc
             }
             return bucket.map { BrowseNarratorAggregate(name: $0.key, bookCount: $0.value.count, representativeThumb: $0.value.thumb) }
-        }
-
-        func fetchBrowseSeriesAggregates(
-            mediaType: String,
-            providerId: UUID? = nil,
-            libraryId: String? = nil
-        ) throws -> [BrowseSeriesAggregate] {
-            let localMediaType = mediaType
-            let localProviderId = providerId?.uuidString ?? ""
-            let localLibraryId = libraryId ?? ""
-            let predicate: Predicate<BookRecord>
-            switch (providerId, libraryId) {
-            case (nil, _):
-                predicate = #Predicate<BookRecord> { record in
-                    record.mediaType == localMediaType && !record.isDeleted
-                }
-            case (.some, nil):
-                predicate = #Predicate<BookRecord> { record in
-                    record.mediaType == localMediaType && !record.isDeleted && record.providerId == localProviderId
-                }
-            case (.some, .some):
-                predicate = #Predicate<BookRecord> { record in
-                    record.mediaType == localMediaType && !record.isDeleted
-                        && record.providerId == localProviderId && record.libraryId == localLibraryId
-                }
-            }
-            var descriptor = FetchDescriptor<BookRecord>(predicate: predicate)
-            descriptor.propertiesToFetch = [
-                \BookRecord.series,
-                \BookRecord.thumb,
-                \BookRecord.currentTime,
-                \BookRecord.duration,
-                \BookRecord.ebookProgress,
-                \BookRecord.isFinished,
-            ]
-            let rows = try modelContext.fetch(descriptor)
-
-            struct Acc {
-                var count: Int = 0
-                var completedCount: Int = 0
-                var thumb: String?
-                var matchingNames = Set<String>()
-            }
-            var bucket: [String: Acc] = [:]
-            for row in rows {
-                guard let raw = row.series?.trimmingCharacters(in: .whitespacesAndNewlines),
-                    !raw.isEmpty
-                else { continue }
-                let displayName = NameNormalizer.normalizeSeriesName(raw)
-                var acc = bucket[displayName, default: Acc()]
-                acc.count += 1
-                let progress = localMediaType == "ebook"
-                    ? row.ebookProgress ?? 0
-                    : row.duration.map { $0 > 0 ? row.currentTime / $0 : 0 } ?? 0
-                if row.isFinished || progress >= Book.finishedProgressThreshold {
-                    acc.completedCount += 1
-                }
-                acc.matchingNames.insert(raw)
-                if acc.thumb == nil, let t = row.thumb, !t.isEmpty { acc.thumb = t }
-                bucket[displayName] = acc
-            }
-            return bucket.map {
-                BrowseSeriesAggregate(
-                    name: $0.key,
-                    bookCount: $0.value.count,
-                    completedBookCount: $0.value.completedCount,
-                    representativeThumb: $0.value.thumb,
-                    matchingNames: $0.value.matchingNames.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
-                )
-            }
         }
 
         func fetchBooksByAuthor(author: String, mediaType: String, limit: Int) throws -> [Book] {
@@ -946,7 +878,7 @@ final class SwiftDataBookStore: BookStoreRepository, @unchecked Sendable {
             return try modelContext.fetch(descriptor).compactMap { $0.toBook() }
         }
 
-        func fetchDownloadedEbooks(limit: Int) throws -> [Book] {
+        func fetchDownloadedEbookCandidates(offset: Int, limit: Int) throws -> [Book] {
             let ebookType = "ebook"
             let localSource = Book.BookSource.local.rawValue
             var descriptor = FetchDescriptor<BookRecord>(
@@ -956,21 +888,11 @@ final class SwiftDataBookStore: BookStoreRepository, @unchecked Sendable {
                         && !$0.isHidden
                         && ($0.ebookFileURLPath != nil || ($0.source == localSource && $0.filePath != nil))
                 },
-                sortBy: [SortDescriptor(\.lastUpdate, order: .reverse)]
+                sortBy: [SortDescriptor(\.lastUpdate, order: .reverse), SortDescriptor(\.uniqueId)]
             )
             descriptor.fetchLimit = limit
-            let fetched = try modelContext.fetch(descriptor).compactMap { $0.toBook() }
-
-            let docs = URL.documentsDirectory
-            let serverRoot = docs.appendingPathComponent("Ebooks").path
-            let localRoot = docs.appendingPathComponent("Ebooks/local").path
-            let readaloudRoot = docs.appendingPathComponent("Ebooks/readaloud").path
-            return fetched.filter { book in
-                if book.source == .local { return true }
-                guard let url = book.ebookFileURL, FileManager.default.fileExists(atPath: url.path) else { return false }
-                let p = url.path
-                return p.hasPrefix(serverRoot) || p.hasPrefix(localRoot) || p.hasPrefix(readaloudRoot)
-            }
+            descriptor.fetchOffset = offset
+            return try modelContext.fetch(descriptor).compactMap { $0.toBook() }
         }
 
         func fetchBook(byBookId id: String) throws -> Book? {
@@ -1289,7 +1211,7 @@ final class SwiftDataBookStore: BookStoreRepository, @unchecked Sendable {
             return try modelContext.fetch(descriptor).compactMap { $0.toBook() }
         }
 
-        private func backfillSortKeysIfNeeded() throws {
+        func backfillSortKeysIfNeeded() throws {
             let flag = "imagine.bookSortKeysBackfilled.v1"
             if UserDefaults.standard.bool(forKey: flag) { return }
             let pageSize = 2000
@@ -1310,7 +1232,7 @@ final class SwiftDataBookStore: BookStoreRepository, @unchecked Sendable {
             UserDefaults.standard.set(true, forKey: flag)
         }
 
-        private nonisolated static func sortDescriptors(for descriptors: [BookStoreSortDescriptor]) -> [SortDescriptor<BookRecord>] {
+        nonisolated static func sortDescriptors(for descriptors: [BookStoreSortDescriptor]) -> [SortDescriptor<BookRecord>] {
             let descriptors =
                 descriptors.isEmpty
                 ? [BookStoreSortDescriptor(field: .recent, direction: .descending)]
@@ -2820,7 +2742,7 @@ final class SwiftDataBookStore: BookStoreRepository, @unchecked Sendable {
         }
     }
 
-    private func makeWorker() -> Worker {
+    func makeWorker() -> Worker {
         Worker(modelContainer: container)
     }
 
@@ -3495,9 +3417,24 @@ final class SwiftDataBookStore: BookStoreRepository, @unchecked Sendable {
     }
 
     func downloadedEbooks(limit: Int) async -> [Book] {
+        guard limit > 0 else { return [] }
         let worker = makeWorker()
         do {
-            return try await worker.fetchDownloadedEbooks(limit: limit)
+            let pageSize = 200
+            let availability = await ebookImporter.offlineAvailability()
+            var offset = 0
+            var books: [Book] = []
+            while books.count < limit {
+                try Task.checkCancellation()
+                let candidates = try await worker.fetchDownloadedEbookCandidates(offset: offset, limit: pageSize)
+                let offline = await availability.existingBooks(in: candidates)
+                books.append(contentsOf: offline.prefix(limit - books.count))
+                if candidates.count < pageSize { break }
+                offset += pageSize
+            }
+            return books
+        } catch is CancellationError {
+            return []
         } catch {
             AppLogger.general.error("BookStore.downloadedEbooks failed: \(error)")
             return []

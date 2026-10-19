@@ -35,6 +35,7 @@ final class GrimmoryEpubStreamingSession: @unchecked Sendable {
     nonisolated let sizesByPath: [String: UInt64]
     private nonisolated let entriesByPath: [String: Entry]
     private nonisolated let cacheRoot: URL
+    nonisolated var cacheDirectory: URL { cacheRoot }
     private nonisolated let fetchRemote: @Sendable (String) async throws -> Data
 
     nonisolated init(

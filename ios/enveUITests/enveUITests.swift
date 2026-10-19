@@ -512,6 +512,7 @@ final class enveUISmokeTests: XCTestCase {
 
     @MainActor
     private func performReleaseAccessibilityAudit(in app: XCUIApplication) throws {
+        attachAccessibilityContext(in: app)
         try app.performAccessibilityAudit(for: releaseAuditTypes)
         // iOS 27 beta reports false failures for demonstrably high-contrast text on physical devices.
         if ProcessInfo.processInfo.operatingSystemVersion.majorVersion < 27 {
@@ -521,6 +522,7 @@ final class enveUISmokeTests: XCTestCase {
 
     @MainActor
     private func assertVisibleButtonHitRegions(in app: XCUIApplication) {
+        attachAccessibilityContext(in: app)
         let visibleFrame = app.windows.firstMatch.frame
         for button in app.buttons.allElementsBoundByIndex {
             let frame = button.frame
@@ -528,6 +530,24 @@ final class enveUISmokeTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(frame.width + 0.01, 44, "\(button.label) is narrower than 44 points")
             XCTAssertGreaterThanOrEqual(frame.height + 0.01, 44, "\(button.label) is shorter than 44 points")
         }
+    }
+
+    @MainActor
+    private func attachAccessibilityContext(in app: XCUIApplication) {
+        let visibleFrame = app.windows.firstMatch.frame
+        let rows = app.buttons.allElementsBoundByIndex.compactMap { button -> String? in
+            let frame = button.frame
+            guard !frame.isEmpty, frame.intersects(visibleFrame), button.isHittable else { return nil }
+            return "\(button.label) | \(frame.origin.x), \(frame.origin.y), \(frame.width), \(frame.height)"
+        }
+        let geometry = XCTAttachment(string: rows.joined(separator: "\n"))
+        geometry.name = "visible-button-frames"
+        geometry.lifetime = .keepAlways
+        add(geometry)
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "accessibility-context"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
     }
 
     @MainActor
@@ -580,7 +600,7 @@ final class ProfileDeviceUITests: XCTestCase {
         let readerID = useReader.identifier.replacingOccurrences(of: "profile-switch-", with: "")
         let readerSync = app.switches["profile-server-sync-\(readerID)"]
         XCTAssertEqual(readerSync.value as? String, "1")
-        readerSync.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+        readerSync.tap()
         XCTAssertTrue(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == '0'"), object: readerSync)], timeout: 3) == .completed)
         useReader.tap()
         XCTAssertTrue(app.staticTexts["profile-current-\(readerID)"].waitForExistence(timeout: 30))

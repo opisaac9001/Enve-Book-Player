@@ -147,7 +147,13 @@ final class PlaybackManager {
     let audioProcessor: AudioProcessor
     private unowned let profileSession: ProfileSession
     private var isRetired = false
+    private var playbackGeneration = 0
+    private var audioSessionGeneration = 0
+    private var isStartPending = false
     private var operations: [UUID: Task<Void, Never>] = [:]
+    private var startupTask: Task<Void, Never>?
+    private let startupTimeout: TimeInterval
+    private let progressTimeout: TimeInterval
     private let bookSession: any CurrentBookSession
     private let libraryCache: LibraryBookCache
     private let connectionStore: ProviderConnectionStore
@@ -438,8 +444,10 @@ final class PlaybackManager {
         NotificationCenter.default.post(name: .continueListeningNeedsRefresh, object: nil)
     }
 
-    init(profileSession: ProfileSession) {
+    init(profileSession: ProfileSession, startupTimeout: TimeInterval = 20, progressTimeout: TimeInterval = 5) {
         self.profileSession = profileSession
+        self.startupTimeout = startupTimeout
+        self.progressTimeout = progressTimeout
         audioProcessor = AudioProcessor(preferencesStore: profileSession.preferences)
         storageService = profileSession.storageService
         bookSession = profileSession.appState
@@ -453,11 +461,58 @@ final class PlaybackManager {
     }
 
     private func runOperation(_ operation: @escaping @MainActor () async -> Void) {
-        guard !isRetired else { return }
+        _ = makeOperation(operation)
+    }
+
+    private func makeOperation(_ operation: @escaping @MainActor () async -> Void) -> Task<Void, Never>? {
+        guard !isRetired else { return nil }
         let id = UUID()
-        operations[id] = Task { [weak self] in
+        let task = Task { [weak self] in
             await operation()
             self?.operations.removeValue(forKey: id)
+        }
+        operations[id] = task
+        return task
+    }
+
+    private func startPlaybackPreparation(
+        for book: Book,
+        operation: @escaping @MainActor () async throws -> Void
+    ) {
+        startupTask?.cancel()
+        let generation = playbackGeneration
+        isLoading = true
+        playbackError = nil
+        startupTask = makeOperation { [self] in
+            do {
+                try await PlaybackStartupDeadline.run(seconds: startupTimeout, operation: operation)
+                guard !Task.isCancelled, !isRetired, generation == playbackGeneration else { return }
+                isLoading = false
+                startupTask = nil
+                play()
+            } catch {
+                guard !Task.isCancelled, !isRetired, generation == playbackGeneration else { return }
+                startupTask = nil
+                if let sessionID = currentSessionId, !sessionID.hasPrefix("local-"), let provider = currentProvider {
+                    let closingPosition = currentTime
+                    Task { await provider.reportPlayback(.stopped, book: book, sessionId: sessionID, position: closingPosition) }
+                    currentSessionId = nil
+                }
+                player?.pause()
+                if let timeObserver, let player { player.removeTimeObserver(timeObserver) }
+                timeObserver = nil
+                clearPlaybackItemObservers()
+                resetPlaybackRecovery()
+                clearNowPlayingSession()
+                player = nil
+                isPlaying = false
+                isLoading = false
+                let detail = (error as? URLError)?.code == .timedOut
+                    ? "Playback took too long to start. Check the connection and try again."
+                    : error.localizedDescription
+                playbackError = "Unable to play \"\(book.title)\": \(detail)"
+                AppLogger.player.warning("Playback preparation failed for bookDiagnosticID=\(diagnosticBookID(book))")
+            }
         }
     }
 
@@ -577,7 +632,7 @@ final class PlaybackManager {
     }
 
     private func applyPlaybackSpeed() {
-        player?.rate = isPlaying ? playbackSpeed : 0
+        player?.rate = isPlaying && !isStartPending ? playbackSpeed : 0
         if currentItemIsPodcast {
             let existing = profileSession.defaults.float(forKey: "podcastPlaybackSpeed")
             if existing != playbackSpeed {
@@ -604,34 +659,28 @@ final class PlaybackManager {
         updateNowPlayingInfo()
     }
 
-    private func setupAudioSession(activate: Bool = true) {
+    private func setupAudioSession(activate: Bool = true, then start: @escaping @MainActor @Sendable () -> Void = {}) {
         #if os(iOS)
-        let audioSession = AVAudioSession.sharedInstance()
-        do {
-            let voiceMode = profileSession.preferences.loadPreferences().basicVoiceMode.audioSessionMode
-            let policy: AVAudioSession.RouteSharingPolicy = voiceMode == .voicePrompt ? .default : .longFormAudio
-            let options: AVAudioSession.CategoryOptions = policy == .default ? [.allowAirPlay, .allowBluetoothA2DP] : []
-            try audioSession.setCategory(.playback, mode: voiceMode, policy: policy, options: options)
-            if activate {
-                activateAudioSession()
+        audioSessionGeneration &+= 1
+        let generation = audioSessionGeneration
+        let voiceMode = profileSession.preferences.loadPreferences().basicVoiceMode.audioSessionMode
+        let policy: AVAudioSession.RouteSharingPolicy = voiceMode == .voicePrompt ? .default : .longFormAudio
+        let options: AVAudioSession.CategoryOptions = policy == .default ? [.allowAirPlay, .allowBluetoothA2DP] : []
+        AudioSessionQueue.perform {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: voiceMode, policy: policy, options: options)
+            if activate { try session.setActive(true) }
+        } completion: { [weak self] failure in
+            guard let self, self.audioSessionGeneration == generation, !self.isRetired else { return }
+            if let failure {
+                AppLogger.player.error("Failed to setup audio session: \(failure)")
             }
-        } catch {
-            AppLogger.player.error("Failed to setup audio session: \(error)")
+            start()
         }
+        #else
+        start()
         #endif
         NowPlayingCoordinator.shared.setActive(self)
-    }
-
-    private nonisolated func activateAudioSession() {
-        #if os(iOS)
-        Task.detached(priority: .userInitiated) {
-            do {
-                try AVAudioSession.sharedInstance().setActive(true)
-            } catch {
-                AppLogger.player.error("Failed to activate audio session: \(error)")
-            }
-        }
-        #endif
     }
 
     private func updateNowPlayingInfo() {
@@ -1132,7 +1181,7 @@ final class PlaybackManager {
         AppLogger.player.debug("Is playing: \(isPlaying)")
         AppLogger.player.debug("Current time in memory: \(currentTime)s")
 
-        if currentBook?.stableId == book.stableId && player != nil {
+        if currentBook?.stableId == book.stableId, !isLoading, player?.currentItem?.status == .readyToPlay {
             AppLogger.player.info("Same book already loaded, resuming from currentTime: \(currentTime)s...")
             refreshCurrentTimeFromPlayer()
             resume()
@@ -1207,26 +1256,15 @@ final class PlaybackManager {
         isLoading = true
         playbackError = nil
 
-        runOperation { [self] in
-            do {
-                let resolvedResumeTime = await resolveProviderOpenResumeTime(
-                    for: book,
-                    provider: provider,
-                    initialResumeTime: resumeTime,
-                    localUpdate: localUpdate
-                )
-                try await setupPlayer(for: book, provider: provider, resumeTime: resolvedResumeTime)
-                await MainActor.run {
-                    self.isLoading = false
-                    self.play()
-                }
-            } catch {
-                AppLogger.player.error("Failed to setup player: \(error)")
-                await MainActor.run {
-                    self.isLoading = false
-                    self.playbackError = "Unable to play \"\(book.title)\": \(error.localizedDescription)"
-                }
-            }
+        startPlaybackPreparation(for: book) { [self] in
+            let resolvedResumeTime = await resolveProviderOpenResumeTime(
+                for: book,
+                provider: provider,
+                initialResumeTime: resumeTime,
+                localUpdate: localUpdate
+            )
+            try Task.checkCancellation()
+            try await setupPlayer(for: book, provider: provider, resumeTime: resolvedResumeTime)
         }
     }
 
@@ -1321,20 +1359,8 @@ final class PlaybackManager {
         currentTime = resumeTime
         isLoading = true
         playbackError = nil
-        runOperation { [self] in
-            do {
-                try await setupPlayer(for: book, provider: provider, resumeTime: resumeTime)
-                await MainActor.run {
-                    self.isLoading = false
-                    self.play()
-                }
-            } catch {
-                AppLogger.player.error("Grimmory playback setup failed: \(error.localizedDescription)")
-                await MainActor.run {
-                    self.isLoading = false
-                    self.playbackError = "Unable to play \"\(book.title)\": \(error.localizedDescription)"
-                }
-            }
+        startPlaybackPreparation(for: book) { [self] in
+            try await setupPlayer(for: book, provider: provider, resumeTime: resumeTime)
         }
     }
 
@@ -1351,12 +1377,15 @@ final class PlaybackManager {
             book.source != .smb,
             book.source != .booklore,
             let progressProvider = provider as? any AudiobookProgressPulling,
-            let result = try? await progressProvider.fetchAudiobookProgress(for: book)
+            let result = try? await PlaybackStartupDeadline.run(seconds: progressTimeout, operation: {
+                try await progressProvider.fetchAudiobookProgress(for: book)
+            })
         else {
             return initialResumeTime
         }
 
-        guard profileSession.serverSyncEnabled else { return initialResumeTime }
+        guard !Task.isCancelled, !isRetired, currentBook?.uniqueId == book.uniqueId,
+            profileSession.serverSyncEnabled else { return initialResumeTime }
         var serverTime = result.positionSeconds
         if serverTime <= 0,
             let duration = book.duration,
@@ -1454,6 +1483,8 @@ final class PlaybackManager {
     }
 
     private func setupPlayer(for book: Book, provider: any PlaybackSessionProvider, resumeTime: TimeInterval) async throws {
+        let generation = playbackGeneration
+        try Task.checkCancellation()
         AppLogger.player.debug("Setting up player bookDiagnosticID=\(diagnosticBookID(book))")
         AppLogger.player.debug("Resume time: \(resumeTime)s")
         self.currentProvider = provider
@@ -1487,8 +1518,17 @@ final class PlaybackManager {
         let session: PlaybackSessionInfo
         do {
             session = try await provider.startPlaybackSession(for: book)
+            do {
+                guard !isRetired, generation == playbackGeneration else { throw CancellationError() }
+                try Task.checkCancellation()
+            } catch {
+                let sessionID = session.sessionId
+                Task { await provider.reportPlayback(.stopped, book: book, sessionId: sessionID, position: resumeTime) }
+                throw error
+            }
             AppLogger.player.info("Playback session started successfully")
         } catch {
+            try Task.checkCancellation()
             if localPlaybackIssue == nil,
                 let localTracks = makeLocalTracks(for: book), !localTracks.isEmpty
             {
@@ -1689,8 +1729,6 @@ final class PlaybackManager {
                     self.playbackRecoveryTask = nil
                     return
                 }
-                self.player?.play()
-                self.player?.rate = self.playbackSpeed
                 self.playbackRecoveryTask = nil
             } catch {
                 if error is CancellationError { return }
@@ -1721,13 +1759,30 @@ final class PlaybackManager {
         playbackError = "Unable to continue \"\(currentBook?.title ?? "this book")\": \(detail)"
     }
 
+    private func loadPlayableStatus(
+        _ asset: AVURLAsset,
+        expectedSessionId: String?,
+        generation: Int
+    ) async throws -> Bool {
+        do {
+            let playable = try await asset.load(.isPlayable)
+            try validatePlaybackSession(expectedSessionId, expectedGeneration: generation)
+            return playable
+        } catch {
+            try validatePlaybackSession(expectedSessionId, expectedGeneration: generation)
+            throw error
+        }
+    }
+
     private func loadAndPlayTrack(
         _ track: AudioTrackInfo,
         seekTime: TimeInterval = 0,
         expectedSessionId: String? = nil,
         isRecovery: Bool = false
     ) async throws {
-        try validatePlaybackSession(expectedSessionId)
+        let expectedSessionId = expectedSessionId ?? currentSessionId
+        let generation = playbackGeneration
+        try validatePlaybackSession(expectedSessionId, expectedGeneration: generation)
         if !isRecovery {
             resetPlaybackRecovery()
         }
@@ -1770,16 +1825,16 @@ final class PlaybackManager {
         }
 
         var playableAsset = asset
-        let isPlayable = try await asset.load(.isPlayable)
-        try validatePlaybackSession(expectedSessionId)
+        let isPlayable = try await loadPlayableStatus(asset, expectedSessionId: expectedSessionId, generation: generation)
+        try validatePlaybackSession(expectedSessionId, expectedGeneration: generation)
         if !isPlayable {
             if url.isFileURL, let correctedURL = Self.correctFileExtensionIfNeeded(for: url) {
                 AppLogger.player.debug(
                     "File format mismatch corrected: \(DiagnosticLogSanitizer.fileDescriptor(for: correctedURL))"
                 )
                 let retryAsset = AVURLAsset(url: correctedURL)
-                let retryPlayable = try await retryAsset.load(.isPlayable)
-                try validatePlaybackSession(expectedSessionId)
+                let retryPlayable = try await loadPlayableStatus(retryAsset, expectedSessionId: expectedSessionId, generation: generation)
+                try validatePlaybackSession(expectedSessionId, expectedGeneration: generation)
                 if retryPlayable {
                     playableAsset = retryAsset
                     if let idx = currentTracks.firstIndex(where: { $0.contentUrl == track.contentUrl }) {
@@ -1812,6 +1867,7 @@ final class PlaybackManager {
         ) { [weak self] notification in
             let error = notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
             MainActor.assumeIsolated {
+                guard self?.player?.currentItem === playerItem else { return }
                 self?.runOperation { @MainActor [weak self] in
                     guard let self else { return }
                     if let error {
@@ -1838,6 +1894,7 @@ final class PlaybackManager {
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
+                guard self?.player?.currentItem === playerItem else { return }
                 self?.runOperation { @MainActor [weak self] in
                     guard let self else { return }
                     AppLogger.player.warning("Playback stalled on track \(track.index); monitoring for recovery")
@@ -1855,7 +1912,7 @@ final class PlaybackManager {
         AppLogger.player.warning("Skipping audio tap on simulator")
         #else
         if let assetTrack = try? await playableAsset.loadTracks(withMediaType: AVMediaType.audio).first {
-            try validatePlaybackSession(expectedSessionId)
+            try validatePlaybackSession(expectedSessionId, expectedGeneration: generation)
             let audioMix = AVMutableAudioMix()
             let parameters = AVMutableAudioMixInputParameters(track: assetTrack)
             if let tap = audioProcessor.createTap() {
@@ -1866,7 +1923,7 @@ final class PlaybackManager {
             playerItem.audioMix = audioMix
         }
         #endif
-        try validatePlaybackSession(expectedSessionId)
+        try validatePlaybackSession(expectedSessionId, expectedGeneration: generation)
 
         if let player = self.player {
             player.replaceCurrentItem(with: playerItem)
@@ -1884,7 +1941,7 @@ final class PlaybackManager {
                 throw PlaybackError.mediaLoadTimeout
             }
             try await Task.sleep(nanoseconds: 100_000_000)
-            try validatePlaybackSession(expectedSessionId)
+            try validatePlaybackSession(expectedSessionId, expectedGeneration: generation)
         }
 
         if playerItem.status == .failed {
@@ -1950,7 +2007,7 @@ final class PlaybackManager {
             AppLogger.player.info("Seeking to local position: \(safeSeek)s")
             let seekCMTime = CMTime(seconds: safeSeek, preferredTimescale: 1000)
             await player.seek(to: seekCMTime)
-            try validatePlaybackSession(expectedSessionId)
+            try validatePlaybackSession(expectedSessionId, expectedGeneration: generation)
         }
 
         setupTimeObserver(for: player)
@@ -1978,14 +2035,14 @@ final class PlaybackManager {
             }
         }
 
-        if isPlaying {
+        if isPlaying && !isStartPending {
             player.play()
             player.rate = playbackSpeed
         }
     }
 
-    private func validatePlaybackSession(_ expectedSessionId: String?) throws {
-        guard !isRetired else { throw CancellationError() }
+    private func validatePlaybackSession(_ expectedSessionId: String?, expectedGeneration: Int) throws {
+        guard !isRetired, expectedGeneration == playbackGeneration else { throw CancellationError() }
         if let expectedSessionId, currentSessionId != expectedSessionId {
             throw CancellationError()
         }
@@ -2109,15 +2166,39 @@ final class PlaybackManager {
     func play() {
         guard !isRetired else { return }
         AppLogger.player.info("play() called")
-        guard let player else {
+        guard let player, player.currentItem?.status == .readyToPlay else {
             isPlaying = false
-            AppLogger.player.info("play() called but player is nil")
+            guard !isLoading, let book = currentBook else { return }
+            if let provider = currentProvider {
+                stop()
+                playBook(book, provider: provider)
+            } else if currentTracks.count == 1,
+                let url = URL(string: currentTracks[0].contentUrl)
+            {
+                stop()
+                playDirectURL(book, url: url)
+            }
             return
         }
 
-        setupAudioSession()
+        if duration > 0, currentTime >= duration {
+            seek(to: 0)
+        }
+
         announcePlaybackOwnership()
         activateNowPlayingSession(for: player)
+        isStartPending = true
+        isPlaying = true
+        let sessionId = currentSessionId
+        setupAudioSession { [weak self] in
+            guard let self, self.currentSessionId == sessionId else { return }
+            self.beginPlayback()
+        }
+    }
+
+    private func beginPlayback() {
+        guard let player else { return }
+        isStartPending = false
         AppLogger.player.info("Setting player rate to \(playbackSpeed)x")
         player.rate = playbackSpeed
         isPlaying = true
@@ -2147,6 +2228,12 @@ final class PlaybackManager {
 
     private func pause(userInitiated: Bool) {
         AppLogger.player.info("pause() called")
+        playbackGeneration &+= 1
+        audioSessionGeneration &+= 1
+        startupTask?.cancel()
+        startupTask = nil
+        isLoading = false
+        isStartPending = false
         player?.pause()
         isPlaying = false
         stopSyncTimer()
@@ -2228,6 +2315,11 @@ final class PlaybackManager {
         }
         #endif
 
+        playbackGeneration &+= 1
+        startupTask?.cancel()
+        startupTask = nil
+        isStartPending = false
+        audioSessionGeneration &+= 1
         player?.pause()
         isPlaying = false
 
@@ -2493,39 +2585,12 @@ final class PlaybackManager {
 
         isLoading = true
 
-        runOperation { [self] in
-            do {
-                if let localTracks = makeLocalTracks(for: book), !localTracks.isEmpty, !NetworkPolicyService.shared.isConnected {
-                    AppLogger.player.info("Offline conflict resolution: using \(localTracks.count) local file(s)")
-                    self.currentSessionId = "local-\(book.id)"
-                    let orderedTracks = normalizedTracks(localTracks)
-                    self.currentTracks = orderedTracks
-                    if let state = orderedTracks.playbackState(at: targetTime) {
-                        self.currentTrackIndex = state.index
-                        self.currentTrackStartOffset = state.track.startOffset
-                        try await loadAndPlayTrack(state.track, seekTime: state.localTime)
-                    } else {
-                        self.currentTrackIndex = 0
-                        self.currentTrackStartOffset = orderedTracks[0].startOffset
-                        try await loadAndPlayTrack(orderedTracks[0], seekTime: 0)
-                    }
-                } else {
-                    try await setupPlayer(for: book, provider: provider, resumeTime: targetTime)
-                }
-                await MainActor.run {
-                    self.isLoading = false
-                    self.play()
-                }
-            } catch {
-                AppLogger.player.error("Failed to setup player after conflict resolution: \(error)")
-                await MainActor.run {
-                    self.isLoading = false
-                }
-            }
+        startPlaybackPreparation(for: book) { [self] in
+            try await setupPlayer(for: book, provider: provider, resumeTime: targetTime)
         }
     }
 
-    private func makeLocalTracks(for book: Book) -> [AudioTrackInfo]? {
+    func makeLocalTracks(for book: Book) -> [AudioTrackInfo]? {
         let storage = profileSession.localStorage
         guard let localFiles = storage.localAudiobookFilesIfExists(for: book),
             !localFiles.isEmpty
@@ -2547,6 +2612,9 @@ final class PlaybackManager {
 
         var result: [AudioTrackInfo] = []
         var runningOffset: TimeInterval = 0
+        let bookTracks = (book.audioTracks ?? []).sorted {
+            $0.startOffset == $1.startOffset ? $0.index < $1.index : $0.startOffset < $1.startOffset
+        }
 
         let fallbackPerTrackDuration: TimeInterval = {
             if let totalDuration = book.duration, totalDuration > 0, localFiles.count > 0 {
@@ -2557,8 +2625,7 @@ final class PlaybackManager {
 
         for (idx, fileURL) in localFiles.enumerated() {
             let trackDuration: TimeInterval
-            if let bookTracks = book.audioTracks,
-                idx < bookTracks.count,
+            if idx < bookTracks.count,
                 bookTracks[idx].duration > 0
             {
                 trackDuration = bookTracks[idx].duration

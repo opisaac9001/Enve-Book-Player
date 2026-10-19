@@ -92,7 +92,7 @@ struct FoliateRuntimeSecurityTests {
         )
 
         #expect(source.contains("if (!content?.doc && navigateToResource)"))
-        #expect(source.contains("content.overlayer.add("))
+        #expect(source.contains("overlayer.add(ttsAnnotationKey, resolved.range, Overlayer.highlight"))
         #expect(source.contains("const ttsAnnotationKey = 'enve-tts-current'"))
         #expect(source.contains("const followTTSLocator = async locatorJSON =>"))
         #expect(source.contains("case 'ttsStart':"))
@@ -100,11 +100,34 @@ struct FoliateRuntimeSecurityTests {
         #expect(source.contains("new Intl.Segmenter(language, { granularity: 'sentence' })"))
         #expect(source.contains("locator.cfi = null"))
         #expect(source.contains("locator.domRange = null"))
-        #expect(source.contains("if (!isVisible) await view.renderer.scrollToAnchor?.(range)"))
+        #expect(source.contains("if (!isVisible && !lastSelection) await view.renderer.scrollToAnchor?.(range)"))
         let highlight = try #require(source.range(of: "const applyTTSLocator"))
         let follow = try #require(source.range(of: "const followTTSLocator"))
         let highlightBody = source[highlight.lowerBound..<follow.lowerBound]
         #expect(!highlightBody.contains("view.goTo"))
         #expect(!highlightBody.contains("scrollToAnchor"))
+    }
+
+    @Test func narrationHighlightSurvivesSectionLoadsAndSavedHighlightHits() throws {
+        let runtimeRoot = try #require(FoliateRuntimeSupport.resourceRoot)
+        let source = try String(
+            contentsOf: runtimeRoot.appendingPathComponent("adapter.js"),
+            encoding: .utf8
+        )
+
+        #expect(source.contains("Promise.resolve().then(drawTTSHighlight)"))
+        #expect(source.contains("overlayer.hitTest = hitTestSkippingTTS"))
+        #expect(source.contains("if (lastSelection) return"))
+    }
+
+    @Test func readerFontUsesPrivateFamilyAndReachesInlinePublisherRules() throws {
+        let runtimeRoot = try #require(FoliateRuntimeSupport.resourceRoot)
+        let source = try String(
+            contentsOf: runtimeRoot.appendingPathComponent("adapter.js"),
+            encoding: .utf8
+        )
+
+        #expect(source.contains("return '\"Enve OpenDyslexic\", sans-serif'"))
+        #expect(source.contains("body *:not(code, kbd, samp, var, pre, pre *, code *)"))
     }
 }

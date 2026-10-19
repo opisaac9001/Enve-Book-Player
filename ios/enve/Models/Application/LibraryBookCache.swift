@@ -1,6 +1,5 @@
 import Combine
 import Foundation
-import Logging
 
 @MainActor
 protocol CurrentBookSession: AnyObject {
@@ -37,13 +36,6 @@ final class LibraryBookCache {
     var books: [Book] = [] {
         didSet {
             mutationCount += 1
-            #if DEBUG
-            let delta = books.count - oldValue.count
-            AppLogger.general.debug(
-                "Library cache mutation=\(mutationCount) oldCount=\(oldValue.count) newCount=\(books.count) delta=\(delta) memoryMB=\(AppState.currentMemoryMB())"
-            )
-            #endif
-
             if !skipsDeduplication {
                 var seen = Set<String>(minimumCapacity: books.count)
                 if books.contains(where: { !seen.insert($0.uniqueId).inserted }) {
@@ -130,10 +122,7 @@ final class LibraryBookCache {
     @discardableResult
     func replaceExisting(_ book: Book) -> Bool {
         guard let index = uniqueIdIndex[book.uniqueId], books.indices.contains(index) else { return false }
-        let previousSkip = skipsIndexRebuild
-        skipsIndexRebuild = true
-        books[index] = book
-        skipsIndexRebuild = previousSkip
+        replaceBook(at: index, with: book)
         hot.insert(book)
         return true
     }
@@ -142,8 +131,10 @@ final class LibraryBookCache {
     func mutateBook(uniqueId: String, _ transform: (inout Book) -> Void) -> Book? {
         let updated: Book
         if let index = uniqueIdIndex[uniqueId], books.indices.contains(index) {
-            transform(&books[index])
-            updated = books[index]
+            var snapshot = books[index]
+            transform(&snapshot)
+            replaceBook(at: index, with: snapshot)
+            updated = snapshot
         } else if var cached = hot.book(uniqueId: uniqueId) {
             transform(&cached)
             updated = cached
@@ -158,8 +149,10 @@ final class LibraryBookCache {
     func mutateBook(stableId: String, _ transform: (inout Book) -> Void) -> Book? {
         let updated: Book
         if let index = stableIdIndex[stableId], books.indices.contains(index) {
-            transform(&books[index])
-            updated = books[index]
+            var snapshot = books[index]
+            transform(&snapshot)
+            replaceBook(at: index, with: snapshot)
+            updated = snapshot
         } else if var cached = hot.book(stableId: stableId) {
             transform(&cached)
             updated = cached
@@ -249,6 +242,19 @@ final class LibraryBookCache {
     func retire() async {
         isRetired = true
         for task in Array(persistenceTasks.values) { await task.value }
+    }
+
+    private func replaceBook(at index: Int, with book: Book) {
+        let priorSkipDedup = skipsDeduplication
+        let priorSkipRebuild = skipsIndexRebuild
+        let sameUniqueId = books[index].uniqueId == book.uniqueId
+        skipsDeduplication = priorSkipDedup || sameUniqueId
+        skipsIndexRebuild = priorSkipRebuild || (sameUniqueId && books[index].stableId == book.stableId)
+        defer {
+            skipsDeduplication = priorSkipDedup
+            skipsIndexRebuild = priorSkipRebuild
+        }
+        books[index] = book
     }
 
     private func commit(_ snapshots: [Book], matchingSession: ((Book) -> Bool)?) {

@@ -5,6 +5,7 @@ import UIKit
 
 extension UnifiedDownloadService {
     func cacheAssetsForOffline(book: Book) async {
+        guard !isRetired, !Task.isCancelled else { return }
         let bookId = book.downloadKey
         let diagnosticID = DiagnosticLogSanitizer.identifier(for: book.stableId)
 
@@ -27,6 +28,7 @@ extension UnifiedDownloadService {
                         let (fetched, _) = try await session.data(from: coverURL)
                         coverData = fetched
                     }
+                    guard !Task.isCancelled, !isRetired else { return }
                     if let data = coverData, let image = UIImage(data: data) {
                         imageCache.save(image, for: coverURL)
                         _ = try? storageManager.saveCoverOverride(for: bookId, imageData: data)
@@ -47,6 +49,7 @@ extension UnifiedDownloadService {
             }
         }
 
+        guard !Task.isCancelled, !isRetired else { return }
         do {
             let metadata = OfflineBookMetadata(
                 id: book.id,
@@ -101,13 +104,13 @@ extension UnifiedDownloadService {
             var rebuiltTracks: [AudioTrack] = []
             rebuiltTracks.reserveCapacity(localFiles.count)
 
+            let orderedBookTracks = (book.audioTracks ?? []).sorted {
+                $0.startOffset == $1.startOffset ? $0.index < $1.index : $0.startOffset < $1.startOffset
+            }
             var runningOffset: TimeInterval = 0
             for (index, fileURL) in localFiles.enumerated() {
                 let fileMetadata = try? await localMetadata.loadMetadataForDownloadedAudio(at: fileURL.path)
-                let fallbackDuration =
-                    (book.audioTracks != nil && index < (book.audioTracks?.count ?? 0))
-                    ? (book.audioTracks?[index].duration ?? 0)
-                    : 0
+                let fallbackDuration = index < orderedBookTracks.count ? orderedBookTracks[index].duration : 0
                 let sessionDuration = sessionFallbackDurations[index] ?? 0
                 let probedDuration = localAudioDuration(for: fileURL) ?? 0
                 let duration = max(probedDuration, fileMetadata?.duration ?? 0, fallbackDuration, sessionDuration)
@@ -177,6 +180,7 @@ extension UnifiedDownloadService {
                 source: book.source
             )
 
+            guard !Task.isCancelled, !isRetired else { return }
             try storageManager.saveMetadataOverride(metadata, for: bookId)
             AppLogger.network.debug("Refreshed offline metadata bookDiagnosticID=\(diagnosticID)")
         } catch {

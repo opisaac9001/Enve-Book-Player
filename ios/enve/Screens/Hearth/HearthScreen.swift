@@ -25,6 +25,7 @@ struct HearthScreen: View {
     @State private var loaded = false
     @State private var seeAll: HearthSeeAll?
     @State private var lastOpenedBook: Book?
+    @State private var pendingUnread: Book?
     @State private var sectionOrder: [UserPreferences.HomeSection]
 
     private var lastOpened: LastOpenedBookStore { profileSession.lastOpened }
@@ -47,6 +48,7 @@ struct HearthScreen: View {
 
                     if let hero {
                         HearthBookCard(book: hero, sourceLabel: sourceLabel(for: hero), prominent: true)
+                            .contextMenu { markUnreadButton(for: hero) }
                             .padding(.horizontal, 24)
                         HearthPulse(
                             activeCount: activeBookCount,
@@ -107,9 +109,24 @@ struct HearthScreen: View {
                     profileSession.preferences
                     .loadPreferences()
                     .normalizedHomeSectionOrder
+                await load()
             }
         }
         .toolbar(.hidden, for: .navigationBar)
+        .confirmationDialog(
+            "Mark as unread?",
+            isPresented: Binding(
+                get: { pendingUnread != nil },
+                set: { if !$0 { pendingUnread = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: pendingUnread
+        ) { book in
+            Button("Mark as Unread", role: .destructive) { markUnread(book) }
+            Button("Cancel", role: .cancel) {}
+        } message: { book in
+            Text("Your place in \"\(book.title)\" goes back to the beginning wherever it syncs. Bookmarks, highlights, and downloads stay.")
+        }
     }
 
     @ViewBuilder
@@ -205,7 +222,9 @@ struct HearthScreen: View {
     }
 
     private var hero: Book? {
-        lastOpenedBook ?? engine.playback.currentBook ?? reading.first ?? listening.first ?? fresh.first
+        [lastOpenedBook, engine.playback.currentBook, reading.first, listening.first, fresh.first]
+            .compactMap { $0 }
+            .first(where: profileSession.preferences.includesLibraryBook)
     }
 
     private var shelfReading: [Book] {
@@ -287,8 +306,22 @@ struct HearthScreen: View {
                 resetProgress(book)
             }
         }
+        markUnreadButton(for: book)
         Button(book.mediaType == .ebook ? "Read" : "Listen", systemImage: book.mediaType == .ebook ? "book" : "play") {
             engine.playback.play(book)
+        }
+    }
+
+    @ViewBuilder
+    private func markUnreadButton(for book: Book) -> some View {
+        if engine.library.canMarkUnread(book) {
+            Button("Mark as Unread", systemImage: "book.closed") {
+                if engine.library.markUnreadNeedsConfirmation(book) {
+                    pendingUnread = book
+                } else {
+                    markUnread(book)
+                }
+            }
         }
     }
 
@@ -397,6 +430,19 @@ struct HearthScreen: View {
         Task { await load() }
     }
 
+    private func markUnread(_ book: Book) {
+        reading.removeAll { $0.stableId == book.stableId }
+        listening.removeAll { $0.stableId == book.stableId }
+        if lastOpenedBook?.stableId == book.stableId {
+            lastOpenedBook = nil
+        }
+        PlatformHaptics.impact(.light)
+        Task {
+            await engine.library.markUnread(book)
+            await load()
+        }
+    }
+
     private func replaceShelfBook(_ book: Book) {
         if let index = reading.firstIndex(where: { $0.stableId == book.stableId }) {
             reading[index] = book
@@ -463,9 +509,9 @@ struct HearthScreen: View {
             currentStableId: hero?.stableId
         )
         listening = feed.listening
-        reading = feed.reading
-        fresh = feed.fresh
-        downloaded = feed.downloaded
+        reading = profileSession.preferences.readingEnabled ? feed.reading : []
+        fresh = feed.fresh.filter(profileSession.preferences.includesLibraryBook)
+        downloaded = feed.downloaded.filter(profileSession.preferences.includesLibraryBook)
 
         if let hero {
             heroTint = await profileSession.ambientColors.resolve(for: hero)

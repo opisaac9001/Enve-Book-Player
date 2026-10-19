@@ -42,6 +42,7 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
 
     @discardableResult
     func authenticate(serverURL: String, username: String, password: String) async throws -> String {
+        try EnveProvenance.checkServerAddress(serverURL)
         self.connection = ServerConnection(
             name: connection.name,
             url: serverURL,
@@ -78,6 +79,7 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
     }
 
     func validateConnection() async throws -> Bool {
+        try EnveProvenance.checkServerAddress(connection.url)
         if connection.token != nil && connection.userId != nil {
             return try await checkSystemInfo()
         }

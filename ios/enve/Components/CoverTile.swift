@@ -16,18 +16,25 @@ struct CoverTile: View {
     var corner: CGFloat = Hearth.radiusCover
 
     @Environment(\.hearth) private var hearth
+    @State private var imageRatio: CGFloat?
 
     private var showBadges: Bool { badges && width >= 64 }
+    private var coverRatio: CGFloat {
+        book.mediaType == .ebook ? min(imageRatio ?? book.hearthCoverRatio, book.hearthCoverRatio) : book.hearthCoverRatio
+    }
 
     var body: some View {
         CachedAsyncCoverImage(
             url: book.coverURL,
             fallbackColor: "Blue",
             headers: CachedAsyncCoverImage.authHeaders(for: book),
-            book: book
+            book: book,
+            onImageSizeChange: { size in
+                imageRatio = size.map { $0.height / $0.width }
+            }
         )
-        .aspectRatio(1 / book.hearthCoverRatio, contentMode: .fill)
-        .frame(width: width, height: width * book.hearthCoverRatio)
+        .aspectRatio(1 / coverRatio, contentMode: .fill)
+        .frame(width: width, height: width * coverRatio)
         .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
         .overlay {
             if showBadges, book.isFinished {

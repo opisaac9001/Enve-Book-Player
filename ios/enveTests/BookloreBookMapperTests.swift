@@ -83,6 +83,7 @@ struct BookloreBookMapperTests {
         #expect(BookloreBookMapper.normalizedFileType("application/epub+zip") == "epub")
         #expect(BookloreBookMapper.mediaType(from: ".m4b") == .audiobook)
         #expect(BookloreBookMapper.libraryType(from: ["EPUB"]) == "ebook")
+        #expect(BookloreBookMapper.libraryType(from: ["KEPUB"]) == "ebook")
         #expect(BookloreBookMapper.libraryType(from: ["AUDIOBOOK"]) == "audiobook")
         #expect(BookloreBookMapper.displayAuthor(from: [" Zed ", "amy", "amy"]) == "amy, Zed")
         #expect(BookloreBookMapper.title(fromPrimaryFileName: "  My Book.m4b ") == "My Book")

@@ -13,8 +13,7 @@ struct ProfileLibrarianIsolationTests {
         let storage = ProfileStorageLocations(profileID: profile.id,
             documentsDirectory: root.appendingPathComponent("Documents"),
             applicationSupportDirectory: root.appendingPathComponent("ApplicationSupport"),
-            cachesDirectory: root.appendingPathComponent("Caches"),
-            legacyPlaybackStoreURL: root.appendingPathComponent("default.store"))
+            cachesDirectory: root.appendingPathComponent("Caches"))
         let session = try ProfileSession(profile: profile, storage: storage, defaults: defaults)
         let book = Book(id: UUID().uuidString, title: "Shared server identity")
         let ownerMessage = LibrarianMessage(role: .user, text: "Owner conversation", scope: .previousChapter)

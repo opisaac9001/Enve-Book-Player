@@ -60,6 +60,9 @@ private struct SourcesOPDSBrowseContent: View {
                 if let message = browser.errorMessage {
                     noticeCard(message)
                 }
+                if let message = browser.searchAttribution {
+                    noticeCard(message)
+                }
                 breadcrumbCard
                 if browser.canSearch { searchCard }
                 navigationCard
@@ -232,7 +235,7 @@ private struct SourcesOPDSBrowseContent: View {
                 .disabled(searchField.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 .opacity(searchField.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.5 : 1)
 
-                if browser.isSearchResult {
+                if browser.isSearchResult || browser.searchAttribution != nil {
                     Button("Clear") {
                         searchField = ""
                         Task { await browser.clearSearch() }

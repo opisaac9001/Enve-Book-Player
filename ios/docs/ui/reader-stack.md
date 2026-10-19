@@ -168,6 +168,7 @@ A Grimmory streamed EPUB is attempted after step 3 misses and before the step 5 
 Formats (`enum EbookFormat`, `Models/LocalLibrary.swift:396`): `epub`, `pdf`, `cbz`, `cbr`, `mobi`, `azw3`, `azw`, `imagefolder`.
 - **MOBI/AZW/AZW3** → `Services/Import/MobiConverter.swift` + `KF8Reader.swift` (native Swift PalmDB/KF8 parser) `convertMobiToEpub` → opened by Readium; DRM detected (`MobiConversionError.encrypted`); fallback `extractHTMLForWebKit` → `readyHTML` WKWebView.
 - **CBZ/CBR/imagefolder** → `Services/ComicArchiveService.swift` (ZIPFoundation + `LocalPackages/UnrarKit`; reads ComicInfo.xml manga direction) → `[URL]` pages → `ComicReaderBridge` (paged UIPageViewController with RTL/spread/zoom, or vertical scroll mode), opened and owned by `ReaderPagedContentController`. Comics never go through Readium.
+- **Comic direction** → a per-book choice (`ComicReadingDirectionStore`, cleared by Auto) wins, then the provider's series direction (`ComicReadingDirectionProvider`, Komga), then ComicInfo.xml, then the global default; a global Scroll default is not overridden by paged metadata. Landscape spreads keep the cover alone, pair pages in order, and restart pairing after each wide page; progress uses the last visible page.
 - **PDF** → PDFKit directly (`PDFReaderController`, also owned by `ReaderPagedContentController`).
 - **EPUB** → Readium (`openPublication(at:)`), with `copyToCanonicalLocation` retry for local imports.
 

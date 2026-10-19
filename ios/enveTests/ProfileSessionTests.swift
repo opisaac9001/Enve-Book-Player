@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import Security
 import Testing
 
@@ -92,6 +93,38 @@ struct ProfileSessionTests {
         var available = true
     }
 
+    @Test func obsoletePlaybackFilesDoNotBlockProfilesOrActivePersistence() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let legacyDirectory = fixture.root.appendingPathComponent("ApplicationSupport")
+        try FileManager.default.createDirectory(at: legacyDirectory, withIntermediateDirectories: true)
+        let legacyFiles = ["default.store", "default.store-wal", "default.store-shm"]
+            .map { legacyDirectory.appendingPathComponent($0) }
+        let preserved = Data("obsolete playback fixture".utf8)
+        for file in legacyFiles { try preserved.write(to: file) }
+        let profile = FamilyProfile(id: FamilyProfile.ownerID, name: "Owner", role: .adult)
+        let session = try fixture.session(profile)
+        let book = Book(id: "fixture", title: "Saved book", backendId: "local", source: .local)
+        await session.bookStore.upsertBooks([book])
+        await session.bookStore.updateProgress(uniqueId: book.uniqueId, currentTime: 123, isFinished: false, lastUpdate: Date())
+        session.bookProgress.saveProgress(for: book, progress: 123, duration: 600)
+        let bookmark = Bookmark(bookId: book.stableId, position: 90, title: "Saved passage", note: "Keep this", mediaType: .audiobook)
+        session.readerArtifacts.saveBookmarks(bookId: book.stableId, bookmarks: [bookmark])
+        try await session.metadataStorage.saveMetadata(BookMetadata(bookId: book.stableId, file: FileMetadataLayer(title: book.title)))
+        try await session.metadataStorage.updateUserOverrides(bookId: book.stableId, overrides: UserOverridesLayer(customTitle: "Custom title"))
+        session.playbackQueue.addLast(book)
+        await session.retire()
+        let reopened = try fixture.session(profile)
+        #expect(await reopened.bookStore.book(uniqueId: book.uniqueId)?.currentTime == 123)
+        #expect(reopened.bookProgress.loadProgress(for: book)?.progress == 123)
+        #expect(reopened.readerArtifacts.loadBookmarks(bookId: book.stableId).first?.id == bookmark.id)
+        #expect(reopened.readerArtifacts.loadBookmarks(bookId: book.stableId).first?.note == "Keep this")
+        #expect(try await reopened.metadataStorage.loadMetadata(bookId: book.stableId)?.userOverrides?.customTitle == "Custom title")
+        #expect(reopened.playbackQueue.entries.map(\.book.id) == [book.id])
+        for file in legacyFiles { #expect(try Data(contentsOf: file) == preserved) }
+        await reopened.retire()
+    }
+
     @Test func capturedGraphKeepsLibraryProgressAndArtworkIndependentAfterReopen() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -167,7 +200,7 @@ struct ProfileSessionTests {
         let coordinatorDefaults = try fixture.defaults("coordinator")
         coordinatorDefaults.set(true, forKey: "familyProfiles.enabled")
         let coordinator = try ProfileSwitchCoordinator(catalog: catalog, pinStore: fixture.pin,
-            defaults: coordinatorDefaults, initialSession: initial, sessionFactory: { try fixture.session($0) })
+            defaults: coordinatorDefaults, initialSession: initial, sessionFactory: { try fixture.session($0, libraryDatabase: $1) })
         do {
             try coordinator.authorizeParent(pin: "111111")
             Issue.record("Wrong PIN was accepted")
@@ -204,6 +237,37 @@ struct ProfileSessionTests {
             var conversions = alignment.completedConversions().makeAsyncIterator()
             #expect(await conversions.next() == nil)
         }
+        await coordinator.activeSession.retire()
+    }
+
+    @Test func coordinatorReusesDatabasesAndReleasesRemovedProfiles() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let catalog = try FamilyProfileStore(fileURL: fixture.root.appendingPathComponent("catalog.json"), pinStore: fixture.pin)
+        let other = try catalog.addAdult(name: "Other")
+        let initial = try fixture.session(catalog.profiles[0])
+        let defaults = try fixture.defaults("coordinator")
+        defaults.set(true, forKey: "familyProfiles.enabled")
+        let coordinator = try ProfileSwitchCoordinator(catalog: catalog, pinStore: fixture.pin,
+            defaults: defaults, initialSession: initial,
+            sessionFactory: { try fixture.session($0, libraryDatabase: $1) })
+        try await coordinator.switchProfile(id: other.id)
+        weak let retiredSession = coordinator.activeSession
+        weak let otherDatabase = coordinator.activeSession.libraryDatabase
+        #expect(otherDatabase !== initial.libraryDatabase)
+        try await coordinator.switchProfile(id: FamilyProfile.ownerID)
+        await Task.yield()
+        #expect(retiredSession == nil)
+        #expect(coordinator.activeSession !== initial)
+        #expect(coordinator.activeSession.libraryDatabase === initial.libraryDatabase)
+        try await coordinator.switchProfile(id: other.id)
+        #expect(coordinator.activeSession.libraryDatabase === otherDatabase)
+        try await coordinator.switchProfile(id: FamilyProfile.ownerID)
+        try await coordinator.removeProfile(id: other.id)
+        await Task.yield()
+        #expect(otherDatabase == nil)
+        #expect(!coordinator.profiles.contains { $0.id == other.id })
+        #expect(coordinator.activeSession.libraryDatabase === initial.libraryDatabase)
         await coordinator.activeSession.retire()
     }
 
@@ -269,6 +333,45 @@ struct ProfileSessionTests {
         await session.retire()
     }
 
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["ENVE_PROFILE_SOAK"] == "1"))
+    func repeatedSwitchesPreserveProfileBooksWithoutGrowingOpenFiles() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let catalog = try FamilyProfileStore(fileURL: fixture.root.appendingPathComponent("catalog.json"), pinStore: fixture.pin)
+        let other = try catalog.addAdult(name: "Other")
+        let initial = try fixture.session(catalog.profiles[0])
+        let defaults = try fixture.defaults("coordinator")
+        defaults.set(true, forKey: "familyProfiles.enabled")
+        let coordinator = try ProfileSwitchCoordinator(catalog: catalog, pinStore: fixture.pin,
+            defaults: defaults, initialSession: initial, sessionFactory: { try fixture.session($0, libraryDatabase: $1) })
+        let book = Book(id: "switch-fixture", title: "Owner", backendId: "fixture", source: .smb)
+        await initial.bookStore.upsertBooks([book])
+        try await coordinator.switchProfile(id: other.id)
+        var otherBook = book
+        otherBook.title = "Other"
+        await coordinator.activeSession.bookStore.upsertBooks([otherBook])
+        try await coordinator.switchProfile(id: FamilyProfile.ownerID)
+
+        func openFileCount() -> Int {
+            (0..<getdtablesize()).count { fcntl($0, F_GETFD) != -1 }
+        }
+        let baseline = openFileCount()
+        for iteration in 1...100 {
+            try await coordinator.switchProfile(id: other.id)
+            #expect(await coordinator.activeSession.bookStore.book(uniqueId: book.uniqueId)?.title == "Other")
+            await coordinator.activeSession.bookStore.updateProgress(uniqueId: book.uniqueId, currentTime: Double(iteration), isFinished: false, lastUpdate: Date())
+            try await coordinator.switchProfile(id: FamilyProfile.ownerID)
+            #expect(await coordinator.activeSession.bookStore.book(uniqueId: book.uniqueId)?.title == "Owner")
+            #expect(await coordinator.activeSession.bookStore.book(uniqueId: book.uniqueId)?.currentTime == 0)
+        }
+        let afterSwitching = openFileCount()
+        #expect(afterSwitching <= baseline + 8)
+        try await coordinator.switchProfile(id: other.id)
+        #expect(await coordinator.activeSession.bookStore.book(uniqueId: book.uniqueId)?.currentTime == 100)
+        print("Profile resource soak: 200 switches, open files \(baseline) -> \(afterSwitching)")
+        await coordinator.activeSession.retire()
+    }
+
     private final class CountingSyncSink: SyncSink {
         let id = "profile-test"
         let displayName = "Profile test"
@@ -297,13 +400,12 @@ struct ProfileSessionTests {
             return try #require(UserDefaults(suiteName: domain))
         }
 
-        func session(_ profile: FamilyProfile) throws -> ProfileSession {
+        func session(_ profile: FamilyProfile, libraryDatabase: BookStoreManager? = nil) throws -> ProfileSession {
             let storage = ProfileStorageLocations(profileID: profile.id,
                 documentsDirectory: root.appendingPathComponent("Documents"),
                 applicationSupportDirectory: root.appendingPathComponent("ApplicationSupport"),
-                cachesDirectory: root.appendingPathComponent("Caches"),
-                legacyPlaybackStoreURL: root.appendingPathComponent("Playback.store"))
-            return try ProfileSession(profile: profile, storage: storage, defaults: defaults(profile.id))
+                cachesDirectory: root.appendingPathComponent("Caches"))
+            return try ProfileSession(profile: profile, storage: storage, defaults: defaults(profile.id), libraryDatabase: libraryDatabase)
         }
 
         func remove() {

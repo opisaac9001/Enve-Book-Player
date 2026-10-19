@@ -67,6 +67,7 @@ struct KOReaderScreen: View {
         .scrollIndicators(.hidden)
         .background(HearthBackground())
         .toolbar(.hidden, for: .navigationBar)
+        .hearthInteractiveBack()
     }
 
     private var connectedCard: some View {

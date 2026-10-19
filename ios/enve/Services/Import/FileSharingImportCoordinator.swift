@@ -328,7 +328,7 @@ final class FileSharingImportCoordinator {
                 guard let values = try? item.resourceValues(forKeys: keys) else { continue }
                 let ext = item.pathExtension.lowercased()
                 let isAudio = ["m4b", "m4a", "mp3", "aac", "flac", "ogg", "opus", "mp4", "aiff", "wav"].contains(ext)
-                let isEbook = ["epub", "pdf", "cbz", "cbr", "mobi", "azw3", "azw"].contains(ext)
+                let isEbook = ["epub", "kepub", "pdf", "cbz", "cbr", "mobi", "azw3", "azw"].contains(ext)
                 let isImage = EbookFormat.isImagePageExtension(ext)
                 let isZip = ext == "zip"
                 let isDir = values.isDirectory == true

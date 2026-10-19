@@ -373,27 +373,38 @@ final class UserProgressStore {
         }
         if let resetBook {
             library.hot.insert(resetBook)
-            retainOperation(priority: .utility) { [self] in
-                let store = bookStore
-                await store.updateProgress(
-                    uniqueId: resetBook.uniqueId,
-                    currentTime: 0,
+        }
+        // Large libraries page books from the store, so the persisted reset can't depend on an in-memory copy.
+        let persistedBook = resetBook ?? book
+        retainOperation(priority: .utility) { [self] in
+            let store = bookStore
+            await store.updateProgress(
+                uniqueId: persistedBook.uniqueId,
+                currentTime: 0,
+                isFinished: false,
+                lastUpdate: zeroed.lastUpdate
+            )
+            if hasTextPosition {
+                await store.updateEbookProgress(
+                    uniqueId: persistedBook.uniqueId,
+                    ebookProgress: 0,
+                    epubLocator: nil,
                     isFinished: false,
                     lastUpdate: zeroed.lastUpdate
                 )
-                await store.upsertProgress(
-                    bookUniqueId: resetBook.uniqueId,
-                    stableId: resetBook.stableId,
-                    currentTime: 0,
-                    duration: resetBook.duration ?? 0,
-                    ebookProgress: hasTextPosition ? 0 : nil,
-                    epubLocator: nil,
-                    isFinished: false,
-                    lastUpdate: zeroed.lastUpdate,
-                    hideFromContinue: false,
-                    preserveEbookPosition: false
-                )
             }
+            await store.upsertProgress(
+                bookUniqueId: persistedBook.uniqueId,
+                stableId: persistedBook.stableId,
+                currentTime: 0,
+                duration: persistedBook.duration ?? 0,
+                ebookProgress: hasTextPosition ? 0 : nil,
+                epubLocator: nil,
+                isFinished: false,
+                lastUpdate: zeroed.lastUpdate,
+                hideFromContinue: false,
+                preserveEbookPosition: false
+            )
         }
 
         progressCache.clearProgress(for: book.stableId)

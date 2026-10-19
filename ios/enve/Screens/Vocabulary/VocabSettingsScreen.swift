@@ -102,6 +102,7 @@ struct VocabSettingsScreen: View {
         .scrollIndicators(.hidden)
         .background(HearthBackground())
         .toolbar(.hidden, for: .navigationBar)
+        .hearthInteractiveBack()
     }
 
     private func vocabCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {

@@ -19,11 +19,39 @@ struct KomgaReadiumProgressionTests {
     )
 
     @Test func comicFormatSurvivesGenericAndParameterizedMediaTypes() {
-        #expect(KomgaProvider.ebookFormat(mediaType: "application/octet-stream", mediaProfile: "DIVINA", fileName: "/comics/Issue.CBR") == "cbr")
-        #expect(KomgaProvider.ebookFormat(mediaType: "application/zip; charset=binary", mediaProfile: "DIVINA", fileName: "Issue") == "cbz")
-        #expect(KomgaProvider.ebookFormat(mediaType: nil, mediaProfile: "DIVINA", fileName: "Issue") == "cbz")
-        #expect(KomgaProvider.ebookFormat(mediaType: "application/pdf", mediaProfile: "PDF", fileName: "/books/Issue.pdf") == "pdf")
-        #expect(KomgaProvider.ebookFormat(mediaType: "application/epub+zip", mediaProfile: "EPUB", fileName: "Book") == "epub")
+        #expect(format(mediaType: "application/octet-stream", profile: "DIVINA", fileName: "/comics/Issue.CBR") == "cbr")
+        #expect(format(mediaType: "application/zip; charset=binary", profile: "DIVINA", fileName: "Issue") == "cbz")
+        #expect(format(mediaType: nil, profile: "DIVINA", fileName: "Issue") == "cbz")
+        #expect(format(mediaType: "application/pdf", profile: "PDF", fileName: "/books/Issue.pdf") == "pdf")
+        #expect(format(mediaType: "application/epub+zip", profile: "EPUB", fileName: "Book") == "epub")
+    }
+
+    @Test func theMediaProfileDecidesBetweenComicAndBook() {
+        #expect(format(mediaType: "application/epub+zip", profile: "EPUB", divina: true, fileName: "/manga/Vol 1.epub") == "cbz")
+        #expect(format(mediaType: "application/epub+zip", profile: "EPUB", divina: false, fileName: "/books/Novel.epub") == "epub")
+        #expect(format(mediaType: "application/zip", profile: "DIVINA", fileName: "/comics/Issue.epub") == "cbz")
+        #expect(format(mediaType: "application/x-7z-compressed", profile: "DIVINA", fileName: "/comics/Issue.cb7") == "cbz")
+        #expect(format(mediaType: nil, profile: "PDF", fileName: "Issue") == "pdf")
+    }
+
+    @Test func anUnanalyzedBookFallsBackToItsFilenameAndNeverGuessesEPUB() {
+        #expect(format(mediaType: nil, profile: nil, fileName: "/comics/Unanalyzed.cbz") == "cbz")
+        #expect(format(mediaType: "", profile: "", fileName: "/comics/Unanalyzed.CBR") == "cbr")
+        #expect(format(mediaType: "application/zip", profile: nil, fileName: "Unanalyzed") == "cbz")
+        #expect(format(mediaType: nil, profile: nil, fileName: "Unanalyzed") == nil)
+    }
+
+    @Test func seriesReadingDirectionsMapToReaderDirections() {
+        #expect(KomgaProvider.comicReadingDirection(fromSeriesValue: "LEFT_TO_RIGHT") == .leftToRight)
+        #expect(KomgaProvider.comicReadingDirection(fromSeriesValue: "RIGHT_TO_LEFT") == .rightToLeft)
+        #expect(KomgaProvider.comicReadingDirection(fromSeriesValue: "VERTICAL") == .vertical)
+        #expect(KomgaProvider.comicReadingDirection(fromSeriesValue: "WEBTOON") == .vertical)
+        #expect(KomgaProvider.comicReadingDirection(fromSeriesValue: "") == nil)
+        #expect(KomgaProvider.comicReadingDirection(fromSeriesValue: nil) == nil)
+    }
+
+    private func format(mediaType: String?, profile: String?, divina: Bool? = nil, fileName: String?) -> String? {
+        KomgaProvider.ebookFormat(mediaType: mediaType, mediaProfile: profile, epubDivinaCompatible: divina, fileName: fileName)
     }
 
     @Test func aFetchedProgressionBecomesAReadiumLocator() throws {

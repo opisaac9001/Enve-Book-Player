@@ -27,13 +27,14 @@ enum LibraryLayout: String {
 }
 
 enum LibraryMediaFilter: String, CaseIterable {
-    case all, audiobooks, ebooks, podcasts
+    case all, audiobooks, ebooks, comics, podcasts
 
     var title: String {
         switch self {
         case .all: "All media"
         case .audiobooks: "Audiobooks"
-        case .ebooks: "Ebooks & comics"
+        case .ebooks: "Ebooks"
+        case .comics: "Comics"
         case .podcasts: "Podcasts"
         }
     }
@@ -42,9 +43,50 @@ enum LibraryMediaFilter: String, CaseIterable {
         switch self {
         case .all: nil
         case .audiobooks: "audiobook"
-        case .ebooks: "ebook"
+        case .ebooks, .comics: "ebook"
         case .podcasts: "podcast"
         }
+    }
+
+    func matches(_ book: Book) -> Bool {
+        switch self {
+        case .all: true
+        case .comics: book.mediaType == .ebook && book.isComic
+        case .audiobooks, .ebooks, .podcasts: book.mediaType.rawValue == mediaTypeRaw
+        }
+    }
+}
+
+struct LibraryBrowsePreferences: Equatable {
+    var facet: LibraryFacet
+    var layout: LibraryLayout
+
+    static let facetKey = "imagine.library.facet"
+    static let comicsFacets: [LibraryFacet] = [.books, .series]
+
+    static func load(media: LibraryMediaFilter, source: LibrarySourceFilter, defaults: UserDefaults) -> LibraryBrowsePreferences {
+        let globalLayout = LibraryLayout(rawValue: defaults.string(forKey: LibraryLayout.defaultsKey) ?? "") ?? .list
+        guard media == .comics else {
+            let facet = LibraryFacet(rawValue: defaults.string(forKey: facetKey) ?? "") ?? .books
+            return LibraryBrowsePreferences(facet: facet, layout: globalLayout)
+        }
+        let facet = LibraryFacet(rawValue: defaults.string(forKey: comicsKey("facet", source: source)) ?? "")
+            .flatMap { comicsFacets.contains($0) ? $0 : nil }
+            ?? .series
+        let layout = LibraryLayout(rawValue: defaults.string(forKey: comicsKey("layout", source: source)) ?? "") ?? globalLayout
+        return LibraryBrowsePreferences(facet: facet, layout: layout)
+    }
+
+    static func save(facet: LibraryFacet, media: LibraryMediaFilter, source: LibrarySourceFilter, defaults: UserDefaults) {
+        defaults.set(facet.rawValue, forKey: media == .comics ? comicsKey("facet", source: source) : facetKey)
+    }
+
+    static func save(layout: LibraryLayout, media: LibraryMediaFilter, source: LibrarySourceFilter, defaults: UserDefaults) {
+        defaults.set(layout.rawValue, forKey: media == .comics ? comicsKey("layout", source: source) : LibraryLayout.defaultsKey)
+    }
+
+    private static func comicsKey(_ name: String, source: LibrarySourceFilter) -> String {
+        "imagine.library.comics.\(name).\(source.rawValue)"
     }
 }
 
@@ -148,8 +190,16 @@ final class LibraryModel {
     private(set) var isPagedMode = false
 
     private(set) var facet: LibraryFacet = .books
-    private(set) var status: LibraryStatusFilter
-    private(set) var media: LibraryMediaFilter
+    private var selectedStatus: LibraryStatusFilter
+    private var selectedMedia: LibraryMediaFilter
+    private(set) var status: LibraryStatusFilter {
+        get { !readingEnabled && selectedStatus == .reading ? .listening : selectedStatus }
+        set { selectedStatus = newValue }
+    }
+    private(set) var media: LibraryMediaFilter {
+        get { !readingEnabled && (selectedMedia == .ebooks || selectedMedia == .comics) ? .all : selectedMedia }
+        set { selectedMedia = newValue }
+    }
     private(set) var sort: LibrarySort
     private(set) var sortDirection: LibrarySortDirection
     private(set) var sortDescriptors: [LibrarySortDescriptor]
@@ -173,45 +223,69 @@ final class LibraryModel {
     @ObservationIgnored private var workRefByRep: [String: LibraryWorkRef] = [:]
     @ObservationIgnored private var workHiddenIds: Set<String> = []
     @ObservationIgnored private var excludedLibraryKeys: Set<String> = []
+    @ObservationIgnored private var lastBrowseQuery: BrowseQuery?
+    @ObservationIgnored private var firstPageLimit = LibraryModel.pageSize
 
     private static let pageSize = 200
     private static let pagePrefetchDistance = 40
     private static let pagedThreshold = 3000
     private static let expensiveSupportDataThreshold = 5000
     private static let supportDataSampleLimit = 1200
-    private static let normalDownloadedBadgeLimit = 1000
     private static let statusKey = "imagine.library.status"
     private static let mediaKey = "imagine.library.media"
     private static let sortKey = "imagine.library.sort"
     private static let sortDirectionKey = "imagine.library.sortDirection"
     private static let sortDescriptorsKey = "imagine.library.sortDescriptors"
     private static let sourceKey = "imagine.library.source"
-    private static let facetKey = "imagine.library.facet"
     private static let advancedFiltersKey = "imagine.library.advancedFilters"
 
     private enum LibraryPagingMode {
         case none
         case recentKeyset
         case sortedOffset
+        case comicOffset
+    }
+
+    private struct BrowseQuery: Equatable {
+        let facet: LibraryFacet
+        let status: LibraryStatusFilter
+        let media: LibraryMediaFilter
+        let readingEnabled: Bool
+        let source: LibrarySourceFilter
+        let sort: [LibrarySortDescriptor]
+        let advancedFilters: LibraryAdvancedFilters
+        let search: String
     }
 
     private unowned let profileSession: ProfileSession?
     private var defaults: UserDefaults { profileSession?.defaults ?? .standard }
+    private var preferences: LibraryDisplayPreferencesStore { profileSession?.preferences ?? .shared }
+    var readingEnabled: Bool { preferences.readingEnabled }
+    var availableMediaFilters: [LibraryMediaFilter] {
+        readingEnabled ? LibraryMediaFilter.allCases : [.all, .audiobooks, .podcasts]
+    }
+    var availableStatusFilters: [LibraryStatusFilter] {
+        LibraryStatusFilter.allCases.filter { readingEnabled || $0 != .reading }
+    }
 
     init(profileSession: ProfileSession? = nil) {
         self.profileSession = profileSession
         let defaults = profileSession?.defaults ?? .standard
-        facet = LibraryFacet(rawValue: defaults.string(forKey: Self.facetKey) ?? "") ?? .books
-        status = LibraryStatusFilter(rawValue: defaults.string(forKey: Self.statusKey) ?? "") ?? .all
-        media = LibraryMediaFilter(rawValue: defaults.string(forKey: Self.mediaKey) ?? "") ?? .all
+        selectedStatus = LibraryStatusFilter(rawValue: defaults.string(forKey: Self.statusKey) ?? "") ?? .all
+        let sourceFilter = LibrarySourceFilter(rawValue: defaults.string(forKey: Self.sourceKey) ?? "")
+        let media = LibraryMediaFilter(rawValue: defaults.string(forKey: Self.sourceMediaKey(sourceFilter)) ?? "")
+            ?? LibraryMediaFilter(rawValue: defaults.string(forKey: Self.mediaKey) ?? "") ?? .all
+        let browse = LibraryBrowsePreferences.load(media: media, source: sourceFilter, defaults: defaults)
+        self.selectedMedia = media
+        self.sourceFilter = sourceFilter
+        facet = browse.facet
+        layout = browse.layout
         let fallbackSort = LibrarySort(rawValue: defaults.string(forKey: Self.sortKey) ?? "") ?? .recent
         let fallbackDirection = LibrarySortDirection(rawValue: defaults.string(forKey: Self.sortDirectionKey) ?? "") ?? .descending
         let descriptors = Self.loadSortDescriptors(defaults: defaults, fallbackSort: fallbackSort, fallbackDirection: fallbackDirection)
         sortDescriptors = descriptors
         sort = descriptors.first?.field ?? fallbackSort
         sortDirection = descriptors.first?.direction ?? fallbackDirection
-        layout = LibraryLayout(rawValue: defaults.string(forKey: LibraryLayout.defaultsKey) ?? "") ?? .list
-        sourceFilter = LibrarySourceFilter(rawValue: defaults.string(forKey: Self.sourceKey) ?? "")
         advancedFilters =
             defaults.data(forKey: Self.advancedFiltersKey)
             .flatMap { try? JSONDecoder().decode(LibraryAdvancedFilters.self, from: $0) }
@@ -222,32 +296,62 @@ final class LibraryModel {
         !searchQuery.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
+    var searchAttribution: String? {
+        EnveProvenance.searchAttribution(for: searchQuery)
+    }
+
     var mediaScope: [String] {
         media.mediaTypeRaw.map { [$0] } ?? ["audiobook", "ebook", "podcast"]
+    }
+
+    var availableFacets: [LibraryFacet] {
+        media == .comics ? LibraryBrowsePreferences.comicsFacets : LibraryFacet.allCases
+    }
+
+    func title(for facet: LibraryFacet) -> String {
+        media == .comics && facet == .books ? "Issues" : facet.title
+    }
+
+    var comicSeriesFilter: ComicSeriesFilter {
+        ComicSeriesFilter(status: status, advancedFilters: advancedFilters)
     }
 
     func select(_ facet: LibraryFacet) {
         guard facet != self.facet else { return }
         self.facet = facet
-        defaults.set(facet.rawValue, forKey: Self.facetKey)
+        LibraryBrowsePreferences.save(facet: facet, media: media, source: sourceFilter, defaults: defaults)
         if facet != .books {
             libraryEndSelection()
         }
-        Task { await reload() }
+        scheduleReload()
+    }
+
+    private func applyBrowsePreferences() {
+        let browse = LibraryBrowsePreferences.load(media: media, source: sourceFilter, defaults: defaults)
+        if facet != browse.facet {
+            facet = browse.facet
+            if facet != .books { libraryEndSelection() }
+        }
+        if layout != browse.layout {
+            layout = browse.layout
+        }
     }
 
     func select(_ status: LibraryStatusFilter) {
         guard status != self.status else { return }
         self.status = status
         defaults.set(status.rawValue, forKey: Self.statusKey)
-        Task { await reload() }
+        scheduleReload()
     }
 
     func select(_ media: LibraryMediaFilter) {
         guard media != self.media else { return }
+        let changesBrowseScope = media == .comics || self.media == .comics
         self.media = media
+        defaults.set(media.rawValue, forKey: Self.sourceMediaKey(sourceFilter))
         defaults.set(media.rawValue, forKey: Self.mediaKey)
-        Task { await reload() }
+        if changesBrowseScope { applyBrowsePreferences() }
+        scheduleReload()
     }
 
     func select(_ direction: LibrarySortDirection) {
@@ -303,14 +407,21 @@ final class LibraryModel {
     func selectLayout(_ layout: LibraryLayout) {
         guard layout != self.layout else { return }
         self.layout = layout
-        defaults.set(layout.rawValue, forKey: LibraryLayout.defaultsKey)
+        LibraryBrowsePreferences.save(layout: layout, media: media, source: sourceFilter, defaults: defaults)
     }
 
     func select(_ source: LibrarySourceFilter) {
         guard source != sourceFilter else { return }
+        let previousMedia = media
+        defaults.set(selectedMedia.rawValue, forKey: Self.sourceMediaKey(sourceFilter))
         sourceFilter = source
         defaults.set(source.rawValue, forKey: Self.sourceKey)
-        Task { await reload() }
+        if let saved = defaults.string(forKey: Self.sourceMediaKey(source)), let selected = LibraryMediaFilter(rawValue: saved) {
+            media = selected
+        }
+        defaults.set(selectedMedia.rawValue, forKey: Self.mediaKey)
+        if previousMedia == .comics || media == .comics { applyBrowsePreferences() }
+        scheduleReload()
     }
 
     func focus(status: LibraryStatusFilter, media: LibraryMediaFilter, source: LibrarySourceFilter, facet: LibraryFacet = .books) {
@@ -320,6 +431,7 @@ final class LibraryModel {
             defaults.set(status.rawValue, forKey: Self.statusKey)
             changed = true
         }
+        let changesBrowseScope = (media == .comics || self.media == .comics) && (self.media != media || sourceFilter != source)
         if self.media != media {
             self.media = media
             defaults.set(media.rawValue, forKey: Self.mediaKey)
@@ -330,14 +442,18 @@ final class LibraryModel {
             defaults.set(source.rawValue, forKey: Self.sourceKey)
             changed = true
         }
+        defaults.set(selectedMedia.rawValue, forKey: Self.sourceMediaKey(source))
+        if changesBrowseScope {
+            applyBrowsePreferences()
+        }
         if self.facet != facet {
             self.facet = facet
-            defaults.set(facet.rawValue, forKey: Self.facetKey)
+            LibraryBrowsePreferences.save(facet: facet, media: media, source: source, defaults: defaults)
             changed = true
         }
         if changed {
             libraryEndSelection()
-            Task { await reload() }
+            scheduleReload()
         }
     }
 
@@ -362,14 +478,19 @@ final class LibraryModel {
         if resultTotalCount > loaded {
             return "\(loaded.formatted()) of \(resultTotalCount.formatted()) loaded"
         }
+        if media == .comics {
+            return ComicSeriesFormat.issueCount(loaded)
+        }
         return loaded == 1 ? "1 book" : "\(loaded.formatted()) books"
     }
 
     func isDownloaded(_ book: Book) -> Bool {
-        downloadedBookIds.contains(book.uniqueId) || downloadedStableIds.contains(book.stableId)
+        downloadedBookIds.contains(book.uniqueId)
+            || (book.mediaType != .ebook && downloadedStableIds.contains(book.stableId))
     }
 
     func clearFilters() {
+        let leavesComics = media == .comics
         status = .all
         media = .all
         sourceFilter = .all
@@ -378,7 +499,8 @@ final class LibraryModel {
         defaults.set(LibraryMediaFilter.all.rawValue, forKey: Self.mediaKey)
         defaults.set(LibrarySourceFilter.all.rawValue, forKey: Self.sourceKey)
         defaults.removeObject(forKey: Self.advancedFiltersKey)
-        Task { await reload() }
+        if leavesComics { applyBrowsePreferences() }
+        scheduleReload()
     }
 
     func toggleGenre(_ genre: String) {
@@ -415,8 +537,9 @@ final class LibraryModel {
         defer { isLoadingAdvancedFilterOptions = false }
         let library = (profileSession?.engine ?? EnveEngine.shared).library
         let downloaded = status == .downloaded ? downloadedStableIdsFromTasks() : []
+        let media = media
         let list = await sourceScopedBooks(library: library, mediaType: nil, boundedForSupportData: true)
-            .filter { library.matchesStatus($0, status: status, downloadedIds: downloaded) }
+            .filter { media.matches($0) && library.matchesStatus($0, status: status, downloadedIds: downloaded) }
         advancedFilterOptions = LibraryAdvancedFilterPolicy.options(from: list)
     }
 
@@ -428,7 +551,7 @@ final class LibraryModel {
         } else {
             defaults.removeObject(forKey: Self.advancedFiltersKey)
         }
-        Task { await reload() }
+        scheduleReload()
     }
 
     var sortSummary: String {
@@ -509,7 +632,7 @@ final class LibraryModel {
         sortDescriptors = descriptors.isEmpty ? [Self.defaultSortDescriptor] : descriptors
         syncPrimarySort()
         persistSortDescriptors()
-        Task { await reload() }
+        scheduleReload()
     }
 
     private func syncPrimarySort() {
@@ -597,7 +720,9 @@ final class LibraryModel {
         libraryEndSelection()
         guard !targets.isEmpty else { return }
         PlatformHaptics.impact(.light)
-        Task {
+        Task { [profileSession] in
+            defer { withExtendedLifetime(profileSession) {} }
+            guard profileSession?.isRetired != true else { return }
             for book in targets {
                 await (profileSession?.engine ?? EnveEngine.shared).downloads.download(book)
             }
@@ -627,7 +752,11 @@ final class LibraryModel {
         guard !targets.isEmpty else { return }
         PlatformHaptics.impact(.medium)
         for book in targets {
-            Task { await (profileSession?.engine ?? EnveEngine.shared).downloads.removeLibraryDownload(for: book) }
+            Task { [profileSession] in
+                defer { withExtendedLifetime(profileSession) {} }
+                guard profileSession?.isRetired != true else { return }
+                await (profileSession?.engine ?? EnveEngine.shared).downloads.removeLibraryDownload(for: book)
+            }
         }
     }
 
@@ -659,12 +788,13 @@ final class LibraryModel {
             if facet != .books {
                 libraryEndSelection()
             }
-            Task { await reload() }
+            scheduleReload()
             return
         }
-        searchTask = Task {
+        searchTask = Task { [profileSession] in
+            defer { withExtendedLifetime(profileSession) {} }
             try? await Task.sleep(nanoseconds: 300_000_000)
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, profileSession?.isRetired != true else { return }
             searchQuery = text
             await reload()
         }
@@ -677,18 +807,64 @@ final class LibraryModel {
         {
             sourceFilter = .all
             defaults.set(LibrarySourceFilter.all.rawValue, forKey: Self.sourceKey)
+            if media == .comics { applyBrowsePreferences() }
         }
         await reload()
     }
 
+    private func scheduleReload() {
+        let session = profileSession
+        Task { [weak self] in
+            defer { withExtendedLifetime(session) {} }
+            guard let self, session?.isRetired != true else { return }
+            await reload()
+        }
+    }
+
     func reload() async {
+        let session = profileSession
+        defer { withExtendedLifetime(session) {} }
+        guard session?.isRetired != true else { return }
         generation &+= 1
         let gen = generation
         let library = (profileSession?.engine ?? EnveEngine.shared).library
-        excludedLibraryKeys = LibraryDisplayPreferencesStore.shared.loadPreferences().excludedLibraryIds
+        if readingEnabled, defaults.string(forKey: Self.sourceMediaKey(sourceFilter)) == nil,
+            let providerId = sourceFilter.providerId, let libraryId = sourceFilter.libraryId {
+            let typedComicLibrary = (profileSession?.engine ?? EnveEngine.shared).sources.librarySourceSnapshot.libraries.contains {
+                $0.providerId == providerId && $0.id == libraryId && $0.isComic
+            }
+            let comicCount = typedComicLibrary ? 0 : await library.comicBookCount(sourceFilter: sourceFilter)
+            let total = comicCount > 0 ? await library.bookCount(sourceFilter: sourceFilter, mediaType: "ebook") : 0
+            if typedComicLibrary || (comicCount > 0 && comicCount == total) {
+                media = .comics
+                applyBrowsePreferences()
+                defaults.set(media.rawValue, forKey: Self.sourceMediaKey(sourceFilter))
+                defaults.set(media.rawValue, forKey: Self.mediaKey)
+            }
+        }
+        if lastBrowseQuery?.readingEnabled != readingEnabled {
+            applyBrowsePreferences()
+        }
+        let query = BrowseQuery(
+            facet: facet,
+            status: status,
+            media: media,
+            readingEnabled: readingEnabled,
+            source: sourceFilter,
+            sort: sortDescriptors,
+            advancedFilters: advancedFilters,
+            search: searchQuery
+        )
+        if query == lastBrowseQuery {
+            firstPageLimit = max(rawPages.count, Self.pageSize)
+        } else {
+            firstPageLimit = Self.pageSize
+            lastBrowseQuery = query
+        }
+        excludedLibraryKeys = (profileSession?.preferences ?? LibraryDisplayPreferencesStore.shared).loadPreferences().excludedLibraryIds
         totalLibraryCount = await library.totalBookCount()
         if facet == .books || isSearchActive {
-            if await shouldBuildWorkIndex(library: library) {
+            if readingEnabled, await shouldBuildWorkIndex(library: library) {
                 await rebuildWorkIndex()
             } else {
                 workHiddenIds = []
@@ -696,11 +872,9 @@ final class LibraryModel {
                 libraryRecollapse()
             }
         }
-        let downloadedLimit =
-            status == .downloaded
-            ? max(totalLibraryCount, 1)
-            : min(max(totalLibraryCount, 1), Self.normalDownloadedBadgeLimit)
+        let downloadedLimit = max(totalLibraryCount, 1)
         let downloadedEbooks = await library.downloadedEbooks(limit: downloadedLimit)
+        guard gen == generation else { return }
         downloadedBookIds = Set(downloadedEbooks.map(\.uniqueId))
         downloadedStableIds = Set(downloadedEbooks.map(\.stableId))
         downloadedStableIds.formUnion(downloadedStableIdsFromTasks())
@@ -709,9 +883,9 @@ final class LibraryModel {
             let results = await library.searchBooks(query: searchQuery, sourceFilter: sourceFilter, limit: 200)
             guard gen == generation else { return }
             let downloaded = status == .downloaded ? downloadedStableIdsFromTasks() : []
-            let mediaRaw = media.mediaTypeRaw
+            let media = media
             let kept = results.filter {
-                (mediaRaw == nil || $0.mediaType.rawValue == mediaRaw)
+                media.matches($0)
                     && library.matchesStatus($0, status: status, downloadedIds: downloaded)
                     && libraryMatchesSource($0)
                     && LibraryAdvancedFilterPolicy.matches($0, filters: advancedFilters)
@@ -744,12 +918,16 @@ final class LibraryModel {
     }
 
     private func loadGrid(gen: Int, library: LibraryEngine) async {
-        if advancedFilters.isActive {
+        if !readingEnabled || advancedFilters.isActive || (media == .comics && status != .all) {
             await presentStatusScopedBooks(library: library, gen: gen)
             return
         }
         switch status {
         case .all:
+            if media == .comics {
+                await loadComics(gen: gen, library: library)
+                return
+            }
             let raw = media.mediaTypeRaw
             if sourceFilter == .device {
                 await present(await sourceScopedBooks(library: library, mediaType: raw), gen: gen)
@@ -763,7 +941,7 @@ final class LibraryModel {
                 resultTotalCount = scopedCount
                 if scopedCount > Self.pagedThreshold {
                     if usesDefaultSorting, !library.usesRemoteBrowsing(sourceFilter: sourceFilter) {
-                        let first = await library.pagedBooks(sourceFilter: sourceFilter, mediaType: raw, after: nil, limit: Self.pageSize)
+                        let first = await library.pagedBooks(sourceFilter: sourceFilter, mediaType: raw, after: nil, limit: firstPageLimit)
                         guard gen == generation else { return }
                         rawPages = first
                         pageCursor = first.last
@@ -793,7 +971,7 @@ final class LibraryModel {
                 resultTotalCount = scopedCount
                 if scopedCount > Self.pagedThreshold {
                     if usesDefaultSorting {
-                        let first = await library.pagedBooks(sourceFilter: sourceFilter, mediaType: raw, after: nil, limit: Self.pageSize)
+                        let first = await library.pagedBooks(sourceFilter: sourceFilter, mediaType: raw, after: nil, limit: firstPageLimit)
                         guard gen == generation else { return }
                         rawPages = first
                         pageCursor = first.last
@@ -826,7 +1004,7 @@ final class LibraryModel {
             resultTotalCount = scopedCount
             if scopedCount > Self.pagedThreshold {
                 if usesDefaultSorting {
-                    let first = await library.pagedBooks(sourceFilter: sourceFilter, mediaType: raw, after: nil, limit: Self.pageSize)
+                    let first = await library.pagedBooks(sourceFilter: sourceFilter, mediaType: raw, after: nil, limit: firstPageLimit)
                     guard gen == generation else { return }
                     rawPages = first
                     pageCursor = first.last
@@ -880,14 +1058,15 @@ final class LibraryModel {
 
     private func presentStatusScopedBooks(library: LibraryEngine, gen: Int) async {
         let downloaded = status == .downloaded ? downloadedStableIdsFromTasks() : []
-        let list = await sourceScopedBooks(library: library, mediaType: media.mediaTypeRaw, boundedForSupportData: true)
-        let kept = library.filterStatus(list, status: status, downloadedIds: downloaded)
+        let list = await sourceScopedBooks(library: library, mediaType: media.mediaTypeRaw, boundedForSupportData: readingEnabled && media != .comics)
+        let kept = status == .downloaded && media == .comics
+            ? list.filter { downloadedBookIds.contains($0.uniqueId) }
+            : library.filterStatus(list, status: status, downloadedIds: downloaded)
         await present(kept, gen: gen)
     }
 
     private func present(_ list: [Book], gen: Int) async {
-        let mediaRaw = media.mediaTypeRaw
-        var kept = mediaRaw.map { r in list.filter { $0.mediaType.rawValue == r } } ?? list
+        var kept = list.filter(media.matches)
         kept = kept.filter(libraryMatchesSource)
         kept = kept.filter { LibraryAdvancedFilterPolicy.matches($0, filters: advancedFilters) }
         guard gen == generation else { return }
@@ -912,7 +1091,9 @@ final class LibraryModel {
         let mode = pagingMode
         let cursor = pageCursor
         let offset = pageOffset
-        Task {
+        Task { [profileSession] in
+            defer { withExtendedLifetime(profileSession) {} }
+            guard profileSession?.isRetired != true else { return }
             let library = (profileSession?.engine ?? EnveEngine.shared).library
             let next: [Book]
             switch mode {
@@ -930,6 +1111,8 @@ final class LibraryModel {
                 )
             case .sortedOffset:
                 next = await loadSortedPage(library: library, offset: offset, limit: Self.pageSize)
+            case .comicOffset:
+                next = await library.comicBooksPage(sourceFilter: sourceFilter, offset: offset, limit: Self.pageSize, sort: storeSortDescriptors)
             case .none:
                 next = []
             }
@@ -948,26 +1131,57 @@ final class LibraryModel {
                 if next.count < Self.pageSize { pagingMode = .none }
             case .sortedOffset:
                 pageOffset = offset + Self.pageSize
+            case .comicOffset:
+                pageOffset = offset + next.count
+                if next.count < Self.pageSize { pagingMode = .none }
             case .none:
                 pagingMode = .none
             }
-            let mediaRaw = media.mediaTypeRaw
+            let media = media
             let kept = rawPages.filter {
-                libraryMatchesSource($0) && (mediaRaw == nil || $0.mediaType.rawValue == mediaRaw)
+                libraryMatchesSource($0) && media.matches($0)
             }
             books = kept
         }
     }
 
     private func beginSortedPaging(gen: Int, library: LibraryEngine) async {
-        let first = await loadSortedPage(library: library, offset: 0, limit: Self.pageSize)
+        let limit = firstPageLimit
+        let first = await loadSortedPage(library: library, offset: 0, limit: limit)
         guard gen == generation else { return }
         rawPages = first
         pageCursor = nil
-        pageOffset = Self.pageSize
+        pageOffset = limit
         pagingMode = first.isEmpty ? .none : .sortedOffset
         isPagedMode = pagingMode != .none
         books = first.filter(libraryMatchesSource)
+    }
+
+    private func loadComics(gen: Int, library: LibraryEngine) async {
+        let count = await library.comicBookCount(sourceFilter: sourceFilter)
+        guard gen == generation else { return }
+        resultTotalCount = count
+        if count > Self.pagedThreshold {
+            let limit = firstPageLimit
+            let first = await library.comicBooksPage(sourceFilter: sourceFilter, offset: 0, limit: limit, sort: storeSortDescriptors)
+            guard gen == generation else { return }
+            rawPages = first
+            pageCursor = nil
+            pageOffset = first.count
+            pagingMode = first.count < limit ? .none : .comicOffset
+            isPagedMode = true
+            books = first.filter { libraryMatchesSource($0) && media.matches($0) }
+        } else {
+            let all = await library.comicBooksPage(sourceFilter: sourceFilter, offset: 0, limit: max(count, 1), sort: storeSortDescriptors)
+            guard gen == generation else { return }
+            rawPages = []
+            pageCursor = nil
+            pageOffset = 0
+            pagingMode = .none
+            isPagedMode = false
+            let kept = all.filter { libraryMatchesSource($0) && media.matches($0) }
+            books = library.applySort(kept, descriptors: sortDescriptors)
+        }
     }
 
     private func loadSortedPage(library: LibraryEngine, offset: Int, limit: Int) async -> [Book] {
@@ -980,7 +1194,12 @@ final class LibraryModel {
         )
     }
 
+    private static func sourceMediaKey(_ source: LibrarySourceFilter) -> String {
+        "imagine.library.source.media.\(source.rawValue)"
+    }
+
     private func libraryMatchesSource(_ book: Book) -> Bool {
+        guard preferences.includesLibraryBook(book) else { return false }
         if !excludedLibraryKeys.isEmpty,
             excludedLibraryKeys.contains("\(book.providerId.uuidString)_\(book.libraryId)")
         {
@@ -1032,7 +1251,7 @@ final class LibraryModel {
     }
 
     private func loadSeriesAggregates(gen: Int, library: LibraryEngine) async {
-        let isSourceOnly = status == .all && !advancedFilters.isActive
+        let isSourceOnly = readingEnabled && status == .all && !advancedFilters.isActive && excludedLibraryKeys.isEmpty
         let merged: [BrowseSeriesAggregate]
         switch sourceFilter {
         case .all where isSourceOnly:
@@ -1042,17 +1261,17 @@ final class LibraryModel {
         case .library(let providerId, let libraryId) where isSourceOnly:
             merged = await library.seriesAggregates(mediaScope: mediaScope, providerId: providerId, libraryId: libraryId)
         default:
-            let books = await sourceScopedBooksForCurrentMedia(library: library, boundedForSupportData: true)
+            let books = await sourceScopedBooksForCurrentMedia(library: library, boundedForSupportData: readingEnabled && media != .comics)
             merged = library.seriesAggregates(from: books)
         }
         guard gen == generation else { return }
-        seriesAggregates = merged
+        seriesAggregates = media == .comics ? merged.filter(\.isComic) : merged
         loadedAggregateFacets.insert(.series)
     }
 
     private func loadAuthorAggregates(gen: Int, library: LibraryEngine) async {
-        if sourceFilter != .all || status != .all || advancedFilters.isActive {
-            let books = await sourceScopedBooksForCurrentMedia(library: library, boundedForSupportData: true)
+        if !readingEnabled || sourceFilter != .all || status != .all || advancedFilters.isActive {
+            let books = await sourceScopedBooksForCurrentMedia(library: library, boundedForSupportData: readingEnabled)
             let merged = library.authorAggregates(from: books)
             guard gen == generation else { return }
             authorAggregates = merged
@@ -1067,8 +1286,8 @@ final class LibraryModel {
     }
 
     private func loadNarratorAggregates(gen: Int, library: LibraryEngine) async {
-        if sourceFilter != .all || status != .all || advancedFilters.isActive {
-            let books = await sourceScopedBooksForCurrentMedia(library: library, boundedForSupportData: true)
+        if !readingEnabled || sourceFilter != .all || status != .all || advancedFilters.isActive {
+            let books = await sourceScopedBooksForCurrentMedia(library: library, boundedForSupportData: readingEnabled)
             let merged = library.narratorAggregates(from: books)
             guard gen == generation else { return }
             narratorAggregates = merged
@@ -1083,8 +1302,8 @@ final class LibraryModel {
     }
 
     private func loadGenreAggregates(gen: Int, library: LibraryEngine) async {
-        if sourceFilter != .all || status != .all || advancedFilters.isActive {
-            let books = await sourceScopedBooksForCurrentMedia(library: library, boundedForSupportData: true)
+        if !readingEnabled || sourceFilter != .all || status != .all || advancedFilters.isActive {
+            let books = await sourceScopedBooksForCurrentMedia(library: library, boundedForSupportData: readingEnabled)
             let merged = library.genreAggregates(from: books)
             guard gen == generation else { return }
             genreAggregates = merged
@@ -1100,11 +1319,11 @@ final class LibraryModel {
 
     func books(forGenre aggregate: BrowseGenreAggregate) async -> [Book] {
         let library = (profileSession?.engine ?? EnveEngine.shared).library
-        if sourceFilter == .all, status == .all, !advancedFilters.isActive {
+        if readingEnabled, sourceFilter == .all, status == .all, !advancedFilters.isActive {
             return await library.books(forGenre: aggregate, mediaScope: mediaScope)
         }
         let matchingKeys = Set(aggregate.matchingGenres.map(Self.genreLookupKey))
-        return await sourceScopedBooksForCurrentMedia(library: library, boundedForSupportData: true)
+        return await sourceScopedBooksForCurrentMedia(library: library, boundedForSupportData: readingEnabled)
             .filter { book in
                 (book.genres ?? []).contains { matchingKeys.contains(Self.genreLookupKey($0)) }
             }
@@ -1113,8 +1332,9 @@ final class LibraryModel {
 
     private func sourceScopedBooksForCurrentMedia(library: LibraryEngine, boundedForSupportData: Bool = false) async -> [Book] {
         let downloaded = status == .downloaded ? downloadedStableIdsFromTasks() : []
+        let media = media
         return await sourceScopedBooks(library: library, mediaType: nil, boundedForSupportData: boundedForSupportData)
-            .filter { library.matchesStatus($0, status: status, downloadedIds: downloaded) }
+            .filter { media.matches($0) && (status == .downloaded && media == .comics ? downloadedBookIds.contains($0.uniqueId) : library.matchesStatus($0, status: status, downloadedIds: downloaded)) }
             .filter { LibraryAdvancedFilterPolicy.matches($0, filters: advancedFilters) }
     }
 
@@ -1149,7 +1369,11 @@ final class LibraryModel {
 
     static func markHidden(_ booksToHide: [Book], profileSession: ProfileSession? = nil) {
         guard !booksToHide.isEmpty else { return }
-        Task { await (profileSession?.engine ?? EnveEngine.shared).library.hideFromLibrary(booksToHide) }
+        Task {
+            defer { withExtendedLifetime(profileSession) {} }
+            guard profileSession?.isRetired != true else { return }
+            await (profileSession?.engine ?? EnveEngine.shared).library.hideFromLibrary(booksToHide)
+        }
         PlatformHaptics.impact(.light)
     }
 

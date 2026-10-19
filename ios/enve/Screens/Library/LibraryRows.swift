@@ -66,7 +66,7 @@ struct LibraryBookContextMenu: View {
             Button {
                 Task { await engine.downloads.download(book) }
             } label: {
-                Label("Download", systemImage: "arrow.down.circle")
+                Label("Download for offline", systemImage: "arrow.down.circle")
             }
         }
         Button {
@@ -171,6 +171,7 @@ struct LibraryBookRow: View {
     var onHide: ((Book) -> Void)? = nil
 
     @Environment(\.hearth) private var hearth
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(EnveEngine.self) private var engine
     @State private var confirmDelete = false
 
@@ -249,13 +250,13 @@ struct LibraryBookRow: View {
                 Text(book.title)
                     .font(.hearthDisplay(16, weight: .semibold))
                     .foregroundStyle(hearth.text)
-                    .lineLimit(2)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 4 : 2)
                     .multilineTextAlignment(.leading)
                 if let author = book.author, !author.isEmpty {
                     Text(author)
                         .font(.hearthCaption)
                         .foregroundStyle(hearth.textSecondary)
-                        .lineLimit(1)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
                 }
                 let fraction = book.canonicalProgress
                 if fraction > 0.001, !book.isFinished {

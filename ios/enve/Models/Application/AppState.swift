@@ -287,6 +287,9 @@ public class AppState {
                     .filter { !$0.isArchived }
                     .map { $0.id.uuidString }
             )
+            #if DEBUG && os(iOS)
+                .union(SyntheticLibrarySeeder.providerIds.map(\.uuidString))
+            #endif
             retainOperation(priority: .background) {
                 let removed = await store.deleteBooksFromUnknownProviders(validProviderIds: validProviderIds)
                 if removed > 0 {

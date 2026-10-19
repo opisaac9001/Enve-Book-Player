@@ -55,6 +55,8 @@ public final class AudioService: NSObject, ObservableObject {
     private var timeObserver: Any?
     private var cancellables = Set<AnyCancellable>()
     private var isAudioSessionConfigured = false
+    private var playbackGeneration = 0
+    private var isStartPending = false
     private var lastPausedTime: TimeInterval?
     private var lastPausedBookId: String?
     private var lastPausedDate: Date?
@@ -203,12 +205,19 @@ public final class AudioService: NSObject, ObservableObject {
     }
 
     func play() {
-        guard let player = player else {
+        guard player != nil else {
             AppLogger.player.info("No player to play")
             return
         }
 
-        setupAudioSession()
+        isStartPending = true
+        isPlaying = true
+        setupAudioSession { [weak self] in self?.beginPlayback() }
+    }
+
+    private func beginPlayback() {
+        guard let player else { return }
+        isStartPending = false
 
         if let paused = lastPausedTime,
             let pausedBookId = lastPausedBookId,
@@ -312,6 +321,7 @@ public final class AudioService: NSObject, ObservableObject {
     }
 
     private func pause(source: PauseSource) {
+        cancelPendingPlayback()
         guard isPlaying else { return }
 
         player?.pause()
@@ -398,6 +408,7 @@ public final class AudioService: NSObject, ObservableObject {
         guard let player = player else { return }
 
         let target = max(0, globalTime)
+        let generation = playbackGeneration
 
         holdUI(at: target)
 
@@ -407,16 +418,7 @@ public final class AudioService: NSObject, ObservableObject {
             player.seek(to: cmTime, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] completed in
                 guard let self, completed else { return }
                 Task { @MainActor in
-                    player.play()
-                    self.applyPlaybackRate()
-                    self.isPlaying = true
-                    self.lastPausedTime = nil
-                    self.lastPauseSource = nil
-                    #if os(iOS)
-                    self.beginBackgroundTask()
-                    #endif
-                    self.pushNowPlaying()
-                    AppLogger.player.info("Play (resumed via seek)")
+                    self.completeResumeAfterSeek(generation: generation)
                 }
             }
             return
@@ -429,16 +431,7 @@ public final class AudioService: NSObject, ObservableObject {
                 seekToTrack(index: index, localTime: localTime) { [weak self] completed in
                     guard let self, completed else { return }
                     Task { @MainActor in
-                        player.play()
-                        self.applyPlaybackRate()
-                        self.isPlaying = true
-                        self.lastPausedTime = nil
-                        self.lastPauseSource = nil
-                        #if os(iOS)
-                        self.beginBackgroundTask()
-                        #endif
-                        self.pushNowPlaying()
-                        AppLogger.player.info("Play (resumed via seek)")
+                        self.completeResumeAfterSeek(generation: generation)
                     }
                 }
                 return
@@ -446,11 +439,27 @@ public final class AudioService: NSObject, ObservableObject {
             accumulated += track.duration
         }
 
+        completeResumeAfterSeek(generation: generation)
+    }
+
+    private func completeResumeAfterSeek(generation: Int) {
+        guard playbackGeneration == generation, let player else { return }
         player.play()
         applyPlaybackRate()
         isPlaying = true
         lastPausedTime = nil
         lastPauseSource = nil
+        #if os(iOS)
+        beginBackgroundTask()
+        #endif
+        pushNowPlaying()
+        AppLogger.player.info("Play (resumed via seek)")
+    }
+
+    private func cancelPendingPlayback() {
+        playbackGeneration &+= 1
+        pendingPlayAfterReady = false
+        isStartPending = false
     }
 
     func seekGlobal(to globalTime: TimeInterval) {
@@ -663,6 +672,7 @@ public final class AudioService: NSObject, ObservableObject {
     }
 
     func cleanup() {
+        cancelPendingPlayback()
         player?.pause()
         isPlaying = false
 
@@ -693,7 +703,6 @@ public final class AudioService: NSObject, ObservableObject {
         }
         duration = 0
         isReady = false
-        pendingPlayAfterReady = false
         currentTrackIndex = 0
         trackCount = 0
         error = nil
@@ -707,61 +716,57 @@ public final class AudioService: NSObject, ObservableObject {
 }
 
 private extension AudioService {
-    func setupAudioSession() {
+    func setupAudioSession(then start: @escaping @MainActor @Sendable () -> Void = {}) {
         #if os(iOS)
-        if isAudioSessionConfigured && isPlaying { return }
-
-        let session = AVAudioSession.sharedInstance()
-
-        let mode = basicVoiceMode.audioSessionMode
-        let options: AVAudioSession.CategoryOptions
-
-        switch basicVoiceMode {
-        case .strong:
-            options = [.allowBluetoothA2DP]
-        default:
-            options = [.allowAirPlay, .allowBluetoothA2DP]
+        if isAudioSessionConfigured && isPlaying && !isStartPending {
+            start()
+            return
         }
 
-        do {
-            if #available(iOS 13.0, *) {
-                let policy: AVAudioSession.RouteSharingPolicy = (mode == .spokenAudio) ? .longFormAudio : .default
-                try session.setCategory(.playback, mode: mode, policy: policy, options: options)
-            } else {
-                try session.setCategory(.playback, mode: mode, options: options)
-            }
-            try session.setActive(true)
-            isAudioSessionConfigured = true
-            AppLogger.player.info("Audio session configured (mode: \(mode.rawValue))")
-        } catch {
-            AppLogger.player.error("Mode \(mode.rawValue) failed: \(error.localizedDescription)")
+        playbackGeneration &+= 1
+        let generation = playbackGeneration
+        let mode = basicVoiceMode.audioSessionMode
+        let options: AVAudioSession.CategoryOptions = basicVoiceMode == .strong ? [.allowBluetoothA2DP] : [.allowAirPlay, .allowBluetoothA2DP]
+        let policy: AVAudioSession.RouteSharingPolicy = mode == .spokenAudio ? .longFormAudio : .default
+        AudioSessionQueue.perform {
+            let session = AVAudioSession.sharedInstance()
             do {
+                try session.setCategory(.playback, mode: mode, policy: policy, options: options)
+                try session.setActive(true)
+                AppLogger.player.info("Audio session configured (mode: \(mode.rawValue))")
+            } catch {
+                AppLogger.player.error("Mode \(mode.rawValue) failed: \(error.localizedDescription)")
                 try session.setCategory(.playback)
                 try session.setActive(true)
-                isAudioSessionConfigured = true
                 AppLogger.player.warning("Audio session configured (simple fallback)")
-            } catch {
-                AppLogger.player.error("Audio session error: \(error)")
-                self.error = error
             }
+        } completion: { [weak self] failure in
+            guard let self, self.playbackGeneration == generation else { return }
+            if let failure {
+                AppLogger.player.error("Audio session error: \(failure)")
+                self.error = failure
+            } else {
+                self.isAudioSessionConfigured = true
+            }
+            start()
         }
+        #else
+        start()
         #endif
     }
 
     func applyVoiceMode() {
         #if os(iOS)
-        do {
-            let session = AVAudioSession.sharedInstance()
-            let mode = basicVoiceMode.audioSessionMode
-            if #available(iOS 13.0, *) {
-                let policy: AVAudioSession.RouteSharingPolicy = (mode == .spokenAudio) ? .longFormAudio : .default
-                try session.setCategory(.playback, mode: mode, policy: policy, options: [.allowAirPlay, .allowBluetoothA2DP])
-            } else {
-                try session.setCategory(.playback, mode: mode, options: [.allowAirPlay, .allowBluetoothA2DP])
+        let mode = basicVoiceMode.audioSessionMode
+        let name = basicVoiceMode.displayName
+        let policy: AVAudioSession.RouteSharingPolicy = mode == .spokenAudio ? .longFormAudio : .default
+        AudioSessionQueue.shared.async {
+            do {
+                try AVAudioSession.sharedInstance().setCategory(.playback, mode: mode, policy: policy, options: [.allowAirPlay, .allowBluetoothA2DP])
+                AppLogger.player.info("[AudioService] Voice mode: \(name)")
+            } catch {
+                AppLogger.player.error("Failed to set voice mode: \(error)")
             }
-            AppLogger.player.info("[AudioService] Voice mode: \(basicVoiceMode.displayName)")
-        } catch {
-            AppLogger.player.error("Failed to set voice mode: \(error)")
         }
         #endif
     }
@@ -1214,7 +1219,7 @@ private extension AudioService {
                 guard let self = self else { return }
                 Task { @MainActor in
                     AppLogger.player.info("Track change seek completed, resuming: \(wasPlaying)")
-                    if wasPlaying {
+                    if wasPlaying, self.isPlaying, !self.isStartPending {
                         self.player?.play()
                         self.player?.rate = Float(currentRate)
                         self.isPlaying = true
@@ -1247,7 +1252,7 @@ private extension AudioService {
 private extension AudioService {
     func applyPlaybackRate() {
         guard let player = player else { return }
-        player.rate = isPlaying ? Float(playbackRate) : 0.0
+        player.rate = isPlaying && !isStartPending ? Float(playbackRate) : 0.0
     }
 
     func applyVolume() {

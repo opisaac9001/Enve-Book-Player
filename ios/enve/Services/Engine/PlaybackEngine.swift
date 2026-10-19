@@ -62,7 +62,7 @@ final class PlaybackEngine {
             return
         }
         if book.mediaType == .ebook {
-            readerOpen.open(book)
+            openEbook(book)
             return
         }
         queue.playManually(book, presentPlayer: presentPlayer)
@@ -124,18 +124,20 @@ final class PlaybackEngine {
         }
     }
 
-    func openEbook(_ book: Book, at locator: String? = nil) {
-        readerOpen.open(book, at: locator)
+    func openEbook(_ book: Book, at locator: String? = nil, readingSequence: [String]? = nil) {
+        guard profileSession.preferences.readingEnabled else { return }
+        readerOpen.open(book, at: locator, readingSequence: readingSequence)
     }
 
     func presentReader(for book: Book) {
-        readerOpen.open(book)
+        openEbook(book)
     }
 
     func presentReaderAfterDismissingPlayer(for book: Book, at locator: String? = nil) {
+        guard profileSession.preferences.readingEnabled else { return }
         dismissPlayer()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-            self.readerOpen.open(book, at: locator)
+            self.openEbook(book, at: locator)
         }
     }
 

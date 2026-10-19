@@ -35,6 +35,13 @@ final class RemoteLibraryBrowseStore: @unchecked Sendable {
         return counts[Self.key(providerId: providerId, libraryId: libraryId)] != nil
     }
 
+    func libraryIds(providerId: UUID) -> [String] {
+        let prefix = "\(providerId.uuidString)|"
+        lock.lock()
+        defer { lock.unlock() }
+        return counts.keys.filter { $0.hasPrefix(prefix) }.map { String($0.dropFirst(prefix.count)) }.sorted()
+    }
+
     private static func key(providerId: UUID, libraryId: String) -> String {
         "\(providerId.uuidString)|\(libraryId)"
     }

@@ -76,6 +76,7 @@ struct VocabularyHubScreen: View {
         .scrollIndicators(.hidden)
         .background(HearthBackground())
         .toolbar(.hidden, for: .navigationBar)
+        .hearthInteractiveBack()
         .task { await vocabReload() }
         .fullScreenCover(
             item: $studySession,

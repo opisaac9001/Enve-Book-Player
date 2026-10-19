@@ -86,8 +86,7 @@ struct ProfileDownloadRuntimeTests {
             profileID: UUID().uuidString,
             documentsDirectory: root.appendingPathComponent("Documents"),
             applicationSupportDirectory: root.appendingPathComponent("ApplicationSupport"),
-            cachesDirectory: root.appendingPathComponent("Caches"),
-            legacyPlaybackStoreURL: root.appendingPathComponent("default.store")
+            cachesDirectory: root.appendingPathComponent("Caches")
         )
     }
 }

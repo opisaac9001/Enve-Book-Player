@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Keep queued library work tied to its profile while that work finishes.
+- Add an Audiobooks only preference that hides reading controls while preserving books and positions.
+- Browse comics by series, volumes, and specials, with separate source-specific Comics preferences.
+- Stream Kavita and Komga comic pages and resume without waiting for a full archive download.
+- Keep downloaded comics distinct from temporary reading cache across details, library filters, and storage.
+- Bound reading-cache storage and preserve active readers and offline downloads when clearing it.
+- Preserve library navigation and expanded volumes when returning from a comic.
+- Improve reader page labels, footnotes, typography, and read-aloud controls.
+- Recover Audiobookshelf authentication and playback without replacing newer credentials or saved progress.
+- Add native Silo SSO and tighten BookOrbit callback validation.
+- Improve download integrity, profile isolation, and playback recovery.
+
 ## 1.2.6 — 2026-10-09
 
 - Added separate user profiles with isolated settings, history, downloads, and sync state.

@@ -22,10 +22,13 @@ struct AppRootView: View {
     @State private var tabResetTokens: [HearthTab: UUID] = Dictionary(
         uniqueKeysWithValues: HearthTab.allCases.map { ($0, UUID()) }
     )
+    @State private var mantelBarHeight: CGFloat?
+    @State private var shellBottomSafeArea: CGFloat = 0
     @AppStorage("hearth.mode") private var modeRaw = Hearth.Mode.system.rawValue
     @State private var prefs: UserPreferences
 
     @State private var debugDetailBook: Book?
+    @State private var debugComicSeries: BrowseSeriesAggregate?
     @State private var debugPodcastShow: Book?
     @State private var debugLibrarianBook: Book?
     @State private var debugSettingsPresented = false
@@ -81,6 +84,12 @@ struct AppRootView: View {
         .fullScreenCover(item: $debugDetailBook) { book in
             NavigationStack { BookDetailScreen(book: book) }
                 .enveEnvironment(session: profileSession)
+        }
+        .fullScreenCover(item: $debugComicSeries) { aggregate in
+            NavigationStack {
+                ComicSeriesScreen(aggregate: aggregate, mediaScope: ["ebook"], filter: ComicSeriesFilter(), library: engine.library)
+            }
+            .enveEnvironment(session: profileSession)
         }
         .fullScreenCover(item: $debugPodcastShow) { show in
             NavigationStack { PodcastShowScreen(show: show) }
@@ -253,9 +262,16 @@ struct AppRootView: View {
         }
 
         if seedCountArg > 0 {
-            await SyntheticLibrarySeeder.shared.seed(count: seedCountArg, scenario: .mixed) { _ in }
+            let scenario = SyntheticLibrarySeeder.Scenario(rawValue: Self.launchArgumentValue("imagineScenario") ?? "") ?? .mixed
+            await SyntheticLibrarySeeder.shared.seed(count: seedCountArg, scenario: scenario) { _ in }
+            if scenario == .comics {
+                let library = profileSession.libraryModel
+                library.clearFilters()
+                library.focus(status: .all, media: .comics, source: .all, facet: .series)
+                library.selectLayout(.grid)
+            }
             NotificationCenter.default.post(name: .bookStoreDidChange, object: nil)
-            tab = .library
+            selectTab(.library)
         }
 
         switch route ?? "" {
@@ -396,6 +412,14 @@ struct AppRootView: View {
                 providerId: UUID(),
                 libraryId: "debug"
             )
+        case "comicseries":
+            let book: Book?
+            if let openBook {
+                book = await engine.library.book(stableId: openBook)
+            } else {
+                book = await engine.library.comicBooksPage(sourceFilter: .all, offset: 0, limit: 1).first
+            }
+            if let book { debugComicSeries = await engine.library.seriesAggregate(for: book) }
         case "detail":
             if openBook?.isEmpty ?? true {
                 var book = await engine.library.continueListeningBooks(limit: 1).first
@@ -1599,21 +1623,19 @@ struct AppRootView: View {
                 }
             }
 
-            MantelBar(tab: $tab, style: prefs.shellNavigationStyle, onSelect: selectTab)
-
+            MantelBar(tab: $tab, style: prefs.shellNavigationStyle, bottomSafeArea: shellBottomSafeArea, onSelect: selectTab)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { mantelBarHeight = $0 }
                 .ignoresSafeArea(.keyboard, edges: .bottom)
         }
+        // Read here, not inside the bar, so the bar's sink can't feed back into the inset it is sized from.
+        .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.bottom } action: { shellBottomSafeArea = $0 }
         .environment(\.mantelInset, mantelInset)
         .environment(\.shellNavigationStyle, prefs.shellNavigationStyle)
     }
 
     private var mantelInset: CGFloat {
-        switch prefs.shellNavigationStyle {
-        case .classic:
-            MantelBar.height + 16
-        case .liquidGlass:
-            MantelBar.liquidHeight + 18
-        }
+        let estimate = prefs.shellNavigationStyle == .classic ? MantelBar.classicHeight : MantelBar.liquidHeight
+        return (mantelBarHeight ?? estimate) + 16
     }
 
     @ViewBuilder
@@ -1684,6 +1706,7 @@ struct AppRootView: View {
             "imagineOpenBook",
             "imagineFixture",
             "imagineSeed",
+            "imagineScenario",
             "imagineTeardownSynthetic",
             "imagineRefreshLibraries",
             "imagineSourceType",

@@ -280,8 +280,7 @@ struct ProfileDownloadImportTests {
                 ProfileStorageLocations(
                     profileID: profileID, documentsDirectory: fixtureRoot.appendingPathComponent("Documents"),
                     applicationSupportDirectory: fixtureRoot.appendingPathComponent("ApplicationSupport"),
-                    cachesDirectory: fixtureRoot.appendingPathComponent("Caches"),
-                    legacyPlaybackStoreURL: fixtureRoot.appendingPathComponent("default.store")
+                    cachesDirectory: fixtureRoot.appendingPathComponent("Caches")
                 )
             }
             sourceLocations = locations(FamilyProfile.ownerID)

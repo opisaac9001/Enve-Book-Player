@@ -11,6 +11,13 @@ struct ReaderLocationControllerTests {
         #expect(!ReadAloudOverlayTransform.hrefMatches("chapter-1.xhtml", "chapter-2.xhtml"))
     }
 
+    @Test func overlayHrefMatchingDecodesAndRespectsPathBoundaries() {
+        #expect(ReadAloudOverlayTransform.hrefMatches("Text/Chapter%201.xhtml", "OPS/Text/Chapter 1.xhtml"))
+        #expect(ReadAloudOverlayTransform.hrefMatches("../Text/ch%C3%A4pter.xhtml", "OEBPS/Text/chäpter.xhtml"))
+        #expect(!ReadAloudOverlayTransform.hrefMatches("chapter1.xhtml", "OPS/xchapter1.xhtml"))
+        #expect(!ReadAloudOverlayTransform.hrefMatches("", "OPS/chapter.xhtml"))
+    }
+
     @Test func bestOverlayClipPrefersTheMatchingDocument() {
         let clips = [
             clip(fragment: "paragraph", href: "chapter-1.xhtml"),

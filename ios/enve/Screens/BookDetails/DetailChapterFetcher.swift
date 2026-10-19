@@ -80,7 +80,7 @@ final class DetailChapterFetcher {
                 }
 
                 if let trackURL = session.audioTracks.first.flatMap({ URL(string: $0.contentUrl) }),
-                    let embedded = await MetadataLayeringManager(playbackStateManager: profileSession.playbackState, localStorage: profileSession.localStorage, providerConnections: profileSession.providerConnections).extractEmbeddedChapters(
+                    let embedded = await MetadataLayeringManager(localStorage: profileSession.localStorage, providerConnections: profileSession.providerConnections).extractEmbeddedChapters(
                         from: trackURL,
                         headers: provider.getStreamingHeaders()
                     ),
@@ -109,7 +109,7 @@ final class DetailChapterFetcher {
                 return
             }
 
-            if let extracted = await MetadataLayeringManager(playbackStateManager: profileSession.playbackState, localStorage: profileSession.localStorage, providerConnections: profileSession.providerConnections).extractChapters(for: refreshed), !extracted.isEmpty {
+            if let extracted = await MetadataLayeringManager(localStorage: profileSession.localStorage, providerConnections: profileSession.providerConnections).extractChapters(for: refreshed), !extracted.isEmpty {
                 apply(extracted, to: book, library: library, profileSession: profileSession)
                 return
             }
@@ -123,7 +123,7 @@ final class DetailChapterFetcher {
             return
         }
         AppLogger.network.info("[Chapters] Server/cache chapters inadequate; attempting embedded extraction")
-        if let extracted = await MetadataLayeringManager(playbackStateManager: profileSession.playbackState, localStorage: profileSession.localStorage, providerConnections: profileSession.providerConnections).extractChapters(for: refreshed), !extracted.isEmpty {
+        if let extracted = await MetadataLayeringManager(localStorage: profileSession.localStorage, providerConnections: profileSession.providerConnections).extractChapters(for: refreshed), !extracted.isEmpty {
             apply(extracted, to: refreshed, library: library, profileSession: profileSession)
             AppLogger.network.info("[Chapters] Applied embedded chapters: \(extracted.count)")
         } else {
@@ -189,7 +189,7 @@ final class DetailChapterFetcher {
             }
         }
 
-        return await MetadataLayeringManager(playbackStateManager: profileSession.playbackState, localStorage: profileSession.localStorage, providerConnections: profileSession.providerConnections).extractChapters(for: book)
+        return await MetadataLayeringManager(localStorage: profileSession.localStorage, providerConnections: profileSession.providerConnections).extractChapters(for: book)
     }
 
     private func trackBasedChapters(from tracks: [AudioTrackInfo]) -> [Chapter] {

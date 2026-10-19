@@ -106,14 +106,7 @@ struct AudiobookArtifactMigrationTests {
     }
 
     private func makeStore() throws -> SwiftDataBookStore {
-        let schema = Schema([
-            BookRecord.self,
-            MediaProgressRecord.self,
-            LinkedBookPairRecord.self,
-            BookmarkRecord.self,
-            AnnotationRecord.self,
-            ChapterCacheRecord.self,
-        ])
+        let schema = Schema(versionedSchema: BookStoreSchemaV2.self)
         let config = ModelConfiguration(
             "AudiobookArtifactMigrationTests-\(UUID().uuidString)",
             schema: schema,

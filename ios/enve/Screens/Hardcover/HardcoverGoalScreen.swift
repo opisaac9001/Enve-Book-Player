@@ -35,6 +35,7 @@ struct HardcoverGoalScreen: View {
         .scrollIndicators(.hidden)
         .background(HearthBackground())
         .toolbar(.hidden, for: .navigationBar)
+        .hearthInteractiveBack()
         .task { await hardcoverLoadGoal() }
         .sheet(isPresented: $editorShown) {
             HardcoverGoalEditorSheet(currentTarget: goal?.target ?? 12) { target in

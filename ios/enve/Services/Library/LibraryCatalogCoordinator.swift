@@ -467,6 +467,7 @@ final class LibraryCatalogCoordinator {
             do {
                 defer { (profileSession?.catalogRefreshGate ?? CatalogRefreshGate.shared).end(providerId: connection.id) }
                 let fetchedLibraries = try await provider.fetchLibraries()
+                includeNewLibraries(fetchedLibraries, providerId: connection.id)
                 let targets = selectedLibraries(from: fetchedLibraries, for: provider)
                 guard !targets.isEmpty else { continue }
 
@@ -503,17 +504,21 @@ final class LibraryCatalogCoordinator {
                 if !deduplicated.isEmpty {
                     let deletedIds = (profileSession?.deletedBooks ?? DeletedBooksTombstoneStore.shared).allDeleted
                     library.performBatch {
-                        var indices = Dictionary(
-                            uniqueKeysWithValues: library.books.enumerated().map { ($0.element.uniqueId, $0.offset) }
-                        )
+                        var indices: [String: Int] = [:]
+                        var merged: [Book] = []
+                        for book in library.books where indices[book.uniqueId] == nil {
+                            indices[book.uniqueId] = merged.count
+                            merged.append(book)
+                        }
                         for book in deduplicated where !deletedIds.contains(book.stableId) {
                             if let index = indices[book.uniqueId] {
-                                library.books[index] = book
+                                merged[index] = book
                             } else {
-                                indices[book.uniqueId] = library.books.count
-                                library.books.append(book)
+                                indices[book.uniqueId] = merged.count
+                                merged.append(book)
                             }
                         }
+                        library.books = merged
                     }
                     await bookStore.upsertBooks(deduplicated)
                 }
@@ -693,6 +698,7 @@ final class LibraryCatalogCoordinator {
 
         do {
             let libs = try await provider.fetchLibraries()
+            includeNewLibraries(libs, providerId: providerId)
             await MainActor.run {
                 for lib in libs where !self.libraries.contains(where: { $0.id == lib.id && $0.providerId == lib.providerId }) {
                     self.libraries.append(lib)
@@ -801,6 +807,7 @@ final class LibraryCatalogCoordinator {
             let libraries = try await provider.fetchLibraries()
 
             providerConnections.clearReauthentication(connectionId: providerId)
+            includeNewLibraries(libraries, providerId: providerId)
 
             await MainActor.run {
                 for lib in libraries where !self.libraries.contains(where: { $0.id == lib.id && $0.providerId == lib.providerId }) {
@@ -890,6 +897,7 @@ final class LibraryCatalogCoordinator {
             await MainActor.run { presentation.libraryImportProgress = nil }
             return
         }
+        includeNewLibraries(libs, providerId: providerId)
 
         await MainActor.run {
             for lib in libs where !self.libraries.contains(where: { $0.id == lib.id && $0.providerId == lib.providerId }) {
@@ -931,6 +939,14 @@ final class LibraryCatalogCoordinator {
             await (profileSession?.sync ?? SyncCoordinator.shared).syncNewBooksFromCloud(addedCloudEligibleBooks)
         }
         AppLogger.general.info("Finished: \(name)")
+    }
+
+    private func includeNewLibraries(_ fetched: [Library], providerId: UUID) {
+        providerConnections.includeNewLibraries(
+            connectionId: providerId,
+            fetchedIds: Set(fetched.map(\.id)),
+            previouslySeenIds: Set(libraries.lazy.filter { $0.providerId == providerId }.map(\.id))
+        )
     }
 
     private func selectedLibraries(from libraries: [Library], for provider: LibraryProvider) -> [Library] {
@@ -1980,6 +1996,9 @@ final class LibraryCatalogCoordinator {
 
     private func purgeMissingLibraryBooks(providerId: UUID, validLibraries: [Library]) async {
         var validProviderIds = Set(providerConnections.connections.filter { !$0.isArchived }.map { $0.id.uuidString })
+        #if DEBUG && os(iOS)
+        validProviderIds.formUnion(SyntheticLibrarySeeder.providerIds.map(\.uuidString))
+        #endif
         validProviderIds.insert(providerId.uuidString)
         let validLibraryIds = Set(validLibraries.map(\.id))
         let removed = await bookStore.deleteBooksFromInactiveLibraries(

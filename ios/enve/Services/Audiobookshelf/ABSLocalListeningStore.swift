@@ -20,17 +20,40 @@ final class ABSLocalListeningStore {
         let startedAt: Int64
         var updatedAt: Int64
         var needsUpload: Bool
+        /// Set only for cross-provider history, whose upload position is refreshed from the server.
         var accountId: String? = nil
+        /// The ABS user that listened; native sessions upload only while that user is signed in.
+        var ownerAccountId: String? = nil
     }
 
     private let defaultsKey = "absLocalListeningSessions.v1"
+    private let accountsKey = "absLocalListeningAccounts.v1"
     private let retentionDays = 30
     private let defaults: UserDefaults
     private var sessions: [Session]
+    private var accountIdByConnection: [String: String]
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         sessions = defaults.data(forKey: defaultsKey).flatMap { try? JSONDecoder().decode([Session].self, from: $0) } ?? []
+        accountIdByConnection = defaults.dictionary(forKey: accountsKey) as? [String: String] ?? [:]
+    }
+
+    /// Unowned sessions were recorded before any account was known for the connection, so the first one claims them.
+    func rememberAccount(_ accountId: String, connectionId: UUID) {
+        let key = connectionId.uuidString
+        guard !accountId.isEmpty, accountIdByConnection[key] != accountId else { return }
+        if accountIdByConnection[key] == nil {
+            for index in sessions.indices
+            where sessions[index].connectionId == connectionId && sessions[index].accountId == nil
+                && sessions[index].ownerAccountId == nil
+            {
+                sessions[index].ownerAccountId = accountId
+            }
+            persist()
+        }
+        accountIdByConnection[key] = accountId
+        defaults.set(accountIdByConnection, forKey: accountsKey)
     }
 
     func record(
@@ -47,8 +70,9 @@ final class ABSLocalListeningStore {
         guard listened > 0 else { return }
         let day = Self.dayKey(now)
         let nowMillis = Int64(now.timeIntervalSince1970 * 1000)
+        let owner = accountIdByConnection[connectionId.uuidString]
         if let index = sessions.firstIndex(where: {
-            $0.connectionId == connectionId && $0.accountId == nil
+            $0.connectionId == connectionId && $0.accountId == nil && $0.ownerAccountId == owner
                 && $0.libraryItemId == libraryItemId && $0.episodeId == episodeId && $0.day == day
         }) {
             sessions[index].timeListening += listened
@@ -72,7 +96,8 @@ final class ABSLocalListeningStore {
                     currentTime: currentTime,
                     startedAt: nowMillis - Int64(listened * 1000),
                     updatedAt: nowMillis,
-                    needsUpload: true
+                    needsUpload: true,
+                    ownerAccountId: owner
                 )
             )
         }
@@ -86,10 +111,19 @@ final class ABSLocalListeningStore {
         persist()
     }
 
-    func pendingUploads(connectionId: UUID, verifiedAccountId: String? = nil) -> [Session] {
-        sessions.filter {
-            $0.connectionId == connectionId && $0.needsUpload
-                && ($0.accountId == nil || $0.accountId == verifiedAccountId)
+    func pendingUploads(connectionId: UUID) -> [Session] {
+        sessions.filter { $0.connectionId == connectionId && $0.needsUpload }
+    }
+
+    /// Sessions of another user stay queued without costing an account lookup on every sync.
+    func hasUploadCandidates(connectionId: UUID) -> Bool {
+        let known = accountIdByConnection[connectionId.uuidString]
+        return pendingUploads(connectionId: connectionId).contains { known == nil || ($0.accountId ?? $0.ownerAccountId) == known }
+    }
+
+    func pendingUploads(connectionId: UUID, verifiedAccountId: String) -> [Session] {
+        pendingUploads(connectionId: connectionId).filter {
+            ($0.accountId ?? $0.ownerAccountId) == verifiedAccountId
         }
     }
 

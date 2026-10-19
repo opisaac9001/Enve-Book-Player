@@ -2,13 +2,14 @@ import Foundation
 import Logging
 
 class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDownloadProvider,
-    ServerPageProvider, @unchecked Sendable
+    ServerPageProvider, ComicReadingDirectionProvider, @unchecked Sendable
 {
     var connection: ServerConnection
-    var catalogMappingRevision: Int { 1 }
+    var catalogMappingRevision: Int { 3 }
     private let isolatesCredentials: Bool
     private let certificateTransport: InsecureURLSession
     private let pageSize = 100
+    private var readerBookMetadata: (id: String, seriesId: String, pageCount: Int?)?
 
     private let networkSession: URLSession
     private let ebooks: LocalEbookImporter
@@ -24,6 +25,7 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
     }
 
     func validateConnection() async throws -> Bool {
+        try EnveProvenance.checkServerAddress(connection.url)
         let request = try makeRequest(path: "/api/v1/libraries")
         let (_, response) = try await send(request)
         return response.statusCode == 200
@@ -253,12 +255,7 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
     }
 
     func fetchFullBookDetails(bookId: String, libraryId: String) async throws -> Book {
-        let request = try makeRequest(path: "/api/v1/books/\(bookId)")
-        let (data, response) = try await send(request)
-        guard response.statusCode == 200 else {
-            throw ProviderError.serverError("Failed to fetch book details (HTTP \(response.statusCode))")
-        }
-        let book = try JSONDecoder().decode(KomgaBook.self, from: data)
+        let book = try await fetchKomgaBook(bookId)
         return mapToBook(book, libraryId: libraryId)
     }
 
@@ -352,7 +349,17 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
                 try? FileManager.default.removeItem(at: tempURL)
                 throw ProviderError.serverError("Failed to download ebook (HTTP \(httpResponse.statusCode))")
             }
-            let ext = detectEbookExtension(response: httpResponse) ?? "epub"
+            guard !Self.isStreamOnlyArchive(httpResponse) else {
+                try? FileManager.default.removeItem(at: tempURL)
+                throw ProviderError.serverError("CB7 and CBT comics can only be read while Komga streams their pages")
+            }
+            guard
+                let ext = detectEbookExtension(response: httpResponse)
+                    ?? book.ebookFormat.flatMap({ EbookFormat.from(fileExtension: $0)?.rawValue })
+            else {
+                try? FileManager.default.removeItem(at: tempURL)
+                throw ProviderError.serverError("Komga did not report the file type of this book")
+            }
             let filename = "\(book.title.replacingOccurrences(of: "/", with: "-")).\(ext)"
             return try ebooks.cacheRemoteEbook(
                 tempURL: tempURL,
@@ -454,7 +461,9 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
         guard response.statusCode == 200 else {
             throw ProviderError.serverError("Failed to fetch Komga book (HTTP \(response.statusCode))")
         }
-        return try JSONDecoder().decode(KomgaBook.self, from: data)
+        let book = try JSONDecoder().decode(KomgaBook.self, from: data)
+        readerBookMetadata = (book.id, book.seriesId, book.media?.pagesCount)
+        return book
     }
 
     func fetchRecentProgress(limit: Int, launchOptimized: Bool) async throws -> [UserMediaProgress] {
@@ -473,7 +482,15 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
         ]
     }
 
+    func canStreamPages(for book: Book) -> Bool {
+        book.mediaType == .ebook && (book.isComic || book.ebookFormat?.lowercased() == "pdf")
+    }
+
     func fetchPageCount(for book: Book) async throws -> Int {
+        if let count = book.comicMetadata?.pageCount, count > 0 { return count }
+        if let metadata = readerBookMetadata, metadata.id == book.id, let count = metadata.pageCount, count > 0 {
+            return count
+        }
         let request = try makeRequest(path: "/api/v1/books/\(book.id)/pages")
         let (data, response) = try await send(request)
         guard response.statusCode == 200 else {
@@ -493,6 +510,22 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
             throw ProviderError.serverError("Failed to fetch page \(pageNumber) (HTTP \(response.statusCode))")
         }
         return data
+    }
+
+    func fetchComicReadingDirection(for book: Book) async throws -> ComicReadingDirection? {
+        let seriesId: String
+        if let metadata = readerBookMetadata, metadata.id == book.id {
+            seriesId = metadata.seriesId
+        } else {
+            seriesId = try await fetchKomgaBook(book.id).seriesId
+        }
+        guard !seriesId.isEmpty else { return nil }
+        let (data, response) = try await send(try makeRequest(path: "/api/v1/series/\(seriesId)"))
+        guard response.statusCode == 200 else {
+            throw ProviderError.serverError("Failed to fetch Komga series (HTTP \(response.statusCode))")
+        }
+        let series = try JSONDecoder().decode(KomgaSeries.self, from: data)
+        return Self.comicReadingDirection(fromSeriesValue: series.metadata?.readingDirection)
     }
 
     private func makeRequest(path: String, queryItems: [URLQueryItem] = [], accept: String = "application/json") throws -> URLRequest {
@@ -540,7 +573,7 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
         headers.keys.contains { $0.caseInsensitiveCompare(name) == .orderedSame }
     }
 
-    private func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         let (data, response) = try await networkSession.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ProviderError.invalidResponse
@@ -612,13 +645,43 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
         }
     }
 
-    static func ebookFormat(mediaType: String?, mediaProfile: String?, fileName: String?) -> String? {
-        if let fileName {
-            let ext = (fileName as NSString).pathExtension.lowercased()
-            if EbookFormat.allExtensions.contains(ext) { return ext }
+    static func ebookFormat(
+        mediaType: String?,
+        mediaProfile: String?,
+        epubDivinaCompatible: Bool?,
+        fileName: String?
+    ) -> String? {
+        let fileFormat = fileName
+            .map { ($0 as NSString).pathExtension.lowercased() }
+            .flatMap { EbookFormat.allExtensions.contains($0) ? $0 : nil }
+        let mimeFormat = mediaType.flatMap(mimeToExtension)
+        switch mediaProfile?.uppercased() {
+        case "DIVINA":
+            return [fileFormat, mimeFormat].contains(EbookFormat.cbr.rawValue) ? EbookFormat.cbr.rawValue : EbookFormat.cbz.rawValue
+        case "PDF":
+            return EbookFormat.pdf.rawValue
+        case "EPUB":
+            // Komga serves a divina-compatible EPUB as page images, like any other comic.
+            return epubDivinaCompatible == true ? EbookFormat.cbz.rawValue : EbookFormat.epub.rawValue
+        default:
+            return fileFormat ?? mimeFormat
         }
-        if let mediaType, let ext = mimeToExtension(mediaType) { return ext }
-        return mediaProfile?.uppercased() == "DIVINA" ? "cbz" : nil
+    }
+
+    static func comicReadingDirection(fromSeriesValue value: String?) -> ComicReadingDirection? {
+        switch value?.uppercased() {
+        case "LEFT_TO_RIGHT": .leftToRight
+        case "RIGHT_TO_LEFT": .rightToLeft
+        case "VERTICAL", "WEBTOON": .vertical
+        default: nil
+        }
+    }
+
+    private static func isStreamOnlyArchive(_ response: HTTPURLResponse) -> Bool {
+        let mimeType = response.mimeType?.lowercased() ?? ""
+        if mimeType.contains("7z") || mimeType.contains("tar") { return true }
+        let filename = response.suggestedFilename?.lowercased() ?? ""
+        return [".cb7", ".cbt", ".7z", ".tar"].contains { filename.hasSuffix($0) }
     }
 
     private func detectEbookExtension(response: HTTPURLResponse) -> String? {
@@ -690,8 +753,15 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
         let ebookFormat = Self.ebookFormat(
             mediaType: book.media?.mediaType,
             mediaProfile: book.media?.mediaProfile,
+            epubDivinaCompatible: book.media?.epubDivinaCompatible,
             fileName: book.url ?? book.name
         )
+        // Komga has no volume level, so comic books map to flat issues of their server series.
+        let comicFormats = [EbookFormat.cbz.rawValue, EbookFormat.cbr.rawValue, EbookFormat.pdf.rawValue]
+        let comicMetadata: ComicMetadata? =
+            detectedMediaType == .ebook && !book.seriesId.isEmpty && comicFormats.contains(ebookFormat ?? "")
+            ? ComicMetadata(seriesID: book.seriesId, issueLabel: issueNumber.map { "Issue \($0)" }, issueOrder: book.metadata?.numberSort, pageCount: book.media?.pagesCount)
+            : nil
         return Book(
             id: book.id,
             title: title,
@@ -703,6 +773,7 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
             coverURL: coverURL(bookId: book.id),
             mediaType: detectedMediaType,
             ebookFormat: ebookFormat,
+            comicMetadata: comicMetadata,
             dateAdded: book.created,
             description: book.metadata?.summary?.nonEmpty ?? book.summary,
             genres: book.metadata?.tags,
@@ -916,6 +987,7 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
 
     private struct KomgaSeriesMetadata: Decodable {
         let title: String?
+        let readingDirection: String?
     }
 
     private struct KomgaMedia: Decodable {

@@ -57,6 +57,20 @@ struct AudioOverlayClip: Sendable, Codable {
     var duration: TimeInterval { clipEnd - clipBegin }
     var isTextFragment: Bool { textFragment != nil }
 
+    func withTextHref(_ textHref: String) -> AudioOverlayClip {
+        AudioOverlayClip(
+            fragmentId: fragmentId,
+            textHref: textHref,
+            audioSrc: audioSrc,
+            clipBegin: clipBegin,
+            clipEnd: clipEnd,
+            granularity: granularity,
+            parentGroupIndex: parentGroupIndex,
+            textFragment: textFragment,
+            skippableRole: skippableRole
+        )
+    }
+
     init(
         fragmentId: String,
         textHref: String,
@@ -117,6 +131,15 @@ enum EPUB3SMILParser {
         href.hasPrefix("/") ? String(href.dropFirst()) : href
     }
 
+    static func normalizedResourcePath(_ href: String) -> String {
+        let path = href.components(separatedBy: "#").first ?? href
+        return resolvePathDots(path.removingPercentEncoding ?? path)
+    }
+
+    static func pathsShareSuffix(_ a: String, _ b: String) -> Bool {
+        a == b || a.hasSuffix("/" + b) || b.hasSuffix("/" + a)
+    }
+
     static func localAudioFilename(for src: String) -> String {
         resolvePathDots(src).replacingOccurrences(of: "/", with: "_")
     }
@@ -162,11 +185,10 @@ enum EPUB3SMILParser {
             let href = normalizeHref($0.href).lowercased()
             return href.hasSuffix(".smil") || href.contains(".smil#")
         }
-        let smilLinksByHref = Dictionary(
-            (mediaTypeLinks + extensionLinks).map { (normalizeHref($0.href), $0) },
-            uniquingKeysWith: { first, _ in first }
-        )
-        let smilLinks = Array(smilLinksByHref.values)
+        var seenSMILHrefs = Set<String>()
+        let smilLinks = (mediaTypeLinks + extensionLinks).filter {
+            seenSMILHrefs.insert(normalizeHref($0.href)).inserted
+        }
 
         guard !smilLinks.isEmpty else {
             AppLogger.library.info("EPUB3SMILParser: No SMIL resources in publication (mediaType + .smil fallback)")
@@ -174,8 +196,8 @@ enum EPUB3SMILParser {
                 AppLogger.library.debug(
                     "EPUB3SMILParser: Falling back to ZIP scan \(DiagnosticLogSanitizer.fileDescriptor(for: epubFileURL))"
                 )
-                let zipClips = try await parseSMILFromArchive(epubFileURL: epubFileURL)
-                let sortedZipClips = sortClipsBySpine(zipClips, publication: publication)
+                let zipDocuments = try await parseSMILFromArchive(epubFileURL: epubFileURL)
+                let sortedZipClips = sortClipsBySpine(zipDocuments, publication: publication)
                 AppLogger.library.info("EPUB3SMILParser: ZIP fallback parsed \(sortedZipClips.count) clip(s)")
                 return sortedZipClips
             }
@@ -184,7 +206,7 @@ enum EPUB3SMILParser {
 
         AppLogger.library.info("EPUB3SMILParser: Found \(smilLinks.count) SMIL resource(s)")
 
-        var allClips: [AudioOverlayClip] = []
+        var documents: [SMILDocument] = []
 
         for link in smilLinks {
             guard let resource = publication.get(link) else {
@@ -206,60 +228,104 @@ enum EPUB3SMILParser {
 
             let clips = SmilXMLParser(data: data, baseHref: baseHref).parseAndReturn()
             AppLogger.library.info("EPUB3SMILParser: Parsed \(clips.count) clips from \(baseHref)")
-            allClips.append(contentsOf: clips)
+            documents.append(SMILDocument(href: baseHref, clips: clips))
         }
 
-        guard !allClips.isEmpty else {
+        guard documents.contains(where: { !$0.clips.isEmpty }) else {
             AppLogger.library.warning("EPUB3SMILParser: Parsed 0 clips total from \(smilLinks.count) SMIL file(s)")
             if let epubFileURL {
                 AppLogger.library.info("EPUB3SMILParser: Retrying via direct ZIP SMIL scan")
-                let zipClips = try await parseSMILFromArchive(epubFileURL: epubFileURL)
-                let sortedZipClips = sortClipsBySpine(zipClips, publication: publication)
+                let zipDocuments = try await parseSMILFromArchive(epubFileURL: epubFileURL)
+                let sortedZipClips = sortClipsBySpine(zipDocuments, publication: publication)
                 AppLogger.library.info("EPUB3SMILParser: ZIP retry parsed \(sortedZipClips.count) clip(s)")
                 return sortedZipClips
             }
             return []
         }
 
-        allClips = sortClipsBySpine(allClips, publication: publication)
+        let allClips = sortClipsBySpine(documents, publication: publication)
 
         AppLogger.library.info("EPUB3SMILParser: Total clips: \(allClips.count), sorted by spine order")
         return allClips
     }
 
-    private static func sortClipsBySpine(_ clips: [AudioOverlayClip], publication: Publication) -> [AudioOverlayClip] {
-        let readingOrderHrefs = publication.readingOrder.map { normalizeHref($0.href) }
-        let hrefToSpineIndex: [String: Int] = {
-            var map: [String: Int] = [:]
-            for (idx, href) in readingOrderHrefs.enumerated() {
-                map[href] = idx
-            }
-            return map
-        }()
-
-        func spinePosition(for textHref: String) -> Int {
-            let normalized = normalizeHref(textHref)
-            if let exact = hrefToSpineIndex[normalized] { return exact }
-            for (href, idx) in hrefToSpineIndex {
-                if href.hasSuffix(normalized) || normalized.hasSuffix(href) { return idx }
-                let hrefFile = (href as NSString).lastPathComponent
-                let normalizedFile = (normalized as NSString).lastPathComponent
-                if hrefFile == normalizedFile { return idx }
-            }
-            return Int.max
-        }
-
-        return clips.enumerated()
-            .sorted { a, b in
-                let spineA = spinePosition(for: a.element.textHref)
-                let spineB = spinePosition(for: b.element.textHref)
-                if spineA != spineB { return spineA < spineB }
-                return a.offset < b.offset
-            }
-            .map(\.element)
+    struct SMILDocument {
+        let href: String
+        let clips: [AudioOverlayClip]
     }
 
-    private static func parseSMILFromArchive(epubFileURL: URL) async throws -> [AudioOverlayClip] {
+    struct ReadingOrderEntry {
+        let href: String
+        let overlayHrefs: [String]
+    }
+
+    private static func sortClipsBySpine(_ documents: [SMILDocument], publication: Publication) -> [AudioOverlayClip] {
+        // Readium moves spine-referenced SMIL items out of `resources` and into the spine item's alternates.
+        let readingOrder = publication.readingOrder.map { link in
+            ReadingOrderEntry(
+                href: normalizeHref(link.href),
+                overlayHrefs: link.alternates.filter { $0.mediaType?.matches(.smil) == true }.map(\.href)
+            )
+        }
+        return orderClips(documents: documents, readingOrder: readingOrder)
+    }
+
+    // Unmatched clips stay with their SMIL document instead of sinking to the end.
+    static func orderClips(documents: [SMILDocument], readingOrder: [ReadingOrderEntry]) -> [AudioOverlayClip] {
+        let spinePaths = readingOrder.map { normalizedResourcePath($0.href) }
+        var spineIndexByPath: [String: Int] = [:]
+        var spineIndexByOverlayPath: [String: Int] = [:]
+        for (index, entry) in readingOrder.enumerated() {
+            if spineIndexByPath[spinePaths[index]] == nil { spineIndexByPath[spinePaths[index]] = index }
+            for overlayPath in entry.overlayHrefs.map(normalizedResourcePath) where spineIndexByOverlayPath[overlayPath] == nil {
+                spineIndexByOverlayPath[overlayPath] = index
+            }
+        }
+
+        var spineIndexByTextPath: [String: Int?] = [:]
+        func spineIndex(forTextPath path: String) -> Int? {
+            if let cached = spineIndexByTextPath[path] { return cached }
+            let fileName = (path as NSString).lastPathComponent.lowercased()
+            let index =
+                spineIndexByPath[path]
+                ?? spinePaths.firstIndex { pathsShareSuffix($0, path) }
+                ?? spinePaths.firstIndex { ($0 as NSString).lastPathComponent.lowercased() == fileName }
+            spineIndexByTextPath[path] = index
+            return index
+        }
+
+        var keyed: [(position: Int, document: Int, offset: Int, clip: AudioOverlayClip)] = []
+        var unmatchedCount = 0
+        var previousDocumentPosition = -1
+        for (documentIndex, document) in documents.enumerated() {
+            let resolved = document.clips.map { clip -> (spineIndex: Int?, clip: AudioOverlayClip) in
+                guard let index = spineIndex(forTextPath: normalizedResourcePath(clip.textHref)) else {
+                    return (nil, clip)
+                }
+                return (index, clip.withTextHref(readingOrder[index].href))
+            }
+            let documentPosition =
+                spineIndexByOverlayPath[normalizedResourcePath(document.href)]
+                ?? resolved.compactMap(\.spineIndex).min()
+                ?? previousDocumentPosition
+            previousDocumentPosition = documentPosition
+            for (offset, entry) in resolved.enumerated() {
+                if entry.spineIndex == nil { unmatchedCount += 1 }
+                keyed.append((entry.spineIndex ?? documentPosition, documentIndex, offset, entry.clip))
+            }
+        }
+
+        if unmatchedCount > 0 {
+            AppLogger.library.warning(
+                "EPUB3SMILParser: \(unmatchedCount) of \(keyed.count) clip(s) reference text outside the reading order"
+            )
+        }
+        return keyed
+            .sorted { ($0.position, $0.document, $0.offset) < ($1.position, $1.document, $1.offset) }
+            .map(\.clip)
+    }
+
+    private static func parseSMILFromArchive(epubFileURL: URL) async throws -> [SMILDocument] {
         let fileSize: Int64 = {
             let attrs = try? FileManager.default.attributesOfItem(atPath: epubFileURL.path)
             return attrs?[.size] as? Int64 ?? -1
@@ -439,7 +505,7 @@ enum EPUB3SMILParser {
         try FileManager.default.createDirectory(at: tmpRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tmpRoot) }
 
-        var allClips: [AudioOverlayClip] = []
+        var documents: [SMILDocument] = []
 
         for (idx, entry) in smilEntries.enumerated() {
 
@@ -449,11 +515,11 @@ enum EPUB3SMILParser {
             let data = try Data(contentsOf: tmpFile)
             let baseHref = normalizeHref(resolvePathDots(entry.path))
             let clips = SmilXMLParser(data: data, baseHref: baseHref).parseAndReturn()
-            allClips.append(contentsOf: clips)
+            documents.append(SMILDocument(href: baseHref, clips: clips))
         }
 
-        AppLogger.library.info("EPUB3SMILParser: ZIP parsed total \(allClips.count) clips")
-        return allClips
+        AppLogger.library.info("EPUB3SMILParser: ZIP parsed total \(documents.reduce(0) { $0 + $1.clips.count }) clips")
+        return documents
     }
 
     @MainActor
@@ -1117,8 +1183,8 @@ private final class SmilXMLParser: NSObject, XMLParserDelegate {
             if let frag = currentFragmentId,
                 let textHref = currentTextHref,
                 let audioSrc = currentAudioSrc,
-                let begin = currentClipBegin,
-                let end = currentClipEnd, end > begin
+                let begin = currentClipBegin, begin.isFinite,
+                let end = currentClipEnd, end.isFinite, end > begin
             {
                 clips.append(
                     AudioOverlayClip(

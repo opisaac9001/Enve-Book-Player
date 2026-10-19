@@ -39,7 +39,11 @@ let autoScrollPreviousTime = 0
 let selectionTimer = 0
 let initialized = false
 let activeFootnote = null
+let footnoteClosedAt = -Infinity
 const ttsAnnotationKey = 'enve-tts-current'
+const ttsHighlightColor = '#3399FF'
+const ttsHighlightRanges = new WeakMap()
+let ttsLocatorJSON = null
 const annotationByCFI = new Map()
 const drawnAnnotationCFIs = new Set()
 const selectionCleanups = []
@@ -446,8 +450,9 @@ const sanitizeMarkup = (source, mediaType, name = '', requiresCSP = false) => {
             : doc.createElement(name)
         let head = doc.querySelector('head')
         if (!head) {
+            // Trailing, so the body keeps the CFI step it has in the unsanitized document.
             head = makeElement('head')
-            root.insertBefore(head, root.firstChild)
+            root.append(head)
         }
         const meta = makeElement('meta')
         meta.setAttribute('http-equiv', 'Content-Security-Policy')
@@ -543,7 +548,7 @@ const fontStack = family => {
     case 'sansSerif':
         return '-apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif'
     case 'openDyslexic':
-        return '"OpenDyslexic", sans-serif'
+        return '"Enve OpenDyslexic", sans-serif'
     case 'duospace':
         return '"iA Writer Duospace", ui-monospace, Menlo, monospace'
     default:
@@ -617,6 +622,12 @@ const appearanceStyles = next => {
             font-family: inherit !important;
             color: inherit !important;
         }`
+    // Matches Readium CSS: a chosen reader font reaches inline publisher rules too, but not code.
+    const readerFontReset = next.customFontFamily || next.fontFamily !== 'serif'
+        ? `body *:not(code, kbd, samp, var, pre, pre *, code *) {
+            font-family: inherit !important;
+        }`
+        : ''
     return `
         ${next.customFontCSS || ''}
         :root {
@@ -659,6 +670,7 @@ const appearanceStyles = next => {
                 0 0.2px currentColor;
         }
         ${publisherReset}
+        ${readerFontReset}
     `
 }
 
@@ -781,6 +793,29 @@ const annotationIdAt = (x, y) => {
     return null
 }
 
+// WebKit does not deliver events to listeners on sandboxed, script-disabled section
+// frames (webkit.org/b/218086), so Foliate's own link handling never sees a tap.
+// The native tap recognizer activates the link here instead.
+const activateLinkAt = (x, y) => {
+    if (activeFootnote || performance.now() - footnoteClosedAt < 800) return true
+    for (const content of view?.renderer?.getContents?.() ?? []) {
+        const frame = content.doc?.defaultView?.frameElement?.getBoundingClientRect()
+        if (!frame || x < frame.left || x > frame.right || y < frame.top || y > frame.bottom) continue
+        const a = content.doc.elementFromPoint(x - frame.left, y - frame.top)?.closest?.('a[href]')
+        if (!a) continue
+        const rawHref = a.getAttribute('href')
+        const href = book.sections[content.index]?.resolveHref?.(rawHref) ?? rawHref
+        if (book.isExternal?.(href)) {
+            if (isNetworkURL(href)) post('externalLink', { url: href })
+            return true
+        }
+        const event = new CustomEvent('link', { detail: { a, href }, cancelable: true })
+        if (view.dispatchEvent(event)) view.goTo(href).catch(postError)
+        return true
+    }
+    return false
+}
+
 const emitSelection = () => {
     lastSelection = currentSelectionSnapshot()
     post('selection', { selection: lastSelection })
@@ -797,6 +832,7 @@ const closeFootnote = () => {
     activeFootnote.view.close()
     activeFootnote.overlay.remove()
     activeFootnote = null
+    footnoteClosedAt = performance.now()
 }
 
 const footnotes = new FootnoteHandler()
@@ -1248,28 +1284,42 @@ const restoreLocator = async (locatorJSON, animated = false) => {
     return false
 }
 
-const applyTTSLocator = async locatorJSON => {
-    for (const content of view.renderer?.getContents?.() ?? []) {
-        content.overlayer?.remove(ttsAnnotationKey)
-    }
-    if (locatorJSON === null) return { applied: true, cleared: true }
+// The narration highlight is the newest overlay, so Foliate's own hit test would
+// report it instead of a saved highlight underneath.
+function hitTestSkippingTTS(point) {
+    const hit = Overlayer.prototype.hitTest.call(this, point)
+    const range = ttsHighlightRanges.get(this)
+    if (hit[0] !== ttsAnnotationKey || !range) return hit
+    this.remove(ttsAnnotationKey)
+    const saved = Overlayer.prototype.hitTest.call(this, point)
+    this.add(ttsAnnotationKey, range, Overlayer.highlight, { color: ttsHighlightColor })
+    return saved
+}
+
+const drawTTSHighlight = async () => {
+    const locatorJSON = ttsLocatorJSON
+    if (locatorJSON === null) return false
     const locator = parseLocator(locatorJSON)
     locator.cfi = null
     locator.domRange = null
     const resolved = await semanticRangeForLocator(locator, false)
-    if (!resolved?.content.overlayer || resolved.range.collapsed) {
-        return { applied: false, cleared: false }
+    const overlayer = resolved?.content.overlayer
+    if (locatorJSON !== ttsLocatorJSON || !overlayer || resolved.range.collapsed) return false
+    overlayer.hitTest = hitTestSkippingTTS
+    ttsHighlightRanges.set(overlayer, resolved.range)
+    overlayer.add(ttsAnnotationKey, resolved.range, Overlayer.highlight, { color: ttsHighlightColor })
+    return resolved.range.getClientRects().length > 0
+}
+
+// The locator is retained so a section rendered later (page follow, reflow, or a
+// relayout) draws the current narration highlight when its overlay is created.
+const applyTTSLocator = async locatorJSON => {
+    ttsLocatorJSON = locatorJSON
+    for (const content of view.renderer?.getContents?.() ?? []) {
+        content.overlayer?.remove(ttsAnnotationKey)
     }
-    resolved.content.overlayer.add(
-        ttsAnnotationKey,
-        resolved.range,
-        Overlayer.highlight,
-        { color: '#3399FF' }
-    )
-    return {
-        applied: resolved.range.getClientRects().length > 0,
-        cleared: false,
-    }
+    if (locatorJSON === null) return { applied: true, cleared: true }
+    return { applied: await drawTTSHighlight(), cleared: false }
 }
 
 const textPointAtOffset = (element, target) => {
@@ -1438,11 +1488,12 @@ const ttsPositionAtPoint = (x, y) => {
 }
 
 const followTTSLocator = async locatorJSON => {
+    if (lastSelection) return
     const locator = parseLocator(locatorJSON)
     locator.cfi = null
     locator.domRange = null
     let resolved = await semanticRangeForLocator(locator, true)
-    if (!resolved) return
+    if (!resolved || lastSelection) return
     if (resolved.content.index !== view.renderer?.primaryIndex) {
         await view.goTo(locator.href)
         resolved = await semanticRangeForLocator(locator, false)
@@ -1466,7 +1517,7 @@ const followTTSLocator = async locatorJSON => {
             isVisible = false
         }
     }
-    if (!isVisible) await view.renderer.scrollToAnchor?.(range)
+    if (!isVisible && !lastSelection) await view.renderer.scrollToAnchor?.(range)
 }
 
 const performSearch = async query => {
@@ -1685,6 +1736,11 @@ const command = async envelope => {
             throw new TypeError('Annotation-at payload is invalid')
         }
         return { id: annotationIdAt(payload.x, payload.y) }
+    case 'activateLinkAt':
+        if (!hasExactKeys(payload, ['x', 'y']) || !Number.isFinite(payload.x) || !Number.isFinite(payload.y)) {
+            throw new TypeError('Activate-link payload is invalid')
+        }
+        return { handled: activateLinkAt(payload.x, payload.y) }
     case 'refreshSelection':
         if (!hasExactKeys(payload, [])) throw new TypeError('Refresh-selection payload is invalid')
         emitSelection()
@@ -1832,6 +1888,8 @@ const boot = async () => {
             attachDocumentListeners(content.doc)
         }
         renderAnnotations().catch(postError)
+        // The renderer publishes the new section's contents after this event returns.
+        Promise.resolve().then(drawTTSHighlight).catch(postError)
     })
     view.addEventListener('draw-annotation', event => {
         const { annotation, draw } = event.detail
@@ -1875,9 +1933,14 @@ const boot = async () => {
     })
     view.addEventListener('link', event => {
         const handled = footnotes.handle(book, event)
-        handled?.catch(error => {
+        if (!handled) {
+            if (lastPosition) post('internalLink', { locator: lastPosition })
+            return
+        }
+        handled.catch(error => {
             console.error('Footnote popup failed', error)
             closeFootnote()
+            if (lastPosition) post('internalLink', { locator: lastPosition })
             view.goTo(event.detail?.href)
         })
     })

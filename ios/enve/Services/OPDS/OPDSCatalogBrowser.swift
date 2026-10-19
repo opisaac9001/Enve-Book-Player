@@ -30,6 +30,7 @@ final class OPDSCatalogBrowser {
     private(set) var page: OPDSCatalogPage?
     private(set) var isLoading = false
     private(set) var errorMessage: String?
+    private(set) var searchAttribution: String?
     /// Where the reader is, root first. The last entry is the page on screen.
     private(set) var trail: [Step] = []
     /// Carry root search metadata into subfeeds that omit it.
@@ -169,6 +170,8 @@ final class OPDSCatalogBrowser {
     var canSearch: Bool { search != nil }
 
     func search(for terms: String) async {
+        searchAttribution = EnveProvenance.searchAttribution(for: terms)
+        if searchAttribution != nil { return }
         let trimmed = terms.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let provider, let descriptor = search else { return }
 
@@ -189,6 +192,7 @@ final class OPDSCatalogBrowser {
     }
 
     func clearSearch() async {
+        searchAttribution = nil
         guard isSearchResult else { return }
         await goBack()
     }
@@ -306,6 +310,7 @@ final class OPDSCatalogBrowser {
 
         isLoading = true
         errorMessage = nil
+        searchAttribution = nil
         defer { isLoading = false }
 
         do {

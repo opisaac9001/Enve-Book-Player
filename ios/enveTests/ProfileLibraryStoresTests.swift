@@ -172,8 +172,7 @@ struct ProfileLibraryStoresTests {
                 ProfileStorageLocations(
                     profileID: id, documentsDirectory: root.appendingPathComponent("Documents"),
                     applicationSupportDirectory: root.appendingPathComponent("ApplicationSupport"),
-                    cachesDirectory: root.appendingPathComponent("Caches"),
-                    legacyPlaybackStoreURL: root.appendingPathComponent("default.store")
+                    cachesDirectory: root.appendingPathComponent("Caches")
                 )
             }
             ownerStorage = storage(FamilyProfile.ownerID)

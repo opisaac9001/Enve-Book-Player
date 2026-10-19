@@ -5,6 +5,8 @@ struct WorkHubScreen: View {
     var seed: Book?
 
     @Environment(EnveEngine.self) private var engine
+    @Environment(\.profileSession) private var capturedSession
+    private var readingEnabled: Bool { (capturedSession ?? .owner).preferences.readingEnabled }
     @Environment(\.hearth) private var hearth
     @Environment(\.mantelInset) private var mantelInset
 
@@ -178,7 +180,7 @@ struct WorkHubScreen: View {
 
     private var actions: some View {
         VStack(spacing: 14) {
-            if let edition = selectedEdition {
+            if let edition = selectedEdition, readingEnabled || edition.format != .ebook {
                 EmberButton(title: primaryTitle(edition), systemImage: edition.format == .ebook ? "book.fill" : "play.fill") {
                     PlatformHaptics.impact(.light)
                     let source = playbackSource(for: edition)
@@ -189,7 +191,7 @@ struct WorkHubScreen: View {
                     }
                 }
             }
-            if let other = crossFormatEdition {
+            if let other = crossFormatEdition, readingEnabled || other.format != .ebook {
                 QuietButton(
                     title: other.format == .ebook ? "Read instead" : "Listen instead",
                     systemImage: other.format == .ebook ? "book" : "headphones"

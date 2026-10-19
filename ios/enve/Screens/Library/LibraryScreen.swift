@@ -9,8 +9,8 @@ struct LibraryScreen: View {
     @Environment(\.profileSession) private var profileSession
     @Environment(EnveEngine.self) private var engine
     @Environment(\.hearth) private var hearth
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.mantelInset) private var mantelInset
-    @Environment(\.shellNavigationStyle) private var shellNavigationStyle
 
     @Environment(LibraryModel.self) private var model
     @State private var searchText = ""
@@ -29,12 +29,6 @@ struct LibraryScreen: View {
     #endif
     @AppStorage("library.gridColumns") private var gridColumns = 0
 
-    private var searchRestInset: CGFloat {
-        switch shellNavigationStyle {
-        case .classic: MantelBar.height + 12
-        case .liquidGlass: MantelBar.liquidHeight - 18 + 12
-        }
-    }
 
     var body: some View {
         GeometryReader { geo in
@@ -63,6 +57,9 @@ struct LibraryScreen: View {
                 await refreshVisibleLibraryScope()
             }
         }
+        .navigationDestination(for: BrowseSeriesAggregate.self) { aggregate in
+            LibrarySeriesDestination(aggregate: aggregate, mediaScope: model.mediaScope, comicFilter: model.comicSeriesFilter)
+        }
         .background(HearthBackground())
         .accessibilityIdentifier("library-screen")
         .toolbar(.hidden, for: .navigationBar)
@@ -78,7 +75,7 @@ struct LibraryScreen: View {
                     text: $searchText,
                     expanded: $searchExpanded,
                     focused: $searchFocused,
-                    restInset: searchRestInset
+                    restInset: mantelInset - 4
                 )
             }
         }
@@ -132,6 +129,7 @@ struct LibraryScreen: View {
                 names: [
                     UnifiedDownloadService.downloadCompletedNotification,
                     .localLibraryUpdated,
+                    .preferencesDidChange,
                 ],
                 debounce: .milliseconds(150)
             ) {
@@ -217,7 +215,7 @@ struct LibraryScreen: View {
                 SettingsScreen(profileSession: profileSession ?? .owner)
             } label: {
                 Image(systemName: "gearshape")
-                    .font(.hearthUI(15, weight: .semibold))
+                    .font(.system(size: 15 * Hearth.visionFactor, weight: .semibold))
                     .foregroundStyle(hearth.text)
                     .frame(width: buttonSize, height: buttonSize)
                     .background {
@@ -230,8 +228,8 @@ struct LibraryScreen: View {
                     }
             }
             .buttonStyle(PressableStyle())
-            .frame(minWidth: 44, minHeight: 44)
             .accessibilityLabel("Settings")
+            .accessibilityShowsLargeContentViewer()
         }
         .fixedSize()
     }
@@ -310,13 +308,15 @@ struct LibraryScreen: View {
                     ) {
                         focusShelf(status: .listening, media: .all, source: .all)
                     }
-                    LibraryShelfButton(
-                        glyph: "book.pages",
-                        title: "Reading",
-                        line: "Ebooks & comics",
-                        isActive: isShelfActive(status: .reading, media: .ebooks, source: .all)
-                    ) {
-                        focusShelf(status: .reading, media: .ebooks, source: .all)
+                    if model.readingEnabled {
+                        LibraryShelfButton(
+                            glyph: "book.pages",
+                            title: "Reading",
+                            line: "Ebooks & comics",
+                            isActive: isShelfActive(status: .reading, media: .ebooks, source: .all)
+                        ) {
+                            focusShelf(status: .reading, media: .ebooks, source: .all)
+                        }
                     }
                     LibraryShelfButton(
                         glyph: "arrow.down.circle",
@@ -344,7 +344,7 @@ struct LibraryScreen: View {
                         LibraryShelfLabel(glyph: "folder", title: "Collections", line: "Smart shelves")
                     }
                     .buttonStyle(PressableStyle())
-                    .frame(height: 45)
+                    .frame(minHeight: 45)
                     .contentShape(Rectangle())
                     NavigationLink {
                         DiscoverScreen()
@@ -378,7 +378,7 @@ struct LibraryScreen: View {
             }
         } label: {
             Image(systemName: "plus")
-                .font(.hearthUI(16, weight: .semibold))
+                .font(.system(size: 16 * Hearth.visionFactor, weight: .semibold))
                 .foregroundStyle(hearth.text)
                 .frame(width: size, height: size)
                 .background {
@@ -389,8 +389,10 @@ struct LibraryScreen: View {
                         tint: hearth.bgElevated
                     )
                 }
+                .contentShape(Rectangle())
         }
         .accessibilityLabel("Add books")
+        .accessibilityShowsLargeContentViewer()
     }
 
     private var displayGlyph: String {
@@ -444,7 +446,8 @@ struct LibraryScreen: View {
     }
 
     private var scopeRow: some View {
-        HStack(spacing: 10) {
+        let layout = dynamicTypeSize.isAccessibilitySize ? AnyLayout(VStackLayout(spacing: 10)) : AnyLayout(HStackLayout(spacing: 10))
+        return layout {
             Menu {
                 Button {
                     selectSource(.all)
@@ -634,19 +637,20 @@ struct LibraryScreen: View {
         source: LibrarySourceFilter,
         facet: LibraryFacet = .books
     ) -> Bool {
-        model.status == status && model.media == media && model.sourceFilter == source && model.facet == facet
+        let media = !model.readingEnabled && (media == .ebooks || media == .comics) ? .all : media
+        return model.status == status && model.media == media && model.sourceFilter == source && model.facet == facet
     }
 
     private var facetRow: some View {
         ScrollView(.horizontal) {
             HStack(spacing: 24) {
-                ForEach(LibraryFacet.allCases, id: \.self) { facet in
+                ForEach(model.availableFacets, id: \.self) { facet in
                     Button {
                         PlatformHaptics.selection()
                         model.select(facet)
                     } label: {
                         VStack(spacing: 5) {
-                            Overline(facet.title, color: model.facet == facet ? hearth.ember : nil)
+                            Overline(model.title(for: facet), color: model.facet == facet ? hearth.ember : nil)
                             Capsule()
                                 .fill(model.facet == facet ? hearth.ember : .clear)
                                 .frame(width: 22, height: 2)
@@ -654,7 +658,7 @@ struct LibraryScreen: View {
                         .frame(minHeight: 44)
                     }
                     .buttonStyle(PressableStyle())
-                    .frame(height: 45)
+                    .frame(minHeight: 45)
                     .contentShape(Rectangle())
                 }
                 NavigationLink {
@@ -669,7 +673,7 @@ struct LibraryScreen: View {
                     .frame(minHeight: 44)
                 }
                 .buttonStyle(PressableStyle())
-                .frame(height: 45)
+                .frame(minHeight: 45)
                 .contentShape(Rectangle())
             }
             .padding(.horizontal, 24)
@@ -679,13 +683,20 @@ struct LibraryScreen: View {
 
     @ViewBuilder
     private func content(width: CGFloat) -> some View {
+        if let message = model.searchAttribution {
+            quietNote(message)
+        }
         if !model.hasLoaded {
             loadingStacks
         } else if model.totalLibraryCount == 0 {
-            emptyLibrary
+            if model.searchAttribution == nil {
+                emptyLibrary
+            }
         } else if model.isSearchActive {
             if model.displayBooks.isEmpty {
-                quietNote("Nothing answers to that name.")
+                if model.searchAttribution == nil {
+                    quietNote("Nothing answers to that name.")
+                }
             } else {
                 bookResults(width: width)
             }
@@ -712,15 +723,20 @@ struct LibraryScreen: View {
                 } else if model.layout == .grid {
                     let spec = browseGridSpec(width: width)
                     LazyVGrid(columns: spec.columns, spacing: 20) {
-                        ForEach(model.seriesAggregates, id: \.name) { aggregate in
-                            LibrarySeriesGridCell(aggregate: aggregate, mediaScope: model.mediaScope, width: spec.cellWidth)
+                        ForEach(model.seriesAggregates, id: \.id) { aggregate in
+                            LibrarySeriesGridCell(
+                                aggregate: aggregate,
+                                mediaScope: model.mediaScope,
+                                width: spec.cellWidth,
+                                comicFilter: model.comicSeriesFilter
+                            )
                         }
                     }
                     .padding(.horizontal, spec.padding)
                 } else {
                     LazyVStack(spacing: 18) {
-                        ForEach(model.seriesAggregates, id: \.name) { aggregate in
-                            LibrarySeriesRow(aggregate: aggregate, mediaScope: model.mediaScope)
+                        ForEach(model.seriesAggregates, id: \.id) { aggregate in
+                            LibrarySeriesRow(aggregate: aggregate, mediaScope: model.mediaScope, comicFilter: model.comicSeriesFilter)
                         }
                     }
                     .padding(.horizontal, 24)
@@ -1006,14 +1022,13 @@ private struct LibraryShelfLabel: View {
             Image(systemName: glyph)
                 .font(.hearthUI(13, weight: .semibold))
                 .foregroundStyle(isActive ? hearth.readableOnEmber : hearth.ember)
-                .frame(width: 16, height: 16)
+                .frame(minWidth: 16, minHeight: 16)
             Text(title)
                 .font(.hearthUI(12, weight: .semibold))
                 .foregroundStyle(isActive ? hearth.readableOnEmber : hearth.text)
                 .lineLimit(1)
-                .minimumScaleFactor(0.82)
         }
-        .frame(height: 44)
+        .frame(minHeight: 44)
         .padding(.horizontal, 12)
         .background {
             HearthChromeBackground(
@@ -1055,10 +1070,9 @@ struct HearthFloatingSearch: View {
     private var glass: some View {
         Button {
             expanded = true
-            focused.wrappedValue = true
         } label: {
             Image(systemName: "magnifyingglass")
-                .font(.hearthUI(19, weight: .semibold))
+                .font(.system(size: 19 * Hearth.visionFactor, weight: .semibold))
                 .foregroundStyle(hearth.ember)
                 .frame(width: 54, height: 54)
                 .background {
@@ -1073,6 +1087,7 @@ struct HearthFloatingSearch: View {
         }
         .buttonStyle(PressableStyle())
         .accessibilityLabel("Search the library")
+        .accessibilityShowsLargeContentViewer()
         .transition(.scale.combined(with: .opacity))
     }
 
@@ -1121,6 +1136,7 @@ struct HearthFloatingSearch: View {
         }
         .shadow(color: .black.opacity(hearth.isInk ? 0.55 : 0.18), radius: 14, y: 4)
         .transition(.move(edge: .trailing).combined(with: .opacity))
+        .onAppear { focused.wrappedValue = true }
     }
 }
 
@@ -1131,13 +1147,14 @@ struct LibraryScopeButton: View {
     var isActive: Bool
 
     @Environment(\.hearth) private var hearth
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: systemImage)
                 .font(.hearthUI(14, weight: .semibold))
                 .foregroundStyle(isActive ? hearth.ember : hearth.textSecondary)
-                .frame(width: 18)
+                .frame(minWidth: 18)
             VStack(alignment: .leading, spacing: 2) {
                 Text(subtitle.uppercased())
                     .font(.hearthUI(9, weight: .semibold))
@@ -1145,9 +1162,10 @@ struct LibraryScopeButton: View {
                 Text(title)
                     .font(.hearthUI(13, weight: .semibold))
                     .foregroundStyle(hearth.text)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                    .minimumScaleFactor(dynamicTypeSize.isAccessibilitySize ? 1 : 0.8)
             }
+            .multilineTextAlignment(.leading)
             Image(systemName: "chevron.down")
                 .font(.hearthUI(9, weight: .semibold))
                 .foregroundStyle(hearth.textTertiary)
@@ -1290,7 +1308,7 @@ private struct LibraryControlsSheet: View {
 
                 controlSection("Status") {
                     LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
-                        ForEach(LibraryStatusFilter.allCases, id: \.self) { status in
+                        ForEach(model.availableStatusFilters, id: \.self) { status in
                             LibraryControlPill(
                                 title: status.title,
                                 isSelected: model.status == status
@@ -1304,7 +1322,7 @@ private struct LibraryControlsSheet: View {
 
                 controlSection("Media") {
                     LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
-                        ForEach(LibraryMediaFilter.allCases, id: \.self) { media in
+                        ForEach(model.availableMediaFilters, id: \.self) { media in
                             LibraryControlPill(
                                 title: media.title,
                                 isSelected: model.media == media
@@ -1444,6 +1462,7 @@ private struct LibrarySortPriorityRow: View {
     let onRemove: () -> Void
 
     @Environment(\.hearth) private var hearth
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1457,14 +1476,16 @@ private struct LibrarySortPriorityRow: View {
                 Text(descriptor.title)
                     .font(.hearthUI(15, weight: .semibold))
                     .foregroundStyle(hearth.text)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                    .minimumScaleFactor(dynamicTypeSize.isAccessibilitySize ? 1 : 0.8)
 
                 Spacer(minLength: 8)
 
-                sortIconButton("chevron.up", label: "Move \(descriptor.title) up", isEnabled: canMoveUp, action: onMoveUp)
-                sortIconButton("chevron.down", label: "Move \(descriptor.title) down", isEnabled: canMoveDown, action: onMoveDown)
-                sortIconButton("xmark", label: "Remove \(descriptor.title)", isEnabled: canRemove, action: onRemove)
+                HStack(spacing: 0) {
+                    sortIconButton("chevron.up", label: "Move \(descriptor.title) up", isEnabled: canMoveUp, action: onMoveUp)
+                    sortIconButton("chevron.down", label: "Move \(descriptor.title) down", isEnabled: canMoveDown, action: onMoveDown)
+                    sortIconButton("xmark", label: "Remove \(descriptor.title)", isEnabled: canRemove, action: onRemove)
+                }
             }
 
             HStack(spacing: 8) {
@@ -1475,7 +1496,7 @@ private struct LibrarySortPriorityRow: View {
                         Label(direction.title, systemImage: direction.glyph)
                             .font(.hearthUI(13, weight: .semibold))
                             .foregroundStyle(descriptor.direction == direction ? hearth.readableOnEmber : hearth.text)
-                            .frame(maxWidth: .infinity, minHeight: 36)
+                            .frame(maxWidth: .infinity, minHeight: 44)
                             .background {
                                 HearthChromeBackground(
                                     shape: .capsule,
@@ -1519,6 +1540,8 @@ private struct LibrarySortPriorityRow: View {
                         tint: hearth.bg
                     )
                 }
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
         }
         .disabled(!isEnabled)
         .buttonStyle(PressableStyle())
@@ -1533,6 +1556,7 @@ private struct LibraryControlPill: View {
     let action: () -> Void
 
     @Environment(\.hearth) private var hearth
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         Button(action: action) {
@@ -1543,11 +1567,11 @@ private struct LibraryControlPill: View {
                 }
                 Text(title)
                     .font(.hearthUI(14, weight: isSelected ? .semibold : .medium))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.78)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                    .minimumScaleFactor(dynamicTypeSize.isAccessibilitySize ? 1 : 0.78)
             }
             .foregroundStyle(isSelected ? hearth.readableOnEmber : hearth.text)
-            .frame(maxWidth: .infinity, minHeight: 40)
+            .frame(maxWidth: .infinity, minHeight: 44)
             .padding(.horizontal, 12)
             .background {
                 HearthChromeBackground(

@@ -48,6 +48,7 @@ enum SeriesSortOption: String, Codable {
 }
 
 @MainActor
+@Observable
 final class LibraryDisplayPreferencesStore {
     static let shared = LibraryDisplayPreferencesStore()
 
@@ -75,9 +76,15 @@ final class LibraryDisplayPreferencesStore {
     private static let userPreferencesKey = "userPreferences"
 
     private let userDefaults: UserDefaults
+    private(set) var readingEnabled = true
 
     init(defaults: UserDefaults = .standard) {
         userDefaults = defaults
+        readingEnabled = loadPreferences().readingEnabled
+    }
+
+    func includesLibraryBook(_ book: Book) -> Bool {
+        readingEnabled || book.mediaType != .ebook || book.hasEPUB3MediaOverlay
     }
 
     private enum CacheScopeRaw: String {
@@ -120,6 +127,7 @@ final class LibraryDisplayPreferencesStore {
     }
 
     func savePreferences(_ preferences: UserPreferences) {
+        readingEnabled = preferences.readingEnabled
         guard let encoded = try? JSONEncoder().encode(preferences) else { return }
         if let existing = userDefaults.data(forKey: Self.userPreferencesKey), existing == encoded {
             return

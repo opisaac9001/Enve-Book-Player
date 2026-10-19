@@ -130,6 +130,7 @@ final class AnnotationResponderBridge: UIViewController {
             view.addGestureRecognizer(selectionLongPress)
             foliateSelectionLongPressGesture = selectionLongPress
             pagePan.require(toFail: selectionLongPress)
+            foliateTap.require(toFail: selectionLongPress)
         }
 
         let selectionDismissTap = UITapGestureRecognizer(target: self, action: #selector(handleSelectionDismissTap(_:)))
@@ -578,14 +579,26 @@ struct VolumeButtonNavigationCapture: UIViewRepresentable {
         private weak var slider: UISlider?
         nonisolated(unsafe) private var enabled = false
         nonisolated(unsafe) private var isResetting = false
+        private var isObservingVolume = false
+        private var isStopped = false
 
         init(onIncrease: @escaping () -> Void, onDecrease: @escaping () -> Void) {
             self.onIncrease = onIncrease
             self.onDecrease = onDecrease
             self.previousVolume = AVAudioSession.sharedInstance().outputVolume
             super.init()
-            try? session.setActive(true)
-            session.addObserver(self, forKeyPath: "outputVolume", options: [.new], context: nil)
+            // Volume KVO only delivers on an active session, so register once activation has been attempted.
+            AudioSessionQueue.perform {
+                try AVAudioSession.sharedInstance().setActive(true)
+            } completion: { [weak self] failure in
+                guard let self, !self.isStopped else { return }
+                if let failure {
+                    AppLogger.library.error("Volume button capture could not activate the audio session: \(failure)")
+                }
+                self.session.addObserver(self, forKeyPath: "outputVolume", options: [.new], context: nil)
+                self.isObservingVolume = true
+                self.previousVolume = self.session.outputVolume
+            }
         }
 
         func attach(volumeView: MPVolumeView) {
@@ -602,7 +615,10 @@ struct VolumeButtonNavigationCapture: UIViewRepresentable {
         }
 
         func stop() {
+            isStopped = true
+            guard isObservingVolume else { return }
             session.removeObserver(self, forKeyPath: "outputVolume")
+            isObservingVolume = false
         }
 
         nonisolated override func observeValue(
@@ -677,8 +693,7 @@ struct ReaderKeyboardNavigationCapture: UIViewControllerRepresentable {
                 editingObservers.append(
                     NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                         Task { @MainActor in
-                            guard let self, self.viewIfLoaded?.window != nil else { return }
-                            self.becomeFirstResponder()
+                            self?.resumeNavigation()
                         }
                     }
                 )
@@ -687,7 +702,20 @@ struct ReaderKeyboardNavigationCapture: UIViewControllerRepresentable {
 
         override func viewDidAppear(_ animated: Bool) {
             super.viewDidAppear(animated)
+            resumeNavigation()
+        }
+
+        private func resumeNavigation() {
+            guard let window = viewIfLoaded?.window else { return }
+            let windows = window.windowScene?.windows ?? [window]
+            // Ending one field can mean another field is taking keyboard focus.
+            guard !windows.contains(where: { Self.hasFocusedTextInput(in: $0) }) else { return }
             becomeFirstResponder()
+        }
+
+        private static func hasFocusedTextInput(in view: UIView) -> Bool {
+            if view.isFirstResponder, view is any UITextInput { return true }
+            return view.subviews.contains { hasFocusedTextInput(in: $0) }
         }
 
         func tearDown() {
@@ -698,6 +726,7 @@ struct ReaderKeyboardNavigationCapture: UIViewControllerRepresentable {
         }
 
         override var keyCommands: [UIKeyCommand]? {
+            guard isFirstResponder else { return nil }
             let commands = [
                 UIKeyCommand(input: UIKeyCommand.inputLeftArrow, modifierFlags: [], action: #selector(handleLeftArrow)),
                 UIKeyCommand(input: UIKeyCommand.inputRightArrow, modifierFlags: [], action: #selector(handleRightArrow)),

@@ -89,6 +89,7 @@ public struct UserPreferences: Codable, Equatable {
     public var mergeAggressiveness: MergeAggressiveness = .normal
     public var authorGroupingThreshold: Double = 0.85
     public var showAdvancedLibrarySettings: Bool = false
+    var readingEnabled = true
 
     public var dedupExcludedProviderIds: Set<String> = []
     public var dedupExcludedLibraryIds: Set<String> = []
@@ -546,7 +547,7 @@ public struct UserPreferences: Codable, Equatable {
         case sortBy, sortOrder, authorNameSort, sortLevels, authorSortOption
         case excludedLibraryIds, hiddenBookIds, hiddenBookNames
         case titleDisplayMode, subtitleHandling, mergeAggressiveness
-        case authorGroupingThreshold, showAdvancedLibrarySettings
+        case authorGroupingThreshold, showAdvancedLibrarySettings, readingEnabled
         case dedupExcludedProviderIds, dedupExcludedLibraryIds, dedupFetchMissingDuration
         case autoMatchThreshold, autoMatchDurationTolerance
         case autoClearCacheEnabled, expireOldMetadataEnabled, compressCoversEnabled
@@ -565,6 +566,7 @@ public struct UserPreferences: Codable, Equatable {
     public init(from decoder: Decoder) throws {
         self.init()
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        readingEnabled = (try? c.decodeIfPresent(Bool.self, forKey: .readingEnabled)) ?? true
 
         func decode<T: Decodable>(_ type: T.Type, _ key: CodingKeys) -> T? {
             (try? c.decodeIfPresent(type, forKey: key))

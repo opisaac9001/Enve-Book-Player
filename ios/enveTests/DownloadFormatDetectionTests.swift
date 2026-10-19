@@ -24,6 +24,29 @@ struct DownloadFormatDetectionTests {
         #expect(EbookFormat.detectedExtension(inDownloadResponse: response) == "epub")
     }
 
+    @Test(arguments: ["Book.kepub", "Book.kepub.epub"])
+    func kepubDownloadsAreStoredAsEpub(filename: String) {
+        for contentType in ["application/epub+zip", "application/octet-stream"] {
+            let response = Self.response(
+                url: "https://books.example.invalid/api/v1/books/1/download",
+                headers: [
+                    "Content-Type": contentType,
+                    "Content-Disposition": "attachment; filename=\"\(filename)\"",
+                ]
+            )
+
+            #expect(EbookFormat.detectedExtension(inDownloadResponse: response) == "epub")
+        }
+    }
+
+    @Test func kepubExtensionsUseEpubHandling() {
+        #expect(EbookFormat.from(fileExtension: "KEPUB") == .epub)
+        #expect(BookloreBookMapper.normalizedEbookFormat("KEPUB") == "epub")
+        #expect(BookloreBookMapper.normalizedEbookFormat(".kepub") == "epub")
+        #expect(BookloreBookMapper.normalizedEbookFormat("AZW3") == "azw3")
+        #expect(BookloreBookMapper.normalizedEbookFormat("CBX") == nil)
+    }
+
     @Test func suggestedFilenameResolvesUnknownContentTypes() {
         let response = Self.response(
             url: "https://books.example.invalid/api/v1/books/1/download/book.cbz",

@@ -34,6 +34,7 @@ struct HardcoverLinkScreen: View {
         .scrollIndicators(.hidden)
         .background(HearthBackground())
         .toolbar(.hidden, for: .navigationBar)
+        .hearthInteractiveBack()
         .task { await hardcoverLoadLink() }
         .onChange(of: query) { _, newValue in
             hardcoverDebouncedSearch(newValue)

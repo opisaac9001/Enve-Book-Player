@@ -17,6 +17,7 @@ struct DetailDownloadButton: View {
     @Environment(\.hearth) private var hearth
     @State private var confirmRemove = false
     @State private var confirmCellular = false
+    @State private var removalError: String?
 
     private enum Phase {
         case downloaded
@@ -45,7 +46,9 @@ struct DetailDownloadButton: View {
             }
         }
         .buttonStyle(PressableStyle())
+        .disabled(isLocalOriginal && isDownloaded)
         .accessibilityLabel(accessibilityText)
+        .accessibilityIdentifier("detail.downloadButton")
         .alert("Remove this download?", isPresented: $confirmRemove) {
             Button("Remove", role: .destructive) { removeDownload() }
             Button("Keep", role: .cancel) {}
@@ -58,6 +61,14 @@ struct DetailDownloadButton: View {
         } message: {
             Text("Cellular downloads are off in settings.")
         }
+        .alert("Couldn't remove download", isPresented: Binding(
+            get: { removalError != nil },
+            set: { if !$0 { removalError = nil } }
+        )) {
+            Button("OK", role: .cancel) { removalError = nil }
+        } message: {
+            Text(removalError ?? "")
+        }
     }
 
     private var task: BookDownloadTask? {
@@ -66,6 +77,10 @@ struct DetailDownloadButton: View {
 
     private var isDownloaded: Bool {
         engine.downloads.isDownloaded(book)
+    }
+
+    private var isLocalOriginal: Bool {
+        book.source == .local
     }
 
     private var phase: Phase {
@@ -90,20 +105,24 @@ struct DetailDownloadButton: View {
 
     private var label: String {
         switch phase {
-        case .downloaded: formatName.map { "\($0.capitalized) downloaded" } ?? "Downloaded"
+        case .downloaded: formatName.map { "\($0.capitalized) available offline" } ?? "Available offline"
         case .active(let progress, let queued): queued ? "Queued" : "\(Int((progress * 100).rounded()))%"
         case .failed: "Try again"
-        case .idle: formatName.map { "Download \($0)" } ?? "Download"
+        case .idle: formatName.map { "Download \($0)" } ?? "Download for offline"
         }
     }
 
     private var accessibilityText: String {
         switch phase {
-        case .downloaded: formatName.map { "\($0.capitalized) downloaded. Remove download" } ?? "Downloaded. Remove download"
+        case .downloaded:
+            if isLocalOriginal { return "Available on this device" }
+            return formatName.map { "\($0.capitalized) available offline. Remove download" } ?? "Available offline. Remove download"
         case .active(let progress, let queued):
-            queued ? "Queued. Cancel download" : "Downloading, \(Int((progress * 100).rounded())) percent. Cancel download"
-        case .failed: formatName.map { "\($0.capitalized) download failed. Try again" } ?? "Download failed. Try again"
-        case .idle: formatName.map { "Download \($0)" } ?? "Download"
+            return queued ? "Queued. Cancel download" : "Downloading, \(Int((progress * 100).rounded())) percent. Cancel download"
+        case .failed:
+            return formatName.map { "\($0.capitalized) download failed. Try again" } ?? "Download failed. Try again"
+        case .idle:
+            return formatName.map { "Download \($0) for offline" } ?? "Download for offline"
         }
     }
 
@@ -113,7 +132,7 @@ struct DetailDownloadButton: View {
         case .downloaded:
             Image(systemName: "checkmark.circle.fill")
                 .font(.hearthUI(14, weight: .medium))
-                .foregroundStyle(tint)
+                .foregroundStyle(hearth.statusOK)
         case .active(let progress, _):
             ZStack {
                 Circle()
@@ -169,7 +188,9 @@ struct DetailDownloadButton: View {
     private func removeDownload() {
         PlatformHaptics.impact(.medium)
         Task {
-            await engine.downloads.removeDownload(for: book)
+            if !(await engine.downloads.removeDownload(for: book)) {
+                removalError = engine.downloads.lastError ?? "The files couldn't be removed. Try again."
+            }
         }
     }
 }

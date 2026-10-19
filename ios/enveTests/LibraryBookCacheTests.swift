@@ -134,6 +134,87 @@ private final class RecordingBookWriter: BookWriting {
 
 @MainActor
 struct LibraryBookCacheOwnershipTests {
+    @Test func progressUpdatesInALargeComicLibrary() async {
+        let cache = LibraryBookCache(writer: NoopBookWriter())
+        let providerId = UUID()
+        let clock = ContinuousClock()
+        let loadStart = clock.now
+        cache.load((0..<17_400).map {
+            Book(id: String($0), title: "Issue \($0)", source: .komga, mediaType: .ebook,
+                 ebookFormat: "cbz", providerId: providerId, libraryId: "comics")
+        })
+        print("PERF load / 17400 comics: \(loadStart.duration(to: clock.now))")
+        let selected = cache.books[8_700]
+        let start = clock.now
+        for page in 1...100 {
+            cache.mutateBook(uniqueId: selected.uniqueId) {
+                $0.ebookProgress = Double(page) / 100
+                $0.epubLocator = "cbz-page:\(page)"
+            }
+        }
+        print("PERF 100 progress updates / 17400 comics: \(start.duration(to: clock.now))")
+        #expect(cache.book(uniqueId: selected.uniqueId)?.ebookProgress == 1)
+        #expect(cache.bookInMemory(stableId: selected.stableId)?.epubLocator == "cbz-page:100")
+        #expect(cache.uniqueIdIndex.count == 17_400)
+        #expect(cache.stableIdIndex.count == 17_400)
+        await cache.retire()
+    }
+
+    @Test func changingAStableIdentityRebuildsIndexesAndRemovesTheOldHotLookup() throws {
+        let cache = LibraryBookCache(writer: NoopBookWriter())
+        let stored = book(id: "one", stableId: "stable-one")
+        cache.load([stored])
+
+        let updated = try #require(cache.mutateBook(uniqueId: stored.uniqueId) { $0.readAloudSourceStableId = "narrated-one" })
+
+        #expect(cache.stableIdIndex[stored.stableId] == nil)
+        #expect(cache.hot.book(stableId: stored.stableId) == nil)
+        #expect(cache.bookInMemory(stableId: updated.stableId) == updated)
+    }
+
+    @Test func bulkHotCacheEvictionKeepsPinnedAndRecentlyAccessedBooks() {
+        let hot = BookHotCache(capacity: 3)
+        let pinned = book(id: "pinned", stableId: "pinned")
+        let recent = book(id: "recent", stableId: "recent")
+        hot.insertMany([pinned, recent])
+        hot.pin(uniqueId: pinned.uniqueId)
+        let incoming = (0..<10).map { book(id: "issue-\($0)", stableId: "comic") }
+
+        hot.insertMany(incoming)
+        #expect(hot.count == 3)
+        #expect(hot.book(uniqueId: pinned.uniqueId) == pinned)
+        #expect(hot.book(uniqueId: incoming[8].uniqueId) == incoming[8])
+        #expect(hot.book(uniqueId: incoming[9].uniqueId) == incoming[9])
+        #expect(hot.book(uniqueId: recent.uniqueId) == nil)
+
+        hot.unpin(uniqueId: pinned.uniqueId)
+        _ = hot.book(uniqueId: incoming[8].uniqueId)
+        _ = hot.book(uniqueId: pinned.uniqueId)
+        hot.insert(recent)
+        #expect(hot.count == 3)
+        #expect(hot.book(uniqueId: incoming[9].uniqueId) == nil)
+        #expect(hot.book(uniqueId: pinned.uniqueId) == pinned)
+    }
+
+    @Test func ordinaryMutationsPublishAndPreserveAnOuterBatchPolicy() {
+        let cache = LibraryBookCache(writer: NoopBookWriter())
+        let stored = book(id: "one", stableId: "stable-one")
+        cache.load([stored])
+        var count = 0
+        let cancellable = cache.changes.sink { count += 1 }
+
+        cache.mutateBook(stableId: stored.stableId) { $0.ebookProgress = 0.5 }
+        #expect(count == 1)
+        #expect(!cache.skipsDeduplication && !cache.skipsIndexRebuild)
+        cache.performBatch {
+            cache.mutateBook(uniqueId: stored.uniqueId) { $0.ebookProgress = 1 }
+            #expect(cache.skipsDeduplication && cache.skipsIndexRebuild && cache.suppressNotifications)
+        }
+        #expect(count == 1)
+        #expect(cache.book(uniqueId: stored.uniqueId)?.ebookProgress == 1)
+        _ = cancellable
+    }
+
     @Test func mutatingByUniqueIdUpdatesMirrorHotCacheAndSession() {
         let cache = LibraryBookCache(writer: NoopBookWriter())
         let session = SessionStub()

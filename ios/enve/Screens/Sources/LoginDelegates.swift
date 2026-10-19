@@ -2,6 +2,7 @@
 import AuthenticationServices
 import CryptoKit
 import SwiftUI
+import UIKit
 
 final class ValidatedConnectionLoginDelegate: UnifiedLoginDelegate {
     private unowned let profileSession: ProfileSession
@@ -548,11 +549,14 @@ final class BookOrbitLoginDelegate: UnifiedLoginDelegate {
         else {
             throw OAuthError.invalidResponse
         }
+        guard callbackComponents.queryItems?.first(where: { $0.name == "state" })?.value == stateResponse.state else {
+            throw OAuthError.invalidResponse
+        }
         if let authError = callbackComponents.queryItems?.first(where: { $0.name == "error" })?.value {
             throw OAuthError.authorizationFailed(authError)
         }
-        guard callbackComponents.queryItems?.first(where: { $0.name == "state" })?.value == stateResponse.state,
-            let code = callbackComponents.queryItems?.first(where: { $0.name == "code" })?.value
+        guard let code = callbackComponents.queryItems?.first(where: { $0.name == "code" })?.value,
+            !code.isEmpty
         else {
             throw OAuthError.invalidResponse
         }
@@ -629,7 +633,7 @@ final class BookOrbitLoginDelegate: UnifiedLoginDelegate {
         }
 
         let providers = try JSONDecoder().decode([BookOrbitOIDCProvider].self, from: data)
-        guard let provider = providers.first(where: { $0.enabled }) ?? providers.first else {
+        guard let provider = providers.first(where: { $0.enabled }) else {
             throw OAuthError.authorizationFailed("No enabled BookOrbit SSO providers were found.")
         }
         return provider
@@ -672,7 +676,7 @@ final class BookOrbitLoginDelegate: UnifiedLoginDelegate {
             throw OAuthError.invalidConfiguration
         }
 
-        components.queryItems = [
+        components.queryItems = (components.queryItems ?? []) + [
             URLQueryItem(name: "response_type", value: "code"),
             URLQueryItem(name: "client_id", value: provider.clientId),
             URLQueryItem(name: "redirect_uri", value: redirectURI),
@@ -784,6 +788,122 @@ final class BookOrbitLoginDelegate: UnifiedLoginDelegate {
     private struct BookOrbitUser: Decodable {
         let id: Int
         let username: String
+    }
+}
+
+final class SiloLoginDelegate: UnifiedLoginDelegate {
+    private unowned let profileSession: ProfileSession
+    private let appState: AppState
+    private let validatedLogin: ValidatedConnectionLoginDelegate
+
+    init(appState: AppState, profileSession: ProfileSession = .owner) {
+        self.profileSession = profileSession
+        self.appState = appState
+        self.validatedLogin = ValidatedConnectionLoginDelegate(
+            appState: appState,
+            providerType: .silo,
+            defaultName: "Silo",
+            profileSession: profileSession
+        )
+    }
+
+    func authenticate(
+        serverURL: String,
+        username: String,
+        password: String,
+        customHeaders: [String: String]?
+    ) async throws -> ServerConnection {
+        try await validatedLogin.authenticate(
+            serverURL: serverURL,
+            username: username,
+            password: password,
+            customHeaders: customHeaders
+        )
+    }
+
+    func authenticateWithToken(serverURL: String, token: String, customHeaders: [String: String]?) async throws -> ServerConnection {
+        try await validatedLogin.authenticateWithToken(serverURL: serverURL, token: token, customHeaders: customHeaders)
+    }
+
+    func authenticateWithOIDC(
+        serverURL: String,
+        redirectURIOverride: String?,
+        customHeaders: [String: String]?
+    ) async throws -> ServerConnection {
+        let pendingConnection = ServerConnection(
+            name: "Silo",
+            url: normalizedURL(serverURL),
+            type: .silo,
+            isConnected: false,
+            customHeaders: customHeaders,
+            authMode: .sso
+        )
+        // The provider stores the refresh token under the pending connection's id, which
+        // validation and the saved connection keep.
+        let provider = SiloProvider(connection: pendingConnection, profileSession: profileSession)
+        let signedIn: ServerConnection
+        do {
+            let option = try await chooseOAuthOption(from: try await provider.nativeOAuthOptions())
+            let attempt = try await provider.beginNativeOAuth(with: option)
+            let callbackURL = try await profileSession.oauth.browserCallback(
+                authURL: attempt.authorizationURL,
+                callbackScheme: SiloProvider.NativeOAuthAttempt.callbackScheme
+            )
+            try await provider.completeNativeOAuth(callbackURL: callbackURL, attempt: attempt)
+            signedIn = provider.connection
+        } catch {
+            await provider.retire()
+            throw error
+        }
+        await provider.retire()
+
+        let (isValid, validatedConnection) = try await appState.validateConnection(signedIn)
+        guard isValid else { throw ProviderError.unauthorized }
+        var finalConnection = validatedConnection
+        finalConnection.isConnected = true
+        finalConnection.lastVerified = Date()
+        return finalConnection
+    }
+
+    func fetchLibraries(connection: ServerConnection) async throws -> [LibraryMetadata] {
+        try await validatedLogin.fetchLibraries(connection: connection)
+    }
+
+    private func chooseOAuthOption(from options: [SiloProvider.OAuthOption]) async throws -> SiloProvider.OAuthOption {
+        guard options.count > 1 else { return options[0] }
+        let windows = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+        var presenter = windows.first(where: \.isKeyWindow)?.rootViewController ?? windows.first?.rootViewController
+        while let presented = presenter?.presentedViewController { presenter = presented }
+        guard let presenter else { throw OAuthError.invalidConfiguration }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            let alert = UIAlertController(
+                title: "Sign in to Silo",
+                message: "Choose how to sign in.",
+                preferredStyle: .alert
+            )
+            for option in options {
+                alert.addAction(UIAlertAction(title: option.displayName, style: .default) { _ in
+                    continuation.resume(returning: option)
+                })
+            }
+            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in
+                continuation.resume(throwing: CancellationError())
+            })
+            presenter.present(alert, animated: true)
+        }
+    }
+
+    private func normalizedURL(_ input: String) -> String {
+        var value = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        while value.hasSuffix("/") { value.removeLast() }
+        if value.isEmpty { return value }
+        if !value.lowercased().hasPrefix("http://") && !value.lowercased().hasPrefix("https://") {
+            value = "https://" + value
+        }
+        return value
     }
 }
 

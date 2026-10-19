@@ -57,6 +57,7 @@ struct CollectionDetailScreen: View {
                         collectionsBookGrid(
                             filtered,
                             width: geo.size.width - 48,
+                            readingSequence: books.filter { $0.mediaType == .ebook }.map(\.uniqueId),
                             onRemove: current.isServerEditable ? { pendingRemoval = $0 } : nil
                         )
                         if current.remoteId != nil, books.count < total {
@@ -327,6 +328,7 @@ struct CollectionsSmartDetailScreen: View {
 func collectionsBookGrid(
     _ books: [Book],
     width: CGFloat,
+    readingSequence: [String]? = nil,
     onRemove: ((Book) -> Void)? = nil,
     removeLabel: String = "Remove from collection"
 ) -> some View {
@@ -334,7 +336,7 @@ func collectionsBookGrid(
     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 16, alignment: .top), count: 3), spacing: 16) {
         ForEach(books, id: \.stableId) { book in
             NavigationLink {
-                BookDetailScreen(book: book)
+                BookDetailScreen(book: book, readingSequence: readingSequence)
             } label: {
                 ShelfCoverCell(book: book, width: cellWidth)
             }

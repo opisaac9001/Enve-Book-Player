@@ -82,8 +82,7 @@ struct ProfileQueueStorageTests {
             profileID: id,
             documentsDirectory: root.appendingPathComponent("Documents"),
             applicationSupportDirectory: root.appendingPathComponent("ApplicationSupport"),
-            cachesDirectory: root.appendingPathComponent("Caches"),
-            legacyPlaybackStoreURL: root.appendingPathComponent("PlaybackState.store")
+            cachesDirectory: root.appendingPathComponent("Caches")
         )
     }
 

@@ -22,6 +22,17 @@ struct LibraryDisplayScreen: View {
             title: "Library display",
             subtitle: "Card style, title cleanup, subtitles, and grouping."
         ) {
+            SourcesCard {
+                SourcesToggleRow(
+                    title: "Audiobooks only",
+                    subtitle: "Browse audiobooks and podcasts with reading controls hidden. Your books and reading positions stay saved.",
+                    isOn: Binding(
+                        get: { !prefs.readingEnabled },
+                        set: { value in prefs = SettingsPrefs.mutate(in: session.preferences) { $0.readingEnabled = !value } }
+                    )
+                )
+                .accessibilityIdentifier("settings-audiobooks-only")
+            }
             cardStyleCard
             titleModeCard
             subtitleCard

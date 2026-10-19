@@ -20,6 +20,11 @@ private final class CatalogConnectionStub: ProviderConnectionResolving, Provider
 
     func markNeedsReauthentication(providerId: UUID, error: Error) {}
     func clearReauthentication(connectionId: UUID) {}
+    func includeNewLibraries(connectionId: UUID, fetchedIds: Set<String>, previouslySeenIds: Set<String>) {
+        guard let index = connections.firstIndex(where: { $0.id == connectionId }) else { return }
+        connections[index].includeNewLibraries(fetchedIds: fetchedIds, previouslySeenIds: previouslySeenIds)
+        allProviders[connectionId]?.connection = connections[index]
+    }
     func backend(id: String) -> BackendConfig? { nil }
     func allBackends() -> [BackendConfig] { [] }
     func provider(for providerId: UUID) -> LibraryProvider? { allProviders[providerId] }
@@ -48,6 +53,7 @@ private final class CatalogProviderStub: @MainActor LibraryProvider {
     var connection: ServerConnection
     var capabilities: ProviderCapabilities = [.collections]
     var libraries: [Library] = []
+    var recentBooks: [Book] = []
 
     init(connection: ServerConnection) {
         self.connection = connection
@@ -55,8 +61,8 @@ private final class CatalogProviderStub: @MainActor LibraryProvider {
 
     func validateConnection() async throws -> Bool { true }
     func fetchLibraries() async throws -> [Library] { libraries }
-    func fetchBooks(libraryId: String) async throws -> [Book] { [] }
-    func fetchRecentBooks(libraryId: String, limit: Int) async throws -> [Book] { [] }
+    func fetchBooks(libraryId: String) async throws -> [Book] { recentBooks }
+    func fetchRecentBooks(libraryId: String, limit: Int) async throws -> [Book] { recentBooks }
     func fetchCollections(libraryId: String?) async throws -> [Collection] { [] }
     func fetchSeries(libraryId: String) async throws -> [Series] { [] }
     func fetchUserMediaProgress(libraryId: String) async throws -> [UserMediaProgress] { [] }
@@ -90,14 +96,7 @@ private struct CatalogFixture {
     let progressFileURL: URL
 
     init() throws {
-        let schema = Schema([
-            BookRecord.self,
-            MediaProgressRecord.self,
-            LinkedBookPairRecord.self,
-            BookmarkRecord.self,
-            AnnotationRecord.self,
-            ChapterCacheRecord.self,
-        ])
+        let schema = Schema(versionedSchema: BookStoreSchemaV2.self)
         let configuration = ModelConfiguration(
             "LibraryCatalogCoordinatorTests-\(UUID().uuidString)",
             schema: schema,
@@ -264,6 +263,60 @@ struct LibraryCatalogCoordinatorTests {
         #expect(catalog.libraries.map(\.id) == [kept.id])
         #expect(!fixture.library.books.contains { $0.libraryId == removed.id })
         #expect(await fixture.store.book(uniqueId: orphan.uniqueId) == nil)
+        fixture.cleanUp()
+    }
+
+    @Test func recentRefreshMergesDuplicateCachedRowsWithoutLosingOtherSources() async throws {
+        let fixture = try CatalogFixture()
+        defer { fixture.cleanUp() }
+        let catalog = fixture.makeCoordinator()
+        let connection = ServerConnection(name: "Fixture", url: "https://bookorbit.example.invalid",
+            type: .bookOrbit, isConnected: true)
+        let provider = CatalogProviderStub(connection: connection)
+        provider.libraries = [Library(id: "library", name: "Books", type: "book", providerId: connection.id)]
+        var stale = makeBook(id: "existing", source: .bookOrbit)
+        stale.providerId = connection.id
+        var refreshed = stale
+        refreshed.title = "Updated title"
+        let added = Book(id: "added", title: "New book", source: .bookOrbit,
+            mediaType: .audiobook, providerId: connection.id, libraryId: "library")
+        let other = makeBook(id: "other", source: .audiobookshelf)
+        provider.recentBooks = [refreshed, refreshed, added]
+        fixture.connections.connections = [connection]
+        fixture.connections.allProviders = [connection.id: provider]
+        catalog.libraries = provider.libraries
+        fixture.library.load([stale, stale, other])
+        await fixture.store.upsertBooks([stale, other])
+
+        await catalog.refreshStaleServerMirrorDomains()
+
+        #expect(fixture.library.books.filter { $0.uniqueId == refreshed.uniqueId }.count == 1)
+        #expect(fixture.library.books.first { $0.uniqueId == refreshed.uniqueId }?.title == "Updated title")
+        #expect(fixture.library.books.contains { $0.uniqueId == added.uniqueId })
+        #expect(fixture.library.books.contains { $0.uniqueId == other.uniqueId })
+        #expect(await fixture.store.book(uniqueId: refreshed.uniqueId)?.title == "Updated title")
+        await catalog.retire()
+    }
+
+    @Test func refreshIncludesALibraryAddedAfterTheSelection() async throws {
+        let fixture = try CatalogFixture()
+        let catalog = fixture.makeCoordinator()
+        var connection = makeConnection()
+        connection.selectedLibraryIds = ["first"]
+        connection.knownLibraryIds = ["first", "excluded"]
+        let provider = CatalogProviderStub(connection: connection)
+        let providerId = connection.id
+        provider.libraries = ["first", "excluded", "added"].map {
+            Library(id: $0, name: $0, type: "book", providerId: providerId)
+        }
+        fixture.connections.connections = [connection]
+        fixture.connections.allProviders = [providerId: provider]
+
+        await catalog.refreshConnectionLibraries(providerId: providerId, refreshCollections: false)
+
+        #expect(fixture.connections.connections.first?.selectedLibraryIds == ["first", "added"])
+        #expect(fixture.connections.connections.first?.knownLibraryIds == ["first", "excluded", "added"])
+        #expect(provider.connection.selectedLibraryIds == ["first", "added"])
         fixture.cleanUp()
     }
 

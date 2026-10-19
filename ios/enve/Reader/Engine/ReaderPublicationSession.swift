@@ -28,8 +28,11 @@ final class ReaderPublicationSession {
     private var streaming: GrimmoryEpubStreamingSession?
     private var openTask: Task<Void, Never>?
     private var streamedPositionsTask: Task<Void, Never>?
+    private var cacheOwner = UUID().uuidString
+    private let preparationOwner: String?
 
     var isStreaming: Bool { streaming != nil }
+    var hasLocalAsset: Bool { existingLocalAssetURL() != nil }
 
     private var bookDiagnosticID: String { DiagnosticLogSanitizer.identifier(for: book.stableId) }
 
@@ -37,6 +40,7 @@ final class ReaderPublicationSession {
 
     init(book: Book, providerResolver: any LibraryProviderResolving, profileSession: ProfileSession = .owner) {
         self.profileSession = profileSession
+        preparationOwner = profileSession.readingCache.claimPreparation(for: book.uniqueId)
         self.book = book
         self.providerResolver = providerResolver
         let httpClient = DefaultHTTPClient()
@@ -67,17 +71,28 @@ final class ReaderPublicationSession {
     }
 
     func cleanup() {
+        let opening = openTask
         openTask?.cancel()
         openTask = nil
         streamedPositionsTask?.cancel()
         streamedPositionsTask = nil
         streaming = nil
+        profileSession.downloads.cancelReaderAssetPreparation(for: book)
+        let owner = cacheOwner
+        cacheOwner = UUID().uuidString
+        Task { [cache = profileSession.readingCache, preparationOwner] in
+            await opening?.value
+            if let preparationOwner { await cache.release(owner: preparationOwner) }
+            await cache.release(owner: owner)
+            await cache.trim()
+        }
     }
 
     // Streamed EPUBs open inside resolution so a failed streamed open still falls through to the download path.
     func resolveAsset(
         openStreamed: (GrimmoryEpubStreamingSession) async throws -> Void
     ) async -> Resolution {
+        let owner = cacheOwner
         var resolvedURL = existingLocalAssetURL()
 
         if resolvedURL == nil || !(FileManager.default.fileExists(atPath: resolvedURL?.path ?? "")) {
@@ -87,6 +102,8 @@ final class ReaderPublicationSession {
                         for: book,
                         providerResolver: providerResolver
                     )
+                    try Task.checkCancellation()
+                    await profileSession.readingCache.protect([session.cacheDirectory], owner: owner)
                     try Task.checkCancellation()
                     streaming = session
                     try await openStreamed(session)
@@ -102,6 +119,7 @@ final class ReaderPublicationSession {
             }
             if book.source != .local, !book.isReadAloudBook {
                 do {
+                    await profileSession.readingCache.protect([profileSession.ebooks.remoteReaderCacheRoot], owner: owner)
                     let downloadedURL = try await profileSession.downloads.prepareReaderAsset(for: book)
                     try Task.checkCancellation()
                     resolvedURL = downloadedURL
@@ -119,11 +137,21 @@ final class ReaderPublicationSession {
         }
 
         guard let url = resolvedURL else { return .notFound }
+        await profileSession.readingCache.protect([url], owner: owner)
+        if let preparationOwner { await profileSession.readingCache.release(owner: preparationOwner) }
+        await profileSession.readingCache.touch(url)
+        guard !Task.isCancelled else { return .cancelled }
         fileURL = url
         return .file(url)
     }
 
     func open(at url: URL) async throws -> Opened {
+        try Task.checkCancellation()
+        let owner = cacheOwner
+        await profileSession.readingCache.protect([url], owner: owner)
+        try Task.checkCancellation()
+        await profileSession.readingCache.touch(url)
+        try Task.checkCancellation()
         fileURL = url
         guard let readiumURL = FileURL(url: url) else {
             throw ClassicReaderError.invalidURL(url.path)
@@ -134,6 +162,7 @@ final class ReaderPublicationSession {
     }
 
     func openStreamed(_ session: GrimmoryEpubStreamingSession) async throws -> Opened {
+        try Task.checkCancellation()
         let asset = Asset.container(
             ContainerAsset(
                 container: StreamedGrimmoryEpubContainer(session: session),
@@ -146,7 +175,7 @@ final class ReaderPublicationSession {
 
     func scheduleStreamedPositions(apply: @escaping (Publication, [[Locator]]) async -> Void) {
         streamedPositionsTask?.cancel()
-        guard let streaming, let publication else { return }
+        guard !Task.isCancelled, let streaming, let publication else { return }
         streamedPositionsTask = Task {
             await streaming.prefetchAllResources()
             guard !Task.isCancelled else { return }
@@ -188,6 +217,7 @@ final class ReaderPublicationSession {
 
     private func open(asset: Asset) async throws -> Publication {
         let publication = try await publicationOpener.open(asset: asset, allowUserInteraction: false).get()
+        try Task.checkCancellation()
         self.publication = publication
         return publication
     }
@@ -198,7 +228,7 @@ final class ReaderPublicationSession {
         {
             return cached
         }
-        if #available(iOS 26.0, *), profileSession.isOwner,
+        if #available(iOS 26.0, *), profileSession.isOwner, !book.isComic,
             let audiobook = profileSession.playback.linker.linkedAudiobook(for: book),
             let narrated = StoryAlignService.shared.cachedNarratedEpubURL(ebook: book, audiobook: audiobook)
         {

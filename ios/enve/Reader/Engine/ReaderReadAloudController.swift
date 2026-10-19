@@ -37,6 +37,15 @@ final class ReaderReadAloudController {
     private var normalReadingOverlayClipIndex: Int?
     private var clipTextProgressions: [Double] = []
     private var wasPlaying = false
+    private var programmaticNavigation: ProgrammaticNavigation?
+    private var lastLocationChangeWasManual = false
+
+    private static let programmaticLocationGrace: Duration = .milliseconds(750)
+
+    private struct ProgrammaticNavigation {
+        let documentHref: String?
+        var settlesAt: ContinuousClock.Instant?
+    }
 
     private let profileSession: ProfileSession
 
@@ -126,12 +135,14 @@ final class ReaderReadAloudController {
     }
 
     func markManualNavigationIfNeeded(at locator: Locator) {
-        guard playback.isReadAloudMode, !playback.audioIsNavigating else { return }
+        lastLocationChangeWasManual = false
+        guard playback.isReadAloudMode, !playback.audioIsNavigating, !isNarrationDrivenLocation(locator) else { return }
+        lastLocationChangeWasManual = true
         markManualNavigation(at: locator)
     }
 
     func handleUserPageTurn() {
-        guard playback.isReadAloudMode, appearance.readAloudSkipOnPageTurn else { return }
+        guard lastLocationChangeWasManual, playback.isReadAloudMode, appearance.readAloudSkipOnPageTurn else { return }
         syncAudioToVisiblePage()
     }
 
@@ -162,6 +173,7 @@ final class ReaderReadAloudController {
         readAloudStartTask?.cancel()
         readAloudStartTask = nil
         stopPositionSyncTimer()
+        programmaticNavigation = nil
         playback.lastSyncedFragmentId = nil
         playback.lastSyncedClipIndex = -1
         playback.lastSyncedAudioTime = -1
@@ -525,76 +537,92 @@ final class ReaderReadAloudController {
         guard !Task.isCancelled, host?.readAloudHasActiveSelection != true else { return }
 
         if onSameDocument {
-            if appearance.scrollEnabled {
-                let didScroll: Bool
-                if clip.isTextFragment {
-                    didScroll = await scrollToTextFragment(clip, in: navigator)
-                } else {
-                    let safeId = javascriptStringLiteral(fragmentId)
-                    let scrollJS = """
-                        (function(){
-                            const el = document.getElementById(\(safeId));
-                            if (!el) return false;
-                            const safeAreaTop = parseInt(window.getComputedStyle(document.documentElement).paddingTop) || 0;
-                            el.scrollIntoView({behavior:'auto',block:'start'});
-                            window.scrollBy(0, -safeAreaTop);
-                            return true;
-                        })()
-                        """
-                    if case .success(let value) = await navigator.evaluateJavaScript(scrollJS) {
-                        didScroll = value as? Bool == true
+            await navigateForNarration(documentHref: clipHref) {
+                if appearance.scrollEnabled {
+                    let didScroll: Bool
+                    if clip.isTextFragment {
+                        didScroll = await scrollToTextFragment(clip, in: navigator)
                     } else {
-                        didScroll = false
+                        let safeId = javascriptStringLiteral(fragmentId)
+                        let scrollJS = """
+                            (function(){
+                                const el = document.getElementById(\(safeId));
+                                if (!el) return false;
+                                el.scrollIntoView({behavior:'auto',block:'center'});
+                                return true;
+                            })()
+                            """
+                        if case .success(let value) = await navigator.evaluateJavaScript(scrollJS) {
+                            didScroll = value as? Bool == true
+                        } else {
+                            didScroll = false
+                        }
                     }
-                }
-                if !didScroll, let locator = makeOverlayLocator(for: clip) {
-                    playback.audioIsNavigating = true
+                    if !didScroll, let locator = makeOverlayLocator(for: clip) {
+                        _ = await navigator.go(to: locator, options: .init(animated: true))
+                    }
+                } else if let locator = makeOverlayLocator(for: clip) {
                     _ = await navigator.go(to: locator, options: .init(animated: true))
-                    playback.audioIsNavigating = false
                 }
-            } else if let locator = makeOverlayLocator(for: clip) {
-                playback.audioIsNavigating = true
-                _ = await navigator.go(to: locator, options: .init(animated: true))
-                playback.audioIsNavigating = false
             }
             return
         }
 
-        playback.audioIsNavigating = true
-
-        if let publication {
-            if let link = publication.readingOrder.first(where: {
-                let linkHref = $0.url().string
-                return linkHref.hasSuffix(clipHref) || clipHref.hasSuffix(linkHref) || linkHref == clipHref
-            }), var locator = await publication.locate(link) {
-                guard !Task.isCancelled, host?.readAloudHasActiveSelection != true else {
-                    playback.audioIsNavigating = false
-                    return
-                }
+        await navigateForNarration(documentHref: clipHref) {
+            if let publication,
+                let link = publication.readingOrder.first(where: {
+                    EPUB3SMILParser.normalizedResourcePath($0.href) == EPUB3SMILParser.normalizedResourcePath(clipHref)
+                }) ?? publication.readingOrder.first(where: {
+                    let linkHref = $0.url().string
+                    return linkHref.hasSuffix(clipHref) || clipHref.hasSuffix(linkHref) || linkHref == clipHref
+                }),
+                var locator = await publication.locate(link)
+            {
+                guard !Task.isCancelled, host?.readAloudHasActiveSelection != true else { return }
                 locator = locator.copy(locations: { locations in
                     locations.fragments = [fragmentId]
                 })
                 _ = await navigator.go(to: locator, options: .init(animated: true))
-                playback.audioIsNavigating = false
                 return
             }
-        }
 
-        let clipProg = Double(clipIdx) / max(Double(playback.overlayClips.count), 1.0)
-        let locatorJSON = """
-            {
-              "href": "\(clipHref)",
-              "type": "application/xhtml+xml",
-              "locations": {
-                "fragments": ["\(fragmentId)"],
-                "totalProgression": \(clipProg)
-              }
+            let clipProg = Double(clipIdx) / max(Double(playback.overlayClips.count), 1.0)
+            let locatorJSON = """
+                {
+                  "href": "\(clipHref)",
+                  "type": "application/xhtml+xml",
+                  "locations": {
+                    "fragments": ["\(fragmentId)"],
+                    "totalProgression": \(clipProg)
+                  }
+                }
+                """
+            if let locator = try? Locator(jsonString: locatorJSON) {
+                _ = await navigator.go(to: locator, options: .init(animated: true))
             }
-            """
-        if let locator = try? Locator(jsonString: locatorJSON) {
-            _ = await navigator.go(to: locator, options: .init(animated: true))
         }
+    }
+
+    // Readium can report the location after `go(to:)` returns; keep it tagged so it isn't taken for a user turn.
+    private func navigateForNarration(documentHref: String?, _ move: () async -> Void) async {
+        playback.audioIsNavigating = true
+        programmaticNavigation = ProgrammaticNavigation(documentHref: documentHref)
+        await move()
         playback.audioIsNavigating = false
+        programmaticNavigation?.settlesAt = .now + Self.programmaticLocationGrace
+    }
+
+    private func isNarrationDrivenLocation(_ locator: Locator) -> Bool {
+        guard let navigation = programmaticNavigation else { return false }
+        if let settlesAt = navigation.settlesAt, ContinuousClock.now >= settlesAt {
+            programmaticNavigation = nil
+            return false
+        }
+        guard let documentHref = navigation.documentHref else { return true }
+        return ReadAloudOverlayTransform.hrefMatches(
+            EPUB3SMILParser.normalizedResourcePath(documentHref),
+            EPUB3SMILParser.normalizedResourcePath(locator.href.string)
+        )
     }
 
     func selectionDidChange() {
@@ -666,7 +694,7 @@ final class ReaderReadAloudController {
                 playbackRate: rate,
                 lead: leadSeconds
             )
-        let nanos = UInt64(delay * 1_000_000_000)
+        let nanos = delay.isFinite && delay > 0 ? UInt64(min(delay, 3_600) * 1_000_000_000) : 0
         let scheduledGeneration = playback.manualNavigationGeneration
         let scheduledDocumentHref = ReadAloudOverlayTransform.normalizedDocumentHref(navigator.currentLocation?.href.string)
 
@@ -688,9 +716,9 @@ final class ReaderReadAloudController {
             let now = CFAbsoluteTimeGetCurrent()
             guard now - self.playback.lastPagePreflipAt >= 0.3 else { return }
             self.playback.lastPagePreflipAt = now
-            self.playback.audioIsNavigating = true
-            _ = await navigator.goForward(options: .init(animated: true))
-            self.playback.audioIsNavigating = false
+            await self.navigateForNarration(documentHref: nil) {
+                _ = await navigator.goForward(options: .init(animated: true))
+            }
         }
     }
 
@@ -762,9 +790,14 @@ final class ReaderReadAloudController {
             let navigator
         else { return }
 
-        if let currentFrag = player.currentFragmentId {
+        if let currentFrag = player.currentFragmentId,
+            playback.overlayClips.indices.contains(player.currentClipIndex) {
+            let currentHref = playback.overlayClips[player.currentClipIndex].textHref
             Task { @MainActor in
-                if await self.isOverlayFragmentVisible(currentFrag, in: navigator) {
+                if let visibleHref = navigator.currentLocation?.href.string,
+                    ReadAloudOverlayTransform.hrefMatches(currentHref, visibleHref),
+                    await self.isOverlayFragmentVisible(currentFrag, in: navigator)
+                {
                     return
                 }
                 self.seekAudioToVisibleContent(player: player, navigator: navigator)
@@ -1275,7 +1308,7 @@ final class ReaderReadAloudController {
                     const rect = range.getBoundingClientRect();
                     if (!rect || (!rect.width && !rect.height)) return false;
                     const safeAreaTop = parseInt(window.getComputedStyle(document.documentElement).paddingTop) || 0;
-                    window.scrollTo({ top: Math.max(0, window.scrollY + rect.top - safeAreaTop), behavior: "auto" });
+                    window.scrollTo({ top: Math.max(0, window.scrollY + rect.top + rect.height / 2 - (window.innerHeight + safeAreaTop) / 2), behavior: "auto" });
                     return true;
                 } finally {
                     range.detach?.();
@@ -1453,7 +1486,12 @@ final class ReaderReadAloudController {
             player.currentClipIndex < playback.overlayClips.count
         else { return }
         let clipIdx = player.currentClipIndex
-        let audioTime = player.currentTime
+        let audioTime = Self.committedAudioTime(
+            player.currentTime,
+            clip: playback.overlayClips[clipIdx],
+            clipIndex: clipIdx,
+            timeline: timeline
+        )
 
         guard
             fragmentId != playback.lastSyncedFragmentId
@@ -1501,6 +1539,20 @@ final class ReaderReadAloudController {
                 schedulesRemoteSync: scheduleRemoteSync
             )
         )
+    }
+
+    // The playhead can run past an estimated file duration into the next file's timeline range.
+    static func committedAudioTime(
+        _ time: TimeInterval,
+        clip: AudioOverlayClip,
+        clipIndex: Int,
+        timeline: MediaOverlayTimeline
+    ) -> TimeInterval {
+        guard time.isFinite else { return timeline.audioTime(forClipIndex: clipIndex) ?? 0 }
+        guard let start = timeline.audioStart(forAudioSource: clip.audioSrc),
+            let duration = timeline.duration(forAudioSource: clip.audioSrc)
+        else { return time }
+        return min(max(time, start), start + duration)
     }
 
     func clearHighlight() {

@@ -112,6 +112,7 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
     }
 
     func validateConnection() async throws -> Bool {
+        try EnveProvenance.checkServerAddress(connection.url)
         try await ensureAuthenticated()
         _ = try await ensureProfile()
         _ = try await fetchLibraries()
@@ -896,11 +897,97 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
             "password": password,
         ])
         let response = try await send(request, as: SiloLoginResponse.self, retryingAuth: false)
+        applySession(response)
+    }
+
+    private func applySession(_ response: SiloLoginResponse) {
         connection.token = response.accessToken
         connection.username = response.user.username
-        connection.userId = String(response.user.id)
+        connection.userId = response.user.id
         storeRefreshToken(response.refreshToken)
         notifyTokenUpdated()
+    }
+
+    func nativeOAuthOptions() async throws -> [OAuthOption] {
+        let capabilitiesRequest = try makeRequest(
+            path: "/auth/oauth/capabilities", profileRequired: false, includeAuth: false, apiVersion: "v2"
+        )
+        let (data, response) = try await session.data(for: capabilitiesRequest)
+        guard let http = response as? HTTPURLResponse else { throw ProviderError.invalidResponse }
+        // Servers that predate the v2 OAuth contract do not expose the capabilities endpoint.
+        if http.statusCode == 404 { throw SiloOAuthError.nativeSignInUnavailable }
+        guard (200...299).contains(http.statusCode) else {
+            throw ProviderError.serverError("Silo returned HTTP \(http.statusCode)")
+        }
+        guard let capabilities = try? decoder.decode(SiloOAuthCapabilities.self, from: data) else {
+            throw ProviderError.decodingFailed
+        }
+        guard capabilities.native else { throw SiloOAuthError.nativeSignInUnavailable }
+
+        let providers = try await send(
+            try makeRequest(path: "/auth/providers", profileRequired: false, includeAuth: false, apiVersion: "v2"),
+            as: SiloAuthProvidersResponse.self,
+            retryingAuth: false
+        )
+        let options = providers.items.compactMap { item -> OAuthOption? in
+            guard item.mode == "oauth", let path = item.nativeStartPath, !path.isEmpty else { return nil }
+            return OAuthOption(displayName: item.displayName ?? item.name ?? "Single Sign-On", nativeStartPath: path)
+        }
+        guard !options.isEmpty else { throw SiloOAuthError.noProviders }
+        return options
+    }
+
+    func beginNativeOAuth(with option: OAuthOption) async throws -> NativeOAuthAttempt {
+        guard let base = URL(string: baseURLString), let issuer = Self.origin(of: base) else {
+            throw ProviderError.invalidURL
+        }
+        let identity = try await send(
+            try makeRequest(path: "/system/identity", profileRequired: false, includeAuth: false, apiVersion: "v2"),
+            as: SiloServerIdentity.self,
+            retryingAuth: false
+        )
+        guard !identity.serverID.isEmpty else { throw ProviderError.invalidResponse }
+
+        let path = option.nativeStartPath
+        guard path.hasPrefix("/api/v2/auth/oauth/"), path.hasSuffix("/native/start"),
+            !path.contains("?"), !path.contains("#"), !path.contains(".."),
+            var components = URLComponents(string: baseURLString + path),
+            let startURL = components.url,
+            Self.origin(of: startURL) == issuer
+        else {
+            throw SiloOAuthError.invalidStartPath
+        }
+
+        let codeVerifier = Self.randomURLSafeString(byteCount: 32)
+        let state = Self.randomURLSafeString(byteCount: 32)
+        let challenge = Self.base64URLEncoded(Data(SHA256.hash(data: Data(codeVerifier.utf8))))
+        components.queryItems = (components.queryItems ?? []) + [
+            URLQueryItem(name: "code_challenge", value: challenge),
+            URLQueryItem(name: "code_challenge_method", value: "S256"),
+            URLQueryItem(name: "app_state", value: state),
+        ]
+        guard let authorizationURL = components.url else { throw SiloOAuthError.invalidStartPath }
+        return NativeOAuthAttempt(
+            authorizationURL: authorizationURL,
+            codeVerifier: codeVerifier,
+            state: state,
+            serverID: identity.serverID,
+            issuer: issuer
+        )
+    }
+
+    func completeNativeOAuth(callbackURL: URL, attempt: NativeOAuthAttempt) async throws {
+        let code = try attempt.authorizationCode(from: callbackURL)
+        var request = try makeRequest(
+            path: "/auth/oauth/complete", method: "POST", profileRequired: false, includeAuth: false, apiVersion: "v2"
+        )
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "code": code,
+            "code_verifier": attempt.codeVerifier,
+        ])
+        let response = try await send(request, as: SiloLoginResponse.self, retryingAuth: false)
+        connection.authMode = .sso
+        applySession(response)
     }
 
     private func refreshAccessToken() async -> Bool {
@@ -993,8 +1080,8 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         return value
     }
 
-    private func apiURL(path: String, query: [URLQueryItem] = []) throws -> URL {
-        guard var components = URLComponents(string: "\(baseURLString)/api/v1\(path)") else {
+    private func apiURL(path: String, query: [URLQueryItem] = [], apiVersion: String = "v1") throws -> URL {
+        guard var components = URLComponents(string: "\(baseURLString)/api/\(apiVersion)\(path)") else {
             throw ProviderError.invalidURL
         }
         if !query.isEmpty {
@@ -1009,11 +1096,12 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         query: [URLQueryItem] = [],
         method: String = "GET",
         profileRequired: Bool = true,
-        includeAuth: Bool = true
+        includeAuth: Bool = true,
+        apiVersion: String = "v1"
     ) throws -> URLRequest {
         guard !isRetired else { throw CancellationError() }
         try Task.checkCancellation()
-        var request = URLRequest(url: try apiURL(path: path, query: query))
+        var request = URLRequest(url: try apiURL(path: path, query: query, apiVersion: apiVersion))
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("Enve Book Player/1.0", forHTTPHeaderField: "User-Agent")
@@ -1923,6 +2011,115 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         }
         throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid date: \(raw)")
     }
+
+    static func origin(of url: URL) -> String? {
+        guard let scheme = url.scheme?.lowercased(), let host = url.host()?.lowercased(), !host.isEmpty else {
+            return nil
+        }
+        let defaultPort = scheme == "https" ? 443 : scheme == "http" ? 80 : nil
+        let authority = host.contains(":") ? "[\(host)]" : host
+        if let port = url.port, port != defaultPort {
+            return "\(scheme)://\(authority):\(port)"
+        }
+        return "\(scheme)://\(authority)"
+    }
+
+    private static func randomURLSafeString(byteCount: Int) -> String {
+        var generator = SystemRandomNumberGenerator()
+        return base64URLEncoded(Data((0..<byteCount).map { _ in UInt8.random(in: .min ... .max, using: &generator) }))
+    }
+
+    private static func base64URLEncoded(_ data: Data) -> String {
+        data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+}
+
+extension SiloProvider {
+    struct OAuthOption: Equatable {
+        let displayName: String
+        let nativeStartPath: String
+    }
+
+    struct NativeOAuthAttempt {
+        static let callbackScheme = "org.siloserver.silo"
+
+        let authorizationURL: URL
+        let codeVerifier: String
+        let state: String
+        let serverID: String
+        let issuer: String
+
+        func authorizationCode(from callbackURL: URL) throws -> String {
+            guard let components = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false),
+                components.scheme?.lowercased() == Self.callbackScheme,
+                components.host?.isEmpty ?? true,
+                components.path == "/auth/callback"
+            else {
+                throw SiloOAuthError.invalidCallback
+            }
+            let items = components.queryItems ?? []
+            func value(_ name: String) -> String? {
+                let values = items.filter { $0.name == name }.compactMap(\.value)
+                return values.count == 1 ? values[0] : nil
+            }
+
+            guard value("state") == state else { throw SiloOAuthError.invalidCallback }
+            guard value("server") == serverID else { throw SiloOAuthError.serverMismatch }
+            guard let iss = value("iss"),
+                let issuerURL = URL(string: iss),
+                issuerURL.path.isEmpty || issuerURL.path == "/",
+                issuerURL.query == nil, issuerURL.fragment == nil, issuerURL.user == nil,
+                SiloProvider.origin(of: issuerURL) == issuer
+            else {
+                throw SiloOAuthError.issuerMismatch
+            }
+            guard !items.contains(where: { $0.name == "link" }) else { throw SiloOAuthError.invalidCallback }
+            if items.contains(where: { $0.name == "error" }) && value("error") == nil {
+                throw SiloOAuthError.invalidCallback
+            }
+            if items.contains(where: { $0.name == "code" }) && value("code") == nil {
+                throw SiloOAuthError.invalidCallback
+            }
+            if let error = value("error") {
+                guard !items.contains(where: { $0.name == "code" }) else { throw SiloOAuthError.invalidCallback }
+                throw SiloOAuthError.authorizationFailed(error)
+            }
+            guard let code = value("code"), !code.isEmpty else { throw SiloOAuthError.invalidCallback }
+            return code
+        }
+    }
+}
+
+enum SiloOAuthError: LocalizedError, Equatable {
+    case nativeSignInUnavailable
+    case noProviders
+    case invalidStartPath
+    case invalidCallback
+    case serverMismatch
+    case issuerMismatch
+    case authorizationFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .nativeSignInUnavailable:
+            "This Silo server doesn't support single sign-on from apps. Update Silo, or sign in with a password or token."
+        case .noProviders:
+            "No single sign-on providers are configured on this Silo server."
+        case .invalidStartPath:
+            "Silo returned an invalid sign-in address."
+        case .invalidCallback:
+            "Silo returned an unexpected sign-in response. Try again."
+        case .serverMismatch:
+            "The sign-in response came from a different Silo server."
+        case .issuerMismatch:
+            "The sign-in response doesn't match this server's address."
+        case .authorizationFailed(let reason):
+            "Silo sign-in failed (\(reason))."
+        }
+    }
 }
 
 struct SiloReaderAnnotationRecord: Decodable, Sendable {
@@ -2008,9 +2205,50 @@ private struct SiloRefreshResponse: Decodable {
     }
 }
 
+private struct SiloOAuthCapabilities: Decodable {
+    let native: Bool
+}
+
+private struct SiloAuthProvidersResponse: Decodable {
+    let items: [SiloAuthProviderItem]
+}
+
+private struct SiloAuthProviderItem: Decodable {
+    let mode: String
+    let name: String?
+    let displayName: String?
+    let nativeStartPath: String?
+
+    enum CodingKeys: String, CodingKey {
+        case mode, name
+        case displayName = "display_name"
+        case nativeStartPath = "native_start_path"
+    }
+}
+
+private struct SiloServerIdentity: Decodable {
+    let serverID: String
+
+    enum CodingKeys: String, CodingKey {
+        case serverID = "server_id"
+    }
+}
+
 private struct SiloUser: Decodable {
-    let id: Int
+    let id: String
     let username: String
+
+    enum CodingKeys: String, CodingKey { case id, username }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        username = try container.decode(String.self, forKey: .username)
+        if let id = try? container.decode(String.self, forKey: .id) {
+            self.id = id
+        } else {
+            id = String(try container.decode(Int.self, forKey: .id))
+        }
+    }
 }
 
 private struct SiloProfilesResponse: Decodable {

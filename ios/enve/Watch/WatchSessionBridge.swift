@@ -8,7 +8,6 @@ import WatchConnectivity
 final class WatchSessionBridge: NSObject {
     static let shared = WatchSessionBridge(
         providerResolver: AppState.shared.providerConnections,
-        connectionAccess: AppState.shared.providerConnections,
         bookQuerying: AppState.shared.bookStore,
         libraryCache: AppState.shared.libraryCache
     )
@@ -17,19 +16,16 @@ final class WatchSessionBridge: NSObject {
     private var hasStarted = false
     private var lastPayload = WatchNowPlayingPayload.empty
     private var lastContextPush = Date.distantPast
-    private var watchABSSessions: [String: String] = [:]
     private unowned let profileSession: ProfileSession?
     private var isRevoked = false
     private var operations: [UUID: Task<Void, Never>] = [:]
     private let providerResolver: any LibraryProviderResolving
-    private let connectionAccess: any ProviderConnectionAccessing
     private let bookQuerying: any BookQuerying
     private let libraryCache: LibraryBookCache
     private let playback: any PlaybackControlling
 
     init(
         providerResolver: any LibraryProviderResolving,
-        connectionAccess: any ProviderConnectionAccessing,
         bookQuerying: any BookQuerying,
         libraryCache: LibraryBookCache,
         playback: any PlaybackControlling = ActivePlayback.controller,
@@ -37,7 +33,6 @@ final class WatchSessionBridge: NSObject {
     ) {
         self.profileSession = profileSession
         self.providerResolver = providerResolver
-        self.connectionAccess = connectionAccess
         self.bookQuerying = bookQuerying
         self.libraryCache = libraryCache
         self.playback = playback
@@ -302,12 +297,14 @@ final class WatchSessionBridge: NSObject {
             throw WatchBridgeError.noProvider
         }
         let headers = provider.getStreamingHeaders()
-        closeStaleWatchSession(for: book)
+        // ABS closes every open session for a device on POST /play, and the watch streams under the phone's device id.
+        let session = if let abs = provider as? AudiobookshelfProvider {
+            try? await abs.directPlayback(for: book)
+        } else {
+            try? await provider.startPlaybackSession(for: book)
+        }
 
-        if let session = try? await provider.startPlaybackSession(for: book) {
-            if book.source == .audiobookshelf {
-                watchABSSessions[book.stableId] = session.sessionId
-            }
+        if let session {
             let tracks = session.audioTracks
                 .sorted { $0.startOffset < $1.startOffset }
                 .compactMap { track -> WatchTrackPayload? in
@@ -342,7 +339,7 @@ final class WatchSessionBridge: NSObject {
 
         var streamURL = provider.getAudioURL(for: book)
         if streamURL == nil {
-            streamURL = try? await (profileSession?.playback.player ?? PlayerViewModel.shared).resolveStreamURL(for: book)
+            streamURL = try? await (profileSession?.playback.player ?? PlayerViewModel.shared).resolveReadOnlyStreamURL(for: book)
         }
         guard var url = streamURL, !url.isFileURL else {
             throw WatchBridgeError.noStreamURL
@@ -368,25 +365,6 @@ final class WatchSessionBridge: NSObject {
             ],
             chapters: (book.chapters ?? []).map(Self.chapterPayload)
         )
-    }
-
-    private func closeStaleWatchSession(for book: Book) {
-        guard book.source == .audiobookshelf,
-            let sessionId = watchABSSessions.removeValue(forKey: book.stableId),
-            let backendId = book.backendId,
-            let backend = connectionAccess.backend(id: backendId)
-        else { return }
-        let position = (profileSession?.bookProgress ?? BookProgressStore.shared).loadProgress(for: book)?.progress ?? book.currentTime
-        let duration = book.duration ?? 0
-        let service = profileSession?.absService ?? AudiobookshelfService.shared
-        Task {
-            try? await service.closePlaySession(
-                sessionId: sessionId,
-                currentTime: position,
-                duration: duration,
-                backend: backend
-            )
-        }
     }
 
     private static func chapterPayload(_ chapter: Chapter) -> WatchChapterPayload {

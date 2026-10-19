@@ -5,6 +5,21 @@ import Testing
 
 @MainActor
 struct ReaderPublicationSessionTests {
+    @Test(arguments: ["cbz", "cbr", "epub", "pdf"])
+    func existingLocalAssetsBypassServerSetup(_ fileExtension: String) throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString).appendingPathExtension(fileExtension)
+        try Data([1]).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        var book = Book(id: UUID().uuidString, title: "Issue", source: .kavita, mediaType: .ebook)
+        book.ebookFileURL = url
+        let session = ReaderPublicationSession(book: book, providerResolver: NoProviderResolver())
+
+        #expect(session.hasLocalAsset)
+        try FileManager.default.removeItem(at: url)
+        #expect(!session.hasLocalAsset)
+    }
+
     private let fixtureRoot = FileManager.default.temporaryDirectory
         .appendingPathComponent("ReaderPublicationSessionTests", isDirectory: true)
 
@@ -62,4 +77,9 @@ struct ReaderPublicationSessionTests {
             )
         )
     }
+}
+
+private final class NoProviderResolver: LibraryProviderResolving {
+    func provider(for providerId: UUID) -> LibraryProvider? { nil }
+    func provider(for book: Book) -> LibraryProvider? { nil }
 }

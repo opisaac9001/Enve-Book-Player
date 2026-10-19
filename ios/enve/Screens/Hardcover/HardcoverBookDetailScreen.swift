@@ -53,6 +53,7 @@ struct HardcoverBookDetailScreen: View {
         .scrollIndicators(.hidden)
         .background(HearthBackground())
         .toolbar(.hidden, for: .navigationBar)
+        .hearthInteractiveBack()
         .task {
             await hardcoverLoadDetails()
             await hardcoverReloadLinked()

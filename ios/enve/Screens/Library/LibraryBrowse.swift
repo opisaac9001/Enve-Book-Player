@@ -278,33 +278,90 @@ struct LibrarySeriesGridCell: View {
     let aggregate: BrowseSeriesAggregate
     let mediaScope: [String]
     let width: CGFloat
+    var comicFilter = ComicSeriesFilter()
 
     @Environment(EnveEngine.self) private var engine
     @State private var fan: [Book] = []
 
     var body: some View {
-        NavigationLink {
-            LibraryFilteredGridScreen(overline: "Series", title: aggregate.name, fetch: fetchBooks)
-        } label: {
-            LibraryBrowseGridCard(
-                title: aggregate.name,
-                count: aggregate.bookCount,
-                status: aggregate.readingStatusText,
-                statusIsComplete: aggregate.unreadBookCount == 0,
-                width: width
-            ) {
-                LibrarySeriesFan(books: fan, coverWidth: min(width * 0.48, 78))
+        VStack(alignment: .leading, spacing: 8) {
+            NavigationLink(value: aggregate) {
+                LibraryBrowseGridCard(
+                    title: aggregate.name, count: aggregate.bookCount,
+                    status: aggregate.libraryStatusText, statusIsComplete: aggregate.unreadBookCount == 0, width: width
+                ) {
+                    LibrarySeriesFan(books: fan, coverWidth: min(width * 0.48, 78))
+                }
             }
+            .buttonStyle(PressableStyle())
+            .accessibilityIdentifier("library-series-\(aggregate.id)")
+            if aggregate.isComic { ComicSeriesQuickReadButton(aggregate: aggregate, filter: comicFilter) }
         }
-        .buttonStyle(PressableStyle())
-        .task(id: aggregate.name) {
+        .task(id: aggregate.id) {
             guard fan.isEmpty else { return }
             fan = await engine.library.seriesFan(for: aggregate, mediaScope: mediaScope)
         }
     }
+}
 
-    private func fetchBooks() async -> [Book] {
-        await engine.library.books(forSeries: aggregate, mediaScope: mediaScope)
+private struct ComicSeriesQuickReadButton: View {
+    let aggregate: BrowseSeriesAggregate
+    let filter: ComicSeriesFilter
+    @Environment(EnveEngine.self) private var engine
+    @Environment(\.hearth) private var hearth
+    @State private var book: Book?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let book {
+                let actionTitle = book.canonicalEbookProgress > 0.001 ? "Resume" : "Read"
+                Text(book.comicMetadata?.issueLabel ?? LibraryDisplayFormatter.displayTitle(book.title))
+                    .font(.hearthCaption)
+                    .foregroundStyle(hearth.textSecondary)
+                    .lineLimit(2)
+                QuietButton(title: actionTitle, systemImage: "book") {
+                    engine.playback.play(book)
+                }
+                .accessibilityLabel("\(actionTitle) \(aggregate.name), \(book.title)")
+            }
+        }
+        .task(id: aggregate) { await loadBook() }
+        .onChange(of: filter) {
+            Task { await loadBook() }
+        }
+    }
+
+    private func loadBook() async {
+        guard let id = aggregate.resumeBookUniqueID, let next = await engine.library.book(uniqueId: id),
+            engine.library.matchesStatus(next, status: filter.status, downloadedIds: []),
+            LibraryAdvancedFilterPolicy.matches(next, filters: filter.advancedFilters)
+        else { book = nil; return }
+        guard !Task.isCancelled else { return }
+        book = next
+    }
+}
+
+struct LibrarySeriesDestination: View {
+    let aggregate: BrowseSeriesAggregate
+    let mediaScope: [String]
+    let comicFilter: ComicSeriesFilter
+
+    @Environment(EnveEngine.self) private var engine
+
+    var body: some View {
+        if aggregate.isComic {
+            ComicSeriesScreen(aggregate: aggregate, mediaScope: mediaScope, filter: comicFilter, library: engine.library)
+        } else {
+            LibraryFilteredGridScreen(overline: "Series", title: aggregate.name) {
+                await engine.library.books(forSeries: aggregate, mediaScope: mediaScope)
+            }
+        }
+    }
+}
+
+private extension BrowseSeriesAggregate {
+    var libraryStatusText: String {
+        isComic ? ComicSeriesFormat.summary(total: bookCount, unread: unreadBookCount) : readingStatusText
     }
 }
 
@@ -397,45 +454,41 @@ struct LibraryGenreGridCell: View {
 struct LibrarySeriesRow: View {
     let aggregate: BrowseSeriesAggregate
     let mediaScope: [String]
+    var comicFilter = ComicSeriesFilter()
 
     @Environment(EnveEngine.self) private var engine
     @Environment(\.hearth) private var hearth
     @State private var fan: [Book] = []
 
     var body: some View {
-        NavigationLink {
-            LibraryFilteredGridScreen(overline: "Series", title: aggregate.name, fetch: fetchBooks)
-        } label: {
-            HStack(spacing: 16) {
-                LibrarySeriesFan(books: fan)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(aggregate.name)
-                        .font(.hearthDisplay(17, weight: .semibold))
-                        .foregroundStyle(hearth.text)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                    Label(
-                        aggregate.readingStatusText,
-                        systemImage: aggregate.unreadBookCount == 0 ? "checkmark.circle.fill" : "book.closed"
-                    )
-                        .font(.hearthCaption)
-                        .foregroundStyle(aggregate.unreadBookCount == 0 ? hearth.statusOK : hearth.textTertiary)
+        VStack(alignment: .leading, spacing: 8) {
+            NavigationLink(value: aggregate) {
+                HStack(spacing: 16) {
+                    LibrarySeriesFan(books: fan)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(aggregate.name)
+                            .font(.hearthDisplay(17, weight: .semibold))
+                            .foregroundStyle(hearth.text)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                        Label(aggregate.libraryStatusText, systemImage: aggregate.unreadBookCount == 0 ? "checkmark.circle.fill" : "book.closed")
+                            .font(.hearthCaption)
+                            .foregroundStyle(aggregate.unreadBookCount == 0 ? hearth.statusOK : hearth.textTertiary)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.hearthUI(12, weight: .semibold))
+                        .foregroundStyle(hearth.textTertiary)
                 }
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.hearthUI(12, weight: .semibold))
-                    .foregroundStyle(hearth.textTertiary)
             }
+            .buttonStyle(PressableStyle())
+            .accessibilityIdentifier("library-series-\(aggregate.id)")
+            if aggregate.isComic { ComicSeriesQuickReadButton(aggregate: aggregate, filter: comicFilter) }
         }
-        .buttonStyle(PressableStyle())
-        .task(id: aggregate.name) {
+        .task(id: aggregate.id) {
             guard fan.isEmpty else { return }
             fan = await engine.library.seriesFan(for: aggregate, mediaScope: mediaScope)
         }
-    }
-
-    private func fetchBooks() async -> [Book] {
-        await engine.library.books(forSeries: aggregate, mediaScope: mediaScope)
     }
 }
 

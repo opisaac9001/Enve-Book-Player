@@ -58,6 +58,11 @@ final class DownloadsEngine {
         tasks.filter { $0.status == .completed }
     }
 
+    var lastError: String? {
+        _ = revision
+        return service.lastError
+    }
+
     var isCellularWithDownloadsDisabled: Bool {
         _ = revision
         return service.isCellularWithDownloadsDisabled
@@ -87,18 +92,15 @@ final class DownloadsEngine {
     }
 
     func isDownloaded(_ book: Book) -> Bool {
+        _ = revision
         if usesReaderDownload(book) {
-            return importer.persistedRemoteEbook(forBookId: book.id) != nil
-                || importer.cachedReadaloudEpub(forBookId: book.id) != nil
-                || book.ebookFileURL.map { FileManager.default.fileExists(atPath: $0.path) } == true
+            return importer.offlineEbookURL(for: book) != nil
         }
         return (profileSession?.localStorage ?? LocalStorageManager.shared).isAudiobookDownloaded(book)
     }
 
     func isLibraryDownloaded(_ book: Book) -> Bool {
-        book.mediaType == .ebook
-            ? hasPermanentEbookDownload(book)
-            : (profileSession?.localStorage ?? LocalStorageManager.shared).isAudiobookDownloaded(book)
+        isDownloaded(book)
     }
 
     func isAudiobookDownloaded(_ book: Book) -> Bool {
@@ -112,25 +114,7 @@ final class DownloadsEngine {
     }
 
     func hasPermanentEbookDownload(_ book: Book) -> Bool {
-        guard book.mediaType == .ebook else { return false }
-
-        if book.source == .local {
-            return importer.resolveExistingLocalEbookURL(
-                bookIdentifier: book.id,
-                ebookFileURL: book.ebookFileURL,
-                filePath: book.filePath
-            ) != nil
-        }
-
-        if importer.persistedRemoteEbook(forBookId: book.id) != nil {
-            return true
-        }
-
-        guard let url = book.ebookFileURL, FileManager.default.fileExists(atPath: url.path) else {
-            return false
-        }
-        return Self.isContained(url, in: importer.serverEbooksRoot)
-            || Self.isContained(url, in: importer.readaloudCacheRoot)
+        book.mediaType == .ebook && isDownloaded(book)
     }
 
     func usesReaderDownload(_ book: Book) -> Bool {
@@ -206,11 +190,7 @@ final class DownloadsEngine {
         var seenPaths = Set<String>()
         let ebookSeeds = downloadedEbooks.compactMap { book -> (Book, URL)? in
             guard book.mediaType == .ebook, book.source != .local else { return nil }
-            let url = importer.persistedRemoteEbook(forBookId: book.id) ?? book.ebookFileURL
-            guard let url,
-                FileManager.default.fileExists(atPath: url.path),
-                Self.isContained(url, in: importer.serverEbooksRoot)
-            else { return nil }
+            guard let url = importer.offlineEbookURL(for: book) else { return nil }
             let path = url.standardizedFileURL.path
             guard seenPaths.insert(path).inserted else { return nil }
             return (book, url)
@@ -269,8 +249,14 @@ final class DownloadsEngine {
         await service.downloadFileCopy(bookId: bookId, title: title, sourceURL: sourceURL)
     }
 
-    func removeDownload(for book: Book) async {
-        if usesReaderDownload(book) {
+    @discardableResult
+    func removeDownload(for book: Book) async -> Bool {
+        if book.mediaType == .ebook {
+            guard book.source != .local else { return false }
+            await service.deleteDownload(book: book)
+            NotificationCenter.default.post(name: .bookStoreDidChange, object: nil)
+            revision &+= 1
+        } else if usesReaderDownload(book) {
             try? importer.deleteRemoteEbookArtifacts(forBookId: book.id)
             importer.removeReadaloudCache(forBookId: book.id, stableId: book.stableId)
             if let url = appState.bookInMemory(uniqueId: book.uniqueId)?.ebookFileURL {
@@ -287,26 +273,11 @@ final class DownloadsEngine {
         } else {
             await service.deleteDownload(book: book)
         }
+        return !isDownloaded(book)
     }
 
     func removeLibraryDownload(for book: Book) async {
-        if book.mediaType == .ebook {
-            guard book.source != .local else { return }
-            try? importer.deleteRemoteEbookArtifacts(forBookId: book.id)
-            importer.removeReadaloudCache(forBookId: book.id, stableId: book.stableId)
-            if let url = appState.bookInMemory(uniqueId: book.uniqueId)?.ebookFileURL ?? book.ebookFileURL {
-                let managed =
-                    Self.isContained(url, in: importer.serverEbooksRoot)
-                    || Self.isContained(url, in: importer.remoteReaderCacheRoot)
-                if managed {
-                    appState.mutateBook(uniqueId: book.uniqueId) { $0.ebookFileURL = nil }
-                }
-            }
-            NotificationCenter.default.post(name: .bookStoreDidChange, object: nil)
-            revision &+= 1
-        } else {
-            await service.deleteDownload(book: book)
-        }
+        await removeDownload(for: book)
     }
 
     nonisolated private static func isContained(_ url: URL, in root: URL) -> Bool {

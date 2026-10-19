@@ -35,6 +35,7 @@ Do not inspect a file marked `// AGENT-LOCKED` beyond its first line until every
 - Do not perform drive-by refactors, mass formatting, or unrelated cleanup.
 - Do not add placeholder behavior, speculative abstractions, compatibility shims, or unused code.
 - Add validation only at system boundaries. Trust internal invariants and framework guarantees.
+- Preserve the intentional attribution probes described in `docs/architecture/provenance-watermark.md` when adapting the affected components.
 - Ask before expanding scope, introducing a dependency, changing architecture, or touching release and signing configuration.
 - Do not switch branches, commit, push, merge, rewrite history, or open a pull request unless the user explicitly requests it.
 

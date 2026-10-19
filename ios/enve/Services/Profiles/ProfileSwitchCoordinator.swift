@@ -28,8 +28,9 @@ final class ProfileSwitchCoordinator {
     private var catalog: FamilyProfileStore?
     private let pinStore: AdultPINStore
     private let defaults: UserDefaults
-    private let sessionFactory: (FamilyProfile) throws -> ProfileSession
+    private let sessionFactory: (FamilyProfile, BookStoreManager?) throws -> ProfileSession
     private var inactiveSessions: [String: ProfileSession] = [:]
+    private var libraryDatabases: [String: BookStoreManager] = [:]
     private var serverSyncOverrides: [String: Bool] = [:]
     private var authorizationTask: Task<Void, Never>?
     private var authorizationDeadline: ContinuousClock.Instant?
@@ -52,7 +53,7 @@ final class ProfileSwitchCoordinator {
 
     private init() {
         defaults = .standard
-        sessionFactory = { try ProfileSession(profile: $0) }
+        sessionFactory = { try ProfileSession(profile: $0, libraryDatabase: $1) }
         pinStore = .shared
         let enabled = defaults.bool(forKey: enabledKey)
         isEnabled = enabled
@@ -76,6 +77,7 @@ final class ProfileSwitchCoordinator {
             isLocked = true
             errorMessage = "Profiles could not be opened. Your saved data has been kept."
         }
+        libraryDatabases[activeSession.profile.id] = activeSession.libraryDatabase
         if isLocked { activeSession.revokeSystemAccess() }
     }
 
@@ -84,7 +86,7 @@ final class ProfileSwitchCoordinator {
         pinStore: AdultPINStore,
         defaults: UserDefaults,
         initialSession: ProfileSession,
-        sessionFactory: @escaping (FamilyProfile) throws -> ProfileSession
+        sessionFactory: @escaping (FamilyProfile, BookStoreManager?) throws -> ProfileSession
     ) throws {
         self.catalog = catalog
         self.pinStore = pinStore
@@ -94,6 +96,7 @@ final class ProfileSwitchCoordinator {
         isEnabled = defaults.bool(forKey: enabledKey)
         hasPIN = try pinStore.isConfigured()
         isLocked = isEnabled && activeProfile.role == .adult && isParentAuthorizationRequired
+        libraryDatabases[initialSession.profile.id] = initialSession.libraryDatabase
     }
 
     func enable(ownerName: String, pin: String? = nil) throws {
@@ -223,6 +226,7 @@ final class ProfileSwitchCoordinator {
         #endif
         try requireParentAuthorization()
         try availableCatalog().remove(profileID: id)
+        libraryDatabases.removeValue(forKey: id)
         let locations = session.storage
         if let domain = locations.preferencesDomain { defaults.removePersistentDomain(forName: domain) }
         let root = locations.documentsDirectory.deletingLastPathComponent()
@@ -364,7 +368,8 @@ final class ProfileSwitchCoordinator {
     private func session(for profile: FamilyProfile) throws -> ProfileSession {
         if activeSession.profile.id == profile.id && !activeSession.isRetired { return activeSession }
         if let session = inactiveSessions[profile.id], !session.isRetired { return session }
-        let session = try sessionFactory(profile)
+        let session = try sessionFactory(profile, libraryDatabases[profile.id])
+        libraryDatabases[profile.id] = session.libraryDatabase
         inactiveSessions[profile.id] = session
         return session
     }

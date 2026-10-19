@@ -464,6 +464,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
     }
 
     func validateConnection() async throws -> Bool {
+        try EnveProvenance.checkServerAddress(connection.url)
         try await ensureValidToken()
         let (_, http) = try await perform("auth/me")
         let ok = http.statusCode == 200

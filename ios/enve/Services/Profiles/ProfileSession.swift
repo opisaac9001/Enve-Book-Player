@@ -19,7 +19,6 @@ final class ProfileSession {
     private let allowsSystemIntegrations: Bool
     let libraryDatabase: BookStoreManager
     let playbackQueue: PlaybackQueueStore
-    let playbackState: PlaybackStateManager
     let keychain: SharedKeychainStore
     let legacyKeychain: KeychainHelper
     let tokenStorage: SecureTokenStorage
@@ -33,6 +32,10 @@ final class ProfileSession {
     let appState: AppState
     let localStorage: LocalStorageManager
     let ebooks: LocalEbookImporter
+    let readingCache: ReadingCacheStore
+    #if os(iOS)
+    let comicStreamingPages: ServerPageStreamingService
+    #endif
     let localLibraryService: LocalLibraryService
     let groupingOverrides: AudiobookGroupingOverrideStore
     let localLibrary: LocalLibraryStorageStore
@@ -59,6 +62,8 @@ final class ProfileSession {
     let catalogMapping: CatalogMappingRevisionStore
     let remoteLibraryBrowse: RemoteLibraryBrowseStore
     let siloReaderArtifacts: SiloReaderArtifactIDStore
+    let grimmoryBookNotes: GrimmoryBookNoteIDStore
+    let comicReadingDirections: ComicReadingDirectionStore
     let mirrorCheckpoints: ServerMirrorCheckpointStore
     let opdsProgressionEndpoints: OPDSProgressionEndpointStore
     let opdsAuthentication: OPDSAuthenticationStore
@@ -133,7 +138,7 @@ final class ProfileSession {
     private var didCreateWatchBridge = false
     lazy var watchBridge: WatchSessionBridge = {
         didCreateWatchBridge = true
-        return WatchSessionBridge(providerResolver: providerConnections, connectionAccess: providerConnections,
+        return WatchSessionBridge(providerResolver: providerConnections,
             bookQuerying: bookStore, libraryCache: appState.libraryCache,
             playback: playback.composition.controller, profileSession: self)
     }()
@@ -141,7 +146,7 @@ final class ProfileSession {
     #if canImport(WebKit)
     lazy var websiteDataStore: WKWebsiteDataStore = isOwner ? .default() : WKWebsiteDataStore(forIdentifier: UUID(uuidString: profile.id)!)
     #endif
-    lazy var metadataLayering = MetadataLayeringManager(playbackStateManager: playbackState, localStorage: localStorage, providerConnections: providerConnections)
+    lazy var metadataLayering = MetadataLayeringManager(localStorage: localStorage, providerConnections: providerConnections)
     lazy var embyProvider = EmbyProvider(connection: ServerConnection(name: "Emby", url: "", type: .emby), profileSession: self)
     lazy var embyService = EmbyService(profileSession: self)
     lazy var jellyfinQuickConnect = JellyfinQuickConnectService(session: networkSession)
@@ -260,7 +265,12 @@ final class ProfileSession {
     )
     }()
 
-    init(profile: FamilyProfile, storage suppliedStorage: ProfileStorageLocations? = nil, defaults suppliedDefaults: UserDefaults? = nil) throws {
+    init(
+        profile: FamilyProfile,
+        storage suppliedStorage: ProfileStorageLocations? = nil,
+        defaults suppliedDefaults: UserDefaults? = nil,
+        libraryDatabase suppliedDatabase: BookStoreManager? = nil
+    ) throws {
         self.profile = profile
         allowsSystemIntegrations = suppliedStorage == nil
         let storage = suppliedStorage ?? ProfileStorageLocations(profileID: profile.id)
@@ -268,9 +278,12 @@ final class ProfileSession {
         self.storage = storage
         let defaults = try suppliedDefaults ?? storage.openPreferences()
         self.defaults = defaults
-        libraryDatabase = profile.id == FamilyProfile.ownerID && suppliedStorage == nil ? .shared : try BookStoreManager(storage: storage, defaults: defaults)
+        if let suppliedDatabase {
+            libraryDatabase = suppliedDatabase
+        } else {
+            libraryDatabase = profile.id == FamilyProfile.ownerID && suppliedStorage == nil ? .shared : try BookStoreManager(storage: storage, defaults: defaults)
+        }
         playbackQueue = try PlaybackQueueStore(storage: storage)
-        playbackState = try PlaybackStateManager(storage: storage)
         let keychain = SharedKeychainStore(profileID: profile.id)
         self.keychain = keychain
         let legacyKeychain = KeychainHelper(profileID: profile.id)
@@ -301,6 +314,11 @@ final class ProfileSession {
         downloadActivity = activity
         localStorage = try LocalStorageManager(storage: storage, isDownloadActive: { activity.isActive($0) })
         ebooks = try LocalEbookImporter(storage: storage)
+        let readingCache = ReadingCacheStore(cachesDirectory: storage.cachesDirectory, defaults: defaults)
+        self.readingCache = readingCache
+        #if os(iOS)
+        comicStreamingPages = ServerPageStreamingService(cachesDirectory: storage.cachesDirectory, cache: readingCache)
+        #endif
         localLibrary = LocalLibraryStorageStore(defaults: defaults, storage: storage)
         groupingOverrides = AudiobookGroupingOverrideStore(defaults: defaults)
         localLibraryService = LocalLibraryService(storage: storage, localLibrary: localLibrary, ebooks: ebooks, groupingOverrides: groupingOverrides)
@@ -323,6 +341,8 @@ final class ProfileSession {
         catalogMapping = CatalogMappingRevisionStore(defaults: defaults)
         remoteLibraryBrowse = RemoteLibraryBrowseStore(defaults: defaults)
         siloReaderArtifacts = SiloReaderArtifactIDStore(defaults: defaults)
+        grimmoryBookNotes = GrimmoryBookNoteIDStore(defaults: defaults)
+        comicReadingDirections = ComicReadingDirectionStore(defaults: defaults)
         mirrorCheckpoints = ServerMirrorCheckpointStore(defaults: defaults)
         opdsProgressionEndpoints = OPDSProgressionEndpointStore(defaults: defaults)
         opdsAuthentication = OPDSAuthenticationStore(defaults: defaults, tokens: KeychainOPDSTokenStore(storage: tokenStorage))
@@ -364,6 +384,7 @@ final class ProfileSession {
     }
 
     func start() {
+        Task { await readingCache.trim() }
         precondition(!isRetired)
         guard !hasStarted else { return }
         hasStarted = true
@@ -411,6 +432,10 @@ final class ProfileSession {
         if didCreateRemoteImport { remoteImport.retire() }
         if didCreateNetworkSession { networkSession.invalidateAndCancel() }
         await downloads.retire()
+        #if os(iOS)
+        await comicStreamingPages.retire()
+        #endif
+        await readingCache.trim()
         await providerConnections.retire()
         await appState.retire()
         if didCreatePlayback { await playback.retire() }

@@ -47,8 +47,14 @@ enum BookStoreSQLTuner {
             for statement in indexStatements {
                 try execute(statement, db: db)
             }
+            var statement: OpaquePointer?
+            let hasComicColumns = sqlite3_prepare_v2(db, "SELECT ZCOMICSERIESID FROM ZBOOKRECORD LIMIT 0", -1, &statement, nil) == SQLITE_OK
+            sqlite3_finalize(statement)
+            if hasComicColumns {
+                try execute("CREATE INDEX IF NOT EXISTS ZBOOKRECORD_COMIC_SERIES_IDX ON ZBOOKRECORD (ZPROVIDERID, ZLIBRARYID, ZCOMICSERIESID)", db: db)
+            }
             try execute("COMMIT", db: db)
-            return Result(repairedDuplicateRows: repaired, createdOrVerifiedIndexes: indexStatements.count)
+            return Result(repairedDuplicateRows: repaired, createdOrVerifiedIndexes: indexStatements.count + (hasComicColumns ? 1 : 0))
         } catch {
             _ = try? execute("ROLLBACK", db: db)
             throw error

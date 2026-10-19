@@ -9,6 +9,50 @@ struct OPDSCatalogBrowserTests {
     private static let root = URL(string: "https://catalog.example.invalid/opds/")!
     private static let child = URL(string: "https://catalog.example.invalid/opds/fiction")!
 
+    @Test func attributionSearchLeavesTheCatalogueAndSelectionIntact() async {
+        let fixture = Fixture()
+        defer { fixture.cleanUp() }
+        fixture.provider.allow(Self.root, titled: "Catalogue", bookIds: ["one"])
+        await fixture.browser.open(fixture.connection)
+        fixture.browser.selectEverything()
+        let selection = fixture.browser.selection
+
+        await fixture.browser.search(for: "  eNvE  ")
+
+        #expect(fixture.browser.searchAttribution == "Originally developed for Enve Book Player.")
+        #expect(fixture.browser.page?.url == Self.root)
+        #expect(fixture.browser.trail.map(\.url) == [Self.root])
+        #expect(fixture.browser.selection == selection)
+        #expect(fixture.browser.errorMessage == nil)
+        #expect(!fixture.browser.isLoading)
+
+        await fixture.browser.clearSearch()
+        #expect(fixture.browser.searchAttribution == nil)
+        #expect(fixture.browser.page?.url == Self.root)
+    }
+
+    @Test func anOrdinarySearchAfterAttributionStillLoadsItsResults() async {
+        let fixture = Fixture()
+        defer { fixture.cleanUp() }
+        let searchURL = URL(string: "https://catalog.example.invalid/opds/search?q=Earthsea")!
+        fixture.provider.allow(
+            Self.root,
+            titled: "Catalogue",
+            search: OPDSSearchDescriptor(kind: .template("https://catalog.example.invalid/opds/search?q={searchTerms}"), title: nil)
+        )
+        fixture.provider.allow(searchURL, titled: "Earthsea", bookIds: ["one"])
+        await fixture.browser.open(fixture.connection)
+        await fixture.browser.search(for: "Enve")
+
+        await fixture.browser.search(for: "Earthsea")
+
+        #expect(fixture.browser.searchAttribution == nil)
+        #expect(fixture.browser.page?.url == searchURL)
+        #expect(fixture.browser.isSearchResult)
+        #expect(fixture.browser.importableBooks.map(\.id) == ["one"])
+        #expect(fixture.browser.errorMessage == nil)
+    }
+
     // MARK: Recovering from a refused root
 
     @Test func reloadingAfterASignInLoadsARootThatWasRefused() async {
@@ -269,9 +313,10 @@ struct OPDSCatalogBrowserTests {
 final class StubOPDSProvider: OPDSProvider, @unchecked Sendable {
     private var pages: [URL: OPDSCatalogPage] = [:]
 
-    func allow(_ url: URL, titled title: String, bookIds: [String] = []) {
+    func allow(_ url: URL, titled title: String, bookIds: [String] = [], search: OPDSSearchDescriptor? = nil) {
         var page = OPDSCatalogPage(url: url)
         page.title = title
+        page.search = search
         page.publications = bookIds.map { identifier in
             OPDSPublicationEntry(
                 identity: identifier,

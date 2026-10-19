@@ -21,6 +21,7 @@ final class ReaderOpenCoordinator {
     }
 
     private(set) var activity: Activity?
+    private(set) var readingSequence: [String]?
 
     @ObservationIgnored private let appState: AppState
     @ObservationIgnored private let downloads: UnifiedDownloadService
@@ -28,6 +29,7 @@ final class ReaderOpenCoordinator {
     @ObservationIgnored private let present: (Book) -> Void
     @ObservationIgnored private var requestTask: Task<Void, Never>?
     @ObservationIgnored private var requestedBookID: String?
+    @ObservationIgnored private var preparedAsset: (bookID: String, owner: String)?
 
     private unowned let profileSession: ProfileSession
 
@@ -50,7 +52,7 @@ final class ReaderOpenCoordinator {
     }
 
     // Only pass a locator for an explicit jump. A stale book copy could overwrite newer server progress.
-    func open(_ book: Book, at locator: String? = nil) {
+    func open(_ book: Book, at locator: String? = nil, readingSequence: [String]? = nil) {
         let requestedLocator = locator?.isEmpty == false ? locator : nil
         if requestedBookID == book.uniqueId, requestTask != nil {
             return
@@ -59,7 +61,8 @@ final class ReaderOpenCoordinator {
             AppLogger.general.info("[ReaderOpen] opening at an explicit locator bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId))")
         }
 
-        cancelCurrentRequest(removeActivity: true)
+        cancelCurrentRequest(removeActivity: true, preservingPreparedBookID: book.uniqueId)
+        self.readingSequence = readingSequence?.contains(book.uniqueId) == true ? readingSequence : nil
 
         guard requiresPreparation(book) else {
             requestedBookID = book.uniqueId
@@ -108,7 +111,7 @@ final class ReaderOpenCoordinator {
     func retry() {
         guard let activity else { return }
         cancelCurrentRequest(removeActivity: true)
-        open(activity.book, at: activity.locator)
+        open(activity.book, at: activity.locator, readingSequence: readingSequence)
     }
 
     func dismissFailure() {
@@ -121,7 +124,17 @@ final class ReaderOpenCoordinator {
         requestID: UUID,
         requestedLocator: String?
     ) async {
+        let owner = "reader-preparation-\(requestID)"
+        let cache = profileSession.readingCache
+        var handedToReader = false
+        defer {
+            if !handedToReader {
+                Task { await cache.release(owner: owner) }
+            }
+        }
         do {
+            await cache.protect([profileSession.ebooks.remoteReaderCacheRoot], owner: owner)
+            try Task.checkCancellation()
             let fileURL = try await downloads.prepareReaderAsset(for: book) { [weak self] progress in
                 Task { @MainActor [weak self] in
                     guard self?.activity?.id == requestID else { return }
@@ -144,6 +157,9 @@ final class ReaderOpenCoordinator {
             try Task.checkCancellation()
             guard activity?.id == requestID else { return }
             appState.hotCache.insert(resolved)
+            preparedAsset = (book.uniqueId, owner)
+            cache.retainPreparation(owner: owner, for: book.uniqueId)
+            handedToReader = true
             present(resolved)
             activity = nil
             requestTask = nil
@@ -161,10 +177,13 @@ final class ReaderOpenCoordinator {
     }
 
     private func requiresPreparation(_ book: Book) -> Bool {
-        if downloads.existingReaderAsset(for: book) != nil {
+        if book.source == .local || book.isComic || book.isReadAloudBook {
             return false
         }
-        if book.source == .local || book.source == .komga || book.isComic || book.isReadAloudBook {
+        if appState.providerConnections.capability(ServerPageProvider.self, for: book)?.canStreamPages(for: book) == true {
+            return false
+        }
+        if downloads.existingReaderAsset(for: book) != nil {
             return false
         }
         if GrimmoryEpubStreaming.isEligible(book) {
@@ -235,7 +254,12 @@ final class ReaderOpenCoordinator {
         return book
     }
 
-    private func cancelCurrentRequest(removeActivity: Bool) {
+    private func cancelCurrentRequest(removeActivity: Bool, preservingPreparedBookID: String? = nil) {
+        if let preparedAsset, preparedAsset.bookID != preservingPreparedBookID {
+            self.preparedAsset = nil
+            profileSession.readingCache.discardPreparation(owner: preparedAsset.owner, for: preparedAsset.bookID)
+            Task { [cache = profileSession.readingCache] in await cache.release(owner: preparedAsset.owner) }
+        }
         if let book = activity?.book {
             downloads.cancelReaderAssetPreparation(for: book)
         }

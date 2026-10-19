@@ -17,30 +17,32 @@ final class LocalEbookImporter: @unchecked Sendable {
     static let shared = LocalEbookImporter()
 
     private let fileManager = FileManager.default
-    private let storage: ProfileStorageLocations
+    private nonisolated let storage: ProfileStorageLocations
+    private nonisolated let readableExtensions: Set<String>
 
-    var localEbooksRoot: URL {
+    nonisolated var localEbooksRoot: URL {
         storage.documentsDirectory.appendingPathComponent("Ebooks/local", isDirectory: true)
     }
 
-    var serverEbooksRoot: URL {
+    nonisolated var serverEbooksRoot: URL {
         storage.documentsDirectory.appendingPathComponent("Ebooks", isDirectory: true)
     }
 
-    var remoteReaderCacheRoot: URL {
+    nonisolated var remoteReaderCacheRoot: URL {
         storage.cachesDirectory.appendingPathComponent("ReaderEbooks", isDirectory: true)
     }
 
-    var streamedEpubCacheRoot: URL {
+    nonisolated var streamedEpubCacheRoot: URL {
         storage.cachesDirectory.appendingPathComponent("StreamedEpubs", isDirectory: true)
     }
 
-    var readaloudCacheRoot: URL {
+    nonisolated var readaloudCacheRoot: URL {
         storage.documentsDirectory.appendingPathComponent("Ebooks/readaloud", isDirectory: true)
     }
 
     private init() {
         storage = .owner
+        readableExtensions = Self.validEbookExtensions
         for directory in storageDirectories {
             try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         }
@@ -48,6 +50,7 @@ final class LocalEbookImporter: @unchecked Sendable {
 
     init(storage: ProfileStorageLocations) throws {
         self.storage = storage
+        readableExtensions = Self.validEbookExtensions
         for directory in storageDirectories {
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         }
@@ -57,7 +60,7 @@ final class LocalEbookImporter: @unchecked Sendable {
         [localEbooksRoot, serverEbooksRoot, remoteReaderCacheRoot, readaloudCacheRoot]
     }
 
-    private func isProfileOwnedURL(_ url: URL) -> Bool {
+    private nonisolated func isProfileOwnedURL(_ url: URL) -> Bool {
         guard storage.profileID != FamilyProfile.ownerID else { return true }
         guard url.isFileURL else { return false }
         let path = url.resolvingSymlinksInPath().standardizedFileURL.path
@@ -66,16 +69,20 @@ final class LocalEbookImporter: @unchecked Sendable {
         }
     }
 
-    func resolveExistingLocalEbookURL(bookIdentifier: String? = nil, ebookFileURL: URL?, filePath: String?) -> URL? {
+    nonisolated func resolveExistingLocalEbookURL(bookIdentifier: String? = nil, ebookFileURL: URL?, filePath: String?) -> URL? {
+        for url in [ebookFileURL, filePath.map { URL(fileURLWithPath: $0) }].compactMap({ $0 })
+        where url.deletingLastPathComponent().lastPathComponent != "ConvertedEbooks" {
+            if isExistingEbook(url) { return url }
+        }
         let candidates = ebookPathCandidates(bookIdentifier: bookIdentifier, ebookFileURL: ebookFileURL, filePath: filePath)
         return candidates.first(where: isExistingEbook)
     }
 
-    func resolveExistingLocalEbookURL(ebookFileURL: URL?, filePath: String?) -> URL? {
+    nonisolated func resolveExistingLocalEbookURL(ebookFileURL: URL?, filePath: String?) -> URL? {
         resolveExistingLocalEbookURL(bookIdentifier: nil, ebookFileURL: ebookFileURL, filePath: filePath)
     }
 
-    private func ebookPathCandidates(bookIdentifier: String?, ebookFileURL: URL?, filePath: String?) -> [URL] {
+    private nonisolated func ebookPathCandidates(bookIdentifier: String?, ebookFileURL: URL?, filePath: String?) -> [URL] {
         var candidates: [URL] = []
 
         func appendCandidate(_ url: URL?) {
@@ -189,15 +196,78 @@ final class LocalEbookImporter: @unchecked Sendable {
         return remoteReaderCacheRoot.appendingPathComponent(fileName, isDirectory: false)
     }
 
-    func cachedEbook(forBookId bookId: String) -> URL? {
+    nonisolated func cachedEbook(forBookId bookId: String) -> URL? {
         if let persisted = persistedRemoteEbook(forBookId: bookId) {
             return persisted
         }
         return existingRemoteEbook(forBookId: bookId, roots: [remoteReaderCacheRoot])
     }
 
-    func persistedRemoteEbook(forBookId bookId: String) -> URL? {
+    nonisolated func persistedRemoteEbook(forBookId bookId: String) -> URL? {
         existingRemoteEbook(forBookId: bookId, roots: [serverEbooksRoot])
+    }
+
+    nonisolated func offlineEbookURL(for book: Book) -> URL? {
+        offlineEbookURL(for: book, retainedFiles: nil)
+    }
+
+    nonisolated struct OfflineAvailability: Sendable {
+        fileprivate let importer: LocalEbookImporter
+        fileprivate let retainedFiles: [URL]
+
+        func existingBooks(in books: [Book]) async -> [Book] {
+            await Task.detached(priority: .utility) {
+                books.filter { importer.offlineEbookURL(for: $0, retainedFiles: retainedFiles) != nil }
+            }.value
+        }
+    }
+
+    func offlineAvailability() async -> OfflineAvailability {
+        await Task.detached(priority: .utility) { [self] in
+            let fileManager = FileManager()
+            let files = ((try? fileManager.contentsOfDirectory(
+                at: serverEbooksRoot, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+            )) ?? []).filter {
+                self.readableExtensions.contains($0.pathExtension.lowercased()) && isProfileOwnedURL($0)
+            }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+            return OfflineAvailability(importer: self, retainedFiles: files)
+        }.value
+    }
+
+    private nonisolated func offlineEbookURL(for book: Book, retainedFiles: [URL]?) -> URL? {
+        if book.source == .local {
+            return resolveExistingLocalEbookURL(
+                bookIdentifier: book.id,
+                ebookFileURL: book.ebookFileURL,
+                filePath: book.filePath
+            )
+        }
+
+        if let url = book.ebookFileURL, isExistingEbook(url) {
+            let path = url.resolvingSymlinksInPath().standardizedFileURL.path
+            let root = serverEbooksRoot.resolvingSymlinksInPath().standardizedFileURL.path
+            if path.hasPrefix(root + "/") { return url }
+        }
+
+        let retained: URL?
+        if let retainedFiles {
+            let identifier = sanitizeFilename(book.id)
+            retained = [identifier + "-", identifier + "."].lazy.compactMap { prefix -> URL? in
+                var lower = 0
+                var upper = retainedFiles.count
+                while lower < upper {
+                    let middle = (lower + upper) / 2
+                    if retainedFiles[middle].lastPathComponent < prefix { lower = middle + 1 } else { upper = middle }
+                }
+                guard lower < retainedFiles.count, retainedFiles[lower].lastPathComponent.hasPrefix(prefix),
+                    self.isExistingEbook(retainedFiles[lower]) else { return nil }
+                return retainedFiles[lower]
+            }.first
+        } else {
+            retained = persistedRemoteEbook(forBookId: book.id)
+        }
+        return retained
+            ?? cachedReadaloudEpub(forBookId: book.id)
     }
 
     func persistRemoteEbookForOffline(from sourceURL: URL, preferredFilename: String? = nil, bookIdentifier: String? = nil) throws -> URL {
@@ -258,25 +328,27 @@ final class LocalEbookImporter: @unchecked Sendable {
     }
 
     private static let validEbookExtensions: Set<String> = {
-        var exts = Set(EbookFormat.allCases.map { $0.rawValue })
+        var exts = Set(EbookFormat.allExtensions)
         exts.formUnion(EbookFormat.mobiExtensions)
         return exts
     }()
 
-    private func isExistingEbook(_ url: URL) -> Bool {
+    private nonisolated func isExistingEbook(_ url: URL) -> Bool {
+        let fileManager = FileManager()
         var isDirectory: ObjCBool = false
         guard isProfileOwnedURL(url), fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
             return false
         }
         return isDirectory.boolValue
-            || Self.validEbookExtensions.contains(url.pathExtension.lowercased())
+            || self.readableExtensions.contains(url.pathExtension.lowercased())
     }
 
-    static func matchesRemoteBookIdentifier(_ filename: String, identifier: String) -> Bool {
+    nonisolated static func matchesRemoteBookIdentifier(_ filename: String, identifier: String) -> Bool {
         filename.hasPrefix(identifier + "-") || filename.hasPrefix(identifier + ".")
     }
 
-    private func existingRemoteEbook(forBookId bookId: String, roots: [URL]) -> URL? {
+    private nonisolated func existingRemoteEbook(forBookId bookId: String, roots: [URL]) -> URL? {
+        let fileManager = FileManager()
         let safeId = sanitizeFilename(bookId)
         guard !safeId.isEmpty else { return nil }
         for root in roots {
@@ -289,7 +361,7 @@ final class LocalEbookImporter: @unchecked Sendable {
                 )) ?? []
             if let match = contents.first(where: {
                 Self.matchesRemoteBookIdentifier($0.lastPathComponent, identifier: safeId)
-                    && Self.validEbookExtensions.contains($0.pathExtension.lowercased())
+                    && self.readableExtensions.contains($0.pathExtension.lowercased())
                     && isProfileOwnedURL($0)
             }) {
                 return match
@@ -314,14 +386,14 @@ final class LocalEbookImporter: @unchecked Sendable {
         return root.appendingPathComponent(fileName, isDirectory: false)
     }
 
-    func readaloudEpubURL(forBookId bookId: String) -> URL {
+    nonisolated func readaloudEpubURL(forBookId bookId: String) -> URL {
         let identifier = storage.profileID == FamilyProfile.ownerID ? bookId : sanitizeFilename(bookId)
         return readaloudCacheRoot.appendingPathComponent("\(identifier).epub")
     }
 
-    func cachedReadaloudEpub(forBookId bookId: String) -> URL? {
+    nonisolated func cachedReadaloudEpub(forBookId bookId: String) -> URL? {
         let url = readaloudEpubURL(forBookId: bookId)
-        return isProfileOwnedURL(url) && fileManager.fileExists(atPath: url.path) ? url : nil
+        return isProfileOwnedURL(url) && FileManager().fileExists(atPath: url.path) ? url : nil
     }
 
     func resolveEbookForOverlay(book: Book) -> URL? {
@@ -392,7 +464,7 @@ final class LocalEbookImporter: @unchecked Sendable {
         }
     }
 
-    private func sanitizeFilename(_ value: String) -> String {
+    private nonisolated func sanitizeFilename(_ value: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         let sanitized = trimmed.replacingOccurrences(of: "[^A-Za-z0-9._ -]", with: "-", options: .regularExpression)
         let collapsed = sanitized.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)

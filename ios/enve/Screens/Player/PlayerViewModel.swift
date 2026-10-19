@@ -255,7 +255,7 @@ public class PlayerViewModel {
                 }
                 self.isPlayingSubject.send(snapshot.isPlaying)
                 self.progressSubject.send(snapshot.position)
-                if snapshot.isLoading {
+                if snapshot.isLoading || snapshot.errorDescription == nil {
                     self.error = nil
                 } else if let description = snapshot.errorDescription {
                     self.error = NSError(
@@ -439,6 +439,14 @@ public class PlayerViewModel {
         #endif
     }
 
+    func forgetRestoredBook(stableId: String) {
+        guard restoredBook?.stableId == stableId else { return }
+        currentBookWasRestored = false
+        restoredBook = nil
+        restoredProgress = 0
+        restoredDuration = 0
+    }
+
     private func handlePlaybackBookChange() {
         currentBookWasRestored = false
         restoredBook = nil
@@ -461,12 +469,11 @@ public class PlayerViewModel {
         stopProgressSync()
 
         Task {
-            await sessionService.syncABSSession(progress: progress, duration: duration, timeListened: sessionService.pendingTimeListened)
-            sessionService.pendingTimeListened = 0
+            await syncABSSessionListening()
         }
 
         #if os(iOS)
-        if let sessionId = sessionService.currentABSSessionId {
+        if let sessionId = sessionService.currentABSSessionId, sessionService.ownsABSSession(for: currentBook) {
             if profileSession.isOwner { ABSSessionBackgroundTask.shared.scheduleSessionClose(sessionId: sessionId) }
         }
         #endif
@@ -482,8 +489,9 @@ public class PlayerViewModel {
         if profileSession.isOwner { ABSSessionBackgroundTask.shared.cancelScheduledClose() }
         #endif
 
+        let book = currentBook
         Task {
-            await sessionService.closeABSSession(progress: progress, duration: duration)
+            await sessionService.closeABSSession(for: book, progress: progress, duration: duration)
             progressService.absSessionActive = false
         }
 
@@ -498,8 +506,9 @@ public class PlayerViewModel {
         saveProgress()
     }
 
-    func resolveStreamURL(for book: Book, backendOverride: BackendConfig? = nil) async throws -> URL? {
-        try await streamResolver.streamURL(for: book, backendOverride: backendOverride)
+    /// Resolves a stream for a secondary listener (Matches preview, Watch fallback) without opening an ABS session.
+    func resolveReadOnlyStreamURL(for book: Book, backendOverride: BackendConfig? = nil) async throws -> URL? {
+        try await streamResolver.streamURL(for: book, backendOverride: backendOverride, opensABSSession: false)
     }
 
     func skipForward() {
@@ -1076,7 +1085,7 @@ public class PlayerViewModel {
         guard !activePlaybackOwnsProgressPersistence else { return }
         guard preferences.autoSyncProgress else { return }
 
-        guard sessionService.currentABSSessionId == nil else { return }
+        guard !sessionService.ownsABSSession(for: currentBook) else { return }
         progressService.startProgressSync(currentBook: currentBook, isPlaying: isPlaying) { [weak self] in self?.progress ?? 0 }
     }
 
@@ -1094,23 +1103,26 @@ public class PlayerViewModel {
 
     private func startABSSessionSyncTimer() {
         absSessionSyncTimer?.invalidate()
-        guard sessionService.currentABSSessionId != nil else { return }
+        guard sessionService.ownsABSSession(for: currentBook) else { return }
 
         absSessionSyncTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             Task { @MainActor in
                 self.accumulateTimeListenedSinceLastResume()
                 self.lastPlaybackResumedAt = Date()
-                let pending = self.sessionService.pendingTimeListened
-                let currentProgress = self.progress
-                let currentDuration = self.duration
-                await self.sessionService.syncABSSession(
-                    progress: currentProgress,
-                    duration: currentDuration,
-                    timeListened: pending
-                )
-                self.sessionService.pendingTimeListened = 0
+                await self.syncABSSessionListening()
             }
+        }
+    }
+
+    // Time accrued while the request is in flight stays pending for the next sync.
+    private func syncABSSessionListening() async {
+        let pending = sessionService.pendingTimeListened
+        let delivered = await sessionService.syncABSSession(
+            for: currentBook, progress: progress, duration: duration, timeListened: pending
+        )
+        if delivered {
+            sessionService.pendingTimeListened = max(0, sessionService.pendingTimeListened - pending)
         }
     }
 
@@ -1204,7 +1216,7 @@ public class PlayerViewModel {
 
     func closeABSSessionFromBackground() async {
         guard sessionService.currentABSSessionId != nil else { return }
-        await sessionService.closeABSSession(progress: progress, duration: duration)
+        await sessionService.closeABSSession(for: currentBook, progress: progress, duration: duration)
         progressService.absSessionActive = false
         AppLogger.player.info("ABS session closed from background task")
     }

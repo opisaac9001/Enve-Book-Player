@@ -141,6 +141,8 @@ struct ReaderListenAlongBar: View {
             .foregroundStyle(isActive ? hearth.onEmber : hearth.text)
             .padding(.horizontal, 18)
             .padding(.vertical, 11)
+            .frame(minHeight: 44)
+            .contentShape(Capsule())
             .background {
                 if isActive {
                     HearthChromeBackground(

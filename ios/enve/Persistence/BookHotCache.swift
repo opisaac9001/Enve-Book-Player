@@ -33,25 +33,20 @@ final class BookHotCache {
     func insert(_ book: Book) {
         let uid = book.uniqueId
         let isUpdate = entries[uid] != nil
-        entries[uid] = book
-        stableIdToUniqueId[book.stableId] = uid
-        touch(uid)
+        store(book)
         if !isUpdate { evictIfNeeded() }
     }
 
     func insertMany(_ books: [Book]) {
-        for b in books {
-            entries[b.uniqueId] = b
-            stableIdToUniqueId[b.stableId] = b.uniqueId
-            accessCounter &+= 1
-            lastAccess[b.uniqueId] = accessCounter
-        }
+        for book in books { store(book) }
         evictIfNeeded()
     }
 
     func remove(uniqueId: String) {
         guard let removed = entries.removeValue(forKey: uniqueId) else { return }
-        stableIdToUniqueId.removeValue(forKey: removed.stableId)
+        if stableIdToUniqueId[removed.stableId] == uniqueId {
+            stableIdToUniqueId.removeValue(forKey: removed.stableId)
+        }
         lastAccess.removeValue(forKey: uniqueId)
         pinned.remove(uniqueId)
     }
@@ -74,20 +69,29 @@ final class BookHotCache {
         lastAccess[uniqueId] = accessCounter
     }
 
-    private func evictIfNeeded() {
-        while entries.count > capacity {
+    private func store(_ book: Book) {
+        let uid = book.uniqueId
+        if let previous = entries[uid], previous.stableId != book.stableId,
+            stableIdToUniqueId[previous.stableId] == uid
+        {
+            stableIdToUniqueId.removeValue(forKey: previous.stableId)
+        }
+        entries[uid] = book
+        stableIdToUniqueId[book.stableId] = uid
+        touch(uid)
+    }
 
-            var oldestUid: String? = nil
-            var oldestStamp: UInt64 = UInt64.max
-            for (uid, _) in entries where !pinned.contains(uid) {
-                let stamp = lastAccess[uid] ?? 0
-                if stamp < oldestStamp {
-                    oldestStamp = stamp
-                    oldestUid = uid
-                }
+    private func evictIfNeeded() {
+        let excess = entries.count - capacity
+        guard excess > 0 else { return }
+        let candidates = entries.keys.filter { !pinned.contains($0) }
+        if excess == 1 {
+            if let oldest = candidates.min(by: { lastAccess[$0, default: 0] < lastAccess[$1, default: 0] }) {
+                remove(uniqueId: oldest)
             }
-            guard let evict = oldestUid else { return }
-            remove(uniqueId: evict)
+        } else {
+            let oldest = candidates.sorted { lastAccess[$0, default: 0] < lastAccess[$1, default: 0] }
+            for uid in oldest.prefix(excess) { remove(uniqueId: uid) }
         }
     }
 }

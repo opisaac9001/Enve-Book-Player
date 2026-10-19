@@ -27,7 +27,7 @@ struct ABSLocalListeningStoreTests {
     @Test func sameDayListeningAccumulatesIntoOneSession() {
         let store = makeStore()
         let connection = UUID()
-        let now = Date()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
         record(store, connection: connection, seconds: 42, at: now)
         record(store, connection: connection, seconds: 8, at: now.addingTimeInterval(10))
 
@@ -39,7 +39,7 @@ struct ABSLocalListeningStoreTests {
     @Test func uploadOnlyAcknowledgesTheSentVersion() {
         let store = makeStore()
         let connection = UUID()
-        let now = Date()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
         record(store, connection: connection, seconds: 10, at: now)
         let sent = store.pendingUploads(connectionId: connection)
         record(store, connection: connection, seconds: 5, at: now.addingTimeInterval(5))
