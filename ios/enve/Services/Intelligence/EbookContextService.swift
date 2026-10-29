@@ -115,8 +115,7 @@ final class EbookContextService {
             return cached
         }
 
-        if #available(iOS 26.0, *),
-            let audiobook = EbookAudiobookLinker.shared.linkedAudiobook(for: currentBook),
+        if let audiobook = EbookAudiobookLinker.shared.linkedAudiobook(for: currentBook),
             let narrated = StoryAlignService.shared.cachedNarratedEpubURL(ebook: currentBook, audiobook: audiobook)
         {
             return narrated

@@ -46,6 +46,9 @@ struct JellyfinProgressTransportTests {
         #expect(session.audioTracks.count == 1)
         #expect(session.audioTracks.first?.duration == 60)
         #expect(URL(string: session.audioTracks.first?.contentUrl ?? "")?.path == "/Audio/book/stream")
+        let stream = try #require(URLComponents(string: session.audioTracks.first?.contentUrl ?? ""))
+        #expect(stream.queryItems?.first { $0.name == "ApiKey" }?.value == "fixture")
+        #expect(stream.queryItems?.contains { $0.name == "api_key" } == false)
         #expect(!provider.requests.contains { $0.url?.path == "/Users/user/Items" })
     }
 

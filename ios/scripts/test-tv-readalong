@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+test_dir=$(mktemp -d "${TMPDIR:-/tmp}/enve-tv-readalong.XXXXXX")
+trap 'rm -rf "$test_dir"' EXIT
+xcrun swiftc -swift-version 6 -parse-as-library \
+    "$project_root/enve-tvOS/TVStorytellerSMIL.swift" \
+    "$project_root/enve-tvOS/TVReadAlongProgressStore.swift" \
+    "$project_root/scripts/tests/TVReadAlongRegressionTests.swift" \
+    -o "$test_dir/TVReadAlongRegressionTests"
+"$test_dir/TVReadAlongRegressionTests"

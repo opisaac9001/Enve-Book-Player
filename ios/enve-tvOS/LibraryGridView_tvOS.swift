@@ -13,6 +13,7 @@ struct LibraryGridView_tvOS: View {
 
     @Environment(AppState.self) private var appState
     @Environment(LibraryCatalogCoordinator.self) private var catalog
+    @Environment(\.hearth) private var hearth
     @State private var books: [Book] = []
     @State private var isLoading = true
     @State private var selectedBook: BookRoute_tvOS?
@@ -41,6 +42,7 @@ struct LibraryGridView_tvOS: View {
                 .padding(60)
             }
         }
+        .hearthCanvas()
         .navigationTitle(title)
         .searchable(text: $searchText, prompt: "Search by title, author, or narrator")
         .navigationDestination(item: $selectedBook) { route in
@@ -64,7 +66,7 @@ struct LibraryGridView_tvOS: View {
                 .scaleEffect(1.5)
             Text(catalog.isRefreshing ? "Loading your library…" : "Loading…")
                 .font(.title3)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(hearth.textSecondary)
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 120)
@@ -74,12 +76,13 @@ struct LibraryGridView_tvOS: View {
         VStack(spacing: 16) {
             Image(systemName: "books.vertical")
                 .font(.system(size: 64))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(hearth.textSecondary)
             Text(appState.providerConnections.connections.isEmpty ? "No servers connected" : "No books found")
                 .font(.title2.weight(.semibold))
+                .foregroundStyle(hearth.text)
             Text(emptyMessage)
                 .font(.title3)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(hearth.textSecondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 760)
             if !appState.providerConnections.connections.isEmpty {
@@ -114,12 +117,13 @@ struct LibraryGridView_tvOS: View {
         VStack(spacing: 16) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 64))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(hearth.textSecondary)
             Text("No results")
                 .font(.title2.weight(.semibold))
+                .foregroundStyle(hearth.text)
             Text("Nothing matches \"\(searchText)\".")
                 .font(.title3)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(hearth.textSecondary)
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 120)

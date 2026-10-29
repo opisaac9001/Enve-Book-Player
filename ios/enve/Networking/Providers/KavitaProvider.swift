@@ -403,7 +403,8 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDo
         request.httpBody = try JSONEncoder().encode(loginBody)
         let (data, response) = try await send(request)
         guard response.statusCode == 200 else {
-            throw ProviderError.unauthorized
+            if response.statusCode == 401 { throw ProviderError.unauthorized }
+            throw ProviderError.serverError("Kavita login failed (HTTP \(response.statusCode))")
         }
         let loginResponse = try JSONDecoder().decode(KavitaLoginResponse.self, from: data)
         jwtToken = loginResponse.token

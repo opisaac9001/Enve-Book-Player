@@ -147,6 +147,7 @@ final class DownloadsEngine {
 
     func deleteDownload(bookId: String) async {
         await service.deleteDownload(bookId: bookId)
+        revision &+= 1
     }
 
     func checkStorageLimit() async {
@@ -255,7 +256,6 @@ final class DownloadsEngine {
             guard book.source != .local else { return false }
             await service.deleteDownload(book: book)
             NotificationCenter.default.post(name: .bookStoreDidChange, object: nil)
-            revision &+= 1
         } else if usesReaderDownload(book) {
             try? importer.deleteRemoteEbookArtifacts(forBookId: book.id)
             importer.removeReadaloudCache(forBookId: book.id, stableId: book.stableId)
@@ -269,10 +269,10 @@ final class DownloadsEngine {
                 }
             }
             NotificationCenter.default.post(name: .bookStoreDidChange, object: nil)
-            revision &+= 1
         } else {
             await service.deleteDownload(book: book)
         }
+        revision &+= 1
         return !isDownloaded(book)
     }
 

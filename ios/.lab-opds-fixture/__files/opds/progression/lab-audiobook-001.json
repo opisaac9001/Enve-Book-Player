@@ -1,0 +1,12 @@
+{
+  "title": "Part Two",
+  "modified": "2026-09-19T08:20:00.000Z",
+  "device": {
+    "id": "urn:uuid:8f1d6d4e-3a7b-4f2e-9c58-6b0d9a2e1f47",
+    "name": "Enve OPDS Lab"
+  },
+  "progression": 0.1875,
+  "references": [
+    "#t=1350.5"
+  ]
+}

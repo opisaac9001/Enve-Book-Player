@@ -14,28 +14,20 @@ struct StoryAlignScreen: View {
                         .foregroundStyle(hearth.textSecondary)
                 }
             }
-        } else if #available(iOS 26.0, *) {
+        } else if StoryAlignMethod.allCases.contains(where: \.isAvailable) {
             StoryAlignHub()
         } else {
-            SettingsScaffold(
-                overline: "Library & content",
-                title: "StoryAlign",
-                subtitle: StoryAlignAvailability.unsupportedMessage
-            ) {
+            SettingsScaffold(overline: "Library & content", title: "StoryAlign", subtitle: "Preparation unavailable") {
                 SourcesCard {
-                    Text(
-                        "Read-aloud alignment listens to the whole audiobook on-device and lines each sentence up with the text. The speech stack it needs arrives with iOS 26."
-                    )
-                    .font(.hearthBody)
-                    .foregroundStyle(hearth.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    Text("This build can play completed read-aloud books. Creating new alignments is not available on this platform and system version.")
+                        .font(.hearthBody)
+                        .foregroundStyle(hearth.textSecondary)
                 }
             }
         }
     }
 }
 
-@available(iOS 26.0, *)
 private struct StoryAlignHub: View {
     @Environment(EnveEngine.self) private var engine
     @Environment(\.hearth) private var hearth
@@ -54,6 +46,28 @@ private struct StoryAlignHub: View {
         catch { actionError = error.localizedDescription }
     }
 
+    private var methodCard: some View {
+        SourcesCard {
+            Overline("Alignment method")
+            Picker("Alignment method", selection: Binding(
+                get: { engine.storyAlign.method },
+                set: { engine.storyAlign.method = $0 }
+            )) {
+                ForEach(StoryAlignMethod.allCases.filter(\.isAvailable)) { method in
+                    Text(method.title).tag(method)
+                }
+            }
+            .pickerStyle(.segmented)
+            .disabled(engine.storyAlign.activeConversion != nil)
+            Text(engine.storyAlign.method == .quartzNet
+                 ? "English · 77 MB model downloaded once · iOS 17 or later"
+                 : "Apple's on-device speech service · iOS 26 or later")
+                .font(.hearthCaption)
+                .foregroundStyle(hearth.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     private var canStart: Bool {
         engine.storyAlign.canStart(ebook: selectedEbook, audiobook: selectedAudiobook)
     }
@@ -64,10 +78,12 @@ private struct StoryAlignHub: View {
             title: "StoryAlign",
             subtitle: "Make read-aloud EPUBs: synced text, audio, and live highlighting."
         ) {
+            methodCard
+            temperatureCard
             pairCard
             if selectedEbook != nil || selectedAudiobook != nil { statusCard }
             if let state = engine.storyAlign.activeConversion { activeCard(state) }
-            if let paused = engine.storyAlign.pausedConversion { pausedCard(paused) }
+            if engine.storyAlign.activeConversion == nil, let paused = engine.storyAlign.pausedConversion { pausedCard(paused) }
             if !completed.isEmpty { completedCard }
             aboutCard
         }
@@ -89,7 +105,7 @@ private struct StoryAlignHub: View {
             }
             Button("Maybe later", role: .cancel) {}
         } message: {
-            Text(StoryAlignLaunchWarning.message)
+            Text(StoryAlignLaunchWarning.message(for: engine.storyAlign.method))
         }
         .confirmationDialog(
             "Delete this alignment?",
@@ -135,6 +151,24 @@ private struct StoryAlignHub: View {
             .fixedSize(horizontal: false, vertical: true)
 
             startButton
+        }
+    }
+
+    private var temperatureCard: some View {
+        SourcesCard {
+            Toggle("Pause automatically for temperature", isOn: Binding(
+                get: { engine.storyAlign.automaticallyPausesForTemperature },
+                set: { engine.storyAlign.automaticallyPausesForTemperature = $0 }
+            ))
+            .tint(hearth.ember)
+            .font(.hearthBody)
+            .foregroundStyle(hearth.text)
+            Text(engine.storyAlign.automaticallyPausesForTemperature
+                 ? "Pauses at critical temperature. Analysis slows down as your device warms."
+                 : "Temperature pauses are off. Analysis still slows down as your device warms; iOS may also limit performance.")
+                .font(.hearthCaption)
+                .foregroundStyle(hearth.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -269,6 +303,12 @@ private struct StoryAlignHub: View {
                 SourcesErrorText(message: error)
             }
             if state.isComplete {
+                if let detail = state.detailText {
+                    Text(detail)
+                        .font(.hearthCaption)
+                        .foregroundStyle(hearth.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if let elapsed = state.elapsedTime {
                     Text("Finished in \(HearthFormat.duration(elapsed))")
                         .font(.hearthCaption)
@@ -278,7 +318,10 @@ private struct StoryAlignHub: View {
             } else if state.error != nil {
                 QuietButton(title: "Dismiss", systemImage: nil) { perform { try engine.storyAlign.dismissConversion() } }
             } else {
-                QuietButton(title: "Cancel", systemImage: nil) { perform { try engine.storyAlign.cancelConversion() } }
+                HStack(spacing: 10) {
+                    QuietButton(title: "Pause", systemImage: "pause.fill") { perform { try engine.storyAlign.pauseConversion() } }
+                    QuietButton(title: "Cancel", systemImage: nil) { perform { try engine.storyAlign.cancelConversion() } }
+                }
             }
         }
     }
@@ -298,7 +341,7 @@ private struct StoryAlignHub: View {
                         .font(.hearthBody.weight(.medium))
                         .foregroundStyle(hearth.text)
                         .lineLimit(1)
-                    Text("Interrupted by the system. Transcription progress is saved.")
+                    Text(paused.reason + " Completed sections are saved.")
                         .font(.hearthCaption)
                         .foregroundStyle(hearth.textSecondary)
                 }
@@ -309,6 +352,7 @@ private struct StoryAlignHub: View {
                     EmberButton(title: "Resume", systemImage: "play.fill", tint: nil) {
                         perform { try engine.storyAlign.resumeConversion(ebook: ebook, audiobook: audiobook) }
                     }
+                    .disabled(!paused.method.isAvailable)
                 }
                 QuietButton(title: "Discard", systemImage: nil) {
                     perform { try engine.storyAlign.cancelConversion() }
@@ -349,7 +393,7 @@ private struct StoryAlignHub: View {
         SourcesCard {
             Overline("How it works")
             Text(
-                "StoryAlign transcribes the audiobook with Apple's on-device speech stack and lines each sentence up with the ebook text, writing the result as media overlays inside a new EPUB. Open it from your library to read and listen at once, sentences lighting as they're spoken. Everything stays on this device."
+                "StoryAlign prepares a read-aloud EPUB using the audiobook and ebook text. QuartzNet matches English narration directly to the text and works on iOS 17 or later. Apple Speech remains available on iOS 26 or later. Open the prepared book from your library for sentence highlighting. Your books stay on this device."
             )
             .font(.hearthCaption)
             .foregroundStyle(hearth.textSecondary)
@@ -368,7 +412,6 @@ private struct StoryAlignHub: View {
     }
 }
 
-@available(iOS 26.0, *)
 private struct StoryAlignBookPicker: View {
     let title: String
     let mediaType: String

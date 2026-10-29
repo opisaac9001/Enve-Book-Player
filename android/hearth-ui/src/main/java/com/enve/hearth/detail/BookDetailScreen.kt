@@ -22,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import com.enve.hearth.shell.profileViewModel
+import com.enve.hearth.listeningposition.ListeningPositionShareSheet
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
@@ -84,6 +85,8 @@ fun BookDetailScreen(
     val b = book ?: initial
     val favorite = remember(saved, b) { vm.isSaved(b, SavedBookList.FAVORITES) }
     val forLater = remember(saved, b) { vm.isSaved(b, SavedBookList.LATER) }
+    var sharePositionShown by remember { mutableStateOf(false) }
+    if (sharePositionShown) ListeningPositionShareSheet(b) { sharePositionShown = false }
     var showEditMetadata by remember { mutableStateOf(false) }
     var showMetadataMatches by remember { mutableStateOf(false) }
     var showLinkDialog by remember { mutableStateOf(false) }
@@ -139,6 +142,7 @@ fun BookDetailScreen(
                     onToggleFavorite = { vm.toggleSaved(b, SavedBookList.FAVORITES) },
                     onToggleForLater = { vm.toggleSaved(b, SavedBookList.LATER) },
                     onDelete = { showDeleteConfirm = true },
+                    onSharePosition = { sharePositionShown = true },
                 )
             }
             (savedSyncErrors[b.uniqueKey] ?: b.connectionId?.let { savedSyncErrors[it] })?.let { message ->

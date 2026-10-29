@@ -27,6 +27,10 @@ Each added profile asks “Do you want to turn on syncing?” directly below its
 
 The Profiles page shows names, adult or child labels, and the current profile. The owner can add, rename, remove, and switch profiles. A profile selector is also available from Home so switching does not require finding a settings submenu. A profile needs only a display name and an optional built-in avatar; no email address or birth date is collected by Enve.
 
+On Android, profile management inherits Hearth's selected theme, palette, text size, and e-ink treatment. Profile transitions show a status surface while outgoing work finishes; animated progress is suppressed in e-ink/reduced-motion mode. Light and forced e-ink transitions are covered by `ProfileSwitchUiTest`, including an intentionally delayed outgoing checkpoint. The reported intermittent stall requiring force-quit has not been reproduced.
+
+The Discord announcement is device-wide and dismisses once, independently of app version. `DeviceAnnouncementStore` preserves legacy owner/current-profile dismissals and shares the result across profile runtimes. Reading preferences, including the read-aloud marking style, remain profile-specific.
+
 | Action | Adult profile | Child profile |
 | --- | --- | --- |
 | Browse, read, listen, download | Own library | Own library |

@@ -11,6 +11,7 @@ struct BookDetailScreen: View {
     @Environment(\.hearth) private var hearth
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.mantelInset) private var mantelInset
+    @Environment(\.sharesShellBackdrop) private var sharesShellBackdrop
     @Environment(\.dismiss) private var dismiss
     @Environment(\.isPresented) private var isPresented
     private var savedBooks: SavedBooksStore { profileSession.savedBooks }
@@ -39,6 +40,7 @@ struct BookDetailScreen: View {
     @State private var ratingFailed = false
     @State private var pendingSeparation: PendingChapterSeparation?
     @State private var separationError: String?
+    @State private var sharePositionShown = false
 
     private enum DetailMetadataTool: String, Identifiable {
         case editMetadata, findMatch, linkFormats
@@ -197,6 +199,12 @@ struct BookDetailScreen: View {
                 }
             }
             .enveEnvironment()
+        }
+        .sheet(isPresented: $sharePositionShown) {
+            ListeningPositionShareSheet(book: shown)
+                .hearthPresentationBackground()
+                .presentationDragIndicator(.visible)
+                .enveEnvironment()
         }
         .sheet(isPresented: $bookOrbitCollectionsShown) {
             BookOrbitMembershipSheet(book: shown)
@@ -391,7 +399,9 @@ struct BookDetailScreen: View {
         .padding(.top, 96)
         .padding(.horizontal, 24)
         .padding(.bottom, 4)
-        .background { wash }
+        .background {
+            if !sharesShellBackdrop { wash }
+        }
     }
 
     private func headerText(alignment: TextAlignment) -> some View {
@@ -701,6 +711,15 @@ struct BookDetailScreen: View {
                     engine.playback.addLast(shown)
                 } label: {
                     Label("Add to Up Next", systemImage: "text.append")
+                }
+                Divider()
+            }
+
+            if shown.mediaType == .ebook || (shown.duration ?? 0) > 0 {
+                Button {
+                    sharePositionShown = true
+                } label: {
+                    Label("Share book location", systemImage: "qrcode")
                 }
                 Divider()
             }

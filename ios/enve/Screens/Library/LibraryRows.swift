@@ -428,6 +428,7 @@ struct LibrarySelectionBar: View {
                 shadow: true
             )
         }
+        .frame(maxWidth: 720)
         .padding(.horizontal, 20)
     }
 

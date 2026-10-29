@@ -1,0 +1,19 @@
+{
+  "id": "urn:uuid:5b3f21d0-0003-4c8a-9f10-7d6e5c4b3a23",
+  "title": "Enve OPDS Lab (OAuth implicit grant)",
+  "description": "Sign in through the browser and return with a bearer token in the redirect fragment.",
+  "links": [
+    { "rel": "logo", "href": "/opds/images/thumb-blue.png", "type": "image/png", "width": 200, "height": 300 },
+    { "rel": "help", "href": "/opds/auth/help.html", "type": "text/html" },
+    { "rel": "start", "href": "/opds/v2/root.json", "type": "application/opds+json" }
+  ],
+  "authentication": [
+    {
+      "type": "http://opds-spec.org/auth/oauth/implicit",
+      "links": [
+        { "rel": "authenticate", "href": "/opds/auth/oauth/authorize", "type": "text/html" },
+        { "rel": "refresh", "href": "/opds/auth/oauth/token", "type": "application/json" }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,111 @@
+{
+  "mappings": [
+    {
+      "name": "opds1-root",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/v1/root.xml"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/atom+xml;profile=opds-catalog;kind=navigation;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/v1/root.xml"
+      }
+    },
+    {
+      "name": "opds1-acquisition",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/v1/acquisition.xml"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/atom+xml;profile=opds-catalog;kind=acquisition;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/v1/acquisition.xml"
+      }
+    },
+    {
+      "name": "opds1-acquisition-page2",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/v1/acquisition-page2.xml"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/atom+xml;profile=opds-catalog;kind=acquisition;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/v1/acquisition-page2.xml"
+      }
+    },
+    {
+      "name": "opds1-entry-lab-ebook-101",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/v1/entry/lab-ebook-101.xml"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/atom+xml;type=entry;profile=opds-catalog;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/v1/entry-lab-ebook-101.xml"
+      }
+    },
+    {
+      "name": "opds1-opensearch-description",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/v1/opensearch.xml"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/opensearchdescription+xml;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/v1/opensearch.xml",
+        "transformers": ["response-template"]
+      }
+    },
+    {
+      "name": "opds1-search",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/v1/search.xml"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/atom+xml;profile=opds-catalog;kind=acquisition;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/v1/search.xml"
+      }
+    },
+    {
+      "name": "opds1-protected-401",
+      "request": {
+        "method": "ANY",
+        "urlPath": "/opds/v1/protected.xml"
+      },
+      "response": {
+        "status": 401,
+        "headers": {
+          "Content-Type": "application/opds-authentication+json;charset=utf-8",
+          "WWW-Authenticate": "Basic realm=\"Enve OPDS Lab\", charset=\"UTF-8\"",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/auth/basic.json"
+      }
+    }
+  ]
+}

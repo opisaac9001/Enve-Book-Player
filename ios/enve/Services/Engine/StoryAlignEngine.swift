@@ -1,12 +1,10 @@
 import Foundation
 
-@available(iOS 26.0, *)
 struct StoryAlignPickerPage {
     let books: [Book]
     let canLoadMore: Bool
 }
 
-@available(iOS 26.0, *)
 @MainActor
 @Observable
 final class StoryAlignEngine {
@@ -31,9 +29,25 @@ final class StoryAlignEngine {
         self.isAvailable = isAvailable
     }
 
+    var method: StoryAlignMethod {
+        get { isAvailable ? service.method : .quartzNet }
+        set {
+            guard isAvailable else { return }
+            service.method = newValue
+        }
+    }
+
     var activeConversion: StoryAlignService.ConversionState? {
         guard isAvailable else { return nil }
         return service.activeConversion
+    }
+
+    var automaticallyPausesForTemperature: Bool {
+        get { isAvailable ? service.automaticallyPausesForTemperature : true }
+        set {
+            guard isAvailable else { return }
+            service.automaticallyPausesForTemperature = newValue
+        }
     }
 
     var pausedConversion: StoryAlignService.PausedConversion? {
@@ -42,7 +56,7 @@ final class StoryAlignEngine {
     }
 
     func canStart(ebook: Book?, audiobook: Book?) -> Bool {
-        isAvailable && ebook != nil && audiobook != nil && service.activeConversion == nil
+        isAvailable && service.method.isAvailable && ebook != nil && audiobook != nil && service.activeConversion == nil
     }
 
     func isConverted(ebook: Book, audiobook: Book) -> Bool {
@@ -67,6 +81,11 @@ final class StoryAlignEngine {
     func cancelConversion() throws {
         guard isAvailable else { throw ProfileAccessError.parentAuthorizationRequired }
         service.cancelConversion()
+    }
+
+    func pauseConversion() throws {
+        guard isAvailable else { throw ProfileAccessError.parentAuthorizationRequired }
+        service.pauseConversion()
     }
 
     func dismissConversion() throws {

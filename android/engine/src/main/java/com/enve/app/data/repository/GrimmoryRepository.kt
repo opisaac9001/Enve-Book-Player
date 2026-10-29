@@ -10,6 +10,7 @@ import com.enve.core.data.model.*
 import com.enve.core.data.model.BookSource
 import com.enve.komga.KomgaRepository
 import com.enve.app.data.remote.GrimmoryApi
+import com.enve.app.data.jellyfin.jellyfinBody
 import com.enve.app.data.kavita.KavitaBookRef
 import com.enve.app.data.kavita.KavitaIssue
 import com.enve.app.data.kavita.KavitaLegacyAliasStore
@@ -21,6 +22,7 @@ import com.enve.app.data.repository.grimmory.*
 import com.enve.app.data.remote.dto.*
 import com.enve.app.data.remote.dto.grimmoryapp.LanguageOptionDto
 import com.enve.app.data.remote.dto.grimmoryapp.NamedCountDto
+import com.enve.core.data.provider.*
 import com.enve.core.data.util.*
 import com.enve.core.data.remote.dto.AuthResponse
 import com.enve.core.data.remote.dto.AuthorSummaryDto
@@ -217,6 +219,8 @@ class GrimmoryRepository @Inject constructor(
         CoroutineScope(SupervisorJob() + Dispatchers.Default),
     private val locations: ProfileStorageLocations = ProfileStorageLocations.forProfile(context, DEFAULT_ADULT_PROFILE_ID),
     private val serverSync: com.enve.core.data.local.ProfileServerSyncStore = com.enve.core.data.local.ProfileServerSyncStore(context, locations),
+    private val catalogFetcher: GrimmoryCatalogFetcher = GrimmoryCatalogFetcher(api, Json { ignoreUnknownKeys = true; coerceInputValues = true }),
+    private val catalogImports: CatalogImportStore = CatalogImportStore(locations),
 ) {
 
     suspend fun currentUserId(): Result<String> = runSuspendCatching {
@@ -399,7 +403,7 @@ class GrimmoryRepository @Inject constructor(
     private fun cacheFileForLibraries(source: BookSource, serverUrl: String): java.io.File {
         val cacheDir = java.io.File(locations.cacheDirectory, "book-index-cache").also { it.mkdirs() }
         val safeServer = serverUrl.lowercase().replace(Regex("[^a-z0-9._-]"), "_")
-        val name = "libraries_${source.name.lowercase()}_${safeServer}_${accountCacheKey()}.json"
+        val name = "libraries_scoped_${source.name.lowercase()}_${safeServer}_${accountCacheKey()}.json"
         return java.io.File(cacheDir, name)
     }
 
@@ -724,7 +728,7 @@ class GrimmoryRepository @Inject constructor(
 
             val libs = when (source) {
                 BookSource.GRIMMORY -> {
-                    val response = api.getLibraries()
+                    val response = api.getCatalogLibraries().catalogResponse()
                     val appLibraries = response.body()
                     val dto: List<LibraryDto> = if (
                         shouldUseLegacyGrimmoryCatalog(response.code(), appLibraries?.size)
@@ -733,7 +737,7 @@ class GrimmoryRepository @Inject constructor(
                             "GrimmoryRepository",
                             "/app/libraries HTTP ${response.code()} with ${appLibraries?.size ?: 0} libraries; falling back to legacy /api/v1/libraries",
                         )
-                        val legacy = api.getLibrariesLegacy()
+                        val legacy = api.getCatalogLibrariesLegacy().catalogResponse()
                         if (!legacy.isSuccessful) {
                             return Result.failure(Exception("Failed to fetch libraries (legacy HTTP ${legacy.code()})"))
                         }
@@ -785,10 +789,10 @@ class GrimmoryRepository @Inject constructor(
     ): Result<List<Book>> {
         val ctx = resolveScopedContext()
         if (ctx.source == BookSource.TORBOX) return runSuspendCatching { fetchTorBoxBooks(ctx, libraryId) }
-        booksCache[ctx.cacheScope]?.takeIf { it.isValid() && it.data.first == libraryId }?.let { return Result.success(it.data.second) }
+        booksCache[ctx.cacheScope]?.takeIf { it.isValid() && it.data.first == libraryId && !catalogImports.hasIssue(ctx.connectionId, libraryId) }?.let { return Result.success(it.data.second) }
         val coalesceKey = "${ctx.source.name}|${ctx.serverUrl}|${accountCacheKey()}|${libraryId ?: ""}"
         return mutexForBooksKey(coalesceKey).withLock {
-            booksCache[ctx.cacheScope]?.takeIf { it.isValid() && it.data.first == libraryId }?.let { return@withLock Result.success(it.data.second) }
+            booksCache[ctx.cacheScope]?.takeIf { it.isValid() && it.data.first == libraryId && !catalogImports.hasIssue(ctx.connectionId, libraryId) }?.let { return@withLock Result.success(it.data.second) }
             doFetchBooks(libraryId, page, size, sort, dir, ctx)
         }
     }
@@ -811,7 +815,7 @@ class GrimmoryRepository @Inject constructor(
 
             if (source == BookSource.GRIMMORY) {
                 val cachedSummaries = loadBooksIndexFromDisk(source, serverUrl, libraryId, listCachesInvalidatedAt)
-                if (!cachedSummaries.isNullOrEmpty()) {
+                if (!cachedSummaries.isNullOrEmpty() && !catalogImports.hasIssue(ctx.connectionId, libraryId)) {
                     val cachedMapped = appendCompanionAudiobooks(cachedSummaries.toBooks(serverUrl, token), serverUrl, token)
                     val withOverrides = applyCachedTitleOverrides(cachedMapped)
                     booksCache[ctx.cacheScope] = CacheEntry(Pair(libraryId, withOverrides))
@@ -834,11 +838,16 @@ class GrimmoryRepository @Inject constructor(
 
             val resolved = when (source) {
                 BookSource.GRIMMORY -> {
-                    val summaries = fetchAllBooks(libraryId = libraryId, page = page, size = size, sort = sort, dir = dir)
-                    val mapped = appendCompanionAudiobooks(summaries.toBooks(serverUrl, token), serverUrl, token)
-
+                    val batch = catalogFetcher.fetch(libraryId, page, size, sort, dir)
+                    var report = batch.report
+                    val mapped = appendCompanionAudiobooks(batch.books.toBooks(serverUrl, token) {
+                        report = report.rejecting(CatalogRejectionReason.INVALID_RECORD)
+                    }, serverUrl, token)
                     val resolvedTitles = resolveAmbiguousAudiobookTitles(mapped, api, audiobookTitleOverrideCache, audiobookDurationOverrideCache)
-                    saveBooksIndexToDisk(source, serverUrl, libraryId, summaries)
+                    if (!report.isComplete) {
+                        return Result.failure(CatalogImportException(resolvedTitles, listOf(report.copy(acceptedCount = resolvedTitles.size))))
+                    }
+                    saveBooksIndexToDisk(source, serverUrl, libraryId, batch.books)
                     resolvedTitles
                 }
 
@@ -862,14 +871,24 @@ class GrimmoryRepository @Inject constructor(
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
+            if (e is CatalogImportException) return Result.failure(e)
             if (ctx.source == BookSource.GRIMMORY) {
+                val failure = CatalogFailure(
+                    if (e is java.io.IOException) CatalogFailureKind.NETWORK else CatalogFailureKind.INVALID_PAGE,
+                    CatalogImportStage.BOOKS,
+                )
                 val cachedSummaries = loadBooksIndexFromDisk(ctx.source, ctx.serverUrl, libraryId)
                 if (!cachedSummaries.isNullOrEmpty()) {
                     val cachedMapped = appendCompanionAudiobooks(cachedSummaries.toBooks(ctx.serverUrl, ctx.token), ctx.serverUrl, ctx.token)
                     val resolved = resolveAndEnrichAudiobooks(cachedMapped, ctx.serverUrl, ctx.token)
-                    booksCache[ctx.cacheScope] = CacheEntry(Pair(libraryId, resolved))
-                    return Result.success(resolved)
+                    return Result.failure(CatalogImportException(resolved, listOf(CatalogImportReport(
+                        acceptedCount = resolved.size,
+                        failures = listOf(failure),
+                    ))))
                 }
+                return Result.failure(CatalogImportException(emptyList(), listOf(CatalogImportReport(
+                    failures = listOf(failure),
+                ))))
             }
             Result.failure(e)
         }
@@ -1706,6 +1725,7 @@ class GrimmoryRepository @Inject constructor(
         return ProviderEbookResource(
             url = grimmoryBookContentUrl(ctx.serverUrl, rawBookId, bookType = bookType),
             providerFileId = ebookFile?.id,
+            format = bookType,
         )
     }
 
@@ -2107,137 +2127,20 @@ class GrimmoryRepository @Inject constructor(
         }
     }
 
-    private suspend fun fetchAllBooks(
-        libraryId: String?,
-        page: Int,
-        size: Int,
-        sort: String,
-        dir: String,
-    ): List<BookSummaryDto> = coroutineScope {
-
-        val effectiveSize = size.coerceAtMost(500).coerceAtLeast(1)
-        val firstResponse = api.getBooks(libraryId = libraryId, page = page, size = effectiveSize, sort = sort, dir = dir)
-        val firstPage = firstResponse.body()
-        if (
-            page > 0 ||
-            !shouldUseLegacyGrimmoryCatalog(firstResponse.code(), firstPage?.content?.size)
-        ) {
-            if (firstPage == null) {
-                throw Exception("Failed to decode Grimmory books response")
-            }
-            val totalPages = firstPage.totalPages ?: 1
-            val serverPageSize = firstPage.size?.takeIf { it > 0 } ?: effectiveSize
-            if (totalPages <= page + 1 || firstPage.content.isEmpty()) {
-                return@coroutineScope resolveCatalogFormats(firstPage.content, libraryId)
-            }
-
-            val semaphore = Semaphore(8)
-            val rest = ((page + 1) until totalPages).map { p ->
-                async {
-                    semaphore.withPermit {
-                        val resp = api.getBooks(libraryId = libraryId, page = p, size = serverPageSize, sort = sort, dir = dir)
-                        val body = resp.body()
-                        if (!resp.isSuccessful || body == null) error("Grimmory books page $p failed (HTTP ${resp.code()})")
-                        body.content
-                    }
-                }
-            }.awaitAll().flatten()
-
-            return@coroutineScope resolveCatalogFormats(firstPage.content + rest, libraryId)
-        }
-
-        android.util.Log.i(
-            "GrimmoryRepository",
-            "/app/books HTTP ${firstResponse.code()} with ${firstPage?.content?.size ?: 0} books for lib=$libraryId; falling back to legacy /libraries/{id}/book",
-        )
-        fetchAllBooksLegacy(libraryId)
-    }
-
-    private suspend fun resolveCatalogFormats(
-        summaries: List<BookSummaryDto>,
-        libraryId: String?,
-    ): List<BookSummaryDto> {
-        val resolved = ArrayList<BookSummaryDto>(summaries.size)
-        for (group in summaries.chunked(100)) {
-            val response = api.getBooksBatch(group.joinToString(",") { it.id })
-            if (resolved.isEmpty() && response.code() in listOf(404, 405)) {
-                return fetchAllBooksLegacy(libraryId)
-            }
-            if (!response.isSuccessful) error("Grimmory format inventory failed (HTTP ${response.code()})")
-            val byId = response.body().orEmpty().associateBy { it.id }
-            for (summary in group) {
-                val inventory = byId[summary.id]
-                    ?: error("Grimmory format inventory omitted book ${summary.id}")
-                val enriched = summary.withFormatInventory(inventory)
-                resolved += if (enriched.libraryId == null) enriched.copy(libraryId = libraryId) else enriched
-            }
-        }
-        return resolved
-    }
-
-    private suspend fun fetchAllBooksLegacy(libraryId: String?): List<BookSummaryDto> {
-        val targetLibraryIds: List<String> = if (libraryId != null) {
-            listOf(libraryId)
-        } else {
-            val resp = runSuspendCatching { api.getLibrariesLegacy() }.getOrNull()
-            if (resp == null || !resp.isSuccessful) {
-                throw Exception("Grimmory legacy libraries request failed (HTTP ${resp?.code() ?: "network"})")
-            }
-            resp.body().orEmpty().mapNotNull { it.id.takeIf { id -> id.isNotBlank() } }
-        }
-        val merged = mutableListOf<BookSummaryDto>()
-        for (libId in targetLibraryIds) {
-
-            val pageSize = 500
-            var page = 0
-            var libraryTotal = 0
-            while (page < 200) {
-                val resp = runSuspendCatching { api.getBooksLegacy(libId, page, pageSize) }.getOrNull()
-                if (resp == null || !resp.isSuccessful) {
-                    throw Exception("Grimmory legacy books request failed for library $libId (HTTP ${resp?.code() ?: "network"})")
-                }
-                val list = resp.body().orEmpty()
-                if (list.isEmpty()) break
-                list.forEach { merged += it.toBookSummaryDto(libId) }
-                libraryTotal += list.size
-                if (list.size < pageSize) break
-                page++
-            }
-            android.util.Log.i("GrimmoryRepository", "Legacy /libraries/$libId/book yielded $libraryTotal books across ${page + 1} pages")
-        }
-        return merged
-    }
-
-    private fun com.enve.app.data.remote.dto.LegacyBookloreBookDto.toBookSummaryDto(
-        fallbackLibraryId: String?,
-    ): BookSummaryDto {
-        return BookSummaryDto(
-            id = id,
-            title = listOfNotNull(title, metadata?.title, name)
-                .firstOrNull { it.isNotBlank() } ?: "Untitled",
-            authors = metadata?.authors,
-            thumbnailUrl = metadata?.thumbnailUrl,
-            readStatus = readStatus,
-            personalRating = null,
-            seriesName = metadata?.seriesName,
-            seriesNumber = metadata?.seriesNumber,
-            libraryId = libraryId ?: fallbackLibraryId,
-            libraryName = null,
-            addedOn = addedOn,
-            lastReadTime = lastReadTime,
-            readProgress = readProgress,
-            primaryFileType = primaryFile?.bookType,
-            coverUpdatedOn = metadata?.coverUpdatedOn,
-            audiobookCoverUpdatedOn = metadata?.audiobookCoverUpdatedOn,
-            primaryFile = primaryFile,
-            alternativeFormats = alternativeFormats,
-        )
-    }
-
-    private suspend fun List<BookSummaryDto>.toBooks(serverUrl: String, token: String): List<Book> {
+    private suspend fun List<BookSummaryDto>.toBooks(serverUrl: String, token: String, onRejected: (() -> Unit)? = null): List<Book> {
         val scope = resolveScopedContext().connectionId ?: serverUrl
         val fractions = listProgress.fractions(scope, map { it.listProgress() })
-        return map { it.toBook(serverUrl, token, fractions.getValue(it.id)) }
+        return mapNotNull { summary ->
+            try {
+                summary.toBook(serverUrl, token, fractions.getValue(summary.id))
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (onRejected == null) throw e
+                onRejected()
+                null
+            }
+        }
     }
 
     private fun appendCompanionAudiobooks(books: List<Book>, serverUrl: String, token: String? = null): List<Book> {
@@ -2338,24 +2241,18 @@ class GrimmoryRepository @Inject constructor(
     }
 
     private suspend fun fetchJellyfinLibraries(): List<Library> {
-        val meResponse = api.jellyfinMe()
-        if (!meResponse.isSuccessful) return emptyList()
-        val userId = meResponse.body()?.Id ?: return emptyList()
-
-        val viewsResponse = api.jellyfinViews(userId)
-        if (!viewsResponse.isSuccessful) return emptyList()
-        return viewsResponse.body()?.items.orEmpty().mapNotNull { it.toBookLibraryOrNull() }
+        val userId = api.jellyfinMe().jellyfinBody("user lookup").Id
+        check(userId.isNotBlank()) { "Jellyfin user lookup returned no user ID" }
+        return api.jellyfinViews(userId).jellyfinBody("library discovery").items
+            .mapNotNull { it.toBookLibraryOrNull() }
     }
 
     private suspend fun fetchJellyfinBooks(libraryId: String?, serverUrl: String): List<Book> {
-        val meResponse = api.jellyfinMe()
-        if (!meResponse.isSuccessful) return emptyList()
-        val userId = meResponse.body()?.Id ?: return emptyList()
-
+        val userId = api.jellyfinMe().jellyfinBody("user lookup").Id
+        check(userId.isNotBlank()) { "Jellyfin user lookup returned no user ID" }
         val parentId = libraryId ?: fetchJellyfinLibraries().firstOrNull()?.id ?: return emptyList()
-        val itemsResponse = api.jellyfinItems(userId = userId, parentId = parentId)
-        if (!itemsResponse.isSuccessful) return emptyList()
-        return itemsResponse.body()?.items.orEmpty().mapNotNull { it.toJellyfinBook(serverUrl, parentId) }
+        return api.jellyfinItems(userId = userId, parentId = parentId).jellyfinBody("item loading").items
+            .mapNotNull { it.toJellyfinBook(serverUrl, parentId) }
     }
 
     private suspend fun fetchEmbyLibraries(): List<Library> {
@@ -3333,7 +3230,6 @@ class GrimmoryRepository @Inject constructor(
 
 }
 
-// Grimmory rejects any bookType outside its BookFileType enum with a 400.
 private fun grimmoryBookType(fileType: String?): String = when (fileType?.lowercase()?.removePrefix(".")) {
     "pdf" -> "PDF"
     "cbz", "cbr", "cb7", "cbt", "cbx", "comic" -> "CBX"

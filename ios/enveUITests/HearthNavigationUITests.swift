@@ -5,7 +5,11 @@ final class HearthNavigationUITests: XCTestCase {
     func testBookDetailSupportsCancelledAndCompletedBackSwipes() throws {
         continueAfterFailure = false
         let app = XCUIApplication()
-        app.launchArguments = ["-imagineScreen", "library"]
+        app.launchArguments = [
+            "-imagineSeed", "48", "-imagineScenario", "mixed", "-imagineScreen", "library",
+            "-imagine.library.source", "all", "-imagine.library.status", "all",
+            "-imagine.library.media", "all", "-imagine.library.facet", "books",
+        ]
         app.launch()
         let libraryTab = app.buttons["tab_library"]
         XCTAssertTrue(libraryTab.waitForExistence(timeout: 30))
@@ -49,8 +53,11 @@ final class HearthNavigationUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["-imagineScreen", "library"]
         app.launch()
+        let more = app.buttons["library-more-menu"].firstMatch
+        XCTAssertTrue(more.waitForExistence(timeout: 30))
+        more.tap()
         let settings = app.buttons["Settings"].firstMatch
-        XCTAssertTrue(settings.waitForExistence(timeout: 30))
+        XCTAssertTrue(settings.waitForExistence(timeout: 5))
         settings.tap()
         let experience = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Playback & experience")).firstMatch
         XCTAssertTrue(experience.waitForExistence(timeout: 10))
@@ -71,8 +78,8 @@ final class HearthNavigationUITests: XCTestCase {
         edge.press(forDuration: 0.1, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
         XCTAssertTrue(experience.waitForExistence(timeout: 5))
         edge.press(forDuration: 0.1, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
-        XCTAssertTrue(settings.waitForExistence(timeout: 5))
+        XCTAssertTrue(more.waitForExistence(timeout: 5))
         edge.press(forDuration: 0.1, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
-        XCTAssertTrue(settings.isHittable, "Swiping at the navigation root must keep the library usable")
+        XCTAssertTrue(more.isHittable, "Swiping at the navigation root must keep the library usable")
     }
 }

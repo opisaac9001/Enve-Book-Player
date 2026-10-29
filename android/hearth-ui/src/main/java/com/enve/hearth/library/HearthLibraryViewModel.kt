@@ -180,10 +180,6 @@ class HearthLibraryViewModel @Inject constructor(
         prefs.librarySortStack.map(::decodeSortStack)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), DEFAULT_SORT)
 
-    val usesDefaultSorting: StateFlow<Boolean> =
-        sortStack.map { it == DEFAULT_SORT }
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
-
     private val allBooks: StateFlow<List<Book>> =
         library.allBooks.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -226,6 +222,16 @@ class HearthLibraryViewModel @Inject constructor(
         library.hiddenBookIds.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
 
     val isRefreshing: StateFlow<Boolean> = library.isRefreshing
+    val refreshError: StateFlow<String?> = library.refreshError
+    val importIssues = combine(library.importIssues, sourceFilter, libraryFilter) { issues, source, selected ->
+        issues.filter { issue ->
+            (source == null || issue.report.source == source) && (selected == null || issue.scopeKey in setOf(
+                com.enve.core.data.provider.catalogImportScopeKey(selected.substringBefore("::"), selected.substringAfter("::")),
+                com.enve.core.data.provider.catalogImportScopeKey(selected.substringBefore("::"), null),
+            ))
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
 
     val columns: StateFlow<Int> =
         prefs.libraryColumns.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 3)
@@ -427,13 +433,11 @@ class HearthLibraryViewModel @Inject constructor(
     fun moveSortUp(field: LibrarySort) = moveSort(field, -1)
     fun moveSortDown(field: LibrarySort) = moveSort(field, +1)
 
-    fun clearSorting() = setSortStack(DEFAULT_SORT)
+    fun clearSorting() = setSortStack(emptyList())
 
     fun resetFiltersAndSorting() {
         status.value = StatusFilter.ALL
         media.value = MediaFilter.ALL
-        sourceFilter.value = null
-        libraryFilter.value = null
         setAdvancedFilters(LibraryAdvancedFilters())
         clearSorting()
     }
@@ -457,9 +461,8 @@ class HearthLibraryViewModel @Inject constructor(
     }
 
     private fun setSortStack(stack: List<SortDescriptor>) {
-        val deduped = stack.distinctBy { it.field }.ifEmpty { DEFAULT_SORT }
         viewModelScope.launch {
-            prefs.setLibrarySortStack(deduped.joinToString(",") { "${it.field.name}:${it.direction.name}" })
+            prefs.setLibrarySortStack(encodeSortStack(stack))
         }
     }
 
@@ -751,6 +754,11 @@ class HearthLibraryViewModel @Inject constructor(
         notice.value = "Added \"${book.title}\" to Up Next."
     }
 
+    fun beginSelection() {
+        selectionMode.value = true
+        selection.value = emptySet()
+    }
+
     fun startSelection(book: Book) {
         selectionMode.value = true
         selection.value = setOf(book.uniqueKey)
@@ -862,7 +870,7 @@ class HearthLibraryViewModel @Inject constructor(
     }
 
     private fun comparatorFor(stack: List<SortDescriptor>): Comparator<Book> = Comparator { a, b ->
-        for (descriptor in stack) {
+        for (descriptor in stack.ifEmpty { DEFAULT_SORT }) {
             val aMissing = missingSortValue(a, descriptor.field)
             val bMissing = missingSortValue(b, descriptor.field)
             if (aMissing != bMissing) return@Comparator if (aMissing) 1 else -1
@@ -936,7 +944,22 @@ internal fun List<Book>.excludingLibraries(excludedLibraryIds: Set<String>): Lis
         book.libraryId == null || book.libraryId !in excludedLibraryIds
     }
 
-private fun decodeSortStack(encoded: String): List<SortDescriptor> {
+internal fun libraryActiveFilterCount(
+    status: StatusFilter,
+    media: MediaFilter,
+    advanced: LibraryAdvancedFilters,
+): Int = (if (status != StatusFilter.ALL) 1 else 0) +
+    (if (media != MediaFilter.ALL) 1 else 0) +
+    advanced.genres.size + advanced.languages.size +
+    (if (advanced.minimumRating != null) 1 else 0) +
+    (if (advanced.series != SeriesFilter.ALL) 1 else 0)
+
+internal fun encodeSortStack(stack: List<SortDescriptor>): String =
+    if (stack.isEmpty()) "[]"
+    else stack.distinctBy { it.field }.joinToString(",") { "${it.field.name}:${it.direction.name}" }
+
+internal fun decodeSortStack(encoded: String): List<SortDescriptor> {
+    if (encoded == "[]") return emptyList()
     if (encoded.isBlank()) return DEFAULT_SORT
     val parsed = encoded.split(',').mapNotNull { entry ->
         val (fieldName, dirName) = entry.split(':').takeIf { it.size == 2 } ?: return@mapNotNull null

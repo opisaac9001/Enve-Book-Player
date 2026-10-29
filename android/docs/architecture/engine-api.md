@@ -16,6 +16,7 @@ The dependency graph enforces this: `:hearth-ui` cannot see an engine class, so 
 
 | Facade | Backed by | Surface |
 |---|---|---|
+| `ListeningPositionFacade` | Profile-bound listening-position matcher and applier | Snapshot sharing, ranked library candidates, manual search and explicitly confirmed local/provider progress updates. |
 | `LibraryFacade` | `AggregatorRepository`, `BookCacheDao`, paging sources | Home and library flows (`continueBooks`, `recentlyAdded`, `downloaded`, `allBooks`, `libraries`), series/author/shelf browsing and paging, edition links, collection membership, progress and finished mutations. |
 | `PlaybackFacade` | `AudioPlaybackManager` via `MediaController` | `transport` / `nowPlaying` / `queue` StateFlows, `open`, `playAll`, queue mutation, transport controls, an error `SharedFlow`. |
 | `PlayerSessionFacade` | `PlayerChapterService`, `PlayerBookmarkService`, `PlayerSleepTimerService`, `PlayerProgressService`, `PlaybackChapterStore`, `PlayerReadAloudService` | Chapter list and current index, bookmark CRUD and seek, sleep timer including end-of-chapter, synchronized read-aloud sentences and sentence seeking. |

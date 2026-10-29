@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.enve.engine.servertools.ServerAchievementSummary
 import com.enve.engine.servertools.ServerBookmark
 import com.enve.engine.servertools.ServerFeature
+import com.enve.engine.servertools.ServerFeatureUnsupportedException
 import com.enve.engine.servertools.ServerHighlight
 import com.enve.engine.servertools.ServerHistoryEntry
 import com.enve.engine.servertools.ServerStatGroup
@@ -38,7 +39,8 @@ data class ServerToolsState(
     val highlights: List<ServerHighlight> = emptyList(),
     val bookmarks: List<ServerBookmark> = emptyList(),
     val history: List<ServerHistoryEntry> = emptyList(),
-    val unreachable: Boolean = false,
+    val failedFeatures: Set<ServerFeature> = emptySet(),
+    val unsupported: Boolean = false,
 ) {
     val hasAnyContent: Boolean
         get() = stats.isNotEmpty() || achievements != null || highlights.isNotEmpty() ||
@@ -71,50 +73,68 @@ class ServerToolsViewModel @Inject constructor(
             return
         }
         viewModelScope.launch {
-            loaded.update { it.copy(loading = true, unreachable = false) }
-            val features = serverTools.targets.first()
-                .firstOrNull { it.connectionId == connectionId }
-                ?.features
-                .orEmpty()
-            val result = try {
-                coroutineScope {
-                    val stats = async { if (ServerFeature.STATS in features) statsOrEmpty(connectionId) else emptyList() }
-                    val achievements = async {
-                        if (ServerFeature.ACHIEVEMENTS in features) serverTools.achievements(connectionId) else null
-                    }
-                    val highlights = async {
-                        if (ServerFeature.HIGHLIGHTS in features) serverTools.highlights(connectionId, HIGHLIGHT_LIMIT) else emptyList()
-                    }
-                    val bookmarks = async {
-                        if (ServerFeature.BOOKMARKS in features) serverTools.bookmarks(connectionId, BOOKMARK_LIMIT) else emptyList()
-                    }
-                    val history = async {
-                        if (ServerFeature.HISTORY in features) serverTools.history(connectionId, HISTORY_LIMIT) else emptyList()
-                    }
-                    ServerToolsState(
-                        loading = false,
-                        stats = stats.await(),
-                        achievements = achievements.await(),
-                        highlights = highlights.await(),
-                        bookmarks = bookmarks.await(),
-                        history = history.await(),
-                    )
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                ServerToolsState(loading = false, unreachable = true)
-            }
-            loaded.value = result
+            loaded.update { it.copy(loading = true, failedFeatures = emptySet()) }
+            val target = serverTools.targets.first().firstOrNull { it.connectionId == connectionId }
+            loaded.value = loadServerToolsState(serverTools, connectionId, target?.features.orEmpty())
         }
     }
+}
 
-    private suspend fun statsOrEmpty(connectionId: String): List<ServerStatGroup> =
-        try {
-            serverTools.stats(connectionId)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Exception) {
-            emptyList()
-        }
+internal suspend fun loadServerToolsState(
+    serverTools: ServerToolsFacade,
+    connectionId: String,
+    features: Set<ServerFeature>,
+): ServerToolsState = coroutineScope {
+    val stats = async {
+        loadFeature(ServerFeature.STATS, features, emptyList()) { serverTools.stats(connectionId) }
+    }
+    val achievements = async {
+        loadFeature(ServerFeature.ACHIEVEMENTS, features, null) { serverTools.achievements(connectionId) }
+    }
+    val highlights = async {
+        loadFeature(ServerFeature.HIGHLIGHTS, features, emptyList()) { serverTools.highlights(connectionId, HIGHLIGHT_LIMIT) }
+    }
+    val bookmarks = async {
+        loadFeature(ServerFeature.BOOKMARKS, features, emptyList()) { serverTools.bookmarks(connectionId, BOOKMARK_LIMIT) }
+    }
+    val history = async {
+        loadFeature(ServerFeature.HISTORY, features, emptyList()) { serverTools.history(connectionId, HISTORY_LIMIT) }
+    }
+    val results = mapOf(
+        ServerFeature.STATS to stats.await(),
+        ServerFeature.ACHIEVEMENTS to achievements.await(),
+        ServerFeature.HIGHLIGHTS to highlights.await(),
+        ServerFeature.BOOKMARKS to bookmarks.await(),
+        ServerFeature.HISTORY to history.await(),
+    ).filterKeys { it in features }
+    ServerToolsState(
+        loading = false,
+        stats = stats.await().value,
+        achievements = achievements.await().value,
+        highlights = highlights.await().value,
+        bookmarks = bookmarks.await().value,
+        history = history.await().value,
+        failedFeatures = results.filterValues {
+            it.error != null && it.error !is ServerFeatureUnsupportedException
+        }.keys,
+        unsupported = results.isNotEmpty() && results.values.all { it.error is ServerFeatureUnsupportedException },
+    )
+}
+
+private data class ServerFeatureResult<T>(val value: T, val error: Exception? = null)
+
+private suspend fun <T> loadFeature(
+    feature: ServerFeature,
+    features: Set<ServerFeature>,
+    empty: T,
+    request: suspend () -> T,
+): ServerFeatureResult<T> {
+    if (feature !in features) return ServerFeatureResult(empty)
+    return try {
+        ServerFeatureResult(request())
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        ServerFeatureResult(empty, e)
+    }
 }

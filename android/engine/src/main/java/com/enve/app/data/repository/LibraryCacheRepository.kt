@@ -24,6 +24,9 @@ import com.enve.core.data.local.toLibrary
 import com.enve.core.data.local.withMetadataOverride
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
+import com.enve.core.data.provider.*
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.stateIn
 import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.Library
 import com.enve.core.data.provider.LibraryAccessRevocations
@@ -67,6 +70,7 @@ class LibraryCacheRepository @Inject constructor(
     private val bookLinkRepository: BookLinkRepository,
     private val libraryRevocations: LibraryAccessRevocations,
     private val torBoxCatalog: TorBoxCatalogStore,
+    private val catalogImports: CatalogImportStore,
     @ApplicationScope parentScope: CoroutineScope =
         CoroutineScope(SupervisorJob() + Dispatchers.Default),
     private val serverSync: com.enve.core.data.local.ProfileServerSyncStore,
@@ -79,6 +83,12 @@ class LibraryCacheRepository @Inject constructor(
 
     private val _refreshError = MutableStateFlow<String?>(null)
     val refreshError: StateFlow<String?> = _refreshError.asStateFlow()
+    val importIssues: StateFlow<List<CatalogImportIssue>> = combine(
+        catalogImports.issues, connectionRegistry.connections,
+    ) { issues, connections ->
+        val enabled = connections.filter { it.enabled }.mapTo(mutableSetOf()) { catalogImportConnectionKey(it.id) }
+        issues.filter { it.connectionKey in enabled || (connections.isEmpty() && it.connectionKey == catalogImportConnectionKey(null)) }
+    }.stateIn(scope, SharingStarted.Eagerly, emptyList())
 
     init {
         scope.launch { pruneRemovedConnections() }
@@ -226,6 +236,8 @@ class LibraryCacheRepository @Inject constructor(
     }
 
     suspend fun shouldRefresh(enabledConnectionIds: List<String>, maxAgeMs: Long): Boolean {
+        val active = connectionRegistry.connections.first().filter { it.enabled }.mapTo(mutableSetOf()) { catalogImportConnectionKey(it.id) }
+        if (catalogImports.issues.value.any { it.connectionKey in active }) return true
         if (dao.count() == 0) return true
         if (enabledConnectionIds.any { dao.countForConnection(it) == 0 }) return true
         if (dao.countInProgressMissingTouchTime() > 0) return true
@@ -260,21 +272,20 @@ class LibraryCacheRepository @Inject constructor(
     }
 
     private suspend fun ingestConnections(connectionIds: Set<String>) {
-        if (!refreshMutex.tryLock()) return
+        refreshMutex.lock()
         _isRefreshing.value = true
         _refreshError.value = null
         try {
-            val targetLibs = aggregator.getLibraries(connectionIds).getOrElse {
-                Log.w(TAG, "ingestConnections getLibraries failed: ${it.message}")
-                emptyList()
-            }
+            val enabledIds = connectionRegistry.connections.first()
+                .filter { it.enabled && it.id in connectionIds }.mapTo(mutableSetOf()) { it.id }
+            if (enabledIds.isEmpty()) return
+            val targetLibs = aggregator.getLibraries(enabledIds).getOrThrow()
             if (targetLibs.isNotEmpty()) {
                 val nowMs = System.currentTimeMillis()
                 libraryDao.upsert(targetLibs.map { it.toCached(nowMs) })
                 for (lib in targetLibs) fetchAndUpsert(libraryId = lib.id, connectionId = lib.connectionId)
             } else {
-
-                fetchAndUpsert(libraryId = null, connectionId = null)
+                for (connectionId in enabledIds) fetchAndUpsert(libraryId = null, connectionId = connectionId)
             }
             rebuildAutomaticLinks()
         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -289,26 +300,14 @@ class LibraryCacheRepository @Inject constructor(
     }
 
     suspend fun invalidateAndRefresh(connectionIds: List<String>? = null) {
-
-        progressCarryover = runCatching {
-            dao.getInProgressOnce(limit = 2000).associateBy { it.cacheKey }
-        }.getOrDefault(emptyMap())
-        if (connectionIds.isNullOrEmpty()) {
-            dao.clearCatalogPreservingAudioCheckpoints()
-            libraryDao.clearAll()
-        } else {
-            Log.i(TAG, "invalidateAndRefresh: clearing ${connectionIds.size} connections: $connectionIds")
-            connectionIds.forEach {
-                dao.deleteCatalogForConnectionPreservingAudioCheckpoints(it)
-                libraryDao.deleteByConnection(it)
-            }
-        }
-        doRefresh(connectionIds?.toSet()?.takeIf { it.isNotEmpty() })
+        aggregator.invalidateCaches()
+        doRefresh(connectionIds?.toSet()?.takeIf { it.isNotEmpty() }, awaitRefresh = true)
     }
 
     suspend fun clearForConnection(connectionId: String) {
         dao.deleteByConnection(connectionId)
         libraryDao.deleteByConnection(connectionId)
+        catalogImports.clearConnection(connectionId)
     }
 
     private suspend fun pruneUnlistedLibraries(listed: List<Library>) {
@@ -319,6 +318,7 @@ class LibraryCacheRepository @Inject constructor(
         unlisted.forEach { library ->
             dao.deleteForConnectionLibrary(requireNotNull(library.connectionId), library.id)
             libraryDao.delete(library.id)
+            catalogImports.record(library.connectionId, library.id, null)
         }
         aggregator.clearHomeSnapshotCache()
     }
@@ -390,11 +390,8 @@ class LibraryCacheRepository @Inject constructor(
         _isRefreshing.value = true
         _refreshError.value = null
         try {
-            val libraries: List<Library> = aggregator.getLibraries(connectionIds).getOrElse {
-                Log.w(TAG, "doRefresh: aggregator.getLibraries failed: ${it.message}")
-                emptyList()
-            }
-            Log.i(TAG, "doRefresh: aggregator returned ${libraries.size} libraries: ${libraries.joinToString { "${it.name}(connId=${it.connectionId}, id=${it.id})" }}")
+            val libraries: List<Library> = aggregator.getLibraries(connectionIds).getOrThrow()
+            Log.i(TAG, "Discovered ${libraries.size} libraries")
 
             if (libraries.isNotEmpty()) {
                 val nowMs = System.currentTimeMillis()
@@ -418,7 +415,6 @@ class LibraryCacheRepository @Inject constructor(
             Log.e(TAG, "doRefresh: failed", e)
         } finally {
             _isRefreshing.value = false
-            progressCarryover = null
             refreshMutex.unlock()
         }
 
@@ -493,7 +489,8 @@ class LibraryCacheRepository @Inject constructor(
 
     private suspend fun fetchAndUpsert(libraryId: String?, connectionId: String?, pruneTorBox: Boolean = false) {
         val torBox = connectionRegistry.connections.first().any { it.id == connectionId && it.source == BookSource.TORBOX }
-        val completeCatalog = !torBox || pruneTorBox || (connectionId != null && torBoxCatalog.isComplete(connectionId))
+        var completeCatalog = !torBox || pruneTorBox || (connectionId != null && torBoxCatalog.isComplete(connectionId))
+        var incompleteReport: CatalogImportReport? = null
         var page = 0
         val nowMs = System.currentTimeMillis()
         val seenKeys = mutableSetOf<String>()
@@ -508,18 +505,26 @@ class LibraryCacheRepository @Inject constructor(
                 dir = "desc",
             ).getOrElse { error ->
                 if (error is kotlinx.coroutines.CancellationException) throw error
-                _refreshError.value = error.message ?: "Library import failed"
-                return
+                if (error is CatalogImportException) {
+                    completeCatalog = false
+                    incompleteReport = error.reports.reduceOrNull { accumulated, report -> accumulated.merge(report) }
+                    if (error.issues.isNotEmpty()) catalogImports.record(error.issues)
+                    else incompleteReport?.let { catalogImports.record(connectionId, libraryId, it) }
+                    error.books
+                } else {
+                    _refreshError.value = "Library import failed"
+                    return
+                }
             }
 
-            Log.i(TAG, "fetchAndUpsert: lib=$libraryId page=$page got ${books.size} books")
+            Log.i(TAG, "Book import page=$page received ${books.size} books")
             if (books.isEmpty()) break
 
             val newBooks = books.filter { book ->
                 seenKeys.add("${book.connectionId ?: book.source.name}:${book.id}")
             }
             if (newBooks.isEmpty()) {
-                Log.w(TAG, "fetchAndUpsert: stopping for lib=$libraryId at page $page (page returned only already-seen books)")
+                Log.w(TAG, "Book import page=$page returned only already-seen books")
                 break
             }
 
@@ -532,6 +537,7 @@ class LibraryCacheRepository @Inject constructor(
                     database.withTransaction {
                         val extrasDao = database.bookExtrasDao()
                         for (book in chunk) {
+                            if (incompleteReport != null) continue
                             if (book.source != BookSource.TORBOX || book.audioTracks.size <= 1) continue
                             val extras = extrasDao.get(book.uniqueKey) ?: continue
                             val chapters = extras.decodeChapters()
@@ -544,10 +550,12 @@ class LibraryCacheRepository @Inject constructor(
                         val supersededKeys = mapped.mapNotNull { it.supersededCacheKey() }.filterNot(batchKeys::contains)
                         val supersededByKey = if (supersededKeys.isEmpty()) emptyMap() else dao.getByCacheKeys(supersededKeys).associateBy { it.cacheKey }
                         val pending = database.pendingProgressPushDao()
-                        dao.upsert(mapped.map { book ->
+                        val writable = if (incompleteReport == null) mapped else mapped.filter { book ->
+                            book.cacheKey !in existingByKey && book.supersededCacheKey()?.let { it in supersededByKey } != true
+                        }
+                        dao.upsert(writable.map { book ->
                             val existing = existingByKey[book.cacheKey]
                                 ?: book.supersededCacheKey()?.let(supersededByKey::get)
-                                ?: progressCarryover?.get(book.cacheKey)
                             val key = existing?.cacheKey ?: book.cacheKey
                             val protected = state.hasPendingCapture(key) || state.changedSince(key, fetchSequence)
                             val dirty = pending.get(book.id, book.source, book.connectionId.orEmpty())?.mediaType == "AUDIOBOOK"
@@ -565,14 +573,14 @@ class LibraryCacheRepository @Inject constructor(
                             ) applied += merged.cacheKey
                             merged
                         })
-                        if (supersededByKey.isNotEmpty()) dao.deleteByCacheKeys(supersededByKey.keys.toList())
+                        if (incompleteReport == null && supersededByKey.isNotEmpty()) dao.deleteByCacheKeys(supersededByKey.keys.toList())
                     }
                     applied.forEach { state.recordApplied(it, fetchSequence) }
                 }
             }
-            Log.i(TAG, "fetchAndUpsert: lib=$libraryId page=$page upserted ${newBooks.size} new rows")
+            Log.i(TAG, "Book import page=$page processed ${newBooks.size} books")
 
-            if (books.size != PAGE_SIZE) break
+            if (incompleteReport != null || books.all { it.source == BookSource.GRIMMORY } || books.size != PAGE_SIZE) break
             page++
         }
         if (
@@ -581,9 +589,8 @@ class LibraryCacheRepository @Inject constructor(
         ) {
             dao.deleteStaleForConnectionLibrary(connectionId, libraryId, nowMs)
         }
+        if (incompleteReport == null && completeCatalog) catalogImports.record(connectionId, libraryId, null)
     }
-
-    @Volatile private var progressCarryover: Map<String, CachedBook>? = null
 
     companion object {
         private const val TAG = "LibraryCacheRepository"

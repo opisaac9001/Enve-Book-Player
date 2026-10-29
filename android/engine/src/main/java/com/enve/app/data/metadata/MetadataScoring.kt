@@ -161,7 +161,7 @@ object MetadataScoring {
         return listOf(file.folderName, file.fileName, file.title).firstOrNull { !it.isNullOrBlank() }.orEmpty()
     }
 
-    private fun calculateDurationScore(localDurationSeconds: Double, catalogDurationSeconds: Double): Double {
+    internal fun calculateDurationScore(localDurationSeconds: Double, catalogDurationSeconds: Double): Double {
         if (localDurationSeconds == 0.0 || catalogDurationSeconds == 0.0) {
             return DEFAULT_DURATION_SCORE_MISSING_INFO
         }
@@ -174,7 +174,7 @@ object MetadataScoring {
         }
     }
 
-    private fun calculateTitleScore(queryTitle: String, bookTitle: String): Double {
+    internal fun calculateTitleScore(queryTitle: String, bookTitle: String): Double {
         val scoreWithSubtitle = calculateTitleScoreInternal(queryTitle, bookTitle, keepSubtitle = true)
         if (queryTitle.contains(':') || queryTitle.contains(" - ")) {
             return max(scoreWithSubtitle, calculateTitleScoreInternal(queryTitle, bookTitle, keepSubtitle = false))
@@ -189,7 +189,7 @@ object MetadataScoring {
         return levenshteinSimilarity(cleanQuery, cleanBook)
     }
 
-    private fun calculateAuthorScore(queryAuthor: String, bookAuthors: List<String>): Double {
+    internal fun calculateAuthorScore(queryAuthor: String, bookAuthors: List<String>): Double {
         val normalizedQuery = cleanAuthorForCompare(queryAuthor)
         if (normalizedQuery.isEmpty()) return 1.0
         if (bookAuthors.isEmpty()) return 0.0

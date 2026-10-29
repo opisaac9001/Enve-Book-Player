@@ -104,17 +104,17 @@ public final class SettingsManager: @unchecked Sendable {
             } else {
                 KeychainHelper.shared.delete(hardcoverApiKeyKey)
             }
+            HardcoverSyncService.shared.configurationChanged()
         }
     }
 
     public func clearHardcoverAccess(reason: String? = nil) {
-
+        HardcoverSyncService.shared.discardPending()
         KeychainHelper.shared.delete(hardcoverApiKeyKey)
         userDefaults.removeObject(forKey: hardcoverBookMatchesKey)
         userDefaults.set(false, forKey: hardcoverAutoSyncKey)
-        Task {
-            await HardcoverSyncService.shared.clearSyncTracking()
-        }
+        HardcoverSyncService.shared.clearSyncTracking()
+        HardcoverSyncService.shared.configurationChanged()
     }
 
     public var hardcoverIntroCardDismissed: Bool {
@@ -126,7 +126,10 @@ public final class SettingsManager: @unchecked Sendable {
 
     public var hardcoverAutoSyncEnabled: Bool {
         get { userDefaults.object(forKey: hardcoverAutoSyncKey) as? Bool ?? true }
-        set { userDefaults.set(newValue, forKey: hardcoverAutoSyncKey) }
+        set {
+            userDefaults.set(newValue, forKey: hardcoverAutoSyncKey)
+            HardcoverSyncService.shared.configurationChanged()
+        }
     }
 
     public var allowCellularBookDownloads: Bool {
@@ -221,6 +224,21 @@ public final class SettingsManager: @unchecked Sendable {
         var storage = loadHardcoverMatches()
         storage.matches.removeAll { $0.localBookId == bookId }
         saveHardcoverMatches(storage)
+    }
+
+    func getHardcoverMatch(for book: Book) -> HardcoverBookMatch? {
+        let matches = loadHardcoverMatches().matches
+        if let match = matches.first(where: { $0.localBookId == book.stableId }) { return match }
+        guard let old = matches.first(where: { $0.localBookId == book.uniqueId || $0.localBookId == book.id }) else { return nil }
+        let migrated = HardcoverBookMatch(
+            id: old.id, localBookId: book.stableId, hardcoverBookId: old.hardcoverBookId,
+            hardcoverUserBookId: old.hardcoverUserBookId, hardcoverEditionId: old.hardcoverEditionId,
+            editionPageCount: old.editionPageCount, matchedAt: old.matchedAt, matchType: old.matchType,
+            localBookTitle: old.localBookTitle, hardcoverBookTitle: old.hardcoverBookTitle
+        )
+        removeHardcoverMatch(forLocalBookId: old.localBookId)
+        addHardcoverMatch(migrated)
+        return migrated
     }
 
     public func getHardcoverMatch(forLocalBookId bookId: String) -> HardcoverBookMatch? {

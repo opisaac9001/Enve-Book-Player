@@ -65,6 +65,8 @@ private data class DependencyNotice(
 )
 
 private val legalDocuments = listOf(
+    LegalDocument("Liseur reader behavior", "MIT license", "licenses/liseur-MIT.txt"),
+    LegalDocument("ZXing Core", "Apache-2.0 QR encoding and decoding", "licenses/ZXing-Apache-2.0.txt"),
     LegalDocument("Third-party notices", "Bundled components, SDKs, models, and trademarks", "licenses/THIRD_PARTY_NOTICES.txt"),
     LegalDocument("Enve license", "License for Enve-owned source", "licenses/enve-LICENSE.txt"),
     LegalDocument("Enve notice", "Copyright and source provenance", "licenses/enve-NOTICE.txt"),
@@ -82,6 +84,7 @@ private val legalDocuments = listOf(
     LegalDocument("Atkinson Hyperlegible Next", "SIL Open Font License 1.1", "licenses/Atkinson-Hyperlegible-Next-OFL-1.1.txt"),
     LegalDocument("Lexend", "SIL Open Font License 1.1", "licenses/Lexend-OFL-1.1.txt"),
     LegalDocument("Foliate JS", "MIT license", "licenses/foliate-LICENSE.txt"),
+    LegalDocument("fflate", "MIT license", "licenses/fflate-LICENSE.txt"),
     LegalDocument("zip.js", "BSD-3-Clause license", "licenses/zip.js-LICENSE.txt"),
     LegalDocument("PDF.js", "Apache-2.0 license", "licenses/pdf.js-Apache-2.0.txt"),
     LegalDocument("PDF.js CMaps", "Adobe BSD-style license", "licenses/pdf.js-CMaps-BSD.txt"),

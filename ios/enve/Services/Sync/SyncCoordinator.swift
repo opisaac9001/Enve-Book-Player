@@ -95,6 +95,9 @@ final class SyncCoordinator {
         self.providerResolver = providerResolver
         self.pendingSyncFlusher = pendingSyncFlusher
         self.recentlyPlayedSync = recentlyPlayedSync
+        pendingSyncFlusher.onValidationFailure = { [weak self] bookId, message in
+            self?.emit(.pushFailed(bookId: bookId, error: message, retryable: false))
+        }
         loadSettings()
     }
 
@@ -650,18 +653,18 @@ final class SyncCoordinator {
         return succeeded
     }
 
-    func pushHardcoverIfNeeded(book: Book, progress: Double, sessionService: PlayerSessionService) async {
-        guard allowsOwnerIntegrations, !isRetired else { return }
+    @discardableResult
+    func pushHardcoverIfNeeded(book: Book, progress: Double, sessionService: PlayerSessionService) async -> Bool {
+        guard allowsOwnerIntegrations, !isRetired else { return false }
         let bookId = book.stableId
         let last = lastHardcoverProgress[bookId] ?? -1
         let isFinishing = progress >= Book.finishedProgressThreshold
-        guard abs(progress - last) >= hardcoverThreshold || isFinishing else { return }
-        lastHardcoverProgress[bookId] = progress
-        if isFinishing {
-            await HardcoverSyncService.shared.syncBookFinished(book: book)
-        } else {
-            await sessionService.syncHardcoverProgress(book: book, progress: progress)
-        }
+        guard abs(progress - last) >= hardcoverThreshold || isFinishing else { return true }
+        let succeeded = isFinishing
+            ? await HardcoverSyncService.shared.syncBookFinished(book: book)
+            : await sessionService.syncHardcoverProgress(book: book, progress: progress)
+        if succeeded { lastHardcoverProgress[bookId] = progress }
+        return succeeded
     }
 
     func subscribe(book: Book) -> AsyncStream<SyncEvent> {
@@ -673,6 +676,9 @@ final class SyncCoordinator {
             return stream
         }
         eventContinuations[bookId, default: [:]][token] = continuation
+        if let message = pendingSyncFlusher.validationFailure(for: bookId) {
+            continuation.yield(.pushFailed(bookId: bookId, error: message, retryable: false))
+        }
         continuation.onTermination = { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.eventContinuations[bookId]?.removeValue(forKey: token)
@@ -912,7 +918,20 @@ final class SyncCoordinator {
                     locator: update.locator,
                     isFinished: update.isFinished
                 )
+                if let validation = providerError as? ProgressValidationError {
+                    (profileSession?.pendingSync ?? PendingSyncQueueStore.shared).suspend(
+                        stableId: bookId,
+                        validationFailureMessage: validation.localizedDescription
+                    )
+                }
             } else if hasProviderSync && providerSucceeded {
+                let pendingSync = profileSession?.pendingSync ?? PendingSyncQueueStore.shared
+                if let pending = pendingSync.entries[bookId],
+                    pending.domain == update.domain,
+                    pending.updatedAt <= book.lastUpdate.timeIntervalSince1970
+                {
+                    pendingSync.remove(stableId: bookId)
+                }
                 AppLogger.sync.debug(
                     "[SyncCoordinator] Pushed progress for bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId))"
                 )

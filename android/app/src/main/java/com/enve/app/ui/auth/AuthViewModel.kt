@@ -128,6 +128,7 @@ class AuthViewModel @Inject constructor(
     private val bookOrbitOidcFlow: BookOrbitOidcFlow,
     private val siloOidcFlow: SiloOidcFlow,
     private val passwordLogins: Map<BookSource, @JvmSuppressWildcards PasswordLogin>,
+    private val announcements: com.enve.core.data.local.DeviceAnnouncementStore,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(AuthState())
@@ -167,7 +168,7 @@ class AuthViewModel @Inject constructor(
                 @Suppress("UNCHECKED_CAST")
                 val allConnections = values[5] as List<ProviderConnection>
                 val activeConnId = values[6] as String?
-                val lastSeen = prefs.lastAnnouncementSeen.first()
+                val showDiscordAnnouncement = announcements.shouldShowDiscord(prefs.lastAnnouncementSeen.first())
                 _state.update {
                     it.copy(
                         activeSource = source,
@@ -178,7 +179,7 @@ class AuthViewModel @Inject constructor(
                         isInitialized = true,
                         allConnections = allConnections,
                         activeConnectionId = activeConnId,
-                        showDiscordAnnouncement = lastSeen < com.enve.app.BuildConfig.VERSION_CODE,
+                        showDiscordAnnouncement = showDiscordAnnouncement,
                     )
                 }
             }
@@ -1658,7 +1659,7 @@ class AuthViewModel @Inject constructor(
 
     fun dismissDiscordAnnouncement() {
         viewModelScope.launch {
-            prefs.markAnnouncementSeen(com.enve.app.BuildConfig.VERSION_CODE)
+            announcements.dismissDiscord()
             _state.update { it.copy(showDiscordAnnouncement = false) }
         }
     }

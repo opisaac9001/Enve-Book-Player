@@ -13,4 +13,5 @@
     <string name="action_cancel">Cancel</string>
     <string name="auth_close">Close</string>
     <string name="auth_sign_in">Sign in</string>
+    <string name="close_illustration">Close illustration</string>
 </resources>

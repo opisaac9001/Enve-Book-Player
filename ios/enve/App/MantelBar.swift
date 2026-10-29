@@ -28,9 +28,23 @@ struct MantelBar: View {
     var style: UserPreferences.ShellNavigationStyle = .classic
     var bottomSafeArea: CGFloat = 0
     var onSelect: (HearthTab) -> Void = { _ in }
+    var placement: Placement = .bottom
+    var showsPill = true
+    var onMantelBookChange: ((Book?) -> Void)? = nil
+    var onRailPillTap: (() -> Void)? = nil
+
+    enum Placement: Equatable {
+        /// Docked along the bottom edge.
+        case bottom
+        /// Standing in the side column of a folding phone, where the system keeps its own bars.
+        case rail(SideColumn)
+    }
 
     @Environment(\.hearth) private var hearth
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     @Environment(AppState.self) private var appState
     @Environment(EnveEngine.self) private var engine
 
@@ -42,12 +56,18 @@ struct MantelBar: View {
     @State private var pillTint: Color = Hearth.accent
     @State private var lastOpenedBook: Book?
 
-    static let height: CGFloat = 64
-    static let phoneHeight: CGFloat = 52
-    static let liquidHeight: CGFloat = 74
+    static let height: CGFloat = 88
+    static let phoneHeight: CGFloat = 76
+    static let liquidHeight: CGFloat = 84
+    static let railWidth: CGFloat = 72
 
-    static var classicHeight: CGFloat {
-        UIDevice.current.userInterfaceIdiom == .phone ? phoneHeight : height
+    // The taller bar needs room in both axes; a phone in landscape is regular wide but compact tall.
+    static func classicHeight(horizontal: UserInterfaceSizeClass?, vertical: UserInterfaceSizeClass?) -> CGFloat {
+        horizontal == .regular && vertical == .regular ? height : phoneHeight
+    }
+
+    private var classicHeight: CGFloat {
+        Self.classicHeight(horizontal: horizontalSizeClass, vertical: verticalSizeClass)
     }
 
     private static let liquidSink: CGFloat = 18
@@ -59,11 +79,16 @@ struct MantelBar: View {
 
     var body: some View {
         Group {
-            switch style {
-            case .classic:
-                classicBar
-            case .liquidGlass:
-                liquidGlassBar
+            switch placement {
+            case .rail(let column):
+                railBar(column: column)
+            case .bottom:
+                switch style {
+                case .classic:
+                    classicBar
+                case .liquidGlass:
+                    liquidGlassBar
+                }
             }
         }
         .task(id: lastOpened.openedAt) {
@@ -74,7 +99,8 @@ struct MantelBar: View {
                 await refreshLastOpenedBook()
             }
         }
-        .highPriorityGesture(openPlayerSwipe, including: mantelBook == nil ? .subviews : .all)
+        .onChange(of: mantelBook?.stableId, initial: true) { onMantelBookChange?(mantelBook) }
+        .highPriorityGesture(openPlayerSwipe, including: placement == .bottom && mantelBook != nil ? .all : .subviews)
     }
 
     // Claims every drag on the bar so a swipe can't also tap a tab; only an upward swipe acts.
@@ -91,13 +117,13 @@ struct MantelBar: View {
     }
 
     private var classicBar: some View {
-        let book = mantelBook
+        let book = showsPill ? mantelBook : nil
         return Group {
             if dynamicTypeSize.isAccessibilitySize {
                 VStack(spacing: 0) {
                     if let book {
                         emberPill(book: book)
-                            .frame(minHeight: Self.classicHeight)
+                            .frame(minHeight: classicHeight)
                             .transition(.move(edge: .leading).combined(with: .opacity))
 
                         Rectangle()
@@ -123,7 +149,7 @@ struct MantelBar: View {
                         fullTabs
                     }
                 }
-                .frame(height: Self.classicHeight)
+                .frame(height: classicHeight)
             }
         }
         .padding(.horizontal, 16)
@@ -133,15 +159,31 @@ struct MantelBar: View {
             Rectangle()
                 .fill(hearth.bgElevated)
                 .overlay(alignment: .top) {
-                    Rectangle()
-                        .fill(hearth.hairline)
-                        .frame(height: 1)
+                    if hearth.decorated {
+                        VStack(spacing: 0) {
+                            Rectangle()
+                                .fill(hearth.outline)
+                                .frame(height: 1.5)
+                            Rectangle()
+                                .fill(hearth.wood)
+                                .frame(height: 2.5)
+                            Rectangle()
+                                .fill(hearth.hairline)
+                                .frame(height: 1)
+                        }
+                    } else {
+                        Rectangle()
+                            .fill(hearth.hairline)
+                            .frame(height: 1)
+                    }
                 }
                 .shadow(color: .black.opacity(hearth.isInk ? 0.4 : 0.12), radius: 12, y: -3)
-                .ignoresSafeArea(edges: .bottom)
+                // The surface runs edge to edge like a system bar, including under a vertical status bar;
+                // the tabs above stay inside the safe area.
+                .ignoresSafeArea(edges: [.horizontal, .bottom])
         }
         .padding(.bottom, -classicSink)
-        .animation(.smooth(duration: 0.35), value: book?.stableId)
+        .animation(reduceMotion ? nil : .smooth(duration: 0.35), value: book?.stableId)
     }
 
     @ViewBuilder
@@ -154,12 +196,12 @@ struct MantelBar: View {
     }
 
     private var standardLiquidGlassBar: some View {
-        let book = mantelBook
+        let book = showsPill ? mantelBook : nil
         return HStack(spacing: 10) {
             if let book {
                 glassSurface(cornerRadius: 26) {
                     emberPill(book: book)
-                        .frame(height: 54)
+                        .frame(height: 64)
                 }
                 .frame(minWidth: 0, maxWidth: 390)
                 .transition(.move(edge: .leading).combined(with: .opacity))
@@ -175,16 +217,16 @@ struct MantelBar: View {
         .padding(.horizontal, 16)
         .frame(maxWidth: .infinity)
         .padding(.bottom, -Self.liquidSink)
-        .animation(.smooth(duration: 0.35), value: book?.stableId)
+        .animation(reduceMotion ? nil : .smooth(duration: 0.35), value: book?.stableId)
     }
 
     private var accessibleLiquidGlassBar: some View {
-        let book = mantelBook
+        let book = showsPill ? mantelBook : nil
         return VStack(spacing: 10) {
             if let book {
                 glassSurface(cornerRadius: 26) {
                     emberPill(book: book)
-                        .frame(minHeight: 54)
+                        .frame(minHeight: 64)
                 }
                 .transition(.move(edge: .leading).combined(with: .opacity))
             }
@@ -198,7 +240,7 @@ struct MantelBar: View {
         .padding(.horizontal, 16)
         .frame(maxWidth: .infinity)
         .padding(.bottom, -Self.liquidSink)
-        .animation(.smooth(duration: 0.35), value: book?.stableId)
+        .animation(reduceMotion ? nil : .smooth(duration: 0.35), value: book?.stableId)
     }
 
     @ViewBuilder
@@ -236,13 +278,17 @@ struct MantelBar: View {
                 onSelect(item)
                 PlatformHaptics.selection()
             } label: {
-                VStack(spacing: 3) {
+                VStack(spacing: 5) {
                     Image(systemName: item.glyph)
-                        .font(.hearthUI(18, weight: .medium))
+                        .font(.system(size: 24 * Hearth.visionFactor, weight: .medium))
                     Text(item.title)
-                        .font(.hearthUI(10, weight: .semibold))
+                        .font(.hearthUI(13, weight: .semibold))
+                        .lineLimit(1)
                 }
                 .foregroundStyle(tab == item ? hearth.ember : hearth.textSecondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 3)
+                .background { selectionMark(for: item) }
                 .frame(maxWidth: .infinity)
                 .frame(minHeight: 44)
                 .contentShape(Rectangle())
@@ -261,9 +307,10 @@ struct MantelBar: View {
                     PlatformHaptics.selection()
                 } label: {
                     Image(systemName: item.glyph)
-                        .font(.hearthUI(17, weight: .medium))
+                        .font(.system(size: 24 * Hearth.visionFactor, weight: .medium))
                         .foregroundStyle(tab == item ? hearth.ember : hearth.textSecondary)
-                        .frame(width: 44, height: 44)
+                        .frame(width: 52, height: 56)
+                        .background { selectionMark(for: item).padding(3) }
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(PressableStyle())
@@ -281,19 +328,19 @@ struct MantelBar: View {
                     onSelect(item)
                     PlatformHaptics.selection()
                 } label: {
-                    VStack(spacing: hasBook ? 0 : 3) {
+                    VStack(spacing: hasBook ? 0 : 5) {
                         Image(systemName: item.glyph)
-                            .font(.hearthUI(17, weight: .semibold))
+                            .font(.system(size: 24 * Hearth.visionFactor, weight: .semibold))
                         if !hasBook {
                             Text(item.title)
-                                .font(.hearthUI(9, weight: .semibold))
+                                .font(.hearthUI(13, weight: .semibold))
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.75)
                         }
                     }
                     .foregroundStyle(tab == item ? hearth.ember : hearth.textSecondary)
                     .frame(maxWidth: .infinity)
-                    .frame(height: 54)
+                    .frame(height: 64)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(PressableStyle())
@@ -339,6 +386,7 @@ struct MantelBar: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .background { selectionMark(for: item) }
             .contentShape(Rectangle())
         }
         .buttonStyle(PressableStyle())
@@ -346,41 +394,141 @@ struct MantelBar: View {
         .accessibilityIdentifier("tab_\(item.rawValue)")
     }
 
+    private func railBar(column: SideColumn) -> some View {
+        let book = showsPill ? mantelBook : nil
+        return Group {
+            if style == .liquidGlass {
+                glassSurface(cornerRadius: 28) {
+                    railContent(book: book)
+                        .padding(.vertical, 8)
+                }
+            } else {
+                railContent(book: book)
+            }
+        }
+        .padding(.top, column.statusBarBottom + 8)
+        .padding(.bottom, 10)
+        .frame(maxHeight: .infinity, alignment: .bottom)
+        .animation(reduceMotion ? nil : .smooth(duration: 0.35), value: book?.stableId)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("mantel-rail")
+    }
+
+    private func railContent(book: Book?) -> some View {
+        VStack(spacing: 8) {
+            if let book {
+                railPill(book: book)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
+            VStack(spacing: 2) {
+                ForEach(HearthTab.allCases, id: \.self) { item in
+                    railTab(item)
+                }
+            }
+        }
+        .frame(width: Self.railWidth)
+    }
+
+    private func railTab(_ item: HearthTab) -> some View {
+        Button {
+            onSelect(item)
+            PlatformHaptics.selection()
+        } label: {
+            VStack(spacing: 4) {
+                Image(systemName: item.glyph)
+                    .font(.hearthUI(19, weight: .medium))
+                Text(item.title)
+                    .font(.hearthUI(10, weight: .semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .foregroundStyle(tab == item ? hearth.ember : hearth.textSecondary)
+            .frame(width: Self.railWidth - 12, height: 58)
+            .background {
+                if tab == item, style == .liquidGlass {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(hearth.emberSoft)
+                } else {
+                    selectionMark(for: item)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressableStyle())
+        .accessibilityLabel(item.title)
+        .accessibilityAddTraits(tab == item ? .isSelected : [])
+        .accessibilityIdentifier("tab_\(item.rawValue)")
+    }
+
+    @ViewBuilder
+    private func selectionMark(for item: HearthTab) -> some View {
+        if tab == item, style == .classic {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(hearth.emberSoft)
+                .hearthOutlined(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+    }
+
+    private func railPill(book: Book) -> some View {
+        Button {
+            if let onRailPillTap {
+                onRailPillTap()
+            } else {
+                openPill(book)
+            }
+            PlatformHaptics.impact(.light)
+        } label: {
+            pillCover(book: book)
+                .padding(6)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(PressableStyle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(book.title)
+        .accessibilityValue(pillSubtitle(book: book))
+        .accessibilityAddTraits(.isButton)
+        .accessibilityIdentifier("mantel-pill")
+    }
+
+    private func pillCover(book: Book) -> some View {
+        let artworkWidth = 42 / book.hearthCoverRatio
+        return CachedAsyncCoverImage(
+            url: book.coverURL,
+            fallbackColor: "Blue",
+            headers: CachedAsyncCoverImage.authHeaders(for: book),
+            book: book
+        )
+        .aspectRatio(contentMode: .fill)
+        .frame(width: artworkWidth, height: 42)
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(hearth.hairline, lineWidth: 1)
+        }
+        .padding(2.5)
+        .overlay {
+            // Transpose before rotation to preserve the portrait cover contour.
+            RoundedRectangle(cornerRadius: 11.5, style: .continuous)
+                .trim(from: 0, to: pillFraction(book))
+                .stroke(pillTint, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                .frame(width: 47, height: artworkWidth + 5)
+                .rotationEffect(.degrees(-90))
+                .opacity(pillFraction(book) > 0.001 ? 1 : 0)
+        }
+        .task(id: book.stableId) {
+            pillTint = await profileSession.ambientColors.resolve(for: book)
+        }
+        .frame(width: 42, height: 42)
+    }
+
     private func emberPill(book: Book) -> some View {
         let live = isLive(book)
-        let artworkWidth = 42 / book.hearthCoverRatio
         return HStack(spacing: 8) {
             Button {
                 openPill(book)
             } label: {
                 HStack(spacing: 10) {
-                    CachedAsyncCoverImage(
-                        url: book.coverURL,
-                        fallbackColor: "Blue",
-                        headers: CachedAsyncCoverImage.authHeaders(for: book),
-                        book: book
-                    )
-                    .aspectRatio(contentMode: .fill)
-                    .frame(width: artworkWidth, height: 42)
-                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 9, style: .continuous)
-                            .strokeBorder(hearth.hairline, lineWidth: 1)
-                    }
-                    .padding(2.5)
-                    .overlay {
-                        // Transpose before rotation to preserve the portrait cover contour.
-                        RoundedRectangle(cornerRadius: 11.5, style: .continuous)
-                            .trim(from: 0, to: pillFraction(book))
-                            .stroke(pillTint, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
-                            .frame(width: 47, height: artworkWidth + 5)
-                            .rotationEffect(.degrees(-90))
-                            .opacity(pillFraction(book) > 0.001 ? 1 : 0)
-                    }
-                    .task(id: book.stableId) {
-                        pillTint = await profileSession.ambientColors.resolve(for: book)
-                    }
-                    .frame(width: 42, height: 42)
+                    pillCover(book: book)
 
                     VStack(alignment: .leading) {
                         HearthMarqueeText(
@@ -403,7 +551,7 @@ struct MantelBar: View {
             .accessibilityValue(pillSubtitle(book: book))
             .accessibilityAddTraits(.isButton)
             .accessibilityIdentifier("mantel-pill")
-            .accessibilityAction(named: opensReader(book) ? "Open book" : "Open player") { openPill(book) }
+            .accessibilityAction(named: Self.opensReader(book) ? "Open book" : "Open player") { openPill(book) }
 
             Button {
                 if book.mediaType == .ebook && !book.hasEPUB3MediaOverlay {
@@ -434,12 +582,12 @@ struct MantelBar: View {
         .padding(.trailing, 6)
     }
 
-    private func opensReader(_ book: Book) -> Bool {
+    static func opensReader(_ book: Book) -> Bool {
         book.mediaType == .ebook && !book.hasEPUB3MediaOverlay
     }
 
     private func openPill(_ book: Book) {
-        if opensReader(book) {
+        if Self.opensReader(book) {
             engine.playback.openEbook(book)
         } else {
             appState.currentBook = book

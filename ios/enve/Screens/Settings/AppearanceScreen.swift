@@ -4,9 +4,10 @@ import UIKit
 struct AppearanceScreen: View {
     @Environment(\.hearth) private var hearth
     @Environment(\.profileSession) private var profileSession
+    @EnvironmentObject private var theme: ThemeManager
 
-    @AppStorage("hearth.mode") private var modeRaw = Hearth.Mode.system.rawValue
     @AppStorage("hearth.oled") private var oledEnabled = false
+    @AppStorage("hearth.paletteStyle") private var paletteStyle: Hearth.PaletteStyle = .parchment
     @State private var accentColor: Color
     @State private var prefs: UserPreferences
 
@@ -23,8 +24,8 @@ struct AppearanceScreen: View {
                 Overline("Theme")
                 HStack(spacing: 10) {
                     ForEach(Hearth.Mode.allCases, id: \.rawValue) { mode in
-                        HearthChip(title: mode.title, isSelected: modeRaw == mode.rawValue) {
-                            modeRaw = mode.rawValue
+                        HearthChip(title: mode.title, isSelected: theme.appearanceMode == mode) {
+                            theme.appearanceMode = mode
                             PlatformHaptics.selection()
                         }
                     }
@@ -41,6 +42,19 @@ struct AppearanceScreen: View {
                     }
                 }
                 .tint(hearth.ember)
+
+                Overline("Palette")
+                HStack(spacing: 10) {
+                    ForEach(Hearth.PaletteStyle.allCases, id: \.rawValue) { style in
+                        HearthChip(title: style.title, isSelected: paletteStyle == style) {
+                            paletteStyle = style
+                            PlatformHaptics.selection()
+                        }
+                    }
+                }
+                Text("Classic restores the earlier colors and flat covers.")
+                    .font(.hearthCaption)
+                    .foregroundStyle(hearth.textSecondary)
 
                 HStack(spacing: 14) {
                     Text("Accent")

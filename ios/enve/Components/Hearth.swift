@@ -22,8 +22,20 @@ enum Hearth {
         }
     }
 
+    enum PaletteStyle: String, CaseIterable {
+        case parchment, classic
+
+        var title: String {
+            switch self {
+            case .parchment: "Parchment"
+            case .classic: "Classic"
+            }
+        }
+    }
+
     private static let modeKey = "hearth.mode"
     private static let oledKey = "hearth.oled"
+    private static let paletteStyleKey = "hearth.paletteStyle"
 
     static var mode: Mode {
         get { Mode(rawValue: UserDefaults.standard.string(forKey: modeKey) ?? "") ?? .system }
@@ -33,6 +45,10 @@ enum Hearth {
     static var oledEnabled: Bool {
         get { UserDefaults.standard.bool(forKey: oledKey) }
         set { UserDefaults.standard.set(newValue, forKey: oledKey) }
+    }
+
+    static var paletteStyle: PaletteStyle {
+        PaletteStyle(rawValue: UserDefaults.standard.string(forKey: paletteStyleKey) ?? "") ?? .parchment
     }
 
     static var accent: Color {
@@ -51,14 +67,17 @@ enum Hearth {
         accent: Color? = nil,
         oled: Bool = false,
         highContrast: Bool = false,
-        reduceTransparency: Bool = false
+        reduceTransparency: Bool = false,
+        style: PaletteStyle = Hearth.paletteStyle
     ) -> HearthPalette {
         let resolved = accent ?? Self.accent
         let base =
             if scheme == .dark {
-                oled ? HearthPalette.oled(accent: resolved) : HearthPalette.ink(accent: resolved)
+                oled
+                    ? HearthPalette.oled(accent: resolved, style: style)
+                    : HearthPalette.ink(accent: resolved, style: style)
             } else {
-                HearthPalette.paper(accent: resolved)
+                HearthPalette.paper(accent: resolved, style: style)
             }
         return base.accessible(highContrast: highContrast, reduceTransparency: reduceTransparency)
     }
@@ -79,6 +98,8 @@ enum Hearth {
 
 struct HearthPalette: Equatable {
     var isInk: Bool
+    // Parchment draws cover bindings, shelf ledges and raised wood chrome; Classic keeps surfaces flat.
+    var decorated: Bool
     var bg: Color
     var bgElevated: Color
     var bgSunken: Color
@@ -88,6 +109,9 @@ struct HearthPalette: Equatable {
     var ember: Color
     var emberSoft: Color
     var hairline: Color
+    var outline: Color
+    var wood: Color
+    var pageEdge: Color
 
     var onEmber: Color
     var readableOnEmber: Color {
@@ -97,28 +121,58 @@ struct HearthPalette: Equatable {
     var statusWarn: Color
     var statusError: Color
 
-    static func ink(accent: Color) -> HearthPalette {
-        HearthPalette(
-            isInk: true,
-            bg: Color(hexValue: 0x0C0A09),
-            bgElevated: Color(hexValue: 0x191512),
-            bgSunken: .black,
-            text: Color(hexValue: 0xF0E9DC),
-            textSecondary: Color(hexValue: 0xA99F92),
-            textTertiary: Color(hexValue: 0x80786D),
-            ember: accent,
-            emberSoft: accent.opacity(0.14),
-            hairline: .white.opacity(0.08),
-            onEmber: Color(hexValue: 0x1A120A),
-            statusOK: Color(hexValue: 0x8FBF7F),
-            statusWarn: Color(hexValue: 0xE0A458),
-            statusError: Color(hexValue: 0xD06A5C)
-        )
+    static func ink(accent: Color, style: Hearth.PaletteStyle = Hearth.paletteStyle) -> HearthPalette {
+        switch style {
+        case .parchment:
+            HearthPalette(
+                isInk: true,
+                decorated: true,
+                bg: Color(hexValue: 0x2D2322),
+                bgElevated: Color(hexValue: 0x3A2B26),
+                bgSunken: Color(hexValue: 0x1C1513),
+                text: Color(hexValue: 0xF6DEAA),
+                textSecondary: Color(hexValue: 0xD4BE98),
+                textTertiary: Color(hexValue: 0xB09878),
+                ember: accent,
+                emberSoft: accent.opacity(0.16),
+                hairline: Color(hexValue: 0xF6DEAA).opacity(0.12),
+                outline: Color(hexValue: 0x1C1513),
+                wood: Color(hexValue: 0x794B31),
+                pageEdge: Color(hexValue: 0xF6DEAA),
+                onEmber: Color(hexValue: 0x1C1513),
+                statusOK: Color(hexValue: 0x8FBF7F),
+                statusWarn: Color(hexValue: 0xE0A458),
+                statusError: Color(hexValue: 0xD06A5C)
+            )
+        case .classic:
+            HearthPalette(
+                isInk: true,
+                decorated: false,
+                bg: Color(hexValue: 0x0C0A09),
+                bgElevated: Color(hexValue: 0x191512),
+                bgSunken: .black,
+                text: Color(hexValue: 0xF0E9DC),
+                textSecondary: Color(hexValue: 0xA99F92),
+                textTertiary: Color(hexValue: 0x80786D),
+                ember: accent,
+                emberSoft: accent.opacity(0.14),
+                hairline: .white.opacity(0.08),
+                outline: .white.opacity(0.08),
+                wood: .clear,
+                pageEdge: .clear,
+                onEmber: Color(hexValue: 0x1A120A),
+                statusOK: Color(hexValue: 0x8FBF7F),
+                statusWarn: Color(hexValue: 0xE0A458),
+                statusError: Color(hexValue: 0xD06A5C)
+            )
+        }
     }
 
-    static func oled(accent: Color) -> HearthPalette {
-        HearthPalette(
+    static func oled(accent: Color, style: Hearth.PaletteStyle = Hearth.paletteStyle) -> HearthPalette {
+        let decorated = style == .parchment
+        return HearthPalette(
             isInk: true,
+            decorated: decorated,
             bg: .black,
             bgElevated: Color(hexValue: 0x0C0C0D),
             bgSunken: .black,
@@ -128,6 +182,9 @@ struct HearthPalette: Equatable {
             ember: accent,
             emberSoft: accent.opacity(0.16),
             hairline: .white.opacity(0.11),
+            outline: decorated ? Color(hexValue: 0xF6DEAA).opacity(0.3) : .white.opacity(0.11),
+            wood: decorated ? Color(hexValue: 0x794B31) : .clear,
+            pageEdge: decorated ? Color(hexValue: 0xC9B48A) : .clear,
             onEmber: Color(hexValue: 0x1A120A),
             statusOK: Color(hexValue: 0x8FBF7F),
             statusWarn: Color(hexValue: 0xE0A458),
@@ -135,33 +192,68 @@ struct HearthPalette: Equatable {
         )
     }
 
-    static func paper(accent: Color) -> HearthPalette {
-        HearthPalette(
-            isInk: false,
-            bg: Color(hexValue: 0xF7F2E9),
-            bgElevated: .white,
-            bgSunken: Color(hexValue: 0xEFE8DB),
-            text: Color(hexValue: 0x231F1B),
-            textSecondary: Color(hexValue: 0x6E6459),
-            textTertiary: Color(hexValue: 0x766B5F),
-            ember: deepened(accent),
-            emberSoft: accent.opacity(0.12),
-            hairline: .black.opacity(0.08),
-            onEmber: Color(hexValue: 0x1A120A),
-            statusOK: Color(hexValue: 0x4F7942),
-            statusWarn: Color(hexValue: 0x93601B),
-            statusError: Color(hexValue: 0xA8453A)
-        )
+    static func paper(accent: Color, style: Hearth.PaletteStyle = Hearth.paletteStyle) -> HearthPalette {
+        switch style {
+        case .parchment:
+            let bg = Color(hexValue: 0xF6DEAA)
+            return HearthPalette(
+                isInk: false,
+                decorated: true,
+                bg: bg,
+                bgElevated: Color(hexValue: 0xFBEBC8),
+                bgSunken: Color(hexValue: 0xEFD199),
+                text: Color(hexValue: 0x1C1513),
+                textSecondary: Color(hexValue: 0x5A4535),
+                textTertiary: Color(hexValue: 0x6A5240),
+                ember: deepened(accent, on: bg),
+                emberSoft: accent.opacity(0.14),
+                hairline: Color(hexValue: 0x1C1513).opacity(0.12),
+                outline: Color(hexValue: 0x1C1513),
+                wood: Color(hexValue: 0x794B31),
+                pageEdge: Color(hexValue: 0xFFF6E2),
+                onEmber: Color(hexValue: 0x1C1513),
+                statusOK: Color(hexValue: 0x4F7942),
+                statusWarn: Color(hexValue: 0x93601B),
+                statusError: Color(hexValue: 0xA8453A)
+            )
+        case .classic:
+            let bg = Color(hexValue: 0xF7F2E9)
+            return HearthPalette(
+                isInk: false,
+                decorated: false,
+                bg: bg,
+                bgElevated: .white,
+                bgSunken: Color(hexValue: 0xEFE8DB),
+                text: Color(hexValue: 0x231F1B),
+                textSecondary: Color(hexValue: 0x6E6459),
+                textTertiary: Color(hexValue: 0x766B5F),
+                ember: deepened(accent, on: bg),
+                emberSoft: accent.opacity(0.12),
+                hairline: .black.opacity(0.08),
+                outline: .black.opacity(0.08),
+                wood: .clear,
+                pageEdge: .clear,
+                onEmber: Color(hexValue: 0x1A120A),
+                statusOK: Color(hexValue: 0x4F7942),
+                statusWarn: Color(hexValue: 0x93601B),
+                statusError: Color(hexValue: 0xA8453A)
+            )
+        }
     }
 
-    private static func deepened(_ color: Color) -> Color {
+    private static func deepened(_ color: Color, on paper: Color) -> Color {
         var red: CGFloat = 0
         var green: CGFloat = 0
         var blue: CGFloat = 0
         var a: CGFloat = 0
         guard UIColor(color).getRed(&red, green: &green, blue: &blue, alpha: &a) else { return color }
+        var paperRed: CGFloat = 0
+        var paperGreen: CGFloat = 0
+        var paperBlue: CGFloat = 0
+        var paperAlpha: CGFloat = 0
+        guard UIColor(paper).getRed(&paperRed, green: &paperGreen, blue: &paperBlue, alpha: &paperAlpha) else { return color }
 
-        let background = relativeLuminance(red: 247 / 255, green: 242 / 255, blue: 233 / 255)
+        let background = relativeLuminance(red: paperRed, green: paperGreen, blue: paperBlue)
         var scale: CGFloat = 1
         while contrastRatio(
             relativeLuminance(red: red * scale, green: green * scale, blue: blue * scale),
@@ -205,6 +297,7 @@ struct HearthPalette: Equatable {
             palette.textSecondary = palette.text
             palette.textTertiary = palette.text
             palette.hairline = palette.isInk ? .white.opacity(0.45) : .black.opacity(0.45)
+            palette.outline = palette.text
             palette.statusOK = palette.isInk ? Color(hexValue: 0xC6F1AF) : Color(hexValue: 0x245A1C)
             palette.statusWarn = palette.isInk ? Color(hexValue: 0xFFD28C) : Color(hexValue: 0x824600)
             palette.statusError = palette.isInk ? Color(hexValue: 0xFFB4AA) : Color(hexValue: 0x8F1D14)
@@ -242,6 +335,7 @@ private struct HearthRootModifier: ViewModifier {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @AppStorage("themeColorHex") private var accentHex: String?
     @AppStorage("hearth.oled") private var oledEnabled = false
+    @AppStorage("hearth.paletteStyle") private var paletteStyle: Hearth.PaletteStyle = .parchment
     @AppStorage("visionImpairedModeEnabled") private var visionModeEnabled = false
 
     func body(content: Content) -> some View {
@@ -253,7 +347,8 @@ private struct HearthRootModifier: ViewModifier {
                     accent: Hearth.accent(fromHex: accentHex),
                     oled: oledEnabled,
                     highContrast: visionModeEnabled || colorSchemeContrast == .increased,
-                    reduceTransparency: reduceTransparency
+                    reduceTransparency: reduceTransparency,
+                    style: paletteStyle
                 )
             )
     }

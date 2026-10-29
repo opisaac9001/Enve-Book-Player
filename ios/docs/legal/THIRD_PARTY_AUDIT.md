@@ -40,11 +40,9 @@ Status: source publication can proceed; binary distribution requires a documente
 
 ## Optional model finding
 
-Enve downloads Kokoro 82M and Supertonic 3 weights only when the user enables those enhanced voices.
+As of 2026-10-26, Enve downloads Kokoro 82M weights only when the user enables Kokoro. Apple voices use the system speech engine.
 
 - Kokoro is identified as Apache-2.0.
-- Supertonic 3 is OpenRAIL-M and carries use restrictions plus redistribution notice requirements.
-- FluidInference's Supertonic repository metadata and model card disagree between `openrail++` and OpenRAIL-M. The upstream Supertone repository supplies the OpenRAIL-M license text.
 
 Status: add a model-license disclosure and acceptance surface before download. Record the exact model revision and license alongside every downloaded manifest.
 
@@ -89,7 +87,7 @@ Required remediation:
 1. Generate a bundled license directory from the exact resolved dependency graph.
 2. Add an Acknowledgements screen reachable from Settings.
 3. Include the LGPL and UnRAR texts even when the related feature is not used by a particular user.
-4. Present Kokoro and Supertonic terms before their first download.
+4. Present Kokoro terms before its first download.
 5. Make the release process verify that notice files exist in the final archive.
 
 ## Recommended order

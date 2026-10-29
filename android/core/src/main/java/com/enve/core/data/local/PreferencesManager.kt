@@ -2,6 +2,7 @@
 package com.enve.core.data.local
 
 import com.enve.core.auth.CredentialVault
+import com.enve.core.reader.ReadAloudHighlightStyle
 import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.*
@@ -157,10 +158,6 @@ class PreferencesManager(
 
     val lastAnnouncementSeen: Flow<Int> = dataStore.data.map {
         it[Keys.LAST_ANNOUNCEMENT_SEEN] ?: 0
-    }
-
-    suspend fun markAnnouncementSeen(versionCode: Int) {
-        dataStore.edit { it[Keys.LAST_ANNOUNCEMENT_SEEN] = versionCode }
     }
 
     suspend fun saveAuth(accessToken: String, refreshToken: String?) {
@@ -866,6 +863,7 @@ class PreferencesManager(
         val READ_ALOUD_AUTO_TURN = booleanPreferencesKey("reader.readAloud.autoTurn")
         val READ_ALOUD_SKIP_ON_PAGE_TURN = booleanPreferencesKey("reader.readAloud.skipOnPageTurn")
         val READ_ALOUD_HIGHLIGHT = booleanPreferencesKey("reader.readAloud.highlight")
+        val READ_ALOUD_HIGHLIGHT_STYLE = stringPreferencesKey("reader.readAloud.highlightStyle")
         val READ_ALOUD_HIGHLIGHT_HEX = stringPreferencesKey("reader.readAloud.highlightHex")
         val READ_ALOUD_SKIP_ASIDES = booleanPreferencesKey("reader.readAloud.skipAsides")
         val SCREEN_BRIGHTNESS = floatPreferencesKey("reader.screenBrightness")
@@ -919,6 +917,10 @@ class PreferencesManager(
     val readAloudAutoTurn: Flow<Boolean> = dataStore.data.map { it[ReaderKeys.READ_ALOUD_AUTO_TURN] ?: true }
     val readAloudSkipOnPageTurn: Flow<Boolean> = dataStore.data.map { it[ReaderKeys.READ_ALOUD_SKIP_ON_PAGE_TURN] ?: true }
     val readAloudHighlight: Flow<Boolean> = dataStore.data.map { it[ReaderKeys.READ_ALOUD_HIGHLIGHT] ?: true }
+    val readAloudHighlightStyle: Flow<ReadAloudHighlightStyle> = dataStore.data.map { preferences ->
+        ReadAloudHighlightStyle.entries.firstOrNull { it.name == preferences[ReaderKeys.READ_ALOUD_HIGHLIGHT_STYLE] }
+            ?: ReadAloudHighlightStyle.HIGHLIGHT
+    }
     val readAloudHighlightHex: Flow<String> = dataStore.data.map { it[ReaderKeys.READ_ALOUD_HIGHLIGHT_HEX] ?: "#FFF59D" }
     val readAloudSkipAsides: Flow<Boolean> = dataStore.data.map { it[ReaderKeys.READ_ALOUD_SKIP_ASIDES] ?: true }
     val readerScreenBrightness: Flow<Float> = dataStore.data.map { it[ReaderKeys.SCREEN_BRIGHTNESS] ?: -1f }
@@ -982,6 +984,7 @@ class PreferencesManager(
         readAloudAutoTurn: Boolean? = null,
         readAloudSkipOnPageTurn: Boolean? = null,
         readAloudHighlight: Boolean? = null,
+        readAloudHighlightStyle: ReadAloudHighlightStyle? = null,
         readAloudHighlightHex: String? = null,
         readAloudSkipAsides: Boolean? = null,
         screenBrightness: Float? = null,
@@ -1021,6 +1024,7 @@ class PreferencesManager(
                 readAloudAutoTurn?.let { p[ReaderKeys.READ_ALOUD_AUTO_TURN] = it }
                 readAloudSkipOnPageTurn?.let { p[ReaderKeys.READ_ALOUD_SKIP_ON_PAGE_TURN] = it }
                 readAloudHighlight?.let { p[ReaderKeys.READ_ALOUD_HIGHLIGHT] = it }
+                readAloudHighlightStyle?.let { p[ReaderKeys.READ_ALOUD_HIGHLIGHT_STYLE] = it.name }
                 readAloudHighlightHex?.let { p[ReaderKeys.READ_ALOUD_HIGHLIGHT_HEX] = it }
                 readAloudSkipAsides?.let { p[ReaderKeys.READ_ALOUD_SKIP_ASIDES] = it }
                 screenBrightness?.let { p[ReaderKeys.SCREEN_BRIGHTNESS] = it }

@@ -65,7 +65,7 @@ struct SettingsLinkRow: View {
                     .font(.system(size: 15 * Hearth.visionFactor, weight: .medium))
                     .foregroundStyle(hearth.ember)
                     .frame(width: 34, height: 34)
-                    .background(Circle().fill(hearth.ember.opacity(0.14)))
+                    .background(Circle().fill(hearth.emberSoft).hearthOutlined(Circle()))
             }
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
@@ -116,9 +116,10 @@ struct SettingsChoiceRow: View {
             HStack(spacing: 12) {
                 if let systemImage {
                     Image(systemName: systemImage)
-                        .font(.hearthUI(15))
+                        .font(.system(size: 13 * Hearth.visionFactor, weight: .medium))
                         .foregroundStyle(isSelected ? hearth.ember : hearth.textSecondary)
-                        .frame(width: 24)
+                        .frame(width: 30, height: 30)
+                        .background(Circle().fill(isSelected ? hearth.emberSoft : hearth.bgElevated).hearthOutlined(Circle()))
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)

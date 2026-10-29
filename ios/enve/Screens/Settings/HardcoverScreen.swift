@@ -12,6 +12,7 @@ struct HardcoverScreen: View {
     @State private var statusMessage: String?
     @State private var errorMessage: String?
     @State private var confirmDisconnect = false
+    @State private var autoSync = SettingsManager.shared.hardcoverAutoSyncEnabled
 
     private var isConnected: Bool {
         SettingsManager.shared.hardcoverApiKey != nil
@@ -66,7 +67,7 @@ struct HardcoverScreen: View {
         }
         .task {
             guard isConnected else { return }
-            syncStats = await HardcoverSyncService.shared.getSyncStats()
+            syncStats = HardcoverSyncService.shared.getSyncStats()
             if connectedUsername == nil {
                 connectedUsername = try? await HardcoverService.shared.getCurrentUser().username
             }
@@ -87,6 +88,23 @@ struct HardcoverScreen: View {
                             .foregroundStyle(hearth.textSecondary)
                     }
                 }
+            }
+
+            Toggle("Sync reading progress", isOn: $autoSync)
+                .tint(hearth.ember)
+                .onChange(of: autoSync) { _, enabled in
+                    SettingsManager.shared.hardcoverAutoSyncEnabled = enabled
+                }
+            if HardcoverSyncService.shared.pendingCount > 0 {
+                Text("\(HardcoverSyncService.shared.pendingCount) pending · \(HardcoverSyncService.shared.failedCount) need attention")
+                    .font(.hearthCaption)
+                    .foregroundStyle(hearth.textSecondary)
+                QuietButton(title: "Retry saved updates", systemImage: "arrow.clockwise") {
+                    HardcoverSyncService.shared.retryPending()
+                }
+            }
+            if let error = HardcoverSyncService.shared.lastError {
+                SourcesErrorText(message: error)
             }
 
             QuietButton(title: "Disconnect Hardcover", systemImage: "xmark.circle") {
@@ -111,16 +129,23 @@ struct HardcoverScreen: View {
     }
 
     private func connect() {
-        let stripped = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        var stripped = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if stripped.lowercased().hasPrefix("bearer ") {
+            stripped = String(stripped.dropFirst(7)).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         guard !stripped.isEmpty else { return }
         isWorking = true
         errorMessage = nil
         statusMessage = nil
 
+        let candidate = stripped
         Task {
-            SettingsManager.shared.hardcoverApiKey = stripped
             do {
-                let user = try await HardcoverService.shared.getCurrentUser()
+                let service = HardcoverService(tokenProvider: { candidate })
+                let user = try await service.getCurrentUser()
+                SettingsManager.shared.hardcoverApiKey = candidate
+                HardcoverSyncService.shared.clearSyncTracking()
+                apiKey = ""
                 connectedUsername = user.username
                 statusMessage = "Connected as @\(user.username)."
                 PlatformHaptics.notification(.success)
@@ -147,7 +172,6 @@ struct HardcoverScreen: View {
 
     private func disconnect() {
         SettingsManager.shared.clearHardcoverAccess(reason: "userDisconnected")
-        Task { await HardcoverSyncService.shared.clearSyncTracking() }
         connectedUsername = nil
         syncStats = nil
         apiKey = ""

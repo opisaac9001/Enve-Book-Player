@@ -43,6 +43,11 @@ private final class PendingSyncTestClock {
 }
 
 @MainActor
+private final class PendingSyncRecentlyPlayedStub: RecentlyPlayedSyncing {
+    func sync(trigger: ServerStatusSyncTrigger) async -> ServerStatusSyncResult { .idle }
+}
+
+@MainActor
 struct PendingSyncQueueFlusherTests {
     @Test func providerTransportUsesInjectedBookLookup() async throws {
         var requestedStableIds: [String] = []
@@ -295,6 +300,120 @@ struct PendingSyncQueueFlusherTests {
             storageKey: fixture.storageKey
         )
         #expect(restored.entriesReady().keys.contains("auth"))
+    }
+
+    @Test func validationFailureRetainsTheCheckpointWithoutSpendingRetries() async throws {
+        let fixture = makeStore()
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        let locator = #"{"href":"chapter.xhtml","locations":{"cfi":"epubcfi(/6/8!/4/2:10)"}}"#
+        let checkpoint = PendingServerSync(
+            stableId: "ebook",
+            sourceRaw: Book.BookSource.bookOrbit.rawValue,
+            backendId: UUID().uuidString,
+            serverItemId: "1",
+            position: 0,
+            duration: 0,
+            updatedAt: 10,
+            domainRaw: "ebook",
+            progress: 0.42,
+            locator: locator,
+            isFinished: false
+        )
+        fixture.store.enqueue(checkpoint)
+        let transport = PendingSyncTransportStub()
+        let validation = ProgressValidationError(message: "BookOrbit cannot accept this reading position.")
+        transport.results["ebook"] = [.failure(validation)]
+        let flusher = PendingSyncQueueFlusher(store: fixture.store, transport: transport)
+        var failures: [(String, String)] = []
+        flusher.onValidationFailure = { failures.append(($0, $1)) }
+
+        await flusher.flush()
+        fixture.store.resumeSuspended()
+        await flusher.flush()
+
+        let stored = try #require(fixture.store.entries["ebook"])
+        #expect(stored.locator == locator)
+        #expect(stored.progress == 0.42)
+        #expect(stored.retryCount == 0)
+        #expect(stored.validationFailureMessage == validation.localizedDescription)
+        #expect(transport.attempts == ["ebook"])
+        #expect(failures.count == 1)
+        #expect(failures.first?.0 == "ebook")
+        #expect(failures.first?.1 == validation.localizedDescription)
+
+        let restored = PendingSyncQueueStore(defaults: fixture.defaults, storageKey: fixture.storageKey)
+        #expect(restored.entries["ebook"] == stored)
+        #expect(restored.entriesReady().isEmpty)
+    }
+
+    @Test func aNewCheckpointReplacesABlockedValidationFailure() {
+        let fixture = makeStore()
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        fixture.store.enqueue(entry(id: "book", updatedAt: 10))
+        fixture.store.suspend(stableId: "book", validationFailureMessage: "Invalid reading position")
+        let replacement = entry(id: "book", updatedAt: 20)
+
+        fixture.store.enqueue(replacement)
+
+        #expect(fixture.store.entries["book"] == replacement)
+        #expect(fixture.store.entriesReady().keys.contains("book"))
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func queuedValidationFailuresPublishNonretryableSyncEvents() async throws {
+        let fixture = makeStore()
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        let book = Book(id: UUID().uuidString, title: "Validation fixture", source: .bookOrbit, mediaType: .ebook)
+        fixture.store.enqueue(entry(id: book.stableId, updatedAt: 10))
+        let transport = PendingSyncTransportStub()
+        let validation = ProgressValidationError(message: "BookOrbit cannot accept this reading position.")
+        transport.results[book.stableId] = [.failure(validation)]
+        let flusher = PendingSyncQueueFlusher(store: fixture.store, transport: transport)
+        let coordinator = SyncCoordinator(
+            providerResolver: PendingSyncProviderResolverStub(),
+            pendingSyncFlusher: flusher,
+            recentlyPlayedSync: PendingSyncRecentlyPlayedStub()
+        )
+        let events = coordinator.subscribe(book: book)
+
+        await flusher.flush()
+
+        var iterator = events.makeAsyncIterator()
+        let event = try #require(await iterator.next())
+        guard case .pushFailed(let bookId, let message, let retryable) = event else {
+            Issue.record("Expected a progress failure event")
+            return
+        }
+        #expect(bookId == book.stableId)
+        #expect(message == validation.localizedDescription)
+        #expect(!retryable)
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func newSubscribersSeeAPersistedValidationFailure() async throws {
+        let fixture = makeStore()
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        let book = Book(id: UUID().uuidString, title: "Blocked fixture", source: .bookOrbit, mediaType: .ebook)
+        fixture.store.enqueue(entry(id: book.stableId, updatedAt: 10))
+        fixture.store.suspend(stableId: book.stableId, validationFailureMessage: "Reading position could not sync")
+        let restored = PendingSyncQueueStore(defaults: fixture.defaults, storageKey: fixture.storageKey)
+        let flusher = PendingSyncQueueFlusher(store: restored, transport: PendingSyncTransportStub())
+        let coordinator = SyncCoordinator(
+            providerResolver: PendingSyncProviderResolverStub(),
+            pendingSyncFlusher: flusher,
+            recentlyPlayedSync: PendingSyncRecentlyPlayedStub()
+        )
+        let events = coordinator.subscribe(book: book)
+        var iterator = events.makeAsyncIterator()
+        let event = try #require(await iterator.next())
+
+        guard case .pushFailed(let bookId, let message, let retryable) = event else {
+            Issue.record("Expected the persisted validation error")
+            return
+        }
+        #expect(bookId == book.stableId)
+        #expect(message == flusher.validationFailure(for: book.stableId))
+        #expect(!retryable)
     }
 
     private func entry(id: String, updatedAt: TimeInterval) -> PendingServerSync {

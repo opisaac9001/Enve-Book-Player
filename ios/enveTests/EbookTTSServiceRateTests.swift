@@ -34,7 +34,11 @@ struct EbookTTSServiceRateTests {
         let tts = EbookTTSService(userDefaults: defaults)
 
         tts.rate = 2.25
-        try await Task.sleep(for: .milliseconds(600))
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(5))
+        while defaults.double(forKey: Self.rateKey) != 2.25, clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(25))
+        }
 
         #expect(defaults.double(forKey: Self.rateKey) == 2.25)
     }

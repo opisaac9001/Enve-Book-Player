@@ -54,7 +54,13 @@ final class CompanionReceiverService_tvOS {
     private init() {}
 
     func startDiscovering() async {
-        guard browser == nil else { return }
+        if browser != nil {
+            if connection == nil {
+                state = .discovering
+                scheduleReconnectFromCachedResults()
+            }
+            return
+        }
         state = .discovering
 
         let parameters = NWParameters.tcp
@@ -63,27 +69,33 @@ final class CompanionReceiverService_tvOS {
             using: parameters
         )
 
-        browser.browseResultsChangedHandler = { [weak self] results, _ in
-            Task { @MainActor [weak self] in
-                self?.handleBrowseResults(results)
+        browser.browseResultsChangedHandler = { [weak self, weak browser] results, _ in
+            Task { @MainActor [weak self, weak browser] in
+                guard let self, let browser, self.browser === browser else { return }
+                self.handleBrowseResults(results)
             }
         }
-        browser.stateUpdateHandler = { [weak self] browserState in
-            Task { @MainActor [weak self] in
+        browser.stateUpdateHandler = { [weak self, weak browser] browserState in
+            Task { @MainActor [weak self, weak browser] in
+                guard let self, let browser, self.browser === browser else { return }
                 switch browserState {
                 case .ready:
                     AppLogger.network.info("[Companion] Browser ready")
                 case .failed(let error):
                     AppLogger.network.warning("[Companion] Browser failed: \(error.localizedDescription)")
-                    self?.state = .error(error as NSError)
+                    browser.cancel()
+                    self.browser = nil
+                    self.reconnectTask?.cancel()
+                    self.reconnectTask = nil
+                    if self.connection == nil { self.state = .error(error as NSError) }
                 default:
                     break
                 }
             }
         }
 
-        browser.start(queue: .main)
         self.browser = browser
+        browser.start(queue: .main)
     }
 
     func sendPageCommand(_ direction: PageCommandPayload.Direction) {
@@ -196,6 +208,13 @@ final class CompanionReceiverService_tvOS {
         connection = nil
         session = nil
         resetParserBuffers()
+        guard browser != nil else {
+            state = .error(NSError(
+                domain: "CompanionReceiver", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Discovery stopped. Try again to find your iPhone."]
+            ))
+            return
+        }
         if case .connected = state {
             state = .discovering
         }

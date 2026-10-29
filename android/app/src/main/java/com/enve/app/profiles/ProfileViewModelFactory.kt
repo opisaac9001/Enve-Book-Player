@@ -26,6 +26,7 @@ class ProfileViewModelFactory(private val component: com.enve.app.profiles.Profi
     override fun <T : ViewModel> create(modelClass: Class<T>, extras: CreationExtras): T {
         check(!retired)
         val model = when (modelClass) {
+        com.enve.hearth.listeningposition.ListeningPositionViewModel::class.java -> com.enve.hearth.listeningposition.ListeningPositionViewModel(component.listeningPosition())
         com.enve.app.viewmodel.KOReaderHubViewModel::class.java -> com.enve.app.viewmodel.KOReaderHubViewModel(
             component.koReaderHubService(),
             component.bookCacheDao(),
@@ -112,6 +113,9 @@ class ProfileViewModelFactory(private val component: com.enve.app.profiles.Profi
             component.readerSearchPreferences(),
             component.resources().scope,
             component.database(),
+            component.readium(),
+            component.hearthPreferences(),
+            component.hardcoverSync(),
         )
         com.enve.app.viewmodel.DictionariesSettingsViewModel::class.java -> com.enve.app.viewmodel.DictionariesSettingsViewModel(
             component.installedDictionariesStore(),
@@ -127,6 +131,8 @@ class ProfileViewModelFactory(private val component: com.enve.app.profiles.Profi
         )
         com.enve.app.viewmodel.HardcoverHubViewModel::class.java -> com.enve.app.viewmodel.HardcoverHubViewModel(
             component.hardcoverService(),
+            component.hardcoverSync(),
+            component.library(),
         )
         com.enve.app.viewmodel.TipJarViewModel::class.java -> com.enve.app.viewmodel.TipJarViewModel(
             component.resources().context,
@@ -340,6 +346,7 @@ class ProfileViewModelFactory(private val component: com.enve.app.profiles.Profi
             component.bookOrbitOidcFlow(),
             component.siloOidcFlow(),
             component.passwordLogins(),
+            component.deviceAnnouncements(),
         )
         else -> throw IllegalArgumentException("Unsupported profile ViewModel: ${modelClass.name}")
         } as T

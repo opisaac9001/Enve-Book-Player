@@ -125,7 +125,13 @@ class SyncCenterViewModel @Inject constructor(
                 repository.invalidateListCaches()
                 val result = recentlyPlayedSyncService.sync(com.enve.app.data.sync.ServerStatusSyncTrigger.MANUAL_SYNC)
                 val summary = "Synced ${result.mergedItemCount} item(s) (${result.pulledItemCount} pulled, ${result.pushedItemCount} pushed)"
-                _state.update { it.copy(lastSyncResult = summary) }
+                val error = when {
+                    result.attemptedStrategyCount == 0 -> "Server sync is disabled."
+                    result.hasFailures -> "Could not sync: ${result.failedStrategies.joinToString()}"
+                    else -> null
+                }
+                if (error == null) prefs.setLastSyncTime(System.currentTimeMillis())
+                _state.update { it.copy(lastSyncResult = summary, error = error) }
             }.onFailure { e ->
                 _state.update { it.copy(error = e.message ?: "Sync failed") }
             }

@@ -119,7 +119,7 @@ struct HardcoverStatusChip: View {
         case .currentlyReading: hearth.ember
         case .finished: hearth.statusOK
         case .wantToRead: hearth.statusWarn
-        case .didNotFinish: hearth.textTertiary
+        case .paused, .didNotFinish, .ignored: hearth.textTertiary
         }
     }
 }

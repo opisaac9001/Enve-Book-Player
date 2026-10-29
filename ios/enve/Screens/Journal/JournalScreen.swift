@@ -179,15 +179,28 @@ struct JournalScreen: View {
                 }
             }
             .padding(.horizontal, 24)
-            let cellWidth = max(1, (width - 32) / 3)
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 16, alignment: .top), count: 3), spacing: 16) {
-                ForEach(finished, id: \.stableId) { book in
-                    NavigationLink {
-                        BookDetailScreen(book: book)
-                    } label: {
-                        ShelfCoverCell(book: book, width: cellWidth, showsProgress: false)
+            let cellWidth = max(1, (width - 80) / 3)
+            VStack(spacing: 20) {
+                ForEach(Array(stride(from: 0, to: finished.count, by: 3)), id: \.self) { start in
+                    let row = Array(finished[start..<min(start + 3, finished.count)])
+                    let rowRatio = row.map(\.hearthCoverRatio).max() ?? 1
+                    HStack(alignment: .top, spacing: 16) {
+                        ForEach(row, id: \.stableId) { book in
+                            NavigationLink {
+                                BookDetailScreen(book: book)
+                            } label: {
+                                ShelfCoverCell(book: book, width: cellWidth, cellRatio: rowRatio, showsProgress: false)
+                            }
+                            .buttonStyle(PressableStyle())
+                        }
                     }
-                    .buttonStyle(PressableStyle())
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .overlay(alignment: .top) {
+                        ShelfLedge()
+                            .padding(.top, cellWidth * rowRatio - 1)
+                            .padding(.horizontal, -10)
+                            .allowsHitTesting(false)
+                    }
                 }
             }
             .padding(.horizontal, 24)

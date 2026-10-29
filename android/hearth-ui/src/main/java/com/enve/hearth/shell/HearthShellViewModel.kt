@@ -13,6 +13,7 @@ import com.enve.engine.playback.PlaybackTransport
 import com.enve.engine.playback.PlayerSessionFacade
 import com.enve.engine.prefs.PreferencesFacade
 import com.enve.engine.prefs.HearthStartTab
+import com.enve.engine.theme.HearthPaletteStyle
 import com.enve.engine.theme.HearthThemeMode
 import com.enve.hearth.observeLastOpenedBook
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -63,6 +64,8 @@ class HearthShellViewModel @Inject constructor(
         prefs.themeMode.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), HearthThemeMode.SYSTEM)
     val oled: StateFlow<Boolean> =
         prefs.oledEnabled.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+    val paletteStyle: StateFlow<HearthPaletteStyle> =
+        prefs.paletteStyle.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), HearthPaletteStyle.PARCHMENT)
     val uiTextScale: StateFlow<Float> =
         prefs.uiTextScale.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 1f)
     val reduceMotion: StateFlow<Boolean> =
@@ -71,6 +74,8 @@ class HearthShellViewModel @Inject constructor(
         prefs.accentHex.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "#F5921A")
     val preferredStartTab: StateFlow<HearthStartTab?> =
         prefs.preferredStartTab.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+    val showDockBookShortcut: StateFlow<Boolean> =
+        prefs.showDockBookShortcut.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
 
     fun togglePlayPause() = playback.togglePlayPause()
     fun openAudio(book: Book) = playback.open(book)

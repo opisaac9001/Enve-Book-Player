@@ -1,5 +1,6 @@
 package com.enve.engine.prefs
 
+import com.enve.engine.theme.HearthPaletteStyle
 import com.enve.engine.theme.HearthThemeMode
 import com.enve.core.data.model.ComicPageLoadingMode
 import kotlinx.coroutines.flow.Flow
@@ -24,9 +25,18 @@ enum class ReadNextPosition(val label: String) {
     BOTTOM("Bottom"),
 }
 
+enum class EbookSyncInterval(val label: String, val milliseconds: Long) {
+    AUTOMATIC("Automatic", 0L),
+    THIRTY_SECONDS("30 seconds", 30_000L),
+    ONE_MINUTE("1 minute", 60_000L),
+    FIVE_MINUTES("5 minutes", 300_000L),
+    TWELVE_MINUTES("12 minutes", 720_000L),
+}
+
 interface PreferencesFacade {
     val themeMode: Flow<HearthThemeMode>
     val oledEnabled: Flow<Boolean>
+    val paletteStyle: Flow<HearthPaletteStyle>
     val uiTextScale: Flow<Float>
 
     val reduceMotion: Flow<Boolean>
@@ -51,9 +61,13 @@ interface PreferencesFacade {
     val comicPageLoadingMode: Flow<ComicPageLoadingMode>
     val preferredStartTab: Flow<HearthStartTab>
     val homeSectionOrder: Flow<List<HearthHomeSection>>
+    val showDockBookShortcut: Flow<Boolean>
+    val showTodayStack: Flow<Boolean>
+    val ebookSyncInterval: Flow<EbookSyncInterval>
 
     suspend fun setThemeMode(mode: HearthThemeMode)
     suspend fun setOledEnabled(enabled: Boolean)
+    suspend fun setPaletteStyle(style: HearthPaletteStyle)
     suspend fun setUiTextScale(scale: Float)
     suspend fun setAccentHex(hex: String)
     suspend fun setSkipForwardSeconds(seconds: Int)
@@ -71,4 +85,7 @@ interface PreferencesFacade {
     suspend fun setComicPageLoadingMode(mode: ComicPageLoadingMode)
     suspend fun setPreferredStartTab(tab: HearthStartTab)
     suspend fun setHomeSectionOrder(order: List<HearthHomeSection>)
+    suspend fun setShowDockBookShortcut(show: Boolean)
+    suspend fun setShowTodayStack(show: Boolean)
+    suspend fun setEbookSyncInterval(interval: EbookSyncInterval)
 }

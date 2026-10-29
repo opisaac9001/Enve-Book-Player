@@ -107,6 +107,10 @@ final class LibraryEngine {
         catalog.isRefreshing
     }
 
+    func refreshFailure(for source: LibrarySourceFilter) -> LibraryRefreshFailure? {
+        catalog.refreshFailure(for: source)
+    }
+
     func refreshLibrary() async {
         let signpost = PerfSignpost.begin("library-refresh")
         defer { PerfSignpost.end(signpost) }
@@ -530,7 +534,7 @@ final class LibraryEngine {
 
     func unlinkAudiobook(from ebook: Book) -> Book {
         if (profileSession?.ebookLinker ?? EbookAudiobookLinker.shared).linkedAudiobook(for: ebook) != nil {
-            if profileSession?.isOwner ?? true, #available(iOS 26.0, *) {
+            if profileSession?.isOwner ?? true {
                 (profileSession?.storyAlignService ?? StoryAlignService.shared).deleteConversions(involving: ebook)
             }
         }

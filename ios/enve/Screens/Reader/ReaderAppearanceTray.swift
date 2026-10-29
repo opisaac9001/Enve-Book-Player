@@ -6,6 +6,7 @@ struct ReaderAppearanceTray: View {
     @ObservedObject var model: ClassicReaderModel
 
     @Environment(\.hearth) private var hearth
+    @Environment(\.dismiss) private var dismiss
     private let fontLibrary = ReaderFontLibrary.shared
     @State private var installingFontId: String?
     @State private var showingFontImporter = false
@@ -18,7 +19,16 @@ struct ReaderAppearanceTray: View {
                 case .readyComic:
                     comicControls
                 case .readyPDF:
+                    HStack {
+                        Overline("PDF appearance")
+                        Spacer()
+                        Button("Done") { dismiss() }
+                            .tint(hearth.ember)
+                            .frame(minWidth: 44, minHeight: 44)
+                            .accessibilityIdentifier("reader-pdf-appearance-done")
+                    }
                     flowControls
+                    pdfLayoutControls
                 default:
                     epubControls
                 }
@@ -329,6 +339,54 @@ struct ReaderAppearanceTray: View {
                         model.appearance.scrollEnabled = true
                     }
                 }
+            }
+        }
+    }
+
+    private var pdfLayoutControls: some View {
+        let layout = model.pdfLayout
+        return VStack(alignment: .leading, spacing: 12) {
+            Overline("Pages")
+            VStack(spacing: 0) {
+                comicToggleRow(
+                    title: "Two-page view",
+                    note: "Show facing pages side by side.",
+                    isOn: Binding(
+                        get: { model.pdfLayout.twoPageEnabled },
+                        set: { value in
+                            PlatformHaptics.selection()
+                            var next = model.pdfLayout
+                            next.twoPageEnabled = value
+                            model.setPDFLayout(next)
+                        }
+                    )
+                )
+                .accessibilityIdentifier("reader-pdf-two-page")
+                comicDivider
+                comicToggleRow(
+                    title: "Show cover separately",
+                    note: "Keep the first page on its own, then pair the rest.",
+                    isOn: Binding(
+                        get: { model.pdfLayout.showsCoverSeparately },
+                        set: { value in
+                            PlatformHaptics.selection()
+                            var next = model.pdfLayout
+                            next.showsCoverSeparately = value
+                            model.setPDFLayout(next)
+                        }
+                    )
+                )
+                .accessibilityIdentifier("reader-pdf-cover-separately")
+                .disabled(!layout.twoPageEnabled)
+                .opacity(layout.twoPageEnabled ? 1 : 0.48)
+            }
+            .background {
+                RoundedRectangle(cornerRadius: Hearth.radiusInner, style: .continuous)
+                    .fill(hearth.bgElevated)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: Hearth.radiusInner, style: .continuous)
+                            .strokeBorder(hearth.hairline, lineWidth: 1)
+                    }
             }
         }
     }
@@ -679,6 +737,7 @@ private struct ReaderAutomaticThemeRow: View {
     @Binding var selection: ReaderThemeOption
 
     @Environment(\.hearth) private var hearth
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         Menu {
@@ -729,6 +788,7 @@ private struct ReaderThemeCard: View {
     let action: () -> Void
 
     @Environment(\.hearth) private var hearth
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         Button(action: action) {
@@ -779,6 +839,7 @@ private struct ReaderStepperRow: View {
     let onIncrease: () -> Void
 
     @Environment(\.hearth) private var hearth
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         HStack(spacing: 12) {

@@ -360,7 +360,6 @@ public class AppState {
     }
 
     private func scheduleReadAloudLibrarySyncIfNeeded() {
-        guard #available(iOS 26.0, *) else { return }
         guard !hasScheduledReadAloudLibrarySync else { return }
 
         hasScheduledReadAloudLibrarySync = true

@@ -29,8 +29,10 @@ object ReadAloudEpubBuilder {
         alignedChapters: List<AlignedChapter>,
         audioClips: List<AudioClipFile>,
         modifiedIso: String,
+        quality: StoryAlignOutputQuality? = null,
+        fullSourceTagging: Boolean = false,
     ): ByteArray {
-        val (entries, opfDir) = prepareEntries(original, doc, alignedChapters, modifiedIso)
+        val (entries, opfDir) = prepareEntries(original, doc, alignedChapters, modifiedIso, quality, fullSourceTagging)
         for (clip in audioClips) entries[audioPath(opfDir, clip.name)] = clip.bytes
         return rezip(entries)
     }
@@ -42,8 +44,10 @@ object ReadAloudEpubBuilder {
         alignedChapters: List<AlignedChapter>,
         audioClips: List<AudioClipRef>,
         modifiedIso: String,
+        quality: StoryAlignOutputQuality? = null,
+        fullSourceTagging: Boolean = false,
     ) {
-        val (entries, opfDir) = prepareEntries(original, doc, alignedChapters, modifiedIso)
+        val (entries, opfDir) = prepareEntries(original, doc, alignedChapters, modifiedIso, quality, fullSourceTagging)
         BufferedOutputStream(FileOutputStream(outFile)).use { bos ->
             ZipOutputStream(bos).use { zos ->
                 entries["mimetype"]?.let { writeStored(zos, "mimetype", it) }
@@ -76,8 +80,12 @@ object ReadAloudEpubBuilder {
         doc: EpubDocument,
         alignedChapters: List<AlignedChapter>,
         modifiedIso: String,
+        quality: StoryAlignOutputQuality?,
+        fullSourceTagging: Boolean,
     ): Pair<LinkedHashMap<String, ByteArray>, String> {
         val entries = LinkedHashMap(original.entries())
+        entries.remove(StoryAlignOutputQuality.ENTRY)
+        if (quality != null) entries[StoryAlignOutputQuality.ENTRY] = quality.encode()
         val opfDir = doc.opfPath.substringBeforeLast('/', "")
         fun underOpf(rel: String) = if (opfDir.isEmpty()) rel else "$opfDir/$rel"
 
@@ -93,13 +101,30 @@ object ReadAloudEpubBuilder {
 
             val originalXhtml = chapter.manifestItem.xhtml
                 ?: entries[chapterPath]?.toString(Charsets.UTF_8)
-                ?: continue
+                ?: if (fullSourceTagging) error("Aligned chapter XHTML is missing") else continue
+            val accepted = chapter.alignedSentences.filter { it.sentenceRange.duration > 0.0 }
+            val sentences = if (fullSourceTagging) {
+                chapter.manifestItem.xhtmlSentences.mapIndexed { id, sentence ->
+                    XhtmlSentenceTagger.TaggedSentence("$manifestId-${AssetPaths.SENTENCE_PFX}$id", sentence)
+                }
+            } else accepted.map {
+                XhtmlSentenceTagger.TaggedSentence("$manifestId-${AssetPaths.SENTENCE_PFX}${it.sentenceId}", it.xhtmlSentence)
+            }
             val tagged = XhtmlSentenceTagger().tag(
                 originalXhtml,
-                chapter.alignedSentences
-                    .filter { it.sentenceRange.duration > 0.0 }
-                    .map { XhtmlSentenceTagger.TaggedSentence("$manifestId-${AssetPaths.SENTENCE_PFX}${it.sentenceId}", it.xhtmlSentence) },
+                sentences,
+                allowInlineRanges = fullSourceTagging,
             )
+            if (fullSourceTagging) {
+                val xhtml = org.jsoup.Jsoup.parse(tagged.xhtml, "", org.jsoup.parser.Parser.xmlParser())
+                for (sentence in accepted) {
+                    check(sentence.sentenceId == sentence.sentenceRange.id) { "Alignment sentence IDs disagree" }
+                    val id = "$manifestId-${AssetPaths.SENTENCE_PFX}${sentence.sentenceId}"
+                    val targets = xhtml.getElementsByAttributeValue("id", id)
+                    check(targets.size == 1 && targets.single().wholeText().filterNot { it.isWhitespace() } ==
+                        sentence.xhtmlSentence.filterNot { it.isWhitespace() }) { "Aligned sentence target could not be verified: $id" }
+                }
+            }
             entries[chapterPath] = tagged.xhtml.toByteArray(Charsets.UTF_8)
 
             val overlay = MediaOverlay.fromChapter(manifestId, href, basename, ranges)

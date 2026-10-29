@@ -608,6 +608,12 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         let percentage: Double?
         let positionSeconds: Double?
         let updatedAt: Date?
+        let textUpdatedAt: Date?
+        let narrationUpdatedAt: Date?
+
+        var textPositionUpdatedAt: Date? {
+            textUpdatedAt ?? (narrationUpdatedAt == nil ? updatedAt : nil)
+        }
     }
 
     private struct CurrentlyReadingWidgetDTO: Decodable { let books: [CurrentlyReadingBookDTO] }
@@ -1093,7 +1099,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         else {
             return nil
         }
-        return (progress.percentage, progress.updatedAt, progress.cfi)
+        return (progress.percentage, progress.textPositionUpdatedAt ?? .distantPast, progress.cfi)
     }
 
     func fetchActivitySnapshot() async throws -> [ActivityRecord] {
@@ -1198,7 +1204,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
                 status: candidate.status,
                 progress: progress,
                 epubCFI: exact?.cfi,
-                updatedAt: max(candidate.statusUpdatedAt, exact?.updatedAt ?? .distantPast),
+                updatedAt: exact?.updatedAt ?? candidate.statusUpdatedAt,
                 rating: candidate.card.rating
             )
         }
@@ -1227,7 +1233,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
             return (
                 Book.normalizedFractionProgress(progress.percentage.map { $0 / 100 }) ?? 0,
                 nil,
-                nil
+                candidate.statusUpdatedAt
             )
         }
 
@@ -1244,7 +1250,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         return (
             Book.normalizedFractionProgress(progress.percentage.map { $0 / 100 }) ?? 0,
             progress.cfi,
-            progress.updatedAt
+            progress.textPositionUpdatedAt ?? .distantPast
         )
     }
 
@@ -1326,6 +1332,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
             language: dto.language
         )
         book.mediaType = isAudiobook ? .audiobook : .ebook
+        book.ebookFormat = isAudiobook ? nil : primaryFile?.format?.lowercased()
         if let rawStatus = dto.readStatus?.status,
             let status = BookOrbitReadStatus(rawValue: rawStatus)
         {
@@ -1386,6 +1393,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
             language: dto.language
         )
         book.mediaType = isAudiobook ? .audiobook : .ebook
+        book.ebookFormat = isAudiobook ? nil : primaryFile?.format?.lowercased()
         if let rawStatus = dto.readStatus?.status,
             let status = BookOrbitReadStatus(rawValue: rawStatus)
         {
@@ -1794,9 +1802,10 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
     func updatePersonalRating(for book: Book, rating: Int) async throws {
         guard let bookId = Int(book.id) else { throw ProviderError.invalidURL }
         let body = try JSONSerialization.data(withJSONObject: [
+            "bookIds": [bookId],
             "rating": min(max(rating, 1), 5)
         ])
-        let (_, http) = try await perform("books/\(bookId)/metadata", method: "PATCH", body: body)
+        let (_, http) = try await perform("books/bulk-set-rating", method: "POST", body: body)
         guard (200...299).contains(http.statusCode) else {
             throw ProviderError.serverError("Failed to update BookOrbit rating (HTTP \(http.statusCode))")
         }
@@ -1844,6 +1853,12 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
 
     func downloadEbook(for book: Book, onProgress: (@Sendable (Double) -> Void)? = nil) async throws -> URL {
         if let cached = ebookImporter.cachedEbook(forBookId: book.id) {
+            if cached.pathExtension.lowercased() != "pdf", try Self.isPDF(cached) {
+                let corrected = cached.deletingPathExtension().appendingPathExtension("pdf")
+                try FileManager.default.moveItem(at: cached, to: corrected)
+                onProgress?(1)
+                return corrected
+            }
             onProgress?(1)
             return cached
         }
@@ -1888,22 +1903,37 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         }
         onProgress?(1)
 
-        var filename = "\(book.title.replacingOccurrences(of: "/", with: "-")).epub"
-        if let header = http.allHeaderFields["Content-Disposition"] as? String,
-            let range = header.range(of: "filename=\"") ?? header.range(of: "filename=")
-        {
-            let start = range.upperBound
-            let end = header[start...].firstIndex(of: "\"") ?? header.endIndex
-            filename = String(header[start..<end])
+        let isPDF = try Self.isPDF(tempURL)
+        let format = isPDF || http.mimeType == "application/pdf" ? "pdf" : (book.ebookFormat ?? "epub")
+        var filename = "\(book.title.replacingOccurrences(of: "/", with: "-")).\(format)"
+        if http.value(forHTTPHeaderField: "Content-Disposition") != nil, let suggested = http.suggestedFilename {
+            filename = suggested
+        }
+        if isPDF {
+            filename = (filename as NSString).deletingPathExtension + ".pdf"
         }
 
         return try ebookImporter.cacheRemoteEbook(tempURL: tempURL, preferredFilename: filename, bookIdentifier: book.id)
     }
 
+    private static func isPDF(_ url: URL) throws -> Bool {
+        guard try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else { return false }
+        let file = try FileHandle(forReadingFrom: url)
+        defer { try? file.close() }
+        return try file.read(upToCount: 5) == Data("%PDF-".utf8)
+    }
+
     func updateEbookProgress(for book: Book, progress: Double, epubLocator: String?) async throws {
         guard let ino = book.audioFileIno, let fileId = Int(ino) else { throw ProviderError.unauthorized }
         var payload: [String: Any] = ["percentage": min(max(progress * 100, 0), 100)]
-        if let cfi = Self.extractCFI(from: epubLocator) { payload["cfi"] = cfi }
+        if let cfi = Self.extractCFI(from: epubLocator) {
+            guard cfi.unicodeScalars.count <= 2_000 else {
+                throw ProgressValidationError(
+                    message: "BookOrbit cannot accept this reading position. The saved position on this device has been kept."
+                )
+            }
+            payload["cfi"] = cfi
+        }
         let body = try JSONSerialization.data(withJSONObject: payload)
         let (_, http) = try await perform("books/files/\(fileId)/progress", method: "POST", body: body)
         guard (200...299).contains(http.statusCode) else {
@@ -1925,7 +1955,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
             fraction: progress,
             sourceEngine: .foliate
         )
-        return (progress: progress, locator: locator, updatedAt: dto.updatedAt, isFinished: progress >= Book.finishedProgressThreshold)
+        return (progress: progress, locator: locator, updatedAt: dto.textPositionUpdatedAt, isFinished: progress >= Book.finishedProgressThreshold)
     }
 
     private static let sessionDateFormatter: ISO8601DateFormatter = {

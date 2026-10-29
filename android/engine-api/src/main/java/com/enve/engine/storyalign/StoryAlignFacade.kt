@@ -1,16 +1,21 @@
 package com.enve.engine.storyalign
 
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.serialization.Serializable
 
 enum class StoryAlignStatus { QUEUED, RUNNING, PAUSED, FAILED, CANCELLED, DONE }
 
-enum class StoryAlignStage { DOWNLOAD, EPUB_PARSE, AUDIO_EXTRACT, TRANSCRIBE, ALIGN, EXPORT, REGISTER }
+enum class StoryAlignStage { DOWNLOAD, EPUB_PARSE, AUDIO_EXTRACT, TRANSCRIBE, ANALYZE, ALIGN, EXPORT, REGISTER }
+
+@Serializable
+enum class StoryAlignEngine { WHISPER, QUARTZNET_CTC }
 
 enum class StoryAlignGranularity { SENTENCE, PHRASE, SEGMENT, GROUP, WORD }
 
 @Serializable
 data class StoryAlignSettings(
+    val engine: StoryAlignEngine = StoryAlignEngine.WHISPER,
     val granularity: StoryAlignGranularity = StoryAlignGranularity.SENTENCE,
     val expandGranularity: Boolean = false,
     val model: String = "tiny.en",
@@ -37,6 +42,8 @@ data class StoryAlignJobUi(
     val updatedAt: Long,
     val keptPreviousReason: String? = null,
     val hasPreviousOutput: Boolean = false,
+    val alignedSentences: Int? = null,
+    val totalSentences: Int? = null,
 ) {
     val isActive: Boolean
         get() = status == StoryAlignStatus.QUEUED || status == StoryAlignStatus.RUNNING || status == StoryAlignStatus.PAUSED
@@ -52,6 +59,10 @@ data class StoryAlignPairUi(
 )
 
 interface StoryAlignFacade {
+
+    val preferredEngine: StateFlow<StoryAlignEngine>
+
+    suspend fun setPreferredEngine(engine: StoryAlignEngine)
 
     val jobs: Flow<List<StoryAlignJobUi>>
 

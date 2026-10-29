@@ -7,11 +7,11 @@ This runbook publishes a stable source snapshot from the private development rep
 | Role | Repository | Branch |
 | --- | --- | --- |
 | Development source and private history | `opisaac9001/Enve-Book-Player-iOS` | `main` |
-| Sanitized public snapshots | `opisaac9001/Enve-Book-Player` | `main` |
+| Sanitized public snapshots, iOS under `ios/` and Android under `android/` | `opisaac9001/Enve-Book-Player` | `main` |
 
 Use separate checkouts. Never add the private repository as a remote of the public checkout, merge or cherry-pick private commits into it, or copy `.git`. A release transfers reviewed files, not history.
 
-Keep the destination private while preparing a snapshot. Making it public requires a separate, explicit maintainer instruction.
+For a new destination, keep it private until the maintainer explicitly approves publication. The existing combined repository is already public; prepare its update locally without changing visibility. A local diff is not permission to push it.
 
 ## 1. Verify both checkouts
 
@@ -26,21 +26,21 @@ git fetch --prune origin
 git status --short --branch
 ```
 
-Both working trees must be clean, on `main`, and current with these remotes:
+Before exporting, commit and verify the intended development changes. Both working trees must then be clean, on `main`, and current with these remotes:
 
 ```text
 https://github.com/opisaac9001/Enve-Book-Player-iOS.git
 https://github.com/opisaac9001/Enve-Book-Player.git
 ```
 
-Confirm the destination is private:
+Record the destination's visibility:
 
 ```sh
 gh repo view opisaac9001/Enve-Book-Player \
   --json nameWithOwner,visibility,url
 ```
 
-Stop on a dirty tree, unexpected remote, wrong branch, diverged branch, or public destination.
+Stop on an unexpected remote, wrong branch, diverged branch, or unrelated destination changes. Preserve existing development work while reviewing and committing it; never export uncommitted files or discard them to obtain a clean tree.
 
 ## 2. Find the source boundary
 
@@ -89,16 +89,16 @@ An unexpectedly tracked private file blocks the release. Remove it from source c
 
 ## 4. Preserve the public surface
 
-Do not blanket-overwrite files owned by the public repository:
+Keep the public repository's root community files and assets intact:
 
 - `README.md`
 - `LICENSE.md`, `NOTICE.md`, and `THIRD_PARTY_NOTICES.md`
 - `CONTRIBUTING.md` and `SECURITY.md`
 - `CODE_OF_CONDUCT.md`, `SUPPORT.md`, and `RELEASES.md`
 - `.github/`
-- public screenshots and branding under `assets/`
+- public screenshots and branding under `screenshots/` or `assets/`
 
-Merge changes to these files manually. `CLAUDE.md`, `AGENTS.md`, `ARCHITECTURE.md`, and `DEVELOPMENT.md` should follow current architecture while retaining public contribution, build, and security guidance.
+Merge platform notice, README, contribution, and security changes manually inside `ios/`. Preserve public-only platform release notes. The root `CLAUDE.md` and `AGENTS.md` route contributors to each platform and must not be replaced by the private iOS guides. The guides inside `ios/` should follow current architecture while retaining public build and security guidance.
 
 Application source, tests, Xcode project files, maintained local packages, build support, and technical documentation normally follow the reviewed private snapshot.
 
@@ -108,6 +108,7 @@ Use a checksum dry run to reveal the full proposed transfer:
 
 ```sh
 PUBLIC_REPO="/path/to/Enve-Book-Player"
+PUBLIC_IOS="$PUBLIC_REPO/ios"
 
 rsync -rinc --delete \
   --exclude='.git/' \
@@ -124,7 +125,7 @@ rsync -rinc --delete \
   --exclude='.github/' \
   --exclude='assets/' \
   --exclude='ThirdParty/foliate-js/' \
-  "$EXPORT_DIR/" "$PUBLIC_REPO/"
+  "$EXPORT_DIR/" "$PUBLIC_IOS/"
 ```
 
 Classify every addition, modification, and deletion. Unexplained changes block the release. The dry run is not permission to run a root-level `rsync --delete`; transfer reviewed incremental paths and deletions explicitly.
@@ -133,10 +134,10 @@ Classify every addition, modification, and deletion. Unexplained changes block t
 
 ```sh
 git -C "$SOURCE_REPO" ls-tree HEAD ThirdParty/foliate-js
-git -C "$PUBLIC_REPO" ls-tree HEAD ThirdParty/foliate-js
+git -C "$PUBLIC_REPO" ls-tree HEAD ios/ThirdParty/foliate-js
 ```
 
-If the revisions differ, fetch and check out the exact source revision inside the public submodule, then stage the parent repository's gitlink. Never copy the submodule's `.git` data.
+If the revisions differ, fetch and check out the exact source revision inside `ios/ThirdParty/foliate-js`, then stage the parent repository's gitlink. Never copy the submodule's `.git` data. Do not transfer the private `.gitmodules` file over the public root file, which declares both platform submodules.
 
 After copying, review the destination rather than the source commit:
 
@@ -184,7 +185,7 @@ Read `docs/legal/THIRD_PARTY_AUDIT.md` when dependencies, vendored source, model
 
 ## 7. Verify the public checkout
 
-Build and test an Apple-silicon simulator from the destination:
+Build and test an Apple-silicon simulator from the destination's `ios/` directory:
 
 ```sh
 xcodebuild -project enve.xcodeproj \
@@ -196,6 +197,7 @@ xcodebuild -project enve.xcodeproj \
 xcodebuild -project enve.xcodeproj \
   -scheme enve \
   -testPlan AllTests \
+  -parallel-testing-enabled NO \
   -destination 'platform=iOS Simulator,id=<simulator-udid>' \
   -derivedDataPath .build/DerivedData \
   test
@@ -235,7 +237,7 @@ git ls-remote origin refs/heads/main
 
 gh run list \
   --repo opisaac9001/Enve-Book-Player \
-  --workflow ios-ci.yml \
+  --workflow ios.yml \
   --limit 5
 
 gh run watch <run-id> \
@@ -243,7 +245,7 @@ gh run watch <run-id> \
   --exit-status
 ```
 
-`Build and test` must pass. Confirm branch protection still requires review, code-owner approval, linear history, conversation resolution, and CI, with force pushes and deletions disabled.
+The current iOS workflow validates provenance and the Xcode project; its `Build and test` name does not establish a compiled app or test run. Local build, `AllTests`, and runtime evidence remain required. When updating both platforms, also watch `android.yml`. Confirm required branch protection remains intact.
 
 ## 10. Record the successful boundary
 
@@ -261,7 +263,7 @@ Tags are immutable. Use a numbered tag for a correction. Record the private tag,
 
 ## 11. Publish visibility separately
 
-After explicit maintainer approval:
+For a new private destination only, after explicit maintainer approval:
 
 ```sh
 gh repo edit opisaac9001/Enve-Book-Player \
@@ -272,7 +274,7 @@ gh repo view opisaac9001/Enve-Book-Player \
   --json nameWithOwner,visibility,url
 ```
 
-A request to prepare, sanitize, test, commit, or push is not permission to make the repository public.
+A request to prepare, sanitize, test, commit, or push is not permission to change repository visibility. Skip this step for the existing public destination.
 
 ## Incident handling
 
@@ -283,7 +285,7 @@ For leaked sensitive data, revoke or rotate it first, make the repository privat
 ## Final checklist
 
 - [ ] Repository identities, remotes, branches, and clean states verified
-- [ ] Destination confirmed private
+- [ ] Destination visibility recorded; no unrequested visibility change
 - [ ] Previous private source boundary identified without guessing
 - [ ] Protected changed files authorized for this task
 - [ ] Export contains tracked files only

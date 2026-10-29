@@ -1,0 +1,184 @@
+{
+  "mappings": [
+    {
+      "name": "opds2-root",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/v2/root.json"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/opds+json;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/v2/root.json"
+      }
+    },
+    {
+      "name": "opds2-page2",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/v2/page2.json"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/opds+json;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/v2/page2.json"
+      }
+    },
+    {
+      "name": "opds2-publication-lab-ebook-001",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/v2/publication/lab-ebook-001.json"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/opds-publication+json;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/v2/publication-lab-ebook-001.json"
+      }
+    },
+    {
+      "name": "opds2-nav-ebooks",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/v2/nav/ebooks.json"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/opds+json;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/v2/nav-ebooks.json"
+      }
+    },
+    {
+      "name": "opds2-nav-audiobooks",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/v2/nav/audiobooks.json"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/opds+json;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/v2/nav-audiobooks.json"
+      }
+    },
+    {
+      "name": "opds2-nav-progression",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/v2/nav/progression.json"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/opds+json;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/v2/nav-progression.json"
+      }
+    },
+    {
+      "name": "opds2-nav-edge-cases",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/v2/nav/edge-cases.json"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/opds+json;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/v2/nav-edge-cases.json"
+      }
+    },
+    {
+      "name": "opds2-group-new-releases",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/v2/group/new-releases.json"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/opds+json;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/v2/group-new-releases.json"
+      }
+    },
+    {
+      "name": "opds2-catalog-partner",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/v2/catalog/partner.json"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/opds+json;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/v2/catalog-partner.json"
+      }
+    },
+    {
+      "name": "opds2-facet-language-en",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/v2/facet/language-en.json"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/opds+json;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/v2/facet-language-en.json"
+      }
+    },
+    {
+      "name": "opds2-facet-sort-title",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/v2/facet/sort-title.json"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/opds+json;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/v2/facet-sort-title.json"
+      }
+    },
+    {
+      "name": "opds2-search",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/v2/search.json"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/opds+json;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/v2/search.json"
+      }
+    }
+  ]
+}

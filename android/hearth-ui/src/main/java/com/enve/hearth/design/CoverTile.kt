@@ -19,8 +19,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -64,21 +68,26 @@ fun CoverTile(
 
     val shaped = modifier
         .aspectRatio(coverAspectRatio(mediaType))
-        .then(
-            if (eink.borderInsteadOfShadow) {
-                Modifier.border(1.5.dp, palette.text, shape)
-            } else {
-                Modifier.shadow(
-                    elevation = 14.dp,
-                    shape = shape,
-                    ambientColor = ambient.copy(alpha = 0.25f),
-                    spotColor = ambient.copy(alpha = 0.25f),
-                )
-            },
-        )
+        .then(if (eink.suppressShadows) Modifier else Modifier.shadow(10.dp, shape, clip = false))
+        .drawBehind {
+            if (palette.decorated && !eink.active) {
+                val edge = (size.width * 0.03f).coerceIn(1.5.dp.toPx(), 4.dp.toPx())
+                val corner = CornerRadius(Hearth.Radius.Cover.toPx())
+                drawRoundRect(palette.wood, topLeft = Offset(edge * 2, edge * 1.5f), size = size, cornerRadius = corner)
+                drawRoundRect(palette.outline, topLeft = Offset(edge * 2, edge * 1.5f), size = size, cornerRadius = corner, style = Stroke(1.dp.toPx()))
+                drawRoundRect(palette.pageEdge, topLeft = Offset(edge, edge * 0.75f), size = size, cornerRadius = corner)
+                drawRoundRect(palette.outline.copy(alpha = 0.45f), topLeft = Offset(edge, edge * 0.75f), size = size, cornerRadius = corner, style = Stroke(0.75.dp.toPx()))
+            }
+        }
         .clip(shape)
         .background(if (eink.active) palette.bgElevated else ambient.copy(alpha = 0.18f))
-        .then(if (!eink.active) Modifier.border(1.dp, palette.hairline, shape) else Modifier)
+        .then(
+            when {
+                eink.active -> Modifier.border(1.5.dp, palette.text, shape)
+                palette.decorated -> Modifier.border(1.5.dp, palette.outline, shape)
+                else -> Modifier.border(1.dp, palette.hairline, shape)
+            },
+        )
         .then(
             if (coverDescription != null) {
                 Modifier.semantics(mergeDescendants = true) {

@@ -1,0 +1,245 @@
+{
+  "mappings": [
+    {
+      "name": "image-cover-blue",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/images/cover-blue.png"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "image/png",
+          "Cache-Control": "public, max-age=3600"
+        },
+        "bodyFileName": "fixtures/opds/images/cover-blue.png"
+      }
+    },
+    {
+      "name": "image-cover-amber",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/images/cover-amber.png"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "image/png",
+          "Cache-Control": "public, max-age=3600"
+        },
+        "bodyFileName": "fixtures/opds/images/cover-amber.png"
+      }
+    },
+    {
+      "name": "image-thumb-blue",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/images/thumb-blue.png"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "image/png",
+          "Cache-Control": "public, max-age=3600"
+        },
+        "bodyFileName": "fixtures/opds/images/thumb-blue.png"
+      }
+    },
+    {
+      "name": "file-lab-ebook-001-epub",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/files/lab-ebook-001.epub"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/epub+zip",
+          "Content-Disposition": "attachment; filename=\"lab-ebook-001.epub\"",
+          "Accept-Ranges": "none"
+        },
+        "bodyFileName": "fixtures/opds/files/lab-ebook-001.epub"
+      }
+    },
+    {
+      "name": "file-lab-ebook-002-epub",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/files/lab-ebook-002.epub"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/epub+zip",
+          "Content-Disposition": "attachment; filename=\"lab-ebook-002.epub\"",
+          "Accept-Ranges": "none"
+        },
+        "bodyFileName": "fixtures/opds/files/lab-ebook-002.epub"
+      }
+    },
+    {
+      "name": "file-lab-ebook-003-pdf",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/files/lab-ebook-003.pdf"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/pdf",
+          "Content-Disposition": "attachment; filename=\"lab-ebook-003.pdf\"",
+          "Accept-Ranges": "none"
+        },
+        "bodyFileName": "fixtures/opds/files/lab-ebook-003.pdf"
+      }
+    },
+    {
+      "name": "file-lab-comic-001-cbz",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/files/lab-comic-001.cbz"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/vnd.comicbook+zip",
+          "Content-Disposition": "attachment; filename=\"lab-comic-001.cbz\"",
+          "Accept-Ranges": "none"
+        },
+        "bodyFileName": "fixtures/opds/files/lab-comic-001.cbz"
+      }
+    },
+    {
+      "name": "file-lab-audiobook-001-mp3",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/files/lab-audiobook-001.mp3"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "audio/mpeg",
+          "Accept-Ranges": "none"
+        },
+        "bodyFileName": "fixtures/opds/files/lab-audiobook-001.mp3"
+      }
+    },
+    {
+      "name": "file-lab-audiobook-002-m4b",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/files/lab-audiobook-002.m4b"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "audio/mp4",
+          "Accept-Ranges": "none"
+        },
+        "bodyFileName": "fixtures/opds/files/lab-audiobook-002.m4b"
+      }
+    },
+    {
+      "name": "file-lab-audiobook-003-readium-package",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/files/lab-audiobook-003.audiobook"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/audiobook+zip",
+          "Content-Disposition": "attachment; filename=\"lab-audiobook-003.audiobook\"",
+          "Accept-Ranges": "none"
+        },
+        "bodyFileName": "fixtures/opds/files/lab-audiobook-003.audiobook"
+      }
+    },
+    {
+      "name": "file-lab-audiobook-004-readium-manifest",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/files/lab-audiobook-004.json"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/audiobook+json;charset=utf-8"
+        },
+        "jsonBody": {
+          "@context": "https://readium.org/webpub-manifest/context.jsonld",
+          "metadata": {
+            "@type": "http://schema.org/Audiobook",
+            "identifier": "urn:uuid:1e7b9c40-0031-4a6b-9f31-0a1b2c3d4e31",
+            "title": "The Manifest Reader",
+            "language": "en",
+            "duration": 900
+          },
+          "links": [
+            { "rel": "self", "href": "/opds/files/lab-audiobook-004.json", "type": "application/audiobook+json" }
+          ],
+          "readingOrder": [
+            { "href": "/opds/files/lab-audiobook-001.mp3", "type": "audio/mpeg", "duration": 900 }
+          ],
+          "resources": [
+            { "rel": "cover", "href": "/opds/images/cover-blue.png", "type": "image/png" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "file-lab-ebook-004-lcp-license",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/files/lab-ebook-004.lcpl"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/vnd.readium.lcp.license.v1.0+json;charset=utf-8"
+        },
+        "jsonBody": {
+          "id": "urn:uuid:9c2f4d10-0004-4a1b-9c33-7e6d5f4a3b21",
+          "issued": "2026-09-19T08:00:00Z",
+          "provider": "urn:enve-lab:opds",
+          "encryption": {
+            "profile": "http://readium.org/lcp/basic-profile"
+          },
+          "links": [
+            { "rel": "publication", "href": "/opds/files/lab-ebook-001.epub", "type": "application/epub+zip" },
+            { "rel": "hint", "href": "/opds/auth/help.html", "type": "text/html" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "file-lab-ebook-105-adobe-fulfilment-token",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/files/lab-ebook-105.acsm"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/vnd.adobe.adept+xml;charset=utf-8"
+        },
+        "body": "<?xml version=\"1.0\"?>\n<fulfillmentToken xmlns=\"http://ns.adobe.com/adept\">\n  <distributor>urn:enve-lab:opds</distributor>\n  <operatorURL>http://fulfilment.invalid/adept</operatorURL>\n</fulfillmentToken>\n"
+      }
+    },
+    {
+      "name": "transactional-acquisition-pages",
+      "request": {
+        "method": "GET",
+        "urlPathPattern": "/opds/(buy|borrow|subscribe)/.*"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/html;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/transaction.html"
+      }
+    }
+  ]
+}

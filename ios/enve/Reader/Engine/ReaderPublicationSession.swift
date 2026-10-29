@@ -228,7 +228,7 @@ final class ReaderPublicationSession {
         {
             return cached
         }
-        if #available(iOS 26.0, *), profileSession.isOwner, !book.isComic,
+        if profileSession.isOwner, !book.isComic,
             let audiobook = profileSession.playback.linker.linkedAudiobook(for: book),
             let narrated = StoryAlignService.shared.cachedNarratedEpubURL(ebook: book, audiobook: audiobook)
         {

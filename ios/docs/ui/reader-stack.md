@@ -32,7 +32,7 @@ Swift mapping for Enve:
 
 ## 1. EPUB renderer
 
-**Readium Swift toolkit is the only EPUB renderer in use.**
+**Readium and Foliate share the ebook reader surface.** Ordinary reflowable EPUBs from Grimmory, Silo, and BookOrbit prefer Foliate; read-aloud and media-overlay EPUBs use Readium. AZW3 and FB2 files open directly in Foliate. AZW3 does not enter MOBI-to-EPUB conversion or fall back to Readium.
 
 - SPM dependency `https://github.com/readium/swift-toolkit.git`, minimum `upToNextMajorVersion 3.11.0`, **resolved 3.11.0** (`enve.xcodeproj/.../swiftpm/Package.resolved`). Products linked: `ReadiumShared`, `ReadiumStreamer`, `ReadiumNavigator`, `ReadiumOPDS`, `ReadiumAdapterGCDWebServer`, plus Readium's `ReadiumZIPFoundation` fork.
 **Reader view hierarchy today:**
@@ -43,6 +43,7 @@ BookDetailScreen
     └── ClassicReaderModel (Reader/Engine/ClassicReaderModel.swift)
         state: enum State {
           case readyEPUB(EPUBNavigatorViewController)   → EPUBNavigatorBridge → AnnotationResponderBridge (UIViewControllerRepresentable, EbookReaderView.swift:1432/1288)
+          case readyFoliate(FoliateReaderEngineAdapter) → Foliate WKWebView (including original AZW3/KF8 files)
           case readyPDF(PDFKit.PDFDocument)             → PDFReaderBridge → PDFReaderController (EbookReaderView.swift:1472/1480)
           case readyComic                               → ComicReaderBridge (Reader/Engine/ComicReaders.swift — UIPageViewController paged + scroll modes, zoom, RTL, spreads)
           case readyHTML(WKWebView)                     → HTMLReaderBridge (MOBI last-resort fallback)
@@ -169,7 +170,7 @@ Formats (`enum EbookFormat`, `Models/LocalLibrary.swift:396`): `epub`, `pdf`, `c
 - **MOBI/AZW/AZW3** → `Services/Import/MobiConverter.swift` + `KF8Reader.swift` (native Swift PalmDB/KF8 parser) `convertMobiToEpub` → opened by Readium; DRM detected (`MobiConversionError.encrypted`); fallback `extractHTMLForWebKit` → `readyHTML` WKWebView.
 - **CBZ/CBR/imagefolder** → `Services/ComicArchiveService.swift` (ZIPFoundation + `LocalPackages/UnrarKit`; reads ComicInfo.xml manga direction) → `[URL]` pages → `ComicReaderBridge` (paged UIPageViewController with RTL/spread/zoom, or vertical scroll mode), opened and owned by `ReaderPagedContentController`. Comics never go through Readium.
 - **Comic direction** → a per-book choice (`ComicReadingDirectionStore`, cleared by Auto) wins, then the provider's series direction (`ComicReadingDirectionProvider`, Komga), then ComicInfo.xml, then the global default; a global Scroll default is not overridden by paged metadata. Landscape spreads keep the cover alone, pair pages in order, and restart pairing after each wide page; progress uses the last visible page.
-- **PDF** → PDFKit directly (`PDFReaderController`, also owned by `ReaderPagedContentController`).
+- **PDF** → PDFKit directly (`PDFReaderController`, also owned by `ReaderPagedContentController`). Page flow (`pdfScrollEnabled`) stays a global appearance setting; the two-page view and its "Show cover separately" option are per-book, per-profile choices in `PDFReadingPreferencesStore` (`Services/Reader/`), keyed by `Book.stableId` and applied natively through `PDFView.displayMode` (`.twoUp` / `.twoUpContinuous`) and `displaysAsBook`. `ReaderPagedPagePolicy.pdfSpread` mirrors that pairing (`[1,2],[3,4]…`, or `[1],[2,3],[4,5]…` with the cover alone) so a paged turn advances a whole spread, the visible page range reports the spread, and navigation progress follows the last visible page, while a layout toggle preserves existing progress. `PDFReaderController.configure` rebuilds the `PDFView` only when the flow or layout actually changes and keeps the requested page as the selection when PDFKit reports its spread partner.
 - **EPUB** → Readium (`openPublication(at:)`), with `copyToCanonicalLocation` retry for local imports.
 
 ---

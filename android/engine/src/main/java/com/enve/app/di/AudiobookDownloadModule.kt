@@ -6,6 +6,7 @@ import com.enve.app.data.offline.AudiobookTrackResolverKey
 import com.enve.app.data.offline.resolvers.AudiobookshelfTrackResolver
 import com.enve.app.data.offline.resolvers.BookOrbitTrackResolver
 import com.enve.app.data.offline.resolvers.GrimmoryTrackResolver
+import com.enve.app.data.offline.resolvers.JellyfinTrackResolver
 import com.enve.app.data.offline.resolvers.PlexTrackResolver
 import com.enve.app.data.offline.resolvers.StorytellerTrackResolver
 import com.enve.app.data.offline.resolvers.TorBoxTrackResolver
@@ -18,6 +19,11 @@ import dagger.multibindings.IntoMap
 @Module
 @InstallIn(SingletonComponent::class)
 abstract class AudiobookDownloadModule {
+
+    @Binds
+    @IntoMap
+    @AudiobookTrackResolverKey(BookSource.JELLYFIN)
+    abstract fun bindJellyfinResolver(impl: JellyfinTrackResolver): AudiobookTrackResolver
 
     @Binds
     @IntoMap

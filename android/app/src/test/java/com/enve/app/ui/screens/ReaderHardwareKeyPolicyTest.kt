@@ -39,6 +39,15 @@ class ReaderHardwareKeyPolicyTest {
         assertEquals(
             ReaderPageKeyDirection.FORWARD,
             ReaderHardwareKeyPolicy.directionFor(
+                keyCode = KeyEvent.KEYCODE_VOLUME_DOWN,
+                volumeButtonNavigation = true,
+                audioActive = false,
+            ),
+        )
+
+        assertEquals(
+            ReaderPageKeyDirection.BACKWARD,
+            ReaderHardwareKeyPolicy.directionFor(
                 keyCode = KeyEvent.KEYCODE_VOLUME_UP,
                 volumeButtonNavigation = true,
                 audioActive = false,

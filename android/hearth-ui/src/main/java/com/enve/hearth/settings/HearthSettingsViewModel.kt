@@ -8,10 +8,12 @@ import com.enve.engine.eink.EinkFacade
 import com.enve.engine.eink.EinkMode
 import com.enve.engine.eink.EinkState
 import com.enve.engine.library.LibraryFacade
+import com.enve.engine.prefs.EbookSyncInterval
 import com.enve.engine.prefs.PreferencesFacade
 import com.enve.engine.prefs.HearthHomeSection
 import com.enve.engine.prefs.HearthStartTab
 import com.enve.engine.prefs.ReadNextPosition
+import com.enve.engine.theme.HearthPaletteStyle
 import com.enve.engine.theme.HearthThemeMode
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
@@ -30,6 +32,7 @@ class HearthSettingsViewModel @Inject constructor(
 
     val themeMode = prefs.themeMode.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), HearthThemeMode.SYSTEM)
     val oled = prefs.oledEnabled.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+    val paletteStyle = prefs.paletteStyle.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), HearthPaletteStyle.PARCHMENT)
     val uiTextScale = prefs.uiTextScale.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 1f)
     val accent = prefs.accentHex.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "#F5921A")
     val skipForward = prefs.skipForwardSeconds.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 30)
@@ -73,9 +76,25 @@ class HearthSettingsViewModel @Inject constructor(
         SharingStarted.WhileSubscribed(5000),
         HearthHomeSection.entries,
     )
+    val showDockBookShortcut = prefs.showDockBookShortcut.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5000),
+        true,
+    )
+    val showTodayStack = prefs.showTodayStack.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5000),
+        true,
+    )
+    val ebookSyncInterval = prefs.ebookSyncInterval.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5000),
+        EbookSyncInterval.AUTOMATIC,
+    )
 
     fun setThemeMode(m: HearthThemeMode) = launch { prefs.setThemeMode(m) }
     fun setOled(v: Boolean) = launch { prefs.setOledEnabled(v) }
+    fun setPaletteStyle(style: HearthPaletteStyle) = launch { prefs.setPaletteStyle(style) }
     fun setUiTextScale(scale: Float) = launch { prefs.setUiTextScale(scale) }
     fun setAccent(hex: String) = launch { prefs.setAccentHex(hex) }
     fun setDefaultSpeed(s: Float) = launch { prefs.setDefaultSpeed(s) }
@@ -99,6 +118,9 @@ class HearthSettingsViewModel @Inject constructor(
         }
     }
     fun resetHomeSectionOrder() = launch { prefs.setHomeSectionOrder(HearthHomeSection.entries) }
+    fun setShowDockBookShortcut(show: Boolean) = launch { prefs.setShowDockBookShortcut(show) }
+    fun setShowTodayStack(show: Boolean) = launch { prefs.setShowTodayStack(show) }
+    fun setEbookSyncInterval(interval: EbookSyncInterval) = launch { prefs.setEbookSyncInterval(interval) }
     fun updateConnection(c: ProviderConnection) = launch { sources.update(c) }
     fun setConnectionEnabled(c: ProviderConnection, enabled: Boolean) = launch { sources.setEnabled(c.id, enabled) }
     fun removeConnection(c: ProviderConnection) = launch { sources.remove(c.id) }

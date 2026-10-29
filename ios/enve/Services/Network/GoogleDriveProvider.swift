@@ -54,20 +54,32 @@ final class GoogleDriveProvider: BookSourceProvider {
     let id = "google-drive"
     let displayName = "Google Drive"
     let iconName = "internaldrive"
-    let capabilities: SourceCapabilities = [.streaming, .folderBrowsing, .search]
+    let capabilities: SourceCapabilities = [.folderBrowsing, .search]
 
     @Published private(set) var authenticationState: AuthenticationState = .notAuthenticated
 
-    private let oauthManager = OAuthManager.shared
-    private let tokenStorage = SecureTokenStorage.shared
-    private let session = URLSession.shared
+    private let oauthManager: OAuthManager
+    private let tokenStorage: SecureTokenStorage
+    private let session: URLSession
     private var currentToken: OAuthToken?
 
     private let baseURL = "https://www.googleapis.com/drive/v3"
 
-    init() {
-        Task {
-            await loadSavedToken()
+    init(
+        oauthManager: OAuthManager = .shared,
+        tokenStorage: SecureTokenStorage = .shared,
+        session: URLSession = .shared
+    ) {
+        self.oauthManager = oauthManager
+        self.tokenStorage = tokenStorage
+        self.session = session
+        do {
+            currentToken = try tokenStorage.loadToken(forProvider: id)
+            if let currentToken {
+                authenticationState = currentToken.isExpired ? .tokenExpired : .authenticated
+            }
+        } catch {
+            authenticationState = .authenticationFailed("Could not restore your Google Drive connection. Please sign in again.")
         }
     }
 
@@ -108,24 +120,9 @@ final class GoogleDriveProvider: BookSourceProvider {
     }
 
     func signOut() async throws {
-        currentToken = nil
         try tokenStorage.deleteToken(forProvider: id)
+        currentToken = nil
         authenticationState = .notAuthenticated
-    }
-
-    private func loadSavedToken() async {
-        do {
-            if let token = try tokenStorage.loadToken(forProvider: id) {
-                if token.isExpired {
-                    authenticationState = .tokenExpired
-                } else {
-                    currentToken = token
-                    authenticationState = .authenticated
-                }
-            }
-        } catch {
-            AppLogger.network.error("Failed to load Google Drive token: \(error)")
-        }
     }
 
     func listRoot() async throws -> [RemoteItem] {
@@ -133,16 +130,16 @@ final class GoogleDriveProvider: BookSourceProvider {
     }
 
     func listFolder(_ itemId: String) async throws -> [RemoteItem] {
-        return try await listFiles(query: "'\(itemId)' in parents and trashed = false")
+        return try await listFiles(query: "'\(Self.escapeQueryLiteral(itemId))' in parents and trashed = false")
     }
 
     func search(_ query: String) async throws -> [RemoteItem] {
         let searchQuery =
-            "name contains '\(query)' and (mimeType contains 'audio/' or mimeType = 'application/vnd.google-apps.folder') and trashed = false"
+            "name contains '\(Self.escapeQueryLiteral(query))' and trashed = false"
         return try await listFiles(query: searchQuery)
     }
 
-    private func listFiles(query: String, pageToken: String? = nil) async throws -> [RemoteItem] {
+    private func listFiles(query: String, pageToken: String? = nil, retry: Bool = true) async throws -> [RemoteItem] {
         try await ensureValidToken()
 
         guard var components = URLComponents(string: "\(baseURL)/files") else {
@@ -172,6 +169,10 @@ final class GoogleDriveProvider: BookSourceProvider {
 
         let (data, response) = try await session.data(for: request)
 
+        if (response as? HTTPURLResponse)?.statusCode == 401, retry, currentToken?.refreshToken != nil {
+            try await refreshAuthentication()
+            return try await listFiles(query: query, pageToken: pageToken, retry: false)
+        }
         try handleResponse(response, data: data)
 
         let fileList = try JSONDecoder().decode(DriveFileList.self, from: data)
@@ -182,13 +183,15 @@ final class GoogleDriveProvider: BookSourceProvider {
             items.append(contentsOf: nextPage)
         }
 
-        return items.filter { $0.isFolder || $0.isAudioFile }
+        return items.filter { $0.isFolder || $0.isSupportedBookFile }
     }
 
     func resolveFile(_ item: RemoteItem) async throws -> ResolvedFile {
         try await ensureValidToken()
 
-        guard let streamURL = URL(string: "\(baseURL)/files/\(item.id)?alt=media") else {
+        guard !item.isFolder, item.isSupportedBookFile,
+            let fileID = item.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?#"))),
+            let streamURL = URL(string: "\(baseURL)/files/\(fileID)?alt=media") else {
             throw URLError(.badURL)
         }
 
@@ -203,22 +206,11 @@ final class GoogleDriveProvider: BookSourceProvider {
     }
 
     func getMetadata(_ item: RemoteItem) async throws -> SourceBookMetadata? {
-        return SourceBookMetadata(
-            title: item.name,
-            author: nil,
-            narrator: nil,
-            description: nil,
-            coverURL: nil,
-            duration: nil,
-            chapters: nil,
-            series: nil,
-            seriesNumber: nil,
-            publishedYear: nil,
-            genres: nil,
-            publisher: nil,
-            isbn: nil,
-            asin: nil
-        )
+        .fromFilename(item.name)
+    }
+
+    static func escapeQueryLiteral(_ value: String) -> String {
+        value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "'", with: "\\'")
     }
 
     private func ensureValidToken() async throws {
@@ -226,7 +218,7 @@ final class GoogleDriveProvider: BookSourceProvider {
             throw GoogleDriveError.notAuthenticated
         }
 
-        if token.isExpired {
+        if token.expiresAt.map({ $0.timeIntervalSinceNow <= 60 }) == true {
             try await refreshAuthentication()
         }
     }

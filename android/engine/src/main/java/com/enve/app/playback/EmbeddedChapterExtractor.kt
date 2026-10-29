@@ -131,7 +131,10 @@ class EmbeddedChapterExtractor @Inject constructor(
 
     private suspend fun probeMp4Chapters(url: String, durationSec: Long): List<Chapter> = withContext(Dispatchers.IO) {
         if (!url.isProbeableMp4Audio()) {
-            return@withContext emptyList()
+            val signature = fetchRange(url, 0, 7, 8)
+            if (signature.size < 8 || String(signature, 4, 4, Charsets.US_ASCII) != "ftyp") {
+                return@withContext emptyList()
+            }
         }
 
         val first = fetchRange(url, 0, MP4_PROBE_HEAD_BYTES - 1, MP4_PROBE_HEAD_BYTES)
@@ -236,7 +239,9 @@ class EmbeddedChapterExtractor @Inject constructor(
         return runCatching {
             httpClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return@runCatching ByteArray(0)
-                response.body?.source()?.readLimited(maxBytes) ?: ByteArray(0)
+                val source = response.body?.source() ?: return@runCatching ByteArray(0)
+                if (response.code != 206 && start > 0) source.skip(start)
+                source.readLimited(maxBytes)
             }
         }.getOrDefault(ByteArray(0))
     }

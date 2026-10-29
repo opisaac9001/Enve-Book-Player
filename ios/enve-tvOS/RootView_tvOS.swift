@@ -17,6 +17,7 @@ struct RootView_tvOS: View {
     #if DEBUG
     @State private var debugDetailBook: Book?
     @State private var debugReadBook: Book?
+    @State private var debugReadAlongBook: Book?
     #endif
 
     private var companionSessionActive: Bool {
@@ -56,7 +57,10 @@ struct RootView_tvOS: View {
             NavigationStack { BookDetailView_tvOS(book: book) }
         }
         .fullScreenCover(item: $debugReadBook) { book in
-            EbookReaderView_tvOS(book: book)
+            TVBookReaderView(book: book)
+        }
+        .fullScreenCover(item: $debugReadAlongBook) { book in
+            StorytellerReaderView_tvOS(book: book)
         }
         .task {
             await handleDebugLaunch()
@@ -154,6 +158,35 @@ struct RootView_tvOS: View {
         }
         if let needle = value("-tvReadBook"), let book = await findBook(needle, mediaType: .ebook) {
             debugReadBook = book
+        }
+        if let path = value("-tvReadFile") {
+            let url = URL(fileURLWithPath: path)
+            debugReadBook = Book(
+                id: "tv-publication-fixture:\(url.lastPathComponent)",
+                title: url.deletingPathExtension().lastPathComponent,
+                source: value("-tvReadSource").flatMap(Book.BookSource.init(rawValue:)) ?? .local,
+                mediaType: .ebook,
+                ebookFormat: url.pathExtension,
+                ebookFileURL: url,
+                lastUpdate: .distantPast
+            )
+        }
+        if let needle = value("-tvReadAlongBook"), let book = await findBook(needle, mediaType: nil) {
+            debugReadAlongBook = book
+        }
+        if let path = value("-tvReadAlongFile") {
+            let url = URL(fileURLWithPath: path)
+            debugReadAlongBook = Book(
+                id: "tv-readalong-fixture:\(url.lastPathComponent)",
+                title: value("-tvReadAlongTitle") ?? url.deletingPathExtension().lastPathComponent,
+                author: value("-tvReadAlongAuthor"),
+                thumb: value("-tvReadAlongCover"),
+                source: .local,
+                mediaType: .ebook,
+                ebookFormat: "epub",
+                ebookFileURL: url,
+                lastUpdate: .distantPast
+            )
         }
     }
     #endif

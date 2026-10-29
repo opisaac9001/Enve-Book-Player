@@ -75,7 +75,9 @@ final class LocalEbookImporter: @unchecked Sendable {
     }
 
     func resolveEbookForOverlay(book: Book) -> URL? {
-        nil
+        if let cached = cachedReadaloudEpub(forBookId: book.id) { return cached }
+        if book.source == .storyteller { return nil }
+        return resolveExistingLocalEbookURL(bookIdentifier: book.id, ebookFileURL: book.ebookFileURL, filePath: book.filePath)
     }
 
     func persistedRemoteEbook(forBookId bookId: String) -> URL? {
@@ -112,7 +114,8 @@ final class LocalEbookImporter: @unchecked Sendable {
     }
 
     func cachedReadaloudEpub(forBookId bookId: String) -> URL? {
-        nil
+        let url = readaloudCacheRoot.appendingPathComponent(sanitizeFilename(bookId) + ".epub")
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
     private func cachedRemoteEbookURL(preferredFilename: String, bookIdentifier: String?) -> URL {
@@ -155,7 +158,13 @@ final class LocalEbookImporter: @unchecked Sendable {
     }
 
     func cacheReadaloudEpub(tempURL: URL, bookId: String) throws -> URL {
-        throw EbookImportError.notSupportedOnTVOS
+        try FileManager.default.createDirectory(at: readaloudCacheRoot, withIntermediateDirectories: true)
+        let destination = readaloudCacheRoot.appendingPathComponent(sanitizeFilename(bookId) + ".epub")
+        if FileManager.default.fileExists(atPath: destination.path) {
+            try FileManager.default.removeItem(at: destination)
+        }
+        try FileManager.default.moveItem(at: tempURL, to: destination)
+        return destination
     }
 
     func extractMetadata(from fileURL: URL) async throws -> LocalBookMetadata {

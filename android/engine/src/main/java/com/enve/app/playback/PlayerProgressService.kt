@@ -1,6 +1,7 @@
 package com.enve.app.playback
 
 import androidx.room.withTransaction
+import com.enve.app.data.hardcover.HardcoverSyncService
 import com.enve.app.data.local.ReaderDatabase
 import com.enve.app.data.sync.SyncCoordinator
 import com.enve.core.data.local.BookCacheDao
@@ -21,6 +22,7 @@ class PlayerProgressService @Inject constructor(
     private val pending: com.enve.core.data.local.PendingProgressPushDao,
     private val serverSync: com.enve.core.data.local.ProfileServerSyncStore,
     private val checkpointOrder: AudiobookCheckpointOrder,
+    private val hardcoverSync: HardcoverSyncService,
 ) {
     data class Checkpoint(
         val key: String,
@@ -85,7 +87,11 @@ class PlayerProgressService @Inject constructor(
     }
 
     suspend fun persistCheckpoint(checkpoint: Checkpoint, force: Boolean = false): SaveResult =
-        withContext(Dispatchers.IO) { writer.persist(checkpoint, force) }
+        withContext(Dispatchers.IO) { writer.persist(checkpoint, force) }.also { result ->
+            if (result is SaveResult.Saved && !openProgress.shouldHoldPush(result.progress.book)) {
+                hardcoverSync.submitProgress(result.progress.book, result.progress.progressFraction)
+            }
+        }
 
     private suspend fun writeCheckpoint(checkpoint: Checkpoint): PersistedPlaybackProgress? = database.withTransaction {
         val cached = bookCache.getByCacheKey(checkpoint.key) ?: return@withTransaction null

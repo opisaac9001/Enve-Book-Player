@@ -5,6 +5,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -19,13 +21,19 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 @Composable
@@ -54,7 +62,13 @@ fun EmberButton(
         modifier
             .clip(shape)
             .background(if (eink.active) palette.bg else fill)
-            .then(if (eink.active) Modifier.border(2.dp, palette.ember, shape) else Modifier)
+            .then(
+                when {
+                    eink.active -> Modifier.border(2.dp, palette.ember, shape)
+                    palette.decorated -> Modifier.border(1.5.dp, palette.outline, shape)
+                    else -> Modifier
+                },
+            )
             .sizeIn(minHeight = 48.dp)
             .clickable(role = Role.Button, onClick = onClick)
             .padding(horizontal = 24.dp, vertical = 14.dp),
@@ -63,7 +77,7 @@ fun EmberButton(
     ) {
         val fg = when {
             eink.active -> palette.ember
-            fill.luminance() < 0.52f -> Color(0xFFFFF7EA)
+            fill.luminance() < 0.18f -> Color(0xFFFFF7EA)
             else -> palette.onEmber
         }
         if (leadingIcon != null) {
@@ -80,12 +94,13 @@ fun QuietButton(
     modifier: Modifier = Modifier,
 ) {
     val palette = Hearth.palette
+    val eink = Hearth.eink
     val shape = RoundedCornerShape(Hearth.Radius.Inner)
     Row(
         modifier
             .clip(shape)
             .background(palette.bgElevated)
-            .border(1.dp, palette.hairline, shape)
+            .border(if (eink.active || palette.decorated) 1.5.dp else 1.dp, if (eink.active) palette.text else palette.outline, shape)
             .sizeIn(minHeight = 48.dp)
             .clickable(role = Role.Button, onClick = onClick)
             .padding(horizontal = 18.dp, vertical = 12.dp),
@@ -171,5 +186,43 @@ fun HearthToggleRow(label: String, checked: Boolean, onCheck: (Boolean) -> Unit)
             checked = checked, onCheckedChange = onCheck,
             colors = SwitchDefaults.colors(checkedTrackColor = palette.ember, checkedThumbColor = palette.readableOnEmber),
         )
+    }
+}
+
+@Composable
+fun Modifier.fadeHorizontalEdges(width: Dp = 16.dp): Modifier {
+    if (Hearth.eink.suppressGradients) return this
+    return this
+        .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+        .drawWithContent {
+            drawContent()
+            val edge = width.toPx() / size.width
+            drawRect(
+                Brush.horizontalGradient(
+                    0f to Color.Transparent,
+                    edge to Color.Black,
+                    1f - edge to Color.Black,
+                    1f to Color.Transparent,
+                ),
+                blendMode = BlendMode.DstIn,
+            )
+        }
+}
+
+@Composable
+fun ShelfLedge(modifier: Modifier = Modifier) {
+    val palette = Hearth.palette
+    val eink = Hearth.eink
+    if (!eink.active && !palette.decorated) return
+    val shape = RoundedCornerShape(if (eink.sharpCorners) 0.dp else 3.dp)
+    Box(
+        modifier.fillMaxWidth().height(if (eink.active) 2.dp else 8.dp)
+            .background(if (eink.active) palette.text else palette.wood, shape)
+            .border(1.dp, palette.outline, shape),
+    ) {
+        if (!eink.active) {
+            Box(Modifier.fillMaxWidth().padding(horizontal = 3.dp).padding(top = 1.5.dp)
+                .height(1.5.dp).background(palette.pageEdge.copy(alpha = 0.22f)))
+        }
     }
 }

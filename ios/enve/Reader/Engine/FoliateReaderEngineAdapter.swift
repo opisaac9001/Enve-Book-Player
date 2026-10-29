@@ -79,6 +79,7 @@ enum FoliateRuntimeSupport {
             "foliate/paginator.js",
             "foliate/progress.js",
             "foliate/vendor/zip.js",
+            "foliate/vendor/fflate.js",
             "foliate/search.js",
             "foliate/text-walker.js",
             "foliate/tts.js",
@@ -100,10 +101,12 @@ enum FoliateRuntimeSupport {
             "/session.json",
             "/book/current.epub",
             "/book/current.fb2",
+            "/book/current.azw3",
             "/foliate/view.js",
             "/foliate/epub.js",
             "/foliate/fb2.js",
             "/foliate/mobi.js",
+            "/foliate/vendor/fflate.js",
             "/foliate/epubcfi.js",
             "/foliate/fixed-layout.js",
             "/foliate/footnotes.js",
@@ -393,9 +396,7 @@ private final class FoliateURLSchemeHandler: NSObject, WKURLSchemeHandler, @unch
         switch source {
         case .file(let bookURL, let fileExtension):
             bookData = try Data(contentsOf: bookURL, options: [.mappedIfSafe])
-            bookExtension = fileExtension.lowercased() == EbookFormat.fb2.rawValue
-                ? EbookFormat.fb2.rawValue
-                : EbookFormat.epub.rawValue
+            bookExtension = fileExtension.lowercased()
             streamingSession = nil
         case .streamed(let session):
             bookData = nil
@@ -437,9 +438,7 @@ private final class FoliateURLSchemeHandler: NSObject, WKURLSchemeHandler, @unch
                 return
             }
             data = bookData
-            mimeType = bookExtension == EbookFormat.fb2.rawValue
-                ? EbookFormat.fb2.mimeType
-                : EbookFormat.epub.mimeType
+            mimeType = EbookFormat(rawValue: bookExtension)?.mimeType ?? "application/octet-stream"
         default:
             let relativePath = String(url.path.dropFirst())
             let fileURL = runtimeRoot.appendingPathComponent(relativePath)
@@ -814,7 +813,8 @@ final class FoliateReaderEngineAdapter: UIViewController, ReaderEngineAdapter {
         initialLocatorJSON: String?,
         initialProgression: Double,
         appearance: ClassicReaderAppearance,
-        annotations: [ReaderAnnotation]
+        annotations: [ReaderAnnotation],
+        onPrepared: @MainActor (FoliateReaderEngineAdapter) -> Void
     ) async throws -> FoliateReaderEngineAdapter {
         guard FoliateRuntimeSupport.isPackaged,
             let runtimeRoot = FoliateRuntimeSupport.resourceRoot
@@ -828,9 +828,7 @@ final class FoliateReaderEngineAdapter: UIViewController, ReaderEngineAdapter {
         switch source {
         case .file(_, let sourceExtension):
             streamingJSON = NSNull()
-            fileExtension = sourceExtension.lowercased() == EbookFormat.fb2.rawValue
-                ? EbookFormat.fb2.rawValue
-                : EbookFormat.epub.rawValue
+            fileExtension = sourceExtension.lowercased()
         case .streamed(let streamingSession):
             fileExtension = EbookFormat.epub.rawValue
             streamingJSON = [
@@ -852,15 +850,29 @@ final class FoliateReaderEngineAdapter: UIViewController, ReaderEngineAdapter {
             throw FoliateReaderError.invalidRuntimeMessage
         }
         let sessionData = try JSONSerialization.data(withJSONObject: session)
+        try Task.checkCancellation()
         let ruleList = try await makeNetworkBlocker()
+        try Task.checkCancellation()
         let adapter = try FoliateReaderEngineAdapter(
             runtimeRoot: runtimeRoot,
             source: source,
             sessionData: sessionData,
             ruleList: ruleList
         )
-        try await adapter.start()
-        return adapter
+        onPrepared(adapter)
+        do {
+            try await withTaskCancellationHandler {
+                try Task.checkCancellation()
+                try await adapter.start()
+                try Task.checkCancellation()
+            } onCancel: {
+                Task { @MainActor in adapter.tearDown() }
+            }
+            return adapter
+        } catch {
+            adapter.tearDown()
+            throw error
+        }
     }
 
     private static func makeNetworkBlocker() async throws -> WKContentRuleList {
@@ -952,6 +964,7 @@ final class FoliateReaderEngineAdapter: UIViewController, ReaderEngineAdapter {
     }
 
     private func start() async throws {
+        guard !isTornDown else { throw CancellationError() }
         guard !hasStarted else {
             guard isReady else { throw FoliateReaderError.commandFailed }
             return
@@ -1293,6 +1306,18 @@ final class FoliateReaderEngineAdapter: UIViewController, ReaderEngineAdapter {
             return false
         }
         return result["handled"] as? Bool == true
+    }
+
+    func illustration(at point: CGPoint) async -> ReaderIllustrationReference? {
+        let webPoint = webView.convert(point, from: view)
+        guard let result = try? await command("illustrationAt", payload: ["x": webPoint.x, "y": webPoint.y]),
+            Set(result.keys) == ["illustration"],
+            let payload = result["illustration"] as? [String: Any],
+            let documentHref = payload["documentHref"] as? String
+        else {
+            return nil
+        }
+        return ReaderIllustrationScript.reference(from: payload, documentHref: documentHref)
     }
 
     func refreshSelection() async -> Bool {

@@ -1,6 +1,11 @@
 package com.enve.app.ui.screens
 
 import com.enve.core.data.local.PreferencesManager
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.intOrNull
 import android.os.ParcelFileDescriptor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -368,4 +373,36 @@ private fun saveComicManifest(manifest: File, archive: File, extractDir: File, p
         }
         manifest.outputStream().use { props.store(it, "Enve comic page manifest") }
     }
+}
+
+internal fun commandReaderPage(
+    cached: com.enve.core.data.local.CachedBook?,
+    pending: com.enve.core.data.local.PendingProgressPush?,
+    format: ReaderFormat,
+    pageCount: Int,
+    expectedKey: String,
+    expectedSource: String,
+    expectedConnectionId: String?,
+): Int? {
+    if (cached == null || cached.cacheKey != expectedKey || cached.source != expectedSource ||
+        cached.connectionId != expectedConnectionId || cached.mediaType != "EBOOK" || pageCount <= 0) return null
+    val fixedFormat = when (format) {
+        ReaderFormat.PDF -> cached.primaryFileType.equals("PDF", ignoreCase = true)
+        ReaderFormat.CBZ, ReaderFormat.CBX, ReaderFormat.CBR -> cached.primaryFileType?.lowercase(Locale.ROOT) in setOf("cbz", "cbx", "cbr", "cb7", "cbt", "imagefolder")
+        else -> false
+    }
+    if (!fixedFormat) return null
+    val progression = cached.epubProgress ?: cached.readProgress
+    if (!progression.isFinite()) return null
+    val locator = cached.epubLocator?.let { runCatching { Json.parseToJsonElement(it) as? JsonObject }.getOrNull() }
+    if ((locator?.get("enveSharedPosition") as? JsonPrimitive)?.booleanOrNull == true) {
+        val page = (locator["page"] as? JsonPrimitive)?.takeUnless { it.isString }?.intOrNull
+        if ("page" in locator && page == null) return null
+        return if (page != null) page.takeIf { it in 1..pageCount }?.minus(1) else pageIndexFromProgress(progression, pageCount)
+    }
+    if (pending == null || pending.mediaType != "EBOOK" || pending.bookId != cached.id || pending.source != cached.source ||
+        pending.connectionKey != cached.connectionId.orEmpty() || pending.percentage != progression) return null
+    val page = cached.epubLocator?.takeIf(String::isNotBlank)?.let { parseSavedPage(it, format) }
+        ?: pageIndexFromProgress(progression, pageCount)
+    return page.coerceIn(0, pageCount - 1)
 }

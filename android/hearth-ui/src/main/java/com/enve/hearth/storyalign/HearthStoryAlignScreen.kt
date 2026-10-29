@@ -57,6 +57,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.enve.hearth.shell.profileViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.enve.engine.storyalign.StoryAlignEngine
 import com.enve.core.data.model.Book
 import com.enve.engine.storyalign.StoryAlignJobUi
 import com.enve.engine.storyalign.StoryAlignStatus
@@ -108,6 +109,7 @@ private fun MainView(vm: HearthStoryAlignViewModel) {
     val audiobook by vm.selectedAudiobook.collectAsStateWithLifecycle()
     val canStart by vm.canStart.collectAsStateWithLifecycle()
     val jobs by vm.jobs.collectAsStateWithLifecycle()
+    val engine by vm.selectedEngine.collectAsStateWithLifecycle()
     var showModelTerms by remember { mutableStateOf(false) }
 
     if (showModelTerms) {
@@ -126,12 +128,14 @@ private fun MainView(vm: HearthStoryAlignViewModel) {
                     Text("Cancel", color = palette.textSecondary)
                 }
             },
-            title = { Text("On-device transcription model", color = palette.text) },
+            title = { Text("On-device alignment model", color = palette.text) },
             text = {
                 Text(
-                    "StoryAlign uses the 74 MB Whisper tiny.en model under the MIT license. " +
-                        "Enve downloads the pinned model if it is not installed, verifies its SHA-256 digest, and performs transcription on this device. " +
-                        "The full notice is available in About → Open-source licenses.",
+                    if (engine == StoryAlignEngine.QUARTZNET_CTC) {
+                        "Download the 77 MB English alignment model if needed. Preparation runs on your device."
+                    } else {
+                        "Download the 78 MB Whisper English model if needed. Preparation runs on your device."
+                    },
                     color = palette.textSecondary,
                 )
             },
@@ -183,6 +187,17 @@ private fun MainView(vm: HearthStoryAlignViewModel) {
                     style = HearthText.Body, color = palette.textSecondary,
                 )
                 Spacer(Modifier.height(Hearth.Spacing.L))
+                Overline("Alignment method")
+                Spacer(Modifier.height(Hearth.Spacing.S))
+                Row(horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S)) {
+                    HearthChip("QuartzNet · English", selected = engine == StoryAlignEngine.QUARTZNET_CTC, onClick = {
+                        vm.chooseEngine(StoryAlignEngine.QUARTZNET_CTC)
+                    })
+                    HearthChip("Whisper", selected = engine == StoryAlignEngine.WHISPER, onClick = {
+                        vm.chooseEngine(StoryAlignEngine.WHISPER)
+                    })
+                }
+                Spacer(Modifier.height(Hearth.Spacing.L))
                 StartButton(enabled = canStart) { showModelTerms = true }
             }
         }
@@ -192,10 +207,8 @@ private fun MainView(vm: HearthStoryAlignViewModel) {
                 Overline("How it works")
                 Spacer(Modifier.height(Hearth.Spacing.M))
                 Text(
-                    "StoryAlign transcribes the audiobook on-device (whisper) and lines each " +
-                        "sentence up with the ebook text, writing the result as media overlays " +
-                        "inside a new EPUB. Open it from your library to read and listen at once, " +
-                        "sentences lighting up as they're spoken. Everything stays on this device.",
+                    "StoryAlign matches narration to the ebook text and creates a read-aloud EPUB. " +
+                        "Open it from your library to read and listen with sentence highlighting. Everything stays on this device.",
                     style = HearthText.Body, color = palette.textSecondary,
                 )
             }
@@ -393,7 +406,13 @@ private fun StoryAlignJobUi.statusLine(): String = when (status) {
     StoryAlignStatus.QUEUED -> "Queued"
     StoryAlignStatus.RUNNING -> "${stage.label()} · ${(overallProgress * 100).toInt()}%"
     StoryAlignStatus.PAUSED -> "Paused · ${stage.label()}"
-    StoryAlignStatus.DONE -> keptPreviousReason?.let { "Kept the existing read-aloud book because $it" } ?: "Ready to read"
+    StoryAlignStatus.DONE -> keptPreviousReason?.let { "Kept the existing read-aloud book because $it" } ?: run {
+        val matched = alignedSentences
+        val total = totalSentences
+        if (matched != null && total != null && total > 0) {
+            "Ready · $matched of $total sentences matched" + if (matched < total) ". Some passages have no highlighting." else ""
+        } else "Ready to read"
+    }
     StoryAlignStatus.CANCELLED -> "Cancelled"
     StoryAlignStatus.FAILED -> errorMessage ?: "Failed"
 }
@@ -410,6 +429,7 @@ private fun com.enve.engine.storyalign.StoryAlignStage.label(): String = when (t
     com.enve.engine.storyalign.StoryAlignStage.EPUB_PARSE -> "Reading ebook"
     com.enve.engine.storyalign.StoryAlignStage.AUDIO_EXTRACT -> "Preparing audio"
     com.enve.engine.storyalign.StoryAlignStage.TRANSCRIBE -> "Transcribing"
+    com.enve.engine.storyalign.StoryAlignStage.ANALYZE -> "Analyzing narration"
     com.enve.engine.storyalign.StoryAlignStage.ALIGN -> "Aligning"
     com.enve.engine.storyalign.StoryAlignStage.EXPORT -> "Building book"
     com.enve.engine.storyalign.StoryAlignStage.REGISTER -> "Finishing"

@@ -6,15 +6,24 @@ public final class HardcoverService: Sendable {
 
     private let baseURL = URL(string: "https://api.hardcover.app/v1/graphql")!
     private let userIdCache = UserIdCache()
-    private let insertReadModeStore = InsertReadModeStore()
+    private let session: URLSession
+    private let pacer: HardcoverRequestPacer
+    private let tokenProvider: @MainActor @Sendable () -> String?
 
-    private init() {}
+    @TaskLocal static var syncToken: String?
+
+    init(session: URLSession = .shared, pacer: HardcoverRequestPacer = .shared, tokenProvider: @escaping @MainActor @Sendable () -> String? = { SettingsManager.shared.hardcoverApiKey }) {
+        self.session = session
+        self.pacer = pacer
+        self.tokenProvider = tokenProvider
+    }
 
     private func cachedUserId() async throws -> Int {
-        if let id = await userIdCache.id { return id }
+        guard let token = tokenProvider() else { throw HardcoverError.noApiKey }
+        if let id = await userIdCache.get(token: token) { return id }
         let user = try await getCurrentUser()
-        guard let id = user.id else { throw HardcoverError.invalidResponse }
-        await userIdCache.set(id)
+        guard let id = user.id, tokenProvider() == token else { throw HardcoverError.invalidResponse }
+        await userIdCache.set(id, token: token)
         return id
     }
 
@@ -45,8 +54,8 @@ public final class HardcoverService: Sendable {
                     flair
                     image { url }
                     user_books_aggregate { aggregate { count } }
-                    following_aggregate { aggregate { count } }
-                    followers_aggregate { aggregate { count } }
+                    followed_users_count
+                    followers_count
                 }
             }
             """
@@ -61,8 +70,8 @@ public final class HardcoverService: Sendable {
             image: me.image,
             flair: me.flair,
             booksCount: me.userBooksAggregate?.aggregate?.count,
-            followingCount: me.followingAggregate?.aggregate?.count,
-            followersCount: me.followersAggregate?.aggregate?.count
+            followingCount: me.followedUsersCount,
+            followersCount: me.followersCount
         )
     }
 
@@ -96,6 +105,7 @@ public final class HardcoverService: Sendable {
                         }
                         user_book_reads(order_by: {id: desc}, limit: 1) {
                             id started_at finished_at progress_pages progress_seconds edition_id
+                            edition { id pages audio_seconds reading_format_id }
                         }
                     }
                 }
@@ -133,6 +143,7 @@ public final class HardcoverService: Sendable {
                         }
                         user_book_reads(order_by: {id: desc}, limit: 1) {
                             id started_at finished_at progress_pages progress_seconds edition_id
+                            edition { id pages audio_seconds reading_format_id }
                         }
                     }
                 }
@@ -276,40 +287,57 @@ public final class HardcoverService: Sendable {
         }
     }
 
-    public func addBookToLibrary(bookId: Int, startReading: Bool = false) async throws -> Int {
-        let statusId = startReading ? 2 : 1
-        let today = HardcoverDateFormatter.todayString()
-        let mutation = """
-            mutation {
-                insert_user_book(object: {book_id: \(bookId), status_id: \(statusId), date_added: "\(today)"}) {
-                    error
-                    user_book { id }
+    func findEdition(identifiers: HardcoverIdentifiers) async throws -> HardcoverIdentifierEdition? {
+        guard !identifiers.isEmpty else { return nil }
+        var filters: [[String: Any]] = []
+        if let isbn = identifiers.isbn {
+            filters.append([isbn.count == 10 ? "isbn_10" : "isbn_13": ["_eq": isbn]])
+        }
+        if let asin = identifiers.asin { filters.append(["asin": ["_eq": asin]]) }
+        let query = """
+            query EditionsByIdentifier($where: editions_bool_exp!) {
+                editions(where: $where, limit: 20) {
+                    id book_id isbn_10 isbn_13 asin pages
+                    book { id title cached_contributors image { url } }
                 }
             }
             """
-        do {
-            let response: InsertUserBookMutResponse = try await performQuery(mutation)
-            if let id = response.insertUserBook?.userBook?.id {
-                return id
-            }
-            if let error = response.insertUserBook?.error {
-                AppLogger.network.error("insert_user_book error: \(error)")
-            }
-        } catch {
-            AppLogger.network.error("insert_user_book failed: \(error.localizedDescription)")
-        }
+        struct Response: Decodable { let editions: [HardcoverIdentifierEdition] }
+        let response: Response = try await performQuery(query, variables: ["where": ["_or": filters]])
+        return try HardcoverIdentifierEdition.select(response.editions, identifiers: identifiers)
+    }
 
-        let userBooks = try await getUserBooks(limit: 200)
-        if let existing = userBooks.first(where: { $0.book.id == bookId }) {
-            if startReading {
-                try? await updateBookStatus(userBookId: existing.id, statusId: 2)
+    public func getUserBook(bookId: Int) async throws -> HardcoverUserBook? {
+        let query = """
+            query {
+                me {
+                    user_books(where: {book_id: {_eq: \(bookId)}}, limit: 1) {
+                        id book_id rating review status_id edition_id privacy_setting_id
+                        book { id title cached_contributors image { url } }
+                        edition { id title pages audio_seconds reading_format_id edition_format }
+                        user_book_reads(order_by: {id: desc}, limit: 1) {
+                            id started_at finished_at progress_pages progress_seconds edition_id
+                            edition { id pages audio_seconds reading_format_id }
+                        }
+                    }
+                }
+            }
+            """
+        let response: UserBooksRichResponse = try await performQuery(query)
+        return response.me?.first?.userBooks?.first
+    }
+
+    public func addBookToLibrary(bookId: Int, startReading: Bool = false, eventDate: String? = nil) async throws -> Int {
+        if let existing = try await getUserBook(bookId: bookId) {
+            if startReading, existing.statusId != 2 {
+                try await markBookAsStarted(userBookId: existing.id, eventDate: eventDate)
             }
             return existing.id
         }
-        throw HardcoverError.invalidResponse
+        return try await setBookStatus(bookId: bookId, status: startReading ? .currentlyReading : .wantToRead, eventDate: eventDate)
     }
 
-    public func setBookStatus(bookId: Int, status: HardcoverReadingStatus) async throws -> Int {
+    public func setBookStatus(bookId: Int, status: HardcoverReadingStatus, eventDate: String? = nil) async throws -> Int {
         let query = """
             query {
                 me {
@@ -321,14 +349,14 @@ public final class HardcoverService: Sendable {
             """
         let response: UserBookIDQueryResponse = try await performQuery(query)
         if let userBookId = response.me?.first?.userBooks?.first?.id {
-            try await updateBookStatus(userBookId: userBookId, statusId: status.rawValue)
+            try await updateBookStatus(userBookId: userBookId, statusId: status.rawValue, eventDate: eventDate)
             return userBookId
         }
 
-        let today = HardcoverDateFormatter.todayString()
+        let today = eventDate ?? HardcoverDateFormatter.todayString()
         let mutation = """
             mutation {
-                insert_user_book(object: {book_id: \(bookId), status_id: \(status.rawValue), date_added: "\(today)"}) {
+                insert_user_book(object: {book_id: \(bookId), status_id: \(status.rawValue), date_added: "\(today)", user_date: "\(today)"}) {
                     error
                     user_book { id }
                 }
@@ -344,10 +372,11 @@ public final class HardcoverService: Sendable {
         return userBookId
     }
 
-    public func updateBookStatus(userBookId: Int, statusId: Int) async throws {
+    public func updateBookStatus(userBookId: Int, statusId: Int, eventDate: String? = nil) async throws {
+        let dateParameter = eventDate.map { ", user_date: \"\($0)\"" } ?? ""
         let mutation = """
             mutation {
-                update_user_book(id: \(userBookId), object: {status_id: \(statusId)}) {
+                update_user_book(id: \(userBookId), object: {status_id: \(statusId)\(dateParameter)}) {
                     error
                     user_book { id status_id }
                 }
@@ -357,12 +386,12 @@ public final class HardcoverService: Sendable {
         try response.validate()
     }
 
-    public func markBookAsStarted(userBookId: Int) async throws {
-        try await updateBookStatus(userBookId: userBookId, statusId: 2)
+    public func markBookAsStarted(userBookId: Int, eventDate: String? = nil) async throws {
+        try await updateBookStatus(userBookId: userBookId, statusId: 2, eventDate: eventDate)
     }
 
-    public func markBookAsFinished(userBookId: Int) async throws {
-        try await updateBookStatus(userBookId: userBookId, statusId: 3)
+    public func markBookAsFinished(userBookId: Int, eventDate: String? = nil) async throws {
+        try await updateBookStatus(userBookId: userBookId, statusId: 3, eventDate: eventDate)
     }
 
     public func deleteUserBook(userBookId: Int) async throws {
@@ -371,29 +400,16 @@ public final class HardcoverService: Sendable {
                 delete_user_book(id: \(userBookId)) { id }
             }
             """
-        let _: GenericDeleteResponse = try await performQuery(mutation)
+        let response: GenericDeleteResponse = try await performQuery(mutation)
+        guard response.deleteUserBook?.id == userBookId else { throw HardcoverError.invalidResponse }
     }
 
-    private enum InsertReadMode: String {
-        case legacyObject
-        case startedAt
-        case progressPages
-        case unsupported
-    }
-
-    private actor InsertReadModeStore {
-        private var mode: InsertReadMode = .legacyObject
-
-        func get() -> InsertReadMode { mode }
-        func set(_ newValue: InsertReadMode) { mode = newValue }
-    }
-
-    public func createReadingSession(userBookId: Int, editionId: Int? = nil) async throws -> Int {
+    public func createReadingSession(userBookId: Int, editionId: Int? = nil, eventDate: String? = nil) async throws -> Int {
         try await insertReadRecord(
             userBookId: userBookId,
             progressPages: 0,
             isFinished: false,
-            editionId: editionId
+            editionId: editionId, eventDate: eventDate
         )
     }
 
@@ -428,17 +444,21 @@ public final class HardcoverService: Sendable {
         progressPages: Int,
         progressSeconds: Int? = nil,
         isFinished: Bool,
-        editionId: Int?
+        editionId: Int?,
+        eventDate: String? = nil,
+        startDate: String? = nil,
+        actionAt: Date? = nil
     ) async throws -> Int {
-        let today = HardcoverDateFormatter.todayString()
+        let today = eventDate ?? HardcoverDateFormatter.todayString()
         let editionParam = editionId.map { ", edition_id: \($0)" } ?? ""
+        let actionParam = actionAt.map { ", action_at: \"\($0.ISO8601Format())\"" } ?? ""
         let finishedParam = isFinished ? ", finished_at: \"\(today)\"" : ""
         let progressParam = progressSeconds.map { "progress_seconds: \($0)" } ?? "progress_pages: \(progressPages)"
 
         if let readId = existingReadId, readId > 0 {
             let mutation = """
                 mutation {
-                    update_user_book_read(id: \(readId), object: {\(progressParam)\(finishedParam)\(editionParam)}) {
+                    update_user_book_read(id: \(readId), object: {\(progressParam)\(finishedParam)\(editionParam)\(actionParam)}) {
                         error
                         user_book_read { id progress_pages }
                     }
@@ -451,8 +471,9 @@ public final class HardcoverService: Sendable {
             return try await insertReadRecord(
                 userBookId: userBookId,
                 progressPages: progressPages,
+                progressSeconds: progressSeconds,
                 isFinished: isFinished,
-                editionId: editionId
+                editionId: editionId, eventDate: eventDate, startDate: startDate, actionAt: actionAt
             )
         }
     }
@@ -460,80 +481,32 @@ public final class HardcoverService: Sendable {
     private func insertReadRecord(
         userBookId: Int,
         progressPages: Int,
+        progressSeconds: Int? = nil,
         isFinished: Bool,
-        editionId: Int?
+        editionId: Int?,
+        eventDate: String? = nil,
+        startDate: String? = nil,
+        actionAt: Date? = nil
     ) async throws -> Int {
-        let today = HardcoverDateFormatter.todayString()
-        let editionParam = editionId.map { ", edition_id: \($0)" } ?? ""
-        let finishedParam = isFinished ? ", finished_at: \"\(today)\"" : ""
-
-        var mode = await insertReadModeStore.get()
-
-        while true {
-            if mode == .unsupported {
-                return 0
+        let today = eventDate ?? HardcoverDateFormatter.todayString()
+        var input: [String: Any] = ["started_at": startDate ?? today]
+        if let actionAt { input["action_at"] = actionAt.ISO8601Format() }
+        if let progressSeconds { input["progress_seconds"] = progressSeconds }
+        else { input["progress_pages"] = progressPages }
+        if isFinished { input["finished_at"] = today }
+        if let editionId { input["edition_id"] = editionId }
+        let mutation = """
+            mutation InsertRead($userBookId: Int!, $read: DatesReadInput!) {
+                insert_user_book_read(user_book_id: $userBookId, user_book_read: $read) {
+                    error
+                    user_book_read { id }
+                }
             }
-
-            let mutation: String
-            switch mode {
-            case .legacyObject:
-                mutation = """
-                    mutation {
-                        insert_user_book_read(user_book_id: \(userBookId), object: {started_at: "\(today)", progress_pages: \(progressPages)\(finishedParam)\(editionParam)}) {
-                            error
-                            user_book_read { id }
-                        }
-                    }
-                    """
-            case .startedAt:
-                mutation = """
-                    mutation {
-                        insert_user_book_read(user_book_id: \(userBookId), started_at: "\(today)", progress_pages: \(progressPages)\(finishedParam)\(editionParam)) {
-                            error
-                            user_book_read { id }
-                        }
-                    }
-                    """
-            case .progressPages:
-                mutation = """
-                    mutation {
-                        insert_user_book_read(user_book_id: \(userBookId), progress_pages: \(progressPages)\(editionParam)) {
-                            error
-                            user_book_read { id }
-                        }
-                    }
-                    """
-            case .unsupported:
-                return 0
-            }
-
-            do {
-                let response: InsertReadSessionResponse = try await performQuery(mutation, suppressGraphQLErrorLogging: true)
-                let createdReadId = try response.createdReadId()
-                await insertReadModeStore.set(mode)
-                if isFinished, mode == .progressPages {
-                    try? await markReadSessionFinished(readId: createdReadId)
-                }
-                return createdReadId
-            } catch {
-                if shouldRetryInsertUserBookReadWithoutObject(error) {
-                    mode = .startedAt
-                    await insertReadModeStore.set(mode)
-                    continue
-                }
-                if shouldRetryInsertUserBookReadWithoutStartedAt(error) {
-                    mode = .progressPages
-                    await insertReadModeStore.set(mode)
-                    continue
-                }
-                if shouldDisableInsertUserBookReadProgressSync(error) {
-                    mode = .unsupported
-                    await insertReadModeStore.set(mode)
-                    return 0
-                }
-                throw error
-            }
-        }
+            """
+        let response: InsertReadSessionResponse = try await performQuery(
+            mutation, variables: ["userBookId": userBookId, "read": input]
+        )
+        return try response.createdReadId()
     }
 
     public func rateBook(userBookId: Int, rating: Double) async throws {
@@ -553,16 +526,17 @@ public final class HardcoverService: Sendable {
     }
 
     public func reviewBook(userBookId: Int, reviewText: String) async throws {
-        let slateJSON = "[{\"type\":\"paragraph\",\"children\":[{\"text\":\"\(reviewText.graphQLEscaped)\"}]}]"
         let mutation = """
-            mutation {
-                update_user_book(id: \(userBookId), object: {review_raw: "\(reviewText.graphQLEscaped)", review_slate: \(slateJSON)}) {
+            mutation ReviewBook($id: Int!, $review: UserBookUpdateInput!) {
+                update_user_book(id: $id, object: $review) {
                     error
-                    user_book { id has_review reviewed_at }
+                    user_book { id }
                 }
             }
             """
-        let response: GenericUpdateResponse = try await performQuery(mutation)
+        let response: GenericUpdateResponse = try await performQuery(
+            mutation, variables: ["id": userBookId, "review": ["review_markdown": reviewText]]
+        )
         try response.validate()
     }
 
@@ -758,70 +732,59 @@ public final class HardcoverService: Sendable {
         }
     }
 
-    public func getReadingGoal() async throws -> HardcoverReadingGoalLegacy? {
-        let currentYear = Calendar.current.component(.year, from: Date())
-        let startDate = "\(currentYear)-01-01"
-        let endDate = "\(currentYear)-12-31"
-
+    private func annualBookGoal() async throws -> GoalsResponse.GoalData? {
+        let year = Calendar.current.component(.year, from: Date())
         let query = """
             query {
                 me {
-                    goals(where: {start_date: {_lte: "\(endDate)"}, end_date: {_gte: "\(startDate)"}}) {
-                        id goal metric start_date end_date
+                    goals(where: {metric: {_eq: "book"}, archived: {_eq: false},
+                        start_date: {_eq: "\(year)-01-01"}, end_date: {_eq: "\(year)-12-31"}},
+                        order_by: {id: desc}) {
+                        id goal metric start_date end_date description conditions privacy_setting_id progress
                     }
                 }
             }
             """
-
-        do {
-            let response: GoalsResponse = try await performQuery(query)
-            if let goal = response.me?.first?.goals?.first {
-                let userId = try await cachedUserId()
-                let finishedCount = try await countFinishedBooks(userId: userId, startDate: startDate, endDate: endDate)
-                return HardcoverReadingGoalLegacy(
-                    id: goal.id,
-                    year: currentYear,
-                    target: goal.goal,
-                    current: finishedCount
-                )
-            }
-        } catch {
-            AppLogger.network.error("Goals query failed, trying fallback: \(error.localizedDescription)")
-        }
-
-        return nil
+        let response: GoalsResponse = try await performQuery(query)
+        return response.me?.first?.goals?.first
     }
 
-    private func countFinishedBooks(userId: Int, startDate: String, endDate: String) async throws -> Int {
-        let query = """
-            query {
-                user_book_reads_aggregate(
-                    where: {
-                        finished_at: {_gte: "\(startDate)", _lte: "\(endDate)"},
-                        user_book: {user_id: {_eq: \(userId)}}
-                    }
-                ) {
-                    aggregate { count }
-                }
-            }
-            """
-        let response: FinishedCountResponse = try await performQuery(query)
-        return response.userBookReadsAggregate?.aggregate?.count ?? 0
+    public func getReadingGoal() async throws -> HardcoverReadingGoalLegacy? {
+        guard let goal = try await annualBookGoal() else { return nil }
+        return HardcoverReadingGoalLegacy(
+            id: goal.id,
+            year: Calendar.current.component(.year, from: Date()),
+            target: goal.goal,
+            current: Int(goal.progress)
+        )
     }
 
     public func setReadingGoal(target: Int) async throws {
-        let currentYear = Calendar.current.component(.year, from: Date())
+        guard target > 0 else { throw HardcoverError.invalidResponse }
+        let year = Calendar.current.component(.year, from: Date())
+        let existing = try await annualBookGoal()
+        var input: [String: Any] = [
+            "goal": target, "metric": "book",
+            "start_date": existing?.startDate ?? "\(year)-01-01",
+            "end_date": existing?.endDate ?? "\(year)-12-31",
+            "description": existing?.description ?? "Books read in \(year)",
+            "conditions": try JSONSerialization.jsonObject(with: JSONEncoder().encode(existing?.conditions ?? .init()))
+        ]
+        if let privacy = existing?.privacySettingId { input["privacy_setting_id"] = privacy }
+        let operation = existing == nil ? "insert_goal(object: $goal)" : "update_goal(id: $id, object: $goal)"
+        let idDeclaration = existing == nil ? "" : ", $id: Int!"
         let mutation = """
-            mutation {
-                insert_reading_goals(
-                    objects: {year: \(currentYear), target: \(target)},
-                    on_conflict: {constraint: reading_goals_user_id_year_key, update_columns: [target]}
-                ) {
-                    returning { id target }
-                }
+            mutation SaveGoal($goal: GoalInput!\(idDeclaration)) {
+                result: \(operation) { id errors }
             }
             """
-        let _: GenericMutResponse = try await performQuery(mutation)
+        var variables: [String: Any] = ["goal": input]
+        if let existing { variables["id"] = existing.id }
+        let response: GoalMutationResponse = try await performQuery(mutation, variables: variables)
+        if let errors = response.result?.errors, !errors.isEmpty {
+            throw HardcoverError.graphQLError(message: errors.joined(separator: ", "))
+        }
+        guard response.result?.id != nil else { throw HardcoverError.invalidResponse }
     }
 
     public func getUserStats() async throws -> HardcoverUserStats {
@@ -900,35 +863,44 @@ public final class HardcoverService: Sendable {
 
     private func performQuery<T: Decodable>(
         _ query: String,
-        suppressGraphQLErrorLogging: Bool = false
+        variables: [String: Any]? = nil
     ) async throws -> T {
-        guard let apiKey = SettingsManager.shared.hardcoverApiKey, !apiKey.isEmpty else {
+        guard let apiKey = tokenProvider(), !apiKey.isEmpty else {
             throw HardcoverError.noApiKey
         }
 
+        if let expected = Self.syncToken {
+            guard expected == apiKey, SettingsManager.shared.hardcoverAutoSyncEnabled else { throw CancellationError() }
+        }
+        try Task.checkCancellation()
         var request = URLRequest(url: baseURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["query": query])
+        var body: [String: Any] = ["query": query]
+        body["variables"] = variables
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let queryPrefix = String(query.prefix(80)).replacingOccurrences(of: "\n", with: " ")
-        AppLogger.network.debug("[Hardcover] Query: \(queryPrefix)...")
-
-        var (data, response) = try await URLSession.shared.data(for: request)
-        if let http = response as? HTTPURLResponse,
-            let seconds = HardcoverError.retryDelay(
-                statusCode: http.statusCode,
-                retryAfter: http.value(forHTTPHeaderField: "Retry-After")
-            )
-        {
-            try await Task.sleep(for: .seconds(seconds))
-            (data, response) = try await URLSession.shared.data(for: request)
+        let account = HardcoverRequestPacer.accountKey(apiKey)
+        let isCurrent = {
+            self.tokenProvider() == apiKey && (Self.syncToken == nil ||
+                (SettingsManager.shared.hardcoverAutoSyncEnabled && HardcoverSyncService.hasProfileAccess))
         }
-
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw HardcoverError.networkError
+        var data = Data()
+        var httpResponse: HTTPURLResponse?
+        for attempt in 0..<2 {
+            try await pacer.acquire(account: account, cost: HardcoverRequestPacer.requestCost(query), isCurrent: isCurrent)
+            try Task.checkCancellation()
+            guard isCurrent() else { throw CancellationError() }
+            let (received, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else { throw HardcoverError.networkError }
+            pacer.observe(http, account: account)
+            guard isCurrent() else { throw CancellationError() }
+            data = received
+            httpResponse = http
+            if http.statusCode != 429 || attempt == 1 { break }
         }
+        guard let httpResponse else { throw HardcoverError.networkError }
 
         if !(200...299).contains(httpResponse.statusCode) {
             let msg = String(data: data, encoding: .utf8) ?? "Unknown"
@@ -959,9 +931,7 @@ public final class HardcoverService: Sendable {
 
             if let errors = graphQLResponse.errors, !errors.isEmpty {
                 let msg = errors.map(\.message).joined(separator: ", ")
-                if !suppressGraphQLErrorLogging {
-                    AppLogger.network.error("[Hardcover] GraphQL error: \(msg)")
-                }
+                AppLogger.network.error("[Hardcover] GraphQL request failed")
                 if HardcoverError.isAuthenticationFailure(statusCode: 200, message: msg),
                     SettingsManager.shared.hardcoverApiKey == apiKey {
                     SettingsManager.shared.hardcoverApiKey = nil
@@ -978,41 +948,6 @@ public final class HardcoverService: Sendable {
             AppLogger.network.error("[Hardcover] Decode failed for \(T.self): \(decodingError)")
             throw decodingError
         }
-    }
-
-    private func shouldRetryInsertUserBookReadWithoutObject(_ error: Error) -> Bool {
-        guard case let HardcoverError.graphQLError(message) = error else { return false }
-        let lower = message.lowercased()
-        return lower.contains("insert_user_book_read")
-            && lower.contains("no argument named 'object'")
-    }
-
-    private func shouldRetryInsertUserBookReadWithoutStartedAt(_ error: Error) -> Bool {
-        guard case let HardcoverError.graphQLError(message) = error else { return false }
-        let lower = message.lowercased()
-        return lower.contains("insert_user_book_read")
-            && lower.contains("no argument named 'started_at'")
-    }
-
-    private func shouldDisableInsertUserBookReadProgressSync(_ error: Error) -> Bool {
-        guard case let HardcoverError.graphQLError(message) = error else { return false }
-        let lower = message.lowercased()
-        return lower.contains("insert_user_book_read")
-            && lower.contains("no argument named 'progress_pages'")
-    }
-
-    private func markReadSessionFinished(readId: Int) async throws {
-        let today = HardcoverDateFormatter.todayString()
-        let mutation = """
-            mutation {
-                update_user_book_read(id: \(readId), object: {finished_at: "\(today)"}) {
-                    error
-                    user_book_read { id }
-                }
-            }
-            """
-        let response: UpdateReadProgressResponse = try await performQuery(mutation)
-        try response.validate()
     }
 
     private func mapToLegacyUserBook(_ data: UserBookFullData) -> HardcoverUserBookLegacy {
@@ -1044,14 +979,16 @@ public final class HardcoverService: Sendable {
             rating: data.rating.flatMap { Int($0) },
             review: data.review,
             statusId: data.statusId,
-            editionId: data.editionId,
-            totalPages: data.edition?.pages,
+            editionId: data.userBookReads?.first?.editionId ?? data.editionId,
+            totalPages: (data.userBookReads?.first?.edition ?? data.edition)?.pages,
+            totalAudioSeconds: (data.userBookReads?.first?.edition ?? data.edition)?.audioSeconds,
             userBookReads: data.userBookReads?.map { r in
                 HardcoverUserBookReadLegacy(
                     id: r.id,
                     startedAt: r.startedAt,
                     finishedAt: r.finishedAt,
-                    progress: r.progressPages.map { Double($0) }
+                    progress: r.progressPages.map { Double($0) },
+                    progressSeconds: r.progressSeconds
                 )
             },
             authors: authorsFinal
@@ -1077,6 +1014,7 @@ public struct HardcoverUserBookLegacy: Codable, Identifiable, Sendable {
     public let statusId: Int
     public let editionId: Int?
     public let totalPages: Int?
+    public var totalAudioSeconds: Int? = nil
     public let userBookReads: [HardcoverUserBookReadLegacy]?
     public let authors: [HardcoverAuthor]?
 
@@ -1089,10 +1027,14 @@ public struct HardcoverUserBookLegacy: Codable, Identifiable, Sendable {
     }
 
     public var progressFraction: Double? {
+        if currentReadSession?.finishedAt != nil { return 1 }
+        if let seconds = currentReadSession?.progressSeconds, let total = totalAudioSeconds, total > 0 {
+            return min(1, max(0, Double(seconds) / Double(total)))
+        }
         guard let pages = currentReadSession?.progress,
             let total = totalPages, total > 0
         else { return nil }
-        return pages / Double(total)
+        return min(1, max(0, pages / Double(total)))
     }
 }
 
@@ -1101,6 +1043,7 @@ public struct HardcoverUserBookReadLegacy: Codable, Sendable {
     public let startedAt: String?
     public let finishedAt: String?
     public let progress: Double?
+    public var progressSeconds: Int? = nil
 }
 
 public struct HardcoverReadingGoalLegacy: Codable, Sendable {
@@ -1148,9 +1091,10 @@ public enum HardcoverTrendingPeriod: Sendable {
 }
 
 private actor UserIdCache: Sendable {
-    var id: Int?
-    func set(_ newId: Int) { id = newId }
-    func clear() { id = nil }
+    private var id: Int?
+    private var token: String?
+    func get(token: String) -> Int? { self.token == token ? id : nil }
+    func set(_ id: Int, token: String) { self.id = id; self.token = token }
 }
 
 private struct GraphQLResponse<T: Decodable>: Decodable {
@@ -1179,8 +1123,8 @@ private struct ProfileResponse: Decodable {
         let flair: String?
         let image: HardcoverImage?
         let userBooksAggregate: AggregateWrapper?
-        let followingAggregate: AggregateWrapper?
-        let followersAggregate: AggregateWrapper?
+        let followedUsersCount: Int?
+        let followersCount: Int?
     }
 }
 
@@ -1193,8 +1137,8 @@ private struct UsersResponse: Decodable {
         let flair: String?
         let image: HardcoverImage?
         let userBooksAggregate: AggregateWrapper?
-        let followingAggregate: AggregateWrapper?
-        let followersAggregate: AggregateWrapper?
+        let followedUsersCount: Int?
+        let followersCount: Int?
     }
 }
 
@@ -1257,6 +1201,7 @@ struct UserBookFullData: Decodable {
         let progressPages: Int?
         let progressSeconds: Int?
         let editionId: Int?
+        let edition: HardcoverEdition?
     }
 }
 
@@ -1338,20 +1283,21 @@ struct GenericUpdateResponse: Decodable {
     func validate() throws {
         guard let result = updateUserBook else { throw HardcoverError.invalidResponse }
         if let error = result.error, !error.isEmpty { throw HardcoverError.graphQLError(message: error) }
+        guard let id = result.userBook?.id, id > 0 else { throw HardcoverError.invalidResponse }
     }
 
     let updateUserBook: UpdateData?
     struct UpdateData: Decodable {
         let error: String?
+        let userBook: UpdatedBook?
     }
+    struct UpdatedBook: Decodable { let id: Int }
 }
 
 private struct GenericDeleteResponse: Decodable {
     let deleteUserBook: DeleteData?
     struct DeleteData: Decodable { let id: Int? }
 }
-
-private struct GenericMutResponse: Decodable {}
 
 struct InsertReadSessionResponse: Decodable {
     func createdReadId() throws -> Int {
@@ -1433,11 +1379,27 @@ private struct GoalsResponse: Decodable {
         let metric: String?
         let startDate: String?
         let endDate: String?
+        let description: String?
+        let conditions: GoalConditions
+        let privacySettingId: Int?
+        let progress: Double
     }
 }
 
-private struct FinishedCountResponse: Decodable {
-    let userBookReadsAggregate: AggregateWrapper?
+private struct GoalConditions: Codable {
+    var authorBipoc: Int?
+    var authorGenderIds: [Int]?
+    var authorLgbtqia: Int?
+    var bookCategoryIds: [Int]?
+    var readingFormatId: Int?
+}
+
+private struct GoalMutationResponse: Decodable {
+    let result: Result?
+    struct Result: Decodable {
+        let id: Int?
+        let errors: [String]?
+    }
 }
 
 private struct UserActivityResponse: Decodable {
@@ -1554,14 +1516,7 @@ enum HardcoverError: LocalizedError {
     case invalidRating
     case invalidProgress
     case noMatchFound
-
-    static func retryDelay(statusCode: Int, retryAfter: String?) -> Double? {
-        guard statusCode == 429,
-            let seconds = retryAfter.flatMap(Double.init),
-            (0...3).contains(seconds)
-        else { return nil }
-        return seconds
-    }
+    case rateLimited(until: Date)
 
     static func isAuthenticationFailure(statusCode: Int, message: String) -> Bool {
         if statusCode == 403 { return false }
@@ -1602,6 +1557,8 @@ enum HardcoverError: LocalizedError {
             return "Rating must be between 0.5 and 5 stars"
         case .invalidProgress:
             return "Invalid progress value"
+        case .rateLimited:
+            return "Hardcover is rate limiting requests. Saved progress will retry when the limit resets."
         case .noMatchFound:
             return "No Hardcover match found. Please match the book first."
         }

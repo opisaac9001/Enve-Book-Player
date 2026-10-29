@@ -373,7 +373,7 @@ final class LibraryModel {
 
     func removeSort(_ sort: LibrarySort) {
         let descriptors = sortDescriptors.filter { $0.field != sort }
-        setSortDescriptors(descriptors.isEmpty ? [Self.defaultSortDescriptor] : descriptors)
+        setSortDescriptors(descriptors)
     }
 
     func select(_ direction: LibrarySortDirection, for sort: LibrarySort) {
@@ -401,7 +401,7 @@ final class LibraryModel {
     }
 
     func clearSorting() {
-        setSortDescriptors([Self.defaultSortDescriptor])
+        setSortDescriptors([])
     }
 
     func selectLayout(_ layout: LibraryLayout) {
@@ -458,14 +458,13 @@ final class LibraryModel {
     }
 
     var isNarrowed: Bool {
-        status != .all || media != .all || sourceFilter != .all || advancedFilters.isActive
+        activeFilterCount > 0
     }
 
     var activeFilterCount: Int {
         var count = 0
         if status != .all { count += 1 }
         if media != .all { count += 1 }
-        if sourceFilter != .all { count += 1 }
         if advancedFilters.minimumRating != nil { count += 1 }
         if advancedFilters.series != .all { count += 1 }
         count += advancedFilters.genres.count
@@ -493,11 +492,10 @@ final class LibraryModel {
         let leavesComics = media == .comics
         status = .all
         media = .all
-        sourceFilter = .all
         advancedFilters = .empty
         defaults.set(LibraryStatusFilter.all.rawValue, forKey: Self.statusKey)
         defaults.set(LibraryMediaFilter.all.rawValue, forKey: Self.mediaKey)
-        defaults.set(LibrarySourceFilter.all.rawValue, forKey: Self.sourceKey)
+        defaults.set(LibraryMediaFilter.all.rawValue, forKey: Self.sourceMediaKey(sourceFilter))
         defaults.removeObject(forKey: Self.advancedFiltersKey)
         if leavesComics { applyBrowsePreferences() }
         scheduleReload()
@@ -559,7 +557,7 @@ final class LibraryModel {
     }
 
     var usesDefaultSorting: Bool {
-        sortDescriptors == [Self.defaultSortDescriptor]
+        sortDescriptors.isEmpty || sortDescriptors == [Self.defaultSortDescriptor]
     }
 
     private var storeSortDescriptors: [BookStoreSortDescriptor] {
@@ -620,8 +618,7 @@ final class LibraryModel {
         if let data = defaults.data(forKey: sortDescriptorsKey),
             let decoded = try? JSONDecoder().decode([LibrarySortDescriptor].self, from: data)
         {
-            let unique = uniqueSortDescriptors(decoded)
-            if !unique.isEmpty { return unique }
+            return uniqueSortDescriptors(decoded)
         }
         return [LibrarySortDescriptor(field: fallbackSort, direction: fallbackDirection)]
     }
@@ -629,7 +626,7 @@ final class LibraryModel {
     private func setSortDescriptors(_ descriptors: [LibrarySortDescriptor]) {
         let descriptors = Self.uniqueSortDescriptors(descriptors)
         guard descriptors != sortDescriptors else { return }
-        sortDescriptors = descriptors.isEmpty ? [Self.defaultSortDescriptor] : descriptors
+        sortDescriptors = descriptors
         syncPrimarySort()
         persistSortDescriptors()
         scheduleReload()

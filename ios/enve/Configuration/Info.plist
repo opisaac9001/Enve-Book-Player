@@ -37,6 +37,8 @@
 	<array>
 		<string>_enveread._tcp</string>
 	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>Enve uses the camera to scan a listening-position code someone shows you. Nothing is recorded or uploaded.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Enve uses the local network to mirror books to the Read together app on your Apple TV.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>

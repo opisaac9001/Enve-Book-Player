@@ -226,7 +226,7 @@ class DiskImageCache {
     }
 }
 
-#if os(iOS)
+#if os(iOS) || os(tvOS)
 struct CachedAsyncCoverImage: View {
     private static let remoteSession: URLSession = {
         let config = URLSessionConfiguration.default
@@ -246,6 +246,8 @@ struct CachedAsyncCoverImage: View {
 
     var book: Book? = nil
     var onImageSizeChange: ((CGSize?) -> Void)? = nil
+    var contentMode: ContentMode = .fill
+    var onImageChange: ((UIImage?) -> Void)? = nil
     @State private var image: UIImage?
     @State private var isLoading = false
 
@@ -266,7 +268,7 @@ struct CachedAsyncCoverImage: View {
                 #else
                 Image(uiImage: image)
                     .resizable()
-                    .scaledToFill()
+                    .aspectRatio(contentMode: contentMode)
                 #endif
             } else if url != nil {
                 ZStack {
@@ -287,6 +289,9 @@ struct CachedAsyncCoverImage: View {
         }
         .onChange(of: image?.size) { _, size in
             onImageSizeChange?(size)
+        }
+        .onChange(of: image) { _, image in
+            onImageChange?(image)
         }
         .task(id: reloadKey) {
             image = nil
@@ -621,6 +626,11 @@ struct CachedAsyncCoverImage: View {
         guard let connection = AppState.shared.providerConnections.connections.first(where: { $0.id == book.providerId }) else {
             return [:]
         }
+        return authHeaders(for: connection)
+    }
+
+    @MainActor
+    static func authHeaders(for connection: ServerConnection) -> [String: String] {
         var headers: [String: String] = [:]
 
         if let custom = connection.customHeaders {
@@ -632,6 +642,10 @@ struct CachedAsyncCoverImage: View {
         let token =
             connection.token
             ?? (connection.type == .silo ? SharedKeychainStore.shared.token(forConnectionId: connection.id.uuidString) : nil)
+
+        if connection.type == .jellyfin, let token, !token.isEmpty {
+            return jellyfinCoverHeaders(token: token, customHeaders: headers)
+        }
 
         if connection.type == .silo,
             let token,
@@ -650,7 +664,7 @@ struct CachedAsyncCoverImage: View {
         } else if let token, !token.isEmpty {
             if token.hasPrefix("Basic ") || token.hasPrefix("Bearer ") {
                 headers["Authorization"] = token
-            } else if connection.type == .jellyfin || connection.type == .emby {
+            } else if connection.type == .emby {
                 headers["X-Emby-Token"] = token
             } else if connection.type == .audiobookshelf || connection.type == .booklore || connection.type == .storyteller
                 || connection.type == .bookOrbit || connection.type == .silo || connection.authMode == .sso
@@ -682,10 +696,13 @@ struct CachedAsyncCoverImage: View {
         let token =
             connection.token
             ?? (connection.type == .silo ? SharedKeychainStore.shared.token(forConnectionId: connection.id.uuidString) : nil)
+        if connection.type == .jellyfin, let token, !token.isEmpty {
+            return jellyfinCoverHeaders(token: token, customHeaders: headers)
+        }
         if let token, !token.isEmpty {
             if token.hasPrefix("Basic ") {
                 headers["Authorization"] = token
-            } else if connection.type == .jellyfin || connection.type == .emby {
+            } else if connection.type == .emby {
                 headers["X-Emby-Token"] = token
             } else if connection.type == .audiobookshelf || connection.type == .booklore || connection.type == .storyteller
                 || connection.type == .bookOrbit || connection.type == .silo
@@ -700,6 +717,13 @@ struct CachedAsyncCoverImage: View {
                 headers["Authorization"] = "Basic \(data.base64EncodedString())"
             }
         }
+        return headers
+    }
+
+    private static func jellyfinCoverHeaders(token: String, customHeaders: [String: String]) -> [String: String] {
+        let replaced = Set(["authorization", "x-emby-authorization", "x-emby-token", "x-mediabrowser-token"])
+        var headers = customHeaders.filter { !replaced.contains($0.key.lowercased()) }
+        headers["Authorization"] = MediaBrowserClient.authorizationHeader(token: token)
         return headers
     }
 

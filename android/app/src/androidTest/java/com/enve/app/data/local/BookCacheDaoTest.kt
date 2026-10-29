@@ -469,7 +469,7 @@ class BookCacheDaoTest {
                 status = "ANY",
                 length = "ANY",
                 addedWithinDays = 30,
-                query = "codex",
+                query = "shelley",
                 createdAt = 1000L,
                 updatedAt = 1000L,
             )
@@ -477,7 +477,7 @@ class BookCacheDaoTest {
 
         val inserted = customSmartCollectionDao.get("smart-1")
         assertEquals("Recent Ebooks", inserted?.name)
-        assertEquals("codex", inserted?.query)
+        assertEquals("shelley", inserted?.query)
 
         customSmartCollectionDao.upsert(
             inserted!!.copy(

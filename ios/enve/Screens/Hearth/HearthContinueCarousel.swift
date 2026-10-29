@@ -12,23 +12,29 @@ struct HearthContinueCarousel<MenuItems: View>: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            ScrollView(.horizontal) {
-                LazyHStack(spacing: 12) {
-                    ForEach(books, id: \.stableId) { book in
-                        HearthBookCard(book: book, sourceLabel: sourceLabel(book))
-                            .contextMenu { menu(book) }
-                            .containerRelativeFrame(.horizontal) { width, _ in
-                                books.count > 1 ? width - 72 : width - 48
-                            }
-                            .id(book.stableId)
+            VStack(spacing: 0) {
+                ScrollView(.horizontal) {
+                    LazyHStack(spacing: 12) {
+                        ForEach(books, id: \.stableId) { book in
+                            HearthBookCard(book: book, sourceLabel: sourceLabel(book))
+                                .contextMenu { menu(book) }
+                                .containerRelativeFrame(.horizontal) { width, _ in
+                                    books.count > 1 ? width - 72 : width - 48
+                                }
+                                .id(book.stableId)
+                        }
                     }
+                    .scrollTargetLayout()
                 }
-                .scrollTargetLayout()
+                .contentMargins(.horizontal, 24, for: .scrollContent)
+                .scrollTargetBehavior(.viewAligned)
+                .scrollPosition(id: $visibleId)
+                .scrollIndicators(.hidden)
+
+                // Cards stand directly on the shelf; the scroll clip hides their raised base behind it.
+                ShelfLedge()
+                    .padding(.horizontal, 14)
             }
-            .contentMargins(.horizontal, 24, for: .scrollContent)
-            .scrollTargetBehavior(.viewAligned)
-            .scrollPosition(id: $visibleId)
-            .scrollIndicators(.hidden)
 
             if books.count > 1 {
                 pageIndicator
@@ -142,10 +148,7 @@ struct HearthBookCard: View {
             .background { backdrop }
             .clipShape(RoundedRectangle(cornerRadius: Hearth.radiusCard, style: .continuous))
             .contentShape(RoundedRectangle(cornerRadius: Hearth.radiusCard, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: Hearth.radiusCard, style: .continuous)
-                    .strokeBorder(hearth.hairline, lineWidth: 1)
-            }
+            .hearthOutlined(RoundedRectangle(cornerRadius: Hearth.radiusCard, style: .continuous), raised: true)
         }
         .buttonStyle(PressableStyle())
         .accessibilityLabel(accessibilitySummary)
@@ -359,20 +362,11 @@ struct HearthBookCard: View {
     private var backdrop: some View {
         ZStack {
             hearth.bgElevated
-            CachedAsyncCoverImage(
-                url: book.coverURL,
-                fallbackColor: "Blue",
-                headers: CachedAsyncCoverImage.authHeaders(for: book),
-                book: book
-            )
-            .scaleEffect(1.4)
-            .blur(radius: 40, opaque: true)
-            hearth.bg.opacity(0.55)
             if prominent {
-                EmberGlow(tint: tint, isBreathing: player.isPlaying, intensity: 0.45)
+                EmberGlow(tint: tint, isBreathing: player.isPlaying, intensity: 0.25)
             }
             LinearGradient(
-                colors: [tint.opacity(0.2), .clear],
+                colors: [tint.opacity(hearth.isInk ? 0.1 : 0.06), .clear],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )

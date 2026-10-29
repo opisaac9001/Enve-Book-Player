@@ -23,6 +23,7 @@ import com.enve.app.ui.screens.buildPageLocator
 import com.enve.app.ui.screens.loadOrExtractComicPages
 import com.enve.app.ui.screens.readComicArchiveDirection
 import com.enve.app.ui.screens.pageIndexFromProgress
+import com.enve.app.ui.screens.commandReaderPage
 import com.enve.app.ui.screens.parseSavedPage
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -456,6 +457,8 @@ class ComicReaderViewModel @Inject constructor(
         val fromArgs = parseSavedPage(argsLocator, format).coerceAtLeast(0)
         val cached = bookCacheDao.getByIdAndConnection(bookId, bookConnectionId)
             ?: bookCacheDao.getById(bookId)
+        val pending = database.pendingProgressPushDao().get(bookId, bookSource.name, bookConnectionId.orEmpty())
+        commandReaderPage(cached, pending, format, lastIndex + 1, currentBookKey(), bookSource.name, bookConnectionId)?.let { return it }
         val fromLocal = cached?.epubLocator
             ?.let { parseSavedPage(it, format).coerceAtLeast(0) }
             ?: 0

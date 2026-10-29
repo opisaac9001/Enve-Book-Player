@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <id>urn:uuid:2c9d41a0-0900-4d2a-8f77-9a1b2c3d4e90</id>
+  <title>Enve OPDS Lab — truncated</title>
+  <updated>2026-09-19T08:00:00Z</updated>
+  <entry>
+    <id>urn:uuid:2c9d41a0-0901-4d2a-8f77-9a1b2c3d4e91</id>
+    <title>Cut Off Mid-Element</title>
+    <link rel="http://opds-spec.org/acquisition"
+          href="/opds/files/lab-ebook-001.epub"

@@ -22,6 +22,7 @@ final class ReaderInitialLocationResolver {
         let bridge: BridgeCheckpoint?
         let engineKind: ReaderEngineKind
         let usesMediaOverlayPosition: Bool
+        var epubFileURL: URL? = nil
     }
 
     private let book: Book
@@ -111,6 +112,14 @@ final class ReaderInitialLocationResolver {
 
     private func restoredLocation(_ request: Request) async -> ReaderInitialLocation {
         let freshestBook = libraryCache.bookInMemory(uniqueId: book.uniqueId) ?? book
+        if let shared = await Self.sharedLocation(
+            locatorJSON: freshestBook.epubLocator,
+            syncedProgress: freshestBook.canonicalEbookProgress,
+            in: request.publication,
+            epubFileURL: request.epubFileURL
+        ) {
+            return shared
+        }
         if ReaderInitialLocationPolicy.bridgeCheckpointIsCurrent(
             observedAt: request.bridge?.observedAt,
             bookLastUpdate: freshestBook.lastUpdate
@@ -144,6 +153,70 @@ final class ReaderInitialLocationResolver {
             return ReaderInitialLocation(locator: preferred, locatorJSON: nil)
         }
         return ReaderInitialLocation(locator: rawLocator ?? preferred, locatorJSON: rawLocatorJSON)
+    }
+
+    static func sharedLocation(
+        locatorJSON: String?,
+        syncedProgress: Double,
+        in publication: Publication,
+        epubFileURL: URL? = nil
+    ) async -> ReaderInitialLocation? {
+        guard let inputJSON = locatorJSON, let data = inputJSON.data(using: .utf8),
+            var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let marker = object["enveSharedPosition"] as? NSNumber,
+            CFGetTypeID(marker) == CFBooleanGetTypeID(), marker.boolValue,
+            var locations = object["locations"] as? [String: Any],
+            let total = locations["totalProgression"] as? NSNumber,
+            CFGetTypeID(total) != CFBooleanGetTypeID(),
+            total.doubleValue.isFinite, (0...1).contains(total.doubleValue),
+            abs(syncedProgress - total.doubleValue) <= 0.000_001
+        else { return nil }
+
+        var locatorJSON = inputJSON
+        let hasPortableAnchor = locations["cssSelector"] != nil || locations["domRange"] != nil ||
+            (object["text"] as? [String: Any])?["highlight"] != nil ||
+            (locations["fragments"] as? [String])?.contains(where: { !$0.contains("=") && !$0.hasPrefix("epubcfi(") }) == true
+        if !hasPortableAnchor, let epubFileURL, let cfi = locations["cfi"] as? String,
+            SharedReadingLocator.validCFI(cfi),
+            let convertedJSON = await EpubCFI.readiumLocatorJSON(forCFI: cfi, totalProgression: total.doubleValue, epubFileURL: epubFileURL),
+            var converted = SharedReadingLocator.object(convertedJSON),
+            var convertedLocations = converted["locations"] as? [String: Any] {
+            convertedLocations["cfi"] = cfi
+            convertedLocations["enveSourceEngine"] = "foliate"
+            converted["locations"] = convertedLocations
+            converted["enveSharedPosition"] = true
+            object = converted
+            locations = convertedLocations
+            locatorJSON = SharedReadingLocator.encoded(converted)
+        }
+
+        let readingOrderHrefs = publication.readingOrder.map(\.href)
+        if let href = object["href"] as? String,
+            ListeningPositionReadingLocation.validHref(href),
+            let locator = try? Locator(jsonString: locatorJSON)
+        {
+            let location = Self.validating(
+                ReaderInitialLocation(locator: locator, locatorJSON: locatorJSON),
+                readingOrderHrefs: readingOrderHrefs
+            )
+            if location.locator != nil { return location }
+        }
+
+        guard let locator = await publication.locate(progression: total.doubleValue) else { return nil }
+        var fallbackJSON: String?
+        if let cfi = locations["cfi"] as? String, SharedReadingLocator.validCFI(cfi),
+            var fallback = (try? locator.jsonString()).flatMap(SharedReadingLocator.object) {
+            var fallbackLocations = fallback["locations"] as? [String: Any] ?? [:]
+            fallbackLocations["cfi"] = cfi
+            fallbackLocations["enveSourceEngine"] = "foliate"
+            fallback["locations"] = fallbackLocations
+            fallbackJSON = SharedReadingLocator.encoded(fallback)
+        }
+        let location = Self.validating(
+            ReaderInitialLocation(locator: locator, locatorJSON: fallbackJSON),
+            readingOrderHrefs: readingOrderHrefs
+        )
+        return location.locator == nil ? nil : location
     }
 
     private func preferredLocation(in publication: Publication) async -> Locator? {

@@ -1,5 +1,6 @@
 package com.enve.app.ui.screens.reader
 
+import com.enve.core.reader.ReadAloudHighlightStyle
 import androidx.compose.foundation.background
 import com.enve.core.reader.highlightColorHex
 import androidx.compose.foundation.border
@@ -119,6 +120,11 @@ fun HearthReaderSheets(vm: ReaderViewModel, state: ReaderUiState) {
             ReadAloudSheet(vm, state)
         }
     }
+    if (state.showTtsSheet) {
+        ModalBottomSheet(onDismissRequest = { vm.showTtsSheet(false) }, shape = sheetShape, containerColor = palette.bgElevated) {
+            ReaderTTSSheet(vm, state)
+        }
+    }
     if (state.showAnnotationDialog) {
         ModalBottomSheet(
             onDismissRequest = { vm.showAnnotationDialog(false); vm.hideSelectionPopup() },
@@ -126,6 +132,76 @@ fun HearthReaderSheets(vm: ReaderViewModel, state: ReaderUiState) {
             containerColor = palette.bgElevated,
         ) {
             NoteSheet(vm, state)
+        }
+    }
+}
+
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun ReaderTTSSheet(vm: ReaderViewModel, state: ReaderUiState) {
+    val palette = Hearth.palette
+    Column(
+        Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
+            .padding(horizontal = Hearth.Spacing.XL).padding(bottom = Hearth.Spacing.XXL),
+        verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.L),
+    ) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("Read back", style = HearthText.BookTitle, color = palette.text, modifier = Modifier.weight(1f))
+            androidx.compose.material3.TextButton(onClick = { vm.showTtsSheet(false) }) {
+                Text("Done", color = palette.ember)
+            }
+        }
+        if (state.ttsPlayback.active) {
+            Text(
+                if (state.ttsPlayback.preparing) "Preparing speech…" else "Paragraph ${state.ttsPlayback.paragraph + 1}",
+                style = HearthText.Caption,
+                color = palette.textSecondary,
+            )
+            ReaderSpeechTransport(
+                playing = state.ttsPlayback.playing,
+                preparing = state.ttsPlayback.preparing,
+                narrated = false,
+                onToggle = vm::toggleTtsPlayback,
+                onBack = vm::previousTtsParagraph,
+                onForward = vm::nextTtsParagraph,
+                onSettings = null,
+            )
+            androidx.compose.material3.TextButton(onClick = { vm.stopTts(); vm.showTtsSheet(false) }) {
+                Text("Stop read back", color = palette.ember)
+            }
+        } else {
+            HearthChip("Read from here", selected = false, onClick = vm::startTts)
+        }
+        Overline("Speed")
+        androidx.compose.foundation.layout.FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
+            verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
+        ) {
+            listOf(0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f, 2.5f, 3f).forEach { speed ->
+                HearthChip(
+                    "$speed×",
+                    selected = kotlin.math.abs(state.prefs.ttsSpeed - speed) < 0.01f,
+                    onClick = { vm.updatePreferences(state.prefs.copy(ttsSpeed = speed)) },
+                )
+            }
+        }
+        Overline("Voice")
+        if (state.ttsVoices.isEmpty()) {
+            Text("Install a text-to-speech voice in Android settings.", style = HearthText.Body, color = palette.textSecondary)
+        } else {
+            LazyColumn(Modifier.heightIn(max = 360.dp)) {
+                items(state.ttsVoices, key = { it.name }) { voice ->
+                    Row(
+                        Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                            .selectable(selected = state.ttsVoice == voice.name, role = Role.RadioButton, onClick = { vm.selectTtsVoice(voice.name) })
+                            .padding(vertical = Hearth.Spacing.S),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(voice.label, style = HearthText.Body, color = palette.text, modifier = Modifier.weight(1f))
+                        if (state.ttsVoice == voice.name) Icon(Icons.Outlined.Check, "Selected", tint = palette.ember)
+                    }
+                }
+            }
         }
     }
 }
@@ -232,9 +308,18 @@ private fun ReadAloudSheet(vm: ReaderViewModel, state: ReaderUiState) {
             { vm.updatePreferences(prefs.copy(readAloudSyncOffsetMs = (prefs.readAloudSyncOffsetMs + 100).coerceIn(-1000, 1000))) },
         )
 
-        HearthToggleRow("Highlight read aloud", prefs.readAloudHighlight) { vm.updatePreferences(prefs.copy(readAloudHighlight = it)) }
+        HearthToggleRow("Mark spoken text", prefs.readAloudHighlight) { vm.updatePreferences(prefs.copy(readAloudHighlight = it)) }
         if (prefs.readAloudHighlight) {
-            Row {
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S)) {
+                ReadAloudHighlightStyle.entries.forEach { style ->
+                    HearthChip(
+                        style.label,
+                        selected = prefs.readAloudHighlightStyle == style,
+                        onClick = { vm.updatePreferences(prefs.copy(readAloudHighlightStyle = style)) },
+                    )
+                }
+            }
+            if (prefs.readAloudHighlightStyle == ReadAloudHighlightStyle.HIGHLIGHT) Row {
                 NARRATION_INKS.forEach { hex ->
                     InkSwatch(hex, selected = hex.equals(prefs.readAloudHighlightHex, ignoreCase = true)) {
                         vm.updatePreferences(prefs.copy(readAloudHighlightHex = hex))
@@ -326,6 +411,15 @@ private fun AppearanceSheet(vm: ReaderViewModel, state: ReaderUiState, customFon
                 HearthChip(mode.label, selected = prefs.progressDisplay == mode, onClick = { vm.updatePreferences(prefs.copy(progressDisplay = mode)) })
             }
         }
+
+        HearthToggleRow("Volume-button page turning", prefs.volumeButtonNavigation) {
+            vm.updatePreferences(prefs.copy(volumeButtonNavigation = it))
+        }
+        Text(
+            "Volume down: next page. Volume up: previous page. During audio playback, the buttons control volume.",
+            style = HearthText.Caption,
+            color = palette.textSecondary,
+        )
 
         Overline("Touch zones")
         Row(horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S)) {

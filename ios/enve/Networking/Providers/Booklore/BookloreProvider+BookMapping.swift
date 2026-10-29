@@ -25,7 +25,6 @@ extension BookloreProvider {
             let (data, response) = try await performAuthorizedRequest(request)
             if start == 0, response.statusCode == 404 || response.statusCode == 405 {
                 // No batch endpoint: only the legacy catalog carries full format identity.
-                useLegacyCatalogFallback = true
                 return .batchEndpointUnsupported
             }
             guard response.statusCode == 200 else {

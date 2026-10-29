@@ -134,6 +134,42 @@ struct ShelfHeader: View {
     }
 }
 
+struct ShelfLedge: View {
+    @Environment(\.hearth) private var hearth
+
+    var body: some View {
+        if hearth.decorated {
+            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                .fill(hearth.wood)
+                .overlay(alignment: .top) {
+                    Rectangle()
+                        .fill(hearth.pageEdge.opacity(0.22))
+                        .frame(height: 1.5)
+                        .padding(.horizontal, 3)
+                        .padding(.top, 1.5)
+                }
+                .hearthOutlined(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                .frame(height: 8)
+                .accessibilityHidden(true)
+        }
+    }
+}
+
+extension View {
+    // Dissolves the ends of a horizontally scrolling row instead of cutting items off at the edge.
+    func hearthHorizontalEdgeFade(_ width: CGFloat = 16) -> some View {
+        mask {
+            HStack(spacing: 0) {
+                LinearGradient(colors: [.clear, .black], startPoint: .leading, endPoint: .trailing)
+                    .frame(width: width)
+                Color.black
+                LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
+                    .frame(width: width)
+            }
+        }
+    }
+}
+
 struct PressableStyle: ButtonStyle {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 

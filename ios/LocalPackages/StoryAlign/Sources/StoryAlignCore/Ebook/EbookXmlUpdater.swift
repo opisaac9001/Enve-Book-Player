@@ -24,8 +24,8 @@ public struct EpubXmlUpdater : AlignmentSessionProviding,Sendable {
         }
         """
     
-    public func update(epub: EpubDocument, audioBook: AudioBook, alignedChapters: [AlignedChapter]) async throws {
-        try await tagAndWrite(alignedChapters: alignedChapters, inEbook: epub)
+    public func update(epub: EpubDocument, audioBook: AudioBook, alignedChapters: [AlignedChapter], includeUnalignedSentences: Bool = false) async throws {
+        try await tagAndWrite(alignedChapters: alignedChapters, inEbook: epub, includeUnalignedSentences: includeUnalignedSentences)
         let mediaOverlays = try createMediaOverlays(for: epub, alignedChapters: alignedChapters)
         try update(eBook: epub, mediaOverlays: mediaOverlays, audioFiles: audioBook.audioFiles)
         
@@ -50,7 +50,7 @@ public struct EpubXmlUpdater : AlignmentSessionProviding,Sendable {
 
 extension EpubXmlUpdater {
 
-    func tagAndWrite(alignedChapters: [AlignedChapter], inEbook: EpubDocument) async throws {
+    func tagAndWrite(alignedChapters: [AlignedChapter], inEbook: EpubDocument, includeUnalignedSentences: Bool = false) async throws {
         let total = alignedChapters.count
         let totalBytes = alignedChapters.reduce(0) { $0 + $1.manifestItem.xmlText.count }
         
@@ -73,7 +73,7 @@ extension EpubXmlUpdater {
                 }
             }
             logger.log( .info, "Updating \(manifestItem.id)")
-            let nuText = try await XHTMLTagger(session: session).tag(epub:inEbook, alignedChapter: chapter)
+            let nuText = try await XHTMLTagger(session: session).tag(epub:inEbook, alignedChapter: chapter, includeUnalignedSentences: includeUnalignedSentences)
             try nuText.write(to: filePath, atomically: true, encoding: .utf8)
             logger.log( .info, "\(manifestItem.id) update complete. ( \(index)/\(total) )")
             return( filePath, nuText)

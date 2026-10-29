@@ -47,3 +47,11 @@ Reproduction: run `python3 scripts/playback-network-fixture.py` on the Mac, then
 No code was committed or pushed. The original natural chapter-skip report still needs the affected book/source and a reproducible boundary.
 
 Final cleanup confirmed airplane mode off on both devices. The owned fixture server and the two USB port forwards were removed. The final production patch changes only the narrated-chapter visibility check.
+
+## Read-aloud marking — 2026-10-28
+
+Read Aloud → Mark spoken text offers Highlight or Underline. The selection is saved per profile. Underlines use the reader text color for contrast; highlight colors remain available for the filled style. Changing the style refreshes the current decoration without resubmitting EPUB layout preferences or restarting narration.
+
+`ReaderScrollingNavigationTest.underlineSelectionPersistsAndChangesTheRenderedNarration` exercises both choices in the real reader sheet, verifies the stored preference, inspects the rendered Readium underline/background styles, and checks playback session continuity. It passed on the Android 16 emulator. Physical e-ink verification remains outstanding.
+
+Reference implementations reviewed: Silveran Reader `669a56903316fa51bf9c2850bdc89d9bbcac37dc` (read-aloud style picker) and Storyteller `a78749795` (Readium underline decoration). Both upstreams were fetched; Storyteller's clean reference checkout was fast-forwarded before review.

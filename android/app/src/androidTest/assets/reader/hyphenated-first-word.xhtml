@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="en" xml:lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>Hyphenated first-word selection fixture</title>
+  <style>
+    body { font-family: serif; text-align: justify; }
+    p { -webkit-hyphens: auto; hyphens: auto; margin: 0 0 1em 0; }
+    p.soft { -webkit-hyphens: manual; hyphens: manual; }
+  </style>
+</head>
+<body>
+  <section id="fixture" epub:type="chapter">
+    <h1>Hyphenated first-word selection fixture</h1>
+    <p id="auto">Extraordinarily conscientious typographers acknowledge that justification without hyphenation produces rivers of whitespace, so contemporary rendering engines hyphenate automatically whenever the document language permits it; this paragraph exists so that an automatic hyphen is generated somewhere after its opening word, which is the precondition for the selection-handle defect under investigation. Long-pressing the opening word should select exactly that word in the document object model, while the painted start handle may wander to the last automatic hyphen of the paragraph instead of staying on the word, and dragging either handle then balloons the selection to the whole paragraph. The paragraph continues with additional unremarkable sentences purely to guarantee enough line breaks for the renderer to find hyphenation opportunities in several consecutive lines, including internationalization, characteristically, incomprehensibility, counterrevolutionaries, and uncharacteristically.</p>
+    <p id="soft" class="soft">Incom&#173;pre&#173;hen&#173;si&#173;bil&#173;ity marks the second paragraph, which carries explicit soft hyphens rather than relying on the rendering engine, because publishers routinely ship them and the same defect appears when the generated hyphen comes from a soft hyphen in the text. Long-pressing the opening word must again select exactly that word, and the start handle must stay on it. The remainder of the paragraph keeps supplying soft-hyphenated candidates such as inter&#173;na&#173;tion&#173;al&#173;iza&#173;tion, char&#173;ac&#173;ter&#173;is&#173;ti&#173;cally, counter&#173;revo&#173;lu&#173;tion&#173;aries, and un&#173;char&#173;ac&#173;ter&#173;is&#173;ti&#173;cally so that at least one of them is broken at a line end whatever the column width happens to be on the device under test, and so that the last generated hyphen sits several lines below the opening word.</p>
+    <p id="break">Uncompromisingly long paragraphs are needed to reproduce the second half of the defect, where the paragraph's last automatic hyphen falls in the next column or page and the start handle is painted nowhere at all; this paragraph therefore keeps going for long enough to cross a column boundary at ordinary phone widths and font sizes. It describes nothing in particular, merely repeating that the rendering engine should hyphenate internationalization, characteristically, incomprehensibility, counterrevolutionaries, and uncharacteristically whenever the line is tight enough, and that a reader long-pressing the opening word near the top of a page expects the handles to bracket that word and nothing else. It then continues, still saying nothing of consequence, through a further run of sentences whose only purpose is length: the typographers mentioned earlier would be appalled, the rivers of whitespace would be a scandal, and the renderer would be hyphenating internationalization, characteristically, incomprehensibility, counterrevolutionaries, and uncharacteristically all over again, line after line, until the column is full and the text spills onto the following page, where the final hyphen of this paragraph should come to rest well away from its opening word.</p>
+  </section>
+</body>
+</html>

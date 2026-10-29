@@ -32,11 +32,19 @@ nonisolated struct ProfileStorageLocations: Sendable {
 
     init(
         profileID: String,
-        documentsDirectory: URL = .documentsDirectory,
-        applicationSupportDirectory: URL = .applicationSupportDirectory,
+        documentsDirectory: URL? = nil,
+        applicationSupportDirectory: URL? = nil,
         cachesDirectory: URL = .cachesDirectory
     ) {
         precondition(FamilyProfile.validID(profileID))
+        #if os(tvOS)
+        // tvOS restricts writable files to caches and temporary storage.
+        let documentsDirectory = documentsDirectory ?? cachesDirectory
+        let applicationSupportDirectory = applicationSupportDirectory ?? cachesDirectory
+        #else
+        let documentsDirectory = documentsDirectory ?? .documentsDirectory
+        let applicationSupportDirectory = applicationSupportDirectory ?? .applicationSupportDirectory
+        #endif
         self.profileID = profileID
         if profileID == FamilyProfile.ownerID {
             self.documentsDirectory = documentsDirectory

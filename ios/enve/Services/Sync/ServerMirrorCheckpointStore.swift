@@ -3,6 +3,7 @@ import Foundation
 
 enum ServerMirrorDomain: String, Codable, Sendable {
     case catalog
+    case catalogAdditions
     case activity
     case collections
 }

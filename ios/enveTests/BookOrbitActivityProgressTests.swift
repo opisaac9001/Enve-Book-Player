@@ -35,6 +35,23 @@ struct BookOrbitActivityProgressTests {
         #expect(BookOrbitSyncStrategy.ebookLocator(serverCFI: nil, fraction: 0.9, book: book) == book.epubLocator)
     }
 
+    @Test func explicitUnreadClearsAnAnchorAndAcceptsOnlyACurrentReset() {
+        let book = ebook()
+        let newerReset = progress(fraction: 0, lastUpdate: Self.localDate.addingTimeInterval(3_600))
+        let olderReset = progress(fraction: 0, lastUpdate: Self.localDate.addingTimeInterval(-3_600))
+
+        #expect(BookOrbitSyncStrategy.ebookLocator(
+            serverCFI: Self.canonicalCFI, fraction: 0, book: book, clearsMissingLocator: true
+        ) == nil)
+        #expect(!BookOrbitSyncStrategy.serverProgressIsStale(
+            book: book, serverProgress: newerReset, serverLocator: nil, isExplicitReset: true
+        ))
+        #expect(BookOrbitSyncStrategy.serverProgressIsStale(
+            book: book, serverProgress: olderReset, serverLocator: nil, isExplicitReset: true
+        ))
+        #expect(BookOrbitSyncStrategy.ebookLocator(serverCFI: nil, fraction: 0, book: book) == book.epubLocator)
+    }
+
     @Test func olderServerSnapshotDoesNotRollBackNewerLocalProgress() {
         let book = ebook()
         let server = progress(

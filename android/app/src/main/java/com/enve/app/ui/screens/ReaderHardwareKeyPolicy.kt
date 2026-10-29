@@ -37,8 +37,8 @@ object ReaderHardwareKeyPolicy {
 
         if (!volumeButtonNavigation || audioActive) return null
         return when (keyCode) {
-            KeyEvent.KEYCODE_VOLUME_UP -> ReaderPageKeyDirection.FORWARD
-            KeyEvent.KEYCODE_VOLUME_DOWN -> ReaderPageKeyDirection.BACKWARD
+            KeyEvent.KEYCODE_VOLUME_DOWN -> ReaderPageKeyDirection.FORWARD
+            KeyEvent.KEYCODE_VOLUME_UP -> ReaderPageKeyDirection.BACKWARD
             else -> null
         }
     }

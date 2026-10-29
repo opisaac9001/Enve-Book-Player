@@ -160,6 +160,13 @@ fun HearthProfilesScreen(facade: ProfilesFacade, onBack: () -> Unit) {
 }
 
 @Composable
+fun HearthProfileTransitionScreen() {
+    ProfilePage("Switching profiles", "Saving your place and opening the next profile.") {
+        if (!Hearth.eink.active && !Hearth.reduceMotion) CircularProgressIndicator(color = Hearth.palette.ember)
+    }
+}
+
+@Composable
 fun HearthProfilePickerScreen(facade: ProfilesFacade, onSelected: () -> Unit) {
     val state by facade.state.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
@@ -188,7 +195,7 @@ fun HearthProfilePickerScreen(facade: ProfilesFacade, onSelected: () -> Unit) {
             }, Modifier.fillMaxWidth().testTag("profile-picker-${profile.id}"))
         }
         if (state.switching) CircularProgressIndicator(color = Hearth.palette.ember)
-        error?.let { Text(it, color = Hearth.palette.statusError) }
+        (error ?: state.error)?.let { Text(it, color = Hearth.palette.statusError) }
     }
     adult?.let { profile ->
         AlertDialog(

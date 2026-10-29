@@ -86,6 +86,7 @@ internal fun DetailSecondaryActions(
     onToggleFavorite: () -> Unit,
     onToggleForLater: () -> Unit,
     onDelete: () -> Unit,
+    onSharePosition: () -> Unit,
 ) {
     val palette = Hearth.palette
     val clipboard = LocalClipboard.current
@@ -133,6 +134,12 @@ internal fun DetailSecondaryActions(
                 )
             }
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                if (b.mediaType == AppMediaType.EBOOK || b.duration > 0) {
+                    DropdownMenuItem(text = { Text("Share book location", color = palette.text) }, onClick = {
+                        menu = false
+                        onSharePosition()
+                    })
+                }
                 DropdownMenuItem(text = { Text(if (isFavorite) "Remove from Favorites" else "Add to Favorites") }, onClick = {
                     menu = false
                     onToggleFavorite()

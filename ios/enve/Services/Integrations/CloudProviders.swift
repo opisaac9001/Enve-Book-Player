@@ -21,25 +21,6 @@ class iCloudDriveProvider: BookSourceProvider, ObservableObject {
     func getMetadata(_ item: RemoteItem) async throws -> SourceBookMetadata? { nil }
 }
 
-class DropboxProvider: BookSourceProvider, ObservableObject {
-    let id = UUID().uuidString
-    let displayName = "Dropbox"
-    let iconName = "shippingbox.fill"
-    let capabilities: SourceCapabilities = [.folderBrowsing]
-    @Published var authenticationState: AuthenticationState = .notAuthenticated
-
-    func authenticate() async throws { authenticationState = .authenticated }
-    func refreshAuthentication() async throws {}
-    func signOut() async throws { authenticationState = .notAuthenticated }
-    func listRoot() async throws -> [RemoteItem] { [] }
-    func listFolder(_ itemId: String) async throws -> [RemoteItem] { [] }
-    func search(_ query: String) async throws -> [RemoteItem] { [] }
-    func resolveFile(_ item: RemoteItem) async throws -> ResolvedFile {
-        ResolvedFile(localURL: nil, streamURL: nil, expiresAt: nil, requiresAuthHeader: false, authHeaderValue: nil, contentLength: nil)
-    }
-    func getMetadata(_ item: RemoteItem) async throws -> SourceBookMetadata? { nil }
-}
-
 @MainActor
 class JellyfinConnectionManager: ObservableObject {
     @Published var authenticationState: AuthenticationState = .notAuthenticated

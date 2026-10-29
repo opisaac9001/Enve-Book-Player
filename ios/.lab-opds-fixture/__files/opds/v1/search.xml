@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"
+      xmlns:opds="http://opds-spec.org/2010/catalog"
+      xmlns:dcterms="http://purl.org/dc/terms/"
+      xmlns:schema="http://schema.org/">
+  <id>urn:uuid:2c9d41a0-0400-4d2a-8f77-9a1b2c3d4e00</id>
+  <title>Enve OPDS Lab — search results</title>
+  <updated>2026-09-19T08:00:00Z</updated>
+  <author>
+    <name>Enve OPDS Lab</name>
+  </author>
+  <opensearch:totalResults xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">1</opensearch:totalResults>
+  <link rel="self"
+        href="/opds/v1/search.xml"
+        type="application/atom+xml;profile=opds-catalog;kind=acquisition"/>
+  <link rel="start"
+        href="/opds/v1/root.xml"
+        type="application/atom+xml;profile=opds-catalog;kind=navigation"/>
+  <link rel="search"
+        href="/opds/v1/opensearch.xml"
+        type="application/opensearchdescription+xml"/>
+
+  <entry>
+    <id>urn:uuid:2c9d41a0-0101-4d2a-8f77-9a1b2c3d4e01</id>
+    <title>Harbour Lights</title>
+    <updated>2026-09-18T20:15:00Z</updated>
+    <author>
+      <name>Tomasz Bergström</name>
+    </author>
+    <dcterms:language>en</dcterms:language>
+    <summary type="text">The result set is static: every query returns this entry.</summary>
+    <link rel="http://opds-spec.org/image"
+          href="/opds/images/cover-amber.png"
+          type="image/png"/>
+    <link rel="http://opds-spec.org/acquisition"
+          href="/opds/files/lab-ebook-002.epub"
+          type="application/epub+zip"/>
+  </entry>
+</feed>

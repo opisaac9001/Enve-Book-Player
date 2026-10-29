@@ -20,7 +20,10 @@ class KavitaPasswordLogin @Inject constructor(
     override val source: BookSource = BookSource.KAVITA
 
     override suspend fun login(serverUrl: String, username: String, password: String): Result<Unit> = runCatching {
-        val response = api.kavitaLogin(LoginRequest(username = username, password = password))
+        val response = api.kavitaLogin(
+            "${serverUrl.trimEnd('/')}/api/Account/login",
+            LoginRequest(username = username, password = password),
+        )
         if (!response.isSuccessful) {
             if (response.code() == 401) error("Invalid username or password")
             error("Kavita login failed: HTTP ${response.code()}")

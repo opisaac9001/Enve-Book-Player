@@ -107,6 +107,11 @@ object ProfileRuntimeModule {
 
     @Provides
     @Singleton
+    fun pdfReadingPreferencesStore(resources: ProfileResources): com.enve.core.data.local.PdfReadingPreferencesStore =
+        com.enve.core.data.local.PdfReadingPreferencesStore(resources.profilePreferences.enve)
+
+    @Provides
+    @Singleton
     fun podcastFeedProgressStore(resources: ProfileResources): com.enve.core.data.local.PodcastFeedProgressStore =
         com.enve.core.data.local.PodcastFeedProgressStore(resources.profilePreferences.enve)
 

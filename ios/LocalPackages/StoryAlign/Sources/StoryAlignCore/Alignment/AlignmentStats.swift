@@ -205,7 +205,7 @@ public class AlignmentReportBuilder : AlignmentSessionProviding {
         
         let stageRunTimes = progressTracker.completedStageRunTimes.mapValues { $0.roundToMs()}
         
-        let transcriber = try session.transcriberFactory.transcriber(session: session)
+        let transcriber = try session.makeTranscriber()
 
         let rpt = AlignmentReport(
             alignmentConfig:sessionConfig,

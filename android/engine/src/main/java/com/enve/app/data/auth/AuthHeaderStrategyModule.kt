@@ -1,5 +1,6 @@
 package com.enve.app.data.auth
 
+import com.enve.app.data.jellyfin.JellyfinAuthHeaderStrategy
 import com.enve.core.data.model.BookSource
 import com.enve.core.data.remote.AuthHeaderStrategy
 import com.enve.core.data.remote.AuthHeaderStrategyKey
@@ -20,7 +21,7 @@ abstract class AuthHeaderStrategyModule {
     @Binds
     @IntoMap
     @AuthHeaderStrategyKey(BookSource.JELLYFIN)
-    abstract fun bindJellyfinAuthHeaderStrategy(impl: XEmbyTokenAuthHeaderStrategy): AuthHeaderStrategy
+    abstract fun bindJellyfinAuthHeaderStrategy(impl: JellyfinAuthHeaderStrategy): AuthHeaderStrategy
 
     @Binds
     @IntoMap

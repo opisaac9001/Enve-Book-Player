@@ -1156,8 +1156,9 @@ public class PlayerViewModel {
         guard let book = currentBook, duration > 0, progress > 0 else { return }
         let fraction = progress / duration
         guard abs(fraction - lastHardcoverSyncProgress) > 0.005 else { return }
-        lastHardcoverSyncProgress = fraction
-        await profileSession.sync.pushHardcoverIfNeeded(book: book, progress: fraction, sessionService: sessionService)
+        if await profileSession.sync.pushHardcoverIfNeeded(book: book, progress: fraction, sessionService: sessionService) {
+            lastHardcoverSyncProgress = fraction
+        }
     }
 
     private func syncProgress() {

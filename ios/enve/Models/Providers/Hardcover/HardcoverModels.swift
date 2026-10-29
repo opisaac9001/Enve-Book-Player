@@ -130,14 +130,18 @@ public enum HardcoverReadingStatus: Int, CaseIterable, Codable, Sendable {
     case wantToRead = 1
     case currentlyReading = 2
     case finished = 3
+    case paused = 4
     case didNotFinish = 5
+    case ignored = 6
 
     public var displayName: String {
         switch self {
         case .wantToRead: return "Want to Read"
         case .currentlyReading: return "Currently Reading"
         case .finished: return "Finished"
+        case .paused: return "Paused"
         case .didNotFinish: return "Did Not Finish"
+        case .ignored: return "Ignored"
         }
     }
 
@@ -146,7 +150,9 @@ public enum HardcoverReadingStatus: Int, CaseIterable, Codable, Sendable {
         case .wantToRead: return "bookmark"
         case .currentlyReading: return "book.fill"
         case .finished: return "checkmark.circle.fill"
+        case .paused: return "pause.circle"
         case .didNotFinish: return "xmark.circle"
+        case .ignored: return "eye.slash"
         }
     }
 
@@ -155,7 +161,7 @@ public enum HardcoverReadingStatus: Int, CaseIterable, Codable, Sendable {
         case .wantToRead: return "blue"
         case .currentlyReading: return "green"
         case .finished: return "orange"
-        case .didNotFinish: return "gray"
+        case .paused, .didNotFinish, .ignored: return "gray"
         }
     }
 }
@@ -181,11 +187,14 @@ public struct HardcoverUserBook: Codable, Identifiable, Sendable {
     }
 
     public var progress: Double {
-        guard let read = currentRead,
-            let pages = read.progressPages,
-            let total = edition?.pages, total > 0
-        else { return 0 }
-        return Double(pages) / Double(total)
+        guard let read = currentRead else { return 0 }
+        if read.finishedAt != nil { return 1 }
+        let edition = read.edition ?? edition
+        if let seconds = read.progressSeconds, let total = edition?.audioSeconds, total > 0 {
+            return min(1, max(0, Double(seconds) / Double(total)))
+        }
+        guard let pages = read.progressPages, let total = edition?.pages, total > 0 else { return 0 }
+        return min(1, max(0, Double(pages) / Double(total)))
     }
 }
 
@@ -196,6 +205,7 @@ public struct HardcoverUserBookRead: Codable, Identifiable, Sendable {
     public let progressPages: Int?
     public let progressSeconds: Int?
     public let editionId: Int?
+    public var edition: HardcoverEdition? = nil
 
     public var startDate: Date? {
         guard let str = startedAt else { return nil }
@@ -232,7 +242,9 @@ public struct HardcoverFeedActivity: Identifiable, Sendable {
                 case .wantToRead: return "wants to read"
                 case .currentlyReading: return "started reading"
                 case .finished: return "finished"
+                case .paused: return "paused"
                 case .didNotFinish: return "did not finish"
+                case .ignored: return "ignored"
                 }
             }
             return "updated"

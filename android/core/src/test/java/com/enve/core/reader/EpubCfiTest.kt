@@ -10,6 +10,10 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import java.io.File
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -60,6 +64,45 @@ class EpubCfiTest {
     }
 
     private fun JsonObject.locations() = getValue("locations").jsonObject
+
+    @Test
+    fun cfiOnlyCheckpointResolvesAgainstThePublicationWithoutReplacingNativeAnchors() {
+        val file = File.createTempFile("shared-cfi-", ".epub")
+        try {
+            ZipOutputStream(file.outputStream()).use { zip ->
+                val entries = mapOf(
+                    "META-INF/container.xml" to """<container><rootfiles><rootfile full-path="OEBPS/book.opf"/></rootfiles></container>""",
+                    "OEBPS/book.opf" to """<package><metadata/><manifest><item id="cover" href="text/cover.xhtml"/><item id="chapter" href="text/ch1.xhtml"/></manifest><spine><itemref idref="cover"/><itemref id="c1" idref="chapter"/></spine></package>""",
+                    "OEBPS/text/cover.xhtml" to chapter,
+                    "OEBPS/text/ch1.xhtml" to chapter,
+                )
+                entries.forEach { (path, content) ->
+                    zip.putNextEntry(ZipEntry(path))
+                    zip.write(content.toByteArray())
+                    zip.closeEntry()
+                }
+            }
+            val original = EpubBridgeCheckpoint(
+                publicationSha256 = "publication", providerFileId = "file", revision = 3,
+                writerEpoch = 5, observedAt = 1000, sourceEngine = ReaderEngineKind.FOLIATE,
+                epubCfi = "epubcfi(/6/4[c1]!/4/2[ch1]/6/3:1)", totalProgression = 0.42,
+            )
+            val resolved = EpubCfi.withReadiumAnchor(original, file)
+            assertTrue(resolved.hasPortableAnchor)
+            assertEquals("OEBPS/text/ch1.xhtml", resolved.href)
+            assertTrue(resolved.textQuote!!.exact.startsWith("and more words"))
+            assertEquals(original.epubCfi, resolved.epubCfi)
+            assertEquals(original.totalProgression, resolved.totalProgression)
+            assertEquals(original.writerEpoch, resolved.writerEpoch)
+            assertEquals(original.revision, resolved.revision)
+            assertSame(resolved, EpubCfi.withReadiumAnchor(resolved, file))
+            val invalid = original.copy(epubCfi = "epubcfi(/6/900!/4/2:0)")
+            assertSame(invalid, EpubCfi.withReadiumAnchor(invalid, file))
+            assertSame(original, EpubCfi.withReadiumAnchor(original, File(file.parentFile, "missing.epub")))
+        } finally {
+            file.delete()
+        }
+    }
 
     @Test
     fun narratedSentenceBecomesAnElementCfiWithIdAssertions() {

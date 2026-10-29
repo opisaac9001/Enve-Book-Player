@@ -26,7 +26,7 @@ class MantelBarGestureTest {
     private val selections = mutableListOf<HearthTab>()
     private var opened = 0
 
-    private fun show(withItem: Boolean = true) {
+    private fun show(withItem: Boolean = true, showShortcut: Boolean = true) {
         compose.setContent {
             HearthTheme {
                 MantelBar(
@@ -38,6 +38,7 @@ class MantelBarGestureTest {
                     subtitle = null,
                     onOpenItem = { opened += 1 },
                     onItemAction = {},
+                    showItemShortcut = showShortcut,
                 )
             }
         }
@@ -97,6 +98,21 @@ class MantelBarGestureTest {
 
         assertEquals(emptyList<HearthTab>(), selections)
         assertEquals(0, opened)
+    }
+
+    @Test
+    fun hiddenShortcutCannotBeOpenedBySwipingTheTabs() {
+        show(showShortcut = false)
+        tab("Podcasts").performTouchInput {
+            down(center)
+            updatePointerTo(0, center - Offset(0f, 600f))
+            up()
+        }
+        compose.waitForIdle()
+        assertEquals(0, opened)
+        assertEquals(emptyList<HearthTab>(), selections)
+        tab("Library").performClick()
+        assertEquals(listOf(HearthTab.LIBRARY), selections)
     }
 
     @Test

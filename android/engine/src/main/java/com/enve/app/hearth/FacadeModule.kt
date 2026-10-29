@@ -29,6 +29,9 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 abstract class FacadeModule {
     @Binds @Singleton
+    abstract fun bindListeningPositionFacade(impl: ListeningPositionFacadeImpl): com.enve.engine.listeningposition.ListeningPositionFacade
+
+    @Binds @Singleton
     abstract fun bindPlaybackFacade(impl: PlaybackFacadeImpl): PlaybackFacade
 
     @Binds @Singleton

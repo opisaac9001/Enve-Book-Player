@@ -18,7 +18,7 @@ public final class AlignmentSession : Sendable {
     public let request: AlignmentRequest
     public let config: AlignmentConfig
     public let logger: Logger
-    public let transcriberFactory:TranscriberFactory
+    public let transcriberFactory:(any TranscriberFactory)?
     public let transcriptionStore:TranscriptionStore?
     
     internal let progressTracker: ProgressTracker
@@ -33,7 +33,7 @@ public final class AlignmentSession : Sendable {
     ///   - transcriberFactory: Provides transcriber instances.
     ///   - transcriptionStore: Optional hook for caching/storing transcriptions for later reuse.
     ///
-    public init(request: AlignmentRequest, config: AlignmentConfig, logger: Logger = NullLogger(), transcriberFactory:TranscriberFactory, transcriptionStore:TranscriptionStore? = nil ) {
+    public init(request: AlignmentRequest, config: AlignmentConfig, logger: Logger = NullLogger(), transcriberFactory:(any TranscriberFactory)? = nil, transcriptionStore:TranscriptionStore? = nil ) {
         self.request = request
         self.config = config
         self.logger = logger
@@ -49,6 +49,13 @@ public final class AlignmentSession : Sendable {
     /// but it can add clutter quickly in other cases. If the library created a temp directory, `
     /// cleanup()` will remove it.
     ///
+    func makeTranscriber() throws -> any Transcriber {
+        guard let transcriberFactory else {
+            throw StoryAlignError("This alignment session has no transcription engine. Use CTC alignment or configure a transcriber.")
+        }
+        return try transcriberFactory.transcriber(session: self)
+    }
+
     public func cleanup() {
         progressTracker.finish()
         if !request.shouldRemoveSessionDir {
@@ -59,7 +66,7 @@ public final class AlignmentSession : Sendable {
     
     /// Convenience initializer for using Apple's SpeechTranscriber for transcription.
     public convenience init(request: AlignmentRequest, config: AlignmentConfig, logger: Logger = NullLogger(), speechAnalyzerConfig:SpeechAnalyzerConfig, transcriptionStore:TranscriptionStore? = nil  ) {
-        self.init(request: request, config: config, logger: logger, transcriberFactory: SpeechAnalyzerTranscriberFactory(speechAnalyzerConfig: speechAnalyzerConfig))
+        self.init(request: request, config: config, logger: logger, transcriberFactory: SpeechAnalyzerTranscriberFactory(speechAnalyzerConfig: speechAnalyzerConfig), transcriptionStore: transcriptionStore)
     }
 }
 

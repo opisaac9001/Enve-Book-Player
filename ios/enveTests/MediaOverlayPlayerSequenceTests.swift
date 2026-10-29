@@ -1,21 +1,23 @@
 import AVFoundation
+import Combine
 import Foundation
+import os
 import Testing
 
 @testable import enve
 
 @Suite(.serialized) @MainActor
 struct MediaOverlayPlayerSequenceTests {
-    private static let fileDurations = ["ten.wav": 2.0, "eleven.wav": 0.6, "twelve.wav": 1.0]
+    private static let fileDurations = ["ten.wav": 2.0, "eleven.wav": 0.6, "twelve.wav": 2.0]
 
     private static func makeClips(skippableChapterTwelveOpening: Bool) -> [AudioOverlayClip] {
         [
             AudioOverlayClip(fragmentId: "ten-a", textHref: "ch10.xhtml", audioSrc: "ten.wav", clipBegin: 0, clipEnd: 0.5),
             AudioOverlayClip(fragmentId: "ten-b", textHref: "ch10.xhtml", audioSrc: "ten.wav", clipBegin: 0.5, clipEnd: 1),
             AudioOverlayClip(fragmentId: "eleven", textHref: "ch11.xhtml", audioSrc: "eleven.wav", clipBegin: 0, clipEnd: 0.5),
-            AudioOverlayClip(fragmentId: "twelve-a", textHref: "ch12.xhtml", audioSrc: "twelve.wav", clipBegin: 0, clipEnd: 0.3,
+            AudioOverlayClip(fragmentId: "twelve-a", textHref: "ch12.xhtml", audioSrc: "twelve.wav", clipBegin: 0, clipEnd: 1,
                              skippableRole: skippableChapterTwelveOpening ? "pagebreak" : nil),
-            AudioOverlayClip(fragmentId: "twelve-b", textHref: "ch12.xhtml", audioSrc: "twelve.wav", clipBegin: 0.3, clipEnd: 1),
+            AudioOverlayClip(fragmentId: "twelve-b", textHref: "ch12.xhtml", audioSrc: "twelve.wav", clipBegin: 1, clipEnd: 2),
         ]
     }
 
@@ -49,19 +51,37 @@ struct MediaOverlayPlayerSequenceTests {
         player.load(clips: clips, timeline: MediaOverlayTimeline(clips: clips), audioDir: directory)
         defer { player.cleanup() }
 
-        player.play()
         let start = ProcessInfo.processInfo.systemUptime
         var visits: [(clip: Int, at: TimeInterval)] = []
-        let deadline = Date().addingTimeInterval(20)
-        while Date() < deadline {
-            player.refreshPositionFromPlayhead()
+        let observation = player.$currentFragmentIdentity.sink { _ in
             if visits.last?.clip != player.currentClipIndex {
                 visits.append((player.currentClipIndex, ProcessInfo.processInfo.systemUptime - start))
             }
-            if visits.last?.clip == clips.count - 1, !player.isPlaying { break }
+        }
+        defer { observation.cancel() }
+        let endedFiles = OSAllocatedUnfairLock(initialState: Set<String>())
+        let endObservation = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime, object: nil, queue: .main
+        ) { notification in
+            guard let item = notification.object as? AVPlayerItem else { return }
+            MainActor.assumeIsolated {
+                guard let asset = item.asset as? AVURLAsset,
+                    asset.url.deletingLastPathComponent().path == directory.path
+                else { return }
+                _ = endedFiles.withLock { $0.insert(asset.url.lastPathComponent) }
+            }
+        }
+        defer { NotificationCenter.default.removeObserver(endObservation) }
+
+        player.play()
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(20))
+        while clock.now < deadline {
+            if !player.isPlaying, endedFiles.withLock({ $0.count }) == fileDurations.count { break }
             try await Task.sleep(for: .milliseconds(25))
         }
         #expect(!player.isPlaying)
+        #expect(endedFiles.withLock { $0 } == Set(fileDurations.keys))
         return visits
     }
 

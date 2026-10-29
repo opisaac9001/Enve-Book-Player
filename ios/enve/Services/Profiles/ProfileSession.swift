@@ -158,7 +158,6 @@ final class ProfileSession {
 
     #if os(iOS)
     private var storyAlignServiceStorage: AnyObject?
-    @available(iOS 26.0, *)
     var storyAlignService: StoryAlignService {
         precondition(isOwner)
         if let service = storyAlignServiceStorage as? StoryAlignService { return service }
@@ -416,7 +415,7 @@ final class ProfileSession {
         if didCreateWatchBridge { await watchBridge.retire() }
         #endif
         #if os(iOS)
-        if #available(iOS 26.0, *), let service = storyAlignServiceStorage as? StoryAlignService { await service.retire() }
+        if let service = storyAlignServiceStorage as? StoryAlignService { await service.retire() }
         #endif
         await autoSaver.retire()
         if didCreateCloudProgress { await cloudProgress.retire() }

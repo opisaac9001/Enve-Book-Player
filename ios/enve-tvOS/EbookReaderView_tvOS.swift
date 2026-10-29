@@ -1,7 +1,10 @@
 import SwiftUI
+import CoreText
+import UIKit
 import Zip
 
 struct EbookReaderView_tvOS: View {
+    @Environment(\.hearth) private var hearth
     let book: Book
 
     @Environment(\.dismiss) private var dismiss
@@ -9,6 +12,9 @@ struct EbookReaderView_tvOS: View {
     @State private var chapters: [TVEpubChapter] = []
     @State private var chapterIndex = 0
     @State private var pageIndex = 0
+    @State private var pageOffset = 0
+    @State private var fittedPages: [TVEpubPage] = []
+    @State private var readingSize: CGSize = .zero
     @State private var loadState: LoadState = .loading
     @State private var fontSize: CGFloat = 32
 
@@ -20,7 +26,7 @@ struct EbookReaderView_tvOS: View {
 
     var body: some View {
         ZStack {
-            Color(white: 0.06).ignoresSafeArea()
+            hearth.bgSunken.ignoresSafeArea()
             content
         }
         .focusable()
@@ -33,6 +39,7 @@ struct EbookReaderView_tvOS: View {
             }
         }
         .task { await load() }
+        .onChange(of: chapterIndex) { _, _ in fitPages() }
         .onDisappear { saveProgress() }
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
@@ -47,7 +54,7 @@ struct EbookReaderView_tvOS: View {
         case .loading:
             VStack(spacing: 24) {
                 ProgressView().progressViewStyle(.circular).scaleEffect(2)
-                Text("Preparing book…").font(.title3).foregroundStyle(.secondary)
+                Text("Preparing book…").font(.title3).foregroundStyle(hearth.textSecondary)
             }
         case .failed(let message):
             failedState(message: message)
@@ -60,12 +67,13 @@ struct EbookReaderView_tvOS: View {
         VStack(spacing: 24) {
             Image(systemName: "exclamationmark.triangle")
                 .font(.system(size: 80))
-                .foregroundStyle(.orange)
+                .foregroundStyle(hearth.ember)
             Text("Can't open this book")
                 .font(.title.weight(.bold))
+                .foregroundStyle(hearth.text)
             Text(message)
                 .font(.title3)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(hearth.textSecondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 800)
             Button("Done") { dismiss() }
@@ -76,65 +84,95 @@ struct EbookReaderView_tvOS: View {
 
     private var readerBody: some View {
         let chapter = chapters[chapterIndex]
-        let safePageIndex = min(pageIndex, max(0, chapter.pages.count - 1))
-        let pageText = chapter.pages.indices.contains(safePageIndex) ? chapter.pages[safePageIndex] : ""
+        let fittedIndex = TVEpubPagination.pageIndex(in: fittedPages, sourcePage: pageIndex, offset: pageOffset)
 
         return VStack(alignment: .leading, spacing: 28) {
             Text(chapter.title)
                 .font(.title2.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(hearth.textSecondary)
                 .lineLimit(1)
 
-            ScrollView {
-                Text(pageText)
-                    .font(.system(size: fontSize, design: .serif))
-                    .lineSpacing(14)
-                    .foregroundStyle(.primary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            GeometryReader { geometry in
+                TVEpubPageSurface(page: fittedPages.indices.contains(fittedIndex) ? fittedPages[fittedIndex] : nil)
+                    .onChange(of: geometry.size, initial: true) { _, size in
+                        readingSize = size
+                        fitPages()
+                    }
             }
 
             HStack {
-                Text("Chapter \(chapterIndex + 1) of \(chapters.count)  ·  Page \(safePageIndex + 1) of \(max(chapter.pages.count, 1))")
+                Text("Chapter \(chapterIndex + 1) of \(chapters.count)  ·  Page \(fittedIndex + 1) of \(max(fittedPages.count, 1))")
                     .font(.callout.monospacedDigit())
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(hearth.textSecondary)
                 Spacer()
                 Text("◂ / ▸ to turn pages")
                     .font(.callout)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(hearth.textSecondary)
             }
         }
         .padding(80)
     }
 
+    private func fitPages() {
+        guard chapters.indices.contains(chapterIndex) else { return }
+        let descriptor = UIFont.systemFont(ofSize: fontSize).fontDescriptor.withDesign(.serif)!
+        let font = UIFont(descriptor: descriptor, size: fontSize)
+        fittedPages = TVEpubPagination.pages(
+            chapters[chapterIndex].pages,
+            size: readingSize,
+            font: CTFontCreateWithName(font.fontName as CFString, fontSize, nil),
+            lineSpacing: 14
+        )
+        let index = TVEpubPagination.pageIndex(in: fittedPages, sourcePage: pageIndex, offset: pageOffset)
+        if fittedPages.indices.contains(index) { selectPage(fittedPages[index]) }
+    }
+
+    private func selectPage(_ page: TVEpubPage) {
+        pageIndex = page.sourcePage
+        pageOffset = page.range.location
+    }
+
     private func turnForward() {
-        let chapter = chapters[chapterIndex]
-        if pageIndex + 1 < chapter.pages.count {
-            pageIndex += 1
+        guard !fittedPages.isEmpty else { return }
+        let index = TVEpubPagination.pageIndex(in: fittedPages, sourcePage: pageIndex, offset: pageOffset)
+        if index + 1 < fittedPages.count {
+            selectPage(fittedPages[index + 1])
         } else if chapterIndex + 1 < chapters.count {
             chapterIndex += 1
             pageIndex = 0
+            pageOffset = 0
         }
+        saveProgress()
     }
 
     private func turnBack() {
-        if pageIndex > 0 {
-            pageIndex -= 1
+        guard !fittedPages.isEmpty else { return }
+        let index = TVEpubPagination.pageIndex(in: fittedPages, sourcePage: pageIndex, offset: pageOffset)
+        if index > 0 {
+            selectPage(fittedPages[index - 1])
         } else if chapterIndex > 0 {
             chapterIndex -= 1
             pageIndex = max(0, chapters[chapterIndex].pages.count - 1)
+            pageOffset = Int.max
+            fitPages()
         }
+        saveProgress()
     }
 
     private func load() async {
         do {
-            let loaded = try await TVEpubLoader.load(book: book)
+            let (loaded, sourceChanged) = try await TVEpubLoader.load(book: book)
             await MainActor.run {
                 self.chapters = loaded
                 if let saved = TVEpubProgressStore.load(bookId: book.stableId),
                     loaded.indices.contains(saved.chapter)
                 {
                     self.chapterIndex = saved.chapter
-                    self.pageIndex = min(saved.page, max(0, loaded[saved.chapter].pages.count - 1))
+                    // Page and character offsets index the previous revision's text.
+                    if !sourceChanged {
+                        self.pageIndex = min(saved.page, max(0, loaded[saved.chapter].pages.count - 1))
+                        self.pageOffset = saved.offset ?? 0
+                    }
                 }
                 self.loadState = loaded.isEmpty ? .failed("This book has no readable text.") : .ready
             }
@@ -147,7 +185,55 @@ struct EbookReaderView_tvOS: View {
 
     private func saveProgress() {
         guard loadState == .ready, !chapters.isEmpty else { return }
-        TVEpubProgressStore.save(bookId: book.stableId, chapter: chapterIndex, page: pageIndex)
+        TVEpubProgressStore.save(bookId: book.stableId, chapter: chapterIndex, page: pageIndex, offset: pageOffset)
+    }
+}
+
+private struct TVEpubPageSurface: UIViewRepresentable {
+    let page: TVEpubPage?
+    @Environment(\.hearth) private var hearth
+
+    func makeUIView(context: Context) -> TVEpubTextSurface {
+        TVEpubTextSurface()
+    }
+
+    func updateUIView(_ view: TVEpubTextSurface, context: Context) {
+        view.textColor = UIColor(hearth.text)
+        view.page = page
+    }
+}
+
+private final class TVEpubTextSurface: UIView {
+    var textColor: UIColor = .label {
+        didSet { setNeedsDisplay() }
+    }
+
+    var page: TVEpubPage? {
+        didSet {
+            accessibilityLabel = page?.text
+            setNeedsDisplay()
+        }
+    }
+
+    init() {
+        super.init(frame: .zero)
+        isOpaque = false
+        isAccessibilityElement = true
+        accessibilityTraits = .staticText
+        contentMode = .redraw
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func draw(_ rect: CGRect) {
+        guard let frame = page?.frame, let context = UIGraphicsGetCurrentContext() else { return }
+        context.textMatrix = .identity
+        context.translateBy(x: 0, y: bounds.height)
+        context.scaleBy(x: 1, y: -1)
+        context.setFillColor(textColor.cgColor)
+        CTFrameDraw(frame, context)
     }
 }
 
@@ -163,7 +249,7 @@ enum TVEpubLoader {
     }
 
     @MainActor
-    static func load(book: Book, pageCharSize: Int = 1800) async throws -> [TVEpubChapter] {
+    static func load(book: Book, pageCharSize: Int = 1800) async throws -> (chapters: [TVEpubChapter], sourceChanged: Bool) {
         let epubURL: URL
         if let local = book.ebookFileURL, FileManager.default.fileExists(atPath: local.path) {
             epubURL = local
@@ -174,64 +260,52 @@ enum TVEpubLoader {
                 throw LoadError(message: "Couldn't fetch this book from your server: \(error.localizedDescription)")
             }
         }
+        Zip.addCustomFileExtension(epubURL.pathExtension)
         let bookId = book.stableId
 
         return try await Task.detached(priority: .userInitiated) {
-            let unzippedDir = try unzipIfNeeded(epubURL: epubURL, bookId: bookId)
-            let opfURL = try locateOPF(in: unzippedDir)
-            return try parseChapters(opfURL: opfURL, pageCharSize: pageCharSize)
+            let (root, sourceChanged) = try unzipIfNeeded(epubURL: epubURL, bookId: bookId)
+            return (try parseChapters(in: root, pageCharSize: pageCharSize), sourceChanged)
         }.value
     }
 
-    nonisolated private static func unzipIfNeeded(epubURL: URL, bookId: String) throws -> URL {
-        let cacheRoot = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("EnveTV/epub", isDirectory: true)
+    nonisolated private static func unzipIfNeeded(epubURL: URL, bookId: String) throws -> (root: URL, sourceChanged: Bool) {
+        let cacheRoot = URL.cachesDirectory.appendingPathComponent("EnveTV/epub", isDirectory: true)
         let bookDir = cacheRoot.appendingPathComponent(bookId, isDirectory: true)
-        if FileManager.default.fileExists(atPath: bookDir.appendingPathComponent("META-INF/container.xml").path) {
-            return bookDir
-        }
-        try? FileManager.default.removeItem(at: bookDir)
-        try FileManager.default.createDirectory(at: bookDir, withIntermediateDirectories: true)
-        Zip.addCustomFileExtension(epubURL.pathExtension)
-        try Zip.unzipFile(epubURL, destination: bookDir, overwrite: true, password: nil)
-        return bookDir
+        let values = try epubURL.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        let fingerprint = "\(values.fileSize ?? 0)|\(values.contentModificationDate?.timeIntervalSince1970 ?? 0)"
+        let cachedFingerprint = try? String(contentsOf: bookDir.appendingPathComponent(".source-fingerprint"), encoding: .utf8)
+        if cachedFingerprint == fingerprint,
+            FileManager.default.fileExists(atPath: bookDir.appendingPathComponent("META-INF/container.xml").path)
+        { return (bookDir, false) }
+        let staging = cacheRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: staging) }
+        try Zip.unzipFile(epubURL, destination: staging, overwrite: true, password: nil)
+        try fingerprint.write(to: staging.appendingPathComponent(".source-fingerprint"), atomically: true, encoding: .utf8)
+        if FileManager.default.fileExists(atPath: bookDir.path) { try FileManager.default.removeItem(at: bookDir) }
+        try FileManager.default.moveItem(at: staging, to: bookDir)
+        // Extractions cached before fingerprinting have no recorded source, so their offsets are kept.
+        return (bookDir, cachedFingerprint != nil)
     }
 
-    nonisolated private static func locateOPF(in unzippedDir: URL) throws -> URL {
-        let containerURL = unzippedDir.appendingPathComponent("META-INF/container.xml")
-        let xml = try String(contentsOf: containerURL, encoding: .utf8)
-        guard let fullPath = firstRegexCapture(in: xml, pattern: #"<rootfile\b[^>]*\bfull-path="([^"]+)""#),
-            !fullPath.isEmpty
+    nonisolated private static func parseChapters(in root: URL, pageCharSize: Int) throws -> [TVEpubChapter] {
+        let container = TVStorytellerPackageParser()
+        guard container.parse(try Data(contentsOf: root.appendingPathComponent("META-INF/container.xml"))),
+            let rootfile = container.rootfile, !rootfile.isEmpty
         else {
             throw LoadError(message: "This book's structure is missing a rootfile entry.")
         }
-        return unzippedDir.appendingPathComponent(fullPath)
-    }
-
-    nonisolated private static func parseChapters(opfURL: URL, pageCharSize: Int) throws -> [TVEpubChapter] {
-        let opfDir = opfURL.deletingLastPathComponent()
-        let opfXML = try String(contentsOf: opfURL, encoding: .utf8)
-
-        var hrefForId: [String: String] = [:]
-        for match in allRegexMatches(in: opfXML, pattern: #"<item\b([^>]*)/?>"#) {
-            let attrs = match
-            guard let id = firstRegexCapture(in: attrs, pattern: #"\bid="([^"]+)""#),
-                let href = firstRegexCapture(in: attrs, pattern: #"\bhref="([^"]+)""#)
-            else { continue }
-            hrefForId[id] = href
-        }
-
-        var spineOrder: [String] = []
-        for match in allRegexMatches(in: opfXML, pattern: #"<itemref\b([^>]*)/?>"#) {
-            if let idref = firstRegexCapture(in: match, pattern: #"\bidref="([^"]+)""#) {
-                spineOrder.append(idref)
-            }
+        let opfHref = TVStorytellerPaths.normalizeHref(rootfile)
+        let package = TVStorytellerPackageParser()
+        guard package.parse(try Data(contentsOf: root.appendingPathComponent(opfHref))) else {
+            throw LoadError(message: "This book's package document could not be read.")
         }
 
         var chapters: [TVEpubChapter] = []
-        for (i, idref) in spineOrder.enumerated() {
-            guard let href = hrefForId[idref] else { continue }
-            let chapterURL = opfDir.appendingPathComponent(href)
+        for (i, idref) in package.spine.enumerated() {
+            guard let item = package.items[idref] else { continue }
+            let chapterURL = root.appendingPathComponent(TVStorytellerPaths.resolve(item.href, relativeTo: opfHref))
             guard let html = try? String(contentsOf: chapterURL, encoding: .utf8) else { continue }
             let title = extractTitle(from: html, fallback: "Chapter \(chapters.count + 1)")
             let bodyText = extractPlainText(from: html)
@@ -340,15 +414,6 @@ enum TVEpubLoader {
         return String(source[captureRange])
     }
 
-    nonisolated private static func allRegexMatches(in source: String, pattern: String) -> [String] {
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return [] }
-        let range = NSRange(source.startIndex..<source.endIndex, in: source)
-        return regex.matches(in: source, options: [], range: range).compactMap { match in
-            guard let r = Range(match.range, in: source) else { return nil }
-            return String(source[r])
-        }
-    }
-
     nonisolated private static func regexReplace(in source: String, pattern: String, with replacement: String) -> String {
         guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return source }
         let range = NSRange(source.startIndex..<source.endIndex, in: source)
@@ -383,6 +448,7 @@ enum TVEpubProgressStore {
     struct Position: Codable {
         let chapter: Int
         let page: Int
+        let offset: Int?
     }
 
     static func load(bookId: String) -> Position? {
@@ -390,8 +456,8 @@ enum TVEpubProgressStore {
         return try? JSONDecoder().decode(Position.self, from: data)
     }
 
-    static func save(bookId: String, chapter: Int, page: Int) {
-        let pos = Position(chapter: chapter, page: page)
+    static func save(bookId: String, chapter: Int, page: Int, offset: Int) {
+        let pos = Position(chapter: chapter, page: page, offset: offset)
         guard let data = try? JSONEncoder().encode(pos) else { return }
         UserDefaults.standard.set(data, forKey: keyPrefix + bookId)
     }

@@ -38,6 +38,7 @@ struct LibraryHomeView_tvOS: View {
                 }
                 .padding(60)
             }
+            .hearthCanvas()
             .navigationTitle("enve")
             .navigationDestination(item: $selectedBook) { route in
                 BookDetailView_tvOS(book: route.book)
@@ -73,11 +74,13 @@ struct CarouselRow_tvOS: View {
     let title: String
     let books: [Book]
     let onSelect: (Book) -> Void
+    @Environment(\.hearth) private var hearth
 
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
             Text(title)
-                .font(.title.weight(.semibold))
+                .font(.system(.title, design: .serif, weight: .semibold))
+                .foregroundStyle(hearth.text)
 
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: 32) {
@@ -92,6 +95,7 @@ struct CarouselRow_tvOS: View {
 }
 
 struct OnboardingPlaceholder_tvOS: View {
+    @Environment(\.hearth) private var hearth
     @State private var isShowingAddServer = false
 
     var body: some View {
@@ -101,13 +105,14 @@ struct OnboardingPlaceholder_tvOS: View {
                 .foregroundStyle(.tint)
 
             Text("Connect a library")
-                .font(.system(size: 48, weight: .bold))
+                .font(.hearthDisplay(48))
+                .foregroundStyle(hearth.text)
 
             Text(
                 "Add a media server here, or turn on \"Sync to Apple TV\" in enve on your iPhone or iPad (Settings › Sync) and your servers appear automatically."
             )
             .font(.title3)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(hearth.textSecondary)
             .multilineTextAlignment(.center)
             .frame(maxWidth: 760)
 
@@ -128,16 +133,19 @@ struct OnboardingPlaceholder_tvOS: View {
 }
 
 struct EmptyLibraryPlaceholder_tvOS: View {
+    @Environment(\.hearth) private var hearth
+
     var body: some View {
         VStack(spacing: 16) {
             Image(systemName: "tray")
                 .font(.system(size: 64))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(hearth.textSecondary)
             Text("Library is empty")
                 .font(.title2.weight(.semibold))
+                .foregroundStyle(hearth.text)
             Text("Connect a server in enve on iPhone to add books.")
                 .font(.title3)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(hearth.textSecondary)
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)

@@ -156,13 +156,18 @@ extension BookloreProvider {
         return false
     }
 
-    func switchToLegacyBooksAPI(reason: String, libraryId: String) async throws -> (books: [Book], isComplete: Bool) {
+    func switchToLegacyBooksAPI(
+        reason: String,
+        libraryId: String,
+        expectedBookIds: Set<String>? = nil
+    ) async throws -> (books: [Book], isComplete: Bool) {
         AppLogger.network.info(
             "[Booklore] \(reason) - using legacy catalog endpoint for library \(libraryId) while preserving app feature endpoints"
         )
+        let snapshot = try await fetchBooksViaLegacyAPI(libraryId: libraryId, expectedBookIds: expectedBookIds)
         useKomgaFallback = false
         useLegacyCatalogFallback = true
-        return try await fetchBooksViaLegacyAPI(libraryId: libraryId)
+        return snapshot
     }
 
     func mapKomgaBookToBook(_ book: KomgaBook, libraryId: String) -> Book {
@@ -234,7 +239,10 @@ extension BookloreProvider {
             }
     }
 
-    func fetchBooksViaLegacyAPI(libraryId: String) async throws -> (books: [Book], isComplete: Bool) {
+    func fetchBooksViaLegacyAPI(
+        libraryId: String,
+        expectedBookIds: Set<String>? = nil
+    ) async throws -> (books: [Book], isComplete: Bool) {
         let request = try makeRequest(path: "/api/v1/libraries/\(libraryId)/book")
         AppLogger.network.info("[Booklore/Legacy] GET \(request.url?.redacted.absoluteString ?? "<nil>")")
         let (data, response) = try await performAuthorizedRequest(request)
@@ -249,6 +257,32 @@ extension BookloreProvider {
             throw error
         }
         let books = decoded.values
+        if let expectedBookIds {
+            guard expectedBookIds.isSubset(of: Set(books.map { $0.id.stringValue })) else {
+                throw ProviderError.serverError("Grimmory catalog endpoints returned conflicting books")
+            }
+        } else if books.isEmpty && !useLegacyRestAPI {
+            let appRequest = try makeRequest(
+                path: "/api/v1/app/books",
+                queryItems: [
+                    URLQueryItem(name: "libraryId", value: libraryId),
+                    URLQueryItem(name: "page", value: "0"),
+                    URLQueryItem(name: "size", value: String(pageSize)),
+                ]
+            )
+            let (appData, appResponse) = try await performAuthorizedRequest(appRequest)
+            switch appResponse.statusCode {
+            case 200:
+                let page = try JSONDecoder().decode(BooklorePage<BookloreBookSummary>.self, from: appData)
+                guard page.rawItemCount == 0 else {
+                    throw ProviderError.serverError("Grimmory catalog endpoints returned conflicting books")
+                }
+            case 404, 405:
+                break
+            default:
+                throw ProviderError.serverError("Could not verify empty Grimmory catalog (HTTP \(appResponse.statusCode))")
+            }
+        }
         rejectedContent.update(
             connection: connection,
             libraryId: libraryId,

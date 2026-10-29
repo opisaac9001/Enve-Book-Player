@@ -2,6 +2,7 @@ import SwiftUI
 
 struct AddServerView_tvOS: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.hearth) private var hearth
 
     enum Backend: String, CaseIterable, Identifiable {
         case audiobookshelf
@@ -20,6 +21,24 @@ struct AddServerView_tvOS: View {
 
         var id: String { rawValue }
 
+        init?(editing providerType: ProviderType) {
+            switch providerType {
+            case .audiobookshelf: self = .audiobookshelf
+            case .plex: self = .plex
+            case .jellyfin: self = .jellyfin
+            case .emby: self = .emby
+            case .komga: self = .komga
+            case .kavita: self = .kavita
+            case .booklore: self = .booklore
+            case .storyteller: self = .storyteller
+            case .opds: self = .opds
+            case .webdav: self = .webdav
+            case .premiumize: self = .premiumize
+            case .realdebrid: self = .realdebrid
+            case .torbox, .local, .bookOrbit, .silo, .oneDrive: return nil
+            }
+        }
+
         var displayName: String {
             switch self {
             case .audiobookshelf: return "Audiobookshelf"
@@ -28,7 +47,7 @@ struct AddServerView_tvOS: View {
             case .emby: return "Emby"
             case .komga: return "Komga"
             case .kavita: return "Kavita"
-            case .booklore: return "Booklore"
+            case .booklore: return "Grimmory"
             case .storyteller: return "Storyteller"
             case .opds: return "OPDS"
             case .webdav: return "WebDAV"
@@ -92,18 +111,17 @@ struct AddServerView_tvOS: View {
     var body: some View {
         NavigationStack {
             ZStack {
-
-                Color(white: 0.10).ignoresSafeArea()
+                hearth.bg.ignoresSafeArea()
 
                 VStack(alignment: .leading, spacing: 0) {
-
                     HStack {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Add Server")
-                                .font(.system(size: 56, weight: .bold))
+                                .font(.hearthDisplay(56))
+                                .foregroundStyle(hearth.text)
                             Text("Choose your media server. You can connect more than one.")
                                 .font(.title3)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(hearth.textSecondary)
                         }
                         Spacer()
                         Button("Cancel") { dismiss() }
@@ -148,7 +166,7 @@ struct AddServerView_tvOS: View {
         .padding(.horizontal, 36)
         .padding(.vertical, 28)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(white: 0.16), in: RoundedRectangle(cornerRadius: 14))
+        .background(hearth.bgElevated, in: RoundedRectangle(cornerRadius: 14))
     }
 
     @ViewBuilder

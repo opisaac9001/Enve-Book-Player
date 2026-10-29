@@ -118,4 +118,18 @@ struct ReaderProgressPolicyTests {
         #expect(!unanchored.contains(progression: 0.4201, locatorJSON: nil))
         #expect(!unanchored.contains(progression: 0.42, locatorJSON: Self.pageLocator(progression: 0.2, total: 0.42)))
     }
+
+    @Test func exactCfiChangesRemainDistinctAtTheSamePercentage() throws {
+        let first = try #require(EpubLocationBridge.readiumLocator(
+            href: Self.chapter, epubCFI: "epubcfi(/6/8!/4/2:10)", fraction: 0.42, sourceEngine: .foliate
+        ))
+        let second = try #require(EpubLocationBridge.readiumLocator(
+            href: Self.chapter, epubCFI: "epubcfi(/6/8!/4/2:20)", fraction: 0.42, sourceEngine: .foliate
+        ))
+        let baseline = ReaderPositionBaseline(progression: 0.42, locatorJSON: first)
+
+        #expect(baseline.contains(progression: 0.42, locatorJSON: first))
+        #expect(!baseline.contains(progression: 0.42, locatorJSON: second))
+        #expect(baseline.contains(progression: 0.42001, locatorJSON: first))
+    }
 }

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<entry xmlns="http://www.w3.org/2005/Atom"
+       xmlns:opds="http://opds-spec.org/2010/catalog"
+       xmlns:dcterms="http://purl.org/dc/terms/"
+       xmlns:schema="http://schema.org/">
+  <id>urn:uuid:2c9d41a0-0101-4d2a-8f77-9a1b2c3d4e01</id>
+  <title>Harbour Lights</title>
+  <updated>2026-09-18T20:15:00Z</updated>
+  <author>
+    <name>Tomasz Bergström</name>
+  </author>
+  <dcterms:issued>2018-04-01</dcterms:issued>
+  <dcterms:publisher>Lab Press</dcterms:publisher>
+  <dcterms:language>en</dcterms:language>
+  <summary type="text">The complete entry document for a single OPDS 1.2 publication.</summary>
+  <schema:Series schema:name="Lab Harbour Cycle" schema:position="1"/>
+  <link rel="self"
+        href="/opds/v1/entry/lab-ebook-101.xml"
+        type="application/atom+xml;type=entry;profile=opds-catalog"/>
+  <link rel="http://opds-spec.org/image"
+        href="/opds/images/cover-amber.png"
+        type="image/png"/>
+  <link rel="http://opds-spec.org/image/thumbnail"
+        href="/opds/images/thumb-blue.png"
+        type="image/png"/>
+  <link rel="http://opds-spec.org/acquisition"
+        href="/opds/files/lab-ebook-002.epub"
+        type="application/epub+zip"/>
+  <link rel="http://opds-spec.org/progression"
+        href="/opds/progression/lab-ebook-101"
+        type="application/opds-progression+json"/>
+</entry>

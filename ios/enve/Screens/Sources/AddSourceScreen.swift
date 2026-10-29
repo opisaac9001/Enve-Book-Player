@@ -1,6 +1,12 @@
 import SwiftUI
 
 struct AddSourceScreen: View {
+    private let onAdded: (() -> Void)?
+
+    init(onAdded: (() -> Void)? = nil) {
+        self.onAdded = onAdded
+    }
+
     @Environment(\.hearth) private var hearth
     @Environment(\.mantelInset) private var mantelInset
     @Environment(\.dismiss) private var dismiss
@@ -24,6 +30,11 @@ struct AddSourceScreen: View {
                     }
 
                     grid(
+                        title: "From the web",
+                        providers: [.webLink],
+                        width: HearthAdaptive.contentWidth(for: geo.size.width, maximum: 980)
+                    )
+                    grid(
                         title: "Media servers",
                         providers: [
                             .audiobookshelf, .plex, .jellyfin, .emby, .grimmory,
@@ -38,7 +49,7 @@ struct AddSourceScreen: View {
                     )
                     grid(
                         title: "Cloud drives",
-                        providers: [.oneDrive, .icloudDrive],
+                        providers: [.googleDrive, .dropbox, .oneDrive, .icloudDrive],
                         width: HearthAdaptive.contentWidth(for: geo.size.width, maximum: 980)
                     )
                     grid(
@@ -59,6 +70,7 @@ struct AddSourceScreen: View {
         .sheet(item: $selected, onDismiss: {
             guard didAddSource else { return }
             didAddSource = false
+            onAdded?()
             dismiss()
         }) { provider in
             AddSourceRouter(provider: provider) {
@@ -90,6 +102,7 @@ enum AddSourceProvider: String, CaseIterable, Identifiable {
     case webdav, torbox, premiumize, realdebrid, smb
     case googleDrive, dropbox, oneDrive, icloudDrive
     case files
+    case webLink
 
     var id: String { rawValue }
 
@@ -116,6 +129,7 @@ enum AddSourceProvider: String, CaseIterable, Identifiable {
         case .oneDrive: "OneDrive"
         case .icloudDrive: "iCloud Drive"
         case .files: "Files"
+        case .webLink: "Web link"
         }
     }
 
@@ -136,7 +150,7 @@ enum AddSourceProvider: String, CaseIterable, Identifiable {
         case .torbox: ProviderType.torbox.assetIconName
         case .premiumize: UnifiedWebDAVPreset.premiumize.assetIconName
         case .realdebrid: UnifiedWebDAVPreset.realdebrid.assetIconName
-        case .smb, .googleDrive, .dropbox, .oneDrive, .icloudDrive, .files: nil
+        case .smb, .googleDrive, .dropbox, .oneDrive, .icloudDrive, .files, .webLink: nil
         }
     }
 
@@ -150,6 +164,7 @@ enum AddSourceProvider: String, CaseIterable, Identifiable {
         case .oneDrive: "cloud.fill"
         case .icloudDrive: "icloud"
         case .files: "folder"
+        case .webLink: "link"
         case .grimmory: ProviderType.booklore.iconName
         case .silo: ProviderType.silo.iconName
         default: ProviderType(rawValue: rawValue)?.iconName ?? "server.rack"
@@ -170,7 +185,7 @@ enum AddSourceProvider: String, CaseIterable, Identifiable {
         case .opds: .opds
         case .webdav, .premiumize, .realdebrid: .webdav
         case .torbox: .torbox
-        case .plex, .smb, .googleDrive, .dropbox, .oneDrive, .icloudDrive, .files: nil
+        case .plex, .smb, .googleDrive, .dropbox, .oneDrive, .icloudDrive, .files, .webLink: nil
         }
     }
 
@@ -250,6 +265,8 @@ private struct AddSourceRouter: View {
                 SourcesFilesScreen(onAdded: onAdded)
             case .oneDrive:
                 SourcesOneDriveScreen(onAdded: onAdded)
+            case .webLink:
+                SourcesWebImportScreen(onAdded: onAdded)
             default:
                 EmptyView()
             }

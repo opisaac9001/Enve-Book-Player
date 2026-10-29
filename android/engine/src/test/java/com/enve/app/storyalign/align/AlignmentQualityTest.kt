@@ -11,6 +11,18 @@ class AlignmentQualityTest {
     private val file = AudioFile(0, 0.0, FILE_SECONDS, "storyalign/Audio/0000.m4a")
     private val durations = mapOf(0 to FILE_SECONDS)
 
+    @Test fun oneForwardTimingOutlierDoesNotDiscardTheRemainingBook() {
+        val candidate = chapter((0 until 10).map { id ->
+            val start = if (id == 3) 89.0 else id * 10.0
+            alignedSentence(id, start, start + 9.0)
+        })
+        val assessment = assess(candidate)
+        assertEquals(listOf(0, 1, 2, 4, 5, 6, 7, 8, 9), assessment.units.map { it.sentenceId })
+        assertEquals(9, assessment.quality.unitCount)
+        assertTrue(assessment.quality.isUsable)
+        assertTrue(assessment.quality.coverage >= 0.80)
+    }
+
     @Test fun steadyAlignmentIsUsable() {
         val quality = assess(steadyChapter()).quality
 

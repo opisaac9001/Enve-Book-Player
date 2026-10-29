@@ -59,7 +59,7 @@ class ServerToolsFacadeImpl @Inject constructor(
                 ?.let(ServerToolsMapping::bookOrbitStats)
                 .orEmpty()
             BookSource.GRIMMORY -> scoped(connectionId) {
-                grimmoryTools.stats().getOrNull()?.let(ServerToolsMapping::grimmoryStats).orEmpty()
+                grimmoryTools.stats().getOrThrow()?.let(ServerToolsMapping::grimmoryStats).orEmpty()
             }
             BookSource.KAVITA -> scoped(connectionId) {
                 kavitaTools.stats().getOrNull()?.let(ServerToolsMapping::kavitaStats).orEmpty()
@@ -85,7 +85,7 @@ class ServerToolsFacadeImpl @Inject constructor(
                 .orEmpty()
                 .take(limit)
             BookSource.GRIMMORY -> scoped(connectionId) {
-                grimmoryTools.notes(limit).getOrNull()?.let(ServerToolsMapping::grimmoryHighlights).orEmpty()
+                grimmoryTools.notes(limit).getOrThrow()?.let(ServerToolsMapping::grimmoryHighlights).orEmpty()
             }
             BookSource.KAVITA -> scoped(connectionId) {
                 kavitaTools.annotations(limit).getOrNull()?.let(ServerToolsMapping::kavitaHighlights).orEmpty()

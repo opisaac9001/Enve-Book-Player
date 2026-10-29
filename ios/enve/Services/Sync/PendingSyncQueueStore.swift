@@ -14,6 +14,7 @@ struct PendingServerSync: Codable, Equatable {
     let isFinished: Bool?
     var retryCount: Int = 0
     var nextRetryAfter: TimeInterval = 0
+    var validationFailureMessage: String?
 
     init(
         stableId: String,
@@ -28,7 +29,8 @@ struct PendingServerSync: Codable, Equatable {
         locator: String? = nil,
         isFinished: Bool? = nil,
         retryCount: Int = 0,
-        nextRetryAfter: TimeInterval = 0
+        nextRetryAfter: TimeInterval = 0,
+        validationFailureMessage: String? = nil
     ) {
         self.stableId = stableId
         self.sourceRaw = sourceRaw
@@ -43,6 +45,7 @@ struct PendingServerSync: Codable, Equatable {
         self.isFinished = isFinished
         self.retryCount = retryCount
         self.nextRetryAfter = nextRetryAfter
+        self.validationFailureMessage = validationFailureMessage
     }
 
     var source: Book.BookSource? {
@@ -113,9 +116,10 @@ final class PendingSyncQueueStore {
         persist()
     }
 
-    func suspend(stableId: String) {
+    func suspend(stableId: String, validationFailureMessage: String? = nil) {
         guard var entry = entries[stableId] else { return }
         entry.nextRetryAfter = Date.distantFuture.timeIntervalSince1970
+        entry.validationFailureMessage = validationFailureMessage
         entries[stableId] = entry
         persist()
     }
@@ -123,7 +127,8 @@ final class PendingSyncQueueStore {
     func resumeSuspended() {
         let suspendedRetryDate = Date.distantFuture.timeIntervalSince1970
         var changed = false
-        for (stableId, var entry) in entries where entry.nextRetryAfter == suspendedRetryDate {
+        for (stableId, var entry) in entries
+        where entry.nextRetryAfter == suspendedRetryDate && entry.validationFailureMessage == nil {
             entry.nextRetryAfter = 0
             entries[stableId] = entry
             changed = true

@@ -40,6 +40,8 @@ struct FoliateRuntimeSecurityTests {
             "/foliate/text-walker.js",
             "/foliate/tts.js",
             "/foliate/vendor/zip.js",
+            "/foliate/vendor/fflate.js",
+            "/book/current.azw3",
         ] {
             #expect(FoliateRuntimeSupport.isAllowedRuntimePath(path))
         }

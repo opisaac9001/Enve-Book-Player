@@ -21,7 +21,6 @@ final class EnveEngine {
     let podcastAutoQueue: PodcastAutoQueueService
 
     #if !os(tvOS)
-    @available(iOS 26.0, *)
     var storyAlign: StoryAlignEngine {
         StoryAlignEngine(
             appState: profileSession?.appState ?? .shared,

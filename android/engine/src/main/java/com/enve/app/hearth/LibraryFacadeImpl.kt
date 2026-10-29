@@ -8,6 +8,7 @@ import com.enve.app.data.offline.OfflineDownloadProgress
 import com.enve.app.data.offline.OfflineDownloadStatus
 import com.enve.app.data.metadata.MatchedBookMetadataStore
 import com.enve.app.data.duplicates.DuplicateGroupStore
+import com.enve.app.data.hardcover.HardcoverSyncService
 import com.enve.app.data.links.BookLinkRepository
 import com.enve.app.data.history.HistorySessionStore
 import com.enve.app.data.history.AbsCrossProviderHistorySync
@@ -97,6 +98,7 @@ class LibraryFacadeImpl @Inject constructor(
     private val history: HistorySessionStore,
     private val crossProviderHistory: AbsCrossProviderHistorySync,
     private val groupingOverrides: AudiobookGroupingOverrideStore,
+    private val hardcoverSync: HardcoverSyncService,
     @ApplicationScope scope: CoroutineScope,
 ) : LibraryFacade {
     override val locallyMatchedMetadataKeys: Flow<Set<String>> = matchedMetadata.matchedKeys
@@ -117,6 +119,8 @@ class LibraryFacadeImpl @Inject constructor(
             libraries.filterNot { it.connectionId in disabled }
         }
     override val isRefreshing: StateFlow<Boolean> = cache.isRefreshing
+    override val refreshError: StateFlow<String?> = cache.refreshError
+    override val importIssues: Flow<List<com.enve.core.data.provider.CatalogImportIssue>> = cache.importIssues
 
     private fun visibleBooks(source: (Set<String>) -> Flow<List<Book>>): Flow<List<Book>> =
         prefs.excludedLibraryIds.flatMapLatest { excluded ->
@@ -459,7 +463,9 @@ class LibraryFacadeImpl @Inject constructor(
     override val hiddenBookIds: Flow<Set<String>> = prefs.libraryHiddenBookIds
 
     override suspend fun setFinished(book: Book, finished: Boolean): Boolean =
-        aggregator.updateBookStatus(book, if (finished) "READ" else "UNREAD").isSuccess
+        aggregator.updateBookStatus(book, if (finished) "READ" else "UNREAD").isSuccess.also { updated ->
+            if (updated && finished) hardcoverSync.submitFinished(book)
+        }
 
     override fun supportsPersonalRating(book: Book): Boolean =
         aggregator.supportsPersonalRating(book)
@@ -561,19 +567,19 @@ class LibraryFacadeImpl @Inject constructor(
     }
 
     override suspend fun chapters(book: Book, forceEmbedded: Boolean): List<Chapter>? {
-        book.chapters.takeIf { it.isNotEmpty() }?.let {
-            applyFetchedChapters(book, it)
-            return it
+        if (!forceEmbedded) {
+            val cached = book.chapters.takeIf { it.isNotEmpty() } ?: cachedChapters(book)
+            if (cached != null && (book.duration <= 0 || cached.all { it.startTime < book.duration && it.endTime <= book.duration })) {
+                applyFetchedChapters(book, cached)
+                return cached
+            }
         }
-        cachedChapters(book)?.let {
-            applyFetchedChapters(book, it)
-            return it
-        }
-        suspend fun embeddedChapters() = aggregator.fetchEmbeddedChapters(book).getOrNull()?.takeIf { it.isNotEmpty() }
+        val uncached = book.copy(chapters = emptyList())
+        suspend fun embeddedChapters() = aggregator.fetchEmbeddedChapters(uncached).getOrNull()?.takeIf { it.isNotEmpty() }
         val chapters = if (forceEmbedded) {
-            embeddedChapters() ?: aggregator.fetchChapters(book).getOrNull()
+            embeddedChapters() ?: aggregator.fetchChapters(uncached).getOrNull()
         } else {
-            aggregator.fetchChapters(book).getOrNull()?.let { fetched -> fetched.ifEmpty { embeddedChapters().orEmpty() } }
+            aggregator.fetchChapters(uncached).getOrNull()?.let { fetched -> fetched.ifEmpty { embeddedChapters().orEmpty() } }
         }
         return chapters?.also { applyFetchedChapters(book, it) }
     }
@@ -590,8 +596,6 @@ class LibraryFacadeImpl @Inject constructor(
     }
 
     private suspend fun applyFetchedChapters(book: Book, chapters: List<Chapter>) {
-        if (chapters.isEmpty()) return
-
         val existing = bookExtras.get(book.uniqueKey)
         bookExtras.upsert(
             BookExtras(

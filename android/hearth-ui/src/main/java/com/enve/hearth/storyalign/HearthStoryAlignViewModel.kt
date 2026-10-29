@@ -5,6 +5,8 @@ import androidx.lifecycle.viewModelScope
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
 import com.enve.engine.library.LibraryFacade
+import com.enve.engine.storyalign.StoryAlignEngine
+import com.enve.engine.storyalign.StoryAlignSettings
 import com.enve.engine.storyalign.StoryAlignFacade
 import com.enve.engine.storyalign.StoryAlignJobUi
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -29,6 +31,13 @@ class HearthStoryAlignViewModel @Inject constructor(
 
     val jobs: StateFlow<List<StoryAlignJobUi>> =
         storyAlign.jobs.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val selectedEngine = MutableStateFlow(storyAlign.preferredEngine.value)
+
+    fun chooseEngine(engine: StoryAlignEngine) {
+        selectedEngine.value = engine
+        viewModelScope.launch { storyAlign.setPreferredEngine(engine) }
+    }
 
     val selectedEbook = MutableStateFlow<Book?>(null)
     val selectedAudiobook = MutableStateFlow<Book?>(null)
@@ -94,7 +103,7 @@ class HearthStoryAlignViewModel @Inject constructor(
         val audiobook = selectedAudiobook.value ?: return
         viewModelScope.launch {
             library.linkEditions(ebook, audiobook)
-            storyAlign.createJob(ebook.uniqueKey, audiobook.uniqueKey)
+            storyAlign.createJob(ebook.uniqueKey, audiobook.uniqueKey, StoryAlignSettings(engine = selectedEngine.value))
             selectedEbook.value = null
             selectedAudiobook.value = null
         }

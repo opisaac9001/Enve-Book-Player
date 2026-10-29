@@ -1,0 +1,121 @@
+package com.enve.app.ui.screens
+
+import android.content.Context
+import android.view.KeyEvent
+import androidx.lifecycle.ViewModelProvider
+import androidx.test.core.app.ActivityScenario
+import androidx.test.core.app.ApplicationProvider
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.enve.app.MainActivity
+import com.enve.app.profiles.ProfileActivityBinding
+import com.enve.app.viewmodel.ReaderViewModel
+import com.enve.core.data.model.BookSource
+import com.enve.core.reader.ReaderEngineKind
+import dagger.hilt.android.EntryPointAccessors
+import java.io.File
+import java.util.UUID
+import java.util.zip.CRC32
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import org.readium.r2.navigator.epub.EpubNavigatorFragment
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import org.junit.runner.RunWith
+
+@RunWith(AndroidJUnit4::class)
+class VolumePageTurningTest {
+    @Test
+    fun readiumUsesVolumeDownForNextPage() = verify(ReaderEngineKind.READIUM)
+
+    @Test
+    fun foliateUsesVolumeDownForNextPage() = verify(ReaderEngineKind.FOLIATE)
+
+    private fun verify(engine: ReaderEngineKind) = runBlocking<Unit> {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val coordinator = EntryPointAccessors.fromApplication(context, ProfileActivityBinding.DeviceEntryPoint::class.java).profiles()
+        ActivityScenario.launch(MainActivity::class.java).use { await { coordinator.activeRuntime.value != null } }
+        val runtime = checkNotNull(coordinator.activeRuntime.value)
+        val id = "volume-controls-${UUID.randomUUID()}"
+        val file = File(runtime.component.storageLocations().cacheDirectory, "ebooks/$id.epub")
+        file.parentFile!!.mkdirs()
+        writeBook(file)
+        val intent = EbookReaderActivity.createIntent(context, id, BookSource.LOCAL,
+            title = "Enve page-turn verification", author = "Enve tests", bookFormat = "EPUB",
+            epubLocator = null, epubProgress = 0f, readerEngine = engine)
+        try {
+            ActivityScenario.launch<EbookReaderActivity>(intent).use { scenario ->
+                lateinit var vm: ReaderViewModel
+                await {
+                    scenario.onActivity { vm = ViewModelProvider(it)[ReaderViewModel::class.java] }
+                    vm.state.value.isReady && vm.state.value.totalPages > 1
+                }
+                val original = vm.state.value.prefs
+                try {
+                    withContext(Dispatchers.Main) {
+                        vm.updatePreferences(original.copy(volumeButtonNavigation = true, scroll = false))
+                    }
+                    delay(1_000)
+                    var navigator: EpubNavigatorFragment? = null
+                    scenario.onActivity {
+                        navigator = it.supportFragmentManager.findFragmentByTag("epub_nav") as? EpubNavigatorFragment
+                    }
+                    fun progression(): Double = navigator?.currentLocator?.value?.locations?.progression
+                        ?: vm.state.value.progressPct.toDouble()
+                    val initial = progression()
+                    scenario.onActivity {
+                        assertTrue(it.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_VOLUME_DOWN)))
+                        assertTrue(it.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_VOLUME_DOWN)))
+                    }
+                    await { progression() > initial }
+                    delay(600)
+                    val next = progression()
+                    scenario.onActivity {
+                        assertTrue(it.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_VOLUME_UP)))
+                        assertTrue(it.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_VOLUME_UP)))
+                    }
+                    await { progression() < next }
+                } finally {
+                    withContext(Dispatchers.Main) { vm.updatePreferences(original); vm.flushPreferences() }
+                }
+            }
+        } finally {
+            file.delete()
+        }
+    }
+
+    private suspend fun await(predicate: () -> Boolean) = withTimeout(30_000) {
+        while (!predicate()) delay(100)
+    }
+
+    private fun writeBook(file: File) {
+        ZipOutputStream(file.outputStream()).use { zip ->
+            fun entry(path: String, value: String, stored: Boolean = false) {
+                val bytes = value.toByteArray()
+                val entry = ZipEntry(path)
+                if (stored) {
+                    entry.method = ZipEntry.STORED
+                    entry.size = bytes.size.toLong()
+                    entry.crc = CRC32().apply { update(bytes) }.value
+                }
+                zip.putNextEntry(entry)
+                zip.write(bytes)
+                zip.closeEntry()
+            }
+            entry("mimetype", "application/epub+zip", stored = true)
+            entry("META-INF/container.xml", """<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OPS/book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>""")
+            entry("OPS/book.opf", """<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">enve-volume-verification</dc:identifier><dc:title>Enve page-turn verification</dc:title><dc:language>en</dc:language><meta property="dcterms:modified">2026-10-24T00:00:00Z</meta></metadata><manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/><item id="one" href="one.xhtml" media-type="application/xhtml+xml"/><item id="two" href="two.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="one"/><itemref idref="two"/></spine></package>""")
+            entry("OPS/nav.xhtml", """<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Contents</title></head><body><nav epub:type="toc"><ol><li><a href="one.xhtml">First chapter</a></li><li><a href="two.xhtml">Second chapter</a></li></ol></nav></body></html>""")
+            for (chapter in listOf("one", "two")) {
+                val paragraphs = (1..6).joinToString("") { index ->
+                    "<p>Paragraph $index. " + "The orange book rests beside a window while the reader explores another story. ".repeat(30) + "</p>"
+                }
+                entry("OPS/$chapter.xhtml", """<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Chapter $chapter</title></head><body>$paragraphs</body></html>""")
+            }
+        }
+    }
+}

@@ -132,16 +132,22 @@ bottom-docked with safe-area padding:
 
 ### 2 · Library
 
-- Large search field (serif placeholder "Find a story…"), debounced →
+- Header: Library title, Add books and More. Refresh, book selection, display options and
+  Settings live in More; Done choosing stays directly available during selection.
+- Compact source and library menus show the current browsing scope. Scope does not add
+  to the active-filter count, and resetting filters keeps the selected library.
+- Shelves menu: Everything, In progress, Reading, Downloaded, Favorites, For Later,
+  Collections and Discover. Filter & Sort and the result count sit beside it; controls
+  stack at accessibility text sizes.
+- Floating search opens the serif field (placeholder "Find a story…"), debounced →
   `bookStore.searchBooks(query:limit:200)`.
-- Chip row: **All · Listening · Reading · Finished · Downloaded** + media-type menu chip
-  (Audio / Ebooks / Podcasts) + sort menu (Recent · Title · Author · Series).
-- Grid: 3-col adaptive pure covers (no text under covers; title appears on long-press preview
-  and in detail). Progress ribbon overlays the cover bottom edge when started.
+- Grid: adaptive cover sizes with the user's preferred metadata style. Progress ribbon
+  overlays the cover bottom edge when started.
 - **50k path**: keyset paging via `pagedBooks(after:limit:mediaType:)` exactly like the old
   LibraryViewModel (page 2000, paged mode when `bookCount() > 3000`); search always delegates
   to SQLite. Scroll performance is the test gate.
-- **Facets**: a segmented overline row — Books · Series · Authors — where Series/Authors use
+- **Facets**: a horizontal overline row shows the available book, series, author, narrator,
+  genre and show views for the current media. Series/Authors use
   `browseSeriesAggregates` / `browseAuthorAggregates` rendered as serif list rows with cover
   thumbs; tapping pushes a filtered grid (`books(bySeries:)` etc.). Series rows show a
   **fanned stack** of up to 3 covers.

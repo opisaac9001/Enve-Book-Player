@@ -7,6 +7,7 @@ import com.enve.app.storyalign.align.SentenceRange
 import com.enve.app.storyalign.epub.EpubParser
 import com.enve.app.storyalign.epub.EpubZip
 import com.enve.app.storyalign.epub.parseXmlDocument
+import org.jsoup.Jsoup
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -18,6 +19,23 @@ import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 
 class ReadAloudEpubBuilderTest {
+
+    @Test fun outputQualityIsEmbeddedInTheSameArchiveAsItsNarration() {
+        val original = EpubZip.from(ByteArrayInputStream(sampleEpub()))
+        val document = EpubParser.parse(original)
+        val item = document.spineOrderedManifest.first { it.href == "ch1.xhtml" }
+        val audio = AudioFile(0, 0.0, 10.0, "storyalign/Audio/0000.m4a")
+        val chapter = AlignedChapter(item, alignedSentences = listOf(
+            AlignedSentence("The quick brown fox.", 0, SentenceRange(0, 0.0, 2.0, audio, emptyList())),
+        ))
+        val quality = StoryAlignOutputQuality(1, 2, 0.2)
+        val output = ReadAloudEpubBuilder.build(original, document, listOf(chapter),
+            listOf(ReadAloudEpubBuilder.AudioClipFile("0000.m4a", ByteArray(64))), "2026-10-20T00:00:00Z", quality)
+        val entries = EpubZip.from(ByteArrayInputStream(output)).entries()
+        assertTrue(entries.getValue(StoryAlignOutputQuality.ENTRY).contentEquals(quality.encode()))
+        assertTrue(entries.keys.any { it.endsWith(".smil") })
+    }
+
 
     @Test fun chaptersWithMatchingFileNamesKeepSeparateNarration() {
         val original = EpubZip.from(ByteArrayInputStream(sampleEpub()))
@@ -121,7 +139,60 @@ class ReadAloudEpubBuilderTest {
         }
     }
 
-    private fun sampleEpub(): ByteArray {
+    @Test fun ctcSparseSentenceIdsResolveToTheOriginalSentenceText() {
+        val sentences = listOf("First sentence.", "Skipped sentence.", "Third sentence.", "Another skipped sentence.", "Fifth sentence.")
+        val entries = ctcExport("<p>${sentences.joinToString(" ")}</p>", sentences, listOf(0, 2, 4))
+        val chapter = Jsoup.parse(entries.getValue("OEBPS/ch1.xhtml").toString(Charsets.UTF_8))
+        val smil = parseXmlDocument(entries.getValue("OEBPS/storyalign/MediaOverlays/chapter-0.smil"))
+        assertEquals(listOf("c1-sentence0", "c1-sentence2", "c1-sentence4"), smil.select("text").map { it.attr("src").substringAfter('#') })
+        for (id in listOf(0, 2, 4)) assertEquals(sentences[id], chapter.getElementById("c1-sentence$id")!!.text())
+        assertEquals(5, chapter.select("span[id]").size)
+    }
+
+    @Test fun ctcRepeatedSentenceUsesItsLaterOriginalOccurrence() {
+        val entries = ctcExport("<p>Yes. Between. Yes.</p>", listOf("Yes.", "Between.", "Yes."), listOf(2))
+        val chapter = Jsoup.parse(entries.getValue("OEBPS/ch1.xhtml").toString(Charsets.UTF_8))
+        assertEquals(listOf("c1-sentence0", "c1-sentence1", "c1-sentence2"), chapter.select("span[id]").map { it.id() })
+        val smil = parseXmlDocument(entries.getValue("OEBPS/storyalign/MediaOverlays/chapter-0.smil"))
+        assertEquals("c1-sentence2", smil.selectFirst("text")!!.attr("src").substringAfter('#'))
+    }
+
+    @Test fun ctcInlineTargetPreservesFormattingTextAndUniqueIds() {
+        val body = "<p>Before. Hello <em id=\"emphasis\">brave <strong>world</strong> today. Next</em> sentence.</p>"
+        val entries = ctcExport(body, listOf("Before.", "Hello brave world today.", "Next sentence."), listOf(1, 2))
+        val chapter = Jsoup.parse(entries.getValue("OEBPS/ch1.xhtml").toString(Charsets.UTF_8))
+        assertEquals("Hello brave world today.", chapter.getElementById("c1-sentence1")!!.text())
+        assertEquals("Next sentence.", chapter.getElementById("c1-sentence2")!!.text())
+        assertEquals("world", chapter.selectFirst("#c1-sentence1 em strong")!!.text())
+        assertEquals(Jsoup.parse(body).body().wholeText(), chapter.body().wholeText())
+        assertEquals(chapter.select("[id]").size, chapter.select("[id]").map { it.id() }.toSet().size)
+    }
+
+    @Test(expected = IllegalStateException::class)
+    fun ctcRejectsAnAcceptedSentenceWithoutADomTarget() {
+        ctcExport("<p>Actual sentence.</p>", listOf("Missing sentence."), listOf(0))
+    }
+
+    @Test(expected = IllegalStateException::class)
+    fun ctcRejectsDuplicateDomTargets() {
+        ctcExport("<p id=\"c1-sentence0\">Actual sentence.</p>", listOf("Actual sentence."), listOf(0))
+    }
+
+    private fun ctcExport(body: String, sentences: List<String>, accepted: List<Int>): Map<String, ByteArray> {
+        val source = EpubZip.from(ByteArrayInputStream(sampleEpub("<html xmlns=\"http://www.w3.org/1999/xhtml\"><body>$body</body></html>")))
+        val document = EpubParser.parse(source)
+        val item = document.spineOrderedManifest.first().copy(xhtmlSentences = sentences)
+        val audio = AudioFile(0, 0.0, 100.0, "storyalign/Audio/0000.m4a")
+        val chapter = AlignedChapter(item, alignedSentences = accepted.map { id ->
+            AlignedSentence(sentences[id], id, SentenceRange(id, id * 2.0, id * 2.0 + 1, audio, emptyList()))
+        })
+        val output = ReadAloudEpubBuilder.build(source, document, listOf(chapter),
+            listOf(ReadAloudEpubBuilder.AudioClipFile("0000.m4a", ByteArray(64))), "2026-10-20T00:00:00Z",
+            fullSourceTagging = true)
+        return EpubZip.from(ByteArrayInputStream(output)).entries()
+    }
+
+    private fun sampleEpub(chapterXhtml: String? = null): ByteArray {
         val entries = linkedMapOf(
             "mimetype" to "application/epub+zip",
             "META-INF/container.xml" to """
@@ -145,10 +216,10 @@ class ReadAloudEpubBuilderTest {
                   <spine><itemref idref="c1"/></spine>
                 </package>
             """.trimIndent(),
-            "OEBPS/ch1.xhtml" to """
+            "OEBPS/ch1.xhtml" to (chapterXhtml ?: """
                 <?xml version="1.0"?>
                 <html xmlns="http://www.w3.org/1999/xhtml"><body><p>The quick brown fox. It jumped high.</p></body></html>
-            """.trimIndent(),
+            """.trimIndent()),
         )
         val bos = ByteArrayOutputStream()
         ZipOutputStream(bos).use { zos ->

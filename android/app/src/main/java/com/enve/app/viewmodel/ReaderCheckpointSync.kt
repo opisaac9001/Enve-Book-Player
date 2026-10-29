@@ -1,7 +1,9 @@
 package com.enve.app.viewmodel
 
 import com.enve.core.reader.EpubBridgeCheckpoint
+import org.readium.r2.shared.publication.Locator
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -98,4 +100,48 @@ internal class FoliateCheckpointSync {
             }
         }
     }
+}
+
+internal data class ReadiumCheckpointCapture(val locator: Locator, val checkpoint: EpubBridgeCheckpoint)
+
+internal class HeldReadingPosition {
+    var generation = 0L
+        private set
+    private var observed: Locator? = null
+    private var captured: ReadiumCheckpointCapture? = null
+
+    fun observe(locator: Locator): Long {
+        if (observed != locator) captured = null
+        observed = locator
+        return invalidate()
+    }
+
+    fun invalidate(): Long = ++generation
+
+    fun hold(capture: ReadiumCheckpointCapture, since: Long): Boolean {
+        if (since != generation) return false
+        captured = capture
+        generation++
+        return true
+    }
+
+    fun current(): ReadiumCheckpointCapture? = captured
+    fun locator(): Locator? = captured?.locator ?: observed
+
+    fun retire() {
+        observed = null
+        captured = null
+        invalidate()
+    }
+}
+
+internal const val FINAL_READING_CAPTURE_TIMEOUT_MS = 400L
+
+internal suspend fun awaitStartedReadingCapture(capture: Job?) {
+    if (capture == null) return
+    val completed = withTimeoutOrNull(FINAL_READING_CAPTURE_TIMEOUT_MS) {
+        capture.join()
+        true
+    } == true
+    if (!completed) capture.cancel()
 }

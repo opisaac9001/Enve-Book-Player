@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -49,6 +50,7 @@ import com.enve.hearth.design.CoverTile
 import com.enve.hearth.design.Hearth
 import com.enve.hearth.design.HearthText
 import com.enve.hearth.design.LocalMantelInset
+import com.enve.hearth.design.coverAspectRatio
 import com.enve.hearth.design.hearthDisplay
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
@@ -151,38 +153,40 @@ private fun GridCoverCell(
                 onLongClick = { if (!selectionMode) menu = true },
             ),
     ) {
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .then(if (selected) Modifier.border(2.dp, palette.ember, RoundedCornerShape(Hearth.Radius.Inner)) else Modifier),
-        ) {
-            CoverTile(
-                model = book.coverUrl,
-                mediaType = book.mediaType,
-                modifier = Modifier.fillMaxWidth(),
-                contentDescription = book.title,
-                progress = com.enve.hearth.design.HearthFormat.progress(book),
-                isFinished = book.isFinished,
-            )
-            if (selected) {
-                Icon(
-                    Icons.Filled.CheckCircle, contentDescription = "Selected", tint = palette.ember,
-                    modifier = Modifier.align(Alignment.TopStart).padding(6.dp).size(22.dp),
+        Box(Modifier.fillMaxWidth().aspectRatio(1f), contentAlignment = Alignment.BottomCenter) {
+            Box(
+                Modifier
+                    .fillMaxWidth(coverAspectRatio(book.mediaType))
+                    .then(if (selected) Modifier.border(2.dp, palette.ember, RoundedCornerShape(Hearth.Radius.Inner)) else Modifier),
+            ) {
+                CoverTile(
+                    model = book.coverUrl,
+                    mediaType = book.mediaType,
+                    modifier = Modifier.fillMaxWidth(),
+                    contentDescription = book.title,
+                    progress = com.enve.hearth.design.HearthFormat.progress(book),
+                    isFinished = book.isFinished,
                 )
-            }
-            if (book.isDownloaded) {
-                Icon(
-                    Icons.Outlined.Download,
-                    contentDescription = "Downloaded",
-                    tint = palette.text,
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(6.dp)
-                        .clip(CircleShape)
-                        .background(palette.bg.copy(alpha = 0.78f))
-                        .padding(5.dp)
-                        .size(16.dp),
-                )
+                if (selected) {
+                    Icon(
+                        Icons.Filled.CheckCircle, contentDescription = "Selected", tint = palette.ember,
+                        modifier = Modifier.align(Alignment.TopStart).padding(6.dp).size(22.dp),
+                    )
+                }
+                if (book.isDownloaded) {
+                    Icon(
+                        Icons.Outlined.Download,
+                        contentDescription = "Downloaded",
+                        tint = palette.text,
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(6.dp)
+                            .clip(CircleShape)
+                            .background(palette.bg.copy(alpha = 0.78f))
+                            .padding(5.dp)
+                            .size(16.dp),
+                    )
+                }
             }
         }
         Spacer(Modifier.size(6.dp))

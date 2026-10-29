@@ -35,6 +35,7 @@ kotlin {
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
 
+    implementation("com.google.zxing:core:3.5.4")
     implementation(project(":core"))
     implementation(project(":engine-api"))
 

@@ -39,10 +39,8 @@ struct HardcoverGoalScreen: View {
         .task { await hardcoverLoadGoal() }
         .sheet(isPresented: $editorShown) {
             HardcoverGoalEditorSheet(currentTarget: goal?.target ?? 12) { target in
-                Task {
-                    try? await HardcoverService.shared.setReadingGoal(target: target)
-                    await hardcoverLoadGoal()
-                }
+                try await HardcoverService.shared.setReadingGoal(target: target)
+                await hardcoverLoadGoal()
             }
         }
     }
@@ -150,14 +148,16 @@ struct HardcoverGoalScreen: View {
 
 struct HardcoverGoalEditorSheet: View {
     let currentTarget: Int
-    let onSave: (Int) -> Void
+    let onSave: (Int) async throws -> Void
 
     @Environment(\.hearth) private var hearth
     @Environment(\.dismiss) private var dismiss
 
     @State private var targetInput: String
+    @State private var saveError: String?
+    @State private var isSaving = false
 
-    init(currentTarget: Int, onSave: @escaping (Int) -> Void) {
+    init(currentTarget: Int, onSave: @escaping (Int) async throws -> Void) {
         self.currentTarget = currentTarget
         self.onSave = onSave
         _targetInput = State(initialValue: "\(currentTarget)")
@@ -204,13 +204,23 @@ struct HardcoverGoalEditorSheet: View {
 
             EmberButton(title: "Keep this goal", systemImage: nil, tint: nil) {
                 guard let target else { return }
-                onSave(target)
-                PlatformHaptics.notification(.success)
-                dismiss()
+                isSaving = true
+                saveError = nil
+                Task {
+                    do {
+                        try await onSave(target)
+                        PlatformHaptics.notification(.success)
+                        dismiss()
+                    } catch {
+                        saveError = error.localizedDescription
+                    }
+                    isSaving = false
+                }
             }
-            .disabled(target == nil)
+            .disabled(target == nil || isSaving)
             .opacity(target == nil ? 0.5 : 1)
 
+            if let saveError { SourcesErrorText(message: saveError) }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 24)

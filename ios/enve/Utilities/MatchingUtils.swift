@@ -368,7 +368,7 @@ enum MatchingUtils {
         return numbers
     }
 
-    private static func calculateDurationScore(
+    static func calculateDurationScore(
         localDurationSeconds: TimeInterval,
         audibleDurationSeconds: TimeInterval
     ) -> Double {
@@ -397,7 +397,7 @@ enum MatchingUtils {
         return Swift.abs(audibleSeconds - localSeconds) / 60.0
     }
 
-    private static func calculateTitleScore(queryTitle: String, bookTitle: String) -> Double {
+    static func calculateTitleScore(queryTitle: String, bookTitle: String) -> Double {
         let queryHasSubtitle = hasSubtitle(queryTitle)
 
         let scoreWithSubtitle = calculateTitleScoreInternal(
@@ -437,7 +437,7 @@ enum MatchingUtils {
         return title.contains(":") || title.contains(" - ")
     }
 
-    private static func calculateAuthorScore(queryAuthor: String, bookAuthors: [String]) -> Double {
+    static func calculateAuthorScore(queryAuthor: String, bookAuthors: [String]) -> Double {
         let normalizedQueryAuthor = cleanAuthorForCompares(queryAuthor)
 
         if normalizedQueryAuthor.isEmpty {

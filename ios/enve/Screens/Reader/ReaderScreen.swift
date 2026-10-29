@@ -11,11 +11,19 @@ struct ReaderScreen: View {
     private let profileSession: ProfileSession
     private var engine: EnveEngine { profileSession.engine }
     @StateObject private var model: ClassicReaderModel
-    @Environment(\.hearth) private var hearth
+    @Environment(\.hearth) private var inheritedHearth
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.shellNavigationStyle) private var shellNavigationStyle
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private let hinge = HingeStateStore.shared
 
+    @State private var canvasSize: CGSize = .zero
+    @State private var canvasFold: FoldLine?
+    @State private var sideColumn: SideColumn?
     @State private var chromeVisible = false
     @State private var tray: ReaderTray?
     @State private var ambient: SwiftUI.Color = Hearth.accent
@@ -69,16 +77,63 @@ struct ReaderScreen: View {
         )
     }
 
+    private var hearth: HearthPalette {
+        let scheme = model.preferredColorScheme ?? colorScheme
+        guard inheritedHearth.isInk != (scheme == .dark) else { return inheritedHearth }
+        return Hearth.palette(
+            for: scheme,
+            oled: Hearth.oledEnabled,
+            highContrast: ThemeManager.shared.isVisionMode || colorSchemeContrast == .increased,
+            reduceTransparency: reduceTransparency
+        )
+    }
+
     var body: some View {
         readerLifecycle
+            .environment(\.hearth, hearth)
+            .environment(\.colorScheme, model.preferredColorScheme ?? colorScheme)
     }
 
     private var readerCanvas: some View {
-        ZStack {
+        let lectern = lecternHalves
+        // The page keeps one place in the tree whatever the pose, so folding the phone resizes the engine's
+        // view above the controls instead of rebuilding it and losing its position.
+        return ZStack {
             backdrop
-            content
-            readerDimmer
+            if let lectern {
+                HearthSpineShadow(axis: .horizontal, depth: 1)
+                    .frame(height: 84)
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .offset(y: lectern.foldCenter - 42)
+                    .ignoresSafeArea(edges: .horizontal)
+            }
+            ZStack {
+                content
+                if showsSpine {
+                    HearthSpineShadow(axis: .vertical, depth: hinge.spineDepth(flat: 0.45))
+                        .ignoresSafeArea()
+                        .transition(.opacity)
+                }
+                readerDimmer
+            }
+            .frame(height: lectern?.upperHeight)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
+        .onGeometryChange(for: ReaderCanvasGeometry.self) {
+            ReaderCanvasGeometry(size: $0.size, column: $0.hearthSideColumn(), fold: $0.hearthFold())
+        } action: { geometry in
+            canvasSize = geometry.size
+            sideColumn = geometry.column
+            var fold = geometry.fold
+            #if DEBUG
+            fold = fold ?? hinge.debugFold(canvas: geometry.size)
+            #endif
+            canvasFold = fold
+        }
+        .onChange(of: showsSpine, initial: true) { _, spread in
+            model.setSpreadRequested(spread)
+        }
+        .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: showsSpine)
         .accessibilityIdentifier("reader-screen")
         #if DEBUG
         .overlay(alignment: .topLeading) {
@@ -97,15 +152,24 @@ struct ReaderScreen: View {
             }
         }
         .overlay(alignment: .bottom) {
-            if chromeVisible, model.state.isReady {
+            if let lectern = lecternHalves {
+                lecternPanel
+                    .frame(height: lectern.lowerHeight)
+            } else if chromeVisible, model.state.isReady {
                 bottomVeil
+                    .transition(.opacity)
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            if chromeVisible, model.state.isReady, let column = chromeColumn {
+                sideChrome(column: column)
                     .transition(.opacity)
             }
         }
         .overlay(alignment: .bottom) {
             if model.pendingSelection == nil || model.isReadAloudMode {
                 floatingPills
-                    .padding(.bottom, chromeVisible ? 172 : 36)
+                    .padding(.bottom, floatingPillsInset)
             }
         }
         .overlay(alignment: .top) {
@@ -113,7 +177,7 @@ struct ReaderScreen: View {
                 ReaderTogetherBanner {
                     Task { await model.stopReadTogether() }
                 }
-                .padding(.top, chromeVisible ? 64 : 8)
+                .padding(.top, (chromeVisible ? 64 : 8) + topChromeClearance)
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
@@ -124,7 +188,7 @@ struct ReaderScreen: View {
         }
         .overlay {
             VolumeButtonNavigationCapture(
-                isEnabled: model.appearance.volumeButtonsTurnPages,
+                isEnabled: model.appearance.volumeButtonsTurnPages && model.presentedIllustration == nil,
                 onIncrease: { Task { await model.pageForward() } },
                 onDecrease: { Task { await model.pageBackward() } }
             )
@@ -132,13 +196,15 @@ struct ReaderScreen: View {
             .opacity(0.01)
         }
         .overlay {
-            ReaderKeyboardNavigationCapture(
-                isRightToLeft: model.isRightToLeftPageProgression,
-                onForward: { Task { await model.pageForward() } },
-                onBackward: { Task { await model.pageBackward() } }
-            )
-            .frame(width: 1, height: 1)
-            .opacity(0.01)
+            if model.presentedIllustration == nil {
+                ReaderKeyboardNavigationCapture(
+                    isRightToLeft: model.isRightToLeftPageProgression,
+                    onForward: { Task { await model.pageForward() } },
+                    onBackward: { Task { await model.pageBackward() } }
+                )
+                .frame(width: 1, height: 1)
+                .opacity(0.01)
+            }
         }
         .overlay {
             if showsFullHeightTapZones {
@@ -162,8 +228,15 @@ struct ReaderScreen: View {
         .overlay(alignment: .top) {
             if let bookmarkToast {
                 ReaderToast(message: bookmarkToast)
-                    .padding(.top, 72)
+                    .padding(.top, 72 + topChromeClearance)
                     .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .overlay(alignment: .top) {
+            if let preview = model.pinchResizePreview {
+                ReaderPinchResizeBadge(fontSize: preview)
+                    .padding(.top, 72 + topChromeClearance)
+                    .transition(reduceMotion ? .opacity : .scale(scale: 0.94).combined(with: .opacity))
             }
         }
         .overlay {
@@ -202,6 +275,7 @@ struct ReaderScreen: View {
         .animation(.smooth(duration: 0.25), value: ttsControlsVisible)
         .animation(.smooth(duration: 0.28), value: showsNextSeriesPrompt)
         .animation(.smooth(duration: 0.3), value: restReminder.isDue)
+        .animation(.smooth(duration: 0.2), value: model.pinchResizePreview != nil)
     }
 
     private var readerNavigation: some View {
@@ -269,6 +343,20 @@ struct ReaderScreen: View {
         .fullScreenCover(isPresented: $showingLibrarian) {
             LibrarianChatScreen(book: book, currentEbookProgress: model.currentProgress ?? book.canonicalEbookProgress)
                 .enveEnvironment()
+        }
+        .fullScreenCover(
+            item: Binding(
+                get: { model.presentedIllustration },
+                set: { if $0 == nil { model.dismissIllustration() } }
+            )
+        ) { [model] illustration in
+            ReaderImageViewer(
+                illustration: illustration,
+                backdrop: model.effectiveAppearance.theme == .eink ? .white : .black,
+                onDismiss: { model.dismissIllustration() }
+            )
+            .preferredColorScheme(model.preferredColorScheme)
+            .enveEnvironment()
         }
         .alert(
             "The librarian is away",
@@ -379,12 +467,6 @@ struct ReaderScreen: View {
                 hideTTSControls()
             }
         }
-        .onReceive(model.ttsService.$enhancedDownloadState) { state in
-            #if DEBUG
-            guard debugRoute == "ttsplayback", state == .ready, model.state.isReady else { return }
-            startTTSPlaybackFixture()
-            #endif
-        }
         .onReceive(model.ttsService.$kokoroDownloadState) { state in
             #if DEBUG
             guard debugRoute == "kokoroplayback", state == .ready, model.state.isReady else { return }
@@ -392,7 +474,9 @@ struct ReaderScreen: View {
             #endif
         }
         .preferredColorScheme(model.preferredColorScheme)
-        .statusBarHidden(!chromeVisible)
+        // On a folding phone the status bar's column is where the chrome stands, and hiding it would reflow
+        // the pages every time the chrome toggles.
+        .statusBarHidden(!chromeVisible && !hinge.isKnown)
     }
 
     private var readerLifecycle: some View {
@@ -440,23 +524,18 @@ struct ReaderScreen: View {
         }
         .onChange(of: tray) { _, presented in
             guard presented == nil,
-                model.ttsService.isPlaying || model.ttsService.isPaused
+                !chromeVisible,
+                isTTSActive
             else { return }
-            withAnimation(.smooth(duration: 0.35)) {
-                chromeVisible = false
-            }
             showTTSControls(autoHide: true)
         }
         .onChange(of: model.state.isReady) { _, ready in
             guard ready else { return }
             #if DEBUG
             if [
-                "ttsvoices", "ttsdownload", "kokorodownload",
+                "ttsvoices", "kokorodownload",
             ].contains(debugRoute) {
                 tray = .tts
-            }
-            if debugRoute == "ttsplayback", model.ttsService.enhancedDownloadState == .ready {
-                startTTSPlaybackFixture()
             }
             if debugRoute == "kokoroplayback", model.ttsService.kokoroDownloadState == .ready {
                 startTTSPlaybackFixture()
@@ -604,47 +683,56 @@ struct ReaderScreen: View {
     @ViewBuilder
     private var content: some View {
         switch model.state {
-        case .loading:
-            loadingView
-        case .readyEPUB, .readyFoliate:
-            if let adapter = model.activeReaderEngineAdapter {
-                ZStack {
-                    ReaderEngineControllerBridge(
-                        adapter: adapter,
-                        onHighlight: {
-                            withLiveSelection {
-                                model.annotationController.addAnnotationFromSelection(style: .highlight, colorHex: inkColor)
-                                PlatformHaptics.impact(.light)
-                            }
-                        },
-                        onAnnotate: {
-                            withLiveSelection {
-                                if let selection = adapter.currentSelection {
-                                    model.pendingSelection = selection
-                                    noteDraft = ReaderNoteDraft(text: selection.locator.text.highlight ?? "")
+        case .loading, .readyEPUB, .readyFoliate:
+            ZStack {
+                if let adapter = model.activeReaderEngineAdapter {
+                    ZStack {
+                        ReaderEngineControllerBridge(
+                            adapter: adapter,
+                            onHighlight: {
+                                withLiveSelection {
+                                    model.annotationController.addAnnotationFromSelection(style: .highlight, colorHex: inkColor)
+                                    PlatformHaptics.impact(.light)
                                 }
-                            }
-                        },
-                        onSelectionDismiss: {
-                            dismissPendingSelection()
-                        },
-                        onDoubleTap: { point in
-                            model.doubleTapHandler?(point)
-                        },
-                        isDoubleTapEnabled: model.isReadAloudMode
-                            || model.ttsService.isPlaying
-                            || model.ttsService.isPaused,
-                        isScrollMode: model.appearance.scrollEnabled,
-                        isSelectionActive: model.pendingSelection != nil
-                    )
-                    .ignoresSafeArea(edges: model.castingCanvasSize == nil ? .vertical : [])
-                    .frame(width: model.castingCanvasSize?.width, height: model.castingCanvasSize?.height)
-                    .scaleEffect(model.castingCanvasSize == nil ? 1 : 1.0 / 3.0)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            },
+                            onAnnotate: {
+                                withLiveSelection {
+                                    if let selection = adapter.currentSelection {
+                                        model.pendingSelection = selection
+                                        noteDraft = ReaderNoteDraft(text: selection.locator.text.highlight ?? "")
+                                    }
+                                }
+                            },
+                            onSelectionDismiss: {
+                                dismissPendingSelection()
+                            },
+                            onDoubleTap: { point in
+                                model.doubleTapHandler?(point)
+                            },
+                            isDoubleTapEnabled: model.isReadAloudMode
+                                || model.ttsService.isPlaying
+                                || model.ttsService.isPaused,
+                            isScrollMode: model.appearance.scrollEnabled,
+                            isSelectionActive: model.pendingSelection != nil,
+                            isPinchResizeEnabled: isPinchResizeEnabled,
+                            onPinchResize: { model.handlePinchResize($0) }
+                        )
+                        .id(ObjectIdentifier(adapter.viewController))
+                        .allowsHitTesting(model.state.isReady && !model.readerLayoutInProgress)
+                        .ignoresSafeArea(edges: model.castingCanvasSize == nil ? .vertical : [])
+                        .frame(width: model.castingCanvasSize?.width, height: model.castingCanvasSize?.height)
+                        .scaleEffect(model.castingCanvasSize == nil ? 1 : 1.0 / 3.0)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                    if model.isReadTogetherActive {
-                        ReaderCastingCover(model: model, bookTitle: book.title)
+                        if model.state.isReady, model.isReadTogetherActive {
+                            ReaderCastingCover(model: model, bookTitle: book.title)
+                        }
                     }
+                }
+                if !model.state.isReady {
+                    loadingView
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(hearth.bg)
                 }
             }
         case .readyPDF:
@@ -761,25 +849,60 @@ struct ReaderScreen: View {
                     )
                 }
                 .frame(minHeight: 44)
+                .frame(maxWidth: 560)
                 .padding(.horizontal, 76)
-            HStack {
-                Spacer()
-                ReaderCloseControl { dismiss in
-                    GlyphButton(systemImage: "xmark", label: "Close") {
-                        Task { @MainActor in
-                            await model.saveProgressResolvingVisibleOverlay()
-                            dismiss()
-                        }
-                    }
+            if chromeColumn == nil {
+                HStack {
+                    Spacer()
+                    closeButton
                 }
+                .padding(.trailing, 20)
             }
-            .padding(.trailing, 20)
         }
-        .padding(.top, 8)
+        .padding(.top, 8 + topChromeClearance)
         .frame(maxWidth: .infinity)
     }
 
-    private var bottomVeil: some View {
+    private var closeButton: some View {
+        ReaderCloseControl { dismiss in
+            GlyphButton(systemImage: "xmark", label: "Close") {
+                Task { @MainActor in
+                    await model.saveProgressResolvingVisibleOverlay()
+                    dismiss()
+                }
+            }
+        }
+    }
+
+    // On a folding phone's outer display, and open sideways, the reader's buttons stand in the system's side
+    // column like any toolbar: close at the top, the tools at the bottom where the thumb rests.
+    private func sideChrome(column: SideColumn) -> some View {
+        VStack(spacing: 10) {
+            closeButton
+            Spacer(minLength: 12)
+            toolButtons(spacing: 10)
+        }
+        .padding(.top, column.statusBarBottom + 8)
+        .padding(.bottom, 14)
+        .frame(width: column.width)
+        .frame(maxHeight: .infinity)
+        .offset(x: column.width)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("reader-side-chrome")
+    }
+
+    // The side column exists on the outer display and on the open display held sideways; the lectern keeps
+    // its controls on the flat half instead.
+    private var chromeColumn: SideColumn? {
+        guard hinge.isKnown, !isLectern, !dynamicTypeSize.isAccessibilitySize else { return nil }
+        return sideColumn
+    }
+
+    private var topChromeClearance: CGFloat {
+        chromeColumn?.topClearance ?? 0
+    }
+
+    private var bottomControls: some View {
         VStack(spacing: 12) {
             if isComicReader {
                 comicPositionControls
@@ -811,6 +934,9 @@ struct ReaderScreen: View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
             readAloudBar
+            if isTTSActive {
+                ReaderTTSControls(tts: model.ttsService, onSpeechSettings: { tray = .tts })
+            }
             if let linkedAudiobook {
                 HStack(spacing: 10) {
                     HStack(spacing: 5) {
@@ -825,27 +951,103 @@ struct ReaderScreen: View {
                     ReaderListenAlongBar(ebook: book, audiobook: linkedAudiobook, model: model)
                 }
             }
-            HStack(spacing: 18) {
-                GlyphButton(systemImage: "list.bullet", label: "Contents") { tray = .contents }
-                if showsAppearance {
-                    GlyphButton(
-                        systemImage: isComicReader ? "slider.horizontal.3" : "textformat.size",
-                        label: isComicReader ? "Comic settings" : "Appearance"
-                    ) { tray = .appearance }
-                }
-                if isEPUB {
-                    GlyphButton(systemImage: "magnifyingglass", label: "Search") { tray = .search }
-                }
-                if isEPUB || model.hasMediaOverlay {
-                    moreMenu
-                }
+            if chromeColumn == nil {
+                toolButtons(spacing: 18)
+                    .padding(.top, 2)
             }
-            .padding(.top, 2)
         }
-        .padding(.top, 30)
+        // The rail and controls stay a readable, reachable width on wide canvases; the veil itself spans the window.
+        .frame(maxWidth: 720)
+    }
+
+    private func toolButtons(spacing: CGFloat) -> some View {
+        let layout = chromeColumn == nil ? AnyLayout(HStackLayout(spacing: spacing)) : AnyLayout(VStackLayout(spacing: spacing))
+        return layout {
+            GlyphButton(systemImage: "list.bullet", label: "Contents") { tray = .contents }
+            if showsAppearance {
+                GlyphButton(
+                    systemImage: isComicReader ? "slider.horizontal.3" : "textformat.size",
+                    label: isComicReader ? "Comic settings" : "Appearance"
+                ) { tray = .appearance }
+            }
+            if isEPUB {
+                GlyphButton(systemImage: "magnifyingglass", label: "Search") { tray = .search }
+            }
+            if isEPUB || model.hasMediaOverlay {
+                moreMenu
+            }
+        }
+    }
+
+    private var bottomVeil: some View {
+        bottomControls
+            .padding(.top, 30)
+            .padding(.bottom, 14)
+            .frame(maxWidth: .infinity)
+            .background { bottomVeilBackground }
+    }
+
+    // The flat half of a device propped open on a table keeps the controls in reach the whole time, with page
+    // turns first so the upright page never has to be reached for.
+    private var lecternPanel: some View {
+        VStack(spacing: 14) {
+            lecternPageTurns
+            bottomControls
+        }
+        .padding(.top, 18)
         .padding(.bottom, 14)
-        .frame(maxWidth: .infinity)
-        .background { bottomVeilBackground }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background {
+            Color(model.effectiveAppearance.shellBackgroundColor)
+                .ignoresSafeArea(edges: [.horizontal, .bottom])
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Reading controls")
+    }
+
+    private var showsSpine: Bool {
+        isEPUB
+            && ReaderSpreadPolicy.showsSpine(
+                canvas: canvasSize,
+                columnMode: model.appearance.columnMode,
+                scrollEnabled: model.appearance.scrollEnabled,
+                isFixedLayout: model.isFixedLayoutBook,
+                usesAccessibilityType: dynamicTypeSize.isAccessibilitySize
+            )
+    }
+
+    // The left button always turns towards the left page, so a right-to-left book swaps the labels, not the glyphs.
+    private var lecternPageTurns: some View {
+        let isRightToLeft = model.isRightToLeftPageProgression
+        return HStack(spacing: 28) {
+            GlyphButton(systemImage: "chevron.left", size: 56, glyphSize: 19, label: isRightToLeft ? "Next page" : "Previous page") {
+                turnPageFromLeftEdge()
+            }
+            GlyphButton(systemImage: "chevron.right", size: 56, glyphSize: 19, label: isRightToLeft ? "Previous page" : "Next page") {
+                turnPageFromRightEdge()
+            }
+        }
+        .accessibilityIdentifier("lectern-page-turns")
+    }
+
+    private var lecternHalves: FoldLine.Halves? {
+        guard model.state.isReady, !dynamicTypeSize.isAccessibilitySize else { return nil }
+        return ReaderSpreadPolicy.lecternHalves(canvas: canvasSize, pose: hinge.pose(for: canvasSize), fold: canvasFold)
+    }
+
+    private var isLectern: Bool { lecternHalves != nil }
+
+    // On the lectern the pills sit at the foot of the page rather than over the controls.
+    private var floatingPillsInset: CGFloat {
+        if let lectern = lecternHalves {
+            return canvasSize.height - lectern.upperHeight + 12
+        }
+        guard chromeVisible else { return 36 }
+        return isTTSActive ? 228 : 172
+    }
+
+    private var isTTSActive: Bool {
+        model.ttsService.isPlaying || model.ttsService.isPaused
     }
 
     @ViewBuilder
@@ -872,7 +1074,7 @@ struct ReaderScreen: View {
                 startPoint: .top,
                 endPoint: .bottom
             )
-            .ignoresSafeArea(edges: .bottom)
+            .ignoresSafeArea(edges: [.horizontal, .bottom])
             .allowsHitTesting(false)
         }
     }
@@ -904,9 +1106,12 @@ struct ReaderScreen: View {
         }
     }
 
-    @ViewBuilder
-    private var readAloudBar: some View {
-        if model.isReadAloudMode, let player = model.overlayPlayer {
+    private var readAloudBar: AnyView {
+        // Keep the inactive overlay's generic tree off the reader's main-thread stack.
+        guard model.isReadAloudMode, let player = model.overlayPlayer else {
+            return AnyView(EmptyView())
+        }
+        return AnyView(
             ReaderReadAloudBar(
                 model: model,
                 player: player,
@@ -916,7 +1121,7 @@ struct ReaderScreen: View {
             )
             .padding(.horizontal, 16)
             .transition(.move(edge: .bottom).combined(with: .opacity))
-        }
+        )
     }
 
     private var moreMenu: some View {
@@ -996,6 +1201,10 @@ struct ReaderScreen: View {
     private var isComicReader: Bool {
         if case .readyComic = model.state { return true }
         return model.isComicBook && !model.comicPages.isEmpty
+    }
+
+    private var isPinchResizeEnabled: Bool {
+        isEPUB && !model.isFixedLayoutBook && model.castingCanvasSize == nil
     }
 
     private var showsAppearance: Bool {
@@ -1131,13 +1340,13 @@ struct ReaderScreen: View {
                 )
                 .anchorPreference(key: ReaderNarrationControlsBoundsKey.self, value: .bounds) { $0 }
             }
-            if !chromeVisible,
-                ttsControlsVisible,
-                model.ttsService.isPlaying || model.ttsService.isPaused
-            {
-                ReaderTTSPill(tts: model.ttsService) {
-                    showTTSControls(autoHide: true)
-                }
+            if !chromeVisible, !isLectern, ttsControlsVisible, isTTSActive {
+                ReaderTTSControls(
+                    tts: model.ttsService,
+                    onInteraction: { showTTSControls(autoHide: true) },
+                    onSpeechSettings: { tray = .tts },
+                    onShowReaderControls: { showReaderControls() }
+                )
             }
         }
         .animation(.smooth(duration: 0.3), value: model.isReadAloudMode)
@@ -1340,7 +1549,7 @@ struct ReaderScreen: View {
         }
 
         guard size.width > 0, model.appearance.tapEdgesTurnPages else {
-            toggleChrome()
+            handleCenterTap()
             return
         }
         let leftEdge = size.width * 0.13
@@ -1362,20 +1571,18 @@ struct ReaderScreen: View {
                 }
             }
         } else {
-            if chromeVisible {
-                toggleChrome()
-                if model.ttsService.isPlaying || model.ttsService.isPaused {
-                    showTTSControls(autoHide: true)
-                }
-            } else if model.ttsService.isPlaying || model.ttsService.isPaused {
-                if ttsControlsVisible {
-                    hideTTSControls()
-                } else {
-                    showTTSControls(autoHide: true)
-                }
-            } else {
-                toggleChrome()
+            handleCenterTap()
+        }
+    }
+
+    private func handleCenterTap() {
+        if chromeVisible {
+            toggleChrome()
+            if isTTSActive {
+                showTTSControls(autoHide: true)
             }
+        } else {
+            showReaderControls()
         }
     }
 
@@ -1424,8 +1631,16 @@ struct ReaderScreen: View {
 
     private func toggleChrome() {
         initialChromeHideTask?.cancel()
-        withAnimation(.smooth(duration: 0.35)) {
+        withAnimation(reduceMotion ? nil : .smooth(duration: 0.35)) {
             chromeVisible.toggle()
+        }
+    }
+
+    private func showReaderControls() {
+        initialChromeHideTask?.cancel()
+        ttsControlsHideTask?.cancel()
+        withAnimation(reduceMotion ? nil : .smooth(duration: 0.35)) {
+            chromeVisible = true
         }
     }
 
@@ -1491,9 +1706,7 @@ struct ReaderScreen: View {
 
     private func showDetailedReadAloudControls() {
         hideReadAloudControls()
-        withAnimation(.smooth(duration: 0.35)) {
-            chromeVisible = true
-        }
+        showReaderControls()
     }
 
     private var restPromptColors: ReaderRestPrompt.Colors {
@@ -1694,6 +1907,12 @@ struct ReaderScreen: View {
         guard let ext = book.ebookFileURL?.pathExtension.lowercased() else { return false }
         return ["cbz", "cbr", "cb7", "cbt"].contains(ext)
     }
+}
+
+private nonisolated struct ReaderCanvasGeometry: Equatable, Sendable {
+    var size: CGSize
+    var column: SideColumn?
+    var fold: FoldLine?
 }
 
 // Keep dismiss out of the sheet presenter to avoid an iOS 17 update loop.
@@ -2446,40 +2665,67 @@ private struct ReaderNarratePill: View {
     }
 }
 
-private struct ReaderTTSPill: View {
+private struct ReaderTTSControls: View {
     @ObservedObject var tts: EbookTTSService
-    let onInteraction: () -> Void
+    var onInteraction: () -> Void = {}
+    let onSpeechSettings: () -> Void
+    var onShowReaderControls: (() -> Void)?
 
     @Environment(\.hearth) private var hearth
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var isSpeaking: Bool { tts.isPlaying && !tts.isPaused }
+
+    private var rateText: String {
+        "\(Double(tts.rate).formatted(.number.precision(.fractionLength(0...2))))×"
+    }
 
     var body: some View {
         if tts.isPlaying || tts.isPaused {
-            HStack(spacing: 6) {
-                Button {
+            HStack(spacing: 2) {
+                control("backward.fill", label: "Previous paragraph") {
+                    onInteraction()
+                    tts.previousParagraph()
+                }
+                control(
+                    isSpeaking ? "pause.fill" : "play.fill",
+                    label: isSpeaking ? "Pause reading aloud" : "Resume reading aloud",
+                    primary: true
+                ) {
                     onInteraction()
                     tts.togglePlayPause()
-                } label: {
-                    Image(systemName: tts.isPlaying && !tts.isPaused ? "pause.fill" : "play.fill")
-                        .font(.hearthUI(15, weight: .semibold))
-                        .foregroundStyle(hearth.text)
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
                 }
-                .accessibilityLabel(tts.isPlaying && !tts.isPaused ? "Pause reading aloud" : "Resume reading aloud")
-                Overline(tts.isPaused ? "Paused" : "Reading to you", color: hearth.text)
-                Button {
+                control("forward.fill", label: "Next paragraph") {
                     onInteraction()
-                    tts.stop()
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.hearthUI(13, weight: .semibold))
-                        .foregroundStyle(hearth.textSecondary)
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
+                    tts.nextParagraph()
                 }
-                .accessibilityLabel("Stop reading aloud")
+                Rectangle()
+                    .fill(hearth.hairline)
+                    .frame(width: 1, height: 22)
+                    .accessibilityHidden(true)
+                Button(action: onSpeechSettings) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "person.wave.2")
+                        Text(rateText)
+                            .monospacedDigit()
+                            .lineLimit(1)
+                    }
+                    .font(.hearthUI(13, weight: .semibold))
+                    .foregroundStyle(hearth.textSecondary)
+                    .padding(.horizontal, 8)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(PressableStyle())
+                .accessibilityLabel("Voice and speed")
+                .accessibilityValue(rateText)
+                if let onShowReaderControls {
+                    control("chevron.up", label: "Show reader controls", action: onShowReaderControls)
+                }
             }
-            .padding(.horizontal, 10)
+            .padding(.horizontal, 8)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("reader-tts-controls")
             .background {
                 HearthChromeBackground(
                     shape: .capsule,
@@ -2489,7 +2735,24 @@ private struct ReaderTTSPill: View {
                     shadow: true
                 )
             }
-            .transition(.move(edge: .bottom).combined(with: .opacity))
+            .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
         }
+    }
+
+    private func control(
+        _ systemImage: String,
+        label: String,
+        primary: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.hearthUI(primary ? 15 : 13, weight: .semibold))
+                .foregroundStyle(primary ? hearth.text : hearth.textSecondary)
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(PressableStyle())
+        .accessibilityLabel(label)
     }
 }

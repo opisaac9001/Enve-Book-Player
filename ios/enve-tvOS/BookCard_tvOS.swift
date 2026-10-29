@@ -52,34 +52,11 @@ struct BookCard_tvOS: View {
     }
 
     private var coverImage: some View {
-        Group {
-            if let url = book.coverURL {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .empty:
-                        placeholder
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                    case .failure:
-                        placeholder
-                    @unknown default:
-                        placeholder
-                    }
-                }
-            } else {
-                placeholder
-            }
-        }
-    }
-
-    private var placeholder: some View {
-        ZStack {
-            Color.secondary.opacity(0.3)
-            Image(systemName: book.mediaType.icon)
-                .font(.system(size: width * 0.3))
-                .foregroundStyle(.secondary)
-        }
+        CachedAsyncCoverImage(
+            url: book.coverURL,
+            fallbackColor: "Blue",
+            headers: CachedAsyncCoverImage.authHeaders(for: book),
+            book: book
+        )
     }
 }

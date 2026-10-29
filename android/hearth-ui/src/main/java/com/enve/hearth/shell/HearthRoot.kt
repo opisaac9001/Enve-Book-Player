@@ -90,6 +90,7 @@ fun HearthRoot(
     val vm: HearthShellViewModel = profileViewModel()
     val mode by vm.themeMode.collectAsStateWithLifecycle()
     val oled by vm.oled.collectAsStateWithLifecycle()
+    val paletteStyle by vm.paletteStyle.collectAsStateWithLifecycle()
     val uiTextScale by vm.uiTextScale.collectAsStateWithLifecycle()
     val reduceMotion by vm.reduceMotion.collectAsStateWithLifecycle()
     val accentHex by vm.accentHex.collectAsStateWithLifecycle()
@@ -99,11 +100,13 @@ fun HearthRoot(
     val transport by vm.transport.collectAsStateWithLifecycle()
     val currentChapter by vm.currentChapter.collectAsStateWithLifecycle()
     val preferredStartTab by vm.preferredStartTab.collectAsStateWithLifecycle()
+    val showDockBookShortcut by vm.showDockBookShortcut.collectAsStateWithLifecycle()
 
     HearthTheme(
         mode = mode,
         accent = parseHexColor(accentHex) ?: EmberAccent,
         oledEnabled = oled,
+        paletteStyle = paletteStyle,
         uiTextScale = uiTextScale,
         reduceMotion = reduceMotion,
         eink = HearthEink(einkState),
@@ -324,6 +327,7 @@ fun HearthRoot(
                     subtitle = currentChapter,
                     onOpenItem = openMantelItem,
                     onItemAction = activateMantelItem,
+                    showItemShortcut = showDockBookShortcut,
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .onSizeChanged { mantelBarHeightPx = it.height },

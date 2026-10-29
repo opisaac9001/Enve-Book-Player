@@ -16,7 +16,7 @@ struct ReaderTTSSheet: View {
         self.onStartFromCurrentPosition = onStartFromCurrentPosition
         _showingVoices = State(
             initialValue: [
-                "ttsvoices", "ttsdownload", "ttsplayback", "kokorodownload", "kokoroplayback",
+                "ttsvoices", "kokorodownload", "kokoroplayback",
             ].contains(Self.debugRoute)
         )
     }
@@ -32,12 +32,12 @@ struct ReaderTTSSheet: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("reader-tts-sheet")
         .background(hearth.bg)
         .hearthPresentationBackground()
         .task {
             switch Self.debugRoute {
-            case "ttsdownload", "ttsplayback":
-                tts.setEngineChoice(.supertonic3)
             case "kokorodownload", "kokoroplayback":
                 tts.setEngineChoice(.kokoro)
             default:
@@ -50,6 +50,13 @@ struct ReaderTTSSheet: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 Overline("Read to me")
+
+                if let message = tts.speechError {
+                    Label(message, systemImage: "exclamationmark.circle")
+                        .font(.hearthCaption)
+                        .foregroundStyle(hearth.ember)
+                        .accessibilityIdentifier("reader-tts-error")
+                }
 
                 if !tts.currentUtteranceText.isEmpty {
                     Text(tts.currentUtteranceText)
@@ -148,6 +155,7 @@ struct ReaderTTSSheet: View {
                 }
                 .buttonStyle(PressableStyle())
                 .accessibilityLabel("Choose a voice")
+                .accessibilityValue(tts.currentVoiceDisplayName)
 
                 if tts.isPlaying || tts.isPaused {
                     QuietButton(title: "Stop reading", systemImage: "stop.fill") {
@@ -223,6 +231,7 @@ private struct ReaderVoicePicker: View {
                         ) {
                             tts.setEngineChoice(engine)
                         }
+                        .accessibilityIdentifier("tts-engine-\(engine.rawValue)")
                     }
                 } header: {
                     Overline("Engine")
@@ -230,7 +239,6 @@ private struct ReaderVoicePicker: View {
                 .listRowBackground(Color.clear)
                 .listRowSeparatorTint(hearth.hairline)
 
-                modelDownloadSection(for: .supertonic3)
                 modelDownloadSection(for: .kokoro)
 
                 Section {
@@ -275,23 +283,17 @@ private struct ReaderVoicePicker: View {
                                 tts.setVoice(voice.identifier)
                             }
                         }
-                    case .supertonic3:
-                        ForEach(EnhancedTTSVoice.allCases) { voice in
+                    case .kokoro:
+                        ForEach(KokoroTTSVoice.allCases) { voice in
                             voiceRow(
                                 title: voice.displayName,
                                 subtitle: voice.detail,
-                                isSelected: tts.enhancedVoice == voice
+                                isSelected: tts.kokoroVoice == voice
                             ) {
-                                tts.setEnhancedVoice(voice)
+                                tts.setKokoroVoice(voice)
                             }
+                            .accessibilityIdentifier("kokoro-voice-\(voice.rawValue)")
                         }
-                    case .kokoro:
-                        voiceRow(
-                            title: "Heart",
-                            subtitle: "American English · feminine",
-                            isSelected: true,
-                            action: {}
-                        )
                     }
                 } header: {
                     Overline("Voice")

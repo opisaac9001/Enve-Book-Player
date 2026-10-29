@@ -16,6 +16,7 @@ import com.enve.app.viewmodel.ThemeViewModel
 import com.enve.core.data.model.BookSource
 import com.enve.engine.eink.EinkMode
 import com.enve.engine.eink.EinkState
+import com.enve.engine.theme.HearthPaletteStyle
 import com.enve.engine.theme.HearthThemeMode
 import com.enve.hearth.design.HearthEink
 import com.enve.hearth.design.HearthTheme
@@ -91,6 +92,7 @@ class EbookLibrarianActivity : ComponentActivity() {
             val themeState = themeViewModel.themeState.collectAsStateWithLifecycle().value
             val state = librarianViewModel.state.collectAsStateWithLifecycle().value
             val uiTextScale = hearthPreferences.uiTextScale.collectAsStateWithLifecycle(initialValue = 1f).value
+            val paletteStyle = hearthPreferences.paletteStyle.collectAsStateWithLifecycle(initialValue = HearthPaletteStyle.PARCHMENT).value
             val profile = themeState.einkProfile
             HearthTheme(
                 mode = when (themeState.effectiveAppTheme) {
@@ -100,6 +102,7 @@ class EbookLibrarianActivity : ComponentActivity() {
                 },
                 accent = themeState.themeColor,
                 oledEnabled = themeState.effectiveAppTheme == AppTheme.OLED,
+                paletteStyle = paletteStyle,
                 uiTextScale = uiTextScale,
                 eink = if (profile.active) {
                     HearthEink(

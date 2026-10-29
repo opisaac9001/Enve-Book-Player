@@ -202,12 +202,10 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
         AppLogger.network.info("fetchLibraries URL: \(url.redacted)")
         let (data, response) = try await performDataTask(for: request)
 
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-            AppLogger.network.error("fetchLibraries failed with status: \((response as? HTTPURLResponse)?.statusCode ?? -1)")
-            throw ProviderError.invalidResponse
-        }
+        try JellyfinResponseError.requireOK(response)
 
         let result = try JSONDecoder().decode(JellyfinItemsResponse.self, from: data)
+        guard result.rejectedItems.isEmpty else { throw ProviderError.invalidResponse }
         AppLogger.network.info("fetchLibraries found \(result.Items.count) total views")
 
         return result.Items.compactMap { item in
@@ -278,9 +276,7 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
         var request = URLRequest(url: requestURL)
         addAuthHeaders(&request)
         let (data, response) = try await performDataTask(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            throw ProviderError.invalidResponse
-        }
+        try JellyfinResponseError.requireOK(response)
         let result = try JSONDecoder().decode(JellyfinItemsResponse.self, from: data)
         rejectedContent.update(
             connection: connection,
@@ -393,7 +389,7 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
                     }
                 }
 
-                let streamURLString = "\(base)/Audio/\(streamId)/stream?static=true&api_key=\(token)"
+                let streamURLString = "\(base)/Audio/\(streamId)/stream?static=true&ApiKey=\(token)"
                 if let streamURL = URL(string: streamURLString) {
                     let extracted = await MediaBrowserClient.extractChapters(fromStream: streamURL)
                     if !extracted.isEmpty {
@@ -438,7 +434,7 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
     func getAudioURL(for book: Book) -> URL? {
         guard let token = connection.token else { return nil }
         let base = normalizeServerURL(connection.url)
-        return URL(string: "\(base)/Audio/\(book.id)/stream?static=true&api_key=\(token)")
+        return URL(string: "\(base)/Audio/\(book.id)/stream?static=true&ApiKey=\(token)")
     }
 
     func getStreamingHeaders() -> [String: String] {
@@ -469,7 +465,7 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
             var currentOffset: Double = 0
             tracks = children.enumerated().map { index, track in
                 let trackDuration = Double(track.RunTimeTicks ?? 0) / 10_000_000.0
-                let url = "\(normalizeServerURL(connection.url))/Audio/\(track.Id)/stream?static=true&api_key=\(connection.token ?? "")"
+                let url = "\(normalizeServerURL(connection.url))/Audio/\(track.Id)/stream?static=true&ApiKey=\(connection.token ?? "")"
                 let info = AudioTrackInfo(
                     index: index,
                     startOffset: currentOffset,

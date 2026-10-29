@@ -24,6 +24,14 @@ struct RemoteItem: Identifiable, Sendable, Equatable {
         return audioExtensions.contains(ext)
     }
 
+    var isSupportedBookFile: Bool {
+        guard !isFolder else { return false }
+        let ext = (name as NSString).pathExtension.lowercased()
+        return AudiobookFormat.from(fileExtension: ext) != nil
+            || EbookFormat.from(fileExtension: ext) != nil
+            || ext == "zip"
+    }
+
     var isLikelyAudiobookFolder: Bool {
         guard isFolder else { return false }
 

@@ -107,7 +107,7 @@ class ThemeViewModel @Inject constructor(
 
     fun setThemeColor(color: Color) {
         viewModelScope.launch {
-            val hex = String.format("#%08X", color.toArgb())
+            val hex = String.format("#%06X", color.toArgb() and 0xFFFFFF)
             prefs.setThemeColorHex(hex)
         }
     }

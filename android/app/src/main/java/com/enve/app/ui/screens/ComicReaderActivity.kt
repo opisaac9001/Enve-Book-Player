@@ -43,6 +43,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
 import com.enve.engine.prefs.ReadNextPosition
+import com.enve.engine.theme.HearthPaletteStyle
 import com.enve.core.data.local.LastOpenedBookStore
 import com.enve.app.ui.theme.EnveTheme
 import com.enve.app.viewmodel.ComicBackgroundTheme
@@ -160,6 +161,9 @@ class ComicReaderActivity : ComponentActivity() {
             val state by vm.state.collectAsStateWithLifecycle()
             val themeState by themeViewModel.themeState.collectAsStateWithLifecycle()
             val uiTextScale by hearthPreferences.uiTextScale.collectAsStateWithLifecycle(initialValue = 1f)
+            val paletteStyle by hearthPreferences.paletteStyle.collectAsStateWithLifecycle(
+                initialValue = HearthPaletteStyle.PARCHMENT,
+            )
             val readNextEnabled by hearthPreferences.readNextEnabled.collectAsStateWithLifecycle(initialValue = true)
             val readNextPosition by hearthPreferences.readNextPosition.collectAsStateWithLifecycle(
                 initialValue = ReadNextPosition.BOTTOM,
@@ -195,6 +199,7 @@ class ComicReaderActivity : ComponentActivity() {
                 ) {
                     ComicReaderScreen(
                         state = state,
+                        paletteStyle = paletteStyle,
                         readNextEnabled = readNextEnabled,
                         readNextPosition = readNextPosition,
                         restReminder = restReminder,
@@ -265,6 +270,7 @@ class ComicReaderActivity : ComponentActivity() {
 @Composable
 private fun ComicReaderScreen(
     state: ComicReaderUiState,
+    paletteStyle: HearthPaletteStyle,
     readNextEnabled: Boolean,
     readNextPosition: ReadNextPosition,
     restReminder: com.enve.app.ui.screens.reader.ReaderRestReminderSpec,
@@ -392,6 +398,7 @@ private fun ComicReaderScreen(
             visiblePageIndices = currentEntry,
             chromeVisible = chromeVisible,
             einkActive = com.enve.app.ui.theme.EnveTheme.isEink,
+            paletteStyle = paletteStyle,
             onBack = onBack,
             onToggleBookmark = { onToggleBookmark(state.currentPage) },
             onOpenSettings = onOpenSettings,

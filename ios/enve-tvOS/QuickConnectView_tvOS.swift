@@ -7,6 +7,7 @@ struct QuickConnectView_tvOS: View {
     let customHeaders: [String: String]?
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.hearth) private var hearth
     @Environment(AppState.self) private var appState
 
     private let quickConnect = JellyfinQuickConnectService.shared
@@ -23,7 +24,7 @@ struct QuickConnectView_tvOS: View {
 
     var body: some View {
         ZStack {
-            Color(white: 0.11).ignoresSafeArea()
+            hearth.bg.ignoresSafeArea()
 
             VStack(spacing: 40) {
                 switch phase {
@@ -55,21 +56,23 @@ struct QuickConnectView_tvOS: View {
                 .foregroundStyle(.tint)
 
             Text("Approve this device")
-                .font(.system(size: 44, weight: .bold))
+                .font(.hearthDisplay(44))
+                .foregroundStyle(hearth.text)
 
             VStack(spacing: 12) {
                 Text("In your Jellyfin account - on a phone or computer - open")
                     .font(.title3)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(hearth.textSecondary)
                     .multilineTextAlignment(.center)
                 Text("Settings › Quick Connect")
                     .font(.title3.weight(.semibold))
+                    .foregroundStyle(hearth.text)
             }
 
             VStack(spacing: 8) {
                 Text("Enter this code")
                     .font(.title3)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(hearth.textSecondary)
                 Text(code)
                     .font(.system(size: 76, weight: .bold, design: .monospaced))
                     .tracking(8)
@@ -82,7 +85,7 @@ struct QuickConnectView_tvOS: View {
                 ProgressView().controlSize(.small)
                 Text("Waiting for approval…")
                     .font(.body)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(hearth.textSecondary)
             }
             .padding(.top, 8)
         }
@@ -96,9 +99,10 @@ struct QuickConnectView_tvOS: View {
                 .foregroundStyle(.orange)
             Text("Quick Connect failed")
                 .font(.title)
+                .foregroundStyle(hearth.text)
             Text(message)
                 .font(.body)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(hearth.textSecondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 800)
             Button("Try again") {

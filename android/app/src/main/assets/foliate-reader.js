@@ -65,6 +65,40 @@ let annotationValues = new Map()
 let annotationRevision = 0
 let activeFootnote = null
 let footnoteOpenReported = false
+let wideContentFit = null
+let selectionHandleFix = null
+const wideContentFitTimers = new WeakMap()
+
+const resourcePath = (reference, base) => {
+    try {
+        const url = new URL(String(reference ?? ''), `https://invalid.invalid/${encodeURI(String(base ?? ''))}`)
+        if (url.origin !== 'https://invalid.invalid') return null
+        return decodeURIComponent(url.pathname.slice(1)) || null
+    } catch {
+        return null
+    }
+}
+
+const fitWideContent = doc => {
+    if (!wideContentFit || !doc?.body) return
+    try {
+        if (doc.defaultView.getSelection()?.isCollapsed !== false) selectionHandleFix?.(doc, !preferences.scroll)
+        wideContentFit(doc)
+    } catch (error) {
+        console.warn('Wide content fit failed', error)
+    }
+}
+
+const scheduleWideContentFit = doc => {
+    const win = doc?.defaultView
+    if (!wideContentFit || !win) return
+    clearTimeout(wideContentFitTimers.get(doc))
+    wideContentFitTimers.set(doc, setTimeout(() => win.requestAnimationFrame(() => fitWideContent(doc)), 60))
+}
+
+const fitAllWideContent = () => {
+    for (const { doc } of view.renderer?.getContents?.() ?? []) scheduleWideContentFit(doc)
+}
 
 const READER_THEMES = {
     LIGHT: { background: '#FFFFFF', text: '#161616', panel: '#FFFFFF', border: '#D8D8D8' },
@@ -592,6 +626,8 @@ view.addEventListener('load', event => {
         scheduleSelectionPublish()
     }, { passive: true })
     doc.addEventListener('selectionchange', scheduleSelectionPublish)
+    doc.defaultView.addEventListener('resize', () => scheduleWideContentFit(doc))
+    scheduleWideContentFit(doc)
 })
 
 view.addEventListener('external-link', event => {
@@ -781,6 +817,13 @@ const applyPreferences = next => {
             postNative('error', { message: String(error?.message ?? error) })
         }
     }
+    fitAllWideContent()
+}
+
+const resolveBookHref = async href => {
+    const index = view.book.sections.findIndex(section =>
+        typeof section.id === 'number' && String(section.id) === href)
+    return index >= 0 ? { index } : await view.book.resolveHref(href)
 }
 
 const restoreFromCheckpoint = async checkpoint => {
@@ -812,7 +855,7 @@ const restoreFromCheckpoint = async checkpoint => {
     )
     if (shouldUseHref) {
         try {
-            const resolved = view.book.resolveHref(checkpoint.href)
+            const resolved = await resolveBookHref(checkpoint.href)
             if (
                 resolved &&
                 Number.isInteger(resolved.index) &&
@@ -864,25 +907,29 @@ const restoreFromCheckpoint = async checkpoint => {
     return 'start'
 }
 
-const tocProgression = (href, sectionFractions) => {
+const tocProgression = async (href, sectionFractions) => {
     if (!href || href.includes('#')) return null
-    const index = view.resolveNavigation(href)?.index
+    const index = (await view.resolveNavigation(href))?.index
     const start = sectionFractions[index]
     const end = sectionFractions[index + 1]
     return Number.isFinite(start) && Number.isFinite(end) && end > start ? start : null
 }
 
-const flattenToc = (items, sectionFractions, depth = 0) => (items ?? []).flatMap(item => [
-    {
-        title: compact(item.label) || 'Untitled',
-        href: item.href ?? '',
-        depth,
-        progression: tocProgression(item.href, sectionFractions),
-    },
-    ...flattenToc(item.subitems, sectionFractions, depth + 1),
-])
+const flattenToc = async (items, sectionFractions, depth = 0) => {
+    const entries = []
+    for (const item of items ?? []) {
+        entries.push({
+            title: compact(item.label) || 'Untitled',
+            href: item.href ?? '',
+            depth,
+            progression: await tocProgression(item.href, sectionFractions),
+        })
+        entries.push(...await flattenToc(item.subitems, sectionFractions, depth + 1))
+    }
+    return entries
+}
 
-const sanitizePublicationDocument = (source, mediaType) => {
+const sanitizePublicationDocument = (source, mediaType, original = null) => {
     const value = String(source ?? '')
     const markup = mediaType.includes('html') ||
         /^\s*(?:<\?xml[\s\S]*?\?>\s*)?(?:<!doctype\s+html|<html(?:\s|>))/i.test(value)
@@ -902,6 +949,19 @@ const sanitizePublicationDocument = (source, mediaType) => {
             throw new Error(`compatibility:Invalid ${mediaType || 'XML'} publication resource: ${error}`)
         }
     }
+    const imageReferences = original
+        ? Array.from(
+            new DOMParser()
+                .parseFromString(original.text, outputType === 'text/html' ? 'text/html' : parserType)
+                .querySelectorAll('img, image'),
+            element => element.localName === 'img'
+                ? element.getAttribute('src')
+                : (element.getAttribute('href') ?? element.getAttributeNS('http://www.w3.org/1999/xlink', 'href')),
+        )
+        : null
+    const markImages = imageReferences !== null &&
+        imageReferences.length === doc.querySelectorAll('img, image').length
+    let imageIndex = 0
 
     for (const element of doc.querySelectorAll('*')) {
         for (const attribute of Array.from(element.attributes)) {
@@ -913,6 +973,10 @@ const sanitizePublicationDocument = (source, mediaType) => {
         }
 
         const name = element.localName?.toLocaleLowerCase()
+        if (markImages && (name === 'img' || name === 'image')) {
+            const path = resourcePath(imageReferences[imageIndex++], original.href)
+            if (path) element.setAttribute('data-enve-resource', path)
+        }
         if (name === 'script') {
             element.setAttribute('type', 'application/x-enve-blocked')
             element.removeAttribute('src')
@@ -945,9 +1009,13 @@ const hardenPublication = book => {
     book.transformTarget?.addEventListener('data', event => {
         const detail = event.detail ?? {}
         detail.data = Promise.resolve(detail.data)
-            .then(source => {
-                const value = String(source ?? '')
+            .then(async source => {
                 const mediaType = String(detail.type ?? '').toLocaleLowerCase()
+                if (source == null && mediaType.startsWith('image/') && typeof detail.name === 'string') {
+                    const decodedName = decodeURIComponent(detail.name)
+                    if (decodedName !== detail.name) source = await book.loadBlob(decodedName)
+                }
+                const value = String(source ?? '')
                 const declaredDocument = mediaType.includes('html') ||
                     mediaType.includes('xml') ||
                     mediaType.includes('svg')
@@ -955,7 +1023,13 @@ const hardenPublication = book => {
                     /^\s*(?:<\?xml[\s\S]*?\?>\s*)?<(?:!doctype\s+html|html|svg)(?:\s|>)/i
                         .test(value)
                 if (!declaredDocument && !sniffedDocument) return source
-                const sanitized = sanitizePublicationDocument(value, mediaType)
+                const original = typeof book.loadText === 'function' && typeof detail.name === 'string'
+                    ? await Promise.resolve()
+                        .then(() => book.loadText(detail.name))
+                        .then(text => ({ text: String(text ?? ''), href: detail.name }))
+                        .catch(() => null)
+                    : null
+                const sanitized = sanitizePublicationDocument(value, mediaType, original)
                 detail.type = sanitized.type
                 return sanitized.data
             })
@@ -996,7 +1070,7 @@ const annotationCfi = async annotation => {
     const locator = annotation.locator
     try {
         const resolved = locator?.href
-            ? view.book.resolveHref(locator.href)
+            ? await resolveBookHref(locator.href)
             : cfiIndex === null ? null : { index: cfiIndex }
         const section = view.book.sections[resolved?.index]
         if (!resolved || !section?.createDocument) return null
@@ -1033,6 +1107,10 @@ const annotationCfi = async annotation => {
 }
 
 window.enveReader = {
+    installSelectionHandleFix(fix) {
+        selectionHandleFix = typeof fix === 'function' ? fix : null
+        fitAllWideContent()
+    },
     goForward() {
         markUserInteraction()
         view.next()
@@ -1099,6 +1177,21 @@ window.enveReader = {
     clearSearch() {
         view.clearSearch()
     },
+    illustrationAt(x, y, probe) {
+        if (typeof probe !== 'function') return null
+        for (const { doc } of view.renderer?.getContents?.() ?? []) {
+            const frame = doc?.defaultView?.frameElement
+            if (!frame) continue
+            const rect = frame.getBoundingClientRect()
+            if (x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom) continue
+            return probe(doc, x - rect.left, y - rect.top)
+        }
+        return null
+    },
+    installWideContentFit(fit) {
+        wideContentFit = typeof fit === 'function' ? fit : null
+        fitAllWideContent()
+    },
     autoScrollStep(distance) {
         markUserInteraction()
         view.next(Math.max(1, Number(distance) || 1))
@@ -1158,12 +1251,12 @@ const boot = async () => {
         preferences = initial.preferences ?? {}
         bundledFonts = initial.bundledFonts ?? []
         customFonts = initial.customFonts ?? []
-        const response = await fetch('/book/current.epub', { cache: 'no-store' })
-        if (!response.ok) throw new Error(`EPUB request failed (${response.status})`)
+        const response = await fetch('/book/current', { cache: 'no-store' })
+        if (!response.ok) throw new Error(`Book request failed (${response.status})`)
         const file = new File(
             [await response.blob()],
-            'book.epub',
-            { type: 'application/epub+zip' },
+            initial.fileName,
+            { type: response.headers.get('content-type') },
         )
         const book = await makeBook(file)
         hardenPublication(book)
@@ -1181,7 +1274,7 @@ const boot = async () => {
         restorePending = false
         postNative('ready', {
             title: compact(view.book.metadata?.title),
-            toc: flattenToc(view.book.toc, view.getSectionFractions?.() ?? []),
+            toc: await flattenToc(view.book.toc, view.getSectionFractions?.() ?? []),
             restoreMethod: method,
             checkpoint: lastLocation?.checkpoint ?? null,
         })

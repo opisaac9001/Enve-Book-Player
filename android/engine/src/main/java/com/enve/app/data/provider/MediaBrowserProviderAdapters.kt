@@ -1,6 +1,7 @@
 package com.enve.app.data.provider
 
 import com.enve.app.data.remote.GrimmoryApi
+import com.enve.app.data.jellyfin.jellyfinBody
 import com.enve.app.data.repository.GrimmoryRepository
 import com.enve.core.data.local.ConnectionRegistry
 import com.enve.core.auth.CredentialVault
@@ -25,6 +26,8 @@ import java.time.Instant
 import kotlinx.coroutines.CancellationException
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import com.enve.app.data.repository.durationMs
 import retrofit2.Response
 import javax.inject.Inject
@@ -47,6 +50,7 @@ abstract class MediaBrowserProviderAdapter(
     private val userIds = ConcurrentHashMap<String, String>()
 
     protected abstract val providerSource: BookSource
+    protected open val tokenQueryParameter: String = "api_key"
     override val source: BookSource get() = providerSource
     override val syncCapability: SyncCapability = SyncCapability.READ_WRITE
 
@@ -103,21 +107,18 @@ abstract class MediaBrowserProviderAdapter(
         progressFraction: Float,
     ): Result<Unit> = runSuspendCatching {
         val finished = progressFraction >= FINISHED_PROGRESS_THRESHOLD
-        // Only finishing or resetting changes the played flag, so a played mark set elsewhere isn't cleared mid-listen.
         saveUserData(book.id, currentTimeSec, played = finished.takeIf { it || currentTimeSec <= 1L })
         try {
             saveChildPosition(book.id, currentTimeSec)
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
-            // The book-level position above is the one Enve reads back; the per-file one is a courtesy to other apps.
         }
     }
 
     private data class ChildSpan(val id: String, val startMs: Long, val durationMs: Long)
     private val childSpans = ConcurrentHashMap<String, List<ChildSpan>>()
 
-    // Other clients resume multi-file books from the file playing, so its own resume point is kept too.
     private suspend fun saveChildPosition(bookId: String, positionSec: Long) {
         val spans = childSpans[bookId] ?: run {
             val userId = cachedUserId() ?: return
@@ -159,7 +160,6 @@ abstract class MediaBrowserProviderAdapter(
             else -> api.mediaBrowserPlaybackProgress(report)
         }
         if (!response.isSuccessful) error("$source playback report failed: HTTP ${response.code()}")
-        // Playstate reports apply the server's resume rules (early audiobook positions reset to 0), so restore Enve's position.
         if (event != PlaybackReportEvent.STARTED) saveUserData(book.id, positionSec, played = null)
     }
 
@@ -200,7 +200,7 @@ abstract class MediaBrowserProviderAdapter(
 
     override suspend fun getEbookDownloadUrl(bookId: String): String? {
         val ctx = requestContext()
-        return "${ctx.serverUrl.trimEnd('/')}/Items/$bookId/Download?api_key=${ctx.token}"
+        return "${ctx.serverUrl.trimEnd('/')}/Items/$bookId/Download?${tokenQueryParameter}=${ctx.token}"
     }
 
     override fun invalidateCaches() {
@@ -220,7 +220,7 @@ abstract class MediaBrowserProviderAdapter(
     )
 
     private fun streamUrl(ctx: ProviderRequestContext, itemId: String): String =
-        "${ctx.serverUrl.trimEnd('/')}/Audio/$itemId/stream?static=true&api_key=${ctx.token}"
+        "${ctx.serverUrl.trimEnd('/')}/Audio/$itemId/stream?static=true&${tokenQueryParameter}=${ctx.token}"
 
     private fun requestContext(): ProviderRequestContext {
         val scopedId = ConnectionScope.getConnectionId()
@@ -261,18 +261,24 @@ class JellyfinProviderAdapter @Inject constructor(
     connectionRegistry: ConnectionRegistry,
 ) : MediaBrowserProviderAdapter(repository, api, prefs, vault, connectionRegistry) {
     override val providerSource: BookSource = BookSource.JELLYFIN
+    override val tokenQueryParameter: String = "ApiKey"
 
     override suspend fun currentUserId(): String? =
-        api.jellyfinMe().takeIf { it.isSuccessful }?.body()?.Id
+        api.jellyfinMe().jellyfinBody("user lookup").Id
 
-    override suspend fun audioChildren(userId: String, parentId: String): Response<MediaBrowserItemsDto> =
-        api.jellyfinItems(
+    override suspend fun audioChildren(userId: String, parentId: String): Response<MediaBrowserItemsDto> {
+        val item = api.jellyfinItemDetail(userId, parentId).jellyfinBody("item lookup")
+        if (item["IsFolder"]?.jsonPrimitive?.booleanOrNull != true) {
+            return Response.success(MediaBrowserItemsDto(emptyList(), 0))
+        }
+        return api.jellyfinItems(
             userId = userId,
             parentId = parentId,
             includeItemTypes = "Audio",
             recursive = false,
             limit = 1000,
-        )
+        ).also { it.jellyfinBody("audio track loading") }
+    }
 }
 
 @Singleton

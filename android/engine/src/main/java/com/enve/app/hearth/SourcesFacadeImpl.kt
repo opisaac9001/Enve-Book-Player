@@ -35,7 +35,11 @@ class SourcesFacadeImpl @Inject constructor(
         }
     }
 
-    override suspend fun setEnabled(id: String, enabled: Boolean) = registry.setEnabled(id, enabled)
+    override suspend fun setEnabled(id: String, enabled: Boolean) {
+        registry.setEnabled(id, enabled)
+        aggregator.clearHomeSnapshotCache()
+        if (enabled) cache.ingestConnectionsInBackground(listOf(id))
+    }
 
     override suspend fun remove(id: String) {
         vault.remove(CredentialVault.accessTokenKey(id))

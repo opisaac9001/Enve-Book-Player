@@ -79,9 +79,35 @@ class MainActivity : ComponentActivity() {
             val profileState by profiles.state.collectAsState()
             val active by profiles.activeRuntime.collectAsState()
             val runtime = active
+            val appearance = runtime?.component?.preferencesFacade()
+            val uiTextScale by (appearance?.uiTextScale ?: kotlinx.coroutines.flow.flowOf(1f)).collectAsState(initial = 1f)
+            val hearthMode by (appearance?.themeMode ?: kotlinx.coroutines.flow.flowOf(HearthThemeMode.SYSTEM)).collectAsState(initial = HearthThemeMode.SYSTEM)
+            val hearthOled by (appearance?.oledEnabled ?: kotlinx.coroutines.flow.flowOf(false)).collectAsState(initial = false)
+            val hearthAccentHex by (appearance?.accentHex ?: kotlinx.coroutines.flow.flowOf("#F5921A")).collectAsState(initial = "#F5921A")
+            val paletteStyle by (appearance?.paletteStyle ?: kotlinx.coroutines.flow.flowOf(com.enve.engine.theme.HearthPaletteStyle.PARCHMENT)).collectAsState(initial = com.enve.engine.theme.HearthPaletteStyle.PARCHMENT)
+            val reduceMotion by (appearance?.reduceMotion ?: kotlinx.coroutines.flow.flowOf(false)).collectAsState(initial = false)
+            val detectedEink = remember {
+                val eink = com.enve.app.eink.EinkDetector(this@MainActivity).detect().isEink
+                com.enve.engine.eink.EinkState.Inactive.copy(active = eink, monochrome = eink)
+            }
+            val eink by (runtime?.component?.einkFacade()?.state ?: kotlinx.coroutines.flow.flowOf(detectedEink)).collectAsState(initial = detectedEink)
             if (runtime == null || profileState.locked || profileState.switching) {
-                com.enve.hearth.design.HearthTheme {
-                    if (!profileState.switching) {
+                com.enve.hearth.design.HearthTheme(
+                    mode = hearthMode, oledEnabled = hearthOled,
+                    accent = parseHexColor(hearthAccentHex) ?: EmberAccent,
+                    paletteStyle = paletteStyle, uiTextScale = uiTextScale, reduceMotion = reduceMotion,
+                    eink = com.enve.hearth.design.HearthEink(eink),
+                ) {
+                    val lightBars = !com.enve.hearth.design.Hearth.palette.isInk
+                    SideEffect {
+                        WindowInsetsControllerCompat(window, window.decorView).apply {
+                            isAppearanceLightStatusBars = lightBars
+                            isAppearanceLightNavigationBars = lightBars
+                        }
+                    }
+                    if (profileState.switching) {
+                        com.enve.hearth.profiles.HearthProfileTransitionScreen()
+                    } else {
                         com.enve.hearth.profiles.HearthProfilePickerScreen(profiles, onSelected = {})
                     }
                 }
@@ -120,13 +146,8 @@ class MainActivity : ComponentActivity() {
                     com.enve.hearth.shell.LocalProfileViewModelFactory provides host.factory,
                     androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner provides host,
                 ) {
-            val hearthPreferences = runtime.component.preferencesFacade()
             val playbackOpenProgress = runtime.component.playbackOpenProgressResolver()
             val epdRefreshManager = runtime.component.epdRefreshManager()
-            val uiTextScale by hearthPreferences.uiTextScale.collectAsState(initial = 1f)
-            val hearthMode by hearthPreferences.themeMode.collectAsState(initial = HearthThemeMode.SYSTEM)
-            val hearthOled by hearthPreferences.oledEnabled.collectAsState(initial = false)
-            val hearthAccentHex by hearthPreferences.accentHex.collectAsState(initial = "#F5921A")
             val themeViewModel: ThemeViewModel = profileViewModel()
             val themeState by themeViewModel.themeState.collectAsState()
             val playbackConflict by playbackOpenProgress.pendingConflict.collectAsState()
@@ -232,7 +253,11 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             } else {
-                com.enve.hearth.design.HearthUiTextScale(uiTextScale) {
+                com.enve.hearth.design.HearthTheme(
+                    mode = hearthMode, accent = bridgedAccent, oledEnabled = hearthOled,
+                    paletteStyle = paletteStyle, uiTextScale = uiTextScale, reduceMotion = reduceMotion,
+                    eink = com.enve.hearth.design.HearthEink(eink),
+                ) {
                     EnveTheme(
                         appTheme = bridgedTheme,
                         themeColor = bridgedAccent,

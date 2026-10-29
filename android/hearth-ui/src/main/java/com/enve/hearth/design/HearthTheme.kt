@@ -17,6 +17,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
+import com.enve.engine.theme.HearthPaletteStyle
 import com.enve.engine.theme.HearthThemeMode
 
 val LocalHearth = staticCompositionLocalOf { HearthPalette.ink() }
@@ -68,6 +69,7 @@ fun HearthTheme(
     mode: HearthThemeMode = HearthThemeMode.SYSTEM,
     accent: Color = EmberAccent,
     oledEnabled: Boolean = false,
+    paletteStyle: HearthPaletteStyle = HearthPaletteStyle.PARCHMENT,
     uiTextScale: Float = 1f,
     reduceMotion: Boolean = false,
     eink: HearthEink = HearthEink.Inactive,
@@ -81,9 +83,9 @@ fun HearthTheme(
 
     val palette = when {
         eink.monochrome -> HearthPalette.eink()
-        !isDark -> HearthPalette.paper(accent)
-        oledEnabled -> HearthPalette.oled(accent)
-        else -> HearthPalette.ink(accent)
+        !isDark -> HearthPalette.paper(accent, paletteStyle)
+        oledEnabled -> HearthPalette.oled(accent, paletteStyle)
+        else -> HearthPalette.ink(accent, paletteStyle)
     }
 
     val material = if (palette.isInk) {

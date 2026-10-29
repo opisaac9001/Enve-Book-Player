@@ -9,6 +9,8 @@ This inventory describes the repository audited on 2026-08-29. Gradle build file
 | Component | Location or version | License | Distribution notes |
 |---|---|---|---|
 | Foliate JS | `ThirdParty/foliate-js`, commit `6b11e1744346f60504b727984f7d42f0fef3ab54` | MIT | Copyright John Factotum. The app packages an allowlisted runtime subset and retains its license. |
+| Liseur reader behavior | Adapted wide-content fitting; revision `1822c64b6a462e6d9285a1b43e2ec7448e4a7719` | MIT | Copyright 2026 chmouel. See `BuildSupport/Liseur/UPSTREAM.md` and `LICENSE.txt`. |
+| fflate | `vendor/fflate.js` in the pinned Foliate runtime | MIT | Copyright Arjun Barrett. Retain `BuildSupport/FoliateRuntime/fflate-LICENSE.txt` in binary documentation or acknowledgements. |
 | zip.js | 2.7.52 in the Foliate runtime | BSD-3-Clause | Copyright Gildas Lormeau. Retain `BuildSupport/FoliateRuntime/zip.js-LICENSE.txt` in binary documentation or acknowledgements. |
 | PDF.js and its CMaps/fonts | PDF.js 4.7.76 in the Foliate vendored tree | Apache-2.0, BSD-style, and SIL OFL-1.1 terms | The app surfaces the PDF.js, CMap, Foxit font, and Liberation font license texts in acknowledgements. |
 | libmobi | 0.12 under `engine/src/main/cpp/libmobi/` | LGPL-3.0-or-later | Built as a separate `libmobi.so` loaded by Enve's JNI bridge. The exact source and replacement/install instructions are published with the app and retained in release evidence. |
@@ -27,6 +29,7 @@ This inventory describes the repository audited on 2026-08-29. Gradle build file
 | Readium Kotlin Toolkit | 3.3.0 | BSD-3-Clause |
 | NanoHTTPD | 2.3.1 | BSD-3-Clause |
 | jsoup | 1.17.2 | MIT |
+| ONNX Runtime Android | 1.24.2 | MIT; retain the runtime license and third-party notices in binary distributions |
 | jcifs-ng | 2.1.10 | LGPL-2.1-or-later; exact source and replacement instructions are retained with release evidence |
 | Android libarchive wrapper and libarchive | 1.1.6 | Apache-2.0 wrapper with libarchive's BSD-style component licenses |
 | Google Cast framework and Play services dependencies | Cast framework 21.5.0 | Google APIs and SDK terms; not relicensed under the Enve license |
@@ -43,6 +46,8 @@ Enve does not license model weights merely by supporting or downloading them. Th
 
 ML Kit states that its APIs may send performance and utilization metrics and may contact Google for updates. Binary distributors must provide the privacy disclosures required for their distribution channel.
 
+The optional StoryAlign CTC engine downloads an English QuartzNet ONNX checkpoint from Storyteller's registry, project `67994333`, model version `3023100`. The model SHA-256 is `3a4cf199c53475ae752694bb65989c05755bf6920d8ac8aaf51581a1021bdf2c`. Weights are not included in this repository. The exact exported checkpoint's license and downstream requirements remain unconfirmed. Confirm provenance and applicable terms, retain required notices, and present any required download terms before releasing this engine. Storyteller's source license and ONNX Runtime's MIT license do not establish the weights' license.
+
 ## Provider names and logos
 
 Enve displays names and logos for compatible services so users can identify a connection type. Those marks belong to their respective owners. Their presence does not imply endorsement, sponsorship, partnership, or ownership by Enve.
@@ -54,3 +59,7 @@ The Enve name, logo, and app icon are not granted for use as a fork's brand by t
 ## Distribution reminder
 
 An APK, app bundle, store listing, or source archive must retain this file, all applicable license texts and notices, the Enve license and notice, and every item required by `docs/legal/THIRD_PARTY_AUDIT.md`. The Enve license does not narrow any right granted directly by a third-party license.
+
+## Listening-position QR codes
+
+ZXing Core 3.5.4 (`com.google.zxing:core`) is used for on-device QR encoding and decoding under Apache-2.0. Copyright ZXing authors. Upstream: https://github.com/zxing/zxing. The app bundles the Apache-2.0 license in its acknowledgements.

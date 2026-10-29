@@ -18,11 +18,14 @@ struct LibraryScreen: View {
     @FocusState private var searchFocused: Bool
     @State private var showFilesImport = false
     @State private var showAddSource = false
+    @State private var showWebImport = false
     @State private var showOPDSCatalog = false
     @State private var opdsCatalogConnectionId: UUID?
     @State private var showLibraryControls = false
     @State private var collectionSelection: LibraryCollectionSelection?
+    @State private var destination: LibraryDestination?
     @State private var visibleScopeRefreshInProgress = false
+    @State private var showPositionScanner = false
     #if DEBUG
     @State private var didPresentDebugCollectionSelection = false
     @State private var didPresentDebugLibraryControls = false
@@ -34,13 +37,13 @@ struct LibraryScreen: View {
         GeometryReader { geo in
             let contentWidth = HearthAdaptive.contentWidth(for: geo.size.width, maximum: HearthAdaptive.wideReadableWidth)
             ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 12) {
                     header(width: contentWidth)
                     scopeRow
-                    if !model.isSearchActive {
-                        shelvesHub
+                    if let failure = refreshFailure {
+                        refreshFailureNotice(failure)
                     }
-                    chipRow
+                    controlsRow
                     if !model.isSearchActive {
                         facetRow
                     }
@@ -85,8 +88,33 @@ struct LibraryScreen: View {
         .navigationDestination(isPresented: $showOPDSCatalog) {
             SourcesOPDSBrowseScreen(connectionId: opdsCatalogConnectionId)
         }
+        .navigationDestination(item: $destination) { destination in
+            switch destination {
+            case .favorites:
+                SavedBooksDetailScreen(list: .favorites)
+            case .later:
+                SavedBooksDetailScreen(list: .later)
+            case .collections:
+                CollectionsScreen()
+            case .discover:
+                DiscoverScreen()
+            case .settings:
+                SettingsScreen(profileSession: profileSession ?? .owner)
+            }
+        }
         .sheet(isPresented: $showFilesImport) {
             SourcesFilesScreen(onAdded: { showFilesImport = false })
+                .enveEnvironment()
+                .hearthPresentationBackground()
+        }
+        .sheet(isPresented: $showWebImport) {
+            SourcesWebImportScreen(onAdded: {
+                model.focus(status: .all, media: .all, source: .device)
+                model.clearFilters()
+                searchText = ""
+                model.updateSearch("")
+                showWebImport = false
+            })
                 .enveEnvironment()
                 .hearthPresentationBackground()
         }
@@ -96,6 +124,11 @@ struct LibraryScreen: View {
                 .hearthPresentationBackground()
                 .presentationDetents([.medium, .large])
         }
+        .sheet(isPresented: $showPositionScanner) {
+            ListeningPositionScanScreen()
+                .enveEnvironment()
+                .hearthPresentationBackground()
+        }
         .sheet(item: $collectionSelection) { selection in
             CollectionsBatchAddSheet(books: selection.books)
                 .enveEnvironment()
@@ -103,8 +136,6 @@ struct LibraryScreen: View {
         }
         .task(id: isActive) {
             guard isActive else { return }
-            await engine.sources.refreshLibrarySourceNamesIfNeeded()
-
             if model.hasLoaded {
                 await model.reload()
             } else {
@@ -122,6 +153,10 @@ struct LibraryScreen: View {
                     await model.reload()
                 }
             }
+        }
+        .task(id: isActive) {
+            guard isActive else { return }
+            await engine.sources.refreshLibrarySourceNamesIfNeeded()
         }
         .task(id: isActive) {
             guard isActive else { return }
@@ -149,89 +184,110 @@ struct LibraryScreen: View {
 
     private func header(width: CGFloat) -> some View {
         let effectiveColumns = HearthAdaptive.bookGridCount(width: width, preferred: gridColumns)
-        let compact = width < 520
-        return VStack(alignment: .leading, spacing: 7) {
-            Overline("The stacks")
+        // The cover-size cycle must share the grid's breakpoint, or it loops without ever reaching the list layout.
+        let cycleRange = HearthAdaptive.displayCycleRange(for: width)
+        let stacked = dynamicTypeSize.isAccessibilitySize
+        let layout = stacked
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+            : AnyLayout(HStackLayout(spacing: 8))
+        return layout {
             Text("Library")
                 .font(.hearthScreenTitle)
                 .foregroundStyle(hearth.text)
-            headerControls(effectiveColumns: effectiveColumns, compact: compact)
-                .frame(maxWidth: .infinity, alignment: .trailing)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            if !stacked {
+                Spacer(minLength: 8)
+            }
+            headerControls(effectiveColumns: effectiveColumns, cycleRange: cycleRange)
         }
         .padding(.horizontal, 24)
     }
 
-    private func headerControls(effectiveColumns: Int, compact: Bool) -> some View {
-        let buttonSize: CGFloat = 45
-        return HStack(spacing: compact ? 6 : 8) {
+    private func headerControls(effectiveColumns: Int, cycleRange: ClosedRange<Int>) -> some View {
+        HStack(spacing: 8) {
             if visibleScopeRefreshInProgress {
                 ProgressView()
                     .tint(hearth.ember)
-                    .frame(width: buttonSize, height: buttonSize)
-                    .background {
-                        HearthChromeBackground(
-                            shape: .circle,
-                            fill: hearth.bgElevated,
-                            stroke: hearth.hairline,
-                            tint: hearth.bgElevated
-                        )
-                    }
                     .frame(minWidth: 44, minHeight: 44)
                     .accessibilityLabel("Refreshing sources")
-            } else {
-                GlyphButton(
-                    systemImage: "arrow.clockwise",
-                    size: buttonSize,
-                    glyphSize: 15,
-                    label: "Refresh sources"
-                ) {
-                    PlatformHaptics.impact(.light)
-                    Task { await refreshVisibleLibraryScope() }
-                }
             }
-            importMenu(size: buttonSize)
-            if showsBookControls {
+            if model.isSelecting {
                 GlyphButton(
-                    systemImage: model.isSelecting ? "checkmark.circle.fill" : "checkmark.circle",
-                    size: buttonSize,
+                    systemImage: "checkmark.circle.fill",
                     glyphSize: 16,
-                    prominent: model.isSelecting,
-                    label: model.isSelecting ? "Done choosing" : "Choose books"
+                    prominent: true,
+                    label: "Done choosing"
                 ) {
                     PlatformHaptics.selection()
                     model.toggleSelecting()
                 }
             }
-            GlyphButton(
-                systemImage: displayGlyph,
-                size: buttonSize,
-                glyphSize: 15,
-                label: displayCycleLabel(effectiveColumns: effectiveColumns, compact: compact)
-            ) {
-                PlatformHaptics.selection()
-                cycleDisplay(effectiveColumns: effectiveColumns, compact: compact)
-            }
-            NavigationLink {
-                SettingsScreen(profileSession: profileSession ?? .owner)
-            } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 15 * Hearth.visionFactor, weight: .semibold))
-                    .foregroundStyle(hearth.text)
-                    .frame(width: buttonSize, height: buttonSize)
-                    .background {
-                        HearthChromeBackground(
-                            shape: .circle,
-                            fill: hearth.bgElevated,
-                            stroke: hearth.hairline,
-                            tint: hearth.bgElevated
-                        )
-                    }
-            }
-            .buttonStyle(PressableStyle())
-            .accessibilityLabel("Settings")
-            .accessibilityShowsLargeContentViewer()
+            importMenu
+            moreMenu(effectiveColumns: effectiveColumns, cycleRange: cycleRange)
         }
         .fixedSize()
+    }
+
+    private func moreMenu(effectiveColumns: Int, cycleRange: ClosedRange<Int>) -> some View {
+        Menu {
+            Button {
+                PlatformHaptics.impact(.light)
+                Task { await refreshVisibleLibraryScope() }
+            } label: {
+                Label(
+                    visibleScopeRefreshInProgress ? "Refreshing sources" : "Refresh sources",
+                    systemImage: "arrow.clockwise"
+                )
+            }
+            .disabled(visibleScopeRefreshInProgress)
+            if showsBookControls && !model.isSelecting {
+                Button {
+                    PlatformHaptics.selection()
+                    model.toggleSelecting()
+                } label: {
+                    Label("Choose books", systemImage: "checkmark.circle")
+                }
+            }
+            Button {
+                PlatformHaptics.selection()
+                cycleDisplay(effectiveColumns: effectiveColumns, cycleRange: cycleRange)
+            } label: {
+                Label(displayCycleLabel(effectiveColumns: effectiveColumns, cycleRange: cycleRange), systemImage: displayGlyph)
+            }
+            Button {
+                showPositionScanner = true
+            } label: {
+                Label("Scan book position", systemImage: "qrcode.viewfinder")
+            }
+            Divider()
+            Button {
+                destination = .settings
+            } label: {
+                Label("Settings", systemImage: "gearshape")
+            }
+        } label: {
+            headerMenuGlyph("ellipsis")
+        }
+        .accessibilityLabel("More")
+        .accessibilityShowsLargeContentViewer()
+        .accessibilityIdentifier("library-more-menu")
+    }
+
+    private func headerMenuGlyph(_ systemImage: String) -> some View {
+        Image(systemName: systemImage)
+            .font(.hearthUI(16, weight: .semibold))
+            .foregroundStyle(hearth.text)
+            .frame(minWidth: 44, minHeight: 44)
+            .background {
+                HearthChromeBackground(
+                    shape: .circle,
+                    fill: hearth.bgElevated,
+                    stroke: hearth.hairline,
+                    tint: hearth.bgElevated
+                )
+            }
+            .contentShape(Rectangle())
     }
 
     private var showsBookControls: Bool {
@@ -282,85 +338,72 @@ struct LibraryScreen: View {
         #endif
     }
 
-    private var shelvesHub: some View {
-        quickShelves
-            .padding(.top, 2)
-    }
-
-    private var quickShelves: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ShelfHeader(title: "Shelves")
-            ScrollView(.horizontal) {
-                HStack(spacing: 7) {
-                    LibraryShelfButton(
-                        glyph: "books.vertical",
-                        title: "Everything",
-                        line: "All sources",
-                        isActive: isShelfActive(status: .all, media: .all, source: .all)
-                    ) {
-                        focusShelf(status: .all, media: .all, source: .all)
-                    }
-                    LibraryShelfButton(
-                        glyph: "play.circle",
-                        title: "In progress",
-                        line: "Audiobooks",
-                        isActive: isShelfActive(status: .listening, media: .all, source: .all)
-                    ) {
-                        focusShelf(status: .listening, media: .all, source: .all)
-                    }
-                    if model.readingEnabled {
-                        LibraryShelfButton(
-                            glyph: "book.pages",
-                            title: "Reading",
-                            line: "Ebooks & comics",
-                            isActive: isShelfActive(status: .reading, media: .ebooks, source: .all)
-                        ) {
-                            focusShelf(status: .reading, media: .ebooks, source: .all)
-                        }
-                    }
-                    LibraryShelfButton(
-                        glyph: "arrow.down.circle",
-                        title: "Downloaded",
-                        line: "On this device",
-                        isActive: isShelfActive(status: .downloaded, media: .all, source: .all)
-                    ) {
-                        focusShelf(status: .downloaded, media: .all, source: .all)
-                    }
-                    NavigationLink {
-                        SavedBooksDetailScreen(list: .favorites)
-                    } label: {
-                        LibraryShelfLabel(glyph: "heart", title: "Favorites", line: "Saved stories")
-                    }
-                    .buttonStyle(PressableStyle())
-                    NavigationLink {
-                        SavedBooksDetailScreen(list: .later)
-                    } label: {
-                        LibraryShelfLabel(glyph: "bookmark", title: "For Later", line: "To revisit")
-                    }
-                    .buttonStyle(PressableStyle())
-                    NavigationLink {
-                        CollectionsScreen()
-                    } label: {
-                        LibraryShelfLabel(glyph: "folder", title: "Collections", line: "Smart shelves")
-                    }
-                    .buttonStyle(PressableStyle())
-                    .frame(minHeight: 45)
-                    .contentShape(Rectangle())
-                    NavigationLink {
-                        DiscoverScreen()
-                    } label: {
-                        LibraryShelfLabel(glyph: "sparkles", title: "Discover", line: "Find new books")
-                    }
-                    .buttonStyle(PressableStyle())
-                }
-                .padding(.horizontal, 24)
-            }
-            .scrollIndicators(.hidden)
+    private var shelfPresets: [LibraryShelfPreset] {
+        var presets = [
+            LibraryShelfPreset(title: "Everything", glyph: "books.vertical", status: .all, media: .all),
+            LibraryShelfPreset(title: "In progress", glyph: "play.circle", status: .listening, media: .all),
+        ]
+        if model.readingEnabled {
+            presets.append(LibraryShelfPreset(title: "Reading", glyph: "book.pages", status: .reading, media: .ebooks))
         }
+        presets.append(LibraryShelfPreset(title: "Downloaded", glyph: "arrow.down.circle", status: .downloaded, media: .all))
+        return presets
     }
 
-    private func importMenu(size: CGFloat = 44) -> some View {
+    private var shelvesMenu: some View {
+        let active = shelfPresets.first { isShelfActive(status: $0.status, media: $0.media, source: .all) }
+        let narrowed = active.flatMap { $0.status == .all ? nil : $0 }
+        return Menu {
+            Section {
+                ForEach(shelfPresets, id: \.title) { preset in
+                    Button {
+                        focusShelf(status: preset.status, media: preset.media, source: .all)
+                    } label: {
+                        Label(preset.title, systemImage: preset.title == active?.title ? "checkmark" : preset.glyph)
+                    }
+                }
+            }
+            Section {
+                Button {
+                    destination = .favorites
+                } label: {
+                    Label("Favorites", systemImage: "heart")
+                }
+                Button {
+                    destination = .later
+                } label: {
+                    Label("For Later", systemImage: "bookmark")
+                }
+                Button {
+                    destination = .collections
+                } label: {
+                    Label("Collections", systemImage: "folder")
+                }
+                Button {
+                    destination = .discover
+                } label: {
+                    Label("Discover", systemImage: "sparkles")
+                }
+            }
+        } label: {
+            LibraryMenuChip(
+                title: narrowed?.title ?? "Shelves",
+                systemImage: "books.vertical",
+                isActive: narrowed != nil
+            )
+        }
+        .accessibilityLabel("Shelves")
+        .accessibilityValue(active?.title ?? "")
+        .accessibilityIdentifier("library-shelves-menu")
+    }
+
+    private var importMenu: some View {
         Menu {
+            Button {
+                showWebImport = true
+            } label: {
+                Label("Import from link", systemImage: "link")
+            }
             Button {
                 showFilesImport = true
             } label: {
@@ -377,19 +420,7 @@ struct LibraryScreen: View {
                 Label("Add a source", systemImage: "externaldrive.badge.plus")
             }
         } label: {
-            Image(systemName: "plus")
-                .font(.system(size: 16 * Hearth.visionFactor, weight: .semibold))
-                .foregroundStyle(hearth.text)
-                .frame(width: size, height: size)
-                .background {
-                    HearthChromeBackground(
-                        shape: .circle,
-                        fill: hearth.bgElevated,
-                        stroke: hearth.hairline,
-                        tint: hearth.bgElevated
-                    )
-                }
-                .contentShape(Rectangle())
+            headerMenuGlyph("plus")
         }
         .accessibilityLabel("Add books")
         .accessibilityShowsLargeContentViewer()
@@ -399,54 +430,75 @@ struct LibraryScreen: View {
         model.layout == .grid ? "square.grid.3x3" : "list.bullet"
     }
 
-    private func displayCycleLabel(effectiveColumns: Int, compact: Bool) -> String {
+    private func displayCycleLabel(effectiveColumns: Int, cycleRange: ClosedRange<Int>) -> String {
         if model.layout == .list {
             return "Show grid"
         }
-        let maximum = compact ? 4 : 12
-        if effectiveColumns >= maximum {
+        if effectiveColumns >= cycleRange.upperBound {
             return "Show as list"
         }
         return "Cover size, \(effectiveColumns + 1) columns"
     }
 
-    private func cycleDisplay(effectiveColumns: Int, compact: Bool) {
-        let minimum = compact ? 2 : 5
-        let maximum = compact ? 4 : 12
+    private func cycleDisplay(effectiveColumns: Int, cycleRange: ClosedRange<Int>) {
         if model.layout == .list {
-            gridColumns = minimum
+            gridColumns = cycleRange.lowerBound
             model.selectLayout(.grid)
-        } else if effectiveColumns >= maximum {
+        } else if effectiveColumns >= cycleRange.upperBound {
             model.selectLayout(.list)
         } else {
-            gridColumns = min(effectiveColumns + 1, maximum)
+            gridColumns = min(effectiveColumns + 1, cycleRange.upperBound)
         }
     }
 
-    private var chipRow: some View {
-        HStack(spacing: 12) {
-            Button {
-                showLibraryControls = true
-            } label: {
-                LibraryMenuChip(
-                    title: controlsTitle,
-                    systemImage: "line.3.horizontal.decrease",
-                    isActive: model.isNarrowed || !model.usesDefaultSorting
-                )
+    private var controlsRow: some View {
+        let stacked = dynamicTypeSize.isAccessibilitySize
+        let layout = stacked
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+            : AnyLayout(HStackLayout(spacing: 8))
+        return layout {
+            controlChips
+            if !stacked {
+                Spacer(minLength: 8)
             }
-            Spacer(minLength: 8)
-            if model.facet == .books || model.isSearchActive {
-                Text(model.resultSummary)
-                    .font(.hearthCaption.monospacedDigit())
-                    .foregroundStyle(hearth.textTertiary)
-                    .lineLimit(1)
-            }
+            resultSummary
         }
         .padding(.horizontal, 24)
     }
 
+    @ViewBuilder
+    private var controlChips: some View {
+        if !model.isSearchActive {
+            shelvesMenu
+        }
+        Button {
+            showLibraryControls = true
+        } label: {
+            LibraryMenuChip(
+                title: controlsTitle,
+                systemImage: "line.3.horizontal.decrease",
+                isActive: model.isNarrowed || !model.usesDefaultSorting
+            )
+        }
+        .accessibilityLabel(controlsTitle)
+        .accessibilityIdentifier("library-controls-button")
+    }
+
+    @ViewBuilder
+    private var resultSummary: some View {
+        if model.facet == .books || model.isSearchActive {
+            Text(model.resultSummary)
+                .font(.hearthCaption.monospacedDigit())
+                .foregroundStyle(hearth.textTertiary)
+                .lineLimit(1)
+                .layoutPriority(-1)
+        }
+    }
+
     private var scopeRow: some View {
-        let layout = dynamicTypeSize.isAccessibilitySize ? AnyLayout(VStackLayout(spacing: 10)) : AnyLayout(HStackLayout(spacing: 10))
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 0))
+            : AnyLayout(HStackLayout(spacing: 16))
         return layout {
             Menu {
                 Button {
@@ -479,16 +531,18 @@ struct LibraryScreen: View {
                     }
                 }
             } label: {
-                LibraryScopeButton(
+                LibraryScopeMenuLabel(
                     title: sourceFilterTitle,
-                    subtitle: "Source",
                     systemImage: "externaldrive.connected.to.line.below",
                     isActive: model.sourceFilter != .all
                 )
             }
+            .accessibilityLabel("Source")
+            .accessibilityValue(sourceFilterTitle)
             .accessibilityIdentifier("library-source-menu")
             libraryMenu
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 24)
     }
 
@@ -496,13 +550,15 @@ struct LibraryScreen: View {
         Menu {
             libraryMenuContent
         } label: {
-            LibraryScopeButton(
+            LibraryScopeMenuLabel(
                 title: libraryFilterTitle,
-                subtitle: "Library",
                 systemImage: "books.vertical",
                 isActive: model.sourceFilter.libraryId != nil
             )
         }
+        .accessibilityLabel("Library")
+        .accessibilityValue(libraryFilterTitle)
+        .accessibilityIdentifier("library-library-menu")
     }
 
     @ViewBuilder
@@ -661,24 +717,11 @@ struct LibraryScreen: View {
                     .frame(minHeight: 45)
                     .contentShape(Rectangle())
                 }
-                NavigationLink {
-                    CollectionsScreen()
-                } label: {
-                    VStack(spacing: 5) {
-                        Overline("Collections")
-                        Capsule()
-                            .fill(.clear)
-                            .frame(width: 22, height: 2)
-                    }
-                    .frame(minHeight: 44)
-                }
-                .buttonStyle(PressableStyle())
-                .frame(minHeight: 45)
-                .contentShape(Rectangle())
             }
             .padding(.horizontal, 24)
         }
         .scrollIndicators(.hidden)
+        .hearthHorizontalEdgeFade()
     }
 
     @ViewBuilder
@@ -689,7 +732,7 @@ struct LibraryScreen: View {
         if !model.hasLoaded {
             loadingStacks
         } else if model.totalLibraryCount == 0 {
-            if model.searchAttribution == nil {
+            if model.searchAttribution == nil && refreshFailure == nil {
                 emptyLibrary
             }
         } else if model.isSearchActive {
@@ -915,6 +958,42 @@ struct LibraryScreen: View {
         .padding(.horizontal, 24)
     }
 
+    private var refreshFailure: LibraryRefreshFailure? {
+        engine.library.refreshFailure(for: model.sourceFilter)
+    }
+
+    private func refreshFailureNotice(_ failure: LibraryRefreshFailure) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Library refresh failed", systemImage: "exclamationmark.triangle")
+                .font(.hearthUI(15, weight: .semibold))
+                .foregroundStyle(hearth.text)
+            Text(failure.message)
+                .font(.hearthUI(14))
+                .foregroundStyle(hearth.textSecondary)
+            if model.totalLibraryCount > 0 {
+                Text("Your saved library is still available.")
+                    .font(.hearthUI(14))
+                    .foregroundStyle(hearth.textSecondary)
+            }
+            Button("Retry") {
+                Task { await refreshVisibleLibraryScope() }
+            }
+            .buttonStyle(.bordered)
+            .tint(hearth.ember)
+            .disabled(engine.library.isRefreshing)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            HearthChromeBackground(
+                shape: .rounded(16), fill: hearth.bgElevated,
+                stroke: hearth.hairline, tint: hearth.bgElevated
+            )
+        }
+        .padding(.horizontal, 24)
+        .accessibilityIdentifier("library-refresh-failure")
+    }
+
     private var loadingStacks: some View {
         VStack(spacing: 16) {
             ProgressView()
@@ -994,52 +1073,45 @@ private struct LibraryCollectionSelection: Identifiable {
     let books: [Book]
 }
 
-private struct LibraryShelfButton: View {
-    let glyph: String
-    let title: String
-    let line: String
-    var isActive = false
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            LibraryShelfLabel(glyph: glyph, title: title, line: line, isActive: isActive)
-        }
-        .buttonStyle(PressableStyle())
-    }
+private enum LibraryDestination: Hashable {
+    case favorites
+    case later
+    case collections
+    case discover
+    case settings
 }
 
-private struct LibraryShelfLabel: View {
-    let glyph: String
+private struct LibraryShelfPreset {
     let title: String
-    let line: String
-    var isActive = false
+    let glyph: String
+    let status: LibraryStatusFilter
+    let media: LibraryMediaFilter
+}
+
+private struct LibraryScopeMenuLabel: View {
+    let title: String
+    let systemImage: String
+    var isActive: Bool
 
     @Environment(\.hearth) private var hearth
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         HStack(spacing: 7) {
-            Image(systemName: glyph)
+            Image(systemName: systemImage)
                 .font(.hearthUI(13, weight: .semibold))
-                .foregroundStyle(isActive ? hearth.readableOnEmber : hearth.ember)
-                .frame(minWidth: 16, minHeight: 16)
+                .foregroundStyle(isActive ? hearth.ember : hearth.textTertiary)
             Text(title)
-                .font(.hearthUI(12, weight: .semibold))
-                .foregroundStyle(isActive ? hearth.readableOnEmber : hearth.text)
-                .lineLimit(1)
+                .font(.hearthUI(15, weight: .semibold))
+                .foregroundStyle(hearth.text)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                .multilineTextAlignment(.leading)
+            Image(systemName: "chevron.down")
+                .font(.hearthUI(9, weight: .semibold))
+                .foregroundStyle(hearth.textTertiary)
         }
         .frame(minHeight: 44)
-        .padding(.horizontal, 12)
-        .background {
-            HearthChromeBackground(
-                shape: .capsule,
-                fill: isActive ? hearth.ember : hearth.bgElevated,
-                stroke: isActive ? hearth.ember : hearth.hairline,
-                tint: isActive ? hearth.ember : hearth.bgElevated
-            )
-        }
         .contentShape(Rectangle())
-        .accessibilityLabel("\(title), \(line)")
     }
 }
 
@@ -1061,6 +1133,9 @@ struct HearthFloatingSearch: View {
                 glass
             }
         }
+        // Keep the open field reachable from the trailing edge on wide canvases instead of spanning them.
+        .frame(maxWidth: 680)
+        .frame(maxWidth: .infinity, alignment: .trailing)
         .padding(.horizontal, 20)
 
         .padding(.bottom, restInset)
@@ -1140,54 +1215,12 @@ struct HearthFloatingSearch: View {
     }
 }
 
-struct LibraryScopeButton: View {
-    let title: String
-    let subtitle: String
-    let systemImage: String
-    var isActive: Bool
-
-    @Environment(\.hearth) private var hearth
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: systemImage)
-                .font(.hearthUI(14, weight: .semibold))
-                .foregroundStyle(isActive ? hearth.ember : hearth.textSecondary)
-                .frame(minWidth: 18)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(subtitle.uppercased())
-                    .font(.hearthUI(9, weight: .semibold))
-                    .foregroundStyle(isActive ? hearth.textSecondary : hearth.textTertiary)
-                Text(title)
-                    .font(.hearthUI(13, weight: .semibold))
-                    .foregroundStyle(hearth.text)
-                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
-                    .minimumScaleFactor(dynamicTypeSize.isAccessibilitySize ? 1 : 0.8)
-            }
-            .multilineTextAlignment(.leading)
-            Image(systemName: "chevron.down")
-                .font(.hearthUI(9, weight: .semibold))
-                .foregroundStyle(hearth.textTertiary)
-        }
-        .frame(maxWidth: .infinity, minHeight: 46, alignment: .leading)
-        .padding(.horizontal, 12)
-        .background {
-            HearthChromeBackground(
-                shape: .rounded(14),
-                fill: hearth.bgElevated,
-                stroke: isActive ? hearth.ember.opacity(0.35) : hearth.hairline,
-                tint: hearth.bgElevated
-            )
-        }
-    }
-}
-
 struct LibraryMenuChip: View {
     let title: String
     var systemImage: String? = nil
     var isActive: Bool
     @Environment(\.hearth) private var hearth
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         HStack(spacing: 6) {
@@ -1200,6 +1233,7 @@ struct LibraryMenuChip: View {
             Image(systemName: "chevron.down")
                 .font(.hearthUI(9, weight: .semibold))
         }
+        .fixedSize(horizontal: !dynamicTypeSize.isAccessibilitySize, vertical: true)
         .foregroundStyle(isActive ? hearth.ember : hearth.textSecondary)
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
@@ -1249,7 +1283,6 @@ private struct LibraryControlsSheet: View {
                                 descriptor: descriptor,
                                 canMoveUp: index > 0,
                                 canMoveDown: index < model.sortDescriptors.count - 1,
-                                canRemove: model.sortDescriptors.count > 1,
                                 onDirection: { direction in
                                     PlatformHaptics.selection()
                                     model.select(direction, for: descriptor.field)
@@ -1267,6 +1300,12 @@ private struct LibraryControlsSheet: View {
                                     model.removeSort(descriptor.field)
                                 }
                             )
+                        }
+                        if model.sortDescriptors.isEmpty {
+                            Text("Default order: recently added, newest first.")
+                                .font(.hearthUI(14))
+                                .foregroundStyle(hearth.textSecondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
                 }
@@ -1291,16 +1330,18 @@ private struct LibraryControlsSheet: View {
                     }
                 }
 
-                controlSection("Primary direction") {
-                    HStack(spacing: 8) {
-                        ForEach(LibrarySortDirection.allCases, id: \.self) { direction in
-                            LibraryControlPill(
-                                title: direction.title,
-                                systemImage: direction.glyph,
-                                isSelected: model.sortDirection == direction
-                            ) {
-                                PlatformHaptics.selection()
-                                model.select(direction)
+                if !model.sortDescriptors.isEmpty {
+                    controlSection("Primary direction") {
+                        HStack(spacing: 8) {
+                            ForEach(LibrarySortDirection.allCases, id: \.self) { direction in
+                                LibraryControlPill(
+                                    title: direction.title,
+                                    systemImage: direction.glyph,
+                                    isSelected: model.sortDirection == direction
+                                ) {
+                                    PlatformHaptics.selection()
+                                    model.select(direction)
+                                }
                             }
                         }
                     }
@@ -1432,6 +1473,7 @@ private struct LibraryControlsSheet: View {
             .padding(.top, 28)
             .padding(.bottom, 32)
         }
+        .accessibilityIdentifier("library-controls-sheet")
         .background(HearthBackground())
         .task {
             await model.loadAdvancedFilterOptions()
@@ -1455,7 +1497,6 @@ private struct LibrarySortPriorityRow: View {
     let descriptor: LibrarySortDescriptor
     let canMoveUp: Bool
     let canMoveDown: Bool
-    let canRemove: Bool
     let onDirection: (LibrarySortDirection) -> Void
     let onMoveUp: () -> Void
     let onMoveDown: () -> Void
@@ -1484,7 +1525,7 @@ private struct LibrarySortPriorityRow: View {
                 HStack(spacing: 0) {
                     sortIconButton("chevron.up", label: "Move \(descriptor.title) up", isEnabled: canMoveUp, action: onMoveUp)
                     sortIconButton("chevron.down", label: "Move \(descriptor.title) down", isEnabled: canMoveDown, action: onMoveDown)
-                    sortIconButton("xmark", label: "Remove \(descriptor.title)", isEnabled: canRemove, action: onRemove)
+                    sortIconButton("xmark", label: "Remove \(descriptor.title)", isEnabled: true, action: onRemove)
                 }
             }
 

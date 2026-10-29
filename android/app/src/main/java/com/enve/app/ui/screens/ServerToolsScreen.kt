@@ -111,16 +111,16 @@ fun ServerToolsScreen(
 
             when {
                 state.loading -> LoadingCard()
-                state.unreachable -> NoticeCard(
-                    text = "Couldn't reach this server. Check that it is online and try again.",
+                state.failedFeatures.isNotEmpty() -> NoticeCard(
+                    text = "Couldn't load some reader features. Try again.",
                     actionLabel = "Retry",
                     onAction = viewModel::refresh,
                 )
                 !state.hasAnyContent -> NoticeCard(
-                    text = if (target?.features.orEmpty().isEmpty()) {
-                        "Enve doesn't offer personal reader features for this source yet."
+                    text = if (target?.features.orEmpty().isEmpty() || state.unsupported) {
+                        "Personal reader features aren't available for this source."
                     } else {
-                        "This server didn't return any of the reader features Enve supports."
+                        "No personal reading activity to show yet."
                     },
                     actionLabel = "Retry",
                     onAction = viewModel::refresh,

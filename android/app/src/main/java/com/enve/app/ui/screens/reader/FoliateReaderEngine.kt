@@ -82,7 +82,7 @@ private class SelectionActionModeCallback(
 class FoliateReaderEngine(
     context: Context,
     private val container: FrameLayout,
-    private val epubFile: File,
+    private val bookFile: File,
     customFonts: List<CustomFont>,
     private val initialCheckpoint: EpubBridgeCheckpoint?,
     private val identity: EpubBridgeCheckpoint,
@@ -216,6 +216,18 @@ class FoliateReaderEngine(
         return locations.has("domRange") || !locations.optString("cssSelector").isNullOrBlank()
     }
 
+    fun illustrationAt(cssX: Float, cssY: Float, onResult: (ReaderIllustrationHit?) -> Unit) {
+        webView.post {
+            if (closed || !ready) {
+                onResult(null)
+                return@post
+            }
+            webView.evaluateJavascript(ReaderIllustrationProbe.foliateScript(cssX, cssY)) { result ->
+                onResult(ReaderIllustrationProbe.parse(result))
+            }
+        }
+    }
+
     override fun clearSelection() = evaluate("window.enveReader.clearSelection()")
 
     override fun clearSearch() = evaluate("window.enveReader.clearSearch()")
@@ -289,11 +301,11 @@ class FoliateReaderEngine(
                 }
             }
             .addPathHandler("/book/") { path ->
-                if (path == "current.epub" && epubFile.isFile) {
+                if (path == "current" && bookFile.isFile) {
                     WebResourceResponse(
-                        EPUB_MEDIA_TYPE,
+                        if (bookFile.extension.equals("azw3", ignoreCase = true)) "application/vnd.amazon.mobi8-ebook" else EPUB_MEDIA_TYPE,
                         null,
-                        epubFile.inputStream(),
+                        bookFile.inputStream(),
                     ).withoutCaching()
                 } else {
                     blockedResponse()
@@ -388,6 +400,7 @@ class FoliateReaderEngine(
                     .put("revision", identity.revision)
                     .put("writerEpoch", identity.writerEpoch),
             )
+            .put("fileName", bookFile.name)
             .put("capability", bridgeSession.capability)
             .put("preferences", preferences.toFoliateJson())
             .put(
@@ -530,6 +543,8 @@ class FoliateReaderEngine(
             }.onSuccess { (items, checkpoint, restoreMethod) ->
                 ready = true
                 mainHandler.removeCallbacks(readyTimeout)
+                evaluate(ReaderWideContentFit.foliateInstallScript())
+                evaluate(ReaderSelectionHandleFix.foliateInstallScript())
                 webView.post { onReady(items, checkpoint, restoreMethod) }
             }
                 .onFailure { webView.post { onError("Foliate returned an invalid table of contents.") } }
@@ -666,6 +681,8 @@ class FoliateReaderEngine(
             "foliate-reader.js",
             "foliate/view.js",
             "foliate/epub.js",
+            "foliate/mobi.js",
+            "foliate/vendor/fflate.js",
             "foliate/epubcfi.js",
             "foliate/fixed-layout.js",
             "foliate/paginator.js",

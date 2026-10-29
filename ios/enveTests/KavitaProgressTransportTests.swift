@@ -6,6 +6,8 @@ import Testing
 private final class KavitaProgressTransportStub: KavitaProvider, @unchecked Sendable {
     var requests: [URLRequest] = []
     var progressStatus = 200
+    var loginStatus = 200
+    var loginError: URLError?
     var volumeDelay: Duration = .zero
     var activeVolumeRequests = 0
     var peakVolumeRequests = 0
@@ -20,8 +22,9 @@ private final class KavitaProgressTransportStub: KavitaProvider, @unchecked Send
         let status: Int
         switch url.path {
         case "/api/Account/login":
+            if let loginError { throw loginError }
             data = Data(#"{"token":"header.payload.signature","apiKey":"image-key"}"#.utf8)
-            status = 200
+            status = loginStatus
         case "/api/Account":
             data = Data(#"{"apiKey":"image-key"}"#.utf8)
             status = 200
@@ -60,6 +63,44 @@ private final class KavitaProgressTransportStub: KavitaProvider, @unchecked Send
 
 @MainActor
 struct KavitaProgressTransportTests {
+    @Test(arguments: [401, 403, 404, 429, 500, 503])
+    func failedLoginKeepsItsCauseAndCanRecover(status: Int) async throws {
+        let provider = KavitaProgressTransportStub(connection: ServerConnection(
+            name: "Fixture", url: "https://kavita.example.invalid", type: .kavita,
+            username: "reader", password: "fixture-password"
+        ))
+        provider.loginStatus = status
+        do {
+            try await provider.ensureAuthenticated()
+            Issue.record("Expected failed login")
+        } catch ProviderError.unauthorized {
+            #expect(status == 401)
+        } catch ProviderError.serverError(let message) {
+            #expect(status != 401)
+            #expect(message.contains("HTTP \(status)"))
+        }
+        #expect(provider.connection.token == nil)
+        provider.loginStatus = 200
+        try await provider.ensureAuthenticated()
+        #expect(provider.connection.token == "header.payload.signature")
+        #expect(provider.requests.count == 2)
+    }
+
+    @Test func connectionFailureKeepsItsNetworkErrorAndCanRecover() async throws {
+        let provider = KavitaProgressTransportStub(connection: ServerConnection(
+            name: "Fixture", url: "https://kavita.example.invalid", type: .kavita,
+            username: "reader", password: "fixture-password"
+        ))
+        provider.loginError = URLError(.cannotConnectToHost)
+        await #expect(throws: URLError(.cannotConnectToHost)) {
+            try await provider.ensureAuthenticated()
+        }
+        #expect(provider.connection.token == nil)
+        provider.loginError = nil
+        try await provider.ensureAuthenticated()
+        #expect(provider.connection.token == "header.payload.signature")
+    }
+
     @Test func comicPagesStreamTheSelectedIssueWithZeroBasedServerPages() async throws {
         let provider = makeProvider()
         let detail = try await provider.fetchFullBookDetails(bookId: "3:7:12", libraryId: "5")
