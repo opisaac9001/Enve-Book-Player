@@ -10,12 +10,14 @@ import FluidAudio
 
 enum NeuralTTSError: LocalizedError {
     case emptyAudio
+    case invalidAudio
     case notReady
     case unsupportedOS
 
     var errorDescription: String? {
         switch self {
         case .emptyAudio: "The on-device voice produced no audio."
+        case .invalidAudio: "The on-device voice produced invalid audio."
         case .notReady: "The on-device voice is not ready."
         case .unsupportedOS: "Kokoro requires iOS 26.6 or later on iOS 26."
         }
@@ -157,6 +159,7 @@ final class AnchoredAVTTSEngine: NSObject, @preconcurrency TTSEngine, AVSpeechSy
         _ utterance: TTSUtterance,
         onSpeakRange: @escaping (Range<String.Index>) -> Void
     ) async -> Result<Void, ReadiumNavigator.TTSError> {
+        guard !Task.isCancelled else { return .success(()) }
         guard let slice = anchor.slice(for: utterance.text) else {
             return .success(())
         }
@@ -341,6 +344,38 @@ private extension String {
 }
 
 @MainActor
+final class PreparedTTSEngine<Engine: TTSEngine & Sendable>: @preconcurrency TTSEngine, @unchecked Sendable {
+    nonisolated(unsafe) let availableVoices: [TTSVoice]
+    private let engine: Engine
+    private let preparation: Task<Void, Never>?
+    private var requestID: UUID?
+
+    init(engine: Engine, preparation: Task<Void, Never>?) {
+        self.engine = engine
+        self.preparation = preparation
+        availableVoices = engine.availableVoices
+    }
+
+    func speak(
+        _ utterance: TTSUtterance,
+        onSpeakRange: @escaping (Range<String.Index>) -> Void
+    ) async -> Result<Void, ReadiumNavigator.TTSError> {
+        let id = UUID()
+        requestID = id
+        defer { if requestID == id { requestID = nil } }
+        await preparation?.value
+        guard !Task.isCancelled, requestID == id else { return .success(()) }
+        let callback: @MainActor @Sendable (Range<String.Index>) -> Void = { [weak self] range in
+            guard self?.requestID == id else { return }
+            onSpeakRange(range)
+        }
+        return await engine.speak(utterance) { @Sendable range in
+            Task { @MainActor in callback(range) }
+        }
+    }
+}
+
+@MainActor
 final class NeuralTTSAudioPlayer {
     private let audioEngine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
@@ -499,6 +534,10 @@ struct NeuralTTSAudioCache: Sendable {
         _ = samples.withUnsafeMutableBytes { destination in
             data.copyBytes(to: destination)
         }
+        guard Self.isValidAudio(samples) else {
+            try? FileManager.default.removeItem(at: url)
+            return nil
+        }
         try? FileManager.default.setAttributes(
             [.modificationDate: Date()],
             ofItemAtPath: url.path
@@ -508,6 +547,7 @@ struct NeuralTTSAudioCache: Sendable {
 
     nonisolated func store(_ samples: [Float], key: String) throws {
         guard !samples.isEmpty else { throw NeuralTTSError.emptyAudio }
+        guard Self.isValidAudio(samples) else { throw NeuralTTSError.invalidAudio }
         let directory = try cacheDirectory()
         let url = directory.appendingPathComponent(key).appendingPathExtension("pcm")
         let data = samples.withUnsafeBufferPointer { buffer in
@@ -520,6 +560,16 @@ struct NeuralTTSAudioCache: Sendable {
     nonisolated func removeAll() throws {
         let directory = try cacheDirectory()
         try FileManager.default.removeItem(at: directory)
+    }
+
+    private nonisolated static func isValidAudio(_ samples: [Float]) -> Bool {
+        var hasSound = false
+        for sample in samples {
+            // Allow headroom above normalized PCM, but reject corrupt model output.
+            guard sample.isFinite, abs(sample) <= 4 else { return false }
+            if abs(sample) > 0.00001 { hasSound = true }
+        }
+        return hasSound
     }
 
     private nonisolated func cacheDirectory() throws -> URL {

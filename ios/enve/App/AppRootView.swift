@@ -13,18 +13,26 @@ extension Notification.Name {
 }
 
 struct AppRootView: View {
+    @EnvironmentObject private var theme: ThemeManager
     @Environment(AppState.self) private var appState
     @Environment(ProfileSwitchCoordinator.self) private var profiles
     private let profileSession: ProfileSession
     @Environment(EnveEngine.self) private var engine
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var tab: HearthTab = .hearth
     @State private var tabResetTokens: [HearthTab: UUID] = Dictionary(
         uniqueKeysWithValues: HearthTab.allCases.map { ($0, UUID()) }
     )
     @State private var mantelBarHeight: CGFloat?
     @State private var shellBottomSafeArea: CGFloat = 0
-    @AppStorage("hearth.mode") private var modeRaw = Hearth.Mode.system.rawValue
+    @State private var shellSize: CGSize = .zero
+    @State private var shellFold: FoldLine?
+    @State private var shellColumn: SideColumn?
+    @State private var facingBook: Book?
+    @State private var facingResetToken = UUID()
     @State private var prefs: UserPreferences
 
     @State private var debugDetailBook: Book?
@@ -65,14 +73,14 @@ struct AppRootView: View {
         .animation(reduceMotion ? nil : .smooth(duration: 0.6), value: appState.isBootstrapComplete)
         .overlay(alignment: .top) {
             ReaderOpenPreparationBanner()
-                .safeAreaPadding(.top, 8)
+                .safeAreaPadding(.top, 8 + (duoLayout.sideColumn?.topClearance ?? 0))
                 .zIndex(100)
         }
         .animation(
             reduceMotion ? nil : .smooth(duration: 0.25),
             value: engine.readerOpen.activity
         )
-        .fullScreenCover(isPresented: $presentation.isPlayerPresented) {
+        .fullScreenCover(isPresented: playerCoverPresented) {
             PlayerScreen()
                 .enveEnvironment(session: profileSession)
         }
@@ -149,7 +157,20 @@ struct AppRootView: View {
                 tourPresented = true
             }
         }
-        .preferredColorScheme(Hearth.Mode(rawValue: modeRaw)?.preferredColorScheme)
+        .onChange(of: duoLayout.isSpread) { _, spread in
+            // Opening the phone moves the player from the cover to the facing page; closing it keeps the
+            // player on the mantel pill rather than taking the outer display over.
+            if spread {
+                appState.presentation.isPlayerPresented = false
+            }
+        }
+        .onChange(of: appState.presentation.isPlayerPresented) { _, presented in
+            guard presented, duoLayout.isSpread else { return }
+            appState.presentation.isPlayerPresented = false
+            facingResetToken = UUID()
+        }
+        .preferredColorScheme(theme.appearanceMode.preferredColorScheme)
+        .background { HingeStateObserver(store: HingeStateStore.shared) }
         .hearthRoot()
         .task { await restoreLastPlayedIntoMantel() }
         .task { await handleDebugRoute() }
@@ -326,7 +347,8 @@ struct AppRootView: View {
             } else if route == "reader", let smokeBook = Self.makeReaderSmokeBook() {
                 engine.playback.presentReader(for: smokeBook)
             }
-        case "footnotefixture":
+        case "footnotefixture", "pdffixture":
+            let isPDF = route == "pdffixture"
             if let fixtureFilename,
                 let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
             {
@@ -344,12 +366,12 @@ struct AppRootView: View {
                 if FileManager.default.fileExists(atPath: fileURL.path) {
                     let book = Book(
                         id: "debug-\(fixtureFilename)",
-                        title: "Enve Footnote Fixture",
+                        title: isPDF ? "Enve PDF Fixture" : "Enve Footnote Fixture",
                         author: "Test Fixture",
                         source: .local,
                         filePath: fileURL.path,
                         mediaType: .ebook,
-                        ebookFormat: EbookFormat.epub.rawValue,
+                        ebookFormat: (isPDF ? EbookFormat.pdf : EbookFormat.epub).rawValue,
                         ebookFileURL: fileURL,
                         libraryId: "debug"
                     )
@@ -366,6 +388,22 @@ struct AppRootView: View {
             {
                 engine.playback.presentReader(for: book)
             }
+        case "positiondetail":
+            let format = Self.launchArgumentValue("imaginePositionFormat") ?? "epub"
+            var book = Book(
+                id: "debug-position-\(format)", title: "Book position fixture", author: "Enve",
+                source: .local, mediaType: .ebook, ebookFormat: format,
+                ebookProgress: 0.25, providerId: UUID(), libraryId: "debug"
+            )
+            if format == "pdf" {
+                book.epubLocator = #"{"page":7,"pageCount":32}"#
+            } else if format == "cbz" {
+                book.epubLocator = "cbz-page:7"
+                book.comicMetadata = ComicMetadata(seriesID: "position-fixture", pageCount: 32)
+            } else if format == "epub" {
+                book.epubLocator = #"{"href":"chapter2.xhtml","locations":{"progression":0.5,"totalProgression":0.25}}"#
+            }
+            debugDetailBook = book
         case "comicdetail":
             debugDetailBook = Book(
                 id: "debug-comic-detail",
@@ -484,6 +522,31 @@ struct AppRootView: View {
             await runChapterExtractionTest()
         case "grimmorye2e":
             await runGrimmoryE2ETest()
+        case "storyalignassets":
+            if let title = openBook, !title.isEmpty {
+                await StoryAlignCTCProbe.downloadAssets(title: title, engine: engine, profile: profileSession)
+            }
+        case "storyalignctcprobe":
+            if let title = openBook, !title.isEmpty {
+                await StoryAlignCTCProbe.downloadAssets(
+                    title: title, engine: engine, profile: profileSession,
+                    probeStart: Self.launchArgumentValue("imagineCTCStart").flatMap(Double.init) ?? 120
+                )
+            }
+        case "storyalignctcfull":
+            if let title = openBook, !title.isEmpty {
+                await StoryAlignCTCProbe.downloadAssets(title: title, engine: engine, profile: profileSession, fullAlignment: true)
+            }
+        case "storyalignctcinstall":
+            if let title = openBook, !title.isEmpty {
+                await StoryAlignCTCProbe.downloadAssets(title: title, engine: engine, profile: profileSession, installPreparedBook: true)
+            }
+        case "storyalignctcfixture":
+            await StoryAlignCTCProbe.probeLocalFiles(profile: profileSession)
+        case "storyalignctcfixturefull":
+            await StoryAlignCTCProbe.probeLocalFiles(profile: profileSession, fullAlignment: true)
+        case "storyalignctcbenchmark":
+            await StoryAlignCTCProbe.benchmark(profile: profileSession)
         case "storytellere2e":
             await runStorytellerE2ETest()
         case "storytellersmiltest":
@@ -513,7 +576,7 @@ struct AppRootView: View {
         case "suggestions":
             debugWorkHubKey = nil
             debugScreenRoute = DebugRoute(id: "suggestions")
-        case "podcasts", "discover", "collections", "hardcover", "vocabulary", "insights", "completion", "storage", "libraryhealth", "metadatabatch", "tour":
+        case "podcasts", "discover", "collections", "hardcover", "vocabulary", "insights", "completion", "storage", "storyalign", "libraryhealth", "metadatabatch", "tour":
             if let route { debugScreenRoute = DebugRoute(id: route) }
         default:
             break
@@ -1601,6 +1664,7 @@ struct AppRootView: View {
         case "insights": JournalInsightsScreen()
         case "completion": CompletionCenterScreen()
         case "storage": StorageScreen(profileSession: profileSession)
+        case "storyalign": StoryAlignScreen()
         case "libraryhealth": LibraryHealthScreen(profileSession: profileSession)
         case "metadatabatch": MetadataBatchScreen()
         case "tour": HearthTour()
@@ -1609,32 +1673,146 @@ struct AppRootView: View {
     }
 
     private var shell: some View {
-        ZStack(alignment: .bottom) {
-            HearthBackground()
+        let layout = duoLayout
+        let spreadFold = layout.spreadFold
+        let nightstandFold = layout.nightstandFold
+        let column = layout.sideColumn
+        // Tab navigation drops added safe-area padding; reserve its top clearance explicitly.
+        let topClearance = column?.topClearance ?? 0
+        // The stacks keep one place in the tree across every layout, so opening or closing the phone never
+        // resets their navigation or scroll position. The outer stack keeps the safe area so the geometry it
+        // reports stays stable while the inner one reaches into the side column for the rail.
+        return ZStack {
+            ZStack(alignment: .bottom) {
+                if spreadFold != nil {
+                    DuoSpreadBackdrop(book: facingBook)
+                } else {
+                    HearthBackground()
+                }
 
-            VStack(spacing: 0) {
-                shellBanners
+                HStack(spacing: 0) {
+                    VStack(spacing: 0) {
+                        shellBanners
 
-                ZStack {
-                    tabContent(.hearth) { HearthScreen(isActive: tab == .hearth, profileSession: profileSession) }
-                    tabContent(.library) { LibraryScreen(isActive: tab == .library) }
-                    tabContent(.podcasts) { PodcastsHomeScreen(isActive: tab == .podcasts, showsBackButton: false) }
-                    tabContent(.journal) { JournalScreen(isActive: tab == .journal) }
+                        ZStack {
+                            HearthTabStack(isActive: tab == .hearth, resetToken: tabResetTokens[.hearth]) { [tab, profileSession] in
+                                HearthScreen(isActive: tab == .hearth, profileSession: profileSession)
+                            }
+                            HearthTabStack(isActive: tab == .library, resetToken: tabResetTokens[.library]) { [tab] in
+                                LibraryScreen(isActive: tab == .library)
+                            }
+                            HearthTabStack(isActive: tab == .podcasts, resetToken: tabResetTokens[.podcasts]) { [tab] in
+                                PodcastsHomeScreen(isActive: tab == .podcasts, showsBackButton: false)
+                            }
+                            HearthTabStack(isActive: tab == .journal, resetToken: tabResetTokens[.journal]) { [tab] in
+                                JournalScreen(isActive: tab == .journal)
+                            }
+                        }
+                        .padding(.bottom, nightstandFold?.inset ?? 0)
+
+                        if let fold = nightstandFold {
+                            NightstandDock(
+                                tab: $tab,
+                                style: prefs.shellNavigationStyle,
+                                bottomSafeArea: shellBottomSafeArea,
+                                onSelect: selectTab
+                            )
+                            .padding(.top, fold.inset)
+                            .frame(height: max(0, shellSize.height - fold.center))
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                        }
+                    }
+                    .padding(.top, topClearance)
+                    .padding(.trailing, spreadFold?.inset ?? 0)
+                    .environment(\.facingPageBookId, spreadFold == nil ? nil : facingBook?.stableId)
+                    .frame(width: spreadFold?.center)
+
+                    if let fold = spreadFold {
+                        FacingPage(book: facingBook, topInset: topClearance)
+                            .id(facingResetToken)
+                            .padding(.leading, fold.inset)
+                            .frame(maxWidth: .infinity)
+                            .transition(.move(edge: .trailing).combined(with: .opacity))
+                    }
+
+                    if let column {
+                        MantelBar(
+                            tab: $tab,
+                            style: prefs.shellNavigationStyle,
+                            onSelect: selectTab,
+                            placement: .rail(column),
+                            onMantelBookChange: spreadFold == nil ? nil : { facingBook = $0 },
+                            onRailPillTap: spreadFold == nil ? nil : { facingResetToken = UUID() }
+                        )
+                        .frame(width: column.width)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                    }
+                }
+                .environment(\.sharesShellBackdrop, spreadFold != nil)
+
+                if layout == .standard {
+                    MantelBar(tab: $tab, style: prefs.shellNavigationStyle, bottomSafeArea: shellBottomSafeArea, onSelect: selectTab)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { mantelBarHeight = $0 }
+                        .ignoresSafeArea(.keyboard, edges: .bottom)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
-
-            MantelBar(tab: $tab, style: prefs.shellNavigationStyle, bottomSafeArea: shellBottomSafeArea, onSelect: selectTab)
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { mantelBarHeight = $0 }
-                .ignoresSafeArea(.keyboard, edges: .bottom)
+            .overlay {
+                if let fold = spreadFold {
+                    DuoSpine(fold: fold)
+                }
+            }
+            .ignoresSafeArea(edges: column == nil ? [] : .trailing)
         }
         // Read here, not inside the bar, so the bar's sink can't feed back into the inset it is sized from.
-        .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.bottom } action: { shellBottomSafeArea = $0 }
+        .onGeometryChange(for: ShellGeometry.self) {
+            ShellGeometry(
+                size: $0.size,
+                bottomSafeArea: $0.safeAreaInsets.bottom,
+                fold: $0.hearthFold(),
+                column: $0.hearthSideColumn()
+            )
+        } action: { geometry in
+            shellSize = geometry.size
+            shellBottomSafeArea = geometry.bottomSafeArea
+            shellColumn = geometry.column
+            var fold = geometry.fold
+            #if DEBUG
+            fold = fold ?? HingeStateStore.shared.debugFold(canvas: geometry.size)
+            #endif
+            shellFold = fold
+        }
+        .animation(reduceMotion ? nil : .smooth(duration: 0.35), value: layout)
         .environment(\.mantelInset, mantelInset)
         .environment(\.shellNavigationStyle, prefs.shellNavigationStyle)
     }
 
+    private var duoLayout: DuoShellLayout {
+        let hinge = HingeStateStore.shared
+        return DuoShellLayout.resolve(
+            fold: shellFold,
+            column: shellColumn,
+            pose: hinge.pose(for: shellSize),
+            hingeKnown: hinge.isKnown,
+            horizontalSizeClass: horizontalSizeClass,
+            usesAccessibilityType: dynamicTypeSize.isAccessibilitySize
+        )
+    }
+
+    // On an open folding phone the player lives on the facing page, so the cover never competes with it.
+    private var playerCoverPresented: Binding<Bool> {
+        Binding(
+            get: { appState.presentation.isPlayerPresented && !duoLayout.isSpread },
+            set: { appState.presentation.isPlayerPresented = $0 }
+        )
+    }
+
     private var mantelInset: CGFloat {
-        let estimate = prefs.shellNavigationStyle == .classic ? MantelBar.classicHeight : MantelBar.liquidHeight
+        guard duoLayout == .standard else { return 16 }
+        let estimate =
+            prefs.shellNavigationStyle == .classic
+            ? MantelBar.classicHeight(horizontal: horizontalSizeClass, vertical: verticalSizeClass)
+            : MantelBar.liquidHeight
         return (mantelBarHeight ?? estimate) + 16
     }
 
@@ -1665,18 +1843,6 @@ struct AppRootView: View {
         .padding(.top, appState.providerConnections.connectionsNeedingReauth.isEmpty && appState.presentation.orphanedBooks.isEmpty ? 0 : 8)
         .animation(.smooth(duration: 0.3), value: appState.providerConnections.connectionsNeedingReauth.count)
         .animation(.smooth(duration: 0.3), value: appState.presentation.orphanedBooks.count)
-    }
-
-    @ViewBuilder
-    private func tabContent<Content: View>(_ item: HearthTab, @ViewBuilder content: () -> Content) -> some View {
-        NavigationStack {
-            content()
-                .accessibilityHidden(tab != item)
-        }
-        .id(tabResetTokens[item])
-        .opacity(tab == item ? 1 : 0)
-        .allowsHitTesting(tab == item)
-        .accessibilityHidden(tab != item)
     }
 
     private func selectTab(_ item: HearthTab) {
@@ -1714,6 +1880,7 @@ struct AppRootView: View {
             "imagineSourceUser",
             "imagineSourcePassword",
             "imagineSeekFraction",
+            "imagineCTCStart",
         ]
         keys.forEach { UserDefaults.standard.removeObject(forKey: $0) }
         if let bundleID = Bundle.main.bundleIdentifier,
@@ -1775,11 +1942,26 @@ struct AppRootView: View {
     #endif
 }
 
+private nonisolated struct ShellGeometry: Equatable, Sendable {
+    var size: CGSize
+    var bottomSafeArea: CGFloat
+    var fold: FoldLine?
+    var column: SideColumn?
+}
+
 struct HearthBackground: View {
     @Environment(\.hearth) private var hearth
+    @Environment(\.sharesShellBackdrop) private var sharesShellBackdrop
 
     var body: some View {
-        hearth.bg.ignoresSafeArea()
+        Group {
+            if sharesShellBackdrop {
+                Color.clear
+            } else {
+                hearth.bg.ignoresSafeArea()
+            }
+        }
+        .clearsNavigationContainerBackground()
     }
 }
 
@@ -1997,7 +2179,6 @@ extension View {
 
     func enveEnvironment(session: ProfileSession) -> some View {
         self
-            .defaultAppStorage(session.defaults)
             .environment(\.profileSession, session)
             .environment(ProfileSwitchCoordinator.shared)
             .environment(session.appState)
@@ -2013,7 +2194,9 @@ extension View {
             .environmentObject(session.theme)
             .environment(session.playback.player)
             .environment(\.shellNavigationStyle, session.preferences.loadPreferences().shellNavigationStyle)
-            .preferredColorScheme(Hearth.Mode(rawValue: session.defaults.string(forKey: "hearth.mode") ?? "")?.preferredColorScheme)
+            // A presentation is its own surface; it never inherits the spread's shared backdrop.
+            .environment(\.sharesShellBackdrop, false)
             .hearthRoot()
+            .defaultAppStorage(session.defaults)
     }
 }

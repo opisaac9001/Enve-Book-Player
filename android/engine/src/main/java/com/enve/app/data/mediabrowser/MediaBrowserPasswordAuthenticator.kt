@@ -13,12 +13,13 @@ class MediaBrowserPasswordAuthenticator @Inject constructor(
     private val api: GrimmoryApi,
     private val prefs: PreferencesManager,
 ) {
-    suspend fun login(source: BookSource, username: String, password: String): Result<Unit> = runCatching {
+    suspend fun login(source: BookSource, serverUrl: String, username: String, password: String): Result<Unit> = runCatching {
         val authHeader = buildAuthHeader()
         val request = JellyfinAuthRequest(username = username, password = password)
+        val url = "${serverUrl.trimEnd('/')}/Users/AuthenticateByName"
         val response = when (source) {
-            BookSource.JELLYFIN -> api.jellyfinLogin(authHeader, request)
-            BookSource.EMBY -> api.embyLogin(authHeader, request)
+            BookSource.JELLYFIN -> api.jellyfinLogin(url, authHeader, request)
+            BookSource.EMBY -> api.embyLogin(url, authHeader, request)
             else -> error("${source.displayName} does not use MediaBrowser login")
         }
         if (!response.isSuccessful) {

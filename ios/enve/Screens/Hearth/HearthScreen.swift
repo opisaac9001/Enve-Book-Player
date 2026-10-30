@@ -16,6 +16,7 @@ struct HearthScreen: View {
     @Environment(ProfileSwitchCoordinator.self) private var profiles
     @Environment(\.hearth) private var hearth
     @Environment(\.mantelInset) private var mantelInset
+    @Environment(\.facingPageBookId) private var facingPageBookId
 
     @State private var reading: [Book] = []
     @State private var listening: [Book] = []
@@ -47,9 +48,11 @@ struct HearthScreen: View {
                     }
 
                     if let hero {
-                        HearthBookCard(book: hero, sourceLabel: sourceLabel(for: hero), prominent: true)
-                            .contextMenu { markUnreadButton(for: hero) }
-                            .padding(.horizontal, 24)
+                        if hero.stableId != facingPageBookId {
+                            HearthBookCard(book: hero, sourceLabel: sourceLabel(for: hero), prominent: true)
+                                .contextMenu { markUnreadButton(for: hero) }
+                                .padding(.horizontal, 24)
+                        }
                         HearthPulse(
                             activeCount: activeBookCount,
                             downloadedCount: downloaded.count,
@@ -72,16 +75,17 @@ struct HearthScreen: View {
                 .padding(.bottom, mantelInset + 16)
             }
             .scrollIndicators(.hidden)
+            .refreshable {
+                await engine.sync.manualSync()
+                await engine.sources.refreshHearthCatalog()
+                await load()
+            }
         }
         .accessibilityIdentifier("hearth-screen")
         .navigationDestination(item: $seeAll) { destination in
             HearthSeeAllScreen(destination: destination)
         }
         .background(HearthBackground())
-        .refreshable {
-            await engine.sync.manualSync()
-            await load()
-        }
         .task(id: "\(isActive):\(lastOpened.openedAt?.timeIntervalSince1970 ?? 0)") {
             guard isActive else { return }
             await load()
@@ -185,9 +189,15 @@ struct HearthScreen: View {
                     .font(.hearthScreenTitle)
                     .foregroundStyle(hearth.text)
                 if let synced = engine.sync.lastSyncDate {
-                    Text("Synced \(synced.formatted(.relative(presentation: .named)))")
+                    Text("Progress synced \(synced.formatted(.relative(presentation: .named)))")
                         .font(.hearthUI(11))
                         .foregroundStyle(hearth.textTertiary)
+                }
+                if engine.sources.recentCatalogRefreshFailed {
+                    Text("Couldn't check for new books. Pull to retry.")
+                        .font(.hearthUI(11))
+                        .foregroundStyle(hearth.textSecondary)
+                        .accessibilityIdentifier("hearth-catalog-refresh-failure")
                 }
             }
             Spacer()
@@ -213,7 +223,7 @@ struct HearthScreen: View {
                     .background {
                         Circle()
                             .fill(hearth.bgElevated)
-                            .overlay(Circle().strokeBorder(hearth.hairline, lineWidth: 1))
+                            .hearthOutlined(Circle())
                     }
             }
             .accessibilityLabel("Settings")
@@ -251,14 +261,15 @@ struct HearthScreen: View {
     }
 
     private func shelf(books: [Book]) -> some View {
-        ScrollView(.horizontal) {
+        let shelfRatio = books.map(\.hearthCoverRatio).max() ?? 1
+        return ScrollView(.horizontal) {
             LazyHStack(alignment: .top, spacing: 16) {
                 ForEach(books, id: \.stableId) { book in
                     NavigationLink {
                         BookDetailScreen(book: book)
                     } label: {
-                        VStack(alignment: .center, spacing: 8) {
-                            ShelfCoverCell(book: book, width: 96, showsProgress: false)
+                        VStack(alignment: .center, spacing: 16) {
+                            ShelfCoverCell(book: book, width: 96, cellRatio: shelfRatio, showsProgress: false)
                             VStack(alignment: .center, spacing: 2) {
                                 Text(book.title)
                                     .font(.hearthDisplay(13, weight: .medium))
@@ -282,6 +293,13 @@ struct HearthScreen: View {
                         shelfMenu(for: book, dismissable: false)
                     }
                 }
+            }
+            // The ledge sits in front of the covers so their bindings tuck behind the shelf lip.
+            .overlay(alignment: .top) {
+                ShelfLedge()
+                    .padding(.top, 96 * shelfRatio - 1)
+                    .padding(.horizontal, -10)
+                    .allowsHitTesting(false)
             }
             .padding(.horizontal, 24)
         }
@@ -350,15 +368,9 @@ struct HearthScreen: View {
                     }
                 }
             }
-            .background {
-                RoundedRectangle(cornerRadius: Hearth.radiusCard, style: .continuous)
-                    .fill(hearth.bgElevated)
-                    .overlay {
-                        RoundedRectangle(cornerRadius: Hearth.radiusCard, style: .continuous)
-                            .strokeBorder(hearth.hairline, lineWidth: 1)
-                    }
-            }
+            .background(hearth.bgElevated)
             .clipShape(RoundedRectangle(cornerRadius: Hearth.radiusCard, style: .continuous))
+            .hearthOutlined(RoundedRectangle(cornerRadius: Hearth.radiusCard, style: .continuous), raised: true)
             .padding(.horizontal, 24)
         }
     }
@@ -406,7 +418,7 @@ struct HearthScreen: View {
         .background {
             Capsule()
                 .fill(hearth.bgElevated)
-                .overlay(Capsule().strokeBorder(hearth.hairline, lineWidth: 1))
+                .hearthOutlined(Capsule())
         }
     }
 
@@ -457,10 +469,14 @@ struct HearthScreen: View {
             ZStack {
                 EmberGlow(tint: Hearth.accent, isBreathing: true, intensity: 0.8)
                     .frame(height: 180)
-                Image(systemName: "flame")
-                    .font(.hearthUI(44))
-                    .foregroundStyle(hearth.ember)
-                    .accessibilityHidden(true)
+                    .mask(EllipticalGradient(colors: [.black, .clear], center: .center, startRadiusFraction: 0.15, endRadiusFraction: 0.5))
+                VStack(spacing: 0) {
+                    Image(systemName: "books.vertical.fill")
+                        .font(.hearthUI(44))
+                        .foregroundStyle(hearth.ember)
+                    ShelfLedge()
+                        .frame(width: 120)
+                }
             }
             .frame(maxWidth: .infinity)
             .accessibilityHidden(true)
@@ -485,7 +501,9 @@ struct HearthScreen: View {
                 .foregroundStyle(hearth.readableOnEmber)
                 .padding(.horizontal, 24)
                 .padding(.vertical, 14)
-                .background(hearth.ember, in: Capsule())
+                .background {
+                    HearthChromeBackground(shape: .capsule, fill: hearth.ember, tint: hearth.ember)
+                }
             }
             .buttonStyle(PressableStyle())
         }
@@ -604,10 +622,7 @@ struct HearthPulse: View {
         .background {
             RoundedRectangle(cornerRadius: Hearth.radiusCard, style: .continuous)
                 .fill(hearth.bgElevated.opacity(0.82))
-                .overlay {
-                    RoundedRectangle(cornerRadius: Hearth.radiusCard, style: .continuous)
-                        .strokeBorder(hearth.hairline, lineWidth: 1)
-                }
+                .hearthOutlined(RoundedRectangle(cornerRadius: Hearth.radiusCard, style: .continuous), raised: true)
         }
         .accessibilityElement(children: .contain)
     }

@@ -79,6 +79,12 @@ final class ProviderSyncSink: SyncSink {
         guard provider.syncCapability.contains(.pushProgress) else { return }
 
         if update.domain == .ebook {
+            var locator = update.locator
+            if let data = locator?.data(using: .utf8),
+                var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                object.removeValue(forKey: "enveSharedPosition") != nil {
+                locator = String(data: try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), encoding: .utf8)
+            }
             if update.book.isStorytellerReadAloud,
                 let storyteller = provider as? StorytellerProvider
             {
@@ -95,7 +101,7 @@ final class ProviderSyncSink: SyncSink {
                         through: storyteller
                     )
                 } else {
-                    guard let locator = update.locator else { throw ProviderError.invalidResponse }
+                    guard let locator else { throw ProviderError.invalidResponse }
                     try await StorytellerPositionSyncService.shared.submit(
                         book: update.book,
                         locatorJSON: locator,
@@ -109,7 +115,7 @@ final class ProviderSyncSink: SyncSink {
                 try await provider.updateEbookProgress(
                     for: update.book,
                     progress: update.progress,
-                    epubLocator: update.locator,
+                    epubLocator: locator,
                     sourceEngine: update.sourceEngine
                 )
             } else {
@@ -119,7 +125,7 @@ final class ProviderSyncSink: SyncSink {
                 try await progressProvider.updateEbookProgress(
                     for: update.book,
                     progress: update.progress,
-                    epubLocator: update.locator
+                    epubLocator: locator
                 )
             }
         } else {

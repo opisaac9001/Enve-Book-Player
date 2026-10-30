@@ -48,7 +48,7 @@ struct LibraryRecoveryStores {
                 try? profileSession.localStorage.deleteMetadataOverride(for: diskId)
             },
             cleanupAlignmentCaches: { [unowned profileSession] books in
-                if profileSession.isOwner, #available(iOS 26.0, *) {
+                if profileSession.isOwner {
                     profileSession.storyAlignService.cleanupOrphanedCaches(allBooks: books)
                 }
             },
@@ -87,9 +87,7 @@ struct LibraryRecoveryStores {
                 try? storage.deleteMetadataOverride(for: diskId)
             },
             cleanupAlignmentCaches: { books in
-                if #available(iOS 26.0, *) {
-                    StoryAlignService.shared.cleanupOrphanedCaches(allBooks: books)
-                }
+                StoryAlignService.shared.cleanupOrphanedCaches(allBooks: books)
             },
             isAudiobookDownloadActive: { bookId in
                 UnifiedDownloadService.shared.hasActiveTaskForBookId(bookId)
@@ -1284,7 +1282,7 @@ final class LibraryRecoveryCoordinator {
 
         _ = (profileSession?.localStorage ?? LocalStorageManager.shared).deleteAudiobook(book)
         try? (profileSession?.ebooks ?? LocalEbookImporter.shared).deleteRemoteEbookArtifacts(forBookId: book.id)
-        if profileSession?.isOwner ?? true, #available(iOS 26.0, *) {
+        if profileSession?.isOwner ?? true {
             (profileSession?.storyAlignService ?? StoryAlignService.shared).deleteConversions(involving: book)
         }
 

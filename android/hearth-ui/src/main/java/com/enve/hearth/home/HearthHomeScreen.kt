@@ -1,6 +1,7 @@
 package com.enve.hearth.home
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -12,7 +13,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -29,8 +30,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.MenuBook
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.automirrored.outlined.TrendingUp
+import androidx.compose.material.icons.automirrored.outlined.LibraryBooks
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ArrowCircleDown
 import androidx.compose.material.icons.outlined.AutoAwesome
@@ -39,10 +41,8 @@ import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Explore
 import androidx.compose.material.icons.outlined.LocalFireDepartment
 import androidx.compose.material.icons.outlined.Podcasts
-import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.AccountCircle
-import androidx.compose.material.icons.outlined.Verified
 import androidx.compose.material.icons.outlined.WifiOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -60,32 +60,35 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.res.painterResource
+import com.enve.hearth.R
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.enve.hearth.shell.profileViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
-import com.enve.core.data.util.FINISHED_PROGRESS_THRESHOLD
 import com.enve.engine.prefs.HearthHomeSection
 import com.enve.hearth.design.CoverTile
+import com.enve.hearth.design.coverAspectRatio
 import com.enve.hearth.design.EmberButton
 import com.enve.hearth.design.Hearth
 import com.enve.hearth.design.HearthFormat
 import com.enve.hearth.design.HearthText
 import com.enve.hearth.design.LocalMantelInset
 import com.enve.hearth.design.Overline
+import com.enve.hearth.design.ShelfLedge
 import com.enve.hearth.design.ShelfHeader
 import com.enve.hearth.design.hearthDisplay
 import com.enve.hearth.design.hearthUI
@@ -94,7 +97,6 @@ import com.enve.hearth.MarkUnreadDialog
 import com.enve.hearth.detail.detailListenTarget
 import com.enve.hearth.needsUnreadConfirmation
 import kotlin.math.abs
-import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -121,6 +123,7 @@ fun HearthHomeScreen(
     val refreshing by vm.isRefreshing.collectAsStateWithLifecycle()
     val lastSyncMillis by vm.lastSyncMillis.collectAsStateWithLifecycle()
     val homeSectionOrder by vm.homeSectionOrder.collectAsStateWithLifecycle()
+    val showTodayStack by vm.showTodayStack.collectAsStateWithLifecycle()
     val networkAvailable by vm.networkAvailable.collectAsStateWithLifecycle()
     val dismissedKeys by vm.dismissedShelfKeys.collectAsStateWithLifecycle()
     var showingDiscover by rememberSaveable { mutableStateOf(false) }
@@ -237,12 +240,11 @@ fun HearthHomeScreen(
                             onLongClick = { contextBook = book; contextDismissable = true },
                         )
                     }
-                    item {
-                        TodayStack(
-                            activeCount = visibleContinue.distinctBy { it.uniqueKey }.size,
+                    if (showTodayStack) item {
+                        LibraryOverview(
+                            inProgressCount = visibleContinue.distinctBy { it.uniqueKey }.size,
                             downloadedCount = allBooks.count { it.isDownloaded },
-                            freshCount = recent.size,
-                            progress = HearthFormat.progress(book),
+                            recentlyAddedCount = recent.size,
                             tint = rememberAmbientTint(book),
                         )
                     }
@@ -373,9 +375,8 @@ private fun QuoteBlock() {
 }
 
 @Composable
-private fun TodayStack(activeCount: Int, downloadedCount: Int, freshCount: Int, progress: Float, tint: Color) {
+private fun LibraryOverview(inProgressCount: Int, downloadedCount: Int, recentlyAddedCount: Int, tint: Color) {
     val palette = Hearth.palette
-    val pct = (progress.coerceIn(0f, 1f) * 100).roundToInt()
     Column(
         Modifier
             .fillMaxWidth()
@@ -387,31 +388,24 @@ private fun TodayStack(activeCount: Int, downloadedCount: Int, freshCount: Int, 
         verticalArrangement = Arrangement.spacedBy(13.dp),
     ) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Outlined.Search, contentDescription = null, tint = tint, modifier = Modifier.size(14.dp))
-            Overline("Today's stack", color = palette.textTertiary)
-            Spacer(Modifier.weight(1f))
-            Text("$pct% current", style = hearthUI(11.sp, FontWeight.SemiBold), color = tint)
+            Icon(Icons.AutoMirrored.Outlined.LibraryBooks, contentDescription = null, tint = tint, modifier = Modifier.size(14.dp))
+            Overline("Library overview", color = palette.textTertiary)
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S)) {
-            StackTile(Icons.Outlined.LocalFireDepartment, capped(activeCount, 32), "Continue", tint, Modifier.weight(1f))
-            StackTile(Icons.Outlined.ArrowCircleDown, capped(downloadedCount, 16), "Saved", palette.statusOK, Modifier.weight(1f))
-            StackTile(Icons.Outlined.AutoAwesome, capped(freshCount, 12), "Added", palette.ember, Modifier.weight(1f))
-            StackTile(
-                if (progress >= FINISHED_PROGRESS_THRESHOLD) Icons.Outlined.Verified else Icons.AutoMirrored.Outlined.TrendingUp,
-                "$pct%", "Current", tint, Modifier.weight(1f),
-            )
+            StackTile(Icons.Outlined.LocalFireDepartment, inProgressCount, "In progress", tint, Modifier.weight(1f))
+            StackTile(Icons.Outlined.ArrowCircleDown, downloadedCount, "Downloaded", palette.statusOK, Modifier.weight(1f))
+            StackTile(Icons.Outlined.AutoAwesome, recentlyAddedCount, "Recently added", palette.ember, Modifier.weight(1f))
         }
     }
 }
 
-private fun capped(count: Int, cap: Int): String = if (count > cap) "$cap+" else count.toString()
-
 @Composable
-private fun StackTile(icon: androidx.compose.ui.graphics.vector.ImageVector, value: String, label: String, tint: Color, modifier: Modifier = Modifier) {
+private fun StackTile(icon: ImageVector, count: Int, label: String, tint: Color, modifier: Modifier = Modifier) {
     val palette = Hearth.palette
     val shape = RoundedCornerShape(8.dp)
     Column(
         modifier
+            .semantics(mergeDescendants = true) {}
             .heightIn(min = 82.dp)
             .clip(shape)
             .background(palette.bg.copy(alpha = 0.42f))
@@ -421,39 +415,50 @@ private fun StackTile(icon: androidx.compose.ui.graphics.vector.ImageVector, val
         verticalArrangement = Arrangement.spacedBy(7.dp, Alignment.CenterVertically),
     ) {
         Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(14.dp))
-        Text(value, style = hearthDisplay(19.sp, FontWeight.SemiBold), color = palette.text, maxLines = 1)
-        Text(label, style = hearthUI(10.sp, FontWeight.Medium), color = palette.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(count.toString(), style = hearthDisplay(19.sp, FontWeight.SemiBold), color = palette.text, maxLines = 1)
+        Text(label, style = hearthUI(10.sp, FontWeight.Medium), color = palette.textTertiary, maxLines = 2, textAlign = TextAlign.Center, overflow = TextOverflow.Ellipsis)
     }
 }
 
+private val ShelfCoverWidth = 96.dp
+
 @Composable
 private fun BookShelf(title: String, books: List<Book>, onOpen: (Book) -> Unit, onSeeAll: () -> Unit, onContextBook: (Book) -> Unit) {
+    val coverHeight = ShelfCoverWidth / books.minOf { coverAspectRatio(it.mediaType) }
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.M)) {
         ShelfHeader(title, modifier = Modifier.fillMaxWidth().padding(horizontal = Hearth.Spacing.XL), actionLabel = "See all", onAction = onSeeAll)
-        LazyRow(
-            contentPadding = PaddingValues(horizontal = Hearth.Spacing.XL),
-            horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.M),
-        ) {
-            items(books, key = { it.id + (it.connectionId ?: "") }) { book ->
-                ShelfCard(book, onOpen, onContextBook)
+        Box {
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = Hearth.Spacing.XL),
+                horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.M),
+            ) {
+                items(books, key = { it.id + (it.connectionId ?: "") }) { book ->
+                    ShelfCard(book, coverHeight, onOpen, onContextBook)
+                }
             }
+            ShelfLedge(Modifier.padding(top = coverHeight - 1.dp).padding(horizontal = Hearth.Spacing.XL - 10.dp))
         }
     }
 }
 
 @Composable
-private fun ShelfCard(book: Book, onOpen: (Book) -> Unit, onLongClick: (Book) -> Unit) {
+private fun ShelfCard(book: Book, coverHeight: Dp, onOpen: (Book) -> Unit, onLongClick: (Book) -> Unit) {
     val palette = Hearth.palette
     Column(
-        Modifier.width(96.dp).combinedClickable(onClick = { onOpen(book) }, onLongClick = { onLongClick(book) }),
+        Modifier.width(ShelfCoverWidth).combinedClickable(onClick = { onOpen(book) }, onLongClick = { onLongClick(book) }),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.XS),
     ) {
-        CoverTile(
-            model = book.coverUrl,
-            mediaType = book.mediaType,
-            modifier = Modifier.width(96.dp),
-        )
+        Box(
+            Modifier.padding(bottom = Hearth.Spacing.M).size(ShelfCoverWidth, coverHeight),
+            contentAlignment = Alignment.BottomCenter,
+        ) {
+            CoverTile(
+                model = book.coverUrl,
+                mediaType = book.mediaType,
+                modifier = Modifier.width(ShelfCoverWidth),
+            )
+        }
         Text(
             book.title,
             style = hearthDisplay(13.sp, FontWeight.Medium),
@@ -511,17 +516,11 @@ private fun EmptyHearth(onAddSource: () -> Unit) {
         verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.L),
     ) {
         Box(Modifier.fillMaxWidth().height(180.dp), contentAlignment = Alignment.Center) {
-            if (!Hearth.eink.suppressGradients) {
-                Box(Modifier.size(180.dp).drawBehind {
-                    drawCircle(
-                        brush = Brush.radialGradient(
-                            colors = listOf(palette.ember.copy(alpha = 0.25f), Color.Transparent),
-                            radius = size.minDimension / 2f,
-                        ),
-                    )
-                })
+            if (Hearth.eink.active) {
+                Icon(Icons.AutoMirrored.Outlined.MenuBook, contentDescription = null, tint = palette.text, modifier = Modifier.size(72.dp))
+            } else {
+                Image(painterResource(R.drawable.enve_book_mark), contentDescription = null, modifier = Modifier.size(156.dp))
             }
-            Icon(Icons.Outlined.LocalFireDepartment, contentDescription = null, tint = palette.ember, modifier = Modifier.size(44.dp))
         }
         Text("Light the fire.", style = hearthDisplay(26.sp), color = palette.text)
         Text(
@@ -622,7 +621,9 @@ private fun HomeSeeAll(title: String, books: List<Book>, onBack: () -> Unit, onO
             items(books.size, key = { books[it].uniqueKey }) { index ->
                 val book = books[index]
                 Column(Modifier.clickable { onOpen(book) }, verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.XS)) {
-                    CoverTile(book.coverUrl, mediaType = book.mediaType, modifier = Modifier.fillMaxWidth())
+                    Box(Modifier.fillMaxWidth().aspectRatio(1f), contentAlignment = Alignment.BottomCenter) {
+                        CoverTile(book.coverUrl, mediaType = book.mediaType, modifier = Modifier.fillMaxWidth(coverAspectRatio(book.mediaType)))
+                    }
                     Text(book.title, style = hearthDisplay(13.sp, FontWeight.Medium), color = palette.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     book.author?.let { Text(it, style = hearthUI(11.sp), color = palette.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 }

@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.AutoStories
 import androidx.compose.material.icons.filled.Book
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Flag
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Sync
@@ -42,6 +43,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -58,14 +63,20 @@ import com.enve.app.ui.components.SettingsMessageCard
 import com.enve.hearth.design.hearthDisplay
 import coil.compose.AsyncImage
 import com.enve.app.data.hardcover.HardcoverActivity
+import com.enve.app.data.hardcover.HardcoverBookMatch
 import com.enve.app.data.hardcover.HardcoverBookResult
 import com.enve.app.data.hardcover.HardcoverLibraryBook
+import com.enve.app.data.hardcover.HardcoverQueueSummary
+import com.enve.app.data.hardcover.HardcoverSyncStatus
 import com.enve.app.data.hardcover.HardcoverUserList
 import com.enve.app.ui.components.ScreenBackButton
 import com.enve.app.ui.components.SettingsCard
 import com.enve.app.ui.components.SettingsHeroHeader
 import com.enve.app.ui.components.SettingsScreenLayout
 import com.enve.app.ui.components.SettingsSectionHeader
+import com.enve.app.ui.components.SettingsToggleRow
+import com.enve.core.data.model.AppMediaType
+import com.enve.core.data.model.Book
 import com.enve.app.ui.theme.DS
 import com.enve.app.ui.theme.EnveTheme
 import com.enve.app.ui.theme.eink
@@ -85,6 +96,8 @@ fun HardcoverHubScreen(
     val colors = EnveTheme.colors
     val metrics = rememberAdaptiveMetrics()
     val dividerColor = colors.separator.copy(alpha = 0.3f)
+    val uriHandler = LocalUriHandler.current
+    var showSetup by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { viewModel.load() }
 
@@ -127,6 +140,30 @@ fun HardcoverHubScreen(
                 modifier = Modifier.padding(horizontal = DS.Spacing.LG.scaled(metrics)),
             )
 
+            SettingsCard(modifier = Modifier.padding(horizontal = DS.Spacing.LG.scaled(metrics))) {
+                Column(
+                    Modifier.fillMaxWidth().padding(DS.Spacing.LG.scaled(metrics)),
+                    verticalArrangement = Arrangement.spacedBy(DS.Spacing.SM.scaled(metrics)),
+                ) {
+                    TextButton(onClick = { showSetup = !showSetup }) {
+                        Text(if (showSetup) "Hide setup & permissions" else "Setup & permissions")
+                    }
+                    if (showSetup) {
+                        Text("Create a key named Enve in Hardcover's Settings → API. Choose an expiry, then enable:", color = colors.primaryText)
+                        Text("Reading sync: read:me:content, read:catalog:search, read:library, write:library.", color = colors.secondaryText)
+                        Text("Optional: read:lists to display lists; read:goals to display goals; write:goals to set a goal. Enve does not need all, email, account, or catalog-edit permissions.", color = colors.secondaryText)
+                        Text("Connect the key, then enable reading-progress sync and link each Enve book to its Hardcover edition. Sync sends progress and reading status to Hardcover; it does not restore your reader position from Hardcover.", color = colors.secondaryText)
+                        Text("If a section reports missing permissions, create a replacement key with the scopes for that feature. Expired keys also need replacing.", color = colors.secondaryText)
+                        TextButton(onClick = {
+                            uriHandler.openUri("https://hardcover.app/account/api")
+                        }) { Text("Open Hardcover API settings") }
+                        TextButton(onClick = {
+                            uriHandler.openUri("https://docs.hardcover.app/api/getting-started")
+                        }) { Text("Hardcover API documentation") }
+                    }
+                }
+            }
+
             if (!state.hasToken) {
                 HardcoverTokenCard(state.tokenInput, state.isSavingToken, viewModel::updateTokenInput, viewModel::saveToken)
             } else {
@@ -134,6 +171,17 @@ fun HardcoverHubScreen(
                     username = state.profile?.username.orEmpty(),
                     isLoading = state.isLoading,
                     onDisconnect = viewModel::disconnect,
+                )
+
+                HardcoverSyncSection(
+                    enabled = state.syncEnabled,
+                    status = state.syncStatus,
+                    queue = state.queue,
+                    matches = state.matches,
+                    onEnabledChange = viewModel::setSyncEnabled,
+                    onRetryFailed = viewModel::retryFailedSync,
+                    onDiscardFailed = viewModel::discardFailedSync,
+                    onUnlink = viewModel::unlink,
                 )
 
                 state.goalError?.let { HardcoverSectionError("Reading goal", it) }
@@ -229,10 +277,26 @@ fun HardcoverHubScreen(
                             }
                         }
                         state.searchResults.take(8).forEachIndexed { index, book ->
-                            HardcoverSearchRow(book, onAdd = { viewModel.addToLibrary(book) }, onStart = { viewModel.addToLibrary(book, startReading = true) })
+                            HardcoverSearchRow(
+                                book,
+                                onAdd = { viewModel.addToLibrary(book) },
+                                onStart = { viewModel.addToLibrary(book, startReading = true) },
+                                onLink = { viewModel.beginLink(book) },
+                            )
                             if (index < state.searchResults.take(8).lastIndex) HorizontalDivider(color = dividerColor)
                         }
                     }
+                }
+
+                state.linkTarget?.let { target ->
+                    HardcoverLinkSection(
+                        target = target,
+                        query = state.localQuery,
+                        results = state.localResults,
+                        onQueryChange = viewModel::updateLocalQuery,
+                        onSelect = viewModel::confirmLink,
+                        onCancel = viewModel::cancelLink,
+                    )
                 }
 
                 HardcoverLibrarySection(state.library)
@@ -417,10 +481,138 @@ private fun HardcoverActivitySection(activity: List<HardcoverActivity>) {
 }
 
 @Composable
+private fun HardcoverSyncSection(
+    enabled: Boolean,
+    status: HardcoverSyncStatus?,
+    queue: HardcoverQueueSummary,
+    matches: List<HardcoverBookMatch>,
+    onEnabledChange: (Boolean) -> Unit,
+    onRetryFailed: () -> Unit,
+    onDiscardFailed: () -> Unit,
+    onUnlink: (String) -> Unit,
+) {
+    val colors = EnveTheme.colors
+    val metrics = rememberAdaptiveMetrics()
+    val errorColor = if (EnveTheme.eink.monochrome) colors.secondaryText else HearthRed
+    val captionModifier = Modifier.padding(horizontal = DS.Spacing.LG.scaled(metrics), vertical = DS.Spacing.SM.scaled(metrics))
+    SettingsCard(modifier = Modifier.padding(horizontal = DS.Spacing.LG.scaled(metrics))) {
+        SettingsSectionHeader(title = "Progress Sync")
+        SettingsToggleRow(
+            icon = Icons.Default.Sync,
+            title = "Sync reading progress",
+            subtitle = "Sends listening and reading progress to Hardcover. Books match automatically by ISBN or ASIN, or by an exact title and author; link others from Search.",
+            checked = enabled,
+            onCheckedChange = onEnabledChange,
+        )
+        status?.let {
+            Text(
+                text = "${it.bookTitle}: ${it.message}",
+                color = if (it.isError) errorColor else colors.secondaryText,
+                fontSize = DS.FontSize.Caption.scaled(metrics),
+                modifier = captionModifier,
+            )
+        }
+        queue.storageError?.let {
+            Text(it, color = errorColor, fontSize = DS.FontSize.Caption.scaled(metrics), modifier = captionModifier)
+        }
+        if (queue.pending > 0 || queue.failed.isNotEmpty()) {
+            Text(
+                text = listOfNotNull(
+                    queue.pending.takeIf { it > 0 }?.let { if (it == 1) "1 update waiting to send" else "$it updates waiting to send" },
+                    queue.failed.size.takeIf { it > 0 }?.let { if (it == 1) "1 update failed" else "$it updates failed" },
+                ).joinToString(" • "),
+                color = colors.secondaryText,
+                fontSize = DS.FontSize.Caption.scaled(metrics),
+                modifier = captionModifier,
+            )
+        }
+        queue.failed.forEach { failure ->
+            Text(
+                text = "${failure.title}: ${failure.message}",
+                color = errorColor,
+                fontSize = DS.FontSize.Caption.scaled(metrics),
+                modifier = captionModifier,
+            )
+        }
+        if (queue.failed.isNotEmpty()) {
+            Row(modifier = Modifier.padding(horizontal = DS.Spacing.SM.scaled(metrics))) {
+                TextButton(onClick = onRetryFailed) { Text("Retry failed") }
+                TextButton(onClick = onDiscardFailed) { Text("Discard failed") }
+            }
+        }
+        matches.forEach { match ->
+            HorizontalDivider(color = colors.separator.copy(alpha = 0.3f))
+            HardcoverBookRow(
+                coverUrl = null,
+                title = match.localTitle,
+                subtitle = listOfNotNull(
+                    "Hardcover: ${match.hardcoverTitle}",
+                    if (match.automatic) "Matched automatically" else "Linked manually",
+                ).joinToString(" • "),
+                leadingIcon = Icons.Default.Link,
+                trailing = { TextButton(onClick = { onUnlink(match.localKey) }) { Text("Unlink") } },
+            )
+        }
+    }
+}
+
+@Composable
+private fun HardcoverLinkSection(
+    target: HardcoverBookResult,
+    query: String,
+    results: List<Book>,
+    onQueryChange: (String) -> Unit,
+    onSelect: (Book) -> Unit,
+    onCancel: () -> Unit,
+) {
+    val colors = EnveTheme.colors
+    val metrics = rememberAdaptiveMetrics()
+    SettingsCard(modifier = Modifier.padding(horizontal = DS.Spacing.LG.scaled(metrics))) {
+        SettingsSectionHeader(title = "Link ${target.title}", subtitle = "Choose the book in your library that should sync to this Hardcover book.")
+        Column(
+            modifier = Modifier.padding(horizontal = DS.Spacing.LG.scaled(metrics), vertical = DS.Spacing.MD.scaled(metrics)),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            OutlinedTextField(
+                value = query,
+                onValueChange = onQueryChange,
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                label = { Text("Search your library") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            if (results.isEmpty() && query.trim().length >= 2) {
+                Text("No matching books in your library.", color = colors.secondaryText, fontSize = DS.FontSize.Caption.scaled(metrics))
+            }
+        }
+        results.forEachIndexed { index, book ->
+            HardcoverBookRow(
+                coverUrl = book.coverUrl,
+                title = book.title,
+                subtitle = listOfNotNull(
+                    book.author,
+                    if (book.mediaType == AppMediaType.AUDIOBOOK) "Audiobook" else "Ebook",
+                    book.libraryName,
+                ).joinToString(" • "),
+                trailing = { TextButton(onClick = { onSelect(book) }) { Text("Link") } },
+            )
+            if (index < results.lastIndex) HorizontalDivider(color = colors.separator.copy(alpha = 0.3f))
+        }
+        TextButton(
+            onClick = onCancel,
+            modifier = Modifier.padding(horizontal = DS.Spacing.SM.scaled(metrics)),
+        ) {
+            Text("Cancel")
+        }
+    }
+}
+
+@Composable
 private fun HardcoverSearchRow(
     book: HardcoverBookResult,
     onAdd: () -> Unit,
     onStart: () -> Unit,
+    onLink: () -> Unit,
 ) {
     HardcoverBookRow(
         coverUrl = book.coverUrl,
@@ -439,6 +631,7 @@ private fun HardcoverSearchRow(
                     Text("Add")
                 }
                 TextButton(onClick = onStart) { Text("Start") }
+                TextButton(onClick = onLink) { Text("Link") }
             }
         },
     )

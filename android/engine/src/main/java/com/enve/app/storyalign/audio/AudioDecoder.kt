@@ -4,7 +4,6 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import java.nio.ByteBuffer
-import kotlin.math.min
 
 class AudioDecoder {
 
@@ -21,7 +20,7 @@ class AudioDecoder {
     @Volatile private var cancelled = false
     fun cancel() { cancelled = true }
 
-    fun decode(path: String, sink: PcmSink) {
+    fun decode(path: String, checkCancellation: () -> Unit = {}, sink: PcmSink) {
         val extractor = MediaExtractor()
         extractor.setDataSource(path)
         val trackIndex = (0 until extractor.trackCount).firstOrNull {
@@ -46,6 +45,7 @@ class AudioDecoder {
 
         try {
             while (!outputDone && !cancelled) {
+                checkCancellation()
                 if (!inputDone) {
                     val inIndex = codec.dequeueInputBuffer(TIMEOUT_US)
                     if (inIndex >= 0) {
@@ -65,7 +65,7 @@ class AudioDecoder {
                 if (outIndex >= 0) {
                     if (bufferInfo.size > 0) {
                         val outBuf = codec.getOutputBuffer(outIndex)!!
-                        val mono = toMono16k(outBuf, bufferInfo, srcChannels, resampler)
+                        val mono = toMono16k(outBuf, bufferInfo.offset, bufferInfo.size, srcChannels, resampler)
                         if (mono.isNotEmpty()) {
                             val startSeconds = producedSamples.toDouble() / TARGET_SAMPLE_RATE
                             sink.onChunk(mono, startSeconds)
@@ -83,26 +83,29 @@ class AudioDecoder {
         }
     }
 
-    private fun toMono16k(
-        buffer: ByteBuffer,
-        info: MediaCodec.BufferInfo,
-        channels: Int,
-        resampler: LinearResampler,
-    ): FloatArray {
-        buffer.position(info.offset)
-        buffer.limit(info.offset + info.size)
-        val shorts = buffer.asShortBuffer()
-        val frameCount = shorts.remaining() / channels
-        val mono = FloatArray(frameCount)
-        var i = 0
-        while (i < frameCount) {
-            var acc = 0
-            for (c in 0 until channels) acc += shorts.get()
-            mono[i] = (acc.toFloat() / channels) / 32768f
-            i++
-        }
-        return resampler.resample(mono)
+}
+
+internal fun toMono16k(
+    buffer: ByteBuffer,
+    offset: Int,
+    size: Int,
+    channels: Int,
+    resampler: LinearResampler,
+): FloatArray {
+    buffer.position(offset)
+    buffer.limit(offset + size)
+    val shorts = buffer.asShortBuffer()
+    val frameCount = shorts.remaining() / channels
+    val pcm = ShortArray(frameCount * channels)
+    shorts.get(pcm)
+    val mono = FloatArray(frameCount)
+    var sample = 0
+    for (frame in mono.indices) {
+        var acc = 0
+        repeat(channels) { acc += pcm[sample++] }
+        mono[frame] = (acc.toFloat() / channels) / 32768f
     }
+    return resampler.resample(mono)
 }
 
 internal class LinearResampler(private val srcRate: Int, private val dstRate: Int) {
@@ -116,19 +119,20 @@ internal class LinearResampler(private val srcRate: Int, private val dstRate: In
         val prev = carry
         val src = if (prev != null) FloatArray(input.size + 1).also { it[0] = prev; input.copyInto(it, 1) } else input
         val base = if (prev != null) 1.0 else 0.0
-        val out = ArrayList<Float>((input.size / ratio).toInt() + 2)
+        val out = FloatArray((input.size / ratio).toInt() + 2)
+        var count = 0
         var p = pos
         while (p + base < src.size - 1) {
             val idx = (p + base)
             val i0 = idx.toInt()
             val frac = idx - i0
             val s = src[i0] * (1 - frac).toFloat() + src[i0 + 1] * frac.toFloat()
-            out.add(s)
+            out[count++] = s
             p += ratio
         }
 
         pos = (p + base) - (src.size - 1)
         carry = src[src.size - 1]
-        return FloatArray(out.size) { out[it] }
+        return out.copyOf(count)
     }
 }

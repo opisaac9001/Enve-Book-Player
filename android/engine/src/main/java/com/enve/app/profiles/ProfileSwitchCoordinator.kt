@@ -392,6 +392,7 @@ class ProfileSwitchCoordinator @Inject constructor(
             mutableState.update { it.copy(activeProfileId = destination.id, locked = false, switching = false) }
             resumeDownloads(component)
             component.resources().scope.launch { component.pendingProgressReplay().replay() }
+            component.hardcoverSync().start()
         } catch (error: Throwable) {
             mutableState.update { it.copy(switching = false, locked = true) }
             throw error

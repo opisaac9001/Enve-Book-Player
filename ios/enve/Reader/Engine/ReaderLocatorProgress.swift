@@ -19,6 +19,7 @@ final class ReaderLocatorProgress {
     private(set) var lastKnownLocator: Locator?
     private(set) var lastKnownLocatorJSON: String?
     private var lastSavedProgression: Double?
+    private(set) var measurementGeneration = 0
 
     func update(locator: Locator, fallbackProgress: Double?) -> Double {
         let progression =
@@ -26,13 +27,32 @@ final class ReaderLocatorProgress {
             ?? locator.locations.progression
             ?? fallbackProgress
             ?? 0
+        measurementGeneration += 1
+        let json = try? locator.jsonString()
+        let retainAnchor = locatorsShareLocation(json, lastKnownLocatorJSON) && lastKnownLocatorHasTextAnchor()
         lastKnownLocator = locator
-        lastKnownLocatorJSON = try? locator.jsonString()
+        if !retainAnchor { lastKnownLocatorJSON = json }
         return progression
     }
 
     func updateLocatorJSON(_ locatorJSON: String?) {
+        measurementGeneration += 1
         lastKnownLocatorJSON = locatorJSON
+        if let locatorJSON, let locator = try? Locator(jsonString: locatorJSON) {
+            lastKnownLocator = locator
+        }
+    }
+
+    func invalidateMeasurement() {
+        measurementGeneration += 1
+    }
+
+    @discardableResult
+    func acceptMeasurement(_ locatorJSON: String, generation: Int) -> Bool {
+        guard generation == measurementGeneration else { return false }
+        lastKnownLocatorJSON = locatorJSON
+        measurementGeneration += 1
+        return true
     }
 
     func shouldSkipAutoSave(currentProgress: Double) -> Bool {
@@ -55,33 +75,11 @@ final class ReaderLocatorProgress {
     ) -> Snapshot? {
         switch state {
         case .readyEPUB(let nav):
-            let liveProgression =
-                nav.currentLocation?.locations.totalProgression
-                ?? nav.currentLocation?.locations.progression
-            let liveLocatorJSON = nav.currentLocation.flatMap { try? $0.jsonString() }
-            let preferEnriched =
-                locatorsShareLocation(liveLocatorJSON, lastKnownLocatorJSON)
-                && lastKnownLocatorHasTextAnchor()
-
-            if let live = liveProgression, live > 0.001 {
-                return Snapshot(
-                    progression: live,
-                    locatorJSON: preferEnriched ? lastKnownLocatorJSON : liveLocatorJSON,
-                    source: .epub
-                )
-            }
-
-            if let cached = currentProgress, cached > 0.001 {
-                return Snapshot(
-                    progression: cached,
-                    locatorJSON: lastKnownLocatorJSON,
-                    source: .epub
-                )
-            }
-
+            let locator = lastKnownLocator ?? nav.currentLocation
+            guard let locator else { return nil }
             return Snapshot(
-                progression: liveProgression ?? 0,
-                locatorJSON: preferEnriched ? lastKnownLocatorJSON : liveLocatorJSON,
+                progression: locator.locations.totalProgression ?? locator.locations.progression ?? currentProgress ?? 0,
+                locatorJSON: lastKnownLocatorJSON ?? (try? locator.jsonString()),
                 source: .epub
             )
 
@@ -139,6 +137,11 @@ final class ReaderLocatorProgress {
 
         if let locator = book.epubLocator, let parsedIndex = parsePDFLocator(locator) {
             let boundedParsed = min(max(0, parsedIndex), maxIndex)
+            if let data = locator.data(using: .utf8),
+                let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                object["enveSharedPosition"] as? Bool == true {
+                return boundedParsed
+            }
             if abs(boundedParsed - boundedFallback) > 3,
                 boundedFallback > boundedParsed
             {

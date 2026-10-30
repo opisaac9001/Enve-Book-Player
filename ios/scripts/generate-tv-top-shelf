@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+import copy
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+import xml.etree.ElementTree as ET
+
+ROOT = Path(__file__).resolve().parent.parent
+NS = 'http://www.w3.org/2000/svg'
+ET.register_namespace('', NS)
+MASTER = ET.parse(ROOT / 'BuildSupport/AppIcon/enve-book-player-tv.svg').getroot()
+BACKGROUND = MASTER.find(f"{{{NS}}}rect[@id='background']").get('fill')
+RENDERER = shutil.which('rsvg-convert')
+if RENDERER is None:
+    raise SystemExit('Install librsvg (brew install librsvg) to render the tvOS branding assets.')
+
+
+def element(tag, **attributes):
+    return ET.Element(f'{{{NS}}}{tag}', {key: str(value) for key, value in attributes.items()})
+
+
+def canvas(width, height, background=False):
+    svg = element('svg', width=width, height=height, viewBox=f'0 0 {width} {height}')
+    if background:
+        svg.append(element('rect', width=width, height=height, fill=BACKGROUND))
+    return svg
+
+
+def artwork(svg, x, y, size, layers=('book', 'ember')):
+    group = element('g', transform=f'translate({x} {y}) scale({size / 1024})')
+    for layer in layers:
+        group.append(copy.deepcopy(MASTER.find(f"{{{NS}}}g[@id='{layer}']")))
+    svg.append(group)
+
+
+def render(svg, output):
+    with tempfile.TemporaryDirectory(prefix='enve-tv-branding-') as directory:
+        source = Path(directory) / 'artwork.svg'
+        ET.ElementTree(svg).write(source, encoding='unicode')
+        subprocess.run([RENDERER, '-o', str(output), str(source)], check=True)
+
+
+assets = ROOT / 'enve-tvOS/Assets.xcassets/App Icon & Top Shelf Image.brandassets'
+for stack, sizes in (
+    ('App Icon.imagestack', [(400, 240, '-1x'), (800, 480, '-2x')]),
+    ('App Icon - App Store.imagestack', [(1280, 768, '')]),
+):
+    for width, height, suffix in sizes:
+        for layer, name, groups in (
+            ('Back', 'back', ()), ('Middle', 'mid', ('book',)),
+            ('Front', 'front', ('ember',)),
+        ):
+            svg = canvas(width, height, background=layer == 'Back')
+            if groups:
+                size = height * 1.1
+                artwork(svg, (width - size) / 2, (height - size) / 2, size, groups)
+            render(svg, assets / stack / f'{layer}.imagestacklayer/Content.imageset/{name}{suffix}.png')
+
+for folder, name, width in (
+    ('Top Shelf Image.imageset', 'ts', 1920),
+    ('Top Shelf Image Wide.imageset', 'tsw', 2320),
+):
+    for scale in (1, 2):
+        svg = canvas(width, 720, background=True)
+        start = (width - 1200) / 2
+        artwork(svg, start, 50, 620)
+        for label, y, size, family, color in (
+            ('Enve', 320, 116, 'Georgia', '#F6DEAA'),
+            ('Book Player', 395, 44, 'Helvetica', '#F4C05F'),
+            ('Audiobooks & Books', 459, 28, 'Helvetica', '#D4BE98'),
+        ):
+            text = element('text', x=start + 640, y=y, fill=color)
+            text.set('font-family', family)
+            text.set('font-size', str(size))
+            text.text = label
+            svg.append(text)
+        svg.set('width', str(width * scale))
+        svg.set('height', str(720 * scale))
+        render(svg, assets / folder / f'{name}-{scale}x.png')
+
+print('Generated layered tvOS icons and standard/wide Top Shelf artwork.')

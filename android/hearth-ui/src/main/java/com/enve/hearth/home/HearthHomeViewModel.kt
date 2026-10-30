@@ -79,6 +79,8 @@ class HearthHomeViewModel @Inject constructor(
             SharingStarted.WhileSubscribed(5000),
             HearthHomeSection.entries,
         )
+    val showTodayStack: StateFlow<Boolean> =
+        preferences.showTodayStack.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
 
     suspend fun linkedAudiobook(book: Book): Book? = library.linkedAudiobook(book)
 

@@ -1,5 +1,6 @@
 ﻿package com.enve.app.data.reader
 
+import com.enve.core.reader.ReadAloudHighlightStyle
 import org.readium.r2.navigator.epub.EpubPreferences
 import org.readium.r2.navigator.preferences.ColumnCount
 import org.readium.r2.navigator.preferences.FontFamily
@@ -87,6 +88,7 @@ data class ReaderPreferences(
     val readAloudAutoTurn:     Boolean = true,
     val readAloudSkipOnPageTurn: Boolean = true,
     val readAloudHighlight:    Boolean = true,
+    val readAloudHighlightStyle: ReadAloudHighlightStyle = ReadAloudHighlightStyle.HIGHLIGHT,
     val readAloudHighlightHex: String = "#FFF59D",
     val readAloudSkipAsides:   Boolean = true,
     val screenBrightness: Float = -1f,

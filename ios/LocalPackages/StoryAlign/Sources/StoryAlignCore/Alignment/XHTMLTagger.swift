@@ -659,8 +659,7 @@ extension XHTMLTagger {
     }
 
     
-    //func tag( epub:EpubDocument, manifestItem:EpubManifestItem, chapterId: String) async throws -> String {
-    func tag( epub:EpubDocument, alignedChapter:AlignedChapter) async throws -> String {
+    func tag( epub:EpubDocument, alignedChapter:AlignedChapter, includeUnalignedSentences: Bool = false) async throws -> String {
         let manifestItem = alignedChapter.manifestItem
         let chapterId = alignedChapter.manifestItem.id
         let xhtml = manifestItem.xmlText
@@ -690,10 +689,9 @@ extension XHTMLTagger {
         }
         
         let units = (sessionConfig.granularity.useWordTokenizer) ? alignedChapter.alignedWords : alignedChapter.alignedSentences
-        let sentences = units.map { $0.xhtmlSentence }
+        let sentences = includeUnalignedSentences ? manifestItem.xhtmlSentences : units.map { $0.xhtmlSentence }
         try tag(sentences:sentences,  in: doc, chapterId:chapterSentencePfx)
 
-        //return try doc.outerHtml()
         let retStr = try prepareXhtmlOutput(from: doc)
         return retStr
     }

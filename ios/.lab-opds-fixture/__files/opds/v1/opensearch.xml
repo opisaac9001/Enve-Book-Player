@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<OpenSearchDescription xmlns="http://a9.com/-/spec/opensearch/1.1/">
+  <ShortName>Enve OPDS Lab</ShortName>
+  <LongName>Enve OPDS Lab catalog search</LongName>
+  <Description>Search the deterministic OPDS 1.2 lab catalog.</Description>
+  <InputEncoding>UTF-8</InputEncoding>
+  <OutputEncoding>UTF-8</OutputEncoding>
+  <Image height="64" width="64" type="image/png">http://{{request.headers.Host}}/opds/images/thumb-blue.png</Image>
+  <Url type="application/atom+xml;profile=opds-catalog;kind=acquisition"
+       template="http://{{request.headers.Host}}/opds/v1/search.xml?q={searchTerms}"/>
+  <Url type="application/opds+json"
+       template="http://{{request.headers.Host}}/opds/v2/search.json?query={searchTerms}"/>
+  <Query role="example" searchTerms="harbour"/>
+</OpenSearchDescription>

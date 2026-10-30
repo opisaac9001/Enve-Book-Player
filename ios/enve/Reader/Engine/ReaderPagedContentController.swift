@@ -83,6 +83,22 @@ enum ReaderPagedPagePolicy {
         return comicSpread(containing: target, pageCount: pageCount, step: step, isWidePage: isWidePage).lowerBound
     }
 
+    // Mirrors PDFKit's two-up pairing: `displaysAsBook` keeps the first page alone and pairs the rest in order.
+    static func pdfSpread(containing index: Int, pageCount: Int, layout: PDFReadingLayout) -> ClosedRange<Int> {
+        let bounded = boundedPageIndex(index, pageCount: pageCount)
+        guard layout.twoPageEnabled, pageCount > 1 else { return bounded...bounded }
+        if layout.showsCoverSeparately, bounded == 0 { return 0...0 }
+        let firstPaired = layout.showsCoverSeparately ? 1 : 0
+        let start = firstPaired + (bounded - firstPaired) / 2 * 2
+        return start...min(start + 1, pageCount - 1)
+    }
+
+    static func adjacentPDFPageIndex(from index: Int, by direction: Int, pageCount: Int, layout: PDFReadingLayout) -> Int {
+        let current = pdfSpread(containing: index, pageCount: pageCount, layout: layout)
+        let target = direction > 0 ? current.upperBound + 1 : current.lowerBound - 1
+        return pdfSpread(containing: target, pageCount: pageCount, layout: layout).lowerBound
+    }
+
     static func isComicFormat(_ format: String?) -> Bool {
         let normalized = format?.lowercased()
         return normalized == EbookFormat.cbz.rawValue || normalized == EbookFormat.cbr.rawValue
@@ -167,7 +183,7 @@ protocol ReaderPagedContentHosting: AnyObject {
     var pagedPublicationFileURL: URL? { get }
     func pagedWillChange()
     func pagedPrepareArtifacts(loadingAnnotations: Bool)
-    func pagedApplyPageState(visibleRange: ClosedRange<Int>, progress: Double, sectionTitle: String)
+    func pagedApplyPageState(visibleRange: ClosedRange<Int>, progress: Double, sectionTitle: String, isUserNavigation: Bool)
     func pagedHandleTap(at point: CGPoint, in size: CGSize)
 }
 
@@ -186,6 +202,8 @@ final class ReaderPagedContentController {
     private(set) var currentPDFPageIndex = 0
     private(set) var lastStablePDFPageIndex = 0
     private(set) var pdfController: PDFReaderController?
+    private(set) var pdfLayout: PDFReadingLayout
+    private let pdfPreferences: PDFReadingPreferencesStore
     private var serverEbookFormat: String?
     private var providerReadingDirection: ComicReadingDirection?
     private var archiveReadingDirection: ComicReadingDirection?
@@ -215,6 +233,8 @@ final class ReaderPagedContentController {
         self.appearanceController = appearanceController
         comicDirectionOverride = profileSession.comicReadingDirections.direction(forBookID: book.stableId)
         providerReadingDirection = profileSession.comicReadingDirections.providerDirection(forBookID: book.stableId)
+        pdfPreferences = PDFReadingPreferencesStore(defaults: profileSession.defaults)
+        pdfLayout = pdfPreferences.layout(forBookID: book.stableId)
     }
 
     private var appearance: ClassicReaderAppearance { appearanceController.appearance }
@@ -445,9 +465,10 @@ final class ReaderPagedContentController {
         }
 
         let pageCount = max(document.pageCount, 1)
+        let currentBook = libraryCache.bookInMemory(uniqueId: book.uniqueId) ?? book
         let initialPageIndex =
             initialSelection.map { ReaderPagedPagePolicy.boundedPageIndex($0.chapterIndex, pageCount: pageCount) }
-            ?? ReaderLocatorProgress.restorePDFPageIndex(book: book, totalPages: pageCount)
+            ?? ReaderLocatorProgress.restorePDFPageIndex(book: currentBook, totalPages: pageCount)
         host?.pagedWillChange()
         comicPages = []
         host?.pagedPrepareArtifacts(loadingAnnotations: true)
@@ -458,6 +479,7 @@ final class ReaderPagedContentController {
             document: document,
             initialPageIndex: initialPageIndex,
             scrollEnabled: appearance.pdfScrollEnabled,
+            layout: pdfLayout,
             onPageChange: { [weak self] index in
                 self?.updatePDFPageState(index)
             },
@@ -495,7 +517,17 @@ final class ReaderPagedContentController {
     }
 
     func applyAppearance(_ value: ClassicReaderAppearance) {
-        pdfController?.setScrollEnabled(value.pdfScrollEnabled)
+        pdfController?.configure(scrollEnabled: value.pdfScrollEnabled, layout: pdfLayout)
+    }
+
+    // Pairing changes alter which pages share the screen, so the range refreshes without a stats tick.
+    func setPDFLayout(_ layout: PDFReadingLayout) {
+        guard layout != pdfLayout else { return }
+        host?.pagedWillChange()
+        pdfLayout = layout
+        pdfPreferences.setLayout(layout, forBookID: book.stableId)
+        pdfController?.configure(scrollEnabled: appearance.pdfScrollEnabled, layout: layout)
+        updatePDFPageState(currentPDFPageIndex, shouldRecordStats: false, preservingProgress: true)
     }
 
     // The spread's last page drives progress, so a final pair reads as finished.
@@ -517,7 +549,8 @@ final class ReaderPagedContentController {
         host?.pagedApplyPageState(
             visibleRange: visibleRange,
             progress: ReaderLocatorProgress.comicProgress(pageIndex: spread.upperBound, totalPages: totalPages),
-            sectionTitle: "Page \(pageIndex + 1)"
+            sectionTitle: "Page \(pageIndex + 1)",
+            isUserNavigation: shouldRecordStats
         )
         let pageURL = comicPages[pageIndex]
         Task {
@@ -546,7 +579,14 @@ final class ReaderPagedContentController {
     }
 
     func stepPDFPage(by direction: Int) {
-        requestPDFPage(currentPDFPageIndex + direction)
+        requestPDFPage(
+            ReaderPagedPagePolicy.adjacentPDFPageIndex(
+                from: currentPDFPageIndex,
+                by: direction,
+                pageCount: totalPages,
+                layout: pdfLayout
+            )
+        )
     }
 
     func seekComicToBookmark(_ bookmark: Bookmark) {
@@ -597,25 +637,29 @@ final class ReaderPagedContentController {
         }
     }
 
-    private func requestPDFPage(_ index: Int, shouldRecordStats: Bool = true) {
+    func requestPDFPage(_ index: Int, shouldRecordStats: Bool = true) {
         guard totalPages > 0 else { return }
         let boundedIndex = ReaderPagedPagePolicy.boundedPageIndex(index, pageCount: totalPages)
         pdfController?.goToPage(boundedIndex)
         updatePDFPageState(boundedIndex, shouldRecordStats: shouldRecordStats)
     }
 
-    private func updatePDFPageState(_ index: Int, shouldRecordStats: Bool = true) {
+    private func updatePDFPageState(_ index: Int, shouldRecordStats: Bool = true, preservingProgress: Bool = false) {
         guard totalPages > 0 else { return }
         let boundedIndex = ReaderPagedPagePolicy.boundedPageIndex(index, pageCount: totalPages)
         lastStablePDFPageIndex = boundedIndex
-        guard boundedIndex != currentPDFPageIndex || visiblePageRange == nil else { return }
+        let spread = ReaderPagedPagePolicy.pdfSpread(containing: boundedIndex, pageCount: totalPages, layout: pdfLayout)
+        let visibleRange = (spread.lowerBound + 1)...(spread.upperBound + 1)
+        guard boundedIndex != currentPDFPageIndex || visiblePageRange != visibleRange else { return }
 
+        let progress = preservingProgress ? host?.pagedCurrentProgress : nil
         host?.pagedWillChange()
         currentPDFPageIndex = boundedIndex
         host?.pagedApplyPageState(
-            visibleRange: (boundedIndex + 1)...(boundedIndex + 1),
-            progress: ReaderLocatorProgress.pdfProgress(pageIndex: boundedIndex, totalPages: totalPages),
-            sectionTitle: "Page \(boundedIndex + 1)"
+            visibleRange: visibleRange,
+            progress: progress ?? ReaderLocatorProgress.pdfProgress(pageIndex: spread.upperBound, totalPages: totalPages),
+            sectionTitle: "Page \(boundedIndex + 1)",
+            isUserNavigation: shouldRecordStats
         )
 
         guard shouldRecordStats else { return }

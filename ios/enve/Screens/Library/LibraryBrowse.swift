@@ -147,7 +147,7 @@ struct LibraryBookCell: View {
                 .foregroundStyle(hearth.text)
                 .lineLimit(2)
                 .multilineTextAlignment(.center)
-                .frame(width: artworkWidth, alignment: .center)
+                .frame(width: width, alignment: .center)
         case .standard:
             VStack(alignment: .center, spacing: 2) {
                 Text(LibraryDisplayFormatter.displayTitle(book.title))
@@ -163,7 +163,7 @@ struct LibraryBookCell: View {
                         .multilineTextAlignment(.center)
                 }
             }
-            .frame(width: artworkWidth, alignment: .center)
+            .frame(width: width, alignment: .center)
         }
     }
 }

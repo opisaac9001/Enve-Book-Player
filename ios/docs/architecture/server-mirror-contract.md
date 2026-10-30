@@ -15,6 +15,7 @@ Enve renders a persistent local mirror immediately, then reconciles it with each
 | Domain | Server-owned state | Ordinary refresh |
 |---|---|---|
 | Catalog | libraries, books, metadata, formats, server deletion | delta when trustworthy; otherwise a complete paginated snapshot when stale |
+| Catalog additions | newest-first discovery window, independent freshness per selected library | small pages until a previously indexed page; never reconciles deletions |
 | Activity | progress, locator, reading status, rating, current/finished/abandoned | lightweight activity endpoints or a server cursor |
 | Collections | shelf/collection definitions, membership, ordering, magic rules | complete collection snapshot or a trustworthy server revision |
 | Pending mutations | writes initiated in Enve but not acknowledged | flush before pulling the affected domain; overlay until acknowledged |
@@ -42,7 +43,9 @@ Enve chooses the strongest mechanism a released server supports, per provider an
 2. `revisionSnapshot` — lightweight revision probe followed by a complete snapshot when changed.
 3. `fullSnapshot` — complete paginated snapshot with a local fingerprint.
 
-Startup may also use a small, bounded recent-book window per selected library to discover and index additions without scanning a large catalog. It is only a refresh hint: it can upsert returned books, but it never authorizes deletion reconciliation.
+Startup and Hearth pull-to-refresh use a recent-book window per selected library to discover additions without scanning an unchanged catalog. Grimmory requests 50 source books per page, newest first, and continues through additions until it reaches an already indexed source page. Derived companion audiobooks do not extend that boundary. Only newly discovered rows are merged from Grimmory pages; known books retain their detailed metadata. Pages are staged before merging a library, so a later-page failure preserves the cache and leaves freshness unchanged for retry. An empty local catalog receives only the first window; startup catalog import remains responsible for initial reconciliation. Other window-capable mirror providers retain their bounded recent-book fetch.
+
+The additions window has its own `catalogAdditions` checkpoint and never advances full-catalog reconciliation or authorizes deletions. Grimmory resolves alternate formats through the batch endpoint or individual records; recent discovery never falls back to a full legacy catalog fetch. Servers without the paginated endpoint retain their cache and expose a retry notice on Hearth; manual Library refresh remains available.
 
 Capability probing is behavioral. Enve does not infer support from a server version string.
 
@@ -64,6 +67,8 @@ Startup must remain cache-first and bounded:
 3. Pull lightweight activity state.
 4. Refresh only stale domains.
 5. Schedule periodic complete reconciliation rather than refreshing the entire library on every launch.
+
+Hearth renders cached shelves immediately and observes local library changes. Opening Hearth or returning to it does not start a catalog check. Pull-to-refresh checks recent additions immediately and shares any provider refresh already running. The existing startup path retains its 15-minute additions freshness interval. Progress sync remains separate, and Hearth labels its timestamp “Progress synced.” Full catalog reconciliation retains its seven-day schedule. Failed additions requests do not clear cached books or advance freshness.
 
 Pull-to-refresh on Collections requests the collections domain for every active capable connection. It does not require a catalog refresh. Manual full-library refresh remains a repair and reconciliation action.
 

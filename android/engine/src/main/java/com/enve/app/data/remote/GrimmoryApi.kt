@@ -46,9 +46,10 @@ interface GrimmoryApi {
         @Body request: LoginRequest,
     ): Response<AuthResponse>
 
-    @POST("Users/AuthenticateByName")
+    @POST
     suspend fun jellyfinLogin(
-        @Header("X-Emby-Authorization") authHeader: String,
+        @Url url: String,
+        @Header("Authorization") authHeader: String,
         @Body request: JellyfinAuthRequest,
     ): Response<JellyfinAuthResponse>
 
@@ -67,14 +68,15 @@ interface GrimmoryApi {
     @POST("api/v1/auth/oidc/callback")
     suspend fun oidcCallback(@Body request: OidcCallbackRequest): Response<AuthResponse>
 
-    @POST("Users/AuthenticateByName")
+    @POST
     suspend fun embyLogin(
+        @Url url: String,
         @Header("X-Emby-Authorization") authHeader: String,
         @Body request: JellyfinAuthRequest,
     ): Response<JellyfinAuthResponse>
 
-    @POST("api/Account/login")
-    suspend fun kavitaLogin(@Body request: LoginRequest): Response<JsonObject>
+    @POST
+    suspend fun kavitaLogin(@Url url: String, @Body request: LoginRequest): Response<JsonObject>
 
     @GET("api/Library/libraries")
     suspend fun kavitaLibraries(): Response<List<KavitaLibraryDto>>
@@ -211,6 +213,27 @@ interface GrimmoryApi {
         @Query("sort") sort: String = "addedOn",
         @Query("dir") dir: String = "desc",
     ): Response<PaginatedBooksResponse>
+
+    @GET("api/v1/app/books")
+    fun getCatalogBooks(
+        @Query("libraryId") libraryId: String?,
+        @Query("page") page: Int,
+        @Query("size") size: Int,
+        @Query("sort") sort: String,
+        @Query("dir") dir: String,
+    ): retrofit2.Call<kotlinx.serialization.json.JsonElement>
+
+    @GET("api/v1/books/batch")
+    fun getCatalogInventory(@Query("ids") ids: String): retrofit2.Call<kotlinx.serialization.json.JsonElement>
+
+    @GET("api/v1/libraries/{libraryId}/book")
+    fun getCatalogBooksLegacy(@Path("libraryId") libraryId: String): retrofit2.Call<kotlinx.serialization.json.JsonElement>
+
+    @GET("api/v1/app/libraries")
+    fun getCatalogLibraries(): retrofit2.Call<List<LibraryDto>>
+
+    @GET("api/v1/libraries")
+    fun getCatalogLibrariesLegacy(): retrofit2.Call<List<LibraryDto>>
 
     @GET("api/v1/app/books/{bookId}")
     suspend fun getBookDetail(@Path("bookId") bookId: String): Response<BookDetailDto>

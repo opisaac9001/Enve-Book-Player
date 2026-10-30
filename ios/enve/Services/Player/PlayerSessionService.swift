@@ -153,8 +153,9 @@ public class PlayerSessionService {
         book.partKey ?? book.id
     }
 
-    public func syncHardcoverProgress(book: Book, progress: Double) async {
-        guard serverSyncEnabled() else { return }
-        await HardcoverSyncService.shared.syncProgress(book: book, progress: progress)
+    @discardableResult
+    public func syncHardcoverProgress(book: Book, progress: Double) async -> Bool {
+        guard serverSyncEnabled() else { return false }
+        return await HardcoverSyncService.shared.syncProgress(book: book, progress: progress)
     }
 }

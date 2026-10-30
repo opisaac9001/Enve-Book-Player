@@ -1,0 +1,563 @@
+{
+  "date": "2026-10-22",
+  "iosFluidAudioRevision": "5390df9752c8fc583596018360c5fd70d6fa6c75",
+  "androidApkSha256": "317913c0c2c593b2fd49c0f0764d048e55eec081c1a75d7aa5da2557469fbd1e",
+  "iphone16pro": {
+    "initialRun": {
+      "backend": "FluidAudio KokoroAneManager legacy English",
+      "footprintAfterLoadBytes": 204638360,
+      "footprintBeforeLoadBytes": 151357448,
+      "modelBytesAfterLoad": 124890534,
+      "modelBytesAfterRun": 124890534,
+      "osVersion": "27.0",
+      "playbackStarted": true,
+      "preparationSeconds": 8.879547208,
+      "runs": [
+        {
+          "audioSeconds": 5,
+          "footprintAfterRunBytes": 613075456,
+          "generationSeconds": 3.834599709,
+          "inputCharacters": 82,
+          "label": "first",
+          "realTimeFactor": 0.7669199418
+        },
+        {
+          "audioSeconds": 5,
+          "footprintAfterRunBytes": 627903000,
+          "generationSeconds": 0.757537375,
+          "inputCharacters": 82,
+          "label": "warm1",
+          "realTimeFactor": 0.151507475
+        },
+        {
+          "audioSeconds": 5,
+          "footprintAfterRunBytes": 618056216,
+          "generationSeconds": 0.761891083,
+          "inputCharacters": 82,
+          "label": "warm2",
+          "realTimeFactor": 0.1523782166
+        },
+        {
+          "audioSeconds": 5,
+          "footprintAfterRunBytes": 611944984,
+          "generationSeconds": 0.763879583,
+          "inputCharacters": 82,
+          "label": "warm3",
+          "realTimeFactor": 0.1527759166
+        },
+        {
+          "audioSeconds": 28.875,
+          "footprintAfterRunBytes": 563415576,
+          "generationSeconds": 4.565776875,
+          "inputCharacters": 466,
+          "label": "segmentedPassage",
+          "realTimeFactor": 0.15812214285714285,
+          "segments": 7
+        }
+      ],
+      "sampleRate": 24000,
+      "speed": 1,
+      "stage": "completed",
+      "thermalStateAfter": 0,
+      "thermalStateBefore": 0,
+      "voice": "af_heart"
+    },
+    "repeatProcessRun": {
+      "backend": "FluidAudio KokoroAneManager legacy English",
+      "footprintAfterLoadBytes": 204605616,
+      "footprintBeforeLoadBytes": 152274952,
+      "modelBytesAfterLoad": 124890534,
+      "modelBytesAfterRun": 124890534,
+      "osVersion": "27.0",
+      "playbackStarted": true,
+      "preparationSeconds": 8.6592725,
+      "runs": [
+        {
+          "audioSeconds": 5,
+          "footprintAfterRunBytes": 652823016,
+          "generationSeconds": 1.479632625,
+          "inputCharacters": 82,
+          "label": "first",
+          "realTimeFactor": 0.295926525
+        },
+        {
+          "audioSeconds": 5,
+          "footprintAfterRunBytes": 625396224,
+          "generationSeconds": 0.772883583,
+          "inputCharacters": 82,
+          "label": "warm1",
+          "realTimeFactor": 0.1545767166
+        },
+        {
+          "audioSeconds": 5,
+          "footprintAfterRunBytes": 621545960,
+          "generationSeconds": 0.763092125,
+          "inputCharacters": 82,
+          "label": "warm2",
+          "realTimeFactor": 0.152618425
+        },
+        {
+          "audioSeconds": 5,
+          "footprintAfterRunBytes": 611764736,
+          "generationSeconds": 0.769284541,
+          "inputCharacters": 82,
+          "label": "warm3",
+          "realTimeFactor": 0.1538569082
+        },
+        {
+          "audioSeconds": 28.875,
+          "footprintAfterRunBytes": 599083520,
+          "generationSeconds": 4.5187585,
+          "inputCharacters": 466,
+          "label": "segmentedPassage",
+          "realTimeFactor": 0.15649380086580086,
+          "segments": 7
+        }
+      ],
+      "sampleRate": 24000,
+      "speed": 1,
+      "stage": "completed",
+      "thermalStateAfter": 0,
+      "thermalStateBefore": 0,
+      "voice": "af_heart"
+    },
+    "sustainedRun": {
+      "backend": "FluidAudio KokoroAneManager legacy English",
+      "footprintAfterLoadBytes": 203606144,
+      "footprintBeforeLoadBytes": 152045576,
+      "modelBytesAfterLoad": 124890534,
+      "modelBytesAfterRun": 124890534,
+      "osVersion": "27.0",
+      "passageRuns": [
+        {
+          "footprintAfterPassageBytes": 609602048,
+          "generationSeconds": 4.542549083,
+          "passage": 1,
+          "thermalState": 0
+        },
+        {
+          "footprintAfterPassageBytes": 550177280,
+          "generationSeconds": 4.644767375,
+          "passage": 2,
+          "thermalState": 0
+        },
+        {
+          "footprintAfterPassageBytes": 544524800,
+          "generationSeconds": 4.735655083,
+          "passage": 3,
+          "thermalState": 0
+        },
+        {
+          "footprintAfterPassageBytes": 561007104,
+          "generationSeconds": 4.809269958,
+          "passage": 4,
+          "thermalState": 0
+        },
+        {
+          "footprintAfterPassageBytes": 551504384,
+          "generationSeconds": 4.872450708,
+          "passage": 5,
+          "thermalState": 0
+        },
+        {
+          "footprintAfterPassageBytes": 551733760,
+          "generationSeconds": 4.927409208,
+          "passage": 6,
+          "thermalState": 0
+        },
+        {
+          "footprintAfterPassageBytes": 569543168,
+          "generationSeconds": 4.9529422499999995,
+          "passage": 7,
+          "thermalState": 1
+        },
+        {
+          "footprintAfterPassageBytes": 565037592,
+          "generationSeconds": 4.983128917,
+          "passage": 8,
+          "thermalState": 1
+        },
+        {
+          "footprintAfterPassageBytes": 560810520,
+          "generationSeconds": 5.01503175,
+          "passage": 9,
+          "thermalState": 1
+        },
+        {
+          "footprintAfterPassageBytes": 561433112,
+          "generationSeconds": 5.032250083,
+          "passage": 10,
+          "thermalState": 1
+        }
+      ],
+      "playbackStarted": true,
+      "preparationSeconds": 8.562313292,
+      "runs": [
+        {
+          "audioSeconds": 5,
+          "footprintAfterRunBytes": 652315064,
+          "generationSeconds": 1.42470275,
+          "inputCharacters": 82,
+          "label": "first",
+          "realTimeFactor": 0.28494055
+        },
+        {
+          "audioSeconds": 5,
+          "footprintAfterRunBytes": 627182056,
+          "generationSeconds": 0.755564417,
+          "inputCharacters": 82,
+          "label": "warm1",
+          "realTimeFactor": 0.1511128834
+        },
+        {
+          "audioSeconds": 5,
+          "footprintAfterRunBytes": 625379840,
+          "generationSeconds": 0.7568635,
+          "inputCharacters": 82,
+          "label": "warm2",
+          "realTimeFactor": 0.1513727
+        },
+        {
+          "audioSeconds": 5,
+          "footprintAfterRunBytes": 613124608,
+          "generationSeconds": 0.761938541,
+          "inputCharacters": 82,
+          "label": "warm3",
+          "realTimeFactor": 0.1523877082
+        },
+        {
+          "audioSeconds": 288.75,
+          "footprintAfterRunBytes": 561433112,
+          "generationSeconds": 48.526407292,
+          "inputCharacters": 4669,
+          "label": "segmentedPassage",
+          "realTimeFactor": 0.1680568217904762,
+          "segments": 70
+        }
+      ],
+      "sampleRate": 24000,
+      "speed": 1,
+      "stage": "completed",
+      "thermalStateAfter": 1,
+      "thermalStateBefore": 0,
+      "voice": "af_heart"
+    },
+    "fourVoiceCheck": {
+      "additionalVoiceProfileBytes": 1566720,
+      "modelBytes": 126457254,
+      "sampleRate": 24000,
+      "voices": [
+        {
+          "audioSeconds": 7.275,
+          "cacheMatches": true,
+          "playbackStarted": true,
+          "sha256": "19aef6b0f02cc5c25d7f5418ef9cccb1f319a2258272b2fe5c4952443dfed980",
+          "voice": "af_heart"
+        },
+        {
+          "audioSeconds": 7.825,
+          "cacheMatches": true,
+          "playbackStarted": true,
+          "sha256": "94c2e6eb7525c2ae865fd8fd60f7cb8a9c8dc59c64c86a2aa2cb834b40ae5d64",
+          "voice": "af_bella"
+        },
+        {
+          "audioSeconds": 8.15,
+          "cacheMatches": true,
+          "playbackStarted": true,
+          "sha256": "8d746557fd914c60f5ea5579f988e709d438cc90a5061cd80111fa603590425c",
+          "voice": "am_michael"
+        },
+        {
+          "audioSeconds": 7.45,
+          "cacheMatches": true,
+          "playbackStarted": true,
+          "sha256": "9dfbee027c7eeea0449c87179014be4141be879d0bb978ebe6f372f21ac398f2",
+          "voice": "am_puck"
+        }
+      ]
+    }
+  },
+  "pixel7a": {
+    "cpu4Threads": {
+      "backend": "sherpa-onnx 1.13.8, ONNX Runtime CPU",
+      "model": "kokoro-int8-multi-lang-v1_1",
+      "device": "Google Pixel 7a",
+      "androidApi": 37,
+      "voice": "af_maple",
+      "speakerId": 0,
+      "speed": 1,
+      "threads": 4,
+      "pssBeforeLoadBytes": 30371840,
+      "thermalStateBefore": 0,
+      "stage": "completed",
+      "preparationSeconds": 2.176218995,
+      "pssAfterLoadBytes": 384269312,
+      "sampleRate": 24000,
+      "runs": [
+        {
+          "label": "first",
+          "inputCharacters": 82,
+          "generationSeconds": 4.763657107,
+          "firstAudioSeconds": 2.293782635,
+          "audioSeconds": 4.167,
+          "realTimeFactor": 1.1431862507799377,
+          "pssAfterRunBytes": 444435456
+        },
+        {
+          "label": "warm1",
+          "inputCharacters": 82,
+          "generationSeconds": 4.88183415,
+          "firstAudioSeconds": 2.328947511,
+          "audioSeconds": 4.165375,
+          "realTimeFactor": 1.172003517090298,
+          "pssAfterRunBytes": 483482624
+        },
+        {
+          "label": "warm2",
+          "inputCharacters": 82,
+          "generationSeconds": 4.994605837,
+          "firstAudioSeconds": 2.3865129,
+          "audioSeconds": 4.165625,
+          "realTimeFactor": 1.1990051521680418,
+          "pssAfterRunBytes": 484314112
+        },
+        {
+          "label": "warm3",
+          "inputCharacters": 82,
+          "generationSeconds": 5.07726636,
+          "firstAudioSeconds": 2.431663169,
+          "audioSeconds": 4.165291666666667,
+          "realTimeFactor": 1.218946178638951,
+          "pssAfterRunBytes": 482440192
+        },
+        {
+          "label": "passage",
+          "inputCharacters": 466,
+          "generationSeconds": 25.691269219,
+          "firstAudioSeconds": 3.416219484,
+          "audioSeconds": 22.322791666666667,
+          "realTimeFactor": 1.1508985794712803,
+          "pssAfterRunBytes": 486847488
+        }
+      ],
+      "thermalStateAfter": 0
+    },
+    "cpu2Threads": {
+      "backend": "sherpa-onnx 1.13.8, ONNX Runtime CPU",
+      "model": "kokoro-int8-multi-lang-v1_1",
+      "device": "Google Pixel 7a",
+      "androidApi": 37,
+      "voice": "af_maple",
+      "speakerId": 0,
+      "speed": 1,
+      "threads": 2,
+      "pssBeforeLoadBytes": 30689280,
+      "thermalStateBefore": 0,
+      "stage": "completed",
+      "preparationSeconds": 2.067477133,
+      "pssAfterLoadBytes": 384581632,
+      "sampleRate": 24000,
+      "runs": [
+        {
+          "label": "first",
+          "inputCharacters": 82,
+          "generationSeconds": 4.964139204,
+          "firstAudioSeconds": 2.399997113,
+          "audioSeconds": 4.165625,
+          "realTimeFactor": 1.1916913317929483,
+          "pssAfterRunBytes": 444571648
+        },
+        {
+          "label": "warm1",
+          "inputCharacters": 82,
+          "generationSeconds": 4.996520917,
+          "firstAudioSeconds": 2.384147381,
+          "audioSeconds": 4.165625,
+          "realTimeFactor": 1.1994648863015753,
+          "pssAfterRunBytes": 483646464
+        },
+        {
+          "label": "warm2",
+          "inputCharacters": 82,
+          "generationSeconds": 5.074867637,
+          "firstAudioSeconds": 2.429036907,
+          "audioSeconds": 4.165625,
+          "realTimeFactor": 1.21827280108027,
+          "pssAfterRunBytes": 484473856
+        },
+        {
+          "label": "warm3",
+          "inputCharacters": 82,
+          "generationSeconds": 5.137494306,
+          "firstAudioSeconds": 2.456162843,
+          "audioSeconds": 4.165291666666667,
+          "realTimeFactor": 1.2334056573069112,
+          "pssAfterRunBytes": 482525184
+        },
+        {
+          "label": "passage",
+          "inputCharacters": 466,
+          "generationSeconds": 27.182646294,
+          "firstAudioSeconds": 3.804699017,
+          "audioSeconds": 22.327,
+          "realTimeFactor": 1.2174786712948447,
+          "pssAfterRunBytes": 488919040
+        }
+      ],
+      "thermalStateAfter": 0
+    },
+    "requestedXnnpackFellBackToCpu": {
+      "backend": "sherpa-onnx 1.13.8, ONNX Runtime CPU",
+      "model": "kokoro-int8-multi-lang-v1_1",
+      "device": "Google Pixel 7a",
+      "androidApi": 37,
+      "voice": "af_maple",
+      "speakerId": 0,
+      "speed": 1,
+      "threads": 4,
+      "requestedProvider": "xnnpack",
+      "maxNumSentences": 1,
+      "pssBeforeLoadBytes": 30308352,
+      "thermalStateBefore": 0,
+      "stage": "completed",
+      "preparationSeconds": 2.276266399,
+      "pssAfterLoadBytes": 384885760,
+      "sampleRate": 24000,
+      "runs": [
+        {
+          "label": "first",
+          "inputCharacters": 82,
+          "generationSeconds": 5.477155886,
+          "firstAudioSeconds": 2.607840292,
+          "audioSeconds": 4.166625,
+          "realTimeFactor": 1.3145305579455795,
+          "pssAfterRunBytes": 445018112
+        },
+        {
+          "label": "warm1",
+          "inputCharacters": 82,
+          "generationSeconds": 5.659362511,
+          "firstAudioSeconds": 2.704478395,
+          "audioSeconds": 4.165625,
+          "realTimeFactor": 1.3585866493023255,
+          "pssAfterRunBytes": 484040704
+        },
+        {
+          "label": "warm2",
+          "inputCharacters": 82,
+          "generationSeconds": 6.062830732,
+          "firstAudioSeconds": 2.715689495,
+          "audioSeconds": 4.165666666666667,
+          "realTimeFactor": 1.4554286785628552,
+          "pssAfterRunBytes": 482371584
+        },
+        {
+          "label": "warm3",
+          "inputCharacters": 82,
+          "generationSeconds": 6.471877037,
+          "firstAudioSeconds": 3.027112387,
+          "audioSeconds": 4.165791666666666,
+          "realTimeFactor": 1.553576739995399,
+          "pssAfterRunBytes": 483121152
+        },
+        {
+          "label": "passage",
+          "inputCharacters": 466,
+          "generationSeconds": 32.245405045,
+          "firstAudioSeconds": 4.470910728,
+          "audioSeconds": 22.325,
+          "realTimeFactor": 1.4443630479283314,
+          "pssAfterRunBytes": 486561792
+        }
+      ],
+      "thermalStateAfter": 1
+    },
+    "cpu4Threads2Sentences": {
+      "backend": "sherpa-onnx 1.13.8, ONNX Runtime CPU",
+      "model": "kokoro-int8-multi-lang-v1_1",
+      "device": "Google Pixel 7a",
+      "androidApi": 37,
+      "voice": "af_maple",
+      "speakerId": 0,
+      "speed": 1,
+      "threads": 4,
+      "requestedProvider": "cpu",
+      "maxNumSentences": 2,
+      "pssBeforeLoadBytes": 42263552,
+      "thermalStateBefore": 0,
+      "stage": "completed",
+      "preparationSeconds": 2.050837281,
+      "pssAfterLoadBytes": 385056768,
+      "sampleRate": 24000,
+      "runs": [
+        {
+          "label": "first",
+          "inputCharacters": 82,
+          "generationSeconds": 4.907118044,
+          "firstAudioSeconds": 2.315335816,
+          "audioSeconds": 4.166666666666667,
+          "realTimeFactor": 1.1777083305599998,
+          "pssAfterRunBytes": 445037568
+        },
+        {
+          "label": "warm1",
+          "inputCharacters": 82,
+          "generationSeconds": 4.971170453,
+          "firstAudioSeconds": 2.35401294,
+          "audioSeconds": 4.132625,
+          "realTimeFactor": 1.2029086725749372,
+          "pssAfterRunBytes": 484080640
+        },
+        {
+          "label": "warm2",
+          "inputCharacters": 82,
+          "generationSeconds": 5.292614179,
+          "firstAudioSeconds": 2.516472983,
+          "audioSeconds": 4.165541666666667,
+          "realTimeFactor": 1.2705704569833856,
+          "pssAfterRunBytes": 484899840
+        },
+        {
+          "label": "warm3",
+          "inputCharacters": 82,
+          "generationSeconds": 5.413442955,
+          "firstAudioSeconds": 2.562207236,
+          "audioSeconds": 4.165625,
+          "realTimeFactor": 1.2995511969992497,
+          "pssAfterRunBytes": 482812928
+        },
+        {
+          "label": "passage",
+          "inputCharacters": 466,
+          "generationSeconds": 27.535174737,
+          "firstAudioSeconds": 3.647044517,
+          "audioSeconds": 22.324375,
+          "realTimeFactor": 1.2334130176992637,
+          "pssAfterRunBytes": 487441408
+        }
+      ],
+      "thermalStateAfter": 1
+    },
+    "cpu1ThreadFailed": {
+      "backend": "sherpa-onnx 1.13.8, ONNX Runtime CPU",
+      "model": "kokoro-int8-multi-lang-v1_1",
+      "device": "Google Pixel 7a",
+      "androidApi": 37,
+      "voice": "af_maple",
+      "speakerId": 0,
+      "speed": 1,
+      "threads": 1,
+      "requestedProvider": "cpu",
+      "maxNumSentences": 1,
+      "pssBeforeLoadBytes": 30462976,
+      "thermalStateBefore": 0,
+      "stage": "failed",
+      "preparationSeconds": 2.055370688,
+      "pssAfterLoadBytes": 384473088,
+      "sampleRate": 24000,
+      "failedStage": "synthesizing",
+      "error": "java.lang.IllegalStateException: 141600 non-finite samples of 141600\n\tat com.enve.kokorobenchmark.BenchmarkActivity.onCreate$lambda$3(BenchmarkActivity.kt:126)\n\tat com.enve.kokorobenchmark.BenchmarkActivity.$r8$lambda$j5UFSE1AhIiq5hdCSw-6DG3R26o(BenchmarkActivity.kt:0)\n\tat com.enve.kokorobenchmark.BenchmarkActivity$$ExternalSyntheticLambda1.run(D8$$SyntheticClass:0)\n\tat java.lang.Thread.run(Thread.java:1572)\n"
+    }
+  }
+}

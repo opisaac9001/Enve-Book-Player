@@ -1,3 +1,4 @@
+import CoreML
 import Foundation
 import Logging
 @preconcurrency import ReadiumNavigator
@@ -15,6 +16,8 @@ actor KokoroTTSRuntime {
         let version = ProcessInfo.processInfo.operatingSystemVersion
         return !(version.majorVersion == 26 && (4...5).contains(version.minorVersion))
     }
+
+    nonisolated static var hasDownloadedVoices: Bool { KokoroTTSVoiceAssets.areDownloaded }
 
     private let audioCache = NeuralTTSAudioCache(namespace: "Kokoro")
     private var manager: KokoroAneManager?
@@ -35,7 +38,7 @@ actor KokoroTTSRuntime {
             task = preparationTask
         } else {
             task = Task {
-                try await KokoroAneResourceDownloader.ensureModels(
+                let directory = try await KokoroAneResourceDownloader.ensureModels(
                     variant: .english,
                     progressHandler: { update in progress?(update.fractionCompleted * 0.9) }
                 )
@@ -43,10 +46,16 @@ actor KokoroTTSRuntime {
                     progressHandler: { update in progress?(0.9 + update.fractionCompleted * 0.08) }
                 )
                 _ = await KokoroAneResourceDownloader.ensureEnglishLexicon()
+                try await KokoroTTSVoiceAssets.ensureDownloaded(in: directory)
                 NeuralTTSStorage.excludeModelsFromBackup()
                 try Task.checkCancellation()
-                let manager = KokoroAneManager(variant: .english)
-                try await manager.initialize()
+                // FluidAudio #849 keeps Noise and Tail off Metal on OS 27.
+                let computeUnits: KokoroAneComputeUnits =
+                    ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
+                    ? KokoroAneComputeUnits(noise: .cpuOnly, tail: .cpuOnly)
+                    : .default
+                let manager = KokoroAneManager(variant: .english, computeUnits: computeUnits)
+                try await manager.initialize(preloadVoices: Set(KokoroTTSVoice.allCases.map(\.rawValue)))
                 return manager
             }
             preparationTask = task
@@ -66,10 +75,10 @@ actor KokoroTTSRuntime {
         }
     }
 
-    func synthesize(text: String, speed: Float) async throws -> [Float] {
+    func synthesize(text: String, voice: KokoroTTSVoice, speed: Float) async throws -> [Float] {
         let cacheKey = audioCache.key(
-            "v1",
-            "af_heart",
+            "v2",
+            voice.rawValue,
             String(format: "%.2f", speed),
             text
         )
@@ -83,14 +92,15 @@ actor KokoroTTSRuntime {
         try await prepare()
         guard let manager else { throw NeuralTTSError.notReady }
 
-        let task = Task {
-            try await Self.generateSamples(text: text, speed: speed, manager: manager)
+        let task = Task { [audioCache] in
+            let samples = try await Self.generateSamples(text: text, voice: voice, speed: speed, manager: manager)
+            try audioCache.store(samples, key: cacheKey)
+            return samples
         }
         inFlight[cacheKey] = task
         do {
             let samples = try await task.value
             inFlight[cacheKey] = nil
-            try audioCache.store(samples, key: cacheKey)
             return samples
         } catch {
             inFlight[cacheKey] = nil
@@ -100,6 +110,7 @@ actor KokoroTTSRuntime {
 
     private nonisolated static func generateSamples(
         text: String,
+        voice: KokoroTTSVoice,
         speed: Float,
         manager: KokoroAneManager
     ) async throws -> [Float] {
@@ -113,7 +124,7 @@ actor KokoroTTSRuntime {
             try Task.checkCancellation()
             let result = try await manager.synthesizeDetailed(
                 text: chunk,
-                voice: "af_heart",
+                voice: voice.rawValue,
                 speed: speed
             )
             if index > 0 {
@@ -222,6 +233,7 @@ final class KokoroTTSEngine: @preconcurrency TTSEngine, @unchecked Sendable {
     nonisolated(unsafe) let availableVoices: [TTSVoice] = []
 
     private let runtime: KokoroTTSRuntime
+    private let voice: KokoroTTSVoice
     private let startAnchor: EbookTTSStartAnchor
     private let fallbackEngine: AnchoredAVTTSEngine
     private let audioPlayer = NeuralTTSAudioPlayer(
@@ -230,10 +242,12 @@ final class KokoroTTSEngine: @preconcurrency TTSEngine, @unchecked Sendable {
 
     init(
         runtime: KokoroTTSRuntime = .shared,
+        voice: KokoroTTSVoice,
         rate: Float,
         startAnchor: EbookTTSStartAnchor
     ) {
         self.runtime = runtime
+        self.voice = voice
         self.startAnchor = startAnchor
         currentRate = rate
         fallbackEngine = AnchoredAVTTSEngine(rate: rate, anchor: startAnchor)
@@ -243,6 +257,7 @@ final class KokoroTTSEngine: @preconcurrency TTSEngine, @unchecked Sendable {
         _ utterance: TTSUtterance,
         onSpeakRange: @escaping (Range<String.Index>) -> Void
     ) async -> Result<Void, ReadiumNavigator.TTSError> {
+        guard !Task.isCancelled else { return .success(()) }
         guard baseLanguageCode(for: utterance.language) == "en",
             KokoroTTSRuntime.isSupportedOnCurrentOS
         else {
@@ -259,6 +274,7 @@ final class KokoroTTSEngine: @preconcurrency TTSEngine, @unchecked Sendable {
                 }
                 let samples = try await runtime.synthesize(
                     text: slice.spoken,
+                    voice: voice,
                     speed: currentRate
                 )
                 try Task.checkCancellation()
@@ -317,11 +333,13 @@ actor KokoroTTSRuntime {
 
     nonisolated static var isSupportedOnCurrentOS: Bool { false }
 
+    nonisolated static var hasDownloadedVoices: Bool { false }
+
     func prepare(progress: (@Sendable (Double) -> Void)? = nil) async throws {
         throw NeuralTTSError.notReady
     }
 
-    func synthesize(text: String, speed: Float) async throws -> [Float] {
+    func synthesize(text: String, voice: KokoroTTSVoice, speed: Float) async throws -> [Float] {
         throw NeuralTTSError.notReady
     }
 
@@ -339,6 +357,7 @@ final class KokoroTTSEngine: @preconcurrency TTSEngine, @unchecked Sendable {
 
     init(
         runtime: KokoroTTSRuntime = .shared,
+        voice: KokoroTTSVoice,
         rate: Float,
         startAnchor: EbookTTSStartAnchor
     ) {

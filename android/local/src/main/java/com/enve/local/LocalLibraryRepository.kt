@@ -112,7 +112,7 @@ class LocalLibraryRepository @Inject constructor(
         val extension = file.extension()
 
         val mediaType = when (extension) {
-            "epub", "kepub", "pdf" -> AppMediaType.EBOOK
+            "epub", "kepub", "pdf", "azw3" -> AppMediaType.EBOOK
             "mp3", "m4b", "m4a", "aac" -> AppMediaType.AUDIOBOOK
             "cbz", "cbr" -> AppMediaType.EBOOK
             else -> return null

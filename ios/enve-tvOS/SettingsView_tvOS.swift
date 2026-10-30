@@ -2,7 +2,9 @@ import SwiftUI
 
 struct SettingsView_tvOS: View {
     @Environment(AppState.self) private var appState
+    @Environment(\.hearth) private var hearth
     @State private var isShowingAddServer = false
+    @State private var editingConnection: ServerConnection?
 
     var body: some View {
         NavigationStack {
@@ -10,7 +12,7 @@ struct SettingsView_tvOS: View {
                 Section("Servers") {
                     if appState.providerConnections.connections.isEmpty {
                         Text("No servers connected yet.")
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(hearth.textSecondary)
                     } else {
                         ForEach(appState.providerConnections.connections, id: \.id) { server in
                             connectionRow(server)
@@ -31,7 +33,7 @@ struct SettingsView_tvOS: View {
                     )
                     Text("Turn on \"Sync to Apple TV\" in enve on your iPhone (Settings › Sync) to bring servers over automatically.")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(hearth.textSecondary)
                 }
 
                 Section("About") {
@@ -41,27 +43,47 @@ struct SettingsView_tvOS: View {
                     )
                 }
             }
+            .hearthCanvas()
             .navigationTitle("Settings")
             .fullScreenCover(isPresented: $isShowingAddServer) {
                 AddServerView_tvOS()
+            }
+            .fullScreenCover(item: $editingConnection) { server in
+                if let backend = AddServerView_tvOS.Backend(editing: server.type) {
+                    ServerLoginForm_tvOS(backend: backend, editing: server)
+                }
             }
         }
     }
 
     private func connectionRow(_ server: ServerConnection) -> some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(server.name)
-                    .font(.headline)
-                Text(server.url)
+        let backend = AddServerView_tvOS.Backend(editing: server.type)
+        return Button {
+            if backend != nil { editingConnection = server }
+        } label: {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(server.name)
+                        .font(.headline)
+                    Text(server.url)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Text(backend?.displayName ?? server.type.rawValue.capitalized)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                if backend != nil {
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("· Edit on iPhone")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
-            Spacer()
-            Text(server.type.rawValue.capitalized)
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
         .contextMenu {
             Button(role: .destructive) {

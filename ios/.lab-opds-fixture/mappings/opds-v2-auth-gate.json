@@ -1,0 +1,58 @@
+{
+  "mappings": [
+    {
+      "name": "opds2-gated-authorized",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/v2/gated.json",
+        "headers": {
+          "Authorization": {
+            "matches": ".+"
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/opds+json;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/v2/gated.json"
+      }
+    },
+    {
+      "name": "opds2-gated-unauthorized",
+      "priority": 5,
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/v2/gated.json"
+      },
+      "response": {
+        "status": 401,
+        "headers": {
+          "Content-Type": "application/opds-authentication+json;charset=utf-8",
+          "WWW-Authenticate": "Bearer realm=\"Enve OPDS Lab\"",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/auth/oauth-password.json"
+      }
+    },
+    {
+      "name": "opds2-protected-401",
+      "request": {
+        "method": "ANY",
+        "urlPath": "/opds/v2/protected.json"
+      },
+      "response": {
+        "status": 401,
+        "headers": {
+          "Content-Type": "application/opds-authentication+json;charset=utf-8",
+          "WWW-Authenticate": "Basic realm=\"Enve OPDS Lab\", charset=\"UTF-8\"",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/auth/basic.json"
+      }
+    }
+  ]
+}

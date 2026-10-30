@@ -221,7 +221,7 @@ public struct UserPreferences: Codable, Equatable {
 
         var displayName: String {
             switch self {
-            case .classic: return "Classic"
+            case .classic: return "Anchored"
             case .liquidGlass: return "Liquid Glass"
             }
         }

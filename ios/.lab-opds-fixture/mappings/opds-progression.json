@@ -1,0 +1,385 @@
+{
+  "mappings": [
+    {
+      "name": "progression-lab-ebook-001-get-not-recorded",
+      "priority": 3,
+      "scenarioName": "opds-progression-lab-ebook-001",
+      "requiredScenarioState": "Started",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/progression/lab-ebook-001"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/opds-progression+json;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "body": ""
+      }
+    },
+    {
+      "name": "progression-lab-ebook-001-put-created",
+      "priority": 3,
+      "scenarioName": "opds-progression-lab-ebook-001",
+      "requiredScenarioState": "Started",
+      "newScenarioState": "Recorded",
+      "request": {
+        "method": "PUT",
+        "urlPath": "/opds/progression/lab-ebook-001",
+        "headers": {
+          "Content-Type": {
+            "contains": "application/opds-progression+json"
+          }
+        },
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.modified",
+              "matches": "^\\d{4}-\\d{2}-\\d{2}[Tt]\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?([Zz]|[+-]\\d{2}:?\\d{2})$"
+            }
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.device.id",
+              "matches": "^[A-Za-z][A-Za-z0-9+.-]*:\\S+$"
+            }
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.device.name",
+              "matches": "^\\s*\\S[\\s\\S]*$"
+            }
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.progression",
+              "matches": "^(0|1|0\\.\\d+|1\\.0+|\\d+(\\.\\d+)?[eE]-\\d+)$"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 201,
+        "headers": {
+          "Content-Type": "application/opds-progression+json;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "body": "{{{request.body}}}",
+        "transformers": ["response-template"]
+      }
+    },
+    {
+      "name": "progression-lab-ebook-001-get-recorded",
+      "priority": 3,
+      "scenarioName": "opds-progression-lab-ebook-001",
+      "requiredScenarioState": "Recorded",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/progression/lab-ebook-001"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/opds-progression+json;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/progression/lab-ebook-001-recorded.json"
+      }
+    },
+    {
+      "name": "progression-lab-ebook-001-put-updated",
+      "priority": 3,
+      "scenarioName": "opds-progression-lab-ebook-001",
+      "requiredScenarioState": "Recorded",
+      "request": {
+        "method": "PUT",
+        "urlPath": "/opds/progression/lab-ebook-001",
+        "headers": {
+          "Content-Type": {
+            "contains": "application/opds-progression+json"
+          }
+        },
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.modified",
+              "matches": "^\\d{4}-\\d{2}-\\d{2}[Tt]\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?([Zz]|[+-]\\d{2}:?\\d{2})$"
+            }
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.device.id",
+              "matches": "^[A-Za-z][A-Za-z0-9+.-]*:\\S+$"
+            }
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.device.name",
+              "matches": "^\\s*\\S[\\s\\S]*$"
+            }
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.progression",
+              "matches": "^(0|1|0\\.\\d+|1\\.0+|\\d+(\\.\\d+)?[eE]-\\d+)$"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/opds-progression+json;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "body": "{{{request.body}}}",
+        "transformers": ["response-template"]
+      }
+    },
+    {
+      "name": "progression-lab-ebook-101-get",
+      "priority": 3,
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/progression/lab-ebook-101"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/opds-progression+json;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/progression/lab-ebook-101.json"
+      }
+    },
+    {
+      "name": "progression-lab-ebook-101-put",
+      "priority": 3,
+      "request": {
+        "method": "PUT",
+        "urlPath": "/opds/progression/lab-ebook-101",
+        "headers": {
+          "Content-Type": {
+            "contains": "application/opds-progression+json"
+          }
+        },
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.modified",
+              "matches": "^\\d{4}-\\d{2}-\\d{2}[Tt]\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?([Zz]|[+-]\\d{2}:?\\d{2})$"
+            }
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.device.id",
+              "matches": "^[A-Za-z][A-Za-z0-9+.-]*:\\S+$"
+            }
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.device.name",
+              "matches": "^\\s*\\S[\\s\\S]*$"
+            }
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.progression",
+              "matches": "^(0|1|0\\.\\d+|1\\.0+|\\d+(\\.\\d+)?[eE]-\\d+)$"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/opds-progression+json;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "body": "{{{request.body}}}",
+        "transformers": ["response-template"]
+      }
+    },
+    {
+      "name": "progression-lab-audiobook-001-get",
+      "priority": 3,
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/progression/lab-audiobook-001"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/opds-progression+json;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/progression/lab-audiobook-001.json"
+      }
+    },
+    {
+      "name": "progression-lab-audiobook-001-put",
+      "priority": 3,
+      "request": {
+        "method": "PUT",
+        "urlPath": "/opds/progression/lab-audiobook-001",
+        "headers": {
+          "Content-Type": {
+            "contains": "application/opds-progression+json"
+          }
+        },
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.modified",
+              "matches": "^\\d{4}-\\d{2}-\\d{2}[Tt]\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?([Zz]|[+-]\\d{2}:?\\d{2})$"
+            }
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.device.id",
+              "matches": "^[A-Za-z][A-Za-z0-9+.-]*:\\S+$"
+            }
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.device.name",
+              "matches": "^\\s*\\S[\\s\\S]*$"
+            }
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.progression",
+              "matches": "^(0|1|0\\.\\d+|1\\.0+|\\d+(\\.\\d+)?[eE]-\\d+)$"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/opds-progression+json;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "body": "{{{request.body}}}",
+        "transformers": ["response-template"]
+      }
+    },
+    {
+      "name": "progression-put-invalid-payload",
+      "priority": 10,
+      "request": {
+        "method": "PUT",
+        "urlPathPattern": "/opds/progression/(lab-ebook-001|lab-ebook-101|lab-audiobook-001)"
+      },
+      "response": {
+        "status": 400,
+        "headers": {
+          "Content-Type": "application/problem+json;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "jsonBody": {
+          "type": "https://registry.opds.io/error#progression-invalid-payload",
+          "title": "The request is not a Progression Document",
+          "status": 400,
+          "detail": "A PUT must carry Content-Type application/opds-progression+json and a body with modified, a URI-shaped device.id, a non-empty device.name and a progression between 0 and 1."
+        }
+      }
+    },
+    {
+      "name": "progression-lab-conflict-001-get",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/progression/lab-conflict-001"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/opds-progression+json;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/progression/lab-conflict-001.json"
+      }
+    },
+    {
+      "name": "progression-lab-conflict-001-put-stale",
+      "request": {
+        "method": "PUT",
+        "urlPath": "/opds/progression/lab-conflict-001"
+      },
+      "response": {
+        "status": 409,
+        "headers": {
+          "Content-Type": "application/problem+json;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "jsonBody": {
+          "type": "https://registry.opds.io/error#progression-date",
+          "title": "A more recent progression is already recorded",
+          "status": 409,
+          "detail": "The stored progression was modified at 2026-09-19T09:05:00.000Z, which is not older than the submitted document."
+        }
+      }
+    },
+    {
+      "name": "progression-lab-malformed-001-get",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/progression/lab-malformed-001"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/opds-progression+json;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/progression/lab-malformed-001.json"
+      }
+    },
+    {
+      "name": "progression-lab-malformed-001-put-empty-success-body",
+      "request": {
+        "method": "PUT",
+        "urlPath": "/opds/progression/lab-malformed-001"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/opds-progression+json;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "body": ""
+      }
+    },
+    {
+      "name": "progression-lab-protected-001-unauthorized",
+      "request": {
+        "method": "ANY",
+        "urlPath": "/opds/progression/lab-protected-001"
+      },
+      "response": {
+        "status": 401,
+        "headers": {
+          "Content-Type": "application/opds-authentication+json;charset=utf-8",
+          "WWW-Authenticate": "Bearer realm=\"Enve OPDS Lab\", error=\"invalid_token\"",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/auth/oauth-implicit.json"
+      }
+    },
+    {
+      "name": "progression-schema",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/progression/progression.schema.json"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/schema+json;charset=utf-8"
+        },
+        "bodyFileName": "fixtures/opds/progression/progression.schema.json"
+      }
+    }
+  ]
+}

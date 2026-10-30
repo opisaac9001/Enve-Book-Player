@@ -1,6 +1,7 @@
 import BackgroundTasks
 import Foundation
 import Logging
+import ReadiumZIPFoundation
 import Speech
 import StoryAlignCore
 import SwiftUI
@@ -41,13 +42,47 @@ private enum StoryAlignSpeechAuthorization {
     }
 }
 
-enum StoryAlignLaunchWarning {
-    static let title = "Heads up, this will take a while"
-    static let message =
-        "StoryAlign listens to the full audiobook and lines it up with the ebook text. This can take a while on iPhone, so keeping your phone plugged in is recommended. You can leave the app while it runs, but try not to force-close it or leave it idle for too long, or it may stop. For faster results, you can use the Storyteller server or run StoryAlign on a Mac. Links are at the bottom of this page."
+enum StoryAlignMethod: String, Codable, CaseIterable, Identifiable {
+    case quartzNet = "quartznet"
+    case appleSpeech = "appleSpeech"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .quartzNet: "QuartzNet"
+        case .appleSpeech: "Apple Speech"
+        }
+    }
+
+    var isAvailable: Bool {
+        switch self {
+        case .quartzNet: QuartzNetModelPackage.isSupported
+        case .appleSpeech:
+            if #available(iOS 26.0, *) { true } else { false }
+        }
+    }
+
+    func supports(language: String?) -> Bool {
+        guard self == .quartzNet, let language, !language.isEmpty else { return true }
+        let normalized = language.lowercased().replacingOccurrences(of: "_", with: "-")
+        return normalized == "und" || normalized == "english" || normalized == "eng" || normalized.split(separator: "-").first == "en"
+    }
 }
 
-@available(iOS 26.0, *)
+enum StoryAlignLaunchWarning {
+    static let title = "Prepare read-aloud book"
+
+    static func message(for method: StoryAlignMethod) -> String {
+        switch method {
+        case .quartzNet:
+            return "StoryAlign aligns English narration with the ebook on this device. The first run downloads a 77 MB alignment model. Preparation can use significant battery power. Keep the app open on iOS 17–25; completed sections are saved if preparation pauses."
+        case .appleSpeech:
+            return "StoryAlign transcribes the audiobook with Apple's on-device speech service and matches it to the ebook. Preparation can use significant battery power and may pause if the system ends its background session."
+        }
+    }
+}
+
 @MainActor @Observable
 final class StoryAlignService {
     static let shared = StoryAlignService()
@@ -58,8 +93,23 @@ final class StoryAlignService {
     private let defaults: UserDefaults
     private nonisolated let cacheRoot: URL
     private var operations: [UUID: Task<Void, Never>] = [:]
-    private var cancelledConversions: [Task<Void, Never>] = []
     private var isRetired = false
+    private var runID = UUID()
+    private var thermalObserver: NSObjectProtocol?
+
+    var method: StoryAlignMethod {
+        didSet { defaults.set(method.rawValue, forKey: Self.methodKey) }
+    }
+
+    var automaticallyPausesForTemperature: Bool {
+        didSet {
+            defaults.set(automaticallyPausesForTemperature, forKey: Self.temperaturePauseKey)
+            if automaticallyPausesForTemperature { pauseIfThermallyConstrained() }
+        }
+    }
+
+    private static let methodKey = "storyalign.method"
+    private static let temperaturePauseKey = "storyalign.automaticallyPausesForTemperature"
 
     init(
         libraryCache: LibraryBookCache = AppState.shared.libraryCache,
@@ -68,9 +118,21 @@ final class StoryAlignService {
     ) {
         self.profileSession = profileSession
         defaults = profileSession?.defaults ?? .standard
+        automaticallyPausesForTemperature = defaults.object(forKey: Self.temperaturePauseKey) as? Bool ?? true
         cacheRoot = (profileSession?.storage.applicationSupportDirectory ?? URL.applicationSupportDirectory).appendingPathComponent("Enve/StoryAlignCache", isDirectory: true)
         self.libraryCache = libraryCache
         self.bookRepository = bookRepository
+        let storedMethod = defaults.string(forKey: Self.methodKey).flatMap(StoryAlignMethod.init(rawValue:))
+        if let storedMethod, storedMethod.isAvailable {
+            method = storedMethod
+        } else {
+            method = StoryAlignMethod.allCases.first(where: \.isAvailable) ?? .quartzNet
+        }
+        thermalObserver = NotificationCenter.default.addObserver(
+            forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.pauseIfThermallyConstrained() }
+        }
     }
 
     private func retainOperation(priority: TaskPriority? = nil, _ operation: @escaping @MainActor () async -> Void) {
@@ -84,11 +146,13 @@ final class StoryAlignService {
 
     func retire() async {
         isRetired = true
-        let pending = Array(operations.values) + cancelledConversions + [currentTask].compactMap { $0 }
+        runID = UUID()
+        if let thermalObserver { NotificationCenter.default.removeObserver(thermalObserver) }
+        thermalObserver = nil
+        let pending = Array(operations.values) + [currentTask].compactMap { $0 }
         pending.forEach { $0.cancel() }
         for task in pending { await task.value }
         currentTask = nil
-        cancelledConversions.removeAll()
         currentSession?.cleanup()
         currentSession = nil
         endExecutionProtection(success: false)
@@ -99,6 +163,7 @@ final class StoryAlignService {
     struct ConversionState: Equatable {
         let ebookStableId: String
         let audiobookStableId: String
+        let method: StoryAlignMethod
         var stage: String
         var progress: Double
         var detailText: String?
@@ -120,6 +185,27 @@ final class StoryAlignService {
     struct PausedConversion: Codable {
         let ebookStableId: String
         let audiobookStableId: String
+        let method: StoryAlignMethod
+        let reason: String
+
+        init(ebookStableId: String, audiobookStableId: String, method: StoryAlignMethod, reason: String) {
+            self.ebookStableId = ebookStableId
+            self.audiobookStableId = audiobookStableId
+            self.method = method
+            self.reason = reason
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case ebookStableId, audiobookStableId, method, reason
+        }
+
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            ebookStableId = try values.decode(String.self, forKey: .ebookStableId)
+            audiobookStableId = try values.decode(String.self, forKey: .audiobookStableId)
+            method = try values.decodeIfPresent(StoryAlignMethod.self, forKey: .method) ?? .appleSpeech
+            reason = try values.decodeIfPresent(String.self, forKey: .reason) ?? "Preparation was interrupted."
+        }
     }
 
     private(set) var pausedConversion: PausedConversion? {
@@ -151,18 +237,26 @@ final class StoryAlignService {
     private var currentTask: Task<Void, Never>?
     private var currentSession: AlignmentSession?
     #if !targetEnvironment(macCatalyst)
-    private var continuedTask: BGContinuedProcessingTask?
+    private var continuedProcessing: AnyObject?
     #endif
-    private var bgTaskExpired = false
     private var didDisableIdleTimer = false
 
     #if !targetEnvironment(macCatalyst)
+    @available(iOS 26.0, *)
     func handleContinuedProcessingTask(_ task: BGContinuedProcessingTask) {
-        continuedTask = task
-        task.progress.totalUnitCount = 100
+        guard currentTask?.isCancelled == false,
+            let activeConversion, !activeConversion.isComplete, activeConversion.error == nil, !isRetired
+        else {
+            task.setTaskCompleted(success: false)
+            return
+        }
+        let processing = StoryAlignContinuedProcessing(task: task)
+        continuedProcessing = processing
+        let operationID = runID
         task.expirationHandler = { [weak self] in
-            Task { @MainActor [weak self] in
-                self?.handleBackgroundTaskExpiration()
+            Task { @MainActor in
+                guard let self, operationID == self.runID else { return }
+                self.pauseConversion(reason: "The system paused background preparation.")
             }
         }
     }
@@ -182,185 +276,184 @@ final class StoryAlignService {
 
     func cancelConversion() {
         guard !isRetired else { return }
-        if let currentTask { currentTask.cancel(); cancelledConversions.append(currentTask) }
-        currentTask = nil
-        currentSession?.cleanup()
-        currentSession = nil
+        runID = UUID()
+        currentTask?.cancel()
         activeConversion = nil
         pausedConversion = nil
         endExecutionProtection(success: false)
     }
 
     func resumeConversion(ebook: Book, audiobook: Book) {
-        guard !isRetired else { return }
-        pausedConversion = nil
+        guard !isRetired, let paused = pausedConversion else { return }
+        method = paused.method
         downloadAndConvert(ebook: ebook, audiobook: audiobook)
     }
 
-    func dismissConversion() {
+    func pauseConversion() {
         guard !isRetired else { return }
+        pauseConversion(reason: "Paused by you.")
+    }
+
+    func dismissConversion() {
+        guard !isRetired, currentTask == nil else { return }
         activeConversion = nil
-        currentTask = nil
-        currentSession = nil
-        endExecutionProtection(success: true)
+    }
+
+    func sceneDidEnterBackground() {
+        if #available(iOS 26.0, *) { return }
+        pauseConversion(reason: "Keep Enve open to continue preparation on this iOS version.")
+    }
+
+    private func pauseIfThermallyConstrained() {
+        guard automaticallyPausesForTemperature else { return }
+        switch ProcessInfo.processInfo.thermalState {
+        case .critical:
+            pauseConversion(reason: "Your device needs to cool down. Resume when it is cooler.")
+        default: break
+        }
+    }
+
+    private func pauseConversion(reason: String) {
+        guard let active = activeConversion, !active.isComplete, active.error == nil else { return }
+        runID = UUID()
+        pausedConversion = PausedConversion(
+            ebookStableId: active.ebookStableId,
+            audiobookStableId: active.audiobookStableId,
+            method: active.method,
+            reason: reason
+        )
+        currentTask?.cancel()
+        activeConversion = nil
+        endExecutionProtection(success: false)
     }
 
     private func beginExecutionProtection() {
-        bgTaskExpired = false
-
-        #if !targetEnvironment(macCatalyst)
         if !UIApplication.shared.isIdleTimerDisabled {
             UIApplication.shared.isIdleTimerDisabled = true
             didDisableIdleTimer = true
         }
+        #if !targetEnvironment(macCatalyst)
+        if #available(iOS 26.0, *) {
+            let request = BGContinuedProcessingTaskRequest(
+                identifier: Self.bgTaskIdentifier, title: "StoryAlign", subtitle: "Starting…"
+            )
+            request.strategy = .queue
+            do { try BGTaskScheduler.shared.submit(request) }
+            catch { AppLogger.general.error("[StoryAlign] Background preparation unavailable") }
+        }
+        #endif
+    }
 
-        guard continuedTask == nil else { return }
-        let request = BGContinuedProcessingTaskRequest(
-            identifier: Self.bgTaskIdentifier,
-            title: "StoryAlign",
-            subtitle: "Starting\u{2026}"
-        )
-        request.strategy = .queue
-        do {
-            try BGTaskScheduler.shared.submit(request)
-        } catch {
-            AppLogger.general.error("[StoryAlign] BGContinuedProcessingTask submit failed: \(error.localizedDescription)")
+    private func updateBackgroundProgress(_ progress: Double, stage: String) {
+        #if !targetEnvironment(macCatalyst)
+        if #available(iOS 26.0, *), let processing = continuedProcessing as? StoryAlignContinuedProcessing {
+            processing.update(progress: progress, stage: stage)
         }
         #endif
     }
 
     private func endExecutionProtection(success: Bool) {
         #if !targetEnvironment(macCatalyst)
-        if let task = continuedTask {
-            task.setTaskCompleted(success: success)
-            continuedTask = nil
+        if #available(iOS 26.0, *), let processing = continuedProcessing as? StoryAlignContinuedProcessing {
+            processing.complete(success: success)
         }
-
+        continuedProcessing = nil
+        #endif
         if didDisableIdleTimer {
             UIApplication.shared.isIdleTimerDisabled = false
             didDisableIdleTimer = false
         }
-        #endif
-
-        bgTaskExpired = false
-    }
-
-    private func handleBackgroundTaskExpiration() {
-        bgTaskExpired = true
-        if let currentTask { currentTask.cancel(); cancelledConversions.append(currentTask) }
-        currentTask = nil
-
-        currentSession = nil
-        if let active = activeConversion {
-            pausedConversion = PausedConversion(
-                ebookStableId: active.ebookStableId,
-                audiobookStableId: active.audiobookStableId
-            )
-        }
-        activeConversion?.stage = "Paused"
-        activeConversion?.error = AlignError.backgroundExpired.localizedDescription
-        activeConversion?.isDownloadPhase = false
-        activeConversion?.detailText = nil
-        endExecutionProtection(success: false)
     }
 
     func downloadAndConvert(ebook: Book, audiobook: Book) {
         guard !isRetired, activeConversion == nil else { return }
         guard ebook.mediaType == .ebook, audiobook.mediaType == .audiobook else { return }
 
-        beginExecutionProtection()
-
-        let ebookId = ebook.stableId
-        let audiobookId = audiobook.stableId
-
+        let chosenMethod = method
+        let operationID = UUID()
+        runID = operationID
+        let previousTask = currentTask
+        previousTask?.cancel()
         activeConversion = ConversionState(
-            ebookStableId: ebookId,
-            audiobookStableId: audiobookId,
+            ebookStableId: ebook.stableId,
+            audiobookStableId: audiobook.stableId,
+            method: chosenMethod,
             stage: "Preparing",
             progress: 0,
             detailText: nil,
             isDownloadPhase: false,
             startedAt: Date()
         )
-
+        pausedConversion = PausedConversion(
+            ebookStableId: ebook.stableId, audiobookStableId: audiobook.stableId,
+            method: chosenMethod, reason: "Preparation was interrupted."
+        )
+        beginExecutionProtection()
         currentTask = Task { [weak self] in
+            await previousTask?.value
             guard let self else { return }
             do {
                 try Task.checkCancellation()
-                guard !isRetired else { throw CancellationError() }
-                let speechAnalyzerConfig = self.currentSpeechAnalyzerConfig()
+                guard operationID == runID, !isRetired else { throw CancellationError() }
+                guard chosenMethod.isAvailable else { throw AlignError.appleSpeechUnavailable }
+                guard chosenMethod.supports(language: audiobook.language ?? ebook.language) else {
+                    throw AlignError.unsupportedLanguage
+                }
+                pauseIfThermallyConstrained()
+                try Task.checkCancellation()
                 if resolveEpubURL(ebook) == nil {
-                    await MainActor.run {
-                        self.activeConversion?.stage = "Downloading Ebook"
-                        self.activeConversion?.isDownloadPhase = true
-                        self.activeConversion?.progress = 0
-                        self.activeConversion?.detailText = nil
-                    }
+                    activeConversion?.stage = "Downloading Ebook"
+                    activeConversion?.isDownloadPhase = true
                     await (profileSession?.downloads ?? UnifiedDownloadService.shared).download(book: ebook)
                     try await awaitEbookDownload(ebook)
                 }
-
-                if Task.isCancelled { throw CancellationError() }
-
+                try Task.checkCancellation()
                 if resolveAudioURLs(audiobook) == nil {
-                    await MainActor.run {
-                        self.activeConversion?.stage = "Downloading Audiobook"
-                        self.activeConversion?.isDownloadPhase = true
-                        self.activeConversion?.progress = 0
-                        self.activeConversion?.detailText = nil
-                    }
+                    activeConversion?.stage = "Downloading Audiobook"
+                    activeConversion?.isDownloadPhase = true
                     await (profileSession?.downloads ?? UnifiedDownloadService.shared).download(book: audiobook)
                     try await awaitAudiobookDownload(audiobook)
                 }
-
-                if Task.isCancelled { throw CancellationError() }
-
-                await MainActor.run {
-                    self.activeConversion?.isDownloadPhase = false
-                    self.activeConversion?.detailText = nil
+                try Task.checkCancellation()
+                activeConversion?.isDownloadPhase = false
+                activeConversion?.detailText = nil
+                var modelDirectory: URL?
+                if chosenMethod == .quartzNet {
+                    activeConversion?.stage = "Preparing alignment model"
+                    modelDirectory = try await StoryAlignModelStore.shared.prepare()
+                } else {
+                    try await ensureSpeechAuthorization()
                 }
-
-                try await ensureSpeechAuthorization()
-                guard let epubURL = try await prepareEpubURL(ebook),
-                    let audioURLs = resolveAudioURLs(audiobook)
-                else {
+                try Task.checkCancellation()
+                guard operationID == runID, !isRetired else { throw CancellationError() }
+                guard let epubURL = try await prepareEpubURL(ebook), let audioURLs = resolveAudioURLs(audiobook) else {
                     throw AlignError.missingFiles
                 }
                 try await runAlignment(
-                    ebookId: ebookId,
-                    audiobookId: audiobookId,
-                    epubURL: epubURL,
-                    audioURLs: audioURLs,
-                    ebook: ebook,
-                    audiobook: audiobook,
-                    speechAnalyzerConfig: speechAnalyzerConfig
+                    epubURL: epubURL, audioURLs: audioURLs, ebook: ebook, audiobook: audiobook,
+                    method: chosenMethod, modelDirectory: modelDirectory, operationID: operationID
                 )
+                guard operationID == runID else { return }
+                pausedConversion = nil
+                currentTask = nil
             } catch is CancellationError {
-                await MainActor.run {
-                    if self.bgTaskExpired {
-                        self.activeConversion?.error = AlignError.backgroundExpired.localizedDescription
-                        self.activeConversion?.stage = "Failed"
-                        self.activeConversion?.isDownloadPhase = false
-                        self.activeConversion?.detailText = nil
-                        self.bgTaskExpired = false
-                    } else {
-                        self.activeConversion = nil
-                    }
-                    self.currentSession?.cleanup()
-                    self.currentSession = nil
-                    self.endExecutionProtection(success: false)
-                }
+                guard operationID == runID else { return }
+                currentSession?.cleanup()
+                currentSession = nil
+                currentTask = nil
+                activeConversion = nil
+                endExecutionProtection(success: false)
             } catch {
-                await MainActor.run {
-                    self.activeConversion?.error = self.userFacingErrorMessage(for: error)
-                    self.activeConversion?.technicalError = self.rawErrorString(for: error)
-                    self.activeConversion?.stage = "Failed"
-                    self.activeConversion?.isDownloadPhase = false
-                    self.activeConversion?.detailText = nil
-                    self.currentSession?.cleanup()
-                    self.currentSession = nil
-                    self.endExecutionProtection(success: false)
-                }
+                guard operationID == runID, !isRetired else { return }
+                activeConversion?.error = userFacingErrorMessage(for: error)
+                activeConversion?.technicalError = rawErrorString(for: error)
+                activeConversion?.stage = "Failed"
+                activeConversion?.isDownloadPhase = false
+                activeConversion?.detailText = nil
+                currentSession?.cleanup()
+                currentSession = nil
+                currentTask = nil
+                endExecutionProtection(success: false)
             }
         }
     }
@@ -474,77 +567,152 @@ final class StoryAlignService {
         return message
     }
 
-    private func currentSpeechAnalyzerConfig() -> SpeechAnalyzerConfig {
-        SpeechAnalyzerConfig(bias: .fast)
-    }
-
     private func runAlignment(
-        ebookId: String,
-        audiobookId: String,
         epubURL: URL,
         audioURLs: [URL],
         ebook: Book,
         audiobook: Book,
-        speechAnalyzerConfig: SpeechAnalyzerConfig
+        method: StoryAlignMethod,
+        modelDirectory: URL?,
+        operationID: UUID
     ) async throws {
         let outputDir = cacheDirectory(ebook: ebook, audiobook: audiobook)
-        try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
-        let preparedEpubURL = try prepareStoryAlignInputEpub(epubURL, in: outputDir)
-
+        var workingDir = outputDir.appendingPathComponent("working-\(method.rawValue)", isDirectory: true)
+        try FileManager.default.createDirectory(at: workingDir, withIntermediateDirectories: true)
+        var resources = URLResourceValues()
+        resources.isExcludedFromBackup = true
+        try workingDir.setResourceValues(resources)
+        let preparedEpubURL = try prepareStoryAlignInputEpub(epubURL, in: workingDir)
         let request = try AlignmentRequest(
-            epubURL: preparedEpubURL,
-            audioBookURLs: audioURLs,
-            sessionDir: outputDir.path
+            epubURL: preparedEpubURL, audioBookURLs: audioURLs, sessionDir: workingDir.path
         )
         let config = AlignmentConfig(
-            audioLoaderType: .avfoundation,
-            concurrency: 0,
-            reportType: .none,
-            granularity: .sentence
+            audioLoaderType: .avfoundation, concurrency: 0, reportType: .none, granularity: .sentence
         )
-        let transcriptionStore = DiskTranscriptionStore(
-            directory: outputDir.appendingPathComponent("transcription-cache", isDirectory: true)
-        )
-        let session = AlignmentSession(
-            request: request,
-            config: config,
-            logger: StoryAlignOSLogger(),
-            speechAnalyzerConfig: speechAnalyzerConfig,
-            transcriptionStore: transcriptionStore
-        )
-        await MainActor.run { self.currentSession = session }
-
-        let listener = ProgressBridge { [weak self] snapshot in
+        let session: AlignmentSession
+        if method == .quartzNet {
+            session = AlignmentSession(request: request, config: config, logger: StoryAlignOSLogger())
+        } else {
+            session = AlignmentSession(
+                request: request, config: config, logger: StoryAlignOSLogger(),
+                speechAnalyzerConfig: SpeechAnalyzerConfig(bias: .fast),
+                transcriptionStore: DiskTranscriptionStore(
+                    directory: workingDir.appendingPathComponent("transcription-cache", isDirectory: true)
+                )
+            )
+        }
+        currentSession = session
+        var didPromoteOutput = false
+        defer {
+            session.cleanup()
+            if currentSession === session { currentSession = nil }
+            if didPromoteOutput {
+                for method in StoryAlignMethod.allCases {
+                    try? FileManager.default.removeItem(
+                        at: outputDir.appendingPathComponent("working-\(method.rawValue)", isDirectory: true)
+                    )
+                }
+            }
+        }
+        session.addProgressListener(ProgressBridge { [weak self] snapshot in
             Task { @MainActor in
-                guard let self, !self.isRetired else { return }
-                let stage = snapshot.stage.rawValue.capitalized
+                guard let self, !self.isRetired, operationID == self.runID,
+                    self.activeConversion?.isComplete == false, self.activeConversion?.error == nil
+                else { return }
+                let stage = method == .quartzNet && snapshot.stage == .transcribe
+                    ? "Aligning Narration" : snapshot.stage.rawValue.capitalized
                 self.activeConversion?.stage = stage
                 self.activeConversion?.progress = snapshot.timeEstimateProgress()
                 self.activeConversion?.detailText = nil
-                #if !targetEnvironment(macCatalyst)
-                if let bgTask = self.continuedTask {
-                    bgTask.progress.completedUnitCount = Int64(snapshot.timeEstimateProgress() * 100)
-                    bgTask.updateTitle("StoryAlign", subtitle: stage)
+                self.updateBackgroundProgress(snapshot.timeEstimateProgress(), stage: stage)
+            }
+        })
+        let result: AlignmentResult
+        if method == .quartzNet {
+            guard let modelDirectory else { throw AlignError.missingFiles }
+            result = try await StoryAligner().alignStory(
+                session: session, ctcConfiguration: CTCAlignmentConfiguration(modelDirectory: modelDirectory)
+            )
+        } else {
+            result = try await StoryAligner().alignStory(session: session)
+        }
+        try Task.checkCancellation()
+        guard operationID == runID, !isRetired else { throw CancellationError() }
+        if let previousURL = cachedNarratedEpubURL(ebook: ebook, audiobook: audiobook) {
+            let previous = try await outputQuality(at: previousURL)
+            if let candidate = result.ctcQuality, let incumbent = previous.quality {
+                guard Self.canReplace(candidate: candidate, incumbent: incumbent) else {
+                    throw AlignError.inferiorAlignment
                 }
-                #endif
+            } else {
+                let candidateCount: Int
+                if let quality = result.ctcQuality {
+                    candidateCount = quality.acceptedSentenceCount
+                } else {
+                    candidateCount = try await outputQuality(at: result.alignedEpubURL).sentenceCount
+                }
+                guard candidateCount >= previous.sentenceCount else { throw AlignError.inferiorAlignment }
             }
         }
-        session.addProgressListener(listener)
-
-        let result = try await StoryAligner().alignStory(session: session)
-        let alignedEpubURL = result.alignedEpubURL
         try Task.checkCancellation()
-        guard !isRetired else { throw CancellationError() }
-        await MainActor.run {
-            let elapsed = self.activeConversion.map { Date().timeIntervalSince($0.startedAt) }
-            self.registerReadAloudBook(ebook: ebook, audiobook: audiobook, epubURL: alignedEpubURL)
-            self.activeConversion?.stage = "Complete"
-            self.activeConversion?.progress = 1.0
-            self.activeConversion?.elapsedTime = elapsed
-            self.activeConversion?.isComplete = true
-            self.currentSession = nil
-            self.endExecutionProtection(success: true)
+        guard operationID == runID, !isRetired else { throw CancellationError() }
+        let acceptedURL = outputDir.appendingPathComponent("accepted.epub")
+        if FileManager.default.fileExists(atPath: acceptedURL.path) {
+            _ = try FileManager.default.replaceItemAt(acceptedURL, withItemAt: result.alignedEpubURL)
+        } else {
+            try FileManager.default.moveItem(at: result.alignedEpubURL, to: acceptedURL)
         }
+        let elapsed = activeConversion.map { Date().timeIntervalSince($0.startedAt) }
+        registerReadAloudBook(ebook: ebook, audiobook: audiobook, epubURL: acceptedURL)
+        activeConversion?.stage = "Complete"
+        activeConversion?.progress = 1
+        activeConversion?.elapsedTime = elapsed
+        activeConversion?.isComplete = true
+        if let quality = result.ctcQuality {
+            activeConversion?.detailText = "Matched \(quality.acceptedSentenceCount) of \(quality.eligibleSentenceCount) sentences (\(Int(quality.coverage * 100))%). Unmatched passages have no highlighting."
+        }
+        currentSession = nil
+        endExecutionProtection(success: true)
+        didPromoteOutput = true
+    }
+
+    static func canReplace(candidate: CTCAlignmentQuality, incumbent: CTCAlignmentQuality) -> Bool {
+        candidate.acceptedSentenceCount >= incumbent.acceptedSentenceCount
+            && candidate.coverage + 0.02 >= incumbent.coverage
+            && candidate.audioCoverage + 0.02 >= incumbent.audioCoverage
+    }
+
+    private func outputQuality(at url: URL) async throws -> (quality: CTCAlignmentQuality?, sentenceCount: Int) {
+        let archive = try await Archive(url: url, accessMode: .read)
+        let entries = try await archive.entries().filter { $0.type == .file }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        if let entry = entries.first(where: { $0.path == "META-INF/enve-ctc-quality.json" }) {
+            guard entry.uncompressedSize <= 65_536 else { throw AlignError.invalidPreviousAlignment }
+            let file = root.appendingPathComponent("quality.json")
+            _ = try await archive.extract(entry, to: file)
+            let quality = try JSONDecoder().decode(CTCAlignmentQuality.self, from: Data(contentsOf: file))
+            guard quality.acceptedSentenceCount > 0,
+                quality.eligibleSentenceCount >= quality.acceptedSentenceCount,
+                quality.audioCoverage.isFinite, (0...1).contains(quality.audioCoverage)
+            else { throw AlignError.invalidPreviousAlignment }
+            return (quality, quality.acceptedSentenceCount)
+        }
+        var count = 0
+        for (index, entry) in entries.filter({ $0.path.lowercased().hasSuffix(".smil") }).enumerated() {
+            try Task.checkCancellation()
+            guard entry.uncompressedSize <= 16_777_216 else { throw AlignError.invalidPreviousAlignment }
+            let file = root.appendingPathComponent("\(index).smil")
+            _ = try await archive.extract(entry, to: file)
+            let parser = XMLParser(data: try Data(contentsOf: file))
+            let counter = StoryAlignOverlayCounter()
+            parser.delegate = counter
+            guard parser.parse() else { throw AlignError.invalidPreviousAlignment }
+            count += counter.count
+        }
+        guard count > 0 else { throw AlignError.invalidPreviousAlignment }
+        return (nil, count)
     }
 
     private func prepareStoryAlignInputEpub(_ source: URL, in outputDir: URL) throws -> URL {
@@ -775,6 +943,8 @@ final class StoryAlignService {
 
     private nonisolated func cachedNarratedEpubURL(ebookStableId: String, audiobookStableId: String) -> URL? {
         for dir in cacheDirectories(ebookStableId: ebookStableId, audiobookStableId: audiobookStableId) {
+            let accepted = dir.appendingPathComponent("accepted.epub")
+            if FileManager.default.fileExists(atPath: accepted.path) { return accepted }
             let epubFiles = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil))?.filter {
                 $0.pathExtension.lowercased() == "epub"
             }
@@ -1001,6 +1171,10 @@ enum AlignError: LocalizedError {
     case speechAuthorizationDenied
     case simulatorUnsupported
     case backgroundExpired
+    case appleSpeechUnavailable
+    case unsupportedLanguage
+    case inferiorAlignment
+    case invalidPreviousAlignment
 
     var errorDescription: String? {
         switch self {
@@ -1011,8 +1185,46 @@ enum AlignError: LocalizedError {
         case .simulatorUnsupported:
             return
                 "StoryAlign alignment is not available in the iOS Simulator. Use a physical device to run the transcription and alignment step."
+        case .inferiorAlignment: return "The new alignment matched less of the book. Your previous read-aloud book was kept."
+        case .invalidPreviousAlignment: return "The previous alignment could not be verified. It was kept; remove it explicitly before replacing it."
+        case .appleSpeechUnavailable: return "Apple Speech alignment requires iOS 26 or later. Choose QuartzNet for English books."
+        case .unsupportedLanguage: return "QuartzNet currently supports English narration. Choose Apple Speech for other supported languages on iOS 26 or later."
         case .backgroundExpired:
             return "The system ended StoryAlign\u{2019}s background session. Try again while plugged in and with fewer apps running."
         }
+    }
+}
+
+#if !targetEnvironment(macCatalyst)
+@available(iOS 26.0, *)
+@MainActor
+private final class StoryAlignContinuedProcessing {
+    private let task: BGContinuedProcessingTask
+
+    init(task: BGContinuedProcessingTask) {
+        self.task = task
+        task.progress.totalUnitCount = 100
+    }
+
+    func update(progress: Double, stage: String) {
+        task.progress.completedUnitCount = Int64(min(max(progress, 0), 1) * 100)
+        task.updateTitle("StoryAlign", subtitle: stage)
+    }
+
+    func complete(success: Bool) {
+        task.expirationHandler = nil
+        task.setTaskCompleted(success: success)
+    }
+}
+#endif
+
+nonisolated private final class StoryAlignOverlayCounter: NSObject, XMLParserDelegate {
+    private(set) var count = 0
+
+    func parser(
+        _ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?,
+        qualifiedName qName: String?, attributes attributeDict: [String: String]
+    ) {
+        if elementName.split(separator: ":").last == "audio" { count += 1 }
     }
 }

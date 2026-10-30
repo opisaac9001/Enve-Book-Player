@@ -65,7 +65,25 @@ struct CoverTile: View {
             RoundedRectangle(cornerRadius: corner, style: .continuous)
                 .strokeBorder(hearth.hairline, lineWidth: 1)
         }
+        .background {
+            if hearth.decorated { binding }
+        }
         .shadow(color: .black.opacity(hearth.isInk ? 0.45 : 0.18), radius: 14, y: 8)
+    }
+
+    // Drawn behind the art and offset past its trailing and bottom edges so no artwork is covered.
+    private var binding: some View {
+        let edge = min(4, max(1.5, width * 0.03))
+        let shape = RoundedRectangle(cornerRadius: corner, style: .continuous)
+        return ZStack {
+            shape.fill(hearth.wood)
+                .overlay(shape.strokeBorder(hearth.outline, lineWidth: 1))
+                .offset(x: edge * 2, y: edge * 1.5)
+            shape.fill(hearth.pageEdge)
+                .overlay(shape.strokeBorder(hearth.outline.opacity(0.45), lineWidth: 0.75))
+                .offset(x: edge, y: edge * 0.75)
+        }
+        .accessibilityHidden(true)
     }
 
     @ViewBuilder

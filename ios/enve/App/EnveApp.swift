@@ -82,10 +82,11 @@ struct EnveApp: App {
                 }
             }
             .task(id: ObjectIdentifier(profiles.activeSession)) {
+                HardcoverSyncService.shared.configurationChanged()
                 guard !profiles.isLocked else { return }
                 let session = profiles.activeSession
                 session.start()
-                if session.isOwner, #available(iOS 26.0, *) { session.storyAlignService.loadPausedConversion() }
+                if session.isOwner { session.storyAlignService.loadPausedConversion() }
                 await session.listeningStats.startTracking()
                 await session.appCache.runMaintenance()
                 guard !Task.isCancelled, !session.isRetired else { return }
@@ -99,6 +100,7 @@ struct EnveApp: App {
                 }
             }
             .onChange(of: profiles.isLocked) { _, locked in
+                HardcoverSyncService.shared.configurationChanged()
                 if !locked {
                     profiles.activeSession.start()
                     profiles.activeSession.activateSystemAccess()
@@ -107,12 +109,16 @@ struct EnveApp: App {
             .onChange(of: scenePhase) { _, phase in
                 let session = profiles.activeSession
                 if phase == .active {
+                    HardcoverSyncService.shared.resume()
                     guard !profiles.isLocked else { return }
                     #if os(iOS)
                     session.fileSharing.startWatching()
                     session.fileSharing.scheduleRefresh(reason: "scene-active")
                     #endif
                 } else if phase == .background {
+                    #if os(iOS)
+                    if session.isOwner { session.storyAlignService.sceneDidEnterBackground() }
+                    #endif
                     profiles.onBackground()
                     #if os(iOS)
                     session.fileSharing.stopWatching()

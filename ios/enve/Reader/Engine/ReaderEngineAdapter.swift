@@ -2,6 +2,7 @@ import Foundation
 @preconcurrency import ReadiumNavigator
 @preconcurrency import ReadiumShared
 import UIKit
+import WebKit
 
 struct ReaderSelectionSnapshot: Equatable {
     let locator: Locator
@@ -471,6 +472,19 @@ final class ReadiumReaderEngineAdapter: ReaderEngineAdapter {
             return nil
         }
         return "epubcfi(/6/\(2 * (index + 1))!\(local))"
+    }
+
+    func illustration(at point: CGPoint) async -> ReaderIllustrationReference? {
+        var target = navigator.view.hitTest(point, with: nil)
+        while let view = target, !(view is WKWebView) { target = view.superview }
+        guard let webView = target as? WKWebView,
+            let documentHref = navigator.currentLocation?.href.string else { return nil }
+        var localPoint = webView.convert(point, from: navigator.view)
+        // Readium adds overscroll insets when forwarding DOM tap coordinates.
+        localPoint.x += min(0, webView.scrollView.contentOffset.x)
+        localPoint.y += min(0, webView.scrollView.contentOffset.y)
+        let value = try? await webView.evaluateJavaScript(ReaderIllustrationScript.at(localPoint))
+        return ReaderIllustrationScript.reference(from: value, documentHref: documentHref)
     }
 
     func restore(locatorJSON: String, animated: Bool) async -> Bool {

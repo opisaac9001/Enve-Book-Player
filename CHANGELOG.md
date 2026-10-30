@@ -1,5 +1,30 @@
 # Changelog
 
+## Android 1.2 build 56 / iOS 1.2.7 — 2026-10-29
+
+Release source for iOS 1.2.7 (build 2) and Android 1.2 build 56.
+
+- Share book positions by QR code across iOS and Android for audiobooks, podcasts, ebooks, PDFs, and comics. Reading codes bundle all available CFI, Readium text and DOM anchors, chapter offsets, percentage, and page information; receiving devices confirm the matching copy before applying the position.
+- Preserve deliberate rewinds, beginning-of-book positions, and profile isolation when saved server progress or reader checkpoints are older than an accepted code.
+- Save Android EPUB navigation after an old location fails to restore. Sync Center now reports Grimmory failures and records successful manual syncs.
+- Preserve the confirmed reading position across navigation, reflow, closing, and offline reopening.
+- Fit overflowing tables and preformatted text while preserving publisher styling for content that already fits.
+- Open illustrations in a zoomable viewer with captions and return to the same passage.
+- Resize EPUB text with a pinch gesture and improve reading-time estimates by excluding jumps and idle time.
+- Restore Android selection handles for hyphenated first words.
+- Improve Hardcover matching, reading status, and progress updates on both platforms.
+- Refine reader controls, PDF navigation, library filters, profiles, and local read-aloud generation. iOS also updates cloud-source setup, catalog recovery, and tvOS reading and playback.
+- Remove unused code and redundant comments, sanitize internal review notes, and update dependency acknowledgements and release checks.
+
+### Verification
+
+- iOS: 1,787 tests passed, 36 skipped with parallel execution disabled for shared playback fixtures; all-format sharing, audio QR/scanner, and cached-library UI checks passed on iPhone Air. tvOS build and reader/playback checks passed; StoryAlign passed 32 package tests.
+- Android: 1,545 unit tests passed, one skipped; 63 connected tests passed, followed by seven focused reader and sync-status checks for the EPUB restore fix, 19 sharing checks for richer reading positions, and a local-book CFI restoration check. Debug and minified release builds and the acknowledgement inventory passed.
+- Reader quality: four iOS interaction checks passed across Readium and Foliate, plus 13 Android rendering, selection, offline-opening, and checkpoint checks.
+- Sensitive-source and provenance checks passed on both platforms.
+
+Existing SMB dependency and CloudKit conformance warnings remain. Physical-camera exchange and live-provider account workflows are outside this verification. The signed Android APK and matching source are attached to [build 56](https://github.com/opisaac9001/Enve-Book-Player/releases/tag/v1.2.56). iOS App Store distribution is separate.
+
 ## 2026-10-19
 
 Source update for iOS 1.2.6 and Android 1.2 build 55.

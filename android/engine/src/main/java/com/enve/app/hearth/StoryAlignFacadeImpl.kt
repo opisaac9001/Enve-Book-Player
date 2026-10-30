@@ -9,8 +9,10 @@ import com.enve.app.storyalign.StoryAlignJobEntity
 import com.enve.app.storyalign.StoryAlignJobRepository
 import com.enve.app.storyalign.StoryAlignOutputStore
 import com.enve.app.storyalign.StoryAlignReport
+import com.enve.app.storyalign.StoryAlignPreferencesStore
 import com.enve.core.data.local.LinkedBookPair
 import com.enve.core.data.model.Book
+import com.enve.engine.storyalign.StoryAlignEngine
 import com.enve.engine.storyalign.StoryAlignFacade
 import com.enve.engine.storyalign.StoryAlignJobUi
 import com.enve.engine.storyalign.StoryAlignPairUi
@@ -38,6 +40,11 @@ class StoryAlignFacadeImpl @Inject constructor(
 ) : StoryAlignFacade {
 
     private val json = Json { ignoreUnknownKeys = true }
+    private val preferences = StoryAlignPreferencesStore(context, locations)
+
+    override val preferredEngine = preferences.engine
+
+    override suspend fun setPreferredEngine(engine: StoryAlignEngine) = preferences.setEngine(engine)
 
     override val jobs: Flow<List<StoryAlignJobUi>> =
         repo.jobs.map { list -> list.map { it.toUi() } }
@@ -152,6 +159,8 @@ class StoryAlignFacadeImpl @Inject constructor(
             updatedAt = updatedAt,
             keptPreviousReason = report?.takeIf { !it.lastRunAccepted }?.lastRunExplanation,
             hasPreviousOutput = outputs.previousFile(id).isFile,
+            alignedSentences = report?.alignedSentences,
+            totalSentences = report?.totalSentences,
         )
     }
 

@@ -8,6 +8,14 @@ import com.enve.core.data.local.ConnectionRegistry
 import com.enve.core.data.provider.ProviderPlaybackSession
 import com.enve.core.data.local.toBook
 import com.enve.core.data.model.Book
+import com.enve.core.data.provider.CatalogImportException
+import com.enve.core.data.provider.CatalogImportReport
+import com.enve.core.data.provider.CatalogFailure
+import com.enve.core.data.provider.CatalogFailureKind
+import com.enve.core.data.provider.CatalogImportStage
+import com.enve.core.data.provider.CatalogImportIssue
+import com.enve.core.data.provider.catalogImportConnectionKey
+import com.enve.core.data.provider.catalogImportScopeKey
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.Library
@@ -30,6 +38,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -39,6 +48,13 @@ data class AggregatedHomeSnapshot(
     val continueReading: List<Book> = emptyList(),
     val recentlyAdded: List<Book> = emptyList(),
 )
+
+internal fun providerEbookLocator(locator: String?): String? {
+    if (locator == null) return null
+    val objectValue = runCatching { Json.parseToJsonElement(locator) as? JsonObject }.getOrNull() ?: return locator
+    if ("enveSharedPosition" !in objectValue) return locator
+    return JsonObject(objectValue - "enveSharedPosition").toString()
+}
 
 internal fun selectConnectionForBook(
     book: Book,
@@ -283,7 +299,10 @@ class AggregatorRepository @Inject constructor(
             else -> connections
         }
 
+        if (targetConnections.isEmpty()) return Result.failure(IllegalStateException("Requested provider connection is unavailable"))
         val allBooks = mutableListOf<Book>()
+        val reports = mutableListOf<CatalogImportReport>()
+        val importIssues = mutableListOf<CatalogImportIssue>()
         var lastError: Throwable? = null
 
         for (connection in targetConnections) {
@@ -303,15 +322,27 @@ class AggregatorRepository @Inject constructor(
                 ).onSuccess { books ->
                     allBooks += books.map { book -> book.withConnection(connection) }
                 }.onFailure { err ->
+                    if (err is kotlinx.coroutines.CancellationException) throw err
                     lastError = err
-                    android.util.Log.w("AggregatorRepository", "getBooks failed for ${connection.source.name}: ${err.message}")
+                    if (err is CatalogImportException) {
+                        allBooks += err.books.map { book -> book.withConnection(connection) }
+                        reports += err.reports
+                        importIssues += err.reports.map { report -> CatalogImportIssue(
+                            catalogImportConnectionKey(connection.id), catalogImportScopeKey(connection.id, adapterLibraryId), report,
+                        ) }
+                    } else {
+                        val report = CatalogImportReport(source = connection.source, failures = listOf(
+                            CatalogFailure(CatalogFailureKind.NETWORK, CatalogImportStage.BOOKS),
+                        ))
+                        reports += report
+                        importIssues += CatalogImportIssue(
+                            catalogImportConnectionKey(connection.id), catalogImportScopeKey(connection.id, adapterLibraryId), report,
+                        )
+                    }
+                    android.util.Log.w("AggregatorRepository", "Book import incomplete for ${connection.source.name}")
                 }
                 Result.success(Unit)
             }
-        }
-
-        if (allBooks.isEmpty() && lastError != null) {
-            return Result.failure(lastError)
         }
 
         val unique = allBooks.asSequence()
@@ -320,7 +351,7 @@ class AggregatorRepository @Inject constructor(
             .map { withOfflineDownloadState(it) }
             .toList()
 
-        return Result.success(unique)
+        return if (lastError != null) Result.failure(CatalogImportException(unique, reports, importIssues)) else Result.success(unique)
     }
 
     suspend fun getHomeSnapshot(): Result<AggregatedHomeSnapshot> {
@@ -749,12 +780,13 @@ class AggregatorRepository @Inject constructor(
         }
 
         if (!serverSync.isEnabled) return Result.success(Unit)
+        val providerLocator = providerEbookLocator(locator)
         val result = if (connection != null) {
             withConnectionContext(connection) {
                 getAdapterForSource(connection.source).syncEbookProgress(
                     bookId = bookId,
                     percentage = percentage,
-                    locator = locator,
+                    locator = providerLocator,
                     page = page,
                     pageCount = pageCount,
                 )
@@ -764,7 +796,7 @@ class AggregatorRepository @Inject constructor(
             adapter.syncEbookProgress(
                 bookId = bookId,
                 percentage = percentage,
-                locator = locator,
+                locator = providerLocator,
                 page = page,
                 pageCount = pageCount,
             )

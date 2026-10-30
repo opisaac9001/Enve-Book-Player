@@ -366,6 +366,14 @@ final class SourcesEngine {
         NotificationCenter.default.post(name: .bookStoreDidChange, object: nil)
     }
 
+    var recentCatalogRefreshFailed: Bool {
+        !catalog.recentCatalogFailures.isEmpty
+    }
+
+    func refreshHearthCatalog() async {
+        await catalog.refreshRecentCatalog(force: true)
+    }
+
     func refreshVisibleLibraryScope(_ sourceFilter: LibrarySourceFilter) async {
         switch sourceFilter {
         case .all:

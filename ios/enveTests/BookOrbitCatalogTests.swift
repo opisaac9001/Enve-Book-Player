@@ -14,7 +14,8 @@ nonisolated private final class BookOrbitCatalogProtocol: URLProtocol, @unchecke
             ["id": offset + 1, "title": "Fixture", "seriesName": "Series", "seriesIndex": index,
              "files": [["id": offset + 1, "format": "epub", "role": "primary"]]]
         }
-        cards.append(["id": 8, "title": "Without series index", "seriesName": "Series"])
+        cards.append(["id": 8, "title": "Without series index", "seriesName": "Series",
+                      "files": [["id": 8, "format": "PDF", "role": "primary"]]])
         let payload: Any
         if url.path == "/api/v1/audiobooks/9/playback-state" {
             if request.httpMethod == "PUT" {
@@ -121,11 +122,13 @@ struct BookOrbitCatalogTests {
         let books = try await provider.fetchBooks(libraryId: "1")
         #expect(books.count == expected.count)
         #expect(books.map { $0.seriesInfo?.sequence } == expected)
+        #expect(books.map(\.ebookFormat) == Array(repeating: "epub", count: 7) + ["pdf"])
         let recent = try await provider.fetchRecentBooks(libraryId: "1", limit: 10)
         #expect(recent.map { $0.seriesInfo?.sequence } == expected.reversed())
         for (book, sequence) in zip(books, expected) {
             let detail = try await provider.fetchFullBookDetails(bookId: book.id, libraryId: "1")
             #expect(detail.seriesInfo?.sequence == sequence)
+            #expect(detail.ebookFormat == book.ebookFormat)
         }
     }
 }

@@ -20,6 +20,7 @@ protocol ReaderProgressHosting: AnyObject {
     var progressStablePDFPageIndex: Int { get }
     var progressPDFController: PDFReaderController? { get }
     func progressLocatorAtOrBefore(progression: Double) -> Locator?
+    func progressRestorePDFPage(_ index: Int)
 }
 
 // A checkpoint may only be written once a user interaction has been rendered.
@@ -107,6 +108,9 @@ struct ReaderPositionBaseline {
     private static func anchor(for locatorJSON: String?) -> Anchor? {
         guard let raw = locatorJSON?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
             return nil
+        }
+        if let cfi = EpubLocationBridge.canonicalFullEPUBCFI(EpubLocationBridge.epubCFI(from: raw)) {
+            return .exact(cfi)
         }
         guard let data = raw.data(using: .utf8),
             let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -230,11 +234,15 @@ final class ReaderProgressController {
     }
 
     func beginRestorationWhenReady() {
+        if !book.isStorytellerReadAloud, !book.hasEPUB3MediaOverlay,
+            let fileURL = host?.progressPublicationFileURL,
+            fileURL.isFileURL, FileManager.default.fileExists(atPath: fileURL.path) {
+            switch state {
+            case .readyEPUB, .readyFoliate: completeInitialHydration()
+            default: break
+            }
+        }
         hydrationApplyTask = Task { [weak self] in await self?.applyHydratedServerPositionWhenReady() }
-    }
-
-    func awaitRestoration() async {
-        await hydrationApplyTask?.value
     }
 
     func noteInitialLocation(_ locator: Locator?) {
@@ -243,6 +251,7 @@ final class ReaderProgressController {
 
     private func hydrateServerPositionIfNeeded() async -> String? {
         guard profileSession.serverSyncEnabled else { return nil }
+        guard profileSession.pendingSync.entries[book.stableId]?.domainRaw != "ebook" else { return nil }
         guard let provider = providerResolver.provider(for: book.providerId),
             provider.syncCapability.contains(.pullProgress)
         else { return nil }
@@ -256,6 +265,7 @@ final class ReaderProgressController {
         else { return nil }
 
         guard profileSession.serverSyncEnabled else { return nil }
+        guard profileSession.pendingSync.entries[book.stableId]?.domainRaw != "ebook" else { return nil }
         let serverProgress = result.progress
         let serverLocator = result.locator
         let serverDate = result.updatedAt ?? .distantPast
@@ -383,32 +393,38 @@ final class ReaderProgressController {
         return position.locatorJSON
     }
 
-    private func applyHydratedServerPositionWhenReady() async {
-        defer {
-            hasResolvedInitialHydration = true
-            includeRenderedPositionIfUnmoved()
-            if let lastRenderedEngineRelocation {
-                let readiumNavigator: EPUBNavigatorViewController? = {
-                    guard case .readyEPUB(let navigator) = state else { return nil }
-                    return navigator
-                }()
-                confirmBridgeRestore(
-                    from: lastRenderedEngineRelocation,
-                    readiumNavigator: readiumNavigator
-                )
-            }
+    private func completeInitialHydration() {
+        hasResolvedInitialHydration = true
+        includeRenderedPositionIfUnmoved()
+        if let lastRenderedEngineRelocation {
+            let readiumNavigator: EPUBNavigatorViewController? = {
+                guard case .readyEPUB(let navigator) = state else { return nil }
+                return navigator
+            }()
+            confirmBridgeRestore(from: lastRenderedEngineRelocation, readiumNavigator: readiumNavigator)
         }
-        guard let serverLocatorJSON = await hydrateTask?.value, profileSession.serverSyncEnabled else { return }
+    }
 
-        var adapter: (any ReaderEngineAdapter)?
+    private func applyHydratedServerPositionWhenReady() async {
+        defer { completeInitialHydration() }
+        let serverLocatorJSON = await hydrateTask?.value
+        guard profileSession.serverSyncEnabled else { return }
+
         for _ in 0..<50 {
-            if state.isReady, let ready = engineAdapter {
-                adapter = ready
-                break
-            }
+            if state.isReady { break }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
-        guard profileSession.serverSyncEnabled, let adapter else { return }
+        guard profileSession.serverSyncEnabled else { return }
+        if case .readyPDF = state {
+            guard !hasReaderActivitySinceOpen,
+                let currentBook = libraryCache.bookInMemory(uniqueId: book.uniqueId),
+                let host
+            else { return }
+            let page = ReaderLocatorProgress.restorePDFPageIndex(book: currentBook, totalPages: host.progressTotalPages)
+            host.progressRestorePDFPage(page)
+            return
+        }
+        guard let serverLocatorJSON, let adapter = engineAdapter else { return }
         let usesMediaOverlayPosition = book.hasEPUB3MediaOverlay || readAloud.hasMediaOverlay
 
         func readerMovedSinceOpen() -> Bool {
@@ -521,6 +537,8 @@ final class ReaderProgressController {
 
     // A rendered move has already replaced the engine's location, so it cannot stand for the unmoved position.
     func noteUserNavigation(afterRenderedMove: Bool = false) {
+        locatorProgress.invalidateMeasurement()
+        locatorEnrichmentTask?.cancel()
         if !afterRenderedMove {
             includeRenderedPositionIfUnmoved()
         }
@@ -528,9 +546,7 @@ final class ReaderProgressController {
         if book.isStorytellerReadAloud {
             storytellerPositionActivityAt = Date()
         }
-        if !hasResolvedInitialHydration {
-            userNavigatedEPUBBeforeHydration = true
-        }
+        userNavigatedEPUBBeforeHydration = true
         readiumBridgeRestoreTask?.cancel()
         readiumBridgeRestoreTask = nil
         bridgeSession?.noteUserInteraction()
@@ -687,6 +703,7 @@ final class ReaderProgressController {
 
     func scheduleLocatorEnrichment(locator: ReadiumShared.Locator, navigator: EPUBNavigatorViewController) {
         locatorEnrichmentTask?.cancel()
+        let generation = locatorProgress.measurementGeneration
         locatorEnrichmentTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(280))
             guard !Task.isCancelled, let self, !self.readAloud.isActive else { return }
@@ -695,7 +712,7 @@ final class ReaderProgressController {
             }
             guard let enriched = await Self.locatorWithMiddlePageAnchor(locator: locator, navigator: navigator) else { return }
             guard !Task.isCancelled, !self.readAloud.isActive else { return }
-            self.locatorProgress.updateLocatorJSON(enriched)
+            self.locatorProgress.acceptMeasurement(enriched, generation: generation)
         }
     }
 
@@ -1173,6 +1190,7 @@ final class ReaderProgressController {
     }
 
     func cleanup() {
+        locatorProgress.invalidateMeasurement()
         locatorEnrichmentTask?.cancel()
         locatorEnrichmentTask = nil
         progressSaveTask?.cancel()

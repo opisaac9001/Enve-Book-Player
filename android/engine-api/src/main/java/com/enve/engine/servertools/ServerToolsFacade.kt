@@ -4,6 +4,8 @@ import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
 import kotlinx.coroutines.flow.Flow
 
+class ServerFeatureUnsupportedException : Exception()
+
 enum class ServerFeature {
     STATS,
     ACHIEVEMENTS,

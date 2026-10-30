@@ -169,6 +169,11 @@ interface LibraryFacade {
 
     val isRefreshing: StateFlow<Boolean>
 
+    val importIssues: Flow<List<com.enve.core.data.provider.CatalogImportIssue>>
+        get() = kotlinx.coroutines.flow.flowOf(emptyList())
+
+    val refreshError: StateFlow<String?>
+
     suspend fun refresh()
 
     val hiddenBookIds: Flow<Set<String>>

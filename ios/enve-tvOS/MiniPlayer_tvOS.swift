@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MiniPlayer_tvOS: View {
     @Environment(PlayerViewModel.self) private var playerVM
+    @Environment(\.hearth) private var hearth
     let onTap: () -> Void
 
     var body: some View {
@@ -16,16 +17,16 @@ struct MiniPlayer_tvOS: View {
                         Text(book.title)
                             .font(.headline)
                             .lineLimit(1)
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(hearth.text)
                         if let chapter = playerVM.currentChapter {
                             Text(chapter.title)
                                 .font(.subheadline)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(hearth.textSecondary)
                                 .lineLimit(1)
                         } else if let author = book.author {
                             Text(author)
                                 .font(.subheadline)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(hearth.textSecondary)
                                 .lineLimit(1)
                         }
                     }
@@ -42,7 +43,11 @@ struct MiniPlayer_tvOS: View {
                 }
                 .padding(.horizontal, 24)
                 .padding(.vertical, 16)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .background(hearth.bgElevated, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(hearth.hairline)
+                }
                 .padding(.horizontal, 60)
                 .padding(.bottom, 12)
             }
@@ -55,17 +60,17 @@ struct MiniPlayer_tvOS: View {
         VStack(alignment: .leading, spacing: 4) {
             ProgressView(value: progressFraction)
                 .progressViewStyle(.linear)
-                .tint(.white)
+                .tint(hearth.ember)
             HStack {
                 Text(PlaybackTime.clock(playerVM.progress))
                     .font(.caption2)
                     .monospacedDigit()
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(hearth.textSecondary)
                 Spacer()
                 Text("-\(PlaybackTime.clock(max(0, playerVM.duration - playerVM.progress)))")
                     .font(.caption2)
                     .monospacedDigit()
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(hearth.textSecondary)
             }
         }
     }
@@ -76,28 +81,16 @@ struct MiniPlayer_tvOS: View {
     }
 
     private func coverThumbnail(for book: Book) -> some View {
-        Group {
-            if let url = book.coverURL {
-                AsyncImage(url: url) { image in
-                    image
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                } placeholder: {
-                    Color.secondary.opacity(0.3)
-                }
-            } else {
-                Color.secondary.opacity(0.3)
-                    .overlay(
-                        Image(systemName: "headphones")
-                            .foregroundStyle(.secondary)
-                    )
-            }
-        }
+        CachedAsyncCoverImage(
+            url: book.coverURL,
+            fallbackColor: "Blue",
+            headers: CachedAsyncCoverImage.authHeaders(for: book),
+            book: book
+        )
     }
 }
 
 extension View {
-
     func miniPlayerOverlay() -> some View {
         modifier(MiniPlayerOverlay_tvOS())
     }
@@ -106,7 +99,6 @@ extension View {
 struct MiniPlayerOverlay_tvOS: ViewModifier {
     @Environment(PlayerViewModel.self) private var playerVM
     @State private var isPresentingPlayer = false
-
     @State private var lastAutoPresentedBookId: String?
 
     func body(content: Content) -> some View {

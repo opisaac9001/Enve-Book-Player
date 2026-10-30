@@ -15,6 +15,7 @@ struct HardcoverBookDetailScreen: View {
     @State private var linkedLocalBooks: [Book] = []
     @State private var loadError: String?
     @State private var loaded = false
+    @State private var actionError: String?
 
     @State private var ratingShown = false
     @State private var reviewShown = false
@@ -35,6 +36,7 @@ struct HardcoverBookDetailScreen: View {
                 } else if let book {
                     header(book)
                     actions
+                    if let actionError { SourcesErrorText(message: actionError).padding(.horizontal, 24) }
                     linkedSection
                     if let description = book.description, !description.isEmpty {
                         descriptionSection(description)
@@ -309,8 +311,11 @@ struct HardcoverBookDetailScreen: View {
             EmberButton(title: "Keep this rating") {
                 Task {
                     if let userBookId = userBook?.id {
-                        try? await HardcoverService.shared.rateBook(userBookId: userBookId, rating: pendingRating)
-                        await hardcoverLoadDetails()
+                        do {
+                            try await HardcoverService.shared.rateBook(userBookId: userBookId, rating: pendingRating)
+                            actionError = nil
+                            await hardcoverLoadDetails()
+                        } catch { actionError = error.localizedDescription }
                     }
                     ratingShown = false
                 }
@@ -353,8 +358,11 @@ struct HardcoverBookDetailScreen: View {
             EmberButton(title: "Post the review") {
                 Task {
                     if let userBookId = userBook?.id {
-                        try? await HardcoverService.shared.reviewBook(userBookId: userBookId, reviewText: pendingReview)
-                        await hardcoverLoadDetails()
+                        do {
+                            try await HardcoverService.shared.reviewBook(userBookId: userBookId, reviewText: pendingReview)
+                            actionError = nil
+                            await hardcoverLoadDetails()
+                        } catch { actionError = error.localizedDescription }
                     }
                     reviewShown = false
                 }
@@ -375,12 +383,12 @@ struct HardcoverBookDetailScreen: View {
             async let bookReq = HardcoverService.shared.getBookById(bookId)
             async let editionsReq = HardcoverService.shared.getEditionsForBook(bookId: bookId)
             async let reviewsReq = HardcoverService.shared.getBookReviews(bookId: bookId)
-            async let userBooksReq = HardcoverService.shared.getUserBooksRich(limit: 200)
+            async let userBooksReq = HardcoverService.shared.getUserBook(bookId: bookId)
             let (b, e, r, ubs) = try await (bookReq, editionsReq, reviewsReq, userBooksReq)
             book = b
             editions = e
             reviews = r
-            userBook = ubs.first { $0.bookId == bookId }
+            userBook = ubs
         } catch {
             loadError = error.localizedDescription
         }
@@ -395,7 +403,7 @@ struct HardcoverBookDetailScreen: View {
         )
         var matched: [Book] = []
         for id in linkedIds {
-            if let localBook = await appState.bookStore.book(byBookId: id) {
+            if let localBook = await appState.bookStore.book(byAnyId: id) {
                 matched.append(localBook)
             }
         }
@@ -416,14 +424,20 @@ struct HardcoverBookDetailScreen: View {
 
     private func hardcoverUpdateStatus(_ status: HardcoverReadingStatus) async {
         guard let userBookId = userBook?.id else { return }
-        try? await HardcoverService.shared.updateBookStatus(userBookId: userBookId, statusId: status.rawValue)
-        await hardcoverLoadDetails()
+        do {
+            try await HardcoverService.shared.updateBookStatus(userBookId: userBookId, statusId: status.rawValue)
+            actionError = nil
+            await hardcoverLoadDetails()
+        } catch { actionError = error.localizedDescription }
     }
 
     private func hardcoverRemove() async {
         guard let userBookId = userBook?.id else { return }
-        try? await HardcoverService.shared.deleteUserBook(userBookId: userBookId)
-        userBook = nil
+        do {
+            try await HardcoverService.shared.deleteUserBook(userBookId: userBookId)
+            actionError = nil
+            userBook = nil
+        } catch { actionError = error.localizedDescription }
     }
 
     private func hardcoverLegacyForMatch() -> HardcoverUserBookLegacy? {
@@ -433,7 +447,8 @@ struct HardcoverBookDetailScreen: View {
                 id: $0.id,
                 startedAt: $0.startedAt,
                 finishedAt: $0.finishedAt,
-                progress: $0.progressPages.map(Double.init)
+                progress: $0.progressPages.map(Double.init),
+                progressSeconds: $0.progressSeconds
             )
         }
         return HardcoverUserBookLegacy(
@@ -444,6 +459,7 @@ struct HardcoverBookDetailScreen: View {
             statusId: userBook?.statusId ?? HardcoverReadingStatus.wantToRead.rawValue,
             editionId: userBook?.editionId,
             totalPages: userBook?.edition?.pages,
+            totalAudioSeconds: userBook?.edition?.audioSeconds,
             userBookReads: reads,
             authors: nil
         )

@@ -7,3 +7,8 @@ zip.js
 Repository: https://github.com/gildas-lormeau/zip.js
 Version: 2.7.52
 License: BSD-3-Clause
+
+fflate
+Repository: https://github.com/101arrowz/fflate
+Source: vendor/fflate.js in the pinned Foliate JS commit above
+License: MIT

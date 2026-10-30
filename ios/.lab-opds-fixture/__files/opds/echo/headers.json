@@ -1,0 +1,13 @@
+{
+  "method": "{{request.method}}",
+  "url": "{{request.url}}",
+  "host": "{{request.headers.Host}}",
+  "credentialHeadersPresent": {
+    "authorization": {{#if request.headers.Authorization}}true{{else}}false{{/if}},
+    "proxyAuthorization": {{#if request.headers.[Proxy-Authorization]}}true{{else}}false{{/if}},
+    "cookie": {{#if request.headers.Cookie}}true{{else}}false{{/if}},
+    "xEnveToken": {{#if request.headers.[X-Enve-Token]}}true{{else}}false{{/if}},
+    "xAuthToken": {{#if request.headers.[X-Auth-Token]}}true{{else}}false{{/if}},
+    "xApiKey": {{#if request.headers.[X-Api-Key]}}true{{else}}false{{/if}}
+  }
+}

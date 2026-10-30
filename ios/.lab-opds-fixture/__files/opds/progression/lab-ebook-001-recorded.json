@@ -1,0 +1,14 @@
+{
+  "title": "Chapter 3. The Signal Room",
+  "modified": "2026-09-19T10:00:00.000Z",
+  "device": {
+    "id": "urn:uuid:8f1d6d4e-3a7b-4f2e-9c58-6b0d9a2e1f47",
+    "name": "Enve OPDS Lab"
+  },
+  "progression": 0.4235,
+  "references": [
+    "chapter3.xhtml#:~:text=It%20was%20expected",
+    "chapter3.xhtml#par36",
+    "#epubcfi(/6/8[chap03]!/4/2/14)"
+  ]
+}

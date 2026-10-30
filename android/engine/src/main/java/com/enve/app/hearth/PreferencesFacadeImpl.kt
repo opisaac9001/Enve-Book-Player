@@ -2,10 +2,12 @@ package com.enve.app.hearth
 
 import com.enve.core.data.local.PreferencesManager
 import com.enve.core.data.model.ComicPageLoadingMode
+import com.enve.engine.prefs.EbookSyncInterval
 import com.enve.engine.prefs.PreferencesFacade
 import com.enve.engine.prefs.HearthHomeSection
 import com.enve.engine.prefs.HearthStartTab
 import com.enve.engine.prefs.ReadNextPosition
+import com.enve.engine.theme.HearthPaletteStyle
 import com.enve.engine.theme.HearthThemeMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -22,6 +24,7 @@ class PreferencesFacadeImpl @Inject constructor(
 ) : PreferencesFacade {
     override val themeMode: Flow<HearthThemeMode> = hearthPrefs.themeMode
     override val oledEnabled: Flow<Boolean> = hearthPrefs.oledEnabled
+    override val paletteStyle: Flow<HearthPaletteStyle> = hearthPrefs.paletteStyle
     override val uiTextScale: Flow<Float> = hearthPrefs.uiTextScale
     override val reduceMotion: Flow<Boolean> = prefs.dynamicBackgroundEnabled.map { enabled -> !enabled }
     override val accentHex: Flow<String> = prefs.themeColorHex.map {
@@ -43,6 +46,9 @@ class PreferencesFacadeImpl @Inject constructor(
     override val comicPageLoadingMode: Flow<ComicPageLoadingMode> = prefs.comicPageLoadingMode
     override val preferredStartTab: Flow<HearthStartTab> = hearthPrefs.preferredStartTab
     override val homeSectionOrder: Flow<List<HearthHomeSection>> = hearthPrefs.homeSectionOrder
+    override val showDockBookShortcut: Flow<Boolean> = hearthPrefs.showDockBookShortcut
+    override val showTodayStack: Flow<Boolean> = hearthPrefs.showTodayStack
+    override val ebookSyncInterval: Flow<EbookSyncInterval> = hearthPrefs.ebookSyncInterval
 
     override suspend fun setThemeMode(mode: HearthThemeMode) {
         hearthPrefs.setThemeMode(mode)
@@ -55,6 +61,7 @@ class PreferencesFacadeImpl @Inject constructor(
         )
     }
     override suspend fun setOledEnabled(enabled: Boolean) = hearthPrefs.setOledEnabled(enabled)
+    override suspend fun setPaletteStyle(style: HearthPaletteStyle) = hearthPrefs.setPaletteStyle(style)
     override suspend fun setUiTextScale(scale: Float) = hearthPrefs.setUiTextScale(scale)
     override suspend fun setAccentHex(hex: String) = prefs.setThemeColorHex(hex)
     override suspend fun setSkipForwardSeconds(seconds: Int) = prefs.setSkipForwardSeconds(seconds)
@@ -76,4 +83,8 @@ class PreferencesFacadeImpl @Inject constructor(
         hearthPrefs.setPreferredStartTab(tab)
     override suspend fun setHomeSectionOrder(order: List<HearthHomeSection>) =
         hearthPrefs.setHomeSectionOrder(order)
+    override suspend fun setShowDockBookShortcut(show: Boolean) = hearthPrefs.setShowDockBookShortcut(show)
+    override suspend fun setShowTodayStack(show: Boolean) = hearthPrefs.setShowTodayStack(show)
+    override suspend fun setEbookSyncInterval(interval: EbookSyncInterval) =
+        hearthPrefs.setEbookSyncInterval(interval)
 }

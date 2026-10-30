@@ -1,7 +1,13 @@
 # Changelog
 
-## Unreleased
+## 1.2.7 — 2026-10-29
 
+- Preserve the confirmed reading position across navigation, reflow, closing, and offline reopening.
+- Fit overflowing tables and preformatted text while preserving publisher styling for content that already fits.
+- Open illustrations in a zoomable viewer with captions and return to the same passage.
+- Resize EPUB text with a pinch gesture and improve reading-time estimates by excluding jumps and idle time.
+
+- Share CFI, Readium text and DOM anchors, chapter offsets, and reading percentage together in book-location codes.
 - Keep queued library work tied to its profile while that work finishes.
 - Add an Audiobooks only preference that hides reading controls while preserving books and positions.
 - Browse comics by series, volumes, and specials, with separate source-specific Comics preferences.

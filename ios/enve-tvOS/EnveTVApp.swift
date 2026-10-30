@@ -96,6 +96,7 @@ struct EnveTVApp: App {
                 .environment(LibraryCatalogCoordinator.shared)
                 .environmentObject(themeManager)
                 .environment(PlayerViewModel.shared)
+                .hearthRoot()
                 .onAppear {
                     Task {
                         await ListeningStatsTracker.shared.startTracking()

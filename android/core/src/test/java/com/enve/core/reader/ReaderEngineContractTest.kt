@@ -14,6 +14,16 @@ import kotlinx.serialization.json.jsonPrimitive
 
 class ReaderEngineContractTest {
     @Test
+    fun azw3UsesFoliateEvenWithAReadiumOverride() {
+        for (source in listOf(BookSource.GRIMMORY, BookSource.LOCAL)) {
+            assertEquals(
+                ReaderEngineKind.FOLIATE,
+                ReaderEnginePolicy.select(request(source, format = "azw3", override = ReaderEngineKind.READIUM)),
+            )
+        }
+    }
+
+    @Test
     fun bridgedReadiumLocatorKeepsTheNarratedSentenceId() {
         val narrated = """{"href":"OEBPS/text/ch1.xhtml","type":"application/xhtml+xml","locations":{"fragments":["ch1-sentence320"],"cssSelector":"#ch1-sentence320","progression":0.9,"totalProgression":0.12}}"""
         val checkpoint = requireNotNull(
@@ -274,6 +284,31 @@ class ReaderEngineContractTest {
         ).jsonObject.getValue("locations").jsonObject
         assertFalse("fragments" in readiumLocations)
         assertFalse("cfi" in readiumLocations)
+    }
+
+    @Test
+    fun fullCfiValidationIgnoresDelimitersInsideAssertions() {
+        val assertions = listOf("chapter,one", "chapter/one", "chapter//one", "chapter!one", "chapter]one")
+        for (id in assertions) {
+            val assertion = EpubCfi.assertion(id)
+            val cfi = "epubcfi(/6/4$assertion!/4/2$assertion/1:7)"
+            assertTrue(cfi, EpubBridgeCheckpointCodec.isFullEpubCfi(cfi))
+            assertEquals(id, EpubCfi.parse(cfi)!!.packagePath.last().assertion)
+            assertEquals(id, EpubCfi.parse(cfi)!!.local[1].assertion)
+        }
+        for (cfi in listOf(
+            "epubcfi(/6/4!/4/2/1:7[before,after])",
+            "epubcfi(/6/4!/4/2/1:7[before/word,after!word])",
+            "epubcfi(/6/4!/4/2,/1:7[before,after],/1:12[one/two,three!four])",
+        )) {
+            assertTrue(cfi, EpubBridgeCheckpointCodec.isFullEpubCfi(cfi))
+            assertEquals(7, EpubCfi.parse(cfi)!!.local.last().offset)
+        }
+        for (cfi in listOf(
+            "epubcfi(/6/4!/4//2)", "epubcfi(/6/4!/4/2/)",
+            "epubcfi(/6/4,/2!/4/2)", "epubcfi(/6/4!/4/2,/1:7)",
+            "epubcfi(/6/4!/4/2!/1:7)", "epubcfi(/6/4!/4/2[unclosed)",
+        )) assertFalse(cfi, EpubBridgeCheckpointCodec.isFullEpubCfi(cfi))
     }
 
     @Test

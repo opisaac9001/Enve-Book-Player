@@ -2,7 +2,7 @@
 
 This file is the repository guide for Claude Code and other coding agents. Treat it as project policy when inspecting, modifying, or validating the app.
 
-Enve Book Player is a native Swift audiobook and ebook player for iOS. The project uses Swift 6, SwiftUI, Readium, and Xcode 26.4 or newer. The main scheme is `enve`, and the minimum iOS version is 17.0.
+Enve Book Player is a native Swift audiobook and ebook player for iOS. The project uses Swift 6, SwiftUI, Readium, and Xcode 26.4 or newer (Xcode 27.1 for Duo APIs). The main scheme is `enve`, and the minimum iOS version is 17.0.
 
 ## Start every task here
 
@@ -96,6 +96,10 @@ Provider implementations follow these structural rules:
 
 Do not add provider switches to unrelated views, `AppState`, or sync coordinators when the registry already owns dispatch.
 
+### Storyteller and read-aloud references
+
+Before any Storyteller or read-aloud investigation, design, implementation, or review, inspect both gold-standard references in the workspace: `Other apps/Book Readers & Players/silveran-reader-main/` (upstream `kyonifer/Silveran-Reader` on GitHub) and `Other apps/Book Servers & Sync/storyteller-main/` (upstream `storyteller-platform/storyteller` on GitLab). Fetch upstream first, fast-forward clean checkouts to `origin/main`, and record the revisions consulted. Preserve dirty reference checkouts and report update blockers. Compare the relevant playback, SMIL, locator, alignment, or progress behavior before making Enve changes; adapt the behavior to Enve's architecture without copying source wholesale.
+
 ### State ownership
 
 New persisted or domain-specific state belongs in a focused store under the matching `enve/Services/` area. Give it a typed API and keep its storage keys private.
@@ -151,6 +155,7 @@ The `AllTests` plan is active. Run it for changes to models, services, persisten
 ```sh
 xcodebuild -project enve.xcodeproj -scheme enve \
   -testPlan AllTests \
+  -parallel-testing-enabled NO \
   -destination "platform=iOS Simulator,id=<simulator-udid>" \
   -derivedDataPath .build/DerivedData \
   -quiet test

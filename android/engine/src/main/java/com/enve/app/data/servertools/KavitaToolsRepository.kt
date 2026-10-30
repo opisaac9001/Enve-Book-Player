@@ -34,7 +34,6 @@ class KavitaToolsRepository @Inject constructor(
 ) {
     suspend fun stats(): Result<KavitaReadingStats?> = runSuspendCatching {
         val userId = currentUserId() ?: return@runSuspendCatching null
-        // Kavita's stats filter drops every library not listed, so an empty list returns zeros.
         val libraries = optional { api.kavitaLibraries() }.orEmpty().map { it.id }
         val bar = optional { api.kavitaUserStatBar(userId, libraries, java.time.ZoneId.systemDefault().id) }
         val read = optional { api.kavitaUserReadStatistics(userId) }

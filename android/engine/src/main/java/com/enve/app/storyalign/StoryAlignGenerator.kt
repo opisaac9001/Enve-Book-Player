@@ -10,6 +10,8 @@ import com.enve.app.data.offline.OfflineDownloadManager
 import com.enve.app.data.offline.OfflineDownloadStatus
 import com.enve.app.data.repository.AggregatorRepository
 import com.enve.app.storyalign.align.AlignedChapter
+import com.enve.app.storyalign.align.AlignmentDecision
+import com.enve.app.storyalign.align.AlignmentRejection
 import com.enve.app.storyalign.align.AlignmentQualityEvaluator
 import com.enve.app.storyalign.align.AudioFile
 import com.enve.app.storyalign.align.SentenceAligner
@@ -22,6 +24,11 @@ import com.enve.app.storyalign.audio.AudioDecoder
 import com.enve.app.storyalign.epub.EpubParser
 import com.enve.app.storyalign.epub.EpubZip
 import com.enve.app.storyalign.export.ReadAloudEpubBuilder
+import com.enve.app.storyalign.export.StoryAlignOutputQuality
+import com.enve.app.storyalign.ctc.QuartzNetBookAligner
+import com.enve.app.storyalign.ctc.QuartzNetModelStore
+import com.enve.engine.storyalign.StoryAlignEngine
+import com.enve.engine.storyalign.StoryAlignGranularity
 import com.enve.app.storyalign.transcribe.WhisperContext
 import com.enve.app.storyalign.transcribe.WhisperModelManager
 import com.enve.core.data.local.BookCacheDao
@@ -65,6 +72,7 @@ class StoryAlignGenerator @Inject constructor(
     private val bookCacheDao: BookCacheDao,
     private val modelManager: WhisperModelManager,
     private val outputs: StoryAlignOutputStore,
+    private val quartzNetModels: QuartzNetModelStore,
     private val locations: ProfileStorageLocations = ProfileStorageLocations.forProfile(context, DEFAULT_ADULT_PROFILE_ID),
 ) {
     fun interface ProgressSink {
@@ -85,35 +93,92 @@ class StoryAlignGenerator @Inject constructor(
         sink.onStage(StoryAlignStage.DOWNLOAD, 0f, 0f)
         val epubFile = downloadEbook(ebook, sessionDir)
         sink.onStage(StoryAlignStage.DOWNLOAD, 0.1f, 0.02f)
+        sink.onStage(StoryAlignStage.EPUB_PARSE, 0f, 0.02f)
+        val epubZip = EpubZip.from(epubFile)
+        val doc = EpubParser.parse(epubZip, settings.granularity)
+        sink.onStage(StoryAlignStage.EPUB_PARSE, 1f, 0.02f)
+
+        if (settings.engine == StoryAlignEngine.QUARTZNET_CTC) {
+            val language = (settings.language ?: doc.metaInfo.language)?.trim()?.lowercase(Locale.ROOT)
+                ?.substringBefore('-')?.substringBefore('_')?.takeIf { it.isNotEmpty() }
+            require(language == null || language in setOf("en", "eng", "english", "und")) {
+                "QuartzNet currently supports English books. Choose Whisper for the existing transcription method."
+            }
+            require(settings.granularity == StoryAlignGranularity.SENTENCE) {
+                "QuartzNet alignment currently supports sentence highlighting."
+            }
+        }
         val tracks = ensureAudioDownloaded(audiobook) { p ->
             sink.onStage(StoryAlignStage.DOWNLOAD, 0.1f + 0.8f * p, 0.02f + 0.28f * p)
         }
-        val modelFile = ensureModel(settings) { p ->
-            sink.onStage(StoryAlignStage.DOWNLOAD, 0.9f + 0.1f * p, 0.30f + 0.05f * p)
+        val modelFile = when (settings.engine) {
+            StoryAlignEngine.WHISPER -> ensureModel(settings) { p ->
+                sink.onStage(StoryAlignStage.DOWNLOAD, 0.9f + 0.1f * p, 0.30f + 0.05f * p)
+            }
+            StoryAlignEngine.QUARTZNET_CTC -> {
+                quartzNetModels.prepare { p ->
+                    sink.onStage(StoryAlignStage.DOWNLOAD, 0.9f + 0.1f * p, 0.30f + 0.05f * p)
+                }
+            }
         }
 
-        sink.onStage(StoryAlignStage.EPUB_PARSE, 0.2f, 0.35f)
-        val epubZip = EpubZip.from(epubFile)
-        val doc = EpubParser.parse(epubZip, settings.granularity)
-        sink.onStage(StoryAlignStage.EPUB_PARSE, 1f, 0.37f)
-
-        val transcription = transcribe(tracks, modelFile, settings) { p ->
-            sink.onStage(StoryAlignStage.TRANSCRIBE, p, 0.37f + 0.53f * p)
+        val chapters = when (settings.engine) {
+            StoryAlignEngine.WHISPER -> {
+                val transcription = transcribe(tracks, modelFile, settings) { p ->
+                    sink.onStage(StoryAlignStage.TRANSCRIBE, p, 0.37f + 0.53f * p)
+                }
+                sink.onStage(StoryAlignStage.ALIGN, 0.2f, 0.90f)
+                SentenceAligner().alignBook(doc.spineOrderedManifest, transcription)
+            }
+            StoryAlignEngine.QUARTZNET_CTC -> {
+                QuartzNetBookAligner(context).align(
+                    doc.spineOrderedManifest,
+                    tracks.map { QuartzNetBookAligner.Track(it.index, it.file, it.durationSec) },
+                    modelFile,
+                    File(sessionDir, "ctc-checkpoints"),
+                ) { p -> sink.onStage(StoryAlignStage.ANALYZE, p, 0.37f + 0.53f * p) }
+            }
         }
-
-        sink.onStage(StoryAlignStage.ALIGN, 0.2f, 0.90f)
-        val chapters = SentenceAligner().alignBook(doc.spineOrderedManifest, transcription)
         val total = chapters.sumOf { it.manifestItem.xhtmlSentences.size }
         val assessment = AlignmentQualityEvaluator.assess(
             chapters,
             tracks.associate { it.index to it.durationSec },
         )
-        val stored = StoryAlignReport.decode(job.reportJson) ?: StoryAlignReport.empty
         val retained = outputs.acceptedFile(job.id)
-        val decision = AlignmentQualityEvaluator.decide(
-            assessment,
-            if (retained.exists()) stored.acceptedQuality else null,
+        val incumbent = if (retained.isFile) StoryAlignOutputQuality.read(retained) else null
+        val incumbentQuality = incumbent?.metadata
+        val stored = StoryAlignReport(
+            alignedSentences = incumbent?.clipCount ?: 0,
+            totalSentences = incumbentQuality?.eligibleSentenceCount ?: maxOf(total, incumbent?.clipCount ?: 0),
+            acceptedQuality = incumbentQuality?.assessment,
         )
+        val audioCoverage = (assessment.units.sumOf { it.sentenceRange.duration } /
+            tracks.sumOf { it.durationSec }.coerceAtLeast(0.001)).coerceIn(0.0, 1.0)
+        val candidateQuality = StoryAlignOutputQuality(assessment.units.size, total, audioCoverage, assessment.quality)
+        val cannotReplace = retained.isFile && (incumbent == null ||
+            assessment.units.size < incumbent.clipCount ||
+            incumbentQuality != null && settings.engine == StoryAlignEngine.QUARTZNET_CTC &&
+                (candidateQuality.textCoverage + 0.02 < incumbentQuality.textCoverage ||
+                    candidateQuality.audioCoverage + 0.02 < incumbentQuality.audioCoverage))
+        val decision = if (cannotReplace) {
+            AlignmentDecision(
+                accepted = false,
+                explanation = "The existing read-aloud book was kept because its alignment is stronger or could not be verified.",
+                quality = assessment.quality,
+                rejection = AlignmentRejection.INFERIOR_CANDIDATE,
+            )
+        } else if (settings.engine == StoryAlignEngine.QUARTZNET_CTC &&
+            (assessment.quality.coverage < 0.70 || assessment.units.size < 3)
+        ) {
+            AlignmentDecision(
+                accepted = false,
+                explanation = "QuartzNet could not confidently align enough of this edition. The previous output was kept if available.",
+                quality = assessment.quality,
+                rejection = AlignmentRejection.INVALID_CANDIDATE,
+            )
+        } else {
+            AlignmentQualityEvaluator.decide(assessment, incumbentQuality?.assessment)
+        }
         sink.onStage(StoryAlignStage.ALIGN, 1f, 0.94f)
 
         if (!decision.accepted) {
@@ -139,7 +204,10 @@ class StoryAlignGenerator @Inject constructor(
             )
         }
         try {
-            ReadAloudEpubBuilder.buildToFile(candidate, epubZip, doc, verifiedChapters, clips, isoNow())
+            ReadAloudEpubBuilder.buildToFile(
+                candidate, epubZip, doc, verifiedChapters, clips, isoNow(), candidateQuality,
+                fullSourceTagging = settings.engine == StoryAlignEngine.QUARTZNET_CTC,
+            )
         } catch (error: Exception) {
             outputs.discardCandidate(job.id)
             throw error

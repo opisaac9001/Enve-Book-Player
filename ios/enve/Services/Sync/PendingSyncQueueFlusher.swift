@@ -67,6 +67,8 @@ final class ProviderPendingSyncTransport: PendingSyncTransporting {
 
 @MainActor
 final class PendingSyncQueueFlusher {
+    var onValidationFailure: (@MainActor (String, String) -> Void)?
+
     private let store: PendingSyncQueueStore
     private let transport: any PendingSyncTransporting
     private let now: () -> Date
@@ -80,6 +82,10 @@ final class PendingSyncQueueFlusher {
         self.store = store
         self.transport = transport
         self.now = now
+    }
+
+    func validationFailure(for stableId: String) -> String? {
+        store.entries[stableId]?.validationFailureMessage
     }
 
     func flush() async {
@@ -121,6 +127,13 @@ final class PendingSyncQueueFlusher {
             }
         } catch {
             guard store.entries[stableId] == entry else { return }
+            if let validation = error as? ProgressValidationError {
+                let message = validation.localizedDescription
+                store.suspend(stableId: stableId, validationFailureMessage: message)
+                onValidationFailure?(stableId, message)
+                AppLogger.sync.error("[PendingSync] Validation failed for bookDiagnosticID=\(diagnosticID): \(message)")
+                return
+            }
             let status = httpStatus(from: error)
             switch status {
             case 401, 403:

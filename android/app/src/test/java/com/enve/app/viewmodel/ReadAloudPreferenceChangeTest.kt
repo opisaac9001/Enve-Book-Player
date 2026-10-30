@@ -12,6 +12,7 @@ class ReadAloudPreferenceChangeTest {
     @Test
     fun speedOnlyChangeIsReadAloudOnly() {
         assertTrue(isReadAloudOnlyPreferenceChange(base, base.copy(readAloudSpeed = 1.75f)))
+        assertTrue(isReadAloudOnlyPreferenceChange(base, base.copy(ttsSpeed = 1.5f)))
     }
 
     @Test
@@ -21,6 +22,7 @@ class ReadAloudPreferenceChangeTest {
             readAloudAutoTurn = false,
             readAloudSkipOnPageTurn = false,
             readAloudHighlight = false,
+            readAloudHighlightStyle = com.enve.core.reader.ReadAloudHighlightStyle.UNDERLINE,
             readAloudHighlightHex = "#FF0000",
             readAloudSkipAsides = false,
         )

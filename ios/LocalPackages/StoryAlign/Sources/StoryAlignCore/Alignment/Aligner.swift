@@ -95,7 +95,7 @@ public struct Aligner : AlignmentSessionProviding, Sendable {
             logger.log(.debug, "Segment \(index): \(seg.description)", indentLevel: 1)
         }
         //let transcriber = TranscriberFactory.transcriber(session: session)
-        let transcriber = try session.transcriberFactory.transcriber(session: session)
+        let transcriber = try session.makeTranscriber()
         let transcriptions = try rawTranscriptions.map { try transcriber.buildTranscription(from: $0) }
         
         //let allChapterSentences = ebook.manifest.flatMap { $0.xhtmlSentences }

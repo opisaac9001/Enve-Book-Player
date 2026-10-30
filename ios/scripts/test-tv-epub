@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+test_dir=$(mktemp -d "${TMPDIR:-/tmp}/enve-tv-epub.XXXXXX")
+trap 'rm -rf "$test_dir"' EXIT
+xcrun swiftc -swift-version 6 -parse-as-library \
+    "$project_root/enve-tvOS/TVEpubPagination.swift" \
+    "$project_root/scripts/tests/TVEpubPaginationTests.swift" \
+    -o "$test_dir/TVEpubPaginationTests"
+"$test_dir/TVEpubPaginationTests"

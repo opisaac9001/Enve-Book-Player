@@ -3,13 +3,13 @@ import Testing
 
 @testable import enve
 
-@MainActor
+@Suite(.timeLimit(.minutes(1))) @MainActor
 struct ABSCredentialsRecoveryTests {
     @Test func unauthorizedRequestJoinsRefreshAlreadyInProgress() async throws {
         let provider = RefreshProvider()
         let credentials = ABSCredentialsActor(provider: provider)
         let first = Task { try await credentials.freshCredentials }
-        try await waitUntil { provider.refreshCount > 0 }
+        await provider.waitForRefresh()
         let (secondStarted, signal) = AsyncStream<Void>.makeStream()
         let second = Task {
             signal.finish()
@@ -27,7 +27,7 @@ struct ABSCredentialsRecoveryTests {
         let provider = RefreshProvider()
         let credentials = ABSCredentialsActor(provider: provider)
         let pending = Task { try await credentials.freshCredentials }
-        try await waitUntil { provider.refreshCount > 0 }
+        await provider.waitForRefresh()
         await credentials.retire()
         do {
             _ = try await pending.value
@@ -71,7 +71,8 @@ struct ABSCredentialsRecoveryTests {
 private final class RefreshProvider: AudiobookshelfProvider, @unchecked Sendable {
     private(set) var refreshCount = 0
     private(set) var publishedToken: String?
-    private var isRefreshReleased = false
+    private let refreshStarted = AsyncStream<Void>.makeStream()
+    private let refreshReleased = AsyncStream<Void>.makeStream()
 
     init() {
         super.init(connection: ServerConnection(name: "Recovery fixture", url: "https://example.test", type: .audiobookshelf))
@@ -81,26 +82,21 @@ private final class RefreshProvider: AudiobookshelfProvider, @unchecked Sendable
         ABSTokenSnapshot(token: publishedToken ?? "e30.eyJleHAiOjEsInR5cGUiOiJhY2Nlc3MifQ.fixture", refreshToken: "fixture-refresh")
     }
 
+    func waitForRefresh() async {
+        for await _ in refreshStarted.stream {}
+    }
+
     func releaseRefresh() {
-        isRefreshReleased = true
+        refreshReleased.continuation.finish()
     }
 
     override func performTokenRefresh() async throws -> ABSCredentials {
         refreshCount += 1
-        try await waitUntil { self.isRefreshReleased }
+        refreshStarted.continuation.finish()
+        for await _ in refreshReleased.stream {}
         try Task.checkCancellation()
         let token = "rotated-fixture"
         publishedToken = token
         return .legacy(token: token)
-    }
-}
-
-private struct WaitTimeout: Error {}
-
-private func waitUntil(_ condition: () -> Bool) async throws {
-    let deadline = ContinuousClock.now + .seconds(5)
-    while !condition() {
-        guard ContinuousClock.now < deadline else { throw WaitTimeout() }
-        try await Task.sleep(for: .milliseconds(1))
     }
 }

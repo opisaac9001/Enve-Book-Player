@@ -40,9 +40,11 @@ class GrimmoryEbookSyncStrategy @Inject constructor(
         if (cached.isEmpty()) return ProviderSyncResult.ZERO
 
         var pulled = 0
+        var failed = false
         for (cachedBook in cached) {
             val book = cachedBook.toBook()
-            val snapshot = aggregatorRepository.fetchEbookProgress(book).getOrNull() ?: continue
+            val snapshot = aggregatorRepository.fetchEbookProgress(book)
+                .onFailure { failed = true }.getOrNull() ?: continue
 
             val localPercentage = cachedBook.readProgress
             val progressAdvanced = snapshot.percentage > localPercentage + 0.005f
@@ -69,10 +71,11 @@ class GrimmoryEbookSyncStrategy @Inject constructor(
                 }
                 pulled += 1
                 Log.i(TAG, "Pulled ${book.title}: ${(snapshot.percentage * 100).toInt()}%${if (snapshot.finished) " (finished)" else ""}")
-            }
+            }.onFailure { failed = true }
         }
 
-        return ProviderSyncResult(pulled = pulled, pushed = 0)
+        return ProviderSyncResult(pulled = pulled, pushed = 0,
+            failedBackends = if (failed) listOf(displayName) else emptyList())
     }
 
     private companion object { const val TAG = "GrimmoryEbookSyncStrategy" }

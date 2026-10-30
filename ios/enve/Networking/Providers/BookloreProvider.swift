@@ -8,7 +8,7 @@ import os.lock
 import WebKit
 #endif
 
-class BookloreProvider: IncrementalCatalogProvider, PlaybackSessionProvider, AudiobookProgressProvider,
+class BookloreProvider: IncrementalCatalogProvider, RecentCatalogPagingProvider, PlaybackSessionProvider, AudiobookProgressProvider,
     EbookProgressProvider, EngineAwareEbookProgressProvider, EbookDownloadProvider, ComicReadingDirectionProvider, PersonalRatingProvider, SavedBooksProvider, ObservableObject,
     @unchecked Sendable
 {

@@ -50,6 +50,31 @@ Several sections need setup that a bare device cannot provide: a live server wit
 - [ ] Covers show the progress ribbon overlay once started
 - [ ] Grid density matches the configured column count
 - [ ] Large library: scrolling stays smooth with no jank or OOM
+- [ ] Add and More remain visible; More opens refresh, book selection, display density and Settings; Done exits selection
+- [ ] Compact Source and Library selectors preserve the selected scope without increasing the filter badge
+- [ ] Shelves opens status presets, saved lists and Collections; Books, Series, Authors and Narrators remain directly reachable
+- [ ] Remove the last sort with ×, dismiss and reopen the library; it stays removed and the default recent order applies
+- [ ] Reset filters and sorting clears content filters while keeping the selected source and library
+- [ ] Source, Library, Shelves, Filter & Sort and More remain reachable in Paper, OLED, large text, landscape and e-ink mode
+
+### Grimmory catalog import recovery
+
+Use a synthetic local fixture for destructive catalog scenarios, never a customer library.
+
+- [ ] Import 5,000 valid books across all pages; the library shows 5,000 books.
+- [ ] Reject one missing or invalid book ID on the first and last page; a fresh import shows 4,999 books and one rejection with a safe reason.
+- [ ] A missing title does not reject a valid book identity.
+- [ ] A later HTTP error, malformed whole page, or timeout keeps safely obtained books and shows an incomplete-import message with Retry.
+- [ ] Warm-cache refresh and reindex preserve existing rows, metadata, progress and editions when any page or record is incomplete.
+- [ ] Repair the response and retry; the warning clears only after an authoritative successful import.
+- [ ] Successful authoritative removals and an empty catalog remove only the relevant connection/library's stale rows.
+- [ ] A denied account never receives another account's books, falls back around a permission denial, or loses its warning when another account recovers.
+- [ ] Concurrent catalog requests and restarts preserve the correct library names and selections for each account on the same server.
+- [ ] Fetch the standard legacy list once per library and fetch scope, including catalogs of exactly 500 and 5,000 books; send no page/size query parameters.
+- [ ] Restart after an incomplete import; diagnostics remain and do not contain titles, usernames, URLs, tokens or raw server responses.
+- [ ] Verify the incomplete/failed banner and Retry in light, dark and large-text modes, using the applicable e-ink palette.
+
+`GrimmoryCatalogImportVerificationTest` is opt-in via `enveCatalogFixture=1`. It refuses non-debug targets and connections other than the two synthetic accounts on the local fixture.
 
 ## Book detail
 
@@ -85,8 +110,17 @@ Several sections need setup that a bare device cannot provide: a live server wit
 - [ ] Search returns results and jumps to a match
 - [ ] Selection annotate bar applies highlights, underline, strike, and save-to-vocabulary; annotations persist
 - [ ] Read-aloud on a media-overlay book: narration starts, sentence highlight follows, skip works, pages auto-turn
+- [ ] On an EPUB without recorded narration, Read back speaks from the current passage using an installed Android TTS voice
+- [ ] Pause/resume, previous/next paragraph, voice and speed changes work; changing voice or speed while paused leaves speech paused
+- [ ] During speech or recorded narration, the compact player's up arrow reopens the normal controls without stopping playback
+- [ ] Open Contents, Appearance and voice/speed settings while speaking; dismissing a sheet retains the current speech session
+- [ ] Backgrounding pauses native TTS; returning permits explicit resume at the last spoken word
 - [ ] Progress persists across close and reopen; pull-on-open resolves cross-device position
 - [ ] PDF and comic readers open and page correctly
+
+`NativeTtsSynthesisTest` verifies installed-engine discovery and non-silent synthesized PCM. `ReaderTtsPlaybackTest` exercises the real reader and native speech with Readium and Foliate. `LibraryControlsParityTest` checks sort persistence, scope-preserving reset, touch targets and adaptive layouts. Run these on the Pixel 7a; they use generated text fixtures rather than customer books. Android uses installed system TTS voices; Kokoro and Supertonic are not Android engines.
+
+Read-aloud transport references refreshed on 2026-10-24: Silveran Reader `669a56903316fa51bf9c2850bdc89d9bbcac37dc` and Storyteller `b821e0f4eb6c7c960386c90fa5cc1c7c84bfcd2d`. Both clean reference checkouts were fetched and already matched upstream `main`.
 
 ## Settings
 

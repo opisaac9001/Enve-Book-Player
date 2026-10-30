@@ -22,6 +22,7 @@ Start with the root [architecture guide](../ARCHITECTURE.md) for targets, source
 - [Connections layer](ui/connections-layer.md)
 - [Engine API](ui/engine-api.md)
 - [Reader stack](ui/reader-stack.md)
+- [iPhone Duo](ui/duo.md)
 - [Streamed EPUB reproduction notes](ui/streamed-epub-reproduction.md)
 
 ## Backend references

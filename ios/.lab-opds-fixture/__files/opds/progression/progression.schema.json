@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:enve-lab:opds:progression-1.0",
+  "title": "OPDS Progression Document (lab shape check)",
+  "type": "object",
+  "required": ["modified", "device", "progression"],
+  "properties": {
+    "title": {
+      "type": "string"
+    },
+    "modified": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "device": {
+      "type": "object",
+      "required": ["id", "name"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uri",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "progression": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "references": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "uri-reference"
+      }
+    }
+  }
+}

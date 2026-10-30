@@ -18,7 +18,7 @@ struct HardcoverLinkScreen: View {
                 HardcoverScreenHeader(
                     overline: "Hardcover",
                     title: "Linked books",
-                    line: "Matched pairs carry progress between the two libraries."
+                    line: "Linked books send their reading progress to Hardcover."
                 )
 
                 if !loaded {
@@ -120,7 +120,7 @@ struct HardcoverLinkScreen: View {
     }
 
     private func hardcoverCandidateRow(_ book: Book) -> some View {
-        let isLinked = SettingsManager.shared.getHardcoverMatch(forLocalBookId: book.id) != nil
+        let isLinked = SettingsManager.shared.getHardcoverMatch(for: book) != nil
         return Button {
             matchingBook = book
         } label: {

@@ -17,6 +17,8 @@
 		1DTV0001000000000000B003 /* PulseLogHandler in Frameworks */ = {isa = PBXBuildFile; productRef = 1DTV0001000000000000A003 /* PulseLogHandler */; };
 		1DTV0001000000000000B004 /* AMSMB2 in Frameworks */ = {isa = PBXBuildFile; productRef = 1DTV0001000000000000A004 /* AMSMB2 */; };
 		1DTV0001000000000000B005 /* Zip in Frameworks */ = {isa = PBXBuildFile; productRef = 1DTV0001000000000000A005 /* Zip */; };
+		1DTV0001000000000000B006 /* ReadiumZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = 1DTV0001000000000000A006 /* ReadiumZIPFoundation */; };
+		1DTV0001000000000000B007 /* UnrarKit in Frameworks */ = {isa = PBXBuildFile; productRef = 1DTV0001000000000000A007 /* UnrarKit */; };
 		1DTV0001000000000000E004 /* AMSMB2 in Embed Frameworks */ = {isa = PBXBuildFile; productRef = 1DTV0001000000000000A004 /* AMSMB2 */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 		1DWA0001000000000000B001 /* WatchPayloads.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DWA0001000000000000F001 /* WatchPayloads.swift */; };
 		1DWA0001000000000000B002 /* WatchPayloads.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DWA0001000000000000F001 /* WatchPayloads.swift */; };
@@ -148,7 +150,9 @@
 				Configuration/Info.plist,
 				Configuration/enve.entitlements,
 				App/AppRootView.swift,
+				App/DuoShell.swift,
 				App/EnveApp.swift,
+				App/HearthTabStack.swift,
 				App/HearthTour.swift,
 				App/main.swift,
 				App/MantelBar.swift,
@@ -169,7 +173,10 @@
 				Components/EmberGlow.swift,
 				Components/Hearth.swift,
 				Components/HearthComponents.swift,
+				Components/HearthFold.swift,
 				Components/HearthGlass.swift,
+				Components/HearthSpine.swift,
+				Components/HingeStateObserver.swift,
 				Components/Ribbon.swift,
 				Reader/Engine/ClassicReaderAppearance.swift,
 				Reader/Engine/ClassicReaderModel.swift,
@@ -197,6 +204,7 @@
 				Reader/Engine/ReaderRestReminder.swift,
 				Reader/Engine/ReaderSearchModel.swift,
 				Reader/Engine/ReaderSectionTitleResolver.swift,
+				Reader/Engine/ReaderSpreadPolicy.swift,
 				Reader/Engine/ReaderTOCIndex.swift,
 				Reader/Engine/ReadiumFootnoteViewController.swift,
 				Reader/Engine/ReadiumNoteLinkResolver.swift,
@@ -326,6 +334,7 @@
 				Screens/Player/PlayerReadAloudLyricsView.swift,
 				Screens/Player/PlayerQueueSheet.swift,
 				Screens/Player/PlayerScreen.swift,
+				Screens/Player/PlayerLayoutPolicy.swift,
 				Screens/Player/PlayerSheets.swift,
 				Screens/Player/PlayerSleepInsightsView.swift,
 				Screens/Podcasts/PodcastBrowseScreen.swift,
@@ -407,7 +416,6 @@
 				Services/Debug/ImportGuardrailFixtureRunner.swift,
 				Services/Debug/StorytellerReadaloudE2E.swift,
 				Services/Engine/StoryAlignEngine.swift,
-				Services/Import/ComicArchiveService.swift,
 				Services/Import/EPUBOPFCoverExtractor.swift,
 				Services/Import/FileSharingImportCoordinator.swift,
 				Services/Import/KF8Reader.swift,
@@ -424,6 +432,7 @@
 				Services/Reader/EbookTTSService.swift,
 				Services/Reader/EPUB3SMILParser.swift,
 				Services/Reader/KokoroTTSEngine.swift,
+				Services/Reader/KokoroTTSVoice.swift,
 				Services/Reader/MediaOverlayPlaybackService.swift,
 				Services/Reader/MediaOverlayPlayer.swift,
 				Services/Reader/NeuralTTSSupport.swift,
@@ -431,8 +440,8 @@
 				Services/Reader/ReaderFontLibrary.swift,
 				Services/Reader/ReaderNotebookMerge.swift,
 				Services/Reader/ReaderNotebookSync.swift,
-				Services/Reader/SupertonicTTSEngine.swift,
-				Services/StoryAlign/StoryAlignAvailability.swift,
+				Services/Reader/EbookTTSEngineChoice.swift,
+				Services/System/HingeStateStore.swift,
 				Services/StoryAlign/StoryAlignService.swift,
 				Services/StoryAlign/StorytellerReadaloudOfflinePrep.swift,
 				Services/StoryAlign/TokenSearchAlgorithm.swift,
@@ -555,6 +564,8 @@
 				1DTV0001000000000000B003 /* PulseLogHandler in Frameworks */,
 				1DTV0001000000000000B004 /* AMSMB2 in Frameworks */,
 				1DTV0001000000000000B005 /* Zip in Frameworks */,
+				1DTV0001000000000000B006 /* ReadiumZIPFoundation in Frameworks */,
+				1DTV0001000000000000B007 /* UnrarKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -660,6 +671,7 @@
 				1D03D0EB2F1629100008FD58 /* Resources */,
 				F011A7E50000000000000001 /* Embed Foliate Runtime */,
 				1D925ADD2F2FE9C8004B6146 /* Embed Frameworks */,
+				C7C000010000000000000001 /* Correct ONNX Framework Metadata */,
 				B00C00300000000000000001 /* Embed App Extensions */,
 				1DWA0001000000000000D001 /* Embed Watch Content */,
 			);
@@ -755,6 +767,8 @@
 				1DTV0001000000000000A003 /* PulseLogHandler */,
 				1DTV0001000000000000A004 /* AMSMB2 */,
 				1DTV0001000000000000A005 /* Zip */,
+				1DTV0001000000000000A006 /* ReadiumZIPFoundation */,
+				1DTV0001000000000000A007 /* UnrarKit */,
 			);
 			productName = "enve-tvOS";
 			productReference = 1D40336D2FBEBC3100EEFBEE /* enve-tvOS.app */;
@@ -912,6 +926,21 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		C7C000010000000000000001 /* Correct ONNX Framework Metadata */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = ();
+			inputPaths = (
+				"$(SRCROOT)/BuildSupport/fix-onnx-framework-metadata.sh",
+			);
+			name = "Correct ONNX Framework Metadata";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "/bin/sh \"$SRCROOT/BuildSupport/fix-onnx-framework-metadata.sh\"\n";
+		};
 		F011A7E50000000000000001 /* Embed Foliate Runtime */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -926,6 +955,7 @@
 				"$(SRCROOT)/BuildSupport/FoliateRuntime/reader.css",
 				"$(SRCROOT)/BuildSupport/FoliateRuntime/adapter.js",
 				"$(SRCROOT)/BuildSupport/FoliateRuntime/zip.js-LICENSE.txt",
+				"$(SRCROOT)/BuildSupport/FoliateRuntime/fflate-LICENSE.txt",
 				"$(SRCROOT)/BuildSupport/FoliateRuntime/UPSTREAM.txt",
 				"$(SRCROOT)/ThirdParty/foliate-js/LICENSE",
 				"$(SRCROOT)/ThirdParty/foliate-js/view.js",
@@ -942,6 +972,7 @@
 				"$(SRCROOT)/ThirdParty/foliate-js/tts.js",
 				"$(SRCROOT)/ThirdParty/foliate-js/footnotes.js",
 				"$(SRCROOT)/ThirdParty/foliate-js/vendor/zip.js",
+				"$(SRCROOT)/ThirdParty/foliate-js/vendor/fflate.js",
 			);
 			name = "Embed Foliate Runtime";
 			outputFileListPaths = (
@@ -969,8 +1000,10 @@
 				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/FoliateRuntime.bundle/foliate/tts.js",
 				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/FoliateRuntime.bundle/foliate/footnotes.js",
 				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/FoliateRuntime.bundle/foliate/vendor/zip.js",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/FoliateRuntime.bundle/foliate/vendor/fflate.js",
 				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/FoliateRuntime.bundle/licenses/foliate-LICENSE.txt",
 				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/FoliateRuntime.bundle/licenses/zip.js-LICENSE.txt",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/FoliateRuntime.bundle/licenses/fflate-LICENSE.txt",
 				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/FoliateRuntime.bundle/licenses/UPSTREAM.txt",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1186,10 +1219,11 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = enve/Configuration/enve.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = 9TT6DBK8W3;
 				ENABLE_APP_SANDBOX = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
@@ -1218,7 +1252,7 @@
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 26.1;
-				MARKETING_VERSION = 1.2.6;
+				MARKETING_VERSION = 1.2.7;
 				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enve;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -1243,10 +1277,11 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = enve/enveRelease.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = 9TT6DBK8W3;
 				ENABLE_APP_SANDBOX = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				ENABLE_CODE_COVERAGE = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
@@ -1276,7 +1311,7 @@
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 26.1;
-				MARKETING_VERSION = 1.2.6;
+				MARKETING_VERSION = 1.2.7;
 				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enve;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -1299,12 +1334,12 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEAD_CODE_STRIPPING = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MACOSX_DEPLOYMENT_TARGET = 26.1;
-				MARKETING_VERSION = 1.2.6;
+				MARKETING_VERSION = 1.2.7;
 				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enveTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
@@ -1327,12 +1362,12 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEAD_CODE_STRIPPING = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MACOSX_DEPLOYMENT_TARGET = 26.1;
-				MARKETING_VERSION = 1.2.6;
+				MARKETING_VERSION = 1.2.7;
 				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enveTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
@@ -1354,12 +1389,12 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEAD_CODE_STRIPPING = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MACOSX_DEPLOYMENT_TARGET = 26.1;
-				MARKETING_VERSION = 1.2.6;
+				MARKETING_VERSION = 1.2.7;
 				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enveUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
@@ -1379,12 +1414,12 @@
 		1D03D1182F1629110008FD58 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEAD_CODE_STRIPPING = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MACOSX_DEPLOYMENT_TARGET = 26.1;
-				MARKETING_VERSION = 1.2.6;
+				MARKETING_VERSION = 1.2.7;
 				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enveUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
@@ -1408,7 +1443,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = "enve-tvOS/EnveTV.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 9TT6DBK8W3;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -1421,7 +1456,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.2.6;
+				MARKETING_VERSION = 1.2.7;
 				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enve;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = appletvos;
@@ -1443,7 +1478,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = "enve-tvOS/EnveTVRelease.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 9TT6DBK8W3;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -1456,7 +1491,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.2.6;
+				MARKETING_VERSION = 1.2.7;
 				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enve;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = appletvos;
@@ -1479,7 +1514,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = EnveWatch/EnveWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 9TT6DBK8W3;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -1491,7 +1526,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.2.6;
+				MARKETING_VERSION = 1.2.7;
 				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enve.watchkitapp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;
@@ -1514,7 +1549,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = EnveWatch/EnveWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 9TT6DBK8W3;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -1526,7 +1561,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.2.6;
+				MARKETING_VERSION = 1.2.7;
 				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enve.watchkitapp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;
@@ -1549,7 +1584,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = EnveBookWidgets/EnveBookWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 9TT6DBK8W3;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = EnveBookWidgets/Info.plist;
@@ -1559,7 +1594,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.2.6;
+				MARKETING_VERSION = 1.2.7;
 				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enve.widgets;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -1578,7 +1613,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = EnveBookWidgets/EnveBookWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 9TT6DBK8W3;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = EnveBookWidgets/Info.plist;
@@ -1588,7 +1623,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.2.6;
+				MARKETING_VERSION = 1.2.7;
 				PRODUCT_BUNDLE_IDENTIFIER = com.enve.enve.widgets;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -1771,6 +1806,15 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 1DTV0001000000000000C0Z1 /* XCRemoteSwiftPackageReference "Zip" */;
 			productName = Zip;
+		};
+		1DTV0001000000000000A006 /* ReadiumZIPFoundation */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1D0BB04B2F3EE268001B353E /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
+			productName = ReadiumZIPFoundation;
+		};
+		1DTV0001000000000000A007 /* UnrarKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = UnrarKit;
 		};
 		4F91CD44C845610BAA3FE35E /* ReadiumStreamer */ = {
 			isa = XCSwiftPackageProductDependency;

@@ -1,6 +1,7 @@
 package com.enve.app.ui.screens
 
 import com.enve.app.viewmodel.OpenProgressAuthority
+import com.enve.app.viewmodel.CachedReaderProgress
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -108,4 +109,23 @@ class EbookReaderOpenProgressTest {
         assertTrue(completed)
         assertEquals(listOf(1_000L, 1_000L, 1_000L, 1_000L), budgets)
     }
+    @Test fun newerSharedZeroOverridesStaleIntentAndCachedNarrationTime() {
+        val marked = """{"locations":{"totalProgression":0},"enveSharedPosition":true}"""
+        val plan = sharedReadingOpenPlan(CachedReaderProgress(0f, marked, 900L, updatedAt = 200L), intentUpdatedAt = 100L)!!
+        assertEquals(0f, plan.resolution.progress, 0f)
+        assertEquals(marked, plan.resolution.locatorJson)
+        assertEquals(OpenProgressAuthority.LOCAL, plan.remote.authority)
+        assertEquals(200L, plan.localUpdatedAt)
+        assertFalse(plan.resolution.mayUseCachedAudioPosition)
+        assertEquals(null, selectAudioResumeSeconds(null, 900L, plan.resolution.mayUseCachedAudioPosition))
+        val ordinary = openProgressResolutionFor(OpenProgressAuthority.LOCAL, localLocator, 0.25f, null, 0f)
+        assertEquals(900L, selectAudioResumeSeconds(null, 900L, ordinary.mayUseCachedAudioPosition))
+    }
+
+    @Test fun unmarkedOrOlderCachedPositionsDoNotOverrideIntentAuthority() {
+        assertEquals(null, sharedReadingOpenPlan(CachedReaderProgress(0.25f, localLocator, 0L, updatedAt = 200L), 100L))
+        val marked = """{"locations":{"totalProgression":0.25},"enveSharedPosition":true}"""
+        assertEquals(null, sharedReadingOpenPlan(CachedReaderProgress(0.25f, marked, 0L, updatedAt = 100L), 200L))
+    }
+
 }

@@ -7,6 +7,7 @@
 
 
 import Foundation
+import Darwin
 import ZIPFoundation
 
 public struct EpubExporter : AlignmentSessionProviding {
@@ -28,34 +29,45 @@ public struct EpubExporter : AlignmentSessionProviding {
             try Data("application/epub+zip".utf8).write(to: mimetypeURL, options: .atomic)
         }
         
-        let archive = try Archive(url: outputFile, accessMode: .create)
-        logger.log(.debug, "folderURL \(folderURL)")
-        try archive.addEntry(with: "mimetype", relativeTo: folderURL, compressionMethod: .none)
+        let temporaryFile = outputFile.deletingLastPathComponent().appendingPathComponent(".\(outputFile.lastPathComponent).\(UUID().uuidString).tmp")
+        defer { try? FileManager.default.removeItem(at: temporaryFile) }
+        try Task.checkCancellation()
+        try {
+            let archive = try Archive(url: temporaryFile, accessMode: .create)
+            logger.log(.debug, "folderURL \(folderURL)")
+            try archive.addEntry(with: "mimetype", relativeTo: folderURL, compressionMethod: .none)
 
-        let resourceKeys: [URLResourceKey] = [.isDirectoryKey]
-        let enumerator = FileManager.default.enumerator(at: folderURL, includingPropertiesForKeys: resourceKeys)!
-        try enumerator.compactMap { ($0 as? URL)?.standardizedFileURL }.forEach { fileURL in
-            try Task.checkCancellation()
+            let resourceKeys: [URLResourceKey] = [.isDirectoryKey]
+            let enumerator = FileManager.default.enumerator(at: folderURL, includingPropertiesForKeys: resourceKeys)!
+            try enumerator.compactMap { ($0 as? URL)?.standardizedFileURL }.forEach { fileURL in
+                try Task.checkCancellation()
 
-            let resourceVals = try fileURL.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey] )
+                let resourceVals = try fileURL.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey] )
 
-            defer {
-                session.progressTracker.updateProgress(for: .export, increment: resourceVals.fileSize ?? 0, item:fileURL.lastPathComponent )
-            }
+                defer {
+                    session.progressTracker.updateProgress(for: .export, increment: resourceVals.fileSize ?? 0, item:fileURL.lastPathComponent )
+                }
             
-            logger.log(.debug, "Processing \(fileURL)")
-            let isDir = resourceVals.isDirectory ?? false
-            let entryName = fileURL.path.replacingOccurrences(of: folderURL.path + "/", with: "")
-            if entryName == "mimetype" {
-                return
+                logger.log(.debug, "Processing \(fileURL)")
+                let isDir = resourceVals.isDirectory ?? false
+                let entryName = fileURL.path.replacingOccurrences(of: folderURL.path + "/", with: "")
+                if entryName == "mimetype" {
+                    return
+                }
+                if isDir {
+                    return
+                }
+                logger.log( .info, "Adding \(entryName)")
+                try archive.addEntry(with: entryName, relativeTo: folderURL, compressionMethod: .deflate)
             }
-            if isDir {
-                return
-            }
-            logger.log( .info, "Adding \(entryName)")
-            try archive.addEntry(with: entryName, relativeTo: folderURL, compressionMethod: .deflate)
-        }
         
+        }()
+        try Task.checkCancellation()
+        let result = temporaryFile.path.withCString { temporaryPath in
+            outputFile.path.withCString { rename(temporaryPath, $0) }
+        }
+        guard result == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+
         session.progressTracker.updateProgress(for: .export, event: .end )
         
         logger.log(.info, "Export complete" )

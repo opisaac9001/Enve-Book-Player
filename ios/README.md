@@ -38,14 +38,16 @@ The app accepts user-supplied server addresses, including local HTTP servers. Do
 
 ### Optional OAuth providers
 
-Google Drive and Dropbox require developer-owned OAuth applications. Copy the example configuration and supply your registered client identifiers:
+Google Drive and Dropbox support importing selected books for offline use. See [cloud-drive import and OAuth setup](docs/reference/cloud-drive-import.md).
+
+Google Drive, Dropbox, and OneDrive require developer-owned OAuth applications. Copy the example configuration and supply your registered client identifiers:
 
 ```sh
 cp enve/Configuration/DeveloperSettings.example.plist \
   enve/Configuration/DeveloperSettings.plist
 ```
 
-`DeveloperSettings.plist` is ignored by Git. Its redirect scheme must match the scheme registered with each OAuth provider. These providers remain unavailable when their client identifier is empty.
+`DeveloperSettings.plist` is ignored by Git. Its redirect scheme must match the scheme registered with each OAuth provider. OneDrive setup is documented in [docs/reference/onedrive.md](docs/reference/onedrive.md). These providers remain unavailable when their client identifier is empty.
 
 ### Device signing
 

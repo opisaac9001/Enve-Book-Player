@@ -66,6 +66,23 @@ final class enveUISmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testStoryAlignTemperaturePreferenceSurvivesRelaunch() {
+        let app = launch(route: "storyalign")
+        let toggle = app.switches["Pause automatically for temperature"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 20))
+        if toggle.value as? String == "1" { toggle.tap() }
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(toggle.waitForExistence(timeout: 20))
+        XCTAssertEqual(toggle.value as? String, "0")
+        toggle.tap()
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(toggle.waitForExistence(timeout: 20))
+        XCTAssertEqual(toggle.value as? String, "1")
+    }
+
+    @MainActor
     func testLaunchAndLibraryNavigation() {
         let app = launch(route: "browse")
 

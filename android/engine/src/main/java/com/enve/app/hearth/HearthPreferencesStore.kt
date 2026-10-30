@@ -9,7 +9,9 @@ import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.enve.core.data.local.ProfilePreferences
+import com.enve.engine.theme.HearthPaletteStyle
 import com.enve.engine.theme.HearthThemeMode
+import com.enve.engine.prefs.EbookSyncInterval
 import com.enve.engine.prefs.HearthHomeSection
 import com.enve.engine.prefs.HearthStartTab
 import com.enve.engine.prefs.ReadNextPosition
@@ -21,6 +23,7 @@ import javax.inject.Singleton
 
 private val KEY_THEME_MODE = stringPreferencesKey("hearth.themeMode")
 private val KEY_OLED = booleanPreferencesKey("hearth.oled")
+private val KEY_PALETTE_STYLE = stringPreferencesKey("hearth.paletteStyle")
 private val KEY_UI_TEXT_SCALE = floatPreferencesKey("hearth.uiTextScale")
 private val KEY_SCRUB_CHAPTER = booleanPreferencesKey("hearth.player.scrubChapter")
 private val KEY_READ_NEXT_ENABLED = booleanPreferencesKey("hearth.reader.readNextEnabled")
@@ -31,8 +34,12 @@ private val KEY_REST_REMINDER_INTRO_SHOWN = booleanPreferencesKey("hearth.reader
 private val KEY_LIBRARY_COLUMNS = intPreferencesKey("hearth.library.columns")
 private val KEY_LIBRARY_SORT_STACK = stringPreferencesKey("hearth.library.sortStack")
 private val KEY_LIBRARY_ADVANCED_FILTERS = stringPreferencesKey("hearth.library.advancedFilters")
+private val KEY_READER_TTS_VOICE = stringPreferencesKey("hearth.reader.ttsVoice")
 private val KEY_START_TAB = stringPreferencesKey("hearth.startTab")
 private val KEY_HOME_SECTION_ORDER = stringPreferencesKey("hearth.home.sectionOrder")
+private val KEY_SHOW_DOCK_BOOK_SHORTCUT = booleanPreferencesKey("hearth.dock.showBookShortcut")
+private val KEY_SHOW_TODAY_STACK = booleanPreferencesKey("hearth.home.showTodayStack")
+private val KEY_EBOOK_SYNC_INTERVAL = stringPreferencesKey("hearth.reader.ebookSyncInterval")
 
 @Singleton
 class HearthPreferencesStore(
@@ -47,6 +54,11 @@ class HearthPreferencesStore(
     }
 
     val oledEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_OLED] ?: false }
+
+    val paletteStyle: Flow<HearthPaletteStyle> = dataStore.data.map { prefs ->
+        prefs[KEY_PALETTE_STYLE]?.let { runCatching { HearthPaletteStyle.valueOf(it) }.getOrNull() }
+            ?: HearthPaletteStyle.PARCHMENT
+    }
 
     val uiTextScale: Flow<Float> = dataStore.data.map {
         (it[KEY_UI_TEXT_SCALE] ?: 1f).coerceIn(1f, 1.3f)
@@ -68,6 +80,7 @@ class HearthPreferencesStore(
     val libraryColumns: Flow<Int> = dataStore.data.map { (it[KEY_LIBRARY_COLUMNS] ?: 3).coerceIn(1, 4) }
 
     val librarySortStack: Flow<String> = dataStore.data.map { it[KEY_LIBRARY_SORT_STACK] ?: "" }
+    val readerTtsVoice: Flow<String?> = dataStore.data.map { it[KEY_READER_TTS_VOICE] }
     val libraryAdvancedFilters: Flow<String> =
         dataStore.data.map { it[KEY_LIBRARY_ADVANCED_FILTERS] ?: "" }
     val preferredStartTab: Flow<HearthStartTab> = dataStore.data.map { prefs ->
@@ -81,6 +94,12 @@ class HearthPreferencesStore(
             .mapNotNull { raw -> runCatching { HearthHomeSection.valueOf(raw) }.getOrNull() }
         (saved + HearthHomeSection.entries).distinct()
     }
+    val showDockBookShortcut: Flow<Boolean> = dataStore.data.map { it[KEY_SHOW_DOCK_BOOK_SHORTCUT] ?: true }
+    val showTodayStack: Flow<Boolean> = dataStore.data.map { it[KEY_SHOW_TODAY_STACK] ?: true }
+    val ebookSyncInterval: Flow<EbookSyncInterval> = dataStore.data.map { prefs ->
+        prefs[KEY_EBOOK_SYNC_INTERVAL]?.let { runCatching { EbookSyncInterval.valueOf(it) }.getOrNull() }
+            ?: EbookSyncInterval.AUTOMATIC
+    }
 
     suspend fun setThemeMode(mode: HearthThemeMode) {
         dataStore.edit { it[KEY_THEME_MODE] = mode.name }
@@ -88,6 +107,10 @@ class HearthPreferencesStore(
 
     suspend fun setOledEnabled(enabled: Boolean) {
         dataStore.edit { it[KEY_OLED] = enabled }
+    }
+
+    suspend fun setPaletteStyle(style: HearthPaletteStyle) {
+        dataStore.edit { it[KEY_PALETTE_STYLE] = style.name }
     }
 
     suspend fun setUiTextScale(scale: Float) {
@@ -126,6 +149,10 @@ class HearthPreferencesStore(
         dataStore.edit { it[KEY_LIBRARY_SORT_STACK] = encoded }
     }
 
+    suspend fun setReaderTtsVoice(name: String) {
+        dataStore.edit { it[KEY_READER_TTS_VOICE] = name }
+    }
+
     suspend fun setLibraryAdvancedFilters(encoded: String) {
         dataStore.edit { it[KEY_LIBRARY_ADVANCED_FILTERS] = encoded }
     }
@@ -139,5 +166,17 @@ class HearthPreferencesStore(
         dataStore.edit {
             it[KEY_HOME_SECTION_ORDER] = normalized.joinToString(",") { section -> section.name }
         }
+    }
+
+    suspend fun setShowDockBookShortcut(show: Boolean) {
+        dataStore.edit { it[KEY_SHOW_DOCK_BOOK_SHORTCUT] = show }
+    }
+
+    suspend fun setShowTodayStack(show: Boolean) {
+        dataStore.edit { it[KEY_SHOW_TODAY_STACK] = show }
+    }
+
+    suspend fun setEbookSyncInterval(interval: EbookSyncInterval) {
+        dataStore.edit { it[KEY_EBOOK_SYNC_INTERVAL] = interval.name }
     }
 }

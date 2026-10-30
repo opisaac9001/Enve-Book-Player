@@ -3,6 +3,7 @@ import SwiftUI
 struct PlayerView_tvOS: View {
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.hearth) private var hearth
 
     @State private var showingChapters = false
     @State private var showingSleepTimer = false
@@ -10,7 +11,6 @@ struct PlayerView_tvOS: View {
 
     var body: some View {
         ZStack {
-
             BlurredCoverBackground_tvOS(book: playerVM.currentBook)
                 .ignoresSafeArea()
 
@@ -41,14 +41,14 @@ struct PlayerView_tvOS: View {
 
     private var coverSection: some View {
         VStack {
-            if let url = playerVM.currentBook?.coverURL {
-                AsyncImage(url: url) { image in
-                    image
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                } placeholder: {
-                    coverPlaceholder
-                }
+            if let book = playerVM.currentBook {
+                CachedAsyncCoverImage(
+                    url: book.coverURL,
+                    fallbackColor: "Blue",
+                    headers: CachedAsyncCoverImage.authHeaders(for: book),
+                    book: book,
+                    contentMode: .fit
+                )
                 .frame(maxWidth: 600, maxHeight: 600)
                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .shadow(color: .black.opacity(0.4), radius: 30, y: 20)
@@ -61,11 +61,11 @@ struct PlayerView_tvOS: View {
 
     private var coverPlaceholder: some View {
         RoundedRectangle(cornerRadius: 16)
-            .fill(Color.secondary.opacity(0.3))
+            .fill(hearth.bgElevated)
             .overlay(
                 Image(systemName: "headphones")
                     .font(.system(size: 96))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(hearth.textSecondary)
             )
     }
 
@@ -82,13 +82,13 @@ struct PlayerView_tvOS: View {
     private var metadataBlock: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(playerVM.currentBook?.title ?? "-")
-                .font(.system(size: 48, weight: .bold))
-                .foregroundStyle(.primary)
+                .font(.hearthDisplay(48))
+                .foregroundStyle(hearth.text)
                 .lineLimit(2)
             if let author = playerVM.currentBook?.author, !author.isEmpty {
                 Text(author)
                     .font(.title3)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(hearth.textSecondary)
                     .lineLimit(1)
             }
         }
@@ -100,11 +100,11 @@ struct PlayerView_tvOS: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Chapter")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(hearth.textSecondary)
                     .textCase(.uppercase)
                 Text(chapter.title)
                     .font(.title3.weight(.medium))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(hearth.text)
                     .lineLimit(1)
             }
         }
@@ -114,18 +114,18 @@ struct PlayerView_tvOS: View {
         VStack(alignment: .leading, spacing: 8) {
             ProgressView(value: progressFraction)
                 .progressViewStyle(.linear)
-                .tint(.white)
+                .tint(hearth.ember)
 
             HStack {
                 Text(PlaybackTime.clock(playerVM.progress))
                     .font(.caption)
                     .monospacedDigit()
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(hearth.textSecondary)
                 Spacer()
                 Text("-\(PlaybackTime.clock(max(0, playerVM.duration - playerVM.progress)))")
                     .font(.caption)
                     .monospacedDigit()
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(hearth.textSecondary)
             }
         }
     }
@@ -150,7 +150,7 @@ struct PlayerView_tvOS: View {
             } label: {
                 Image(systemName: playerVM.isPlaying ? "pause.circle.fill" : "play.circle.fill")
                     .font(.system(size: 80))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(hearth.text)
             }
             .buttonStyle(.plain)
 
@@ -169,7 +169,7 @@ struct PlayerView_tvOS: View {
                 Text(label)
                     .font(.caption2)
             }
-            .foregroundStyle(.primary)
+            .foregroundStyle(hearth.text)
             .frame(width: 140, height: 100)
         }
         .buttonStyle(.plain)
@@ -224,22 +224,22 @@ struct PlayerView_tvOS: View {
 
 struct BlurredCoverBackground_tvOS: View {
     let book: Book?
+    @Environment(\.hearth) private var hearth
 
     var body: some View {
         ZStack {
-            Color.black
-            if let url = book?.coverURL {
-                AsyncImage(url: url) { image in
-                    image
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .blur(radius: 60)
-                        .opacity(0.4)
-                } placeholder: {
-                    Color.clear
-                }
+            hearth.bgSunken
+            if let book {
+                CachedAsyncCoverImage(
+                    url: book.coverURL,
+                    fallbackColor: "Blue",
+                    headers: CachedAsyncCoverImage.authHeaders(for: book),
+                    book: book
+                )
+                .blur(radius: 60)
+                .opacity(0.4)
             }
-            Color.black.opacity(0.5)
+            hearth.bgSunken.opacity(0.5)
         }
     }
 }
@@ -273,6 +273,7 @@ struct ChapterListSheet_tvOS: View {
                     }
                 }
             }
+            .hearthCanvas()
             .navigationTitle("Chapters")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -350,6 +351,7 @@ struct SleepTimerSheet_tvOS: View {
                     }
                 }
             }
+            .hearthCanvas()
             .navigationTitle("Sleep timer")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -404,6 +406,7 @@ struct PlaybackSpeedSheet_tvOS: View {
                     }
                 }
             }
+            .hearthCanvas()
             .navigationTitle("Playback speed")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

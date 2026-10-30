@@ -15,5 +15,5 @@ class EmbyPasswordLogin @Inject constructor(
     override val source: BookSource = BookSource.EMBY
 
     override suspend fun login(serverUrl: String, username: String, password: String): Result<Unit> =
-        authenticator.login(source, username, password)
+        authenticator.login(source, serverUrl, username, password)
 }

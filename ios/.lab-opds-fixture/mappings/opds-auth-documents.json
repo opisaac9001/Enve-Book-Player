@@ -1,0 +1,178 @@
+{
+  "mappings": [
+    {
+      "name": "opds-auth-document-basic",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/auth/basic.json"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/opds-authentication+json;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/auth/basic.json"
+      }
+    },
+    {
+      "name": "opds-auth-document-oauth-password",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/auth/oauth-password.json"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/opds-authentication+json;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/auth/oauth-password.json"
+      }
+    },
+    {
+      "name": "opds-auth-document-oauth-implicit",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/auth/oauth-implicit.json"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/opds-authentication+json;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/auth/oauth-implicit.json"
+      }
+    },
+    {
+      "name": "opds-auth-help-and-register-pages",
+      "request": {
+        "method": "GET",
+        "urlPathPattern": "/opds/auth/(help|register)\\.html"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/html;charset=utf-8"
+        },
+        "bodyFileName": "fixtures/opds/auth/info.html"
+      }
+    },
+    {
+      "name": "opds-oauth-token-refresh-grant",
+      "priority": 2,
+      "request": {
+        "method": "POST",
+        "urlPath": "/opds/auth/oauth/token",
+        "bodyPatterns": [
+          {
+            "contains": "refresh_token"
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json;charset=utf-8",
+          "Cache-Control": "no-store",
+          "Pragma": "no-cache"
+        },
+        "jsonBody": {
+          "access_token": "lab-access-token-refreshed-not-a-secret",
+          "token_type": "Bearer",
+          "expires_in": 3600,
+          "refresh_token": "lab-refresh-token-rotated-not-a-secret",
+          "scope": "opds"
+        }
+      }
+    },
+    {
+      "name": "opds-oauth-token-password-grant",
+      "priority": 3,
+      "request": {
+        "method": "POST",
+        "urlPath": "/opds/auth/oauth/token",
+        "bodyPatterns": [
+          {
+            "contains": "password"
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json;charset=utf-8",
+          "Cache-Control": "no-store",
+          "Pragma": "no-cache"
+        },
+        "jsonBody": {
+          "access_token": "lab-access-token-initial-not-a-secret",
+          "token_type": "Bearer",
+          "expires_in": 3600,
+          "refresh_token": "lab-refresh-token-initial-not-a-secret",
+          "scope": "opds"
+        }
+      }
+    },
+    {
+      "name": "opds-oauth-token-unsupported-grant",
+      "priority": 10,
+      "request": {
+        "method": "POST",
+        "urlPath": "/opds/auth/oauth/token"
+      },
+      "response": {
+        "status": 400,
+        "headers": {
+          "Content-Type": "application/json;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "jsonBody": {
+          "error": "unsupported_grant_type",
+          "error_description": "The lab token endpoint implements the password and refresh_token grants."
+        }
+      }
+    },
+    {
+      "name": "opds-oauth-authorize-redirect",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/auth/oauth/authorize",
+        "queryParameters": {
+          "redirect_uri": {
+            "matches": ".+"
+          }
+        }
+      },
+      "response": {
+        "status": 302,
+        "headers": {
+          "Location": "{{request.query.redirect_uri}}#access_token=lab-access-token-implicit-not-a-secret&token_type=Bearer&expires_in=3600&state={{request.query.state}}",
+          "Cache-Control": "no-store"
+        },
+        "transformers": ["response-template"]
+      }
+    },
+    {
+      "name": "opds-oauth-authorize-missing-redirect-uri",
+      "priority": 5,
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/auth/oauth/authorize"
+      },
+      "response": {
+        "status": 400,
+        "headers": {
+          "Content-Type": "application/json;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "jsonBody": {
+          "error": "invalid_request",
+          "error_description": "redirect_uri is required. The lab reflects it verbatim and appends the implicit-grant fragment."
+        }
+      }
+    }
+  ]
+}

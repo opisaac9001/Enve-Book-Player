@@ -26,7 +26,9 @@ This repository contains both editions: the Swift app under [`ios/`](ios/) and t
 
 The public repository follows stable releases. Day-to-day development happens privately, so `main` is updated in reviewed, release-sized snapshots rather than carrying unfinished work.
 
-[Latest source changelog](CHANGELOG.md) — iOS 1.2.6 and Android 1.2 build 55.
+[Download Android 1.2 build 56](https://github.com/opisaac9001/Enve-Book-Player/releases/tag/v1.2.56), including the signed APK, matching source, and checksums.
+
+[Latest source changelog](CHANGELOG.md).
 
 ## What it does
 
@@ -120,13 +122,7 @@ Bug fixes, accessibility improvements, provider work, documentation, and focused
 
 For app support and setup questions, use the central [Enve Support repository](https://github.com/opisaac9001/Enve-Support) or [Discord](https://discord.gg/Hw4nmXRehb). Please report security problems privately as described in [SECURITY.md](SECURITY.md).
 
-## Using AI coding agents
-
-Enve includes repository instructions for working with Codex, Claude Code, and other coding agents. Start with the root [`CLAUDE.md`](CLAUDE.md) and [`AGENTS.md`](AGENTS.md), then read the platform-specific guides under [`ios/`](ios/) or [`android/`](android/) before asking an agent to inspect or change application code.
-
-Keep each task focused on one platform and give the agent a clear outcome, relevant files, and acceptance criteria. Generated changes are drafts: review the complete diff, run the platform's required build and tests, and exercise user-facing changes before submitting them.
-
-Files beginning with `// AGENT-LOCKED` have extra safeguards because they are easy to break without understanding their invariants. The owner-set password is local and advisory: it guides cooperative tools, but it is not encryption or a security boundary. Human contributors can inspect the source normally and should edit protected files only when they understand and can fully test the affected behavior.
+Repository guidance lives in [`CLAUDE.md`](CLAUDE.md), [`AGENTS.md`](AGENTS.md), and the platform-specific guides. Files beginning with `// AGENT-LOCKED` follow the advisory protocol in the owning platform's `AGENTS.md`.
 
 ## Acknowledgements
 

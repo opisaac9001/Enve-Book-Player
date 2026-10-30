@@ -12,6 +12,8 @@ final class LibraryCatalogCoordinator {
     var series: [Series] = []
 
     var isRefreshing = false
+    private(set) var refreshFailures: [LibraryRefreshFailure] = []
+    private(set) var recentCatalogFailures = Set<UUID>()
     var forceNextLocalRefresh = false
 
     private unowned let profileSession: ProfileSession?
@@ -66,6 +68,19 @@ final class LibraryCatalogCoordinator {
         }
         operations[id] = task
         return task
+    }
+
+    func refreshFailure(for source: LibrarySourceFilter) -> LibraryRefreshFailure? {
+        refreshFailures.first {
+            providerConnections[$0.providerId] != nil && $0.matches(source)
+        }
+    }
+
+    private func recordRefreshFailure(_ error: any Error, provider: any LibraryProvider, libraryId: String? = nil) {
+        guard provider.connection.type == .jellyfin, !(error is CancellationError) else { return }
+        let failure = LibraryRefreshFailure(providerId: provider.connection.id, libraryId: libraryId, error: error)
+        refreshFailures.removeAll { $0.providerId == failure.providerId && $0.libraryId == libraryId }
+        refreshFailures.append(failure)
     }
 
     func performInitialCloudSyncIfNeeded() {
@@ -133,7 +148,7 @@ final class LibraryCatalogCoordinator {
 
         await (profileSession?.ebookLinks ?? EbookLinkStore.shared).reapplyLinks()
 
-        if !isRetired, profileSession?.isRetired != true, profileSession?.isOwner ?? true, #available(iOS 26.0, *) {
+        if !isRetired, profileSession?.isRetired != true, profileSession?.isOwner ?? true {
             await MainActor.run { (profileSession?.storyAlignService ?? StoryAlignService.shared).syncReadAloudLibrary() }
         }
 
@@ -382,13 +397,8 @@ final class LibraryCatalogCoordinator {
         }
     }
 
-    func refreshStaleServerMirrorDomains() async {
-        guard let task = retainOperation(operation: { [self] in await performRefreshStaleServerMirrorDomains() }) else { return }
-        await task.value
-    }
-
-    private func performRefreshStaleServerMirrorDomains() async {
-        let mirrorConnections = providerConnections.connections.filter { connection in
+    private var activeMirrorConnections: [ServerConnection] {
+        providerConnections.connections.filter { connection in
             guard connection.isConnected,
                 !connection.isArchived,
                 providerConnections[connection.id] != nil
@@ -400,6 +410,22 @@ final class LibraryCatalogCoordinator {
                 return false
             }
         }
+    }
+
+    func refreshRecentCatalog(force: Bool = false) async {
+        guard let task = retainOperation(operation: { [self] in
+            await refreshRecentCatalogWindows(for: activeMirrorConnections, now: Date(), force: force)
+        }) else { return }
+        await task.value
+    }
+
+    func refreshStaleServerMirrorDomains() async {
+        guard let task = retainOperation(operation: { [self] in await performRefreshStaleServerMirrorDomains() }) else { return }
+        await task.value
+    }
+
+    private func performRefreshStaleServerMirrorDomains() async {
+        let mirrorConnections = activeMirrorConnections
         guard !mirrorConnections.isEmpty else { return }
 
         let now = Date()
@@ -444,102 +470,138 @@ final class LibraryCatalogCoordinator {
 
     private func refreshRecentCatalogWindows(
         for inputConnections: [ServerConnection],
-        now: Date
+        now: Date,
+        force: Bool = false
     ) async {
+        recentCatalogFailures.formIntersection(Set(inputConnections.map(\.id)))
         for connection in inputConnections {
-            guard connection.type != .storyteller else { continue }
-            guard let provider = providerConnections[connection.id] else { continue }
-            let scope = ServerMirrorScope(
-                connectionId: connection.id,
-                accountKey: ServerMirrorFingerprint.accountKey(for: connection),
-                libraryId: nil,
-                domain: .catalog
-            )
-            guard
-                mirrorCheckpoints.needsRefresh(
-                    scope: scope,
-                    after: Self.startupMirrorRefreshInterval,
-                    now: now
-                )
+            guard connection.type != .storyteller,
+                let provider = providerConnections[connection.id]
             else { continue }
-            guard await (profileSession?.catalogRefreshGate ?? CatalogRefreshGate.shared).begin(providerId: connection.id) else { continue }
+            let knownTargets = selectedLibraries(
+                from: libraries.filter { $0.providerId == connection.id }, for: provider
+            )
+            if !force, !knownTargets.isEmpty, knownTargets.allSatisfy({ target in
+                !mirrorCheckpoints.needsRefresh(
+                    scope: ServerMirrorScope(
+                        connectionId: connection.id,
+                        accountKey: ServerMirrorFingerprint.accountKey(for: connection),
+                        libraryId: target.id, domain: .catalogAdditions
+                    ),
+                    after: Self.startupMirrorRefreshInterval, now: now
+                )
+            }) { continue }
+            let gate = profileSession?.catalogRefreshGate ?? CatalogRefreshGate.shared
+            guard await gate.begin(providerId: connection.id) else { continue }
+            defer { gate.end(providerId: connection.id) }
 
             do {
-                defer { (profileSession?.catalogRefreshGate ?? CatalogRefreshGate.shared).end(providerId: connection.id) }
+                try Task.checkCancellation()
                 let fetchedLibraries = try await provider.fetchLibraries()
                 includeNewLibraries(fetchedLibraries, providerId: connection.id)
                 let targets = selectedLibraries(from: fetchedLibraries, for: provider)
-                guard !targets.isEmpty else { continue }
-
-                for library in fetchedLibraries
-                where !libraries.contains(where: {
+                for library in fetchedLibraries where !libraries.contains(where: {
                     $0.id == library.id && $0.providerId == library.providerId
                 }) {
                     libraries.append(library)
                 }
 
-                var recentBooks: [Book] = []
-                for library in targets {
-                    let fetched = try await provider.fetchRecentBooks(
-                        libraryId: library.id,
-                        limit: Self.startupRecentBooksPerLibrary
+                for target in targets {
+                    let scope = ServerMirrorScope(
+                        connectionId: connection.id,
+                        accountKey: ServerMirrorFingerprint.accountKey(for: connection),
+                        libraryId: target.id,
+                        domain: .catalogAdditions
                     )
-                    let normalized = normalizeFetchedBooks(fetched, for: library, provider: provider)
+                    guard force || mirrorCheckpoints.needsRefresh(
+                        scope: scope, after: Self.startupMirrorRefreshInterval, now: now
+                    ) else { continue }
+
+                    let fetched = try await recentCatalogBooks(provider: provider, libraryId: target.id)
+                    try Task.checkCancellation()
+                    let normalized = normalizeFetchedBooks(fetched, for: target, provider: provider)
                     let enriched = await (profileSession?.metadataManager ?? MetadataManager.shared).enrichBooksWithStoredMetadata(normalized)
                     let progress = applyLocalProgressOverrides(
                         enriched,
                         preloadedStoredProgress: await preloadStoredProgressMap(for: enriched)
                     )
                     let existing = await bookStore.booksByAnyIds(Set(progress.map(\.uniqueId)))
-                    recentBooks.append(
-                        contentsOf: applyLocalRelationshipOverrides(
-                            progress,
-                            existingBooks: Array(existing.values)
-                        )
-                    )
-                }
-
-                var seen = Set<String>()
-                let deduplicated = recentBooks.filter { seen.insert($0.uniqueId).inserted }
-                if !deduplicated.isEmpty {
+                    let reconciled = applyLocalRelationshipOverrides(progress, existingBooks: Array(existing.values))
+                    var seen = Set<String>()
                     let deletedIds = (profileSession?.deletedBooks ?? DeletedBooksTombstoneStore.shared).allDeleted
-                    library.performBatch {
-                        var indices: [String: Int] = [:]
-                        var merged: [Book] = []
-                        for book in library.books where indices[book.uniqueId] == nil {
-                            indices[book.uniqueId] = merged.count
-                            merged.append(book)
-                        }
-                        for book in deduplicated where !deletedIds.contains(book.stableId) {
-                            if let index = indices[book.uniqueId] {
-                                merged[index] = book
-                            } else {
+                    let books = reconciled.filter {
+                        seen.insert($0.uniqueId).inserted && !deletedIds.contains($0.stableId)
+                    }
+                    let fingerprint = ServerMirrorFingerprint.catalogSnapshot(books)
+                    let existingIDs = Set(existing.values.map(\.uniqueId))
+                    if !books.isEmpty,
+                        mirrorCheckpoints.checkpoint(for: scope)?.fingerprint != fingerprint
+                            || !Set(books.map(\.uniqueId)).isSubset(of: existingIDs)
+                    {
+                        try Task.checkCancellation()
+                        library.performBatch {
+                            var indices: [String: Int] = [:]
+                            var merged: [Book] = []
+                            for book in library.books where indices[book.uniqueId] == nil {
                                 indices[book.uniqueId] = merged.count
                                 merged.append(book)
                             }
+                            for book in books {
+                                if let index = indices[book.uniqueId] {
+                                    merged[index] = book
+                                } else {
+                                    indices[book.uniqueId] = merged.count
+                                    merged.append(book)
+                                }
+                            }
+                            library.books = merged
                         }
-                        library.books = merged
+                        await bookStore.upsertBooks(books)
                     }
-                    await bookStore.upsertBooks(deduplicated)
+                    mirrorCheckpoints.commit(
+                        scope: scope, syncLevel: .boundedWindow,
+                        fingerprint: fingerprint, itemCount: books.count
+                    )
                 }
-
-                mirrorCheckpoints.commit(
-                    scope: scope,
-                    syncLevel: .boundedWindow,
-                    fingerprint: ServerMirrorFingerprint.catalogWindow(deduplicated),
-                    itemCount: deduplicated.count
-                )
+                recentCatalogFailures.remove(connection.id)
                 saveMetadata()
-                AppLogger.general.info(
-                    "[Startup] Refreshed bounded catalog window for \(connection.name): \(deduplicated.count) books"
-                )
             } catch {
+                if Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled { return }
+                recentCatalogFailures.insert(connection.id)
                 providerConnections.markNeedsReauthentication(providerId: connection.id, error: error)
-                AppLogger.general.error(
-                    "[Startup] Bounded catalog refresh failed for \(connection.name): \(error.localizedDescription)"
-                )
+                AppLogger.general.error("Recent catalog refresh failed; keeping cached books")
             }
         }
+    }
+
+    private func recentCatalogBooks(provider: any LibraryProvider, libraryId: String) async throws -> [Book] {
+        guard let paging = provider as? any RecentCatalogPagingProvider else {
+            return try await provider.fetchRecentBooks(libraryId: libraryId, limit: Self.startupRecentBooksPerLibrary)
+        }
+        let hasCachedCatalog = await bookStore.bookCount(libraryId: libraryId, providerId: provider.connection.id) > 0
+        var collected: [Book] = []
+        var seen = Set<String>()
+        var page = 0
+        while true {
+            try Task.checkCancellation()
+            let result = try await paging.fetchRecentCatalogPage(libraryId: libraryId, page: page, size: 50)
+            guard result.isComplete, !result.books.isEmpty || result.isLast else {
+                throw ProviderError.invalidResponse
+            }
+            let ids = Set(result.books.map(\.uniqueId))
+            let existing = await bookStore.booksByAnyIds(ids)
+            let knownIds = Set(existing.values.map(\.uniqueId))
+            let reachedKnownPage = result.sourceBookIDs.isSubset(of: knownIds)
+            guard ids.isEmpty || !ids.isSubset(of: seen) || reachedKnownPage else {
+                throw ProviderError.invalidResponse
+            }
+            let unseen = result.books.filter { seen.insert($0.uniqueId).inserted }
+            collected.append(contentsOf: unseen.filter { !knownIds.contains($0.uniqueId) })
+            // Stage the whole additions run so a failed later page cannot hide remaining additions on retry.
+            if result.isLast || !hasCachedCatalog || reachedKnownPage { break }
+            page += 1
+        }
+        return collected
     }
 
     private func catalogNeedsReconciliation(
@@ -779,6 +841,7 @@ final class LibraryCatalogCoordinator {
             return
         }
         defer { (profileSession?.catalogRefreshGate ?? CatalogRefreshGate.shared).end(providerId: providerId) }
+        refreshFailures.removeAll { $0.providerId == providerId }
 
         let backgroundTask = BackgroundTaskAssertion.begin(name: "Library Refresh")
         defer { backgroundTask.end() }
@@ -851,6 +914,7 @@ final class LibraryCatalogCoordinator {
             await saveMetadataAsync()
             await MainActor.run { _ = flushLocalBooksToCache() }
         } catch {
+            recordRefreshFailure(error, provider: provider)
             providerConnections.markNeedsReauthentication(providerId: providerId, error: error)
             AppLogger.general.error(
                 "[Catalog] Failed to refresh provider libraries for \(provider.connection.name): \(error.localizedDescription)"
@@ -869,6 +933,7 @@ final class LibraryCatalogCoordinator {
             return
         }
         defer { (profileSession?.catalogRefreshGate ?? CatalogRefreshGate.shared).end(providerId: providerId) }
+        refreshFailures.removeAll { $0.providerId == providerId }
 
         let existingCloudEligibleIds = Set(
             library.books.lazy
@@ -893,6 +958,7 @@ final class LibraryCatalogCoordinator {
         do {
             libs = try await provider.fetchLibraries()
         } catch {
+            recordRefreshFailure(error, provider: provider)
             AppLogger.general.error("Failed to fetch libraries from \(name): \(error)")
             await MainActor.run { presentation.libraryImportProgress = nil }
             return
@@ -1229,6 +1295,7 @@ final class LibraryCatalogCoordinator {
             await MainActor.run {
                 providerConnections.markNeedsReauthentication(providerId: providerId, error: error)
             }
+            recordRefreshFailure(error, provider: provider, libraryId: lib.id)
             AppLogger.general.error("Failed to fetch books for \(lib.name): \(error)")
             return
         }
@@ -1648,6 +1715,7 @@ final class LibraryCatalogCoordinator {
                     reconciliation: reconciliation
                 )
             } catch {
+                recordRefreshFailure(error, provider: provider, libraryId: lib.id)
                 AppLogger.general.error("\(lib.name): could not persist catalog reconciliation: \(error.localizedDescription)")
                 return true
             }
@@ -1705,6 +1773,7 @@ final class LibraryCatalogCoordinator {
             await MainActor.run {
                 providerConnections.markNeedsReauthentication(providerId: providerId, error: error)
             }
+            recordRefreshFailure(error, provider: provider, libraryId: lib.id)
             AppLogger.general.error(
                 "\(lib.name): incremental catalog stopped after \(loadedSoFar) books: \(error.localizedDescription). Committed batches will resume."
             )
@@ -1713,6 +1782,7 @@ final class LibraryCatalogCoordinator {
         }
 
         guard checkpoint.completedSnapshot else {
+            recordRefreshFailure(ProviderError.invalidResponse, provider: provider, libraryId: lib.id)
             AppLogger.general.error("\(lib.name): incremental catalog ended without a complete snapshot marker")
             (profileSession?.catalogCheckpoints ?? CatalogImportCheckpointStore.shared).clear(connectionId: providerId, libraryId: lib.id)
             await MainActor.run { presentation.libraryImportProgress = nil }
@@ -1727,6 +1797,7 @@ final class LibraryCatalogCoordinator {
                 existingCountBefore: checkpoint.existingCountBefore
             )
             guard case let .completed(deleted, kept) = outcome else {
+                recordRefreshFailure(ProviderError.invalidResponse, provider: provider, libraryId: lib.id)
                 AppLogger.general.warning("\(lib.name): incremental reconciliation refused a sparse catalog; checkpoint retained")
                 await MainActor.run { presentation.libraryImportProgress = nil }
                 return true
@@ -1735,6 +1806,7 @@ final class LibraryCatalogCoordinator {
             (profileSession?.catalogCheckpoints ?? CatalogImportCheckpointStore.shared).clear(connectionId: providerId, libraryId: lib.id)
             AppLogger.general.info("\(lib.name): incremental reconciliation committed - \(kept) kept, \(deleted) removed")
         } catch {
+            recordRefreshFailure(error, provider: provider, libraryId: lib.id)
             AppLogger.general.error("\(lib.name): incremental reconciliation failed: \(error.localizedDescription)")
             await MainActor.run { presentation.libraryImportProgress = nil }
             return true

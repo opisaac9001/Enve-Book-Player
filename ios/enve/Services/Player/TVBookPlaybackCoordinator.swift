@@ -126,7 +126,21 @@ final class TVBookPlaybackCoordinator: BookPlaybackStarting, RestoredPlaybackPre
 
         guard activePlayToken == playToken else { return }
 
-        guard let streamURL = try await streamResolver.streamURL(for: book) else {
+        let localFiles = LocalStorageManager.shared.localAudiobookFilesIfExists(for: book) ?? []
+        let manifestSession: PlaybackSessionInfo?
+        let streamURL: URL?
+        if book.source == .storyteller, localFiles.isEmpty,
+            LocalStorageManager.shared.localAudiobookFileURLIfExists(bookId: book.downloadKey) == nil,
+            let provider = providerConnections.capability(PlaybackSessionProvider.self, for: book)
+        {
+            let session = try await provider.startPlaybackSession(for: book)
+            manifestSession = session
+            streamURL = session.audioTracks.first.flatMap { URL(string: $0.contentUrl) }
+        } else {
+            manifestSession = nil
+            streamURL = try await streamResolver.streamURL(for: book)
+        }
+        guard let streamURL else {
             throw NSError(
                 domain: "TVBookPlaybackCoordinator",
                 code: -1,
@@ -135,12 +149,19 @@ final class TVBookPlaybackCoordinator: BookPlaybackStarting, RestoredPlaybackPre
         }
 
         guard activePlayToken == playToken else { return }
-        await enrichChaptersIfNeeded(for: book, streamURL: streamURL)
+        if let manifestSession {
+            let chapters = manifestSession.chapters.isEmpty
+                ? trackBasedChapters(from: manifestSession.audioTracks, idPrefix: "storyteller_track")
+                : manifestSession.chapters
+            if !chapters.isEmpty { chapterService.applyChapters(chapters, for: book) }
+        } else {
+            await enrichChaptersIfNeeded(for: book, streamURL: streamURL)
+        }
 
         guard activePlayToken == playToken else { return }
 
         let localPosition = progressService.loadProgress(for: book)?.position ?? 0
-        let serverPosition = sessionService.lastServerCurrentTime ?? 0
+        let serverPosition = manifestSession?.serverCurrentTime ?? sessionService.lastServerCurrentTime ?? 0
         var startPosition: TimeInterval = max(localPosition, serverPosition)
         let bookDuration = book.duration ?? controller.snapshot.duration
 
@@ -158,7 +179,7 @@ final class TVBookPlaybackCoordinator: BookPlaybackStarting, RestoredPlaybackPre
             progressService.saveProgress(book: book, position: serverPosition, duration: bookDuration)
         }
 
-        if let localFiles = LocalStorageManager.shared.localAudiobookFilesIfExists(for: book), !localFiles.isEmpty {
+        if !localFiles.isEmpty {
             if localFiles.count > 1 {
                 let remoteTracks = (book.audioTracks ?? []).sorted { $0.index < $1.index }
                 var runningOffset: TimeInterval = 0
@@ -186,6 +207,12 @@ final class TVBookPlaybackCoordinator: BookPlaybackStarting, RestoredPlaybackPre
             } else {
                 loader.load(url: streamURL, book: book, startingAt: startPosition)
             }
+        } else if let manifestSession {
+            let tracks = manifestSession.audioTracks.map {
+                AudioTrack(index: $0.index, title: $0.title, contentUrl: $0.contentUrl,
+                           duration: $0.duration, startOffset: $0.startOffset)
+            }
+            loader.loadTracks(tracks, book: book, startingAt: startPosition)
         } else if let grimmoryTracks = resolvedGrimmoryTracks, grimmoryTracks.count > 1 {
             AppLogger.player.debug(
                 "Streaming \(grimmoryTracks.count) Grimmory tracks for bookDiagnosticID=\(diagnosticBookID(book))"
@@ -198,8 +225,8 @@ final class TVBookPlaybackCoordinator: BookPlaybackStarting, RestoredPlaybackPre
             loader.load(url: streamURL, book: book, startingAt: startPosition)
         }
 
-        let absSessionResolved = sessionService.lastServerCurrentTime != nil
-        await handleProgressConflicts(book: book, localProgress: startPosition, serverPositionAlreadyResolved: absSessionResolved)
+        let serverPositionResolved = manifestSession?.serverCurrentTime != nil || sessionService.lastServerCurrentTime != nil
+        await handleProgressConflicts(book: book, localProgress: startPosition, serverPositionAlreadyResolved: serverPositionResolved)
 
         controller.setPlaybackRate(LibraryDisplayPreferencesStore.shared.loadPreferences().playbackSpeed)
         loader.setupNowPlaying(book: book)

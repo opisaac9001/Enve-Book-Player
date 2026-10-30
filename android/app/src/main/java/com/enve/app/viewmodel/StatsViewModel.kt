@@ -119,7 +119,6 @@ class StatsViewModel @Inject constructor(
                 AppMediaType.PODCAST -> fullLibrary.filter { it.mediaType == AppMediaType.PODCAST }
             }
 
-            // Time comes from the sessions Enve recorded, not from how far into each book you are.
             val recordedHours = recorded.sumOf { it.activeDurationSeconds } / 3_600.0
             val totalHours = when (mediaType) {
                 AppMediaType.AUDIOBOOK -> {

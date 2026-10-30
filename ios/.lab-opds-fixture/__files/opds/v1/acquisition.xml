@@ -1,0 +1,166 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"
+      xmlns:opds="http://opds-spec.org/2010/catalog"
+      xmlns:dcterms="http://purl.org/dc/terms/"
+      xmlns:schema="http://schema.org/">
+  <id>urn:uuid:2c9d41a0-0200-4d2a-8f77-9a1b2c3d4e00</id>
+  <title>Enve OPDS Lab — all publications</title>
+  <updated>2026-09-19T08:00:00Z</updated>
+  <author>
+    <name>Enve OPDS Lab</name>
+  </author>
+  <opensearch:totalResults xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">8</opensearch:totalResults>
+  <opensearch:itemsPerPage xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">6</opensearch:itemsPerPage>
+  <opensearch:startIndex xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">1</opensearch:startIndex>
+  <link rel="self"
+        href="/opds/v1/acquisition.xml"
+        type="application/atom+xml;profile=opds-catalog;kind=acquisition"/>
+  <link rel="start"
+        href="/opds/v1/root.xml"
+        type="application/atom+xml;profile=opds-catalog;kind=navigation"/>
+  <link rel="up"
+        href="/opds/v1/root.xml"
+        type="application/atom+xml;profile=opds-catalog;kind=navigation"/>
+  <link rel="search"
+        href="/opds/v1/opensearch.xml"
+        type="application/opensearchdescription+xml"/>
+  <link rel="first"
+        href="/opds/v1/acquisition.xml"
+        type="application/atom+xml;profile=opds-catalog;kind=acquisition"/>
+  <link rel="next"
+        href="/opds/v1/acquisition-page2.xml"
+        type="application/atom+xml;profile=opds-catalog;kind=acquisition"/>
+  <link rel="last"
+        href="/opds/v1/acquisition-page2.xml"
+        type="application/atom+xml;profile=opds-catalog;kind=acquisition"/>
+
+  <entry>
+    <id>urn:uuid:2c9d41a0-0101-4d2a-8f77-9a1b2c3d4e01</id>
+    <title>Harbour Lights</title>
+    <updated>2026-09-18T20:15:00Z</updated>
+    <author>
+      <name>Tomasz Bergström</name>
+    </author>
+    <author>
+      <name>Marguerite Oyelaran</name>
+    </author>
+    <dcterms:issued>2018-04-01</dcterms:issued>
+    <dcterms:publisher>Lab Press</dcterms:publisher>
+    <dcterms:language>en</dcterms:language>
+    <summary type="text">An EPUB with a cover, a series and a progression service.</summary>
+    <schema:Series schema:name="Lab Harbour Cycle" schema:position="1"/>
+    <link rel="http://opds-spec.org/image"
+          href="/opds/images/cover-amber.png"
+          type="image/png"/>
+    <link rel="http://opds-spec.org/image/thumbnail"
+          href="/opds/images/thumb-blue.png"
+          type="image/png"/>
+    <link rel="http://opds-spec.org/acquisition"
+          href="/opds/files/lab-ebook-002.epub"
+          type="application/epub+zip"/>
+    <link rel="http://opds-spec.org/progression"
+          href="/opds/progression/lab-ebook-101"
+          type="application/opds-progression+json"/>
+  </entry>
+
+  <entry>
+    <id>urn:uuid:2c9d41a0-0102-4d2a-8f77-9a1b2c3d4e02</id>
+    <title>Night Watch, Volume One</title>
+    <updated>2026-09-18T20:16:00Z</updated>
+    <author>
+      <name>Ines Vallory</name>
+    </author>
+    <dcterms:language>en</dcterms:language>
+    <summary type="text">A single-file audiobook acquisition. OPDS 1.2 carries no duration.</summary>
+    <schema:Series schema:name="Night Watch" schema:position="1"/>
+    <link rel="http://opds-spec.org/image"
+          href="/opds/images/cover-blue.png"
+          type="image/png"/>
+    <link rel="http://opds-spec.org/acquisition"
+          href="/opds/files/lab-audiobook-001.mp3"
+          type="audio/mpeg"/>
+  </entry>
+
+  <entry>
+    <id>urn:uuid:2c9d41a0-0103-4d2a-8f77-9a1b2c3d4e03</id>
+    <title>A Commerce of Lanterns</title>
+    <updated>2026-09-18T20:17:00Z</updated>
+    <author>
+      <name>Yusuf Adeyemi</name>
+    </author>
+    <dcterms:language>en</dcterms:language>
+    <summary type="text">Purchase only, with an OPDS 1.2 price element.</summary>
+    <link rel="http://opds-spec.org/image"
+          href="/opds/images/cover-amber.png"
+          type="image/png"/>
+    <link rel="http://opds-spec.org/acquisition/buy"
+          href="/opds/buy/lab-buy-103"
+          type="text/html">
+      <opds:price currencycode="USD">9.99</opds:price>
+      <opds:indirectAcquisition type="application/epub+zip"/>
+    </link>
+  </entry>
+
+  <entry>
+    <id>urn:uuid:2c9d41a0-0104-4d2a-8f77-9a1b2c3d4e04</id>
+    <title>The Borrowed Atlas</title>
+    <updated>2026-09-18T20:18:00Z</updated>
+    <author>
+      <name>Ines Vallory</name>
+    </author>
+    <dcterms:language>en</dcterms:language>
+    <summary type="text">Loan only, with availability, copies and holds.</summary>
+    <schema:Series schema:name="Lab Chronicles" schema:position="3"/>
+    <link rel="http://opds-spec.org/image"
+          href="/opds/images/cover-blue.png"
+          type="image/png"/>
+    <link rel="http://opds-spec.org/acquisition/borrow"
+          href="/opds/borrow/lab-borrow-104"
+          type="application/epub+zip">
+      <opds:availability status="unavailable"
+                         since="2026-09-01T00:00:00Z"
+                         until="2026-10-01T00:00:00Z"/>
+      <opds:copies total="4" available="0"/>
+      <opds:holds total="3" position="2"/>
+      <opds:indirectAcquisition type="application/epub+zip"/>
+    </link>
+  </entry>
+
+  <entry>
+    <id>urn:uuid:2c9d41a0-0105-4d2a-8f77-9a1b2c3d4e05</id>
+    <title>The Sealed Archive</title>
+    <updated>2026-09-18T20:19:00Z</updated>
+    <author>
+      <name>Rosalind Achterberg</name>
+    </author>
+    <dcterms:language>en</dcterms:language>
+    <summary type="text">Adobe DRM. Listed by the catalog, refused by the reader.</summary>
+    <link rel="http://opds-spec.org/image"
+          href="/opds/images/cover-amber.png"
+          type="image/png"/>
+    <link rel="http://opds-spec.org/acquisition"
+          href="/opds/files/lab-ebook-105.acsm"
+          type="application/vnd.adobe.adept+xml">
+      <opds:indirectAcquisition type="application/epub+zip"/>
+    </link>
+  </entry>
+
+  <entry>
+    <id>urn:uuid:2c9d41a0-0106-4d2a-8f77-9a1b2c3d4e06</id>
+    <title>Serial Winter</title>
+    <updated>2026-09-18T20:20:00Z</updated>
+    <author>
+      <name>Hélène Duquesne</name>
+    </author>
+    <dcterms:language>fr</dcterms:language>
+    <summary type="text">Subscription only.</summary>
+    <link rel="http://opds-spec.org/image"
+          href="/opds/images/cover-blue.png"
+          type="image/png"/>
+    <link rel="http://opds-spec.org/acquisition/subscribe"
+          href="/opds/subscribe/lab-subscribe-106"
+          type="application/epub+zip">
+      <opds:availability status="unavailable"/>
+    </link>
+  </entry>
+</feed>

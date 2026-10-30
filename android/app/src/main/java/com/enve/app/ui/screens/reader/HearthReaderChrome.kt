@@ -45,6 +45,7 @@ import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.FormatStrikethrough
 import androidx.compose.material.icons.outlined.FormatUnderlined
 import androidx.compose.material.icons.outlined.Gesture
+import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.RecordVoiceOver
 import androidx.compose.material.icons.outlined.Search
@@ -95,6 +96,7 @@ import com.enve.app.viewmodel.ReaderViewModel
 import com.enve.core.data.model.AnnotationStyle
 import com.enve.core.data.model.Book
 import com.enve.engine.prefs.ReadNextPosition
+import com.enve.engine.theme.HearthPaletteStyle
 import com.enve.hearth.design.EmberAccent
 import com.enve.hearth.design.Hearth
 import com.enve.hearth.design.HearthEink
@@ -114,6 +116,7 @@ fun HearthReaderChrome(
     bookTitle: String,
     bookAuthor: String,
     accentColor: Color,
+    paletteStyle: HearthPaletteStyle,
     onBack: () -> Unit,
     onAskLibrarian: () -> Unit,
     onVerticalMarginsChanged: (Float) -> Unit,
@@ -124,8 +127,9 @@ fun HearthReaderChrome(
     restReminder: ReaderRestReminderSpec,
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
+    val chromeInteraction by vm.chromeInteraction.collectAsStateWithLifecycle()
     val knownTags by vm.knownTags.collectAsStateWithLifecycle()
-    val palette = readerChromePalette(state.prefs.theme, einkActive, accentColor)
+    val palette = readerChromePalette(state.prefs.theme, einkActive, accentColor, paletteStyle)
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
 
@@ -140,9 +144,11 @@ fun HearthReaderChrome(
         state.showAnnotationDialog,
         state.showAnnotationsSheet,
         state.showReadAloudSheet,
+        state.showTtsSheet,
         state.showReadAloudLyrics,
         state.showMoreMenu,
         state.readAlongPreparing,
+        chromeInteraction,
     ) {
         if (
             state.showChrome &&
@@ -152,6 +158,7 @@ fun HearthReaderChrome(
             !state.showAnnotationDialog &&
             !state.showAnnotationsSheet &&
             !state.showReadAloudSheet &&
+            !state.showTtsSheet &&
             !state.showReadAloudLyrics &&
             !state.showMoreMenu &&
             !state.readAlongPreparing
@@ -292,6 +299,7 @@ fun HearthReaderChrome(
                         state.lastPageLabel,
                         state.progressPct,
                         state.currentSection,
+                        state.minutesLeftInBook,
                     ),
                     readAlongSupported = state.readAlongSupported,
                     onSeek = vm::seekToProgress,
@@ -302,7 +310,36 @@ fun HearthReaderChrome(
                     },
                     onAnnotations = { vm.showAnnotationsSheet(true) },
                     onNarrate = vm::toggleReadAlongPlayback,
+                    onReadBack = vm::toggleTtsPlayback,
+                    ttsActive = state.ttsPlayback.active,
+                    ttsControls = {
+                        ReaderSpeechTransport(
+                            playing = state.ttsPlayback.playing,
+                            preparing = state.ttsPlayback.preparing,
+                            narrated = false,
+                            onToggle = vm::toggleTtsPlayback,
+                            onBack = vm::previousTtsParagraph,
+                            onForward = vm::nextTtsParagraph,
+                            onSettings = { vm.showTtsSheet(true) },
+                        )
+                    },
                 )
+            }
+
+            if (!state.showChrome && (state.ttsPlayback.active || state.readAlongActive)) {
+                val narrated = state.readAlongActive
+                Box(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(Hearth.Spacing.M)) {
+                    ReaderSpeechTransport(
+                        playing = if (narrated) state.readAlongPlaying else state.ttsPlayback.playing,
+                        preparing = if (narrated) state.readAlongPreparing else state.ttsPlayback.preparing,
+                        narrated = narrated,
+                        onToggle = if (narrated) vm::toggleReadAlongPlayback else vm::toggleTtsPlayback,
+                        onBack = if (narrated) vm::skipReadAlongBackward else vm::previousTtsParagraph,
+                        onForward = if (narrated) vm::skipReadAlongForward else vm::nextTtsParagraph,
+                        onSettings = { if (narrated) vm.showReadAloudSheet(true) else vm.showTtsSheet(true) },
+                        onShowControls = { vm.toggleChrome() },
+                    )
+                }
             }
             if (einkActive) {
                 if (state.showChrome && !state.readAlongActive) {
@@ -538,6 +575,7 @@ private fun TopVeil(
     }
 }
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun BottomVeil(
     progress: Float,
@@ -548,6 +586,9 @@ private fun BottomVeil(
     onBookmark: () -> Unit,
     onAnnotations: () -> Unit,
     onNarrate: () -> Unit,
+    onReadBack: () -> Unit,
+    ttsActive: Boolean,
+    ttsControls: @Composable () -> Unit,
 ) {
     val palette = Hearth.palette
     val eink = Hearth.eink
@@ -560,11 +601,13 @@ private fun BottomVeil(
         ) {
             ProgressRibbon(progress, onSeek)
             Text(summary, style = HearthText.Caption, color = palette.textSecondary)
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+            if (ttsActive) ttsControls()
+            androidx.compose.foundation.layout.FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                 ChromeBtn(Icons.AutoMirrored.Outlined.List, "Contents", onContents)
                 ChromeBtn(Icons.Outlined.Bookmark, "Bookmark", onBookmark)
                 ChromeBtn(Icons.Outlined.Edit, "Notes", onAnnotations)
                 if (readAlongSupported) ChromeBtn(Icons.Outlined.RecordVoiceOver, "Read Aloud", onNarrate)
+                else if (!ttsActive) ChromeBtn(Icons.Outlined.RecordVoiceOver, "Read back", onReadBack)
             }
         }
     }
@@ -602,10 +645,11 @@ private fun ReadAloudBar(
     onTune: () -> Unit, onLyrics: () -> Unit, onClose: () -> Unit,
 ) {
     val palette = Hearth.palette
-    val shape = RoundedCornerShape(Hearth.Radius.Bar)
+    val shape = RoundedCornerShape(if (Hearth.eink.sharpCorners) 0.dp else Hearth.Radius.Bar)
     Row(
         Modifier.padding(horizontal = Hearth.Spacing.M).fillMaxWidth().clip(shape)
             .background(palette.bgElevated).border(1.dp, palette.hairline, shape)
+            .horizontalScroll(rememberScrollState())
             .padding(horizontal = Hearth.Spacing.S, vertical = Hearth.Spacing.XS),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -632,6 +676,38 @@ private fun ReadAloudBar(
         GlyphBtn(Icons.AutoMirrored.Outlined.Subject, "Read mode", onLyrics, palette.textSecondary)
         GlyphBtn(Icons.Outlined.Tune, "Read aloud settings", onTune, palette.textSecondary)
         GlyphBtn(Icons.Outlined.Close, "Stop read aloud", onClose, palette.textSecondary)
+    }
+}
+
+@Composable
+internal fun ReaderSpeechTransport(
+    playing: Boolean,
+    preparing: Boolean,
+    narrated: Boolean,
+    onToggle: () -> Unit,
+    onBack: () -> Unit,
+    onForward: () -> Unit,
+    onSettings: (() -> Unit)?,
+    onShowControls: (() -> Unit)? = null,
+) {
+    val palette = Hearth.palette
+    val shape = RoundedCornerShape(if (Hearth.eink.sharpCorners) 0.dp else Hearth.Radius.Bar)
+    Row(
+        Modifier.clip(shape).background(palette.bgElevated).border(1.dp, palette.hairline, shape)
+            .padding(horizontal = Hearth.Spacing.S, vertical = Hearth.Spacing.XS),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        GlyphBtn(Icons.Filled.SkipPrevious, if (narrated) "Previous clip" else "Previous paragraph", onBack, palette.text, !preparing)
+        GlyphBtn(
+            if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+            if (playing) "Pause read back" else "Resume read back",
+            onToggle,
+            palette.ember,
+        )
+        GlyphBtn(Icons.Filled.SkipNext, if (narrated) "Next clip" else "Next paragraph", onForward, palette.text, !preparing)
+        onSettings?.let { GlyphBtn(Icons.Outlined.Tune, if (narrated) "Read aloud settings" else "Voice and speed", it, palette.textSecondary) }
+        onShowControls?.let { GlyphBtn(Icons.Outlined.KeyboardArrowUp, "Show reader controls", it, palette.textSecondary) }
     }
 }
 
@@ -803,6 +879,7 @@ private fun pageSummary(
     lastPageLabel: String?,
     pct: Int,
     section: String,
+    minutesRemaining: Int?,
 ): String {
     val position = com.enve.app.ui.screens.readerPositionText(
         page,
@@ -813,8 +890,8 @@ private fun pageSummary(
     )
     val loc = if (position.isNotEmpty()) "$position · $pct%" else "$pct%"
 
-    val left = if (total > 0 && page in 1..total) {
-        val mins = ((total - page) * 3) / 2
+    val left = if (minutesRemaining != null) {
+        val mins = minutesRemaining
         if (mins >= 60) " · ~${mins / 60}h ${mins % 60}m left" else " · ~${mins}m left"
     } else ""
     return if (section.isNotBlank()) "$loc$left · $section" else "$loc$left"
@@ -840,13 +917,18 @@ private fun annotationColorLabel(hex: String): String = when (hex.uppercase()) {
     else -> hex
 }
 
-internal fun readerChromePalette(theme: ReaderTheme, eink: Boolean, accent: Color): HearthPalette = when {
+internal fun readerChromePalette(
+    theme: ReaderTheme,
+    eink: Boolean,
+    accent: Color,
+    style: HearthPaletteStyle,
+): HearthPalette = when {
     eink -> HearthPalette.eink()
-    theme == ReaderTheme.LIGHT -> HearthPalette.paper(accent)
-    theme == ReaderTheme.SEPIA -> HearthPalette.paper(accent).copy(
+    theme == ReaderTheme.LIGHT -> HearthPalette.paper(accent, style)
+    theme == ReaderTheme.SEPIA -> HearthPalette.paper(accent, style).copy(
         bg = Color(0xFFF3E8D0), bgElevated = Color(0xFFEDD9B4), bgSunken = Color(0xFFE8DCC0),
         text = Color(0xFF4A3F30), textSecondary = Color(0xFF6E5F49), textTertiary = Color(0xFF9A8968),
     )
-    theme == ReaderTheme.OLED -> HearthPalette.oled(accent)
-    else -> HearthPalette.ink(accent)
+    theme == ReaderTheme.OLED -> HearthPalette.oled(accent, style)
+    else -> HearthPalette.ink(accent, style)
 }

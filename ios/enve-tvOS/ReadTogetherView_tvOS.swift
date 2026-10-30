@@ -2,12 +2,13 @@ import AVFoundation
 import SwiftUI
 
 struct ReadTogetherView_tvOS: View {
+    @Environment(\.hearth) private var hearth
     @State private var receiver = CompanionReceiverService_tvOS.shared
 
     var body: some View {
         NavigationStack {
             ZStack(alignment: .top) {
-                Color.black.ignoresSafeArea()
+                hearth.bgSunken.ignoresSafeArea()
 
                 switch receiver.state {
                 case .idle, .discovering, .connected:
@@ -17,6 +18,7 @@ struct ReadTogetherView_tvOS: View {
                     errorView(error)
                 }
             }
+            .hearthCanvas()
             .navigationTitle("Read together")
             .task {
                 await receiver.startDiscovering()
@@ -33,6 +35,7 @@ struct ReadTogetherView_tvOS: View {
                     .foregroundStyle(.tint)
                 Text("Read together\nwith iPhone")
                     .font(.system(size: 36, weight: .bold))
+                    .foregroundStyle(hearth.text)
                     .multilineTextAlignment(.center)
             }
             .frame(width: 360)
@@ -40,7 +43,7 @@ struct ReadTogetherView_tvOS: View {
             VStack(alignment: .leading, spacing: 14) {
                 Text("Books and comics are rendered on your iPhone and mirrored here. Keep your iPhone nearby with enve open.")
                     .font(.body)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(hearth.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
 
                 stepRow(number: 1, text: "On your iPhone, open enve and join the same Wi-Fi as this Apple TV.")
@@ -64,16 +67,16 @@ struct ReadTogetherView_tvOS: View {
                 ProgressView().controlSize(.small)
                 Text("Looking for your iPhone on this Wi-Fi network…")
                     .font(.body)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(hearth.textSecondary)
             }
             .padding(.top, 12)
         case .idle:
             HStack(spacing: 12) {
                 Image(systemName: "wifi")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(hearth.textSecondary)
                 Text("Make sure both devices are on the same Wi-Fi network.")
                     .font(.body)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(hearth.textSecondary)
             }
             .padding(.top, 12)
         default:
@@ -85,7 +88,7 @@ struct ReadTogetherView_tvOS: View {
         HStack(alignment: .top, spacing: 16) {
             ZStack {
                 Circle()
-                    .fill(Color.accentColor.opacity(0.2))
+                    .fill(hearth.ember.opacity(0.2))
                     .frame(width: 36, height: 36)
                 Text("\(number)")
                     .font(.body.weight(.bold))
@@ -93,7 +96,7 @@ struct ReadTogetherView_tvOS: View {
             }
             Text(text)
                 .font(.body)
-                .foregroundStyle(.primary)
+                .foregroundStyle(hearth.text)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -103,12 +106,13 @@ struct ReadTogetherView_tvOS: View {
         VStack(spacing: 24) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 64))
-                .foregroundStyle(.orange)
+                .foregroundStyle(hearth.ember)
             Text("Lost connection")
                 .font(.title)
+                .foregroundStyle(hearth.text)
             Text(error.localizedDescription)
                 .font(.body)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(hearth.textSecondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 720)
             Button("Try again") {
@@ -121,6 +125,7 @@ struct ReadTogetherView_tvOS: View {
 }
 
 struct CompanionSessionView_tvOS: View {
+    @Environment(\.hearth) private var hearth
 
     private enum FocusTarget: Hashable {
         case page, play, previous, next, speed
@@ -133,7 +138,7 @@ struct CompanionSessionView_tvOS: View {
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            hearth.bgSunken.ignoresSafeArea()
 
             if case .connected(let session) = receiver.state {
                 sessionContent(session: session)
@@ -237,7 +242,7 @@ struct CompanionSessionView_tvOS: View {
                     .scaleEffect(2)
                 Text("Waiting for the first page from \(session.deviceName)…")
                     .font(.body)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(hearth.textSecondary)
             }
         }
     }
@@ -257,10 +262,10 @@ struct CompanionSessionView_tvOS: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(session.bookTitle)
                     .font(.title3.weight(.semibold))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(hearth.text)
                 Text("Reading on \(session.deviceName)")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(hearth.textSecondary)
             }
 
             Spacer()
@@ -296,7 +301,7 @@ struct CompanionSessionView_tvOS: View {
         }
         .padding(.vertical, 16)
         .padding(.horizontal, 24)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .background(hearth.bgElevated, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 
     private func readAloudButton(
@@ -346,6 +351,7 @@ struct CompanionSessionView_tvOS: View {
 }
 
 struct CompanionReadingPromptSheet_tvOS: View {
+    @Environment(\.hearth) private var hearth
     let book: Book
 
     @Environment(\.dismiss) private var dismiss
@@ -358,12 +364,13 @@ struct CompanionReadingPromptSheet_tvOS: View {
 
             Text("Read \(book.title) with iPhone")
                 .font(.system(size: 40, weight: .bold))
+                .foregroundStyle(hearth.text)
                 .multilineTextAlignment(.center)
                 .lineLimit(3)
 
             Text("Apple TV can't render ebooks or comics on its own. Your iPhone renders each page and sends it here.")
                 .font(.title3)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(hearth.textSecondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 760)
 
@@ -380,13 +387,15 @@ struct CompanionReadingPromptSheet_tvOS: View {
                 .padding(.top, 12)
         }
         .padding(60)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(hearth.bg.ignoresSafeArea())
     }
 
     private func instructionRow(number: Int, text: String) -> some View {
         HStack(alignment: .top, spacing: 16) {
             ZStack {
                 Circle()
-                    .fill(Color.accentColor.opacity(0.2))
+                    .fill(hearth.ember.opacity(0.2))
                     .frame(width: 32, height: 32)
                 Text("\(number)")
                     .font(.body.weight(.bold))

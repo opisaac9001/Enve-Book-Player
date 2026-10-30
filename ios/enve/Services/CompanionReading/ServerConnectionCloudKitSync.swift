@@ -99,20 +99,29 @@ final class ServerConnectionCloudKitSync {
         guard isEnabled else { return }
         status = .syncing
         do {
-            let query = CKQuery(recordType: recordType, predicate: NSPredicate(value: true))
-            var fetched: [ServerConnection] = []
-            let (results, _) = try await database.records(matching: query, inZoneWith: zoneID)
-            for (_, result) in results {
-                switch result {
-                case .success(let record):
-                    if let connection = makeConnection(from: record) {
-                        fetched.append(connection)
+            var fetched: [CKRecord.ID: ServerConnection] = [:]
+            var changeToken: CKServerChangeToken?
+            while true {
+                // Zone changes do not require a recordName query index.
+                let page = try await database.recordZoneChanges(inZoneWith: zoneID, since: changeToken)
+                for (recordID, result) in page.modificationResultsByID {
+                    switch result {
+                    case .success(let modification):
+                        let record = modification.record
+                        if record.recordType == recordType, let connection = makeConnection(from: record) {
+                            fetched[recordID] = connection
+                        }
+                    case .failure(let error):
+                        AppLogger.sync.warning("[CKSync] Record fetch failed: \(error.localizedDescription)")
                     }
-                case .failure(let error):
-                    AppLogger.sync.warning("[CKSync] Record fetch failed: \(error.localizedDescription)")
                 }
+                for deletion in page.deletions {
+                    fetched.removeValue(forKey: deletion.recordID)
+                }
+                changeToken = page.changeToken
+                if !page.moreComing { break }
             }
-            mergeIntoAppState(fetched)
+            mergeIntoAppState(Array(fetched.values))
             status = .lastSyncedAt(Date())
         } catch {
             AppLogger.sync.warning("[CKSync] pullAll failed: \(error.localizedDescription)")
@@ -149,7 +158,7 @@ final class ServerConnectionCloudKitSync {
         }
     }
 
-    private func makeRecord(for connection: ServerConnection) -> CKRecord {
+    func makeRecord(for connection: ServerConnection) -> CKRecord {
         connection.persistSecretsToSharedKeychain()
 
         let recordID = CKRecord.ID(recordName: connection.id.uuidString, zoneID: zoneID)
@@ -160,8 +169,12 @@ final class ServerConnectionCloudKitSync {
         if let username = connection.username { record["username"] = username as CKRecordValue }
         if let userId = connection.userId { record["userId"] = userId as CKRecordValue }
         if let rootPath = connection.rootPath { record["rootPath"] = rootPath as CKRecordValue }
-        // An empty list is the "all libraries" state; omitting the key would leave an older selection on the server.
-        record["selectedLibraryIds"] = Array(connection.selectedLibraryIds ?? []) as CKRecordValue
+        // A nil value clears an old selection without creating an untyped empty CloudKit array.
+        if let libraryIds = connection.selectedLibraryIds, !libraryIds.isEmpty {
+            record["selectedLibraryIds"] = Array(libraryIds) as CKRecordValue
+        } else {
+            record["selectedLibraryIds"] = nil
+        }
         let publicCustomHeaders = connection.publicCustomHeadersForPersistence() ?? [:]
         if let data = try? JSONEncoder().encode(publicCustomHeaders) {
             record["customHeadersJSON"] = data as CKRecordValue

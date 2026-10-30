@@ -6,56 +6,101 @@ import Zip
 
 @MainActor
 final class TVStorytellerAudioPlayer: NSObject, ObservableObject {
+    @Published private(set) var currentClipIndex = 0
+    @Published private(set) var elapsedTime: TimeInterval = 0
+    @Published private(set) var isPlaying = false
+    @Published private(set) var playbackRate: Double = 1
+    @Published private(set) var playbackError: String?
 
-    @Published var currentFragmentId: String?
-    @Published var isPlaying: Bool = false
-    @Published var playbackRate: Double = 1.0
+    var currentClip: TVAudioOverlayClip? {
+        timeline.clips.indices.contains(currentClipIndex) ? timeline.clips[currentClipIndex] : nil
+    }
+    var duration: TimeInterval { timeline.duration }
 
-    private var clips: [TVAudioOverlayClip] = []
-    private var clipIndex: [String: Int] = [:]
+    private var timeline = TVStorytellerTimeline(clips: [])
     private var audioDir: URL?
-    private var currentClipIdx: Int = 0
-
     private var player: AVQueuePlayer?
     private var boundaryObserver: Any?
+    private var periodicObserver: Any?
     private var currentItemObservation: NSKeyValueObservation?
-
-    private var audioFileGroups: [(audioSrc: String, startIdx: Int, endIdx: Int)] = []
-    private var clipToGroupIdx: [Int] = []
-    private var groupItems: [AVPlayerItem?] = []
-    private var itemToGroup: [ObjectIdentifier: Int] = [:]
+    private var statusObservation: NSKeyValueObservation?
+    private var observedItem: AVPlayerItem?
+    private var itemGroups: [ObjectIdentifier: Int] = [:]
+    private var queuedItems: [Int: AVPlayerItem] = [:]
+    private var queueID = UUID()
+    private var seekID = UUID()
+    private var isSeeking = false
+    private var previousIdleTimerSetting: Bool?
+    private var bookID: String?
+    private var lastSavedAt = Date.distantPast
 
     func load(clips: [TVAudioOverlayClip], audioDir: URL) {
-        self.clips = clips
+        cleanup()
+        timeline = TVStorytellerTimeline(clips: clips)
         self.audioDir = audioDir
-        self.clipIndex = Dictionary(
-            clips.enumerated().map { ($1.fragmentId, $0) },
-            uniquingKeysWith: { first, _ in first }
-        )
-        currentClipIdx = 0
-        currentFragmentId = clips.first?.fragmentId
-        buildAudioFileGroups()
-        buildQueue(startingAtGroup: 0)
+        currentClipIndex = 0
+        elapsedTime = 0
+        playbackError = nil
+        previousIdleTimerSetting = UIApplication.shared.isIdleTimerDisabled
+        UIApplication.shared.isIdleTimerDisabled = true
+        seek(toClipAt: 0)
     }
 
-    func play(fromFragment fragmentId: String? = nil) {
-        if let frag = fragmentId, let idx = clipIndex[frag] {
-            currentClipIdx = idx
+    func play() { resume() }
+
+    func restorePosition(for book: Book) {
+        bookID = book.stableId
+        var remoteIndex: Int?
+        if let locator = book.epubLocator?.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: locator) as? [String: Any],
+            let href = json["href"] as? String,
+            let locations = json["locations"] as? [String: Any],
+            let fragments = locations["fragments"] as? [String]
+        {
+            remoteIndex = timeline.clips.firstIndex(where: {
+                TVStorytellerPaths.normalizeHref($0.textHref) == TVStorytellerPaths.normalizeHref(href)
+                    && fragments.contains($0.fragmentId)
+            })
         }
-        activateAudioSession()
-        startPlayback()
+        if let saved = TVReadAlongProgressStore.shared.position(for: book.stableId),
+            remoteIndex == nil || saved.observedAt >= book.lastUpdate,
+            let index = timeline.clips.firstIndex(where: {
+                TVStorytellerPaths.normalizeHref($0.textHref) == saved.href && $0.fragmentId == saved.fragmentID
+            })
+        {
+            seek(toClipAt: index, offset: min(max(saved.offset, 0), max(0, timeline.clips[index].duration - 0.01)))
+            return
+        }
+        if let remoteIndex { seek(toClipAt: remoteIndex) }
     }
 
     func pause() {
-        player?.pause()
+        synchronizePosition()
+        saveProgress()
         isPlaying = false
+        player?.pause()
     }
 
     func resume() {
-        guard player != nil else { return }
-        activateAudioSession()
+        guard !timeline.clips.isEmpty else { return }
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .spokenAudio)
+            try session.setActive(true)
+        } catch {
+            playbackError = "The audio session could not start. Try playing again."
+            return
+        }
+        let needsRecovery = playbackError != nil
+        playbackError = nil
         isPlaying = true
-        applyRate()
+        if elapsedTime >= duration {
+            seek(toClipAt: 0)
+        } else if player?.currentItem == nil || needsRecovery {
+            seek(to: elapsedTime)
+        } else {
+            applyRate()
+        }
     }
 
     func togglePlayPause() {
@@ -63,222 +108,247 @@ final class TVStorytellerAudioPlayer: NSObject, ObservableObject {
     }
 
     func next() {
-        guard currentClipIdx + 1 < clips.count else { stop(); return }
-        currentClipIdx += 1
-        if isPlaying {
-            startPlayback()
-        } else {
-            seekToCurrentClip()
-            currentFragmentId = clips[currentClipIdx].fragmentId
-        }
+        guard currentClipIndex + 1 < timeline.clips.count else { return }
+        seek(toClipAt: currentClipIndex + 1)
     }
 
     func previous() {
-        guard currentClipIdx > 0 else { return }
-        currentClipIdx -= 1
-        if isPlaying {
-            startPlayback()
-        } else {
-            seekToCurrentClip()
-            currentFragmentId = clips[currentClipIdx].fragmentId
-        }
+        seek(toClipAt: max(0, currentClipIndex - 1))
     }
 
     func setRate(_ rate: Double) {
-        playbackRate = min(max(rate, 0.5), 3.0)
+        playbackRate = min(max(rate, 0.5), 3)
         applyRate()
     }
 
-    func stop() {
-        teardownObservers()
-        player?.pause()
-        player = nil
-        isPlaying = false
+    func skip(by interval: TimeInterval) {
+        seek(to: elapsedTime + interval)
+    }
+
+    func seek(to time: TimeInterval) {
+        let target = min(max(time, 0), max(0, duration - 0.01))
+        guard let index = timeline.clipIndex(at: target) else { return }
+        seek(toClipAt: index, offset: target - timeline.starts[index])
+    }
+
+    func seek(toClipAt index: Int) {
+        seek(toClipAt: index, offset: 0)
     }
 
     func cleanup() {
-        stop()
-        deactivateAudioSession()
-        clips = []
-        clipIndex = [:]
+        saveProgress()
+        isPlaying = false
+        teardownQueue()
+        if let previousIdleTimerSetting {
+            UIApplication.shared.isIdleTimerDisabled = previousIdleTimerSetting
+            self.previousIdleTimerSetting = nil
+        }
+        if audioDir != nil {
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        }
+        timeline = TVStorytellerTimeline(clips: [])
         audioDir = nil
-        currentFragmentId = nil
-        audioFileGroups = []
-        clipToGroupIdx = []
-        groupItems = []
-        itemToGroup = [:]
+        elapsedTime = 0
+        currentClipIndex = 0
+        playbackError = nil
+        bookID = nil
     }
 
-    private func buildAudioFileGroups() {
-        audioFileGroups = []
-        clipToGroupIdx = Array(repeating: 0, count: clips.count)
-        guard !clips.isEmpty else { return }
-
-        var groupStart = 0
-        var currentSrc = clips[0].audioSrc
-
-        for i in 1..<clips.count {
-            if clips[i].audioSrc != currentSrc {
-                let groupIdx = audioFileGroups.count
-                audioFileGroups.append((audioSrc: currentSrc, startIdx: groupStart, endIdx: i - 1))
-                for j in groupStart...(i - 1) { clipToGroupIdx[j] = groupIdx }
-                groupStart = i
-                currentSrc = clips[i].audioSrc
+    private func seek(toClipAt index: Int, offset: TimeInterval) {
+        guard timeline.clips.indices.contains(index) else { return }
+        playbackError = nil
+        let clip = timeline.clips[index]
+        currentClipIndex = index
+        elapsedTime = timeline.starts[index] + offset
+        saveProgress()
+        isSeeking = true
+        let groupIndex = timeline.groupIndices[index]
+        if currentGroupIndex != groupIndex || player?.currentItem?.status == .failed || player?.status == .failed {
+            buildQueue(startingAtGroup: groupIndex)
+        }
+        guard let player, player.currentItem != nil else {
+            isSeeking = false
+            isPlaying = false
+            return
+        }
+        guard currentGroupIndex == groupIndex else {
+            handlePlaybackFailure("The narration could not be played. Try opening the book again.")
+            return
+        }
+        let requestID = UUID()
+        seekID = requestID
+        player.pause()
+        let time = CMTime(seconds: clip.clipBegin + offset, preferredTimescale: 48_000)
+        player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
+            Task { @MainActor [weak self] in
+                guard let self, self.seekID == requestID else { return }
+                self.isSeeking = false
+                guard finished else {
+                    self.handlePlaybackFailure("The narration could not seek to this passage. Try playing again.")
+                    return
+                }
+                self.synchronizePosition()
+                self.applyRate()
             }
         }
-        let groupIdx = audioFileGroups.count
-        audioFileGroups.append((audioSrc: currentSrc, startIdx: groupStart, endIdx: clips.count - 1))
-        for j in groupStart...(clips.count - 1) { clipToGroupIdx[j] = groupIdx }
+    }
+
+    private var currentGroupIndex: Int? {
+        guard let item = player?.currentItem else { return nil }
+        return itemGroups[ObjectIdentifier(item)]
     }
 
     private func buildQueue(startingAtGroup startingGroup: Int) {
-        teardownObservers()
-        guard let audioDir, !audioFileGroups.isEmpty else {
-            player = nil
-            return
-        }
-
-        groupItems = Array(repeating: nil, count: audioFileGroups.count)
-        itemToGroup = [:]
+        teardownQueue()
+        guard let audioDir else { return }
         var items: [AVPlayerItem] = []
-
-        for groupIdx in startingGroup..<audioFileGroups.count {
-            let group = audioFileGroups[groupIdx]
-            let fileURL = audioDir.appendingPathComponent(TVStorytellerPaths.localAudioFilename(for: group.audioSrc))
-            guard FileManager.default.fileExists(atPath: fileURL.path) else { continue }
-            let item = AVPlayerItem(asset: AVURLAsset(url: fileURL))
+        for groupIndex in startingGroup..<timeline.groups.count {
+            let group = timeline.groups[groupIndex]
+            let url = audioDir.appendingPathComponent(group.audioSrc)
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                playbackError = "A narration file is missing. Download the complete read-aloud book and try again."
+                return
+            }
+            let item = AVPlayerItem(url: url)
             item.audioTimePitchAlgorithm = .timeDomain
-            groupItems[groupIdx] = item
-            itemToGroup[ObjectIdentifier(item)] = groupIdx
+            item.forwardPlaybackEndTime = CMTime(
+                seconds: timeline.clips[group.clipRange.upperBound - 1].clipEnd,
+                preferredTimescale: 48_000
+            )
+            itemGroups[ObjectIdentifier(item)] = groupIndex
+            queuedItems[groupIndex] = item
             items.append(item)
         }
-
-        guard !items.isEmpty else { player = nil; return }
-
         let queue = AVQueuePlayer(items: items)
         queue.actionAtItemEnd = .advance
-        queue.automaticallyWaitsToMinimizeStalling = false
         player = queue
+        let observedQueueID = queueID
+        currentItemObservation = queue.observe(\.currentItem, options: [.new]) { [weak self] _, _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.queueID == observedQueueID else { return }
+                self.currentItemChanged()
+            }
+        }
+        periodicObserver = queue.addPeriodicTimeObserver(
+            forInterval: CMTime(seconds: 0.1, preferredTimescale: 600), queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.synchronizePosition() }
+        }
         observeCurrentItem()
     }
 
-    private func startPlayback() {
-        guard currentClipIdx < clips.count, audioDir != nil else { stop(); return }
-        let targetGroup = clipToGroupIdx[currentClipIdx]
-
-        if currentGroupIndex() != targetGroup || player == nil {
-            buildQueue(startingAtGroup: targetGroup)
+    private func currentItemChanged() {
+        let failedGroup = queuedItems.keys.sorted().first {
+            $0 <= (currentGroupIndex ?? Int.max) && queuedItems[$0]?.status == .failed
         }
-        guard player != nil else { return }
-
-        currentFragmentId = clips[currentClipIdx].fragmentId
-        seekToCurrentClip()
-        isPlaying = true
-        applyRate()
-        reinstallBoundaryObserver()
-    }
-
-    private func seekToCurrentClip() {
-        guard let player, currentClipIdx < clips.count else { return }
-        let time = CMTime(seconds: clips[currentClipIdx].clipBegin, preferredTimescale: 600)
-        player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
-    }
-
-    private func currentGroupIndex() -> Int? {
-        guard let item = player?.currentItem else { return nil }
-        return itemToGroup[ObjectIdentifier(item)]
-    }
-
-    private func applyRate() {
-        player?.rate = isPlaying ? Float(playbackRate) : 0
-    }
-
-    private func reinstallBoundaryObserver() {
-        guard let player else { return }
-        if let boundaryObserver {
-            player.removeTimeObserver(boundaryObserver)
-            self.boundaryObserver = nil
+        if let failedGroup {
+            if timeline.groupIndices[currentClipIndex] != failedGroup {
+                currentClipIndex = timeline.groups[failedGroup].clipRange.lowerBound
+                elapsedTime = timeline.starts[currentClipIndex]
+            }
+            handlePlaybackFailure("The narration could not be played. Try opening the book again.")
+            return
         }
-        guard let groupIdx = currentGroupIndex() else { return }
-        let group = audioFileGroups[groupIdx]
-        guard group.startIdx < group.endIdx else { return }
-
-        var times: [NSValue] = []
-        for idx in group.startIdx..<group.endIdx {
-            let boundary = max(0, clips[idx].clipEnd)
-            times.append(NSValue(time: CMTime(seconds: boundary, preferredTimescale: 600)))
+        guard observedItem?.status != .failed, player?.currentItem?.status != .failed else {
+            handlePlaybackFailure("The narration could not be played. Try opening the book again.")
+            return
         }
-        guard !times.isEmpty else { return }
-
-        boundaryObserver = player.addBoundaryTimeObserver(forTimes: times, queue: .main) { [weak self] in
-            MainActor.assumeIsolated { self?.boundaryCrossed() }
+        guard let groupIndex = currentGroupIndex else {
+            elapsedTime = duration
+            currentClipIndex = max(0, timeline.clips.count - 1)
+            isPlaying = false
+            isSeeking = false
+            return
         }
-    }
-
-    private func boundaryCrossed() {
-        guard isPlaying, currentClipIdx + 1 < clips.count else { return }
-        let nextIdx = currentClipIdx + 1
-        guard clipToGroupIdx[nextIdx] == clipToGroupIdx[currentClipIdx] else { return }
-        currentClipIdx = nextIdx
-        currentFragmentId = clips[currentClipIdx].fragmentId
+        observeCurrentItem()
+        seek(toClipAt: timeline.groups[groupIndex].clipRange.lowerBound)
     }
 
     private func observeCurrentItem() {
-        currentItemObservation = player?.observe(\.currentItem, options: [.new]) { [weak self] _, _ in
-            Task { @MainActor [weak self] in self?.currentItemChanged() }
+        statusObservation?.invalidate()
+        observedItem = player?.currentItem
+        let observedQueueID = queueID
+        statusObservation = observedItem?.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
+            let failed = item.status == .failed
+            let itemID = ObjectIdentifier(item)
+            Task { @MainActor [weak self] in
+                guard let self, self.queueID == observedQueueID,
+                    self.itemGroups[itemID] != nil, failed
+                else { return }
+                self.handlePlaybackFailure("The narration could not be played. Try opening the book again.")
+            }
         }
+        installBoundaryObserver()
     }
 
-    private func currentItemChanged() {
-        guard let groupIdx = currentGroupIndex() else {
-            if isPlaying { stop() }
-            return
-        }
-        let group = audioFileGroups[groupIdx]
-        if currentClipIdx < group.startIdx || currentClipIdx > group.endIdx {
-            currentClipIdx = group.startIdx
-            currentFragmentId = clips[currentClipIdx].fragmentId
-        }
-        applyRate()
-        reinstallBoundaryObserver()
-    }
-
-    private func teardownObservers() {
-        if let boundaryObserver { player?.removeTimeObserver(boundaryObserver) }
+    private func installBoundaryObserver() {
+        guard let player else { return }
+        if let boundaryObserver { player.removeTimeObserver(boundaryObserver) }
         boundaryObserver = nil
+        guard let groupIndex = currentGroupIndex else { return }
+        let times = Set(timeline.groups[groupIndex].clipRange.flatMap { index in
+            [timeline.clips[index].clipBegin, timeline.clips[index].clipEnd]
+        }).sorted().map { NSValue(time: CMTime(seconds: $0, preferredTimescale: 48_000)) }
+        boundaryObserver = player.addBoundaryTimeObserver(forTimes: times, queue: .main) { [weak self] in
+            MainActor.assumeIsolated { self?.synchronizePosition() }
+        }
+    }
+
+    private func synchronizePosition() {
+        guard !isSeeking, playbackError == nil, let player, let groupIndex = currentGroupIndex else { return }
+        let time = player.currentTime().seconds
+        guard time.isFinite else { return }
+        let index = timeline.clipIndex(atAudioTime: time, inGroup: groupIndex)
+        currentClipIndex = index
+        elapsedTime = timeline.elapsedTime(atAudioTime: time, clipIndex: index)
+        if isPlaying, Date().timeIntervalSince(lastSavedAt) >= 15 { saveProgress() }
+    }
+
+    private func saveProgress() {
+        guard let bookID, let clip = currentClip else { return }
+        let now = Date()
+        TVReadAlongProgressStore.shared.save(.init(
+            href: TVStorytellerPaths.normalizeHref(clip.textHref),
+            fragmentID: clip.fragmentId,
+            offset: min(max(elapsedTime - timeline.starts[currentClipIndex], 0), clip.duration),
+            observedAt: now
+        ), for: bookID)
+        lastSavedAt = now
+    }
+
+    private func applyRate() {
+        guard !isSeeking else { return }
+        player?.rate = isPlaying ? Float(playbackRate) : 0
+    }
+
+    private func handlePlaybackFailure(_ message: String) {
+        isSeeking = false
+        isPlaying = false
+        player?.pause()
+        playbackError = message
+        saveProgress()
+    }
+
+    private func teardownQueue() {
+        queueID = UUID()
+        seekID = UUID()
+        player?.pause()
+        if let boundaryObserver { player?.removeTimeObserver(boundaryObserver) }
+        if let periodicObserver { player?.removeTimeObserver(periodicObserver) }
+        boundaryObserver = nil
+        periodicObserver = nil
         currentItemObservation?.invalidate()
         currentItemObservation = nil
-    }
-
-    private func activateAudioSession() {
-        do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .spokenAudio, options: [])
-            try session.setActive(true)
-        } catch {
-
-        }
-    }
-
-    private func deactivateAudioSession() {
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        statusObservation?.invalidate()
+        statusObservation = nil
+        observedItem = nil
+        player = nil
+        itemGroups = [:]
+        queuedItems = [:]
     }
 }
 
-struct TVStorytellerTextSegment: Hashable, Identifiable {
-    let id: Int
-    let fragmentId: String?
-    let text: String
-}
-
-struct TVStorytellerChapter: Hashable, Identifiable {
-    let id: Int
-    let title: String
-    let href: String
-    let segments: [TVStorytellerTextSegment]
-}
-
-struct TVStorytellerBook {
+nonisolated struct TVStorytellerBook: Sendable {
     let chapters: [TVStorytellerChapter]
     let clips: [TVAudioOverlayClip]
     let audioDir: URL
@@ -289,293 +359,106 @@ enum TVStorytellerLoader {
         let message: String
     }
 
-    @MainActor
     static func load(book: Book) async throws -> TVStorytellerBook {
-        guard let epubURL = book.ebookFileURL else {
-            throw LoadError(message: "This Storyteller book hasn't been downloaded yet. Download it from the Enve iPhone app first.")
-        }
-        guard FileManager.default.fileExists(atPath: epubURL.path) else {
-            throw LoadError(message: "The downloaded book file is missing.")
-        }
-        let bookId = book.stableId
-
-        return try await Task.detached(priority: .userInitiated) {
-            let unzipped = try unzipIfNeeded(epubURL: epubURL, bookId: bookId)
-            let opfURL = try locateOPF(in: unzipped)
-            let (chapters, spineHrefs) = try parseChaptersWithFragments(opfURL: opfURL)
-            let clips = try collectClips(unzippedDir: unzipped, opfURL: opfURL, spineHrefs: spineHrefs)
-            guard !clips.isEmpty else {
-                throw LoadError(message: "This book has no Storyteller audio alignment.")
+        let epubURL = try await UnifiedDownloadService.shared.prepareReaderAsset(for: book)
+        Zip.addCustomFileExtension(epubURL.pathExtension)
+        let bookID = book.stableId
+        let task = Task.detached(priority: .userInitiated) {
+            let root = try unzipIfNeeded(epubURL: epubURL, bookID: bookID)
+            try Task.checkCancellation()
+            let container = TVStorytellerPackageParser()
+            guard container.parse(try Data(contentsOf: root.appendingPathComponent("META-INF/container.xml"))),
+                let rootfile = container.rootfile
+            else { throw LoadError(message: "The EPUB is missing its package document.") }
+            let opfHref = TVStorytellerPaths.normalizeHref(rootfile)
+            let package = TVStorytellerPackageParser()
+            guard package.parse(try Data(contentsOf: root.appendingPathComponent(opfHref))) else {
+                throw LoadError(message: "The EPUB package could not be read.")
             }
-            let audioDir = try extractAudioFiles(unzippedDir: unzipped, opfURL: opfURL, clips: clips, bookId: bookId)
-            return TVStorytellerBook(chapters: chapters, clips: clips, audioDir: audioDir)
-        }.value
-    }
-
-    nonisolated private static func unzipIfNeeded(epubURL: URL, bookId: String) throws -> URL {
-        let cacheRoot = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("EnveTV/storyteller", isDirectory: true)
-        let bookDir = cacheRoot.appendingPathComponent(bookId, isDirectory: true)
-        let containerPath = bookDir.appendingPathComponent("META-INF/container.xml")
-        if FileManager.default.fileExists(atPath: containerPath.path) { return bookDir }
-        try? FileManager.default.removeItem(at: bookDir)
-        try FileManager.default.createDirectory(at: bookDir, withIntermediateDirectories: true)
-        try Zip.unzipFile(epubURL, destination: bookDir, overwrite: true, password: nil)
-        return bookDir
-    }
-
-    nonisolated private static func locateOPF(in unzippedDir: URL) throws -> URL {
-        let containerURL = unzippedDir.appendingPathComponent("META-INF/container.xml")
-        let xml = try String(contentsOf: containerURL, encoding: .utf8)
-        guard let fullPath = firstRegexCapture(in: xml, pattern: #"<rootfile\b[^>]*\bfull-path="([^"]+)""#),
-            !fullPath.isEmpty
-        else {
-            throw LoadError(message: "This book's structure is missing a rootfile entry.")
-        }
-        return unzippedDir.appendingPathComponent(fullPath)
-    }
-
-    nonisolated private static func parseChaptersWithFragments(opfURL: URL) throws -> ([TVStorytellerChapter], [String]) {
-        let opfDir = opfURL.deletingLastPathComponent()
-        let opfXML = try String(contentsOf: opfURL, encoding: .utf8)
-
-        var hrefForId: [String: String] = [:]
-        for match in allRegexMatches(in: opfXML, pattern: #"<item\b([^>]*)/?>"#) {
-            guard let id = firstRegexCapture(in: match, pattern: #"\bid="([^"]+)""#),
-                let href = firstRegexCapture(in: match, pattern: #"\bhref="([^"]+)""#)
-            else { continue }
-            hrefForId[id] = href
-        }
-
-        var spineOrder: [String] = []
-        for match in allRegexMatches(in: opfXML, pattern: #"<itemref\b([^>]*)/?>"#) {
-            if let idref = firstRegexCapture(in: match, pattern: #"\bidref="([^"]+)""#) {
-                spineOrder.append(idref)
+            var documents: [(href: String, overlay: String?)] = []
+            for id in package.spine {
+                guard let item = package.items[id] else { continue }
+                documents.append((
+                    TVStorytellerPaths.resolve(item.href, relativeTo: opfHref),
+                    item.overlayID.flatMap { package.items[$0] }.map {
+                        TVStorytellerPaths.resolve($0.href, relativeTo: opfHref)
+                    }
+                ))
             }
-        }
-
-        var chapters: [TVStorytellerChapter] = []
-        var spineHrefs: [String] = []
-        var segmentCounter = 0
-
-        for (chapterIdx, idref) in spineOrder.enumerated() {
-            guard let href = hrefForId[idref] else { continue }
-            spineHrefs.append(
-                TVStorytellerPaths.normalizeHref(
-                    TVStorytellerPaths.resolvePathDots(
-                        opfDir.appendingPathComponent(href).path
-                            .replacingOccurrences(of: opfDir.deletingLastPathComponent().path + "/", with: "")
-                    )
-                )
-            )
-            let chapterURL = opfDir.appendingPathComponent(href)
-            guard let html = try? String(contentsOf: chapterURL, encoding: .utf8) else { continue }
-            let title = extractTitle(from: html, fallback: "Chapter \(chapters.count + 1)")
-            let segments = extractFragmentedText(from: html, counterStart: segmentCounter)
-            segmentCounter += segments.count
-            guard !segments.isEmpty else { continue }
-            chapters.append(
-                TVStorytellerChapter(
-                    id: chapterIdx,
-                    title: title,
-                    href: href,
-                    segments: segments
-                )
-            )
-        }
-        return (chapters, spineHrefs)
-    }
-
-    nonisolated private static func extractFragmentedText(from html: String, counterStart: Int) -> [TVStorytellerTextSegment] {
-        var body = html
-        body = regexReplace(in: body, pattern: #"<script\b[^>]*>[\s\S]*?</script>"#, with: " ")
-        body = regexReplace(in: body, pattern: #"<style\b[^>]*>[\s\S]*?</style>"#, with: " ")
-
-        guard let bodyRange = body.range(of: "<body", options: [.caseInsensitive]) else {
-            return [makeSegment(id: counterStart, fragmentId: nil, text: plainText(from: body))].filter { !$0.text.isEmpty }
-        }
-        guard let bodyClose = body.range(of: "</body>", options: [.caseInsensitive], range: bodyRange.upperBound..<body.endIndex) else {
-            return [makeSegment(id: counterStart, fragmentId: nil, text: plainText(from: String(body[bodyRange.upperBound...])))].filter {
-                !$0.text.isEmpty
-            }
-        }
-        let bodyInner = String(body[bodyRange.upperBound..<bodyClose.lowerBound])
-
-        let pattern = #"<[a-zA-Z][^>]*\bid="([^"]+)"[^>]*>"#
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
-            return [makeSegment(id: counterStart, fragmentId: nil, text: plainText(from: bodyInner))].filter { !$0.text.isEmpty }
-        }
-        let nsBody = bodyInner as NSString
-        let range = NSRange(location: 0, length: nsBody.length)
-        let matches = regex.matches(in: bodyInner, options: [], range: range)
-        guard !matches.isEmpty else {
-            return [makeSegment(id: counterStart, fragmentId: nil, text: plainText(from: bodyInner))].filter { !$0.text.isEmpty }
-        }
-
-        var segments: [TVStorytellerTextSegment] = []
-        var counter = counterStart
-        var cursor = 0
-
-        for (i, match) in matches.enumerated() {
-
-            if match.range.location > cursor {
-                let leading = nsBody.substring(with: NSRange(location: cursor, length: match.range.location - cursor))
-                let text = plainText(from: leading)
-                if !text.isEmpty {
-                    segments.append(makeSegment(id: counter, fragmentId: nil, text: text))
-                    counter += 1
+            var clips: [TVAudioOverlayClip] = []
+            var parsedOverlays: Set<String> = []
+            for document in documents {
+                try Task.checkCancellation()
+                guard let overlay = document.overlay, parsedOverlays.insert(overlay).inserted else { continue }
+                let data = try Data(contentsOf: root.appendingPathComponent(overlay))
+                do {
+                    clips.append(contentsOf: try TVSmilXMLParser(data: data, baseHref: overlay).parseAndReturn())
+                } catch {
+                    throw LoadError(message: "The EPUB's narration alignment is damaged. Download a repaired read-aloud edition or read the text only.")
                 }
             }
-
-            let fragmentId = nsBody.substring(with: match.range(at: 1))
-            let segmentStart = match.range.location + match.range.length
-            let segmentEnd = (i + 1 < matches.count) ? matches[i + 1].range.location : nsBody.length
-            let segmentHTML = nsBody.substring(with: NSRange(location: segmentStart, length: segmentEnd - segmentStart))
-            let text = plainText(from: segmentHTML)
-            if !text.isEmpty {
-                segments.append(makeSegment(id: counter, fragmentId: fragmentId, text: text))
-                counter += 1
+            let positions = Dictionary(documents.enumerated().map { ($1.href, $0) }, uniquingKeysWith: { first, _ in first })
+            clips = clips.enumerated().sorted { a, b in
+                let left = positions[a.element.textHref] ?? Int.max
+                let right = positions[b.element.textHref] ?? Int.max
+                return left == right ? a.offset < b.offset : left < right
+            }.map(\.element)
+            guard !clips.isEmpty else { throw LoadError(message: "This EPUB has no aligned narration. Choose a read-aloud EPUB with media overlays.") }
+            let fragments = Dictionary(grouping: clips, by: \.textHref).mapValues { Set($0.map(\.fragmentId)) }
+            var chapters: [TVStorytellerChapter] = []
+            var segmentCount = 0
+            for (index, document) in documents.enumerated() {
+                try Task.checkCancellation()
+                let html = try String(contentsOf: root.appendingPathComponent(document.href), encoding: .utf8)
+                let parser = TVStorytellerTextParser(fragments: fragments[document.href] ?? [], counterStart: segmentCount)
+                guard parser.parse(html) else { throw LoadError(message: "A chapter's text could not be read from this EPUB.") }
+                guard !parser.segments.isEmpty else { continue }
+                chapters.append(TVStorytellerChapter(
+                    id: index, title: parser.title ?? "Chapter \(index + 1)", href: document.href, segments: parser.segments
+                ))
+                segmentCount += parser.segments.count
             }
-            cursor = segmentEnd
-        }
-        return segments
-    }
-
-    nonisolated private static func makeSegment(id: Int, fragmentId: String?, text: String) -> TVStorytellerTextSegment {
-        TVStorytellerTextSegment(id: id, fragmentId: fragmentId, text: text)
-    }
-
-    nonisolated private static func plainText(from html: String) -> String {
-        var s = html
-        s = regexReplace(in: s, pattern: #"</(p|div|h[1-6]|li|blockquote|br)\s*>"#, with: " ")
-        s = regexReplace(in: s, pattern: #"<br\s*/?>"#, with: " ")
-        s = regexReplace(in: s, pattern: #"<[^>]+>"#, with: "")
-        s = decodeEntities(s)
-        s = regexReplace(in: s, pattern: #"\s+"#, with: " ")
-        return s.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    nonisolated private static func extractTitle(from html: String, fallback: String) -> String {
-        for pattern in [#"<h1\b[^>]*>([\s\S]*?)</h1>"#, #"<h2\b[^>]*>([\s\S]*?)</h2>"#, #"<title\b[^>]*>([\s\S]*?)</title>"#] {
-            if let raw = firstRegexCapture(in: html, pattern: pattern) {
-                let text = decodeEntities(regexReplace(in: raw, pattern: #"<[^>]+>"#, with: ""))
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                if !text.isEmpty { return text }
+            let locations = Set(chapters.flatMap { chapter in
+                chapter.segments.compactMap { segment in
+                    segment.fragmentId.map { chapter.href + "#" + $0 }
+                }
+            })
+            guard clips.allSatisfy({ locations.contains($0.id) }) else {
+                throw LoadError(message: "The narration refers to text missing from this EPUB. Download a complete aligned copy and try again.")
             }
-        }
-        return fallback
-    }
-
-    nonisolated private static func decodeEntities(_ s: String) -> String {
-        var out = s
-        let named: [(String, String)] = [
-            ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
-            ("&quot;", "\""), ("&apos;", "'"), ("&nbsp;", " "),
-            ("&mdash;", "\u{2014}"), ("&ndash;", "\u{2013}"), ("&hellip;", "…"),
-            ("&lsquo;", "‘"), ("&rsquo;", "’"), ("&ldquo;", "“"), ("&rdquo;", "”"),
-        ]
-        for (k, v) in named { out = out.replacingOccurrences(of: k, with: v) }
-        return out
-    }
-
-    nonisolated private static func collectClips(unzippedDir: URL, opfURL: URL, spineHrefs: [String]) throws -> [TVAudioOverlayClip] {
-        var clips: [TVAudioOverlayClip] = []
-        let enumerator = FileManager.default.enumerator(at: unzippedDir, includingPropertiesForKeys: [.isRegularFileKey])
-        while let url = enumerator?.nextObject() as? URL {
-            guard url.pathExtension.lowercased() == "smil" else { continue }
-            guard let data = try? Data(contentsOf: url) else { continue }
-            let relPath = url.path.replacingOccurrences(of: unzippedDir.path + "/", with: "")
-            let baseHref = TVStorytellerPaths.normalizeHref(TVStorytellerPaths.resolvePathDots(relPath))
-            let parser = TVSmilXMLParser(data: data, baseHref: baseHref)
-            clips.append(contentsOf: parser.parseAndReturn())
-        }
-        return sortClipsBySpine(clips, spineHrefs: spineHrefs)
-    }
-
-    nonisolated private static func sortClipsBySpine(_ clips: [TVAudioOverlayClip], spineHrefs: [String]) -> [TVAudioOverlayClip] {
-        var positions: [String: Int] = [:]
-        for (i, href) in spineHrefs.enumerated() {
-            positions[TVStorytellerPaths.normalizeHref(href)] = i
-        }
-        func position(for textHref: String) -> Int {
-            let n = TVStorytellerPaths.normalizeHref(textHref)
-            if let p = positions[n] { return p }
-            for (k, v) in positions where k.hasSuffix(n) || n.hasSuffix(k) { return v }
-            return Int.max
-        }
-        return clips.enumerated()
-            .sorted { a, b in
-                let pa = position(for: a.element.textHref)
-                let pb = position(for: b.element.textHref)
-                if pa != pb { return pa < pb }
-                return a.offset < b.offset
+            for source in Set(clips.map(\.audioSrc)) {
+                guard FileManager.default.fileExists(atPath: root.appendingPathComponent(source).path) else {
+                    throw LoadError(message: "The EPUB is missing a narration file. Download the complete read-aloud edition and try again.")
+                }
             }
-            .map(\.element)
-    }
-
-    nonisolated private static func extractAudioFiles(
-        unzippedDir: URL,
-        opfURL: URL,
-        clips: [TVAudioOverlayClip],
-        bookId: String
-    ) throws -> URL {
-        let audioDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("enve-tv-storyteller").appendingPathComponent(bookId)
-        if FileManager.default.fileExists(atPath: audioDir.path) {
-            try? FileManager.default.removeItem(at: audioDir)
+            return TVStorytellerBook(chapters: chapters, clips: clips, audioDir: root)
         }
-        try FileManager.default.createDirectory(at: audioDir, withIntermediateDirectories: true)
-
-        let opfDir = opfURL.deletingLastPathComponent()
-        let uniqueSrcs = Array(Set(clips.map(\.audioSrc)))
-
-        for src in uniqueSrcs {
-            let cleaned = TVStorytellerPaths.resolvePathDots(src)
-            let candidateRelative = opfDir.appendingPathComponent(cleaned)
-            let dest = audioDir.appendingPathComponent(TVStorytellerPaths.localAudioFilename(for: src))
-
-            if FileManager.default.fileExists(atPath: candidateRelative.path) {
-                try? FileManager.default.copyItem(at: candidateRelative, to: dest)
-                continue
-            }
-
-            if let found = findAudioFile(named: (cleaned as NSString).lastPathComponent, in: unzippedDir) {
-                try? FileManager.default.copyItem(at: found, to: dest)
-            }
-        }
-        return audioDir
-    }
-
-    nonisolated private static func findAudioFile(named filename: String, in root: URL) -> URL? {
-        let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey])
-        while let url = enumerator?.nextObject() as? URL {
-            if url.lastPathComponent.lowercased() == filename.lowercased() { return url }
-        }
-        return nil
-    }
-
-    nonisolated private static func firstRegexCapture(in source: String, pattern: String) -> String? {
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
-        let range = NSRange(source.startIndex..<source.endIndex, in: source)
-        guard let match = regex.firstMatch(in: source, options: [], range: range),
-            match.numberOfRanges >= 2,
-            let captureRange = Range(match.range(at: 1), in: source)
-        else { return nil }
-        return String(source[captureRange])
-    }
-
-    nonisolated private static func allRegexMatches(in source: String, pattern: String) -> [String] {
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return [] }
-        let range = NSRange(source.startIndex..<source.endIndex, in: source)
-        return regex.matches(in: source, options: [], range: range).compactMap { match in
-            guard let r = Range(match.range, in: source) else { return nil }
-            return String(source[r])
+        return try await withTaskCancellationHandler {
+            let loaded = try await task.value
+            try Task.checkCancellation()
+            return loaded
+        } onCancel: {
+            task.cancel()
         }
     }
 
-    nonisolated private static func regexReplace(in source: String, pattern: String, with replacement: String) -> String {
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return source }
-        let range = NSRange(source.startIndex..<source.endIndex, in: source)
-        return regex.stringByReplacingMatches(in: source, options: [], range: range, withTemplate: replacement)
+    nonisolated private static func unzipIfNeeded(epubURL: URL, bookID: String) throws -> URL {
+        let cacheRoot = URL.cachesDirectory.appendingPathComponent("EnveTV/storyteller", isDirectory: true)
+        let bookDir = cacheRoot.appendingPathComponent(bookID, isDirectory: true)
+        let values = try epubURL.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        let fingerprint = "\(values.fileSize ?? 0)|\(values.contentModificationDate?.timeIntervalSince1970 ?? 0)"
+        let fingerprintURL = bookDir.appendingPathComponent(".source-fingerprint")
+        if (try? String(contentsOf: fingerprintURL, encoding: .utf8)) == fingerprint,
+            FileManager.default.fileExists(atPath: bookDir.appendingPathComponent("META-INF/container.xml").path)
+        { return bookDir }
+        let staging = cacheRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: staging) }
+        try Zip.unzipFile(epubURL, destination: staging, overwrite: true, password: nil)
+        try Task.checkCancellation()
+        try fingerprint.write(to: staging.appendingPathComponent(".source-fingerprint"), atomically: true, encoding: .utf8)
+        if FileManager.default.fileExists(atPath: bookDir.path) { try FileManager.default.removeItem(at: bookDir) }
+        try FileManager.default.moveItem(at: staging, to: bookDir)
+        return bookDir
     }
 }

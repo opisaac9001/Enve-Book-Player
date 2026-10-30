@@ -29,23 +29,13 @@ struct HearthChromeBackground: View {
     private var classicSurface: some View {
         switch shape {
         case .capsule:
-            Capsule()
-                .fill(fill)
-                .overlay(Capsule().strokeBorder(stroke ?? .clear, lineWidth: stroke == nil ? 0 : 1))
-                .hearthChromeShadow(shadow, isInk: hearth.isInk)
+            Capsule().fill(fill).hearthOutlined(Capsule(), stroke: stroke, raised: shadow)
         case .circle:
-            Circle()
-                .fill(fill)
-                .overlay(Circle().strokeBorder(stroke ?? .clear, lineWidth: stroke == nil ? 0 : 1))
-                .hearthChromeShadow(shadow, isInk: hearth.isInk)
+            Circle().fill(fill).hearthOutlined(Circle(), stroke: stroke, raised: shadow)
         case .rounded(let radius):
             RoundedRectangle(cornerRadius: radius, style: .continuous)
                 .fill(fill)
-                .overlay {
-                    RoundedRectangle(cornerRadius: radius, style: .continuous)
-                        .strokeBorder(stroke ?? .clear, lineWidth: stroke == nil ? 0 : 1)
-                }
-                .hearthChromeShadow(shadow, isInk: hearth.isInk)
+                .hearthOutlined(RoundedRectangle(cornerRadius: radius, style: .continuous), stroke: stroke, raised: shadow)
         }
     }
 
@@ -137,6 +127,45 @@ private struct HearthChromeShadow: ViewModifier {
 private extension View {
     func hearthChromeShadow(_ enabled: Bool, isInk: Bool) -> some View {
         modifier(HearthChromeShadow(enabled: enabled, isInk: isInk))
+    }
+}
+
+private struct HearthOutline<S: InsettableShape>: ViewModifier {
+    let shape: S
+    let stroke: Color?
+    let raised: Bool
+
+    @Environment(\.hearth) private var hearth
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if hearth.decorated {
+            content
+                .overlay(shape.strokeBorder(inkStroke, lineWidth: 1.5))
+                .background {
+                    if raised {
+                        shape.fill(hearth.wood)
+                            .overlay(shape.strokeBorder(hearth.outline, lineWidth: 1.5))
+                            .offset(y: 3)
+                    }
+                }
+        } else {
+            content
+                .overlay(shape.strokeBorder(stroke ?? .clear, lineWidth: stroke == nil ? 0 : 1))
+                .hearthChromeShadow(raised, isInk: hearth.isInk)
+        }
+    }
+
+    // Neutral hairline strokes become the ink outline; state-driven accent strokes are kept.
+    private var inkStroke: Color {
+        guard let stroke, stroke != hearth.hairline else { return hearth.outline }
+        return stroke
+    }
+}
+
+extension View {
+    func hearthOutlined<S: InsettableShape>(_ shape: S, stroke: Color? = nil, raised: Bool = false) -> some View {
+        modifier(HearthOutline(shape: shape, stroke: stroke, raised: raised))
     }
 }
 

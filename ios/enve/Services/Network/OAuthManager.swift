@@ -63,16 +63,18 @@ struct OAuthConfig: Sendable {
     let tokenEndpoint: URL
     let scopes: [String]
     let usePKCE: Bool
+    var authorizationParameters: [String: String] = [:]
 
     static func googleDrive() -> OAuthConfig {
         return OAuthConfig(
             clientId: OAuthCredentials.googleDriveClientID,
             clientSecret: nil,
-            redirectUri: "\(OAuthCredentials.redirectScheme):/oauth/google",
+            redirectUri: "\(OAuthCredentials.googleDriveClientID.split(separator: ".").reversed().joined(separator: ".")):/oauth/google",
             authorizationEndpoint: URL(string: "https://accounts.google.com/o/oauth2/v2/auth")!,
             tokenEndpoint: URL(string: "https://oauth2.googleapis.com/token")!,
             scopes: ["https://www.googleapis.com/auth/drive.readonly"],
-            usePKCE: true
+            usePKCE: true,
+            authorizationParameters: ["access_type": "offline", "prompt": "consent"]
         )
     }
 
@@ -84,7 +86,8 @@ struct OAuthConfig: Sendable {
             authorizationEndpoint: URL(string: "https://www.dropbox.com/oauth2/authorize")!,
             tokenEndpoint: URL(string: "https://api.dropboxapi.com/oauth2/token")!,
             scopes: ["files.content.read", "files.metadata.read"],
-            usePKCE: true
+            usePKCE: true,
+            authorizationParameters: ["token_access_type": "offline"]
         )
     }
 
@@ -249,8 +252,8 @@ final class OAuthManager: NSObject, ObservableObject {
             URLQueryItem(name: "state", value: state),
         ]
 
-        if !config.scopes.contains("offline_access") {
-            queryItems.append(URLQueryItem(name: "access_type", value: "offline"))
+        queryItems += config.authorizationParameters.sorted { $0.key < $1.key }.map {
+            URLQueryItem(name: $0.key, value: $0.value)
         }
 
         if let pkce = pkce {

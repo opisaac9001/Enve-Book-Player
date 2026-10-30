@@ -1,6 +1,11 @@
 package com.enve.app.ui.screens
 
 import android.content.Context
+import androidx.compose.ui.test.*
+import androidx.compose.ui.test.junit4.createEmptyComposeRule
+import org.junit.Rule
+import com.enve.core.reader.ReadAloudHighlightStyle
+import kotlinx.coroutines.flow.first
 import android.webkit.WebView
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ActivityScenario
@@ -15,6 +20,9 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.enve.app.MainActivity
 import com.enve.app.profiles.ProfileActivityBinding
 import com.enve.app.viewmodel.ReaderViewModel
+import com.enve.core.data.local.toCachedBook
+import com.enve.core.data.model.Book
+import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.BookSource
 import com.enve.core.reader.ReaderEngineKind
 import dagger.hilt.android.EntryPointAccessors
@@ -33,6 +41,149 @@ import org.readium.r2.navigator.epub.EpubNavigatorFragment
 
 @RunWith(AndroidJUnit4::class)
 class ReaderScrollingNavigationTest {
+    @get:Rule val compose = createEmptyComposeRule()
+
+    @Test
+    fun sharedCfiOpensTheExactChapterForALocalBook() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val coordinator = EntryPointAccessors.fromApplication(context, ProfileActivityBinding.DeviceEntryPoint::class.java).profiles()
+        ActivityScenario.launch(MainActivity::class.java).use { await { coordinator.activeRuntime.value != null } }
+        val component = checkNotNull(coordinator.activeRuntime.value).component
+        val id = "shared-cfi-${UUID.randomUUID()}"
+        val file = File(component.storageLocations().cacheDirectory, "ebooks/$id.epub")
+        file.parentFile!!.mkdirs()
+        writeBook(file)
+        val locator = """{"enveSharedPosition":true,"locations":{"cfi":"epubcfi(/6/4!/4/100[p50]/1:0)","enveSourceEngine":"foliate","totalProgression":0}}"""
+        val book = Book(id, "Local shared CFI fixture", source = BookSource.LOCAL,
+            mediaType = AppMediaType.EBOOK, primaryFileType = "EPUB", epubProgress = 0f,
+            readProgress = 0f, epubLocator = locator, lastReadTime = System.currentTimeMillis())
+        component.bookCacheDao().upsert(listOf(book.toCachedBook()))
+        try {
+            val intent = EbookReaderActivity.createIntent(context, id, BookSource.LOCAL,
+                title = book.title, author = "Enve tests", bookFormat = "EPUB",
+                epubLocator = locator, epubProgress = 0f, readerEngine = ReaderEngineKind.READIUM)
+            ActivityScenario.launch<EbookReaderActivity>(intent).use { scenario ->
+                await(description = { "The CFI should open chapter two even though percentage points to chapter one" }) {
+                    var href: String? = null
+                    scenario.onActivity { activity ->
+                        href = activity.supportFragmentManager.fragments.filterIsInstance<EpubNavigatorFragment>()
+                            .firstOrNull()?.currentLocator?.value?.href?.toString()
+                    }
+                    href?.endsWith("two.xhtml") == true
+                }
+            }
+        } finally {
+            component.bookCacheDao().deleteByCacheKeys(listOf(book.uniqueKey))
+            file.delete()
+        }
+    }
+
+    @Test
+    fun userNavigationAfterUnresolvedRestoreSurvivesClosingAndReopening() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val coordinator = EntryPointAccessors.fromApplication(context, ProfileActivityBinding.DeviceEntryPoint::class.java).profiles()
+        ActivityScenario.launch(MainActivity::class.java).use { await { coordinator.activeRuntime.value != null } }
+        val component = checkNotNull(coordinator.activeRuntime.value).component
+        val id = "unresolved-restore-${UUID.randomUUID()}"
+        val file = File(component.storageLocations().cacheDirectory, "ebooks/$id.epub")
+        file.parentFile!!.mkdirs()
+        writeBook(file)
+        val staleLocator = """{"href":"missing-chapter.xhtml","type":"application/xhtml+xml","locations":{"totalProgression":0.32,"progression":0.32}}"""
+        val book = Book(id, "Unresolved restore fixture", source = BookSource.LOCAL,
+            mediaType = AppMediaType.EBOOK, primaryFileType = "EPUB", epubProgress = 0.32f,
+            readProgress = 0.32f, epubLocator = staleLocator)
+        component.bookCacheDao().upsert(listOf(book.toCachedBook()))
+        fun intent(locator: String?, progress: Float) = EbookReaderActivity.createIntent(context,
+            id, BookSource.LOCAL, title = book.title, author = "Enve tests", bookFormat = "EPUB",
+            epubLocator = locator, epubProgress = progress, readerEngine = ReaderEngineKind.READIUM)
+        try {
+            ActivityScenario.launch<EbookReaderActivity>(intent(staleLocator, 0.32f)).use { scenario ->
+                lateinit var vm: ReaderViewModel
+                var nav: EpubNavigatorFragment? = null
+                await {
+                    scenario.onActivity { activity ->
+                        vm = ViewModelProvider(activity)[ReaderViewModel::class.java]
+                        nav = activity.supportFragmentManager.fragments.filterIsInstance<EpubNavigatorFragment>().firstOrNull()
+                    }
+                    nav != null && vm.state.value.totalPages > 1
+                }
+                kotlinx.coroutines.delay(1200)
+                withContext(Dispatchers.Main) { vm.seekToProgress(0.8f) }
+                await { vm.state.value.progressPct > 40 }
+                val destination = checkNotNull(nav!!.currentLocator.value.locations.totalProgression).toFloat()
+                withContext(Dispatchers.Main) { vm.flushProgress() }
+                await(description = { "User navigation was not saved after an unresolved restore" }) {
+                    kotlin.math.abs((component.bookCacheDao().getById(id)?.epubProgress ?: 0f) - destination) < 0.001f
+                }
+            }
+            val saved = checkNotNull(component.bookCacheDao().getById(id))
+            ActivityScenario.launch<EbookReaderActivity>(intent(saved.epubLocator, saved.epubProgress!!)).use { scenario ->
+                await {
+                    var progress = 0
+                    scenario.onActivity { progress = ViewModelProvider(it)[ReaderViewModel::class.java].state.value.progressPct }
+                    progress > 40
+                }
+            }
+        } finally {
+            component.bookCacheDao().deleteByCacheKeys(listOf(book.uniqueKey))
+            file.delete()
+        }
+    }
+
+    @Test
+    fun underlineSelectionPersistsAndChangesTheRenderedNarration() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val coordinator = EntryPointAccessors.fromApplication(context, ProfileActivityBinding.DeviceEntryPoint::class.java).profiles()
+        ActivityScenario.launch(MainActivity::class.java).use { await { coordinator.activeRuntime.value != null } }
+        val runtime = checkNotNull(coordinator.activeRuntime.value)
+        val id = "underline-fixture-${UUID.randomUUID()}"
+        val file = File(runtime.component.storageLocations().cacheDirectory, "ebooks/$id.epub")
+        file.parentFile!!.mkdirs()
+        writeBook(file, narrated = true, longNarration = true)
+        val intent = EbookReaderActivity.createIntent(context, id, BookSource.LOCAL,
+            title = "Underline fixture", author = "Enve tests", bookFormat = "EPUB",
+            epubLocator = null, epubProgress = 0f, readerEngine = ReaderEngineKind.READIUM)
+        try {
+            ActivityScenario.launch<EbookReaderActivity>(intent).use { scenario ->
+                lateinit var vm: ReaderViewModel
+                var nav: EpubNavigatorFragment? = null
+                await {
+                    scenario.onActivity { activity ->
+                        vm = ViewModelProvider(activity)[ReaderViewModel::class.java]
+                        nav = activity.supportFragmentManager.fragments.filterIsInstance<EpubNavigatorFragment>().firstOrNull()
+                    }
+                    nav != null && vm.state.value.readAlongSupported
+                }
+                val navigator = checkNotNull(nav)
+                val original = vm.state.value.prefs
+                try {
+                    withContext(Dispatchers.Main) {
+                        vm.updatePreferences(original.copy(readAloudHighlight = true, readAloudHighlightStyle = ReadAloudHighlightStyle.HIGHLIGHT))
+                        vm.showReadAloudSheet(true)
+                    }
+                    compose.onNodeWithText("Underline").performScrollTo().performClick()
+                    await { runtime.component.preferences().readAloudHighlightStyle.first() == ReadAloudHighlightStyle.UNDERLINE }
+                    withContext(Dispatchers.Main) {
+                        vm.showReadAloudSheet(false)
+                        vm.toggleReadAlongPlayback()
+                    }
+                    await { javascript(navigator, "Array.from(document.querySelectorAll('[class*=r2-underline-]')).some(e => getComputedStyle(e).borderBottomWidth !== '0px' && getComputedStyle(e).backgroundColor === 'rgba(0, 0, 0, 0)')") == "true" }
+                    val session = runtime.component.readAloud().state.value.sessionId
+                    withContext(Dispatchers.Main) { vm.showReadAloudSheet(true) }
+                    compose.onNodeWithText("Highlight", substring = false).performScrollTo().performClick()
+                    withContext(Dispatchers.Main) { vm.showReadAloudSheet(false) }
+                    await { javascript(navigator, "document.querySelectorAll('[class*=r2-highlight-]').length > 0 && document.querySelectorAll('[class*=r2-underline-]').length === 0") == "true" }
+                    assertEquals(session, runtime.component.readAloud().state.value.sessionId)
+                    assertTrue(runtime.component.readAloud().state.value.isPlaying)
+                } finally {
+                    runtime.component.readAloud().stopActiveAndAwait()
+                    withContext(Dispatchers.Main) { vm.updatePreferences(original) }
+                    await { runtime.component.preferences().readAloudHighlightStyle.first() == original.readAloudHighlightStyle }
+                }
+            }
+        } finally { file.delete() }
+    }
+
     @Test
     fun disabledAudioSkippingPreservesPlaybackDuringPagedNavigation() = verifyIndependentNavigation(scroll = false)
 
@@ -222,6 +373,66 @@ class ReaderScrollingNavigationTest {
                 }
             }
         } finally {
+            file.delete()
+        }
+    }
+
+    @Test
+    fun closingDuringFontReflowKeepsTheSavedPassage() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val coordinator = EntryPointAccessors.fromApplication(context, ProfileActivityBinding.DeviceEntryPoint::class.java).profiles()
+        ActivityScenario.launch(MainActivity::class.java).use { await { coordinator.activeRuntime.value != null } }
+        val component = checkNotNull(coordinator.activeRuntime.value).component
+        val id = "reflow-close-${UUID.randomUUID()}"
+        val file = File(component.storageLocations().cacheDirectory, "ebooks/$id.epub")
+        file.parentFile!!.mkdirs()
+        writeBook(file)
+        val book = Book(id, "Reflow close fixture", source = BookSource.LOCAL,
+            mediaType = AppMediaType.EBOOK, primaryFileType = "EPUB")
+        component.bookCacheDao().upsert(listOf(book.toCachedBook()))
+        fun intent(locator: String?, progress: Float) = EbookReaderActivity.createIntent(context,
+            id, BookSource.LOCAL, title = book.title, author = "Enve tests", bookFormat = "EPUB",
+            epubLocator = locator, epubProgress = progress, readerEngine = ReaderEngineKind.READIUM)
+        try {
+            var expected = 0f
+            ActivityScenario.launch<EbookReaderActivity>(intent(null, 0f)).use { scenario ->
+                lateinit var vm: ReaderViewModel
+                var nav: EpubNavigatorFragment? = null
+                await {
+                    scenario.onActivity { activity ->
+                        vm = ViewModelProvider(activity)[ReaderViewModel::class.java]
+                        nav = activity.supportFragmentManager.fragments.filterIsInstance<EpubNavigatorFragment>().firstOrNull()
+                    }
+                    nav != null && vm.state.value.totalPages > 1
+                }
+                val original = vm.state.value.prefs
+                try {
+                    kotlinx.coroutines.delay(800)
+                    withContext(Dispatchers.Main) { vm.seekToProgress(0.75f) }
+                    await(description = { "Seek did not settle: ${vm.state.value.progressPct}%, locator=${nav?.currentLocator?.value}, prefs=${vm.state.value.prefs.scroll}" }) { vm.state.value.progressPct in 50..99 }
+                    kotlinx.coroutines.delay(400)
+                    expected = nav!!.currentLocator.value.locations.totalProgression!!.toFloat()
+                    withContext(Dispatchers.Main) {
+                        vm.updatePreferences(original.copy(fontSize = if (original.fontSize < 1.5f) 1.8f else 1f))
+                        vm.flushProgress()
+                    }
+                    await(description = { "Closing during font reflow lost the held location" }) {
+                        kotlin.math.abs((component.bookCacheDao().getById(id)?.epubProgress ?: 0f) - expected) < 0.001f
+                    }
+                } finally {
+                    withContext(Dispatchers.Main) { vm.updatePreferences(original) }
+                }
+            }
+            val saved = checkNotNull(component.bookCacheDao().getById(id))
+            ActivityScenario.launch<EbookReaderActivity>(intent(saved.epubLocator, saved.epubProgress!!)).use { scenario ->
+                await {
+                    var progress = 0
+                    scenario.onActivity { progress = ViewModelProvider(it)[ReaderViewModel::class.java].state.value.progressPct }
+                    kotlin.math.abs(progress - (expected * 100).toInt()) <= 2
+                }
+            }
+        } finally {
+            component.bookCacheDao().deleteByCacheKeys(listOf(book.uniqueKey))
             file.delete()
         }
     }

@@ -57,6 +57,7 @@ import com.enve.hearth.design.Hearth
 import com.enve.hearth.design.HearthFormat
 import com.enve.hearth.design.LocalHearthImageLoader
 import com.enve.hearth.design.Ribbon
+import com.enve.hearth.design.ShelfLedge
 import com.enve.hearth.design.ShelfHeader
 import com.enve.hearth.design.hearthDisplay
 import com.enve.hearth.design.hearthUI
@@ -83,14 +84,17 @@ internal fun ContinueCarousel(
 
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.M)) {
         ShelfHeader(title, modifier = Modifier.fillMaxWidth().padding(horizontal = Hearth.Spacing.XL), actionLabel = "See all", onAction = onSeeAll)
-        HorizontalPager(
-            state = pagerState,
-            contentPadding = PaddingValues(start = Hearth.Spacing.XL, end = Hearth.Spacing.XL + peek),
-            pageSpacing = Hearth.Spacing.M,
-            key = { books[it].uniqueKey },
-        ) { page ->
-            val book = books[page]
-            BookCard(book, onOpen = { onOpen(book) }, onPlay = { onPlay(book) }, onLongClick = { onContextBook(book) })
+        Column {
+            HorizontalPager(
+                state = pagerState,
+                contentPadding = PaddingValues(start = Hearth.Spacing.XL, end = Hearth.Spacing.XL + peek),
+                pageSpacing = Hearth.Spacing.M,
+                key = { books[it].uniqueKey },
+            ) { page ->
+                val book = books[page]
+                BookCard(book, onOpen = { onOpen(book) }, onPlay = { onPlay(book) }, onLongClick = { onContextBook(book) })
+            }
+            ShelfLedge(Modifier.padding(horizontal = Hearth.Spacing.XL))
         }
         if (books.size > 1) {
             val current = pagerState.currentPage
@@ -154,7 +158,7 @@ internal fun BookCard(
             .fillMaxWidth()
             .clip(shape)
             .background(palette.bgElevated)
-            .border(if (eink.active) 1.5.dp else 1.dp, if (eink.active) palette.text else palette.hairline, shape)
+            .border(if (eink.active) 1.5.dp else 1.dp, if (eink.active) palette.text else palette.outline, shape)
             .then(
                 if (onLongClick == null) Modifier.clickable(onClick = onOpen)
                 else Modifier.combinedClickable(onClick = onOpen, onLongClickLabel = "More options", onLongClick = onLongClick),

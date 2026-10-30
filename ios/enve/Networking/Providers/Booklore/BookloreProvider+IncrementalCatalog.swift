@@ -2,6 +2,53 @@ import Foundation
 import Logging
 
 extension BookloreProvider {
+    func fetchRecentCatalogPage(libraryId: String, page: Int, size: Int) async throws -> LibraryCatalogPage {
+        try Task.checkCancellation()
+        let request = try makeRequest(
+            path: "/api/v1/app/books",
+            queryItems: [
+                URLQueryItem(name: "libraryId", value: libraryId),
+                URLQueryItem(name: "page", value: String(page)),
+                URLQueryItem(name: "size", value: String(min(size, pageSize))),
+                URLQueryItem(name: "sort", value: "addedOn"),
+                URLQueryItem(name: "dir", value: "desc"),
+            ]
+        )
+        let (data, response) = try await performAuthorizedRequest(request)
+        guard response.statusCode == 200 else {
+            throw ProviderError.serverError("Recent additions returned HTTP \(response.statusCode)")
+        }
+        try guardJSON(data, response: response, endpoint: "/api/v1/app/books")
+        let result = try JSONDecoder().decode(BooklorePage<BookloreBookSummary>.self, from: data)
+        guard result.page == page, result.rejectedItems.isEmpty,
+            !result.content.isEmpty || !result.hasNext
+        else { throw ProviderError.invalidResponse }
+
+        let context = catalogMapperContext(libraryId: libraryId)
+        var books = result.content.map { BookloreCatalogMapper.book(from: $0, context: context) }
+        switch try await resolveCatalogFormats(books) {
+        case .resolved(let resolved, let complete):
+            guard complete else { throw ProviderError.invalidResponse }
+            books = resolved
+        case .batchEndpointUnsupported:
+            // Older servers still expose complete format identity through individual legacy records.
+            for index in books.indices {
+                try Task.checkCancellation()
+                let detailRequest = try makeRequest(path: "/api/v1/libraries/\(libraryId)/book/\(books[index].id)")
+                let (detailData, detailResponse) = try await performAuthorizedRequest(detailRequest)
+                guard detailResponse.statusCode == 200 else { throw ProviderError.invalidResponse }
+                let detail = try JSONDecoder().decode(BookloreLegacyBook.self, from: detailData)
+                guard detail.id.stringValue == books[index].id else { throw ProviderError.invalidResponse }
+                books[index] = BookloreCatalogMapper.applyingFormats(detail, to: books[index])
+            }
+        }
+        let sourceBookIDs = Set(books.map(\.uniqueId))
+        let companions = makeCompanionAudiobooks(forEbooks: &books)
+        books.append(contentsOf: companions)
+        return LibraryCatalogPage(books: books, totalCount: result.totalElements,
+            isLast: !result.hasNext, sourceBookIDs: sourceBookIDs)
+    }
+
     func fetchBooksDelta(libraryId: String, since: Date) async throws -> (books: [Book], cursor: Date)? {
         if useLegacyRestAPI || useLegacyCatalogFallback || useKomgaFallback {
             return nil

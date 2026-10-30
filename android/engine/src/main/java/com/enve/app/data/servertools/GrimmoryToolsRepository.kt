@@ -2,7 +2,9 @@ package com.enve.app.data.servertools
 
 import com.enve.app.data.remote.GrimmoryApi
 import com.enve.app.data.remote.dto.*
-import kotlinx.coroutines.CancellationException
+import com.enve.core.data.util.runSuspendCatching
+import com.enve.engine.servertools.ServerFeatureUnsupportedException
+import retrofit2.HttpException
 import javax.inject.Inject
 import javax.inject.Singleton
 import retrofit2.Response
@@ -85,11 +87,12 @@ data class GrimmoryNote(
 class GrimmoryToolsRepository @Inject constructor(
     private val api: GrimmoryApi,
 ) {
-    suspend fun stats(): Result<GrimmoryReadingStats?> = runCatching {
+    suspend fun stats(): Result<GrimmoryReadingStats?> = runSuspendCatching {
+        val requests = OptionalRequests()
         val year = java.time.LocalDate.now().year
-        val streak = optional { api.getReadingStreak() }
-        val listening = optional { api.getListeningCompletion() }
-        GrimmoryReadingStats(
+        val streak = requests.get { api.getReadingStreak() }
+        val listening = requests.get { api.getListeningCompletion() }
+        val stats = GrimmoryReadingStats(
             year = year,
             currentStreak = streak?.currentStreak,
             longestStreak = streak?.longestStreak,
@@ -98,40 +101,42 @@ class GrimmoryToolsRepository @Inject constructor(
             completedAudiobooks = listening?.completed,
             inProgressAudiobooks = listening?.inProgressCount,
             streakDays = streak?.last52Weeks.orEmpty(),
-            readingDays = optionalList { api.getReadingHeatmap(year) },
-            readingPeakHours = optionalList { api.getReadingPeakHours(year) },
-            readingFavoriteDays = optionalList { api.getReadingFavoriteDays(year) },
-            readingGenres = optionalList { api.getReadingGenres() },
-            completionTimeline = optionalList { api.getCompletionTimeline(year) },
-            completionHeatmap = optionalList { api.getCompletionHeatmap() },
-            pageTurners = optionalList { api.getPageTurners() },
-            distributions = optional { api.getBookDistributions() },
-            readingSpeed = optionalList { api.getReadingSpeed(year) },
-            readingSessions = optionalList { api.getReadingSessionScatter(year) },
-            bookTimeline = optionalList { api.getBookTimeline(year) },
-            completionRace = optionalList { api.getCompletionRace(year) },
-            listeningTrend = optionalList { api.getListeningTrend() },
+            readingDays = requests.list { api.getReadingHeatmap(year) },
+            readingPeakHours = requests.list { api.getReadingPeakHours(year) },
+            readingFavoriteDays = requests.list { api.getReadingFavoriteDays(year) },
+            readingGenres = requests.list { api.getReadingGenres() },
+            completionTimeline = requests.list { api.getCompletionTimeline(year) },
+            completionHeatmap = requests.list { api.getCompletionHeatmap() },
+            pageTurners = requests.list { api.getPageTurners() },
+            distributions = requests.get { api.getBookDistributions() },
+            readingSpeed = requests.list { api.getReadingSpeed(year) },
+            readingSessions = requests.list { api.getReadingSessionScatter(year) },
+            bookTimeline = requests.list { api.getBookTimeline(year) },
+            completionRace = requests.list { api.getCompletionRace(year) },
+            listeningTrend = requests.list { api.getListeningTrend() },
             listeningInProgress = listening?.inProgress.orEmpty(),
-            listeningPace = optionalList { api.getListeningPace() },
-            listeningFunnel = optional { api.getListeningFunnel() },
-            listeningPeakHours = optionalList { api.getListeningPeakHours(year) },
-            listeningFavoriteDays = optionalList { api.getListeningFavoriteDays(year) },
-            listeningGenres = optionalList { api.getListeningGenres() },
-            listeningAuthors = optionalList { api.getListeningAuthors() },
-            listeningSessions = optionalList { api.getListeningSessionScatter() },
-            longestAudiobooks = optionalList { api.getLongestAudiobooks() },
-        ).takeUnless { it.isEmpty }
+            listeningPace = requests.list { api.getListeningPace() },
+            listeningFunnel = requests.get { api.getListeningFunnel() },
+            listeningPeakHours = requests.list { api.getListeningPeakHours(year) },
+            listeningFavoriteDays = requests.list { api.getListeningFavoriteDays(year) },
+            listeningGenres = requests.list { api.getListeningGenres() },
+            listeningAuthors = requests.list { api.getListeningAuthors() },
+            listeningSessions = requests.list { api.getListeningSessionScatter() },
+            longestAudiobooks = requests.list { api.getLongestAudiobooks() },
+        )
+        requests.requireSupported()
+        stats.takeUnless { it.isEmpty }
     }
 
-    suspend fun notes(limit: Int): Result<List<GrimmoryNote>?> = runCatching {
-        val booksResponse = api.getNotebookBooks(page = 0, size = NOTEBOOK_BOOKS)
-        if (booksResponse.code() == 404) return@runCatching null
-        if (!booksResponse.isSuccessful) error("Grimmory notebook failed: HTTP ${booksResponse.code()}")
-        val books = booksResponse.body()?.content.orEmpty()
+    suspend fun notes(limit: Int): Result<List<GrimmoryNote>?> = runSuspendCatching {
+        val requests = OptionalRequests()
+        val books = requests.get { api.getNotebookBooks(page = 0, size = NOTEBOOK_BOOKS) }
+        requests.requireSupported()
+        val notebookBooks = books?.content.orEmpty()
         buildList {
-            for (book in books) {
+            for (book in notebookBooks) {
                 if (size >= limit) break
-                val entries = optional { api.getNotebookEntries(book.bookId, page = 0, size = NOTEBOOK_ENTRIES) }
+                val entries = requests.get { api.getNotebookEntries(book.bookId, page = 0, size = NOTEBOOK_ENTRIES) }
                     ?.content
                     .orEmpty()
                 entries.forEach { entry ->
@@ -144,9 +149,9 @@ class GrimmoryToolsRepository @Inject constructor(
             .take(limit)
     }
 
-    suspend fun recommendedBookIds(bookId: String, limit: Int): Result<List<String>?> = runCatching {
+    suspend fun recommendedBookIds(bookId: String, limit: Int): Result<List<String>?> = runSuspendCatching {
         val response = api.getBookRecommendations(bookId, limit.coerceIn(1, 25))
-        if (response.code() == 404) return@runCatching null
+        if (response.code() == 404) return@runSuspendCatching null
         if (!response.isSuccessful) error("Grimmory recommendations failed: HTTP ${response.code()}")
         response.body().orEmpty()
             .sortedByDescending { it.similarityScore }
@@ -165,17 +170,25 @@ class GrimmoryToolsRepository @Inject constructor(
         createdAt = createdAt,
     )
 
-    private suspend fun <T> optional(request: suspend () -> Response<T>): T? = try {
-        val response = request()
-        if (response.isSuccessful) response.body() else null
-    } catch (e: CancellationException) {
-        throw e
-    } catch (_: Exception) {
-        null
-    }
+    private class OptionalRequests {
+        private var supported = false
 
-    private suspend fun <T> optionalList(request: suspend () -> Response<List<T>>): List<T> =
-        optional(request).orEmpty()
+        suspend fun <T> get(request: suspend () -> Response<T>): T? {
+            val response = request()
+            if (response.code() in listOf(404, 405)) return null
+            if (!response.isSuccessful) throw HttpException(response)
+            supported = true
+            return response.body().also {
+                check(it != null || response.code() == 204) { "Grimmory reader feature returned no response body" }
+            }
+        }
+
+        suspend fun <T> list(request: suspend () -> Response<List<T>>): List<T> = get(request).orEmpty()
+
+        fun requireSupported() {
+            if (!supported) throw ServerFeatureUnsupportedException()
+        }
+    }
 
     private companion object {
         const val NOTEBOOK_BOOKS = 6

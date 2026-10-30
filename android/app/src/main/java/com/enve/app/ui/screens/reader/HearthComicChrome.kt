@@ -58,6 +58,7 @@ import com.enve.app.viewmodel.ComicReaderSettings
 import com.enve.app.viewmodel.ComicReaderUiState
 import com.enve.app.viewmodel.ComicReadingDirection
 import com.enve.app.viewmodel.ComicSpreadMode
+import com.enve.engine.theme.HearthPaletteStyle
 import com.enve.hearth.design.EmberAccent
 import com.enve.hearth.design.Hearth
 import com.enve.hearth.design.HearthChip
@@ -74,6 +75,7 @@ fun HearthComicChrome(
     visiblePageIndices: List<Int>,
     chromeVisible: Boolean,
     einkActive: Boolean,
+    paletteStyle: HearthPaletteStyle,
     onBack: () -> Unit,
     onToggleBookmark: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -84,7 +86,7 @@ fun HearthComicChrome(
     onPageChange: (Int) -> Unit,
     restReminder: ReaderRestReminderSpec,
 ) {
-    val palette = comicChromePalette(state.settings.backgroundTheme, einkActive)
+    val palette = comicChromePalette(state.settings.backgroundTheme, einkActive, paletteStyle)
     CompositionLocalProvider(
         LocalHearth provides palette,
         LocalHearthEink provides hearthEinkFor(palette, einkActive),
@@ -128,7 +130,7 @@ fun HearthComicChrome(
     }
 }
 
-private fun comicChromePalette(bg: ComicBackgroundTheme, eink: Boolean): HearthPalette = readerChromePalette(
+private fun comicChromePalette(bg: ComicBackgroundTheme, eink: Boolean, style: HearthPaletteStyle): HearthPalette = readerChromePalette(
     theme = when (bg) {
         ComicBackgroundTheme.WHITE -> ReaderTheme.LIGHT
         ComicBackgroundTheme.BLACK -> ReaderTheme.OLED
@@ -136,6 +138,7 @@ private fun comicChromePalette(bg: ComicBackgroundTheme, eink: Boolean): HearthP
     },
     eink = eink,
     accent = EmberAccent,
+    style = style,
 )
 
 @Composable
@@ -296,7 +299,7 @@ private fun HearthComicSettingsSheet(
             HearthToggleRow("Auto-hide controls", "Hide controls while reading", settings.autoHideChrome) {
                 onSettingsChange(settings.copy(autoHideChrome = it))
             }
-            HearthToggleRow("Volume navigation", "Turn pages with volume buttons", settings.volumeButtonNavigation) {
+            HearthToggleRow("Volume navigation", "Volume down: next page. Volume up: previous page. Audio keeps volume control.", settings.volumeButtonNavigation) {
                 onSettingsChange(settings.copy(volumeButtonNavigation = it))
             }
         }

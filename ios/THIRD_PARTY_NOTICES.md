@@ -13,6 +13,7 @@ This inventory describes the repository state audited on 2026-08-08. Versions ar
 | FluidAudio | revision `5390df9752c8fc583596018360c5fd70d6fa6c75` | Apache-2.0 | [FluidInference/FluidAudio](https://github.com/FluidInference/FluidAudio). Also contains the separately listed FastCluster, VBx, and NeMo text-processing components. |
 | Fuzi, Readium fork | 4.0.0 | MIT | [readium/Fuzi](https://github.com/readium/Fuzi) |
 | GCDWebServer, Readium fork | 4.0.1 | BSD-3-Clause | [readium/GCDWebServer](https://github.com/readium/GCDWebServer) |
+| ONNX Runtime Objective-C | 1.24.2 | MIT | [microsoft/onnxruntime](https://github.com/microsoft/onnxruntime/tree/v1.24.2). Used by the optional QuartzNet alignment engine. Retain the runtime's license and third-party notices in binary distributions. |
 | Pulse | 5.2.3 | MIT | [kean/Pulse](https://github.com/kean/Pulse) |
 | PulseLogHandler | 5.1.0 | MIT | [kean/PulseLogHandler](https://github.com/kean/PulseLogHandler) |
 | Readium Swift Toolkit | 3.11.0 | BSD-3-Clause | [readium/swift-toolkit](https://github.com/readium/swift-toolkit) |
@@ -35,6 +36,8 @@ AMSMB2 declares Swift Atomics 1.2 or newer for its test target, and Readium decl
 | RAR Swift adapter | `LocalPackages/UnrarKit/` | Project-local adapter with retained BSD-style UnrarKit notice | `Package.swift` and `RARArchive.swift` are Enve-local code rather than a vendored abbeycode/UnrarKit revision. See its `PROVENANCE.md`. |
 | UnRAR source 6.1.7, API 6.12 | `LocalPackages/UnrarKit/Sources/unrar-lib/` | UnRAR freeware license | Exact copy of the 147 portable source files in RARLAB archive `unrarsrc-6.1.7.tar.gz`, SHA-256 `de75b6136958173fdfc530d38a0145b72342cf0d3842bf7bb120d336602d88ed`, dated 2022-05-04. RARLAB distributes source archives rather than an authoritative Git history, so no commit applies. Copyright Alexander Roshal. It may be used for archive extraction but not to recreate the proprietary RAR compression algorithm. Modified redistribution must retain the paragraph required by `LocalPackages/UnrarKit/license.txt`. |
 | Foliate JS | `ThirdParty/foliate-js/` | MIT | [johnfactotum/foliate-js](https://github.com/johnfactotum/foliate-js), commit `6b11e1744346f60504b727984f7d42f0fef3ab54`. The runtime build disables publication scripts in two generated files. |
+| Liseur reader behavior | Adapted wide-content fitting; revision `1822c64b6a462e6d9285a1b43e2ec7448e4a7719` | MIT | Copyright 2026 chmouel. See `BuildSupport/Liseur/UPSTREAM.md` and `LICENSE.txt`. |
+| fflate | Pinned Foliate runtime | MIT | Copyright Arjun Barrett. The license is embedded in `FoliateRuntime.bundle/licenses/fflate-LICENSE.txt`. |
 | zip.js | Foliate runtime | BSD-3-Clause | [gildas-lormeau/zip.js](https://github.com/gildas-lormeau/zip.js), version 2.7.52. The license is embedded in `FoliateRuntime.bundle`. |
 | PDF.js | Foliate vendored source | Apache-2.0 | Copyright 2024 Mozilla Foundation. The PDF.js runtime files retain their license headers. |
 | Adobe CMaps | Foliate vendored source | BSD-3-Clause-style terms | Copyright 1990-2009 Adobe Systems Incorporated. See `ThirdParty/foliate-js/vendor/pdfjs/cmaps/LICENSE`. |
@@ -50,9 +53,14 @@ FluidAudio contains a prebuilt `NemoTextProcessing.xcframework` from [FluidInfer
 Enve does not bundle the large TTS model weights in its source repository or application binary. Users may download these through FluidAudio at runtime:
 
 - [Kokoro 82M Core ML](https://huggingface.co/FluidInference/kokoro-82m-coreml), Apache-2.0.
-- [Supertonic 3 Core ML](https://huggingface.co/FluidInference/supertonic-3-coreml), derived from Supertone Supertonic 3. The upstream weights are under the BigScience OpenRAIL-M license, which contains use restrictions and downstream notice requirements. The Hugging Face metadata currently says `openrail++` while the model card and upstream license say OpenRAIL-M; treat the upstream OpenRAIL-M text as controlling unless the publisher clarifies otherwise.
 
 Downloading or redistributing a model creates obligations separate from distributing the Enve source. A binary release must show the applicable model license and use restrictions before or with the model download.
+
+## QuartzNet alignment model
+
+The optional StoryAlign CTC engine downloads a pinned English QuartzNet ONNX checkpoint from Storyteller's model registry (project `67994333`, version `3023100`). The model SHA-256 is `3a4cf199c53475ae752694bb65989c05755bf6920d8ac8aaf51581a1021bdf2c`. Model weights are not included in this repository.
+
+The exact exported checkpoint's license and downstream download/distribution requirements remain unconfirmed. Storyteller's source license and ONNX Runtime's MIT license do not establish the weights' license. Confirm the checkpoint's provenance and applicable terms, retain the required notices, and present any required terms with the download before releasing this engine.
 
 ## Bundled ambient recordings
 

@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
     <files-path name="crashes" path="crashes/" />
+    <cache-path name="listening-position" path="listening-position-share/" />
 </paths>

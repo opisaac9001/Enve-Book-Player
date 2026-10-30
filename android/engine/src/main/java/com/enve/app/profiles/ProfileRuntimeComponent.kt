@@ -30,6 +30,7 @@ import javax.inject.Singleton
 interface ProfileRuntimeComponent {
     fun serverSync(): com.enve.core.data.local.ProfileServerSyncStore
     fun resources(): ProfileResources
+    fun listeningPosition(): com.enve.engine.listeningposition.ListeningPositionFacade
     fun library(): com.enve.engine.library.LibraryFacade
     fun savedBooks(): com.enve.engine.library.SavedBooksFacade
     fun playback(): com.enve.engine.playback.PlaybackFacade
@@ -63,6 +64,7 @@ interface ProfileRuntimeComponent {
     fun syncedItemAudioTimeStore(): com.enve.core.data.local.SyncedItemAudioTimeStore
     fun volumeLevelingStore(): com.enve.core.data.local.VolumeLevelingStore
     fun comicReadingDirectionOverrideStore(): com.enve.core.data.local.ComicReadingDirectionOverrideStore
+    fun pdfReadingPreferencesStore(): com.enve.core.data.local.PdfReadingPreferencesStore
     fun podcastFeedProgressStore(): com.enve.core.data.local.PodcastFeedProgressStore
     fun hearthDismissedShelfStore(): com.enve.core.data.local.HearthDismissedShelfStore
     fun podcastSubscriptionStore(): com.enve.app.data.podcasts.PodcastSubscriptionStore
@@ -111,6 +113,7 @@ interface ProfileRuntimeComponent {
     fun playerSleepTimerService(): com.enve.app.playback.PlayerSleepTimerService
     fun tagIndexStore(): com.enve.app.data.repository.TagIndexStore
     fun bookOrbitHistorySessionSync(): com.enve.bookorbit.sync.BookOrbitHistorySessionSync
+    fun deviceAnnouncements(): com.enve.core.data.local.DeviceAnnouncementStore
     fun einkManager(): com.enve.app.eink.EinkManager
     fun remoteRewindTracker(): com.enve.app.data.sync.RemoteRewindTracker
     fun vocabRepository(): com.enve.app.data.repository.VocabRepository
@@ -123,6 +126,7 @@ interface ProfileRuntimeComponent {
     fun installedDictionariesStore(): com.enve.app.data.vocab.InstalledDictionariesStore
     fun storytellerHubRepository(): com.enve.storyteller.StorytellerHubRepository
     fun hardcoverService(): com.enve.app.data.hardcover.HardcoverService
+    fun hardcoverSync(): com.enve.app.data.hardcover.HardcoverSyncService
     fun recentlyPlayedSyncService(): com.enve.app.data.sync.RecentlyPlayedSyncService
     fun bookloreKoreaderSink(): com.enve.app.data.sync.BookloreKoreaderSink
     fun siloRepository(): com.enve.silo.SiloRepository

@@ -39,6 +39,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.enve.hearth.design.fadeHorizontalEdges
 import com.enve.hearth.shell.profileViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.enve.core.data.model.AppMediaType
@@ -167,7 +168,7 @@ fun PodcastsScreen(
                     )
                     Spacer(Modifier.height(Hearth.Spacing.M))
                     Row(
-                        Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = Hearth.Spacing.XXL),
+                        Modifier.fillMaxWidth().fadeHorizontalEdges().horizontalScroll(rememberScrollState()).padding(horizontal = Hearth.Spacing.XXL),
                         horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
                     ) {
                         genres.forEach { (name, id) ->

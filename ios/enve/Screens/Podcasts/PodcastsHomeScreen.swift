@@ -421,29 +421,34 @@ struct PodcastsHomeScreen: View {
 
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 18) {
-            ZStack {
-                EmberGlow(tint: Hearth.accent, isBreathing: true, intensity: 0.8)
-                    .frame(height: 170)
-                Image(systemName: "antenna.radiowaves.left.and.right")
-                    .font(.hearthUI(42))
-                    .foregroundStyle(Hearth.accent)
-            }
-            .frame(maxWidth: .infinity)
+            Group {
+                ZStack {
+                    EmberGlow(tint: Hearth.accent, isBreathing: true, intensity: 0.8)
+                        .frame(height: 170)
+                        .mask(EllipticalGradient(colors: [.black, .clear], center: .center, startRadiusFraction: 0.15, endRadiusFraction: 0.5))
+                    Image(systemName: "antenna.radiowaves.left.and.right")
+                        .font(.hearthUI(42))
+                        .foregroundStyle(Hearth.accent)
+                }
+                .frame(maxWidth: .infinity)
 
-            Text("Tune the quiet.")
-                .font(.hearthDisplay(26))
-                .foregroundStyle(hearth.text)
-            Text("Subscribe to the voices you want in the room and their new episodes will gather here.")
-                .font(.hearthBody)
-                .foregroundStyle(hearth.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
+                Text("Tune the quiet.")
+                    .font(.hearthDisplay(26))
+                    .foregroundStyle(hearth.text)
+                Text("Subscribe to the voices you want in the room and their new episodes will gather here.")
+                    .font(.hearthBody)
+                    .foregroundStyle(hearth.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
 
-            EmberButton(title: "Browse podcasts", systemImage: "sparkle.magnifyingglass") {
-                browsePushed = true
+                EmberButton(title: "Browse podcasts", systemImage: "sparkle.magnifyingglass") {
+                    browsePushed = true
+                }
             }
+            .padding(.horizontal, 24)
 
             VStack(alignment: .leading, spacing: 12) {
                 Overline("Or start with a genre")
+                    .padding(.horizontal, 24)
                 ScrollView(.horizontal) {
                     HStack(spacing: 8) {
                         ForEach(podcastsEmptyStateGenres) { genre in
@@ -453,12 +458,13 @@ struct PodcastsHomeScreen: View {
                             }
                         }
                     }
+                    .padding(.horizontal, 24)
                 }
                 .scrollIndicators(.hidden)
+                .hearthHorizontalEdgeFade()
             }
             .padding(.top, 8)
         }
-        .padding(.horizontal, 24)
         .padding(.top, 16)
     }
 

@@ -42,6 +42,7 @@ object ReaderEnginePolicy {
     }
 
     fun select(request: ReaderEngineRequest): ReaderEngineKind {
+        if (request.format.equals("AZW3", ignoreCase = true)) return ReaderEngineKind.FOLIATE
         val isOrdinaryEpub = (request.format.equals("EPUB", ignoreCase = true) || request.format.equals("KEPUB", ignoreCase = true)) &&
             request.isReflowable &&
             !request.readAlong
@@ -355,8 +356,8 @@ object EpubBridgeCheckpointCodec {
                     bracketDepth -= 1
                     if (bracketDepth < 0) return false
                 }
-                '!' -> {
-                    if (bracketDepth != 0 || bangIndex >= 0) return false
+                '!' -> if (bracketDepth == 0) {
+                    if (bangIndex >= 0) return false
                     bangIndex = index
                 }
             }
@@ -387,19 +388,39 @@ object EpubBridgeCheckpointCodec {
         takeIf { it.isFinite() }?.coerceIn(0.0, 1.0)
 
     private fun String.isCfiPathComponent(allowRange: Boolean): Boolean {
-        if (!startsWith("/") || endsWith("/") || contains("//")) return false
-        if (!allowRange && contains(',')) return false
-        val branches = if (allowRange) split(',') else listOf(this)
+        fun String.components(separator: Char): List<String> {
+            val parts = mutableListOf<String>()
+            var start = 0
+            var bracketDepth = 0
+            var escaped = false
+            for ((index, character) in withIndex()) {
+                if (escaped) {
+                    escaped = false
+                    continue
+                }
+                when (character) {
+                    '^' -> escaped = true
+                    '[' -> bracketDepth++
+                    ']' -> bracketDepth--
+                    separator -> if (bracketDepth == 0) {
+                        parts += substring(start, index)
+                        start = index + 1
+                    }
+                }
+            }
+            parts += substring(start)
+            return parts
+        }
+        if (!startsWith("/")) return false
+        val branches = components(',')
+        if (!allowRange && branches.size != 1) return false
         if (branches.size != 1 && branches.size != 3) return false
         if (branches.first().isBlank()) return false
         if (branches.size == 3 && branches.drop(1).all { it.isBlank() }) return false
         return branches.filter { it.isNotBlank() }.all { branch ->
             val normalized = if (branch.startsWith("/")) branch else "/$branch"
             Regex("""/\d+""").containsMatchIn(normalized) &&
-                normalized
-                    .split('/')
-                    .drop(1)
-                    .all { step -> step.firstOrNull()?.isDigit() == true }
+                normalized.components('/').drop(1).all { step -> step.firstOrNull()?.isDigit() == true }
         }
     }
 

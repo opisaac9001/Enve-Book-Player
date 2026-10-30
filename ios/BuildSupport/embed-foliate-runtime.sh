@@ -47,9 +47,13 @@ for file in fixed-layout.js paginator.js; do
     fi
 done
 
+cp "${foliate_source}/vendor/fflate.js" "${foliate_destination}/vendor/fflate.js"
+cp "${host_source}/fflate-LICENSE.txt" "${license_destination}/fflate-LICENSE.txt"
 cp "${foliate_source}/vendor/zip.js" "${foliate_destination}/vendor/zip.js"
 cp "${foliate_source}/LICENSE" "${license_destination}/foliate-LICENSE.txt"
 cp "${host_source}/zip.js-LICENSE.txt" "${license_destination}/zip.js-LICENSE.txt"
 cp "${host_source}/UPSTREAM.txt" "${license_destination}/UPSTREAM.txt"
+
+cp "${SRCROOT}/BuildSupport/Liseur/LICENSE.txt" "${license_destination}/liseur-MIT.txt"
 
 touch "${DERIVED_FILE_DIR}/foliate_runtime_embedded.stamp"

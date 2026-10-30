@@ -281,6 +281,33 @@ object EpubCfi {
         }
     }
 
+    fun withReadiumAnchor(checkpoint: EpubBridgeCheckpoint, epubFile: File): EpubBridgeCheckpoint {
+        if (checkpoint.hasPortableAnchor) return checkpoint
+        val cfi = checkpoint.epubCfi ?: return checkpoint
+        val locator = try {
+            readiumLocatorJson(cfi, checkpoint.totalProgression ?: 0.0, epubFile)
+        } catch (_: IOException) {
+            null
+        } ?: return checkpoint
+        val resolved = EpubBridgeCheckpointCodec.fromReadiumLocator(
+            locatorJson = locator,
+            publicationSha256 = checkpoint.publicationSha256,
+            providerFileId = checkpoint.providerFileId,
+            writerEpoch = checkpoint.writerEpoch,
+            revision = checkpoint.revision,
+            observedAt = checkpoint.observedAt,
+        ) ?: return checkpoint
+        if (!resolved.hasPortableAnchor) return checkpoint
+        return checkpoint.copy(
+            href = resolved.href,
+            cssSelector = resolved.cssSelector,
+            domRange = resolved.domRange,
+            resourceProgression = resolved.resourceProgression,
+            textQuote = resolved.textQuote,
+            nativeReadiumLocatorJson = locator,
+        )
+    }
+
     fun normalizedEpubCfi(value: String?): String? {
         val trimmed = value?.trim()?.takeIf { it.isNotEmpty() } ?: return null
         return when {

@@ -11,28 +11,36 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.ArrowDownward
+import androidx.compose.material.icons.outlined.ArrowUpward
+import androidx.compose.material.icons.outlined.Bookmarks
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.FilterList
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -41,57 +49,181 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.enve.core.data.model.Library
+import com.enve.engine.library.SavedBookList
 import com.enve.hearth.design.Hearth
 import com.enve.hearth.design.HearthChip
 import com.enve.hearth.design.HearthText
 import com.enve.hearth.design.LocalMantelInset
 import com.enve.hearth.design.Overline
-import com.enve.hearth.design.ShelfHeader
+import com.enve.hearth.design.fadeHorizontalEdges
 import com.enve.hearth.design.hearthDisplay
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.sp
+
+private val ShelfStatuses = listOf(
+    StatusFilter.ALL,
+    StatusFilter.CURRENTLY_READING,
+    StatusFilter.UNREAD,
+    StatusFilter.FINISHED,
+    StatusFilter.DOWNLOADED,
+)
+
+private fun shelfTitle(status: StatusFilter): String =
+    if (status == StatusFilter.ALL) "Everything" else status.label
 
 @Composable
-internal fun QuickShelves(status: StatusFilter, onStatus: (StatusFilter) -> Unit) {
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.S)) {
-        ShelfHeader("Shelves", modifier = Modifier.fillMaxWidth().padding(horizontal = Hearth.Spacing.XL))
-        Row(
-            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = Hearth.Spacing.XL),
-            horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
+internal fun ShelvesMenu(
+    facet: LibraryFacet,
+    status: StatusFilter,
+    savedList: SavedBookList?,
+    savedCounts: Map<SavedBookList, Int>,
+    onStatus: (StatusFilter) -> Unit,
+    onSavedList: (SavedBookList) -> Unit,
+    onCollections: () -> Unit,
+) {
+    val palette = Hearth.palette
+    var open by remember { mutableStateOf(false) }
+    val showingBooks = savedList == null && facet == LibraryFacet.BOOKS
+    val showingCollections = savedList == null && facet == LibraryFacet.SHELVES
+    val current = when {
+        savedList != null -> savedList.title
+        showingCollections -> "Collections"
+        showingBooks && status != StatusFilter.ALL -> shelfTitle(status)
+        else -> null
+    }
+    val sectionPadding = Modifier.padding(start = Hearth.Spacing.M, end = Hearth.Spacing.M, top = Hearth.Spacing.S, bottom = Hearth.Spacing.XS)
+    Box {
+        ControlPill(
+            icon = Icons.Outlined.Bookmarks,
+            label = current ?: "Shelves",
+            active = current != null,
+            description = "Shelves",
+            state = current,
+            onClick = { open = true },
         ) {
-            ShelfShortcut("Everything", "All sources", selected = status == StatusFilter.ALL) { onStatus(StatusFilter.ALL) }
-            ShelfShortcut("Currently reading", "All media", selected = status == StatusFilter.CURRENTLY_READING) { onStatus(StatusFilter.CURRENTLY_READING) }
-            ShelfShortcut("Unread", "Not marked read", selected = status == StatusFilter.UNREAD) { onStatus(StatusFilter.UNREAD) }
-            ShelfShortcut("Read", "Completed", selected = status == StatusFilter.FINISHED) { onStatus(StatusFilter.FINISHED) }
-            ShelfShortcut("Downloaded", "On this device", selected = status == StatusFilter.DOWNLOADED) { onStatus(StatusFilter.DOWNLOADED) }
+            Icon(
+                Icons.Outlined.ExpandMore,
+                contentDescription = null,
+                tint = if (current != null) palette.ember else palette.textSecondary,
+                modifier = Modifier.size(16.dp),
+            )
+        }
+        LibraryMenu(expanded = open, onDismissRequest = { open = false }) {
+            Overline("Status", modifier = sectionPadding)
+            ShelfStatuses.forEach { option ->
+                LibraryMenuOption(shelfTitle(option), selected = showingBooks && status == option) {
+                    open = false
+                    onStatus(option)
+                }
+            }
+            Overline("Saved lists", modifier = sectionPadding)
+            SavedBookList.entries.forEach { list ->
+                val count = savedCounts[list] ?: 0
+                LibraryMenuOption(
+                    list.title,
+                    supportingText = if (count == 1) "1 book" else "$count books",
+                    selected = savedList == list,
+                ) {
+                    open = false
+                    onSavedList(list)
+                }
+            }
+            Overline("Collections", modifier = sectionPadding)
+            LibraryMenuOption(
+                "Collections",
+                supportingText = "Server and personal collections",
+                selected = showingCollections,
+            ) {
+                open = false
+                onCollections()
+            }
         }
     }
 }
 
 @Composable
-private fun ShelfShortcut(title: String, line: String, selected: Boolean, onClick: () -> Unit) {
+internal fun FilterSortButton(activeFilterCount: Int, onClick: () -> Unit) {
     val palette = Hearth.palette
-    val shape = RoundedCornerShape(Hearth.Radius.Inner)
-
-    Column(
-        Modifier
-            .widthIn(min = 132.dp)
-            .clip(shape)
-            .background(if (selected) palette.ember.copy(alpha = 0.18f) else palette.bgElevated)
-            .border(1.dp, if (selected) palette.ember.copy(alpha = 0.55f) else palette.hairline, shape)
-            .clickable(onClick = onClick)
-            .padding(Hearth.Spacing.M),
-        verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.XS),
+    val narrowed = activeFilterCount > 0
+    ControlPill(
+        icon = Icons.Outlined.FilterList,
+        label = "Filter & Sort",
+        active = narrowed,
+        description = "Filter & Sort",
+        state = if (narrowed) "$activeFilterCount active ${if (activeFilterCount == 1) "filter" else "filters"}" else null,
+        onClick = onClick,
     ) {
-        Text(title, style = HearthText.Caption.copy(fontWeight = FontWeight.SemiBold), color = if (selected) palette.ember else palette.text, maxLines = 1)
-        Text(line, style = HearthText.Overline, color = palette.textTertiary, maxLines = 1)
+        if (narrowed) {
+            Box(
+                Modifier
+                    .sizeIn(minWidth = 18.dp, minHeight = 18.dp)
+                    .clip(if (Hearth.eink.sharpCorners) RectangleShape else CircleShape)
+                    .background(palette.ember)
+                    .padding(horizontal = Hearth.Spacing.XS)
+                    .clearAndSetSemantics {},
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("$activeFilterCount", style = HearthText.Overline, color = palette.readableOnEmber)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ControlPill(
+    icon: ImageVector,
+    label: String,
+    active: Boolean,
+    description: String,
+    state: String?,
+    onClick: () -> Unit,
+    trailing: @Composable () -> Unit,
+) {
+    val palette = Hearth.palette
+    val eink = Hearth.eink
+    val shape = if (eink.sharpCorners) RectangleShape else RoundedCornerShape(50)
+    val tint = if (active) palette.ember else palette.textSecondary
+    val fill = when {
+        active && eink.active -> palette.bg
+        active -> palette.ember.copy(alpha = 0.16f)
+        else -> palette.bgElevated
+    }
+    val outline = when {
+        active && eink.active -> palette.ember
+        active -> palette.ember.copy(alpha = 0.5f)
+        else -> palette.hairline
+    }
+    Row(
+        Modifier
+            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+            .clip(shape)
+            .background(fill)
+            .border(if (active && eink.active) 2.dp else 1.dp, outline, shape)
+            .semantics {
+                contentDescription = description
+                state?.let { stateDescription = it }
+            }
+            .clickable(role = Role.Button, onClick = onClick)
+            .padding(horizontal = Hearth.Spacing.M, vertical = Hearth.Spacing.S),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.XS),
+    ) {
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(16.dp))
+        Text(label, style = HearthText.Caption, color = tint, modifier = Modifier.clearAndSetSemantics {})
+        trailing()
     }
 }
 
@@ -177,64 +309,29 @@ internal fun FloatingSearch(
 }
 
 @Composable
-internal fun FacetRow(facet: LibraryFacet, onSelect: (LibraryFacet) -> Unit) {
-
+internal fun FacetRow(selected: LibraryFacet?, onSelect: (LibraryFacet) -> Unit) {
     Row(
-        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = Hearth.Spacing.XL),
-        horizontalArrangement = Arrangement.spacedBy(if (Hearth.typeCompact) Hearth.Spacing.L else Hearth.Spacing.XL),
+        Modifier.fillMaxWidth().fadeHorizontalEdges().horizontalScroll(rememberScrollState()).padding(horizontal = Hearth.Spacing.L),
+        horizontalArrangement = Arrangement.spacedBy(if (Hearth.typeCompact) Hearth.Spacing.XS else Hearth.Spacing.S),
     ) {
-        LibraryFacet.entries.forEach { f ->
-            val selected = f == facet
-            Text(
-                f.name.lowercase().replaceFirstChar { it.uppercase() },
-                style = HearthText.Overline,
-                color = if (selected) Hearth.palette.ember else Hearth.palette.textTertiary,
-                maxLines = 1,
-                softWrap = false,
-                modifier = Modifier.clickable { onSelect(f) }.padding(vertical = Hearth.Spacing.XS),
-            )
+        LibraryFacet.entries.filter { it != LibraryFacet.SHELVES }.forEach { f ->
+            val isSelected = f == selected
+            Box(
+                Modifier
+                    .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                    .selectable(selected = isSelected, role = Role.Tab) { onSelect(f) }
+                    .padding(horizontal = Hearth.Spacing.XS),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    f.name.lowercase().replaceFirstChar { it.uppercase() },
+                    style = HearthText.Overline,
+                    color = if (isSelected) Hearth.palette.ember else Hearth.palette.textTertiary,
+                    maxLines = 1,
+                    softWrap = false,
+                )
+            }
         }
-    }
-}
-
-@Composable
-internal fun ChipBar(
-    sortStack: List<SortDescriptor>,
-    resultCount: Int,
-    activeFilterCount: Int,
-    usesDefaultSorting: Boolean,
-    onOpenSort: () -> Unit,
-) {
-    val palette = Hearth.palette
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = Hearth.Spacing.XL),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        val narrowed = activeFilterCount > 0
-        val title = when {
-            narrowed -> "Filters $activeFilterCount"
-            usesDefaultSorting -> "Filter & Sort"
-            else -> "Sort: ${sortStack.firstOrNull()?.field?.label ?: "Recent"}"
-        }
-        Row(
-            Modifier.clip(RoundedCornerShape(50))
-                .background(if (narrowed) palette.ember.copy(alpha = 0.16f) else palette.bgElevated)
-                .border(1.dp, if (narrowed) palette.ember.copy(alpha = 0.5f) else palette.hairline, RoundedCornerShape(50))
-                .clickable(onClick = onOpenSort)
-                .padding(horizontal = Hearth.Spacing.M, vertical = Hearth.Spacing.S),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(Icons.Outlined.FilterList, contentDescription = null, tint = if (narrowed) palette.ember else palette.textSecondary, modifier = Modifier.size(16.dp))
-            Spacer(Modifier.width(Hearth.Spacing.XS))
-            Text(title, style = HearthText.Caption, color = if (narrowed) palette.ember else palette.textSecondary, maxLines = 1)
-        }
-        Spacer(Modifier.weight(1f))
-        Text(
-            if (resultCount == 1) "1 book" else "$resultCount books",
-            style = HearthText.Caption,
-            color = palette.textTertiary,
-            maxLines = 1,
-        )
     }
 }
 
@@ -252,7 +349,12 @@ internal fun FilterSortSheet(vm: HearthLibraryViewModel, onDismiss: () -> Unit) 
     } else {
         androidx.compose.material3.BottomSheetDefaults.ExpandedShape
     }
-    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss, shape = sheetShape, containerColor = palette.bgElevated) {
+    androidx.compose.material3.ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        shape = sheetShape,
+        containerColor = palette.bgElevated,
+    ) {
         Column(
             Modifier.fillMaxWidth()
                 .verticalScroll(rememberScrollState())
@@ -273,13 +375,19 @@ internal fun FilterSortSheet(vm: HearthLibraryViewModel, onDismiss: () -> Unit) 
             }
 
             Overline("Sort priority")
+            if (sortStack.isEmpty()) {
+                Text(
+                    "Default order: recent books first.",
+                    style = HearthText.Caption,
+                    color = palette.textSecondary,
+                )
+            }
             sortStack.forEachIndexed { index, descriptor ->
                 SortPriorityRow(
                     index = index,
                     descriptor = descriptor,
                     canMoveUp = index > 0,
                     canMoveDown = index < sortStack.lastIndex,
-                    canRemove = sortStack.size > 1,
                     onDirection = { vm.setSortDirection(descriptor.field, it) },
                     onUp = { vm.moveSortUp(descriptor.field) },
                     onDown = { vm.moveSortDown(descriptor.field) },
@@ -300,14 +408,16 @@ internal fun FilterSortSheet(vm: HearthLibraryViewModel, onDismiss: () -> Unit) 
                 }
             }
 
-            Overline("Primary direction")
-            Row(horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S)) {
-                SortDirection.entries.forEach { dir ->
-                    HearthChip(
-                        "${dir.arrow} ${dir.label}",
-                        selected = sortStack.firstOrNull()?.direction == dir,
-                        onClick = { vm.setPrimaryDirection(dir) },
-                    )
+            if (sortStack.isNotEmpty()) {
+                Overline("Primary direction")
+                Row(horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S)) {
+                    SortDirection.entries.forEach { dir ->
+                        HearthChip(
+                            "${dir.arrow} ${dir.label}",
+                            selected = sortStack.first().direction == dir,
+                            onClick = { vm.setPrimaryDirection(dir) },
+                        )
+                    }
                 }
             }
 
@@ -402,50 +512,87 @@ internal fun FilterSortSheet(vm: HearthLibraryViewModel, onDismiss: () -> Unit) 
     }
 }
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun SortPriorityRow(
     index: Int,
     descriptor: SortDescriptor,
     canMoveUp: Boolean,
     canMoveDown: Boolean,
-    canRemove: Boolean,
     onDirection: (SortDirection) -> Unit,
     onUp: () -> Unit,
     onDown: () -> Unit,
     onRemove: () -> Unit,
 ) {
     val palette = Hearth.palette
-    val shape = RoundedCornerShape(Hearth.Radius.Inner)
-    Row(
+    val sharp = Hearth.eink.sharpCorners
+    val shape = if (sharp) RectangleShape else RoundedCornerShape(Hearth.Radius.Inner)
+    val field = descriptor.field.label
+    val ascending = descriptor.direction == SortDirection.ASCENDING
+    val flipped = if (ascending) SortDirection.DESCENDING else SortDirection.ASCENDING
+    Column(
         Modifier.fillMaxWidth().clip(shape).background(palette.bg).border(1.dp, palette.hairline, shape)
-            .padding(horizontal = Hearth.Spacing.M, vertical = Hearth.Spacing.S),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
+            .padding(start = Hearth.Spacing.M, end = Hearth.Spacing.XS, top = Hearth.Spacing.S),
     ) {
-        Box(
-            Modifier.size(24.dp).clip(RoundedCornerShape(50)).background(palette.ember.copy(alpha = 0.16f)),
-            contentAlignment = Alignment.Center,
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
         ) {
-            Text("${index + 1}", style = HearthText.Overline, color = palette.ember)
+            Box(
+                Modifier.size(24.dp).clip(if (sharp) RectangleShape else CircleShape).background(palette.ember.copy(alpha = 0.16f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("${index + 1}", style = HearthText.Overline, color = palette.ember)
+            }
+            Text(field, style = HearthText.Body, color = palette.text, modifier = Modifier.weight(1f))
         }
-        Text(descriptor.field.label, style = HearthText.Body, color = palette.text, modifier = Modifier.weight(1f))
-        val flipped = if (descriptor.direction == SortDirection.ASCENDING) SortDirection.DESCENDING else SortDirection.ASCENDING
-        RowGlyph(descriptor.direction.arrow, enabled = true) { onDirection(flipped) }
-        RowGlyph("▲", enabled = canMoveUp, onClick = onUp)
-        RowGlyph("▼", enabled = canMoveDown, onClick = onDown)
-        RowGlyph("✕", enabled = canRemove, onClick = onRemove)
+        androidx.compose.foundation.layout.FlowRow(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Row(
+                Modifier
+                    .heightIn(min = 48.dp)
+                    .clip(shape)
+                    .semantics {
+                        contentDescription = "$field order"
+                        stateDescription = descriptor.direction.label
+                    }
+                    .clickable(role = Role.Button, onClickLabel = "Switch to ${flipped.label.lowercase()}") { onDirection(flipped) }
+                    .padding(horizontal = Hearth.Spacing.XS),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.XS),
+            ) {
+                Icon(
+                    if (ascending) Icons.Outlined.ArrowUpward else Icons.Outlined.ArrowDownward,
+                    contentDescription = null,
+                    tint = palette.ember,
+                    modifier = Modifier.size(18.dp),
+                )
+                Text(
+                    descriptor.direction.label,
+                    style = HearthText.Label,
+                    color = palette.textSecondary,
+                    modifier = Modifier.clearAndSetSemantics {},
+                )
+            }
+            Row {
+                SortActionButton(Icons.Outlined.KeyboardArrowUp, "Move $field up", enabled = canMoveUp, onClick = onUp)
+                SortActionButton(Icons.Outlined.KeyboardArrowDown, "Move $field down", enabled = canMoveDown, onClick = onDown)
+                SortActionButton(Icons.Outlined.Close, "Remove $field sort", enabled = true, onClick = onRemove)
+            }
+        }
     }
 }
 
 @Composable
-private fun RowGlyph(glyph: String, enabled: Boolean, onClick: () -> Unit) {
+private fun SortActionButton(icon: ImageVector, label: String, enabled: Boolean, onClick: () -> Unit) {
     val palette = Hearth.palette
-    Text(
-        glyph,
-        style = HearthText.Label,
-        color = if (enabled) palette.textSecondary else palette.textTertiary.copy(alpha = 0.4f),
-        modifier = Modifier.clip(RoundedCornerShape(50))
-            .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier)
-            .padding(horizontal = Hearth.Spacing.S, vertical = Hearth.Spacing.XS),
-    )
+    IconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(48.dp)) {
+        Icon(
+            icon,
+            contentDescription = label,
+            tint = if (enabled) palette.textSecondary else palette.textTertiary.copy(alpha = 0.4f),
+        )
+    }
 }

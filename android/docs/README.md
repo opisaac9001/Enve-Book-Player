@@ -11,6 +11,8 @@ Reference material for the Android app. Start with the root files for anything t
 
 ## Architecture
 
+- [architecture/listening-position-sharing.md](architecture/listening-position-sharing.md) — cross-platform QR contract, matching, confirmation, image limits and progress application
+
 - [architecture/profiles-plan.md](architecture/profiles-plan.md) — proposed adult and child profiles, storage isolation, migration, switching, and verification
 - [architecture/module-boundaries.md](architecture/module-boundaries.md) — Gradle module layout, the UI/backend dependency wall, and the boot contract
 - [architecture/engine-api.md](architecture/engine-api.md) — the facade contract the Compose UI is allowed to call
@@ -20,6 +22,8 @@ Reference material for the Android app. Start with the root files for anything t
 - [architecture/opds-progression.md](architecture/opds-progression.md) — discovery, transport, references, and merge rules for the OPDS Progression 1.0 draft
 
 ## Guides
+
+- [guides/reading-and-sync.md](guides/reading-and-sync.md) — page controls, home customisation, sync intervals, and Hardcover permissions
 
 - [guides/automation.md](guides/automation.md) — Tasker and broadcast-intent playback control
 - [guides/readium-lcp-integration.md](guides/readium-lcp-integration.md) — private runtime handoff, acquisition boundaries, and certification gate for Readium LCP

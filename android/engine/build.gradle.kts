@@ -58,6 +58,7 @@ dependencies {
     implementation(project(":silo"))
 
     implementation("org.nanohttpd:nanohttpd:2.3.1")
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.24.2")
 
     implementation("com.google.dagger:hilt-android:2.58")
     ksp("com.google.dagger:hilt-compiler:2.58")

@@ -40,7 +40,7 @@ public struct StoryAligner {
         }
         let epub = try await EpubParser(session: session).parse(url:epubURL)
         let audioBook = try await AudioFileProcessor(session: session).process(audioURLs: session.request.audioBookURLs, epub: epub)
-        let transcriber = try session.transcriberFactory.transcriber(session: session)
+        let transcriber = try session.makeTranscriber()
         let transcriptions = try await transcriber.transcribe(epub:epub,  audioBook: audioBook )
         let alignedChapters = try await Aligner(session: session).align(ebook: epub, audioBook: audioBook, rawTranscriptions: transcriptions)
         try await EpubXmlUpdater(session: session).update(epub: epub, audioBook: audioBook, alignedChapters: alignedChapters )
@@ -68,4 +68,11 @@ public struct StoryAligner {
 public struct AlignmentResult {
     public let alignedEpubURL:URL
     public let report:AlignmentReport?
+    public let ctcQuality: CTCAlignmentQuality?
+
+    public init(alignedEpubURL: URL, report: AlignmentReport?, ctcQuality: CTCAlignmentQuality? = nil) {
+        self.alignedEpubURL = alignedEpubURL
+        self.report = report
+        self.ctcQuality = ctcQuality
+    }
 }

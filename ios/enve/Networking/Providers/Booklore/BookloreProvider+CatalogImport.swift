@@ -119,7 +119,11 @@ extension BookloreProvider {
             books = resolvedBooks
             if !complete { session.isComplete = false }
         case .batchEndpointUnsupported:
-            // The session cannot change tiers mid-import; fail before commit so the retry runs on the legacy catalog.
+            _ = try await switchToLegacyBooksAPI(
+                reason: "Mobile app books lack the batch format endpoint",
+                libraryId: session.libraryId,
+                expectedBookIds: Set(books.map(\.id))
+            )
             throw ProviderError.serverError("Grimmory batch format endpoint is unavailable")
         }
         let companions = makeCompanionAudiobooks(forEbooks: &books)

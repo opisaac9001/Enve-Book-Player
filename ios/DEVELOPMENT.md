@@ -32,7 +32,7 @@ scripts/                repository checks and local developer tools
 ## Requirements
 
 - macOS on Apple silicon
-- Xcode 26.4 or newer
+- Xcode 26.4 or newer for standard layouts; Xcode 27.1 for Duo hinge and reserved-region APIs. Swift 6.3 builds omit Duo SDK calls; the deployment target remains iOS 17
 - Git with submodule support
 - An iOS 17 or newer simulator
 - An Apple Developer account only when installing on a physical device
@@ -85,12 +85,13 @@ xcrun simctl launch <simulator-udid> com.enve.enve
 
 ## Run the test plan
 
-The `AllTests` plan contains the supported unit and regression suite:
+The `AllTests` plan contains the supported unit and regression suite. Disable parallel execution because playback fixtures exercise shared process state and real-time audio callbacks:
 
 ```sh
 xcodebuild -project enve.xcodeproj \
   -scheme enve \
   -testPlan AllTests \
+  -parallel-testing-enabled NO \
   -destination 'platform=iOS Simulator,id=<simulator-udid>' \
   -derivedDataPath .build/DerivedData \
   test
@@ -99,6 +100,10 @@ xcodebuild -project enve.xcodeproj \
 Run the plan for changes to models, services, persistence, providers, synchronization, import, playback, and reader behavior. Tests do not replace installing and exercising user-facing changes.
 
 Physical device builds require your own development team, bundle identifiers, App Group, CloudKit container, push configuration, and related entitlements. Do not ship a fork using Enve's production identifiers.
+
+## ONNX framework archive metadata
+
+Xcode can relink the static ONNX package as an embedded dynamic framework while retaining its original, lower `MinimumOSVersion`. This causes App Store Connect error 90208. The `Correct ONNX Framework Metadata` phase reads the embedded binary's actual minimum, updates its plist, and re-signs it with the build's existing identity. Keep this phase after framework embedding. The iOS target disables build-script sandboxing because the repair modifies an already-produced framework; application sandboxing remains enabled. See the [upstream validation report](https://github.com/microsoft/onnxruntime/issues/27396).
 
 ## Other targets
 

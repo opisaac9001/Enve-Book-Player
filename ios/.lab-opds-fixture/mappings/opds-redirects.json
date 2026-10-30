@@ -1,0 +1,109 @@
+{
+  "mappings": [
+    {
+      "name": "redirect-cross-origin-from-lan-address",
+      "priority": 2,
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/redirect/cross-origin/epub",
+        "headers": {
+          "Host": {
+            "matches": "10\\.0\\.0\\.116(:\\d+)?"
+          }
+        }
+      },
+      "response": {
+        "status": 302,
+        "headers": {
+          "Location": "http://100.114.100.51:9091/opds/echo/headers",
+          "Cache-Control": "no-store"
+        }
+      }
+    },
+    {
+      "name": "redirect-cross-origin-from-tailscale-address",
+      "priority": 2,
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/redirect/cross-origin/epub",
+        "headers": {
+          "Host": {
+            "matches": "100\\.114\\.100\\.51(:\\d+)?"
+          }
+        }
+      },
+      "response": {
+        "status": 302,
+        "headers": {
+          "Location": "http://10.0.0.116:9091/opds/echo/headers",
+          "Cache-Control": "no-store"
+        }
+      }
+    },
+    {
+      "name": "redirect-cross-origin-from-localhost",
+      "priority": 2,
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/redirect/cross-origin/epub",
+        "headers": {
+          "Host": {
+            "matches": "localhost(:\\d+)?"
+          }
+        }
+      },
+      "response": {
+        "status": 302,
+        "headers": {
+          "Location": "http://127.0.0.1:9091/opds/echo/headers",
+          "Cache-Control": "no-store"
+        }
+      }
+    },
+    {
+      "name": "redirect-cross-origin-fallback",
+      "priority": 8,
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/redirect/cross-origin/epub"
+      },
+      "response": {
+        "status": 302,
+        "headers": {
+          "Location": "http://localhost:9091/opds/echo/headers",
+          "Cache-Control": "no-store"
+        }
+      }
+    },
+    {
+      "name": "redirect-same-origin",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/redirect/same-origin/epub"
+      },
+      "response": {
+        "status": 302,
+        "headers": {
+          "Location": "/opds/files/lab-ebook-001.epub",
+          "Cache-Control": "no-store"
+        }
+      }
+    },
+    {
+      "name": "echo-credential-header-presence",
+      "request": {
+        "method": "ANY",
+        "urlPath": "/opds/echo/headers"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/echo/headers.json",
+        "transformers": ["response-template"]
+      }
+    }
+  ]
+}

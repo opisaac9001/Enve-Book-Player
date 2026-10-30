@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"
+      xmlns:opds="http://opds-spec.org/2010/catalog"
+      xmlns:dcterms="http://purl.org/dc/terms/"
+      xmlns:schema="http://schema.org/">
+  <id>urn:uuid:2c9d41a0-0100-4d2a-8f77-9a1b2c3d4e00</id>
+  <title>Enve OPDS Lab (OPDS 1.2)</title>
+  <updated>2026-09-19T08:00:00Z</updated>
+  <icon>/opds/images/thumb-blue.png</icon>
+  <author>
+    <name>Enve OPDS Lab</name>
+    <uri>/opds/v1/root.xml</uri>
+  </author>
+  <link rel="self"
+        href="/opds/v1/root.xml"
+        type="application/atom+xml;profile=opds-catalog;kind=navigation"/>
+  <link rel="start"
+        href="/opds/v1/root.xml"
+        type="application/atom+xml;profile=opds-catalog;kind=navigation"/>
+  <link rel="search"
+        href="/opds/v1/opensearch.xml"
+        type="application/opensearchdescription+xml"
+        title="Search the lab catalog"/>
+
+  <entry>
+    <id>urn:uuid:2c9d41a0-0110-4d2a-8f77-9a1b2c3d4e10</id>
+    <title>All publications</title>
+    <updated>2026-09-19T08:00:00Z</updated>
+    <content type="text">Every publication in the lab catalog, paginated.</content>
+    <link rel="subsection"
+          href="/opds/v1/acquisition.xml"
+          type="application/atom+xml;profile=opds-catalog;kind=acquisition"/>
+  </entry>
+
+  <entry>
+    <id>urn:uuid:2c9d41a0-0111-4d2a-8f77-9a1b2c3d4e11</id>
+    <title>Newest first</title>
+    <updated>2026-09-19T08:00:00Z</updated>
+    <content type="text">The same publications, second page first.</content>
+    <link rel="http://opds-spec.org/sort/new"
+          href="/opds/v1/acquisition-page2.xml"
+          type="application/atom+xml;profile=opds-catalog;kind=acquisition"/>
+    <link rel="subsection"
+          href="/opds/v1/acquisition-page2.xml"
+          type="application/atom+xml;profile=opds-catalog;kind=acquisition"/>
+  </entry>
+
+  <entry>
+    <id>urn:uuid:2c9d41a0-0100-4d2a-8f77-9a1b2c3d4e01</id>
+    <title>Harbour Lights</title>
+    <updated>2026-09-18T20:15:00Z</updated>
+    <author>
+      <name>Tomasz Bergström</name>
+    </author>
+    <dcterms:issued>2018-04-01</dcterms:issued>
+    <dcterms:language>en</dcterms:language>
+    <summary type="text">A publication entry in an otherwise navigational root feed.</summary>
+    <category scheme="http://www.bisg.org/standards/bisac_subject/index.html" term="FIC000000" label="Fiction"/>
+    <schema:Series schema:name="Lab Harbour Cycle" schema:position="1"/>
+    <link rel="http://opds-spec.org/image"
+          href="/opds/images/cover-amber.png"
+          type="image/png"/>
+    <link rel="http://opds-spec.org/image/thumbnail"
+          href="/opds/images/thumb-blue.png"
+          type="image/png"/>
+    <link rel="http://opds-spec.org/acquisition"
+          href="/opds/files/lab-ebook-002.epub"
+          type="application/epub+zip"/>
+  </entry>
+</feed>

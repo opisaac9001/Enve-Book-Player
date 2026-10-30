@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
@@ -69,6 +70,7 @@ import com.enve.hearth.design.Hearth
 import com.enve.hearth.design.HearthText
 import com.enve.hearth.design.LocalHearthImageLoader
 import com.enve.hearth.design.hearthDisplay
+import com.enve.hearth.design.hearthUI
 import com.enve.hearth.design.rememberCoverImageModel
 import kotlin.math.abs
 
@@ -82,23 +84,25 @@ fun MantelBar(
     subtitle: String?,
     onOpenItem: () -> Unit,
     onItemAction: () -> Unit,
+    showItemShortcut: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     val palette = Hearth.palette
     val eink = Hearth.eink
     val shape = RoundedCornerShape(if (eink.sharpCorners) 10.dp else Hearth.Radius.Bar)
-    val hasItem = lastOpenedBook != null || nowPlaying != null
+    val hasItem = showItemShortcut && (lastOpenedBook != null || nowPlaying != null)
     val openItem by rememberUpdatedState(onOpenItem)
     val canOpenItem by rememberUpdatedState(hasItem)
 
     val surface = Modifier
+        .widthIn(max = 580.dp)
         .fillMaxWidth()
         .navigationBarsPadding()
         .padding(horizontal = Hearth.Spacing.L, vertical = Hearth.Spacing.S)
         .then(if (eink.suppressShadows) Modifier else Modifier.shadow(16.dp, shape, clip = false))
         .clip(shape)
         .background(palette.bgElevated)
-        .border(1.dp, palette.hairline, shape)
+        .border(if (eink.active || palette.decorated) 1.5.dp else 1.dp, if (eink.active) palette.text else palette.outline, shape)
         .padding(horizontal = Hearth.Spacing.S, vertical = Hearth.Spacing.XS)
 
     Column(modifier.then(surface).openItemSwipe { if (canOpenItem) openItem() }) {
@@ -123,16 +127,16 @@ fun MantelBar(
         BoxWithConstraints(Modifier.fillMaxWidth().selectableGroup()) {
             val measurer = rememberTextMeasurer()
             val tabWidthPx = with(LocalDensity.current) {
-                ((maxWidth - Hearth.Spacing.XXL * 2) / HearthTab.entries.size).roundToPx()
+                ((maxWidth - 8.dp * HearthTab.entries.size) / HearthTab.entries.size).roundToPx()
             }
             val labelsFitInline = remember(measurer, tabWidthPx) {
                 HearthTab.entries.all { tab ->
-                    measurer.measure(tab.label, HearthText.Overline, maxLines = 1, softWrap = false).size.width <= tabWidthPx
+                    measurer.measure(tab.label, hearthUI(13.sp, FontWeight.SemiBold), maxLines = 1, softWrap = false).size.width <= tabWidthPx
                 }
             }
             if (labelsFitInline) {
                 Row(
-                    Modifier.fillMaxWidth().padding(horizontal = Hearth.Spacing.XXL),
+                    Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     HearthTab.entries.forEach { tab ->
@@ -178,36 +182,39 @@ private fun Modifier.openItemSwipe(onOpen: () -> Unit): Modifier = pointerInput(
 @Composable
 private fun TabItem(tab: HearthTab, selected: Boolean, onSelect: (HearthTab) -> Unit, modifier: Modifier) {
     val palette = Hearth.palette
-    val tint = if (selected) palette.ember else palette.textTertiary
+    val tint = if (selected) palette.ember else palette.textSecondary
     Column(
         modifier
             .clip(RoundedCornerShape(Hearth.Radius.Inner))
+            .background(if (selected) palette.emberSoft else androidx.compose.ui.graphics.Color.Transparent)
+            .then(if (selected) Modifier.border(1.dp, palette.ember, RoundedCornerShape(Hearth.Radius.Inner)) else Modifier)
             .selectable(selected = selected, role = Role.Tab) { onSelect(tab) }
-            .heightIn(min = 48.dp)
+            .heightIn(min = 68.dp)
             .padding(vertical = Hearth.Spacing.S),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        Icon(tab.glyph, contentDescription = null, tint = tint, modifier = Modifier.size(22.dp))
-        Text(tab.label, style = HearthText.Overline, color = tint, maxLines = 1, softWrap = false)
+        Icon(tab.glyph, contentDescription = null, tint = tint, modifier = Modifier.size(24.dp))
+        Text(tab.label, style = hearthUI(13.sp, FontWeight.SemiBold), color = tint, maxLines = 1, softWrap = false)
     }
 }
 
 @Composable
 private fun GridTabItem(tab: HearthTab, selected: Boolean, onSelect: (HearthTab) -> Unit, modifier: Modifier) {
     val palette = Hearth.palette
-    val tint = if (selected) palette.ember else palette.textTertiary
+    val tint = if (selected) palette.ember else palette.textSecondary
     Row(
         modifier
             .clip(RoundedCornerShape(Hearth.Radius.Inner))
+            .background(if (selected) palette.emberSoft else androidx.compose.ui.graphics.Color.Transparent)
             .selectable(selected = selected, role = Role.Tab) { onSelect(tab) }
-            .heightIn(min = 48.dp)
+            .heightIn(min = 56.dp)
             .padding(Hearth.Spacing.S),
         horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(tab.glyph, contentDescription = null, tint = tint, modifier = Modifier.size(22.dp))
-        Text(tab.label, style = HearthText.Overline, color = tint, modifier = Modifier.weight(1f, fill = false))
+        Icon(tab.glyph, contentDescription = null, tint = tint, modifier = Modifier.size(24.dp))
+        Text(tab.label, style = hearthUI(13.sp, FontWeight.SemiBold), color = tint, modifier = Modifier.weight(1f, fill = false))
     }
 }
 

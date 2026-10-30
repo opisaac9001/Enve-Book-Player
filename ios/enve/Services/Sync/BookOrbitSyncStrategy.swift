@@ -226,7 +226,8 @@ final class BookOrbitSyncStrategy: ProviderSyncStrategy {
             guard !Self.serverProgressIsStale(
                 book: book,
                 serverProgress: update.progress,
-                serverLocator: update.epubLocator
+                serverLocator: update.epubLocator,
+                isExplicitReset: record.status == .unread
             ) else {
                 continue
             }
@@ -334,7 +335,12 @@ final class BookOrbitSyncStrategy: ProviderSyncStrategy {
             : 0
         let epubLocator =
             book.mediaType == .ebook
-            ? Self.ebookLocator(serverCFI: record.epubCFI, fraction: fraction, book: book)
+            ? Self.ebookLocator(
+                serverCFI: record.epubCFI,
+                fraction: fraction,
+                book: book,
+                clearsMissingLocator: record.status == .unread
+            )
             : nil
         return (
             UserMediaProgress(
@@ -356,7 +362,13 @@ final class BookOrbitSyncStrategy: ProviderSyncStrategy {
         )
     }
 
-    static func ebookLocator(serverCFI: String?, fraction: Double, book: Book) -> String? {
+    static func ebookLocator(
+        serverCFI: String?,
+        fraction: Double,
+        book: Book,
+        clearsMissingLocator: Bool = false
+    ) -> String? {
+        if clearsMissingLocator { return nil }
         if let cfi = EpubLocationBridge.canonicalFullEPUBCFI(serverCFI) {
             return EpubLocationBridge.readiumLocator(
                 href: nil,
@@ -369,7 +381,13 @@ final class BookOrbitSyncStrategy: ProviderSyncStrategy {
         return EpubLocationBridge.readiumLocator(href: nil, fraction: fraction, sourceEngine: .foliate)
     }
 
-    static func serverProgressIsStale(book: Book, serverProgress: UserMediaProgress, serverLocator: String?) -> Bool {
+    static func serverProgressIsStale(
+        book: Book,
+        serverProgress: UserMediaProgress,
+        serverLocator: String?,
+        isExplicitReset: Bool = false
+    ) -> Bool {
+        if isExplicitReset { return serverProgress.lastUpdate < book.lastUpdate }
         if book.mediaType == .ebook,
             EpubLocationBridge.canonicalFullEPUBCFI(EpubLocationBridge.epubCFI(from: book.epubLocator)) != nil,
             EpubLocationBridge.canonicalFullEPUBCFI(EpubLocationBridge.epubCFI(from: serverLocator)) == nil

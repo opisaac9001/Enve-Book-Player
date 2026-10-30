@@ -18,6 +18,12 @@ class ThemeManager: ObservableObject {
 
     private let defaults: UserDefaults
 
+    #if os(iOS)
+    @Published var appearanceMode: Hearth.Mode {
+        didSet { defaults.set(appearanceMode.rawValue, forKey: "hearth.mode") }
+    }
+    #endif
+
     @Published var isVisionMode: Bool {
         didSet { defaults.set(isVisionMode, forKey: "visionImpairedModeEnabled") }
     }
@@ -27,6 +33,9 @@ class ThemeManager: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        #if os(iOS)
+        appearanceMode = Hearth.Mode(rawValue: defaults.string(forKey: "hearth.mode") ?? "") ?? .system
+        #endif
         isVisionMode = defaults.bool(forKey: "visionImpairedModeEnabled")
         let stored = defaults.string(forKey: "themeColorHex") ?? Self.defaultThemeHex
         themeColorHex = stored.uppercased() == Self.previousDefaultHex ? Self.defaultThemeHex : stored

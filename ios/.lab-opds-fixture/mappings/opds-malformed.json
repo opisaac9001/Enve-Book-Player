@@ -1,0 +1,79 @@
+{
+  "mappings": [
+    {
+      "name": "malformed-html-served-as-catalog",
+      "request": {
+        "method": "GET",
+        "urlPathPattern": "/opds/malformed/(login-page\\.html|html-as-feed)"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/html;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/malformed/login-page.html"
+      }
+    },
+    {
+      "name": "malformed-json-not-a-feed",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/malformed/not-a-feed.json"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/opds+json;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/malformed/not-a-feed.json"
+      }
+    },
+    {
+      "name": "malformed-json-truncated",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/malformed/truncated.json"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/opds+json;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/malformed/truncated.json"
+      }
+    },
+    {
+      "name": "malformed-atom-truncated",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/malformed/truncated-atom.xml"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/atom+xml;profile=opds-catalog;kind=acquisition;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/malformed/truncated-atom.xml"
+      }
+    },
+    {
+      "name": "malformed-html-declared-as-atom",
+      "request": {
+        "method": "GET",
+        "urlPath": "/opds/malformed/html-declared-atom.xml"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/atom+xml;profile=opds-catalog;kind=acquisition;charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "bodyFileName": "fixtures/opds/malformed/html-declared-atom.xml"
+      }
+    }
+  ]
+}

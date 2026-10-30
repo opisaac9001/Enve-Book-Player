@@ -57,6 +57,15 @@ final class AnnotationResponderBridge: UIViewController {
             updatePaginationLock()
         }
     }
+    var isPinchResizeEnabled = false
+    var onPinchResize: ((ReaderPinchResizeEvent) -> Void)?
+    private var isPinchResizing = false {
+        didSet {
+            guard isPinchResizing != oldValue else { return }
+            updatePaginationLock()
+        }
+    }
+    private var pinchGesture: UIPinchGestureRecognizer?
     private var doubleTapGesture: UITapGestureRecognizer?
     private var selectionDismissTapGesture: UITapGestureRecognizer?
     private var foliateTapGesture: UITapGestureRecognizer?
@@ -98,6 +107,12 @@ final class AnnotationResponderBridge: UIViewController {
         doubleTap.delegate = self
         view.addGestureRecognizer(doubleTap)
         self.doubleTapGesture = doubleTap
+
+        let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinchGesture(_:)))
+        pinch.cancelsTouchesInView = false
+        pinch.delegate = self
+        view.addGestureRecognizer(pinch)
+        pinchGesture = pinch
 
         if adapter.kind == .foliate {
             let foliateTap = UITapGestureRecognizer(
@@ -148,7 +163,15 @@ final class AnnotationResponderBridge: UIViewController {
     }
 
     private func updatePaginationLock() {
-        if isSelectionActive {
+        guard isSelectionActive || isPinchResizing else {
+            selectionPageHolds.removeAll()
+            for (scrollView, wasEnabled) in lockedPagingScrollViews {
+                scrollView.isScrollEnabled = wasEnabled
+            }
+            lockedPagingScrollViews.removeAll()
+            return
+        }
+        if lockedPagingScrollViews.isEmpty {
             var pagingScrollViews: [UIScrollView] = []
             func walk(_ view: UIView) {
                 if let scrollView = view as? UIScrollView,
@@ -166,13 +189,11 @@ final class AnnotationResponderBridge: UIViewController {
             for (scrollView, _) in lockedPagingScrollViews {
                 scrollView.isScrollEnabled = false
             }
-            selectionPageHolds = pagingScrollViews.map(SelectionPageHold.init)
-        } else {
+        }
+        if !isSelectionActive {
             selectionPageHolds.removeAll()
-            for (scrollView, wasEnabled) in lockedPagingScrollViews {
-                scrollView.isScrollEnabled = wasEnabled
-            }
-            lockedPagingScrollViews.removeAll()
+        } else if selectionPageHolds.isEmpty {
+            selectionPageHolds = lockedPagingScrollViews.map { SelectionPageHold(scrollView: $0.view) }
         }
     }
 
@@ -180,6 +201,24 @@ final class AnnotationResponderBridge: UIViewController {
         guard gesture.state == .ended, isDoubleTapEnabled else { return }
         let point = gesture.location(in: readerController.view)
         onDoubleTap?(point)
+    }
+
+    @objc private func handlePinchGesture(_ gesture: UIPinchGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            isPinchResizing = true
+            onPinchResize?(.began)
+        case .changed:
+            onPinchResize?(.changed(scale: Double(gesture.scale)))
+        case .ended:
+            isPinchResizing = false
+            onPinchResize?(.ended(scale: Double(gesture.scale)))
+        case .cancelled, .failed:
+            isPinchResizing = false
+            onPinchResize?(.cancelled)
+        default:
+            break
+        }
     }
 
     @objc private func handleFoliateTapGesture(_ gesture: UITapGestureRecognizer) {
@@ -266,6 +305,9 @@ extension AnnotationResponderBridge: UIGestureRecognizerDelegate {
         if gestureRecognizer === doubleTapGesture {
             return isDoubleTapEnabled
         }
+        if gestureRecognizer === pinchGesture {
+            return isPinchResizeEnabled && !isSelectionActive
+        }
         if gestureRecognizer === foliateTapGesture {
             return !isSelectionActive
         }
@@ -311,6 +353,8 @@ struct ReaderEngineControllerBridge: UIViewControllerRepresentable {
     var isDoubleTapEnabled: Bool = false
     var isScrollMode: Bool = false
     var isSelectionActive: Bool = false
+    var isPinchResizeEnabled: Bool = false
+    var onPinchResize: ((ReaderPinchResizeEvent) -> Void)?
 
     func makeUIViewController(context: Context) -> AnnotationResponderBridge {
         let bridge = AnnotationResponderBridge(adapter: adapter)
@@ -321,6 +365,8 @@ struct ReaderEngineControllerBridge: UIViewControllerRepresentable {
         bridge.isDoubleTapEnabled = isDoubleTapEnabled
         bridge.isScrollMode = isScrollMode
         bridge.isSelectionActive = isSelectionActive
+        bridge.isPinchResizeEnabled = isPinchResizeEnabled
+        bridge.onPinchResize = onPinchResize
         return bridge
     }
 
@@ -332,6 +378,8 @@ struct ReaderEngineControllerBridge: UIViewControllerRepresentable {
         vc.isDoubleTapEnabled = isDoubleTapEnabled
         vc.isScrollMode = isScrollMode
         vc.isSelectionActive = isSelectionActive
+        vc.isPinchResizeEnabled = isPinchResizeEnabled
+        vc.onPinchResize = onPinchResize
     }
 }
 
@@ -349,32 +397,34 @@ struct PDFReaderBridge: UIViewControllerRepresentable {
 }
 
 @MainActor
-final class PDFReaderController: UIViewController, UIGestureRecognizerDelegate {
+final class PDFReaderController: UIViewController {
     private let document: PDFKit.PDFDocument
     private let onPageChange: (Int) -> Void
     private let onTap: (CGPoint, CGSize) -> Void
 
     private var pdfView: PDFView!
     private var lastReportedIndex: Int
-    private var isScrollEnabled: Bool
     private var suppressNotifications = false
     private var pendingInitialPageIndex: Int?
-    private var pagePanStartIndex: Int?
+    private var scrollEnabled: Bool
+    private var layout: PDFReadingLayout
 
     init(
         document: PDFKit.PDFDocument,
         initialPageIndex: Int,
         scrollEnabled: Bool,
+        layout: PDFReadingLayout,
         onPageChange: @escaping (Int) -> Void,
         onTap: @escaping (CGPoint, CGSize) -> Void
     ) {
         self.document = document
         self.lastReportedIndex = initialPageIndex
-        self.isScrollEnabled = scrollEnabled
+        self.scrollEnabled = scrollEnabled
+        self.layout = layout
         self.onPageChange = onPageChange
         self.onTap = onTap
         super.init(nibName: nil, bundle: nil)
-        buildPDFView(scrollEnabled: scrollEnabled, navigateToIndex: initialPageIndex)
+        buildPDFView(navigateToIndex: initialPageIndex)
     }
 
     @available(*, unavailable)
@@ -409,22 +459,31 @@ final class PDFReaderController: UIViewController, UIGestureRecognizerDelegate {
     func goToPage(_ index: Int) {
         let bounded = clampedIndex(index)
         guard let page = document.page(at: bounded) else { return }
+        let wasSuppressing = suppressNotifications
+        suppressNotifications = true
+        defer { suppressNotifications = wasSuppressing }
         pdfView.go(to: page)
         lastReportedIndex = bounded
+        if viewIfLoaded?.window == nil { pendingInitialPageIndex = bounded }
     }
 
+    // PDFKit may report the spread partner; keep the requested page as the selection.
     func currentPageIndex() -> Int {
+        if let pendingInitialPageIndex { return pendingInitialPageIndex }
         guard let page = pdfView.currentPage else { return lastReportedIndex }
-        return document.index(for: page)
+        let index = document.index(for: page)
+        return spread(containing: index).contains(lastReportedIndex) ? lastReportedIndex : index
     }
 
-    func setScrollEnabled(_ enabled: Bool) {
+    func configure(scrollEnabled: Bool, layout: PDFReadingLayout) {
+        guard scrollEnabled != self.scrollEnabled || layout != self.layout else { return }
         let currentIndex = currentPageIndex()
-        isScrollEnabled = enabled
+        self.scrollEnabled = scrollEnabled
+        self.layout = layout
         suppressNotifications = true
         NotificationCenter.default.removeObserver(self)
         pdfView.removeFromSuperview()
-        buildPDFView(scrollEnabled: enabled, navigateToIndex: currentIndex)
+        buildPDFView(navigateToIndex: currentIndex)
         pdfView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(pdfView)
         NSLayoutConstraint.activate([
@@ -436,19 +495,20 @@ final class PDFReaderController: UIViewController, UIGestureRecognizerDelegate {
         suppressNotifications = false
     }
 
-    private func buildPDFView(scrollEnabled: Bool, navigateToIndex index: Int) {
+    private func buildPDFView(navigateToIndex index: Int) {
         let pdf = PDFView()
         pdf.autoScales = true
         pdf.displaysPageBreaks = false
+        // Paged turns are handled by the reader's drag gesture.
+        pdf.usePageViewController(false)
         if scrollEnabled {
-            pdf.displayMode = .singlePageContinuous
+            pdf.displayMode = layout.twoPageEnabled ? .twoUpContinuous : .singlePageContinuous
             pdf.displayDirection = .vertical
-            pdf.usePageViewController(false)
         } else {
-            pdf.displayMode = .singlePage
+            pdf.displayMode = layout.twoPageEnabled ? .twoUp : .singlePage
             pdf.displayDirection = .horizontal
-            pdf.usePageViewController(true, withViewOptions: nil)
         }
+        pdf.displaysAsBook = layout.twoPageEnabled && layout.showsCoverSeparately
         pdf.document = document
 
         let bounded = clampedIndex(index)
@@ -456,21 +516,11 @@ final class PDFReaderController: UIViewController, UIGestureRecognizerDelegate {
             pdf.go(to: page)
         }
         lastReportedIndex = bounded
-
-        if scrollEnabled && bounded > 0 {
-            pendingInitialPageIndex = bounded
-        }
+        pendingInitialPageIndex = bounded > 0 ? bounded : nil
 
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
         tap.cancelsTouchesInView = false
         pdf.addGestureRecognizer(tap)
-        if !scrollEnabled {
-            let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePagePan(_:)))
-            pan.cancelsTouchesInView = false
-            pan.maximumNumberOfTouches = 1
-            pan.delegate = self
-            pdf.addGestureRecognizer(pan)
-        }
 
         NotificationCenter.default.addObserver(
             self,
@@ -486,54 +536,20 @@ final class PDFReaderController: UIViewController, UIGestureRecognizerDelegate {
         min(max(0, index), max(document.pageCount - 1, 0))
     }
 
+    private func spread(containing index: Int) -> ClosedRange<Int> {
+        ReaderPagedPagePolicy.pdfSpread(containing: index, pageCount: document.pageCount, layout: layout)
+    }
+
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
         guard let v = gesture.view else { return }
         onTap(gesture.location(in: v), v.bounds.size)
-    }
-
-    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        !isScrollEnabled || !(gestureRecognizer is UIPanGestureRecognizer)
-    }
-
-    func gestureRecognizer(
-        _ gestureRecognizer: UIGestureRecognizer,
-        shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
-    ) -> Bool {
-        !isScrollEnabled
-    }
-
-    @objc private func handlePagePan(_ gesture: UIPanGestureRecognizer) {
-        guard !isScrollEnabled else { return }
-        switch gesture.state {
-        case .began:
-            pagePanStartIndex = currentPageIndex()
-        case .ended:
-            let translation = gesture.translation(in: pdfView)
-            let velocity = gesture.velocity(in: pdfView)
-            let horizontal = abs(translation.x) > abs(translation.y) * 1.2
-            let crossedDistance = abs(translation.x) > 40
-            let flicked = abs(velocity.x) > 350
-            guard horizontal, crossedDistance || flicked else {
-                pagePanStartIndex = nil
-                return
-            }
-            let startIndex = pagePanStartIndex ?? currentPageIndex()
-            let targetIndex = translation.x < 0 ? startIndex + 1 : startIndex - 1
-            pagePanStartIndex = nil
-            goToPage(targetIndex)
-            onPageChange(currentPageIndex())
-        case .cancelled, .failed:
-            pagePanStartIndex = nil
-        default:
-            break
-        }
     }
 
     @objc private func handlePageChanged(_ notification: Notification) {
         guard !suppressNotifications else { return }
         guard let page = pdfView.currentPage else { return }
         let index = document.index(for: page)
-        guard index != lastReportedIndex else { return }
+        guard !spread(containing: index).contains(lastReportedIndex) else { return }
         lastReportedIndex = index
         onPageChange(index)
     }

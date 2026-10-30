@@ -13,7 +13,9 @@ class XhtmlSentenceTagger {
 
     data class Result(val xhtml: String, val wrapped: Int, val skipped: Int)
 
-    fun tag(xhtml: String, sentences: List<TaggedSentence>): Result {
+    private data class Range(val startNode: TextNode, val endNode: TextNode, val start: Int, val end: Int, val id: String)
+
+    fun tag(xhtml: String, sentences: List<TaggedSentence>, allowInlineRanges: Boolean = false): Result {
         val doc = Jsoup.parse(xhtml, "", Parser.xmlParser())
         doc.outputSettings().prettyPrint(false)
         val body = doc.selectFirst("body") ?: doc
@@ -40,44 +42,74 @@ class XhtmlSentenceTagger {
         var cursor = 0
         var wrapped = 0
         var skipped = 0
-        val perNode = LinkedHashMap<TextNode, MutableList<Triple<Int, Int, String>>>()
+        val ranges = ArrayList<Range>()
 
         for (sentence in sentences) {
             val cs = sentence.text.filterNot { it.isWhitespace() }
             if (cs.isEmpty()) { skipped++; continue }
             var idx = stream.indexOf(cs, cursor)
-            if (idx < 0) idx = stream.indexOf(cs)
+            if (idx < 0 && !allowInlineRanges) idx = stream.indexOf(cs)
             if (idx < 0) { skipped++; continue }
             val endI = idx + cs.length - 1
             val startNode = cNode[idx]
             val endNode = cNode[endI]
             cursor = idx + cs.length
-            if (startNode !== endNode) { skipped++; continue }
-            perNode.getOrPut(startNode) { ArrayList() }.add(Triple(cRaw[idx], cRaw[endI] + 1, sentence.id))
-            wrapped++
+            if (startNode !== endNode && !allowInlineRanges) { skipped++; continue }
+            ranges.add(Range(startNode, endNode, cRaw[idx], cRaw[endI] + 1, sentence.id))
         }
 
-        for ((node, spans) in perNode) {
-            spans.sortBy { it.first }
-            val raw = node.wholeText
-            val replacements = ArrayList<Node>()
-            var pos = 0
-            for ((s, e, id) in spans) {
-                if (s > pos) replacements.add(TextNode(raw.substring(pos, s)))
-                val span = Element(Tag.valueOf("span"), "")
-                span.attr("id", id)
-                span.appendChild(TextNode(raw.substring(s, e)))
-                replacements.add(span)
-                pos = e
-            }
-            if (pos < raw.length) replacements.add(TextNode(raw.substring(pos)))
-            val parent = node.parent() ?: continue
-            val at = node.siblingIndex()
-            node.remove()
-            parent.insertChildren(at, replacements)
+        for (range in ranges.asReversed()) {
+            if (wrap(range)) wrapped++ else skipped++
         }
 
         return Result(doc.outerHtml(), wrapped, skipped)
+    }
+
+    private fun wrap(range: Range): Boolean {
+        var ancestor: Node = range.startNode.parent() ?: return false
+        val endAncestors = generateSequence(range.endNode.parent()) { it.parent() }.toSet()
+        while (ancestor !in endAncestors) ancestor = ancestor.parent() ?: return false
+        val common = ancestor as? Element ?: return false
+        if (range.startNode !== range.endNode) {
+            for (boundary in listOf(range.startNode, range.endNode)) {
+                var parent = boundary.parent()
+                while (parent !== common) {
+                    if (parent is Element && parent.tag().isBlock) return false
+                    parent = parent?.parent() ?: return false
+                }
+            }
+        }
+        if (range.end < range.endNode.wholeText.length) range.endNode.splitText(range.end)
+        val start = if (range.start == 0) range.startNode else range.startNode.splitText(range.start)
+        val end = if (range.startNode === range.endNode) start else range.endNode
+        var first: Node = start
+        while (first.parent() !== common) {
+            val parent = first.parent() as Element
+            if (first.siblingIndex() > 0) {
+                val right = parent.shallowClone().removeAttr("id")
+                parent.after(right)
+                parent.childNodes().drop(first.siblingIndex()).toList().forEach { right.appendChild(it) }
+                first = right
+            } else {
+                first = parent
+            }
+        }
+        var last: Node = end
+        while (last.parent() !== common) {
+            val parent = last.parent() as Element
+            val following = parent.childNodes().drop(last.siblingIndex() + 1).toList()
+            if (following.isNotEmpty()) {
+                val right = parent.shallowClone().removeAttr("id")
+                parent.after(right)
+                following.forEach { right.appendChild(it) }
+            }
+            last = parent
+        }
+        val selected = common.childNodes().subList(first.siblingIndex(), last.siblingIndex() + 1).toList()
+        val span = Element(Tag.valueOf("span"), "").attr("id", range.id)
+        first.before(span)
+        selected.forEach { span.appendChild(it) }
+        return true
     }
 
     private fun collectTextNodes(node: Node, out: MutableList<TextNode>) {

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct PlexLoginView_tvOS: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.hearth) private var hearth
     @Environment(AppState.self) private var appState
 
     private let plexService = PlexService()
@@ -20,7 +21,7 @@ struct PlexLoginView_tvOS: View {
 
     var body: some View {
         ZStack {
-            Color(white: 0.10).ignoresSafeArea()
+            hearth.bg.ignoresSafeArea()
 
             VStack(spacing: 40) {
                 switch phase {
@@ -61,21 +62,22 @@ struct PlexLoginView_tvOS: View {
                 .foregroundStyle(.tint)
 
             Text("Link your Plex account")
-                .font(.system(size: 44, weight: .bold))
+                .font(.hearthDisplay(44))
+                .foregroundStyle(hearth.text)
 
             VStack(spacing: 12) {
                 Text("On your phone or computer, go to")
                     .font(.title3)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(hearth.textSecondary)
                 Text("plex.tv/link")
                     .font(.system(size: 40, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(hearth.text)
             }
 
             VStack(spacing: 8) {
                 Text("Enter this code")
                     .font(.title3)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(hearth.textSecondary)
                 Text(code)
                     .font(.system(size: 80, weight: .bold, design: .monospaced))
                     .tracking(8)
@@ -88,7 +90,7 @@ struct PlexLoginView_tvOS: View {
                 ProgressView().controlSize(.small)
                 Text("Waiting for you to link…")
                     .font(.body)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(hearth.textSecondary)
             }
             .padding(.top, 8)
         }
@@ -98,12 +100,13 @@ struct PlexLoginView_tvOS: View {
     private func serverPicker(_ servers: [PlexServer]) -> some View {
         VStack(alignment: .leading, spacing: 24) {
             Text("Choose a Plex server")
-                .font(.title.weight(.bold))
+                .font(.system(.title, design: .serif, weight: .bold))
+                .foregroundStyle(hearth.text)
 
             if servers.isEmpty {
                 Text("No Plex servers were found on your account.")
                     .font(.title3)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(hearth.textSecondary)
             } else {
                 List {
                     ForEach(servers) { server in
@@ -135,9 +138,10 @@ struct PlexLoginView_tvOS: View {
                 .foregroundStyle(.orange)
             Text("Plex sign-in failed")
                 .font(.title)
+                .foregroundStyle(hearth.text)
             Text(message)
                 .font(.body)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(hearth.textSecondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 800)
             Button("Try again") {

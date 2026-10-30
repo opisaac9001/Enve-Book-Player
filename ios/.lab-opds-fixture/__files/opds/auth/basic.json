@@ -1,0 +1,19 @@
+{
+  "id": "urn:uuid:5b3f21d0-0001-4c8a-9f10-7d6e5c4b3a21",
+  "title": "Enve OPDS Lab",
+  "description": "Sign in with the lab test identity.",
+  "links": [
+    { "rel": "logo", "href": "/opds/images/thumb-blue.png", "type": "image/png", "width": 200, "height": 300 },
+    { "rel": "help", "href": "/opds/auth/help.html", "type": "text/html" },
+    { "rel": "start", "href": "/opds/v2/root.json", "type": "application/opds+json" }
+  ],
+  "authentication": [
+    {
+      "type": "http://opds-spec.org/auth/basic",
+      "labels": {
+        "login": "Username",
+        "password": "Password"
+      }
+    }
+  ]
+}

@@ -33,6 +33,8 @@ check(releaseSigningValues.none { !it.isNullOrBlank() } || releaseSigningConfigu
 val foliateRuntimeFiles = listOf(
     "view.js",
     "epub.js",
+    "mobi.js",
+    "vendor/fflate.js",
     "epubcfi.js",
     "progress.js",
     "overlayer.js",
@@ -73,7 +75,7 @@ val generateFoliateRuntimeAssets = tasks.register<Sync>("generateFoliateRuntimeA
         rename { "foliate-LICENSE.txt" }
     }
     from(foliateMetadata) {
-        include("UPSTREAM.txt", "zip.js-LICENSE.txt")
+        include("UPSTREAM.txt", "zip.js-LICENSE.txt", "fflate-LICENSE.txt")
         into("licenses")
     }
 
@@ -90,6 +92,7 @@ val generateFoliateRuntimeAssets = tasks.register<Sync>("generateFoliateRuntimeA
                     "licenses/foliate-LICENSE.txt",
                     "licenses/UPSTREAM.txt",
                     "licenses/zip.js-LICENSE.txt",
+                    "licenses/fflate-LICENSE.txt",
                 )
             ).toSet()
         val destination = generatedFoliateAssets.get().asFile
@@ -113,7 +116,9 @@ val generateLegalAssets = tasks.register<Sync>("generateLegalAssets") {
 
     from(rootProject.file("LICENSE.md")) { rename { "enve-LICENSE.txt" } }
     from(rootProject.file("NOTICE.md")) { rename { "enve-NOTICE.txt" } }
+    from(rootProject.file("BuildSupport/Liseur/LICENSE.txt")) { rename { "liseur-MIT.txt" } }
     from(rootProject.file("THIRD_PARTY_NOTICES.md")) { rename { "THIRD_PARTY_NOTICES.txt" } }
+    from(rootProject.file("BuildSupport/Licenses/Apache-2.0.txt")) { rename { "ZXing-Apache-2.0.txt" } }
     from(rootProject.file("engine/src/main/cpp/libmobi/COPYING")) { rename { "libmobi-LGPL-3.0.txt" } }
     from(rootProject.file("engine/src/main/cpp/libmobi/PROVENANCE.md")) { rename { "libmobi-PROVENANCE.txt" } }
     from(rootProject.file("engine/src/main/cpp/whisper/LICENSE")) { rename { "whisper-MIT.txt" } }
@@ -399,4 +404,8 @@ tasks.register("verifyAcknowledgementsInventory") {
             "The in-app acknowledgements inventory is missing release dependencies:\n${missing.joinToString("\n")}"
         }
     }
+}
+
+tasks.matching { it.name == "preReleaseBuild" }.configureEach {
+    dependsOn("verifyAcknowledgementsInventory")
 }

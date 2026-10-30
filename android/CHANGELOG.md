@@ -2,8 +2,17 @@
 
 Release notes for the Android app. Versions are `<name> build <code>`, matching `versionName` and `versionCode` in `app/build.gradle.kts`.
 
-## Unreleased
+## 1.2 build 56 — 2026-10-29
 
+- Preserve the confirmed reading position across navigation, reflow, closing, and offline reopening.
+- Fit overflowing tables and preformatted text while preserving publisher styling for content that already fits.
+- Open illustrations in a zoomable viewer with captions and return to the same passage.
+- Resize EPUB text with a pinch gesture and improve reading-time estimates by excluding jumps and idle time.
+- Restore both native selection handles when selecting a hyphenated first word.
+
+- Share all available EPUB position anchors together: CFI, Readium locator, text and DOM anchors, chapter offset, and percentage.
+- Save explicit EPUB navigation even when an old reading location cannot be restored, so closing and reopening the reader preserves the new position.
+- Report Grimmory ebook sync failures in Sync Center, record successful manual sync times, and distinguish an unrun sync from an up-to-date library.
 - Keep skip-button numbers proportional to their icons at larger text sizes.
 - Hide download actions for local files in book details, library menus, and bulk selection.
 - Load TorBox source lists concurrently, use its normal API cache, and skip WebDAV folders outside selected roots.

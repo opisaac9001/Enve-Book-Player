@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "UnrarKit",
-    platforms: [.iOS(.v16), .macOS(.v13)],
+    platforms: [.iOS(.v16), .macOS(.v13), .tvOS(.v17)],
     products: [
         .library(name: "UnrarKit", targets: ["UnrarKit"]),
     ],

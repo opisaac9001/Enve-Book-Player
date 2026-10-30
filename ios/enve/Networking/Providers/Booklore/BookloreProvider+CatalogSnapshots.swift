@@ -91,9 +91,14 @@ extension BookloreProvider {
         }
 
         if firstPage.rawItemCount == 0 {
-            return try await switchToLegacyBooksAPI(reason: "Mobile app books returned an empty first page", libraryId: libraryId)
+            return try await switchToLegacyBooksAPI(
+                reason: "Mobile app books returned an empty first page",
+                libraryId: libraryId,
+                expectedBookIds: []
+            )
         }
 
+        var appBookIds = Set(firstPage.content.map { $0.id.stringValue })
         var checkpoint: GrimmoryCatalogCheckpoint?
         do {
             let prepared = try catalogCheckpoints.prepare(
@@ -132,6 +137,7 @@ extension BookloreProvider {
                     else {
                         throw ProviderError.invalidResponse
                     }
+                    appBookIds.formUnion(stagedPage.content.map { $0.id.stringValue })
                     pageData[page] = data
                 } catch {
                     catalogCheckpoints.discardPage(page: page, checkpoint: &current)
@@ -171,6 +177,7 @@ extension BookloreProvider {
                         else {
                             throw ProviderError.invalidResponse
                         }
+                        appBookIds.formUnion(decoded.content.map { $0.id.stringValue })
                         pageData[page] = data
                         if var current = checkpoint {
                             do {
@@ -192,7 +199,8 @@ extension BookloreProvider {
                 if Self.isCancellation(error) { throw error }
                 return try await switchToLegacyBooksAPI(
                     reason: "Mobile app books page batch failed (\(error.localizedDescription))",
-                    libraryId: libraryId
+                    libraryId: libraryId,
+                    expectedBookIds: appBookIds
                 )
             }
             missingOffset = endOffset
@@ -234,7 +242,8 @@ extension BookloreProvider {
             guard let data = pageData[page] else {
                 return try await switchToLegacyBooksAPI(
                     reason: "Mobile app books snapshot is missing page \(page)",
-                    libraryId: libraryId
+                    libraryId: libraryId,
+                    expectedBookIds: appBookIds
                 )
             }
             let decoded: BooklorePage<BookloreBookSummary>
@@ -243,13 +252,15 @@ extension BookloreProvider {
             } catch {
                 return try await switchToLegacyBooksAPI(
                     reason: "Mobile app books staged page decode failed (\(error.localizedDescription))",
-                    libraryId: libraryId
+                    libraryId: libraryId,
+                    expectedBookIds: appBookIds
                 )
             }
             guard try await append(decoded) else {
                 return try await switchToLegacyBooksAPI(
                     reason: "Mobile app books lack the batch format endpoint",
-                    libraryId: libraryId
+                    libraryId: libraryId,
+                    expectedBookIds: appBookIds
                 )
             }
         }

@@ -1,5 +1,8 @@
 package com.enve.app.data.repository.grimmory
 
+import com.enve.app.data.remote.dto.BookSummaryDto
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -29,5 +32,32 @@ class GrimmoryCatalogFallbackTest {
                 shouldUseLegacyGrimmoryCatalog(responseCode, firstPageItemCount = null),
             )
         }
+    }
+    @Test
+    fun `populated app catalog rejects empty legacy fallback`() {
+        assertThrows(IllegalStateException::class.java) {
+            consistentGrimmoryCatalogFallback(listOf(BookSummaryDto(id = "ebook")), emptyList())
+        }
+    }
+
+    @Test
+    fun `populated app catalog rejects partial legacy fallback`() {
+        val books = listOf(BookSummaryDto(id = "audio"), BookSummaryDto(id = "ebook"))
+        assertThrows(IllegalStateException::class.java) {
+            consistentGrimmoryCatalogFallback(books, books.take(1))
+        }
+    }
+
+    @Test
+    fun `consistent complete empty catalog remains authoritative`() {
+        assertEquals(emptyList<BookSummaryDto>(), consistentGrimmoryCatalogFallback(emptyList(), emptyList()))
+    }
+
+    @Test
+    fun `complete legacy response accepts additional books and recovers after conflict`() {
+        val app = listOf(BookSummaryDto(id = "ebook"))
+        assertThrows(IllegalStateException::class.java) { consistentGrimmoryCatalogFallback(app, emptyList()) }
+        val legacy = app + BookSummaryDto(id = "audio")
+        assertEquals(legacy, consistentGrimmoryCatalogFallback(app, legacy))
     }
 }

@@ -161,6 +161,15 @@ interface BookCacheDao {
     """)
     suspend fun updateAudiobookCommand(cacheKey: String, progress: Float, positionSec: Long, finished: Boolean, hidden: Boolean, status: String?, nowMs: Long): Int
 
+    @Query("""
+        UPDATE book_cache SET readProgress = :progress, epubProgress = :progress,
+            epubLocator = :locator, isFinished = :finished, serverReadStatus = :status,
+            lastReadTime = :nowMs,
+            inProgress = CASE WHEN :finished = 0 AND hideFromContinue = 0 AND :progress > 0.001 THEN 1 ELSE 0 END
+        WHERE cacheKey = :cacheKey AND mediaType = 'EBOOK'
+    """)
+    suspend fun updateReadingCommand(cacheKey: String, progress: Float, locator: String?, finished: Boolean, status: String?, nowMs: Long): Int
+
     @Query("SELECT * FROM pending_progress_push WHERE bookId = :bookId AND source = :source AND connectionKey = :connectionKey AND mediaType = 'AUDIOBOOK' LIMIT 1")
     suspend fun getPendingAudiobookProgress(bookId: String, source: String, connectionKey: String): PendingProgressPush?
 
@@ -764,6 +773,18 @@ interface BookCacheDao {
         LIMIT 1000
     """)
     suspend fun searchAudiobooksByMetadata(query: String): List<CachedBook>
+
+    @Query("""
+        SELECT * FROM book_cache
+        WHERE mediaType IN (:mediaTypes)
+          AND (title LIKE '%' || :query || '%'
+            OR author LIKE '%' || :query || '%'
+            OR narrator LIKE '%' || :query || '%')
+        ORDER BY lastReadTime DESC, addedOn DESC
+        LIMIT 1000
+    """)
+    suspend fun searchPositionBooksByMetadata(query: String, mediaTypes: List<String>): List<CachedBook>
+
 
     @Query("""
         SELECT * FROM book_cache

@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"
+      xmlns:opds="http://opds-spec.org/2010/catalog"
+      xmlns:dcterms="http://purl.org/dc/terms/"
+      xmlns:schema="http://schema.org/">
+  <id>urn:uuid:2c9d41a0-0300-4d2a-8f77-9a1b2c3d4e00</id>
+  <title>Enve OPDS Lab — all publications, page 2</title>
+  <updated>2026-09-19T08:00:00Z</updated>
+  <author>
+    <name>Enve OPDS Lab</name>
+  </author>
+  <opensearch:totalResults xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">8</opensearch:totalResults>
+  <opensearch:itemsPerPage xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">6</opensearch:itemsPerPage>
+  <opensearch:startIndex xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">7</opensearch:startIndex>
+  <link rel="self"
+        href="/opds/v1/acquisition-page2.xml"
+        type="application/atom+xml;profile=opds-catalog;kind=acquisition"/>
+  <link rel="start"
+        href="/opds/v1/root.xml"
+        type="application/atom+xml;profile=opds-catalog;kind=navigation"/>
+  <link rel="up"
+        href="/opds/v1/root.xml"
+        type="application/atom+xml;profile=opds-catalog;kind=navigation"/>
+  <link rel="previous"
+        href="/opds/v1/acquisition.xml"
+        type="application/atom+xml;profile=opds-catalog;kind=acquisition"/>
+  <link rel="first"
+        href="/opds/v1/acquisition.xml"
+        type="application/atom+xml;profile=opds-catalog;kind=acquisition"/>
+  <link rel="last"
+        href="/opds/v1/acquisition-page2.xml"
+        type="application/atom+xml;profile=opds-catalog;kind=acquisition"/>
+
+  <entry>
+    <id>urn:uuid:2c9d41a0-0107-4d2a-8f77-9a1b2c3d4e07</id>
+    <title>Tidal Survey Report 1994</title>
+    <updated>2026-09-18T20:21:00Z</updated>
+    <author>
+      <name>Coastal Survey Office</name>
+    </author>
+    <dcterms:language>en</dcterms:language>
+    <summary type="text">A PDF acquisition on the second page.</summary>
+    <link rel="http://opds-spec.org/image"
+          href="/opds/images/cover-blue.png"
+          type="image/png"/>
+    <link rel="http://opds-spec.org/acquisition"
+          href="/opds/files/lab-ebook-003.pdf"
+          type="application/pdf"/>
+  </entry>
+
+  <entry>
+    <id>urn:uuid:2c9d41a0-0108-4d2a-8f77-9a1b2c3d4e08</id>
+    <title>Ω Прогулка по набережной — 海辺の散歩 — 🌊</title>
+    <updated>2026-09-18T20:22:00Z</updated>
+    <author>
+      <name>Лариса Ковач</name>
+    </author>
+    <dcterms:language>ru</dcterms:language>
+    <summary type="text">Unicode title, open-access acquisition.</summary>
+    <link rel="http://opds-spec.org/image/thumbnail"
+          href="/opds/images/thumb-blue.png"
+          type="image/png"/>
+    <link rel="http://opds-spec.org/acquisition/open-access"
+          href="/opds/files/lab-ebook-001.epub"
+          type="application/epub+zip"/>
+  </entry>
+</feed>

@@ -229,12 +229,14 @@ struct LibraryFetchBatchResult {
 
 struct LibraryCatalogPage {
     let books: [Book]
+    let sourceBookIDs: Set<String>
     let totalCount: Int?
     let isLast: Bool
     let isComplete: Bool
 
-    init(books: [Book], totalCount: Int?, isLast: Bool, isComplete: Bool = true) {
+    init(books: [Book], totalCount: Int?, isLast: Bool, isComplete: Bool = true, sourceBookIDs: Set<String>? = nil) {
         self.books = books
+        self.sourceBookIDs = sourceBookIDs ?? Set(books.map(\.uniqueId))
         self.totalCount = totalCount
         self.isLast = isLast
         self.isComplete = isComplete
@@ -445,6 +447,10 @@ protocol IncrementalCatalogProvider: LibraryProvider {
         resumeAfter: String?,
         expectedSnapshotIdentifier: String?
     ) async throws -> LibraryCatalogBatchSource
+}
+
+protocol RecentCatalogPagingProvider: LibraryProvider {
+    func fetchRecentCatalogPage(libraryId: String, page: Int, size: Int) async throws -> LibraryCatalogPage
 }
 
 protocol WholeSnapshotCatalogProvider: IncrementalCatalogProvider {}

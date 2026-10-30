@@ -79,9 +79,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.enve.core.data.model.ProviderConnection
 import com.enve.core.data.model.ComicPageLoadingMode
 import com.enve.engine.eink.EinkMode
+import com.enve.engine.prefs.EbookSyncInterval
 import com.enve.engine.prefs.HearthHomeSection
 import com.enve.engine.prefs.HearthStartTab
 import com.enve.engine.prefs.ReadNextPosition
+import com.enve.engine.theme.HearthPaletteStyle
 import com.enve.engine.theme.HearthThemeMode
 import com.enve.hearth.design.EmberButton
 import com.enve.hearth.design.Hearth
@@ -288,11 +290,14 @@ private fun AppearancePage(
     val palette = Hearth.palette
     val themeMode by vm.themeMode.collectAsStateWithLifecycle()
     val oled by vm.oled.collectAsStateWithLifecycle()
+    val paletteStyle by vm.paletteStyle.collectAsStateWithLifecycle()
     val uiTextScale by vm.uiTextScale.collectAsStateWithLifecycle()
     val accent by vm.accent.collectAsStateWithLifecycle()
     val eink by vm.einkState.collectAsStateWithLifecycle()
     val preferredStartTab by vm.preferredStartTab.collectAsStateWithLifecycle()
     val homeSectionOrder by vm.homeSectionOrder.collectAsStateWithLifecycle()
+    val showTodayStack by vm.showTodayStack.collectAsStateWithLifecycle()
+    val showDockBookShortcut by vm.showDockBookShortcut.collectAsStateWithLifecycle()
 
     SettingsPage("Settings", SettingsCategory.Appearance.pageTitle, onBack) {
         item {
@@ -327,7 +332,19 @@ private fun AppearancePage(
                     )
                 }
                 Text(
-                    "Only shelves with books appear. The hero and reading pulse stay at the top.",
+                    "Only shelves with books appear. Your current book and optional library overview stay at the top.",
+                    style = HearthText.Caption,
+                    color = palette.textSecondary,
+                )
+                HearthToggleRow("Library overview", showTodayStack, vm::setShowTodayStack)
+                Text(
+                    "Shows how many books are in progress, downloaded, and recently added on Hearth.",
+                    style = HearthText.Caption,
+                    color = palette.textSecondary,
+                )
+                HearthToggleRow("Book shortcut in dock", showDockBookShortcut, vm::setShowDockBookShortcut)
+                Text(
+                    "Shows your last book above the tabs. Turn off to hide it; books and the player stay available from Hearth.",
                     style = HearthText.Caption,
                     color = palette.textSecondary,
                 )
@@ -337,6 +354,8 @@ private fun AppearancePage(
             Group("Theme & accent") {
                 ChipRow(HearthThemeMode.entries.map { it.name.lowercase().replaceFirstChar(Char::uppercase) to (it == themeMode) }) { i -> vm.setThemeMode(HearthThemeMode.entries[i]) }
                 HearthToggleRow("OLED black", oled, vm::setOled)
+                Overline("Palette")
+                ChipRow(HearthPaletteStyle.entries.map { it.name.lowercase().replaceFirstChar(Char::uppercase) to (it == paletteStyle) }) { i -> vm.setPaletteStyle(HearthPaletteStyle.entries[i]) }
                 Overline("Accent")
                 Row(
                     Modifier.horizontalScroll(rememberScrollState()),
@@ -464,6 +483,7 @@ private fun LibraryPage(
     val readNextPosition by vm.readNextPosition.collectAsStateWithLifecycle()
     val restReminderEnabled by vm.restReminderEnabled.collectAsStateWithLifecycle()
     val restReminderMinutes by vm.restReminderMinutes.collectAsStateWithLifecycle()
+    val ebookSyncInterval by vm.ebookSyncInterval.collectAsStateWithLifecycle()
     SettingsPage("Settings", SettingsCategory.Library.pageTitle, onBack) {
         item {
             Group("Library") {
@@ -495,6 +515,17 @@ private fun LibraryPage(
                     minutes = restReminderMinutes,
                     onEnabledChange = vm::setRestReminderEnabled,
                     onMinutesChange = vm::setRestReminderMinutes,
+                )
+                Text("Ebook sync interval", style = HearthText.Caption, color = palette.textSecondary)
+                ChipRow(
+                    EbookSyncInterval.entries.map { interval ->
+                        interval.label to (interval == ebookSyncInterval)
+                    },
+                ) { index -> vm.setEbookSyncInterval(EbookSyncInterval.entries[index]) }
+                Text(
+                    "Controls routine server updates while reading ebooks; your place is still saved locally. Leaving the reader syncs immediately. Audio, comics and PDFs use their own timing.",
+                    style = HearthText.Caption,
+                    color = palette.textSecondary,
                 )
                 ToolRow(Icons.AutoMirrored.Outlined.ManageSearch, "Annotations", "Bookmarks, highlights, and notes") {
                     onOpenDestination(HearthSettingsDestination.Annotations)

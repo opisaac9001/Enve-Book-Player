@@ -73,7 +73,7 @@ struct HardcoverReverseMatchScreen: View {
                                 HardcoverLocalBookPickRow(
                                     book: book,
                                     isSelected: selected?.stableId == book.stableId,
-                                    isAlreadyMatched: SettingsManager.shared.getHardcoverMatch(forLocalBookId: book.id) != nil
+                                    isAlreadyMatched: SettingsManager.shared.getHardcoverMatch(for: book) != nil
                                 ) {
                                     selected = book
                                 }
@@ -133,7 +133,7 @@ struct HardcoverReverseMatchScreen: View {
         }
 
         let match = HardcoverBookMatch(
-            localBookId: localBook.id,
+            localBookId: localBook.stableId,
             hardcoverBookId: hardcoverBook.book.id,
             hardcoverUserBookId: hardcoverBook.id,
             hardcoverEditionId: hardcoverBook.editionId,
@@ -265,7 +265,7 @@ struct HardcoverBookMatchScreen: View {
         }
 
         let match = HardcoverBookMatch(
-            localBookId: book.id,
+            localBookId: book.stableId,
             hardcoverBookId: hardcoverBook.book.id,
             hardcoverUserBookId: hardcoverBook.id,
             hardcoverEditionId: hardcoverBook.editionId,

@@ -22,6 +22,8 @@ const params = new URLSearchParams(location.search)
 const capability = params.get('capability') ?? ''
 const handlerName = params.get('handler') ?? ''
 const nativeHandler = globalThis.webkit?.messageHandlers?.[handlerName]
+const XLINK_NAMESPACE = 'http://www.w3.org/1999/xlink'
+const wideContentStates = new WeakMap()
 
 let outgoingSequence = 0
 let incomingSequence = 0
@@ -385,7 +387,7 @@ const markupParserType = (source, mediaType, name) => {
     return 'application/xhtml+xml'
 }
 
-const sanitizeMarkup = (source, mediaType, name = '', requiresCSP = false) => {
+const sanitizeMarkup = (source, mediaType, name = '', requiresCSP = false, original = null) => {
     const parser = new DOMParser()
     const parserType = markupParserType(source, mediaType, name)
     let doc = parser.parseFromString(source, parserType)
@@ -395,6 +397,13 @@ const sanitizeMarkup = (source, mediaType, name = '', requiresCSP = false) => {
     if (doc.querySelector('parsererror')) {
         throw new Error('Publication markup could not be sanitized')
     }
+    const imageSources = original == null ? [] : Array.from(
+        parser.parseFromString(original, doc.contentType).querySelectorAll('img, image'),
+        element => element.getAttribute('src') ?? element.getAttribute('href')
+            ?? element.getAttributeNS(XLINK_NAMESPACE, 'href')
+    )
+    const markImages = imageSources.length === doc.querySelectorAll('img, image').length
+    let imageIndex = 0
     for (const script of doc.querySelectorAll('script')) {
         script.setAttribute('type', 'application/x-enve-blocked')
         script.removeAttribute('src')
@@ -421,6 +430,11 @@ const sanitizeMarkup = (source, mediaType, name = '', requiresCSP = false) => {
                 && hasRemoteScheme(value)) {
                 element.removeAttribute(attribute.name)
             }
+        }
+        const localName = element.localName?.toLowerCase()
+        if (markImages && (localName === 'img' || localName === 'image')) {
+            const source = imageSources[imageIndex++]
+            if (source) element.setAttribute('data-enve-src', source)
         }
     }
     for (const meta of doc.querySelectorAll('meta[http-equiv]')) {
@@ -479,7 +493,7 @@ const sourceText = async data => {
     return null
 }
 
-const transformedPublicationData = async (data, mediaType, name, requiresCSP) => {
+const transformedPublicationData = async (data, mediaType, name, requiresCSP, loadText) => {
     const resolved = await data
     const type = String(mediaType ?? '').toLowerCase()
     const path = String(name ?? '').toLowerCase()
@@ -501,9 +515,13 @@ const transformedPublicationData = async (data, mediaType, name, requiresCSP) =>
         || /\.(?:xhtml|html?|xml|svg)$/iu.test(path)
     const isCSS = type.includes('css') || path.endsWith('.css')
     if (!isMarkup && !isCSS) return resolved
+    let original = null
+    if (!isCSS && typeof loadText === 'function') {
+        try { original = await loadText(name) } catch {}
+    }
     const transformed = isCSS
         ? sanitizeCSS(text)
-        : sanitizeMarkup(text, mediaType, name, requiresCSP)
+        : sanitizeMarkup(text, mediaType, name, requiresCSP, original)
     return typeof resolved === 'string'
         ? transformed
         : new Blob([transformed], {
@@ -531,11 +549,18 @@ const installPublicationTransform = openedBook => {
         }
         const requiresCSP = sectionNames.has(normalizeHref(detail.name))
         if (requiresCSP) detail.type = 'application/xhtml+xml'
+        const source = Promise.resolve(detail.data).then(async data => {
+            if (data != null || !type.startsWith('image/') || typeof openedBook.loadBlob !== 'function') return data
+            let name
+            try { name = decodeURIComponent(detail.name) } catch { return data }
+            return name === detail.name ? data : (await openedBook.loadBlob(name)) ?? data
+        })
         detail.data = transformedPublicationData(
-            detail.data,
+            source,
             type,
             detail.name,
-            requiresCSP
+            requiresCSP,
+            openedBook.loadText?.bind(openedBook)
         )
     })
     target.addEventListener('load', event => {
@@ -687,11 +712,16 @@ const applyPreferences = next => {
     renderer.setAttribute('gap', `${Math.min(7, Math.max(0, next.pageMargins) * 7)}%`)
     renderer.setAttribute('margin', `${verticalMargin}px`)
     renderer.setAttribute('max-block-size', `calc(100% - ${verticalMargin * 2}px)`)
+    // Two columns are only honoured by the paginator when a column can't hold the whole width, so
+    // the explicit request caps the column at half the view instead of the readable measure.
+    const viewWidth = renderer.getBoundingClientRect?.().width || window.innerWidth
     renderer.setAttribute(
         'max-inline-size',
         next.scroll
             ? '9999px'
-            : `${Math.max(320, Math.round(720 / Math.max(0.25, next.pageMargins)))}px`
+            : next.columns === 'two'
+                ? `${Math.max(320, Math.floor(viewWidth / 2))}px`
+                : `${Math.max(320, Math.round(720 / Math.max(0.25, next.pageMargins)))}px`
     )
     renderer.setAttribute(
         'max-column-count',
@@ -699,7 +729,10 @@ const applyPreferences = next => {
     )
     if (next.scroll) renderer.setAttribute('flow', 'scrolled')
     else renderer.removeAttribute('flow')
-    for (const content of renderer.getContents?.() ?? []) applyBionic(content.doc)
+    for (const content of renderer.getContents?.() ?? []) {
+        applyBionic(content.doc)
+        fitWideContent(content.doc)
+    }
     renderer.render?.()
 }
 
@@ -736,6 +769,63 @@ const applyPreferenceCommand = async next => {
     }
 }
 
+const fitWideContent = doc => {
+    const win = doc?.defaultView
+    if (!win || !doc.body || view?.isFixedLayout) return false
+    let state = wideContentStates.get(doc)
+    if (!state) {
+        state = { token: 'w' + Math.random().toString(36).slice(2, 10), style: null }
+        wideContentStates.set(doc, state)
+    }
+    const attribute = 'data-enve-fit'
+    const table = `table[${attribute}="${state.token}"]`
+    const pre = `pre[${attribute}="${state.token}"]`
+    if (!state.style?.isConnected) {
+        const style = doc.createElementNS('http://www.w3.org/1999/xhtml', 'style')
+        style.textContent = `${table}{table-layout:fixed !important;width:100% !important;max-width:100% !important}`
+            + `${table} td,${table} th{overflow-wrap:anywhere !important}`
+            + `${pre}{white-space:pre-wrap !important;overflow-wrap:anywhere !important;max-width:100% !important}`
+        const parent = doc.head ?? doc.documentElement
+        parent.append(style)
+        state.style = style
+        if (!style.sheet) return false
+    }
+    const room = element => {
+        const parent = element.parentElement
+        if (!parent) return 0
+        const computed = win.getComputedStyle(parent)
+        return parent.clientWidth - parseFloat(computed.paddingLeft) - parseFloat(computed.paddingRight)
+    }
+    const widest = element => {
+        let width = 0
+        for (const rect of element.getClientRects()) width = Math.max(width, rect.width)
+        if (element.localName === 'pre') {
+            const range = doc.createRange()
+            range.selectNodeContents(element)
+            for (const rect of range.getClientRects()) width = Math.max(width, rect.width)
+        }
+        return width
+    }
+    let changed = false
+    for (let pass = 0; pass < 3; pass++) {
+        const elements = Array.from(doc.querySelectorAll('table, pre'))
+        const had = elements.map(element => element.getAttribute(attribute) === state.token)
+        elements.forEach((element, index) => {
+            if (had[index]) element.removeAttribute(attribute)
+        })
+        let passChanged = false
+        elements.forEach((element, index) => {
+            const available = room(element)
+            const wants = available > 0 && widest(element) > available + 1
+            if (wants) element.setAttribute(attribute, state.token)
+            if (wants !== had[index]) passChanged = true
+        })
+        if (!passChanged) break
+        changed = true
+    }
+    return changed
+}
+
 const attachDocumentListeners = doc => {
     if (!doc || doc.documentElement.dataset.enveListeners === '1') return
     doc.documentElement.dataset.enveListeners = '1'
@@ -746,12 +836,21 @@ const attachDocumentListeners = doc => {
     doc.addEventListener('selectionchange', selectionHandler)
     doc.addEventListener('pointerup', selectionHandler)
     doc.addEventListener('keydown', handleNavigationKeydown)
+    const win = doc.defaultView
+    let fitFrame = 0
+    const fitHandler = () => {
+        win.cancelAnimationFrame(fitFrame)
+        fitFrame = win.requestAnimationFrame(() => fitWideContent(doc))
+    }
+    win?.addEventListener('resize', fitHandler)
     selectionCleanups.push(() => {
         doc.removeEventListener('selectionchange', selectionHandler)
         doc.removeEventListener('pointerup', selectionHandler)
         doc.removeEventListener('keydown', handleNavigationKeydown)
+        win?.removeEventListener('resize', fitHandler)
     })
     applyBionic(doc)
+    fitWideContent(doc)
 }
 
 const currentSelectionSnapshot = () => {
@@ -814,6 +913,38 @@ const activateLinkAt = (x, y) => {
         return true
     }
     return false
+}
+
+const illustrationText = value => {
+    const trimmed = String(value ?? '').replace(/\s+/gu, ' ').trim()
+    return trimmed || null
+}
+
+const illustrationAt = (x, y) => {
+    if (activeFootnote || view?.isFixedLayout) return null
+    for (const content of view?.renderer?.getContents?.() ?? []) {
+        const frame = content.doc?.defaultView?.frameElement?.getBoundingClientRect()
+        if (!frame || x < frame.left || x > frame.right || y < frame.top || y > frame.bottom) continue
+        let element = content.doc.elementFromPoint(x - frame.left, y - frame.top)?.closest?.('img, image, svg')
+        if (!element || element.closest('a[href]')) return null
+        if (element.localName === 'svg') element = element.querySelector('image') ?? element
+        const source = element.getAttribute('data-enve-src')
+        if (!source) return null
+        const rect = element.getBoundingClientRect()
+        const figcaption = element.closest('figure')?.querySelector('figcaption')
+        const label = element.closest('svg')?.querySelector(':scope > title, :scope > desc')
+        return {
+            src: source,
+            documentHref: sectionHref(content.index),
+            alt: illustrationText(
+                element.getAttribute('alt') ?? element.getAttribute('aria-label') ?? element.getAttribute('title')
+            ),
+            caption: illustrationText(figcaption?.textContent) ?? illustrationText(label?.textContent),
+            width: rect.width,
+            height: rect.height,
+        }
+    }
+    return null
 }
 
 const emitSelection = () => {
@@ -1741,6 +1872,11 @@ const command = async envelope => {
             throw new TypeError('Activate-link payload is invalid')
         }
         return { handled: activateLinkAt(payload.x, payload.y) }
+    case 'illustrationAt':
+        if (!hasExactKeys(payload, ['x', 'y']) || !Number.isFinite(payload.x) || !Number.isFinite(payload.y)) {
+            throw new TypeError('Illustration-at payload is invalid')
+        }
+        return { illustration: illustrationAt(payload.x, payload.y) }
     case 'refreshSelection':
         if (!hasExactKeys(payload, [])) throw new TypeError('Refresh-selection payload is invalid')
         emitSelection()
@@ -1817,7 +1953,7 @@ Object.defineProperty(globalThis, 'EnveFoliateRuntime', {
 
 const loadSessionBook = async (streaming, fileExtension) => {
     if (streaming === null) {
-        if (!['epub', 'fb2'].includes(fileExtension)) {
+        if (!['epub', 'fb2', 'azw3'].includes(fileExtension)) {
             throw new Error('Reader file type is invalid')
         }
         const bookResponse = await fetch(`/book/current.${fileExtension}`, { cache: 'no-store', credentials: 'omit' })
@@ -1825,9 +1961,11 @@ const loadSessionBook = async (streaming, fileExtension) => {
             throw new Error('Local reader resources could not be loaded')
         }
         const blob = await bookResponse.blob()
-        const mediaType = fileExtension === 'fb2'
-            ? 'application/x-fictionbook+xml'
-            : 'application/epub+zip'
+        const mediaType = {
+            epub: 'application/epub+zip',
+            fb2: 'application/x-fictionbook+xml',
+            azw3: 'application/vnd.amazon.mobi8-ebook',
+        }[fileExtension]
         const file = new File([blob], `current.${fileExtension}`, { type: mediaType })
         return makeBook(file)
     }
@@ -1866,7 +2004,7 @@ const boot = async () => {
     preferences = validatePreferences(session.preferences)
     const annotations = validateAnnotations(session.annotations)
     book = await loadSessionBook(session.streaming, session.fileExtension)
-    if (session.fileExtension === 'epub') installPublicationTransform(book)
+    if (session.fileExtension !== 'fb2') installPublicationTransform(book)
 
     view = document.createElement('foliate-view')
     document.querySelector('#reader').replaceChildren(view)

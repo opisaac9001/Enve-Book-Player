@@ -18,7 +18,6 @@ import android.widget.FrameLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.speech.tts.TextToSpeech
-import android.speech.tts.UtteranceProgressListener
 import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
@@ -50,6 +49,7 @@ import com.enve.app.R
 import com.enve.core.data.local.LastOpenedBookStore
 import com.enve.core.data.local.PreferencesManager
 import com.enve.core.data.model.*
+import com.enve.core.listeningposition.SharedReadingLocation
 import com.enve.app.data.reader.*
 import com.enve.app.data.repository.GrimmoryRepository
 import com.enve.app.data.repository.CustomFontRepository
@@ -65,8 +65,19 @@ import com.enve.app.ui.theme.EnveTheme
 import com.enve.app.ui.theme.eink
 import com.enve.app.ui.screens.reader.BUNDLED_READER_FONTS
 import com.enve.app.ui.screens.reader.FoliateReaderEngine
+import com.enve.app.ui.screens.reader.ReaderIllustration
+import com.enve.app.ui.screens.reader.ReaderIllustrationHit
+import com.enve.app.ui.screens.reader.ReaderIllustrationLoader
+import com.enve.app.ui.screens.reader.ReaderIllustrationProbe
+import com.enve.app.ui.screens.reader.ReaderIllustrationViewer
+import com.enve.app.ui.screens.reader.ReaderPinchTextScale
+import com.enve.app.ui.screens.reader.ReaderPinchTextScaleIndicator
+import com.enve.app.ui.screens.reader.ReaderSelectionHandleFix
+import com.enve.app.ui.screens.reader.ReaderWideContentFit
 import com.enve.app.ui.screens.reader.epubLinkIsNoteRef
 import com.enve.app.ui.screens.reader.epubNoteHtml
+import com.enve.app.ui.screens.reader.readerChromePalette
+import com.enve.app.ui.screens.reader.reflowSignature
 import com.enve.app.viewmodel.ReaderViewModel
 import com.enve.app.viewmodel.ThemeViewModel
 import com.enve.app.viewmodel.CachedReaderProgress
@@ -77,23 +88,30 @@ import com.enve.core.data.provider.ProviderEbookResource
 import com.enve.core.data.sync.AudioLocatorPosition
 import com.enve.core.data.sync.ProgressConflictPassage
 import com.enve.core.data.sync.SyncSnapshot
+import com.enve.core.reader.EpubCfi
 import com.enve.core.reader.EpubBridgeCheckpointCodec
 import com.enve.core.reader.ReaderEngineKind
 import com.enve.core.reader.ReaderEnginePolicy
 import com.enve.core.reader.ReaderEngineRequest
 import com.enve.engine.prefs.ReadNextPosition
+import com.enve.engine.theme.HearthPaletteStyle
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.resume
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
@@ -103,6 +121,7 @@ import org.readium.r2.navigator.epub.EpubNavigatorFragment
 import org.readium.r2.shared.ExperimentalReadiumApi
 import org.readium.r2.shared.publication.Link
 import org.readium.r2.shared.publication.Locator
+import org.readium.r2.shared.publication.Publication
 import org.readium.r2.shared.publication.services.positionsByReadingOrder
 import org.readium.r2.shared.util.AbsoluteUrl
 import org.readium.r2.shared.util.Error as ReadiumError
@@ -128,7 +147,17 @@ internal data class OpenProgressResolution(
 internal data class OpenProgressPlan(
     val resolution: OpenProgressResolution,
     val remote: OpenRemoteProgress,
+    val localUpdatedAt: Long = 0L,
 )
+
+internal fun sharedReadingOpenPlan(cached: CachedReaderProgress?, intentUpdatedAt: Long): OpenProgressPlan? {
+    if (cached == null || cached.updatedAt <= 0L || cached.updatedAt < intentUpdatedAt || !SharedReadingLocation.isSharedPosition(cached.locator)) return null
+    return OpenProgressPlan(
+        resolution = OpenProgressResolution(cached.locator, cached.progress, mayUseCachedAudioPosition = false),
+        remote = OpenRemoteProgress(snapshot = null, authority = OpenProgressAuthority.LOCAL),
+        localUpdatedAt = cached.updatedAt,
+    )
+}
 
 private sealed interface RemoteProgressOutcome {
     data class Resolved(val plan: OpenProgressPlan) : RemoteProgressOutcome
@@ -150,7 +179,7 @@ internal fun openProgressResolutionFor(
     OpenProgressAuthority.REMOTE ->
         OpenProgressResolution(remoteLocatorJson, remoteProgress, mayUseCachedAudioPosition = false)
     OpenProgressAuthority.AUTOMATIC, OpenProgressAuthority.LOCAL ->
-        OpenProgressResolution(localLocatorJson, localProgress, mayUseCachedAudioPosition = true)
+        OpenProgressResolution(localLocatorJson, localProgress, mayUseCachedAudioPosition = !SharedReadingLocation.isSharedPosition(localLocatorJson))
 }
 
 internal suspend fun awaitWithinActiveBudget(
@@ -232,6 +261,23 @@ class EbookReaderActivity : FragmentActivity() {
     private var openProgressPlan: OpenProgressPlan? = null
     private var userDecisionStartedAtMs = 0L
     private var userDecisionTotalMs = 0L
+    private var reflowableDocument = false
+    private var readiumPublication: Publication? = null
+    private var foliateArchive: File? = null
+    private var illustrationRequest = 0L
+    private var illustration by mutableStateOf<ReaderIllustration?>(null)
+    private var pinchTextScalePreview by mutableStateOf<Float?>(null)
+    private var scrollTouchY = 0f
+    private var documentScrollActive = false
+    private var pinchActive = false
+    private var pinchCommitted = false
+    private var pinchStartSpan = 0f
+    private var pinchStartScale = 1f
+    private val readiumReflowRequests = MutableSharedFlow<Unit>(
+        extraBufferCapacity = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    private var readiumReflowJob: Job? = null
 
     private var ttsEngine: TextToSpeech? = null
 
@@ -305,7 +351,7 @@ class EbookReaderActivity : FragmentActivity() {
                 when (ReaderTapZones.zoneAt(e.x, w, st.prefs.tapZoneWidth)) {
                     ReaderTapZone.LEFT_EDGE -> turnPageBackward()
                     ReaderTapZone.RIGHT_EDGE -> turnPageForward()
-                    ReaderTapZone.CENTER -> vm.toggleChrome()
+                    ReaderTapZone.CENTER -> handleCenterTap(e)
                 }
                 return true
             }
@@ -313,26 +359,47 @@ class EbookReaderActivity : FragmentActivity() {
     }
 
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        if (pinchActive) {
+            continuePinch(ev)
+            return true
+        }
+        if (ev.actionMasked == MotionEvent.ACTION_POINTER_DOWN && ev.pointerCount == 2 && canStartPinch()) {
+            beginPinch(ev)
+            return true
+        }
         if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
+            illustrationRequest++
+            scrollTouchY = ev.y
+            documentScrollActive = false
             readiumNavigator?.currentLocator?.value?.let {
                 readiumFootnoteReturnLocator = it
             }
             val state = vm.state.value
             documentGestureSequenceBlocked = foliateEngine?.footnoteOpen == true ||
+                illustration != null ||
                 state.showAppearanceSheet || state.showTocSheet ||
                 state.showSearchSheet || state.showMoreMenu || state.showAnnotationDialog ||
-                state.showReadAloudSheet || state.showReadAloudLyrics || state.showSelectionPopup || state.showAutoScrollPanel ||
+                state.showReadAloudSheet || state.showTtsSheet || state.showReadAloudLyrics || state.showSelectionPopup || state.showAutoScrollPanel ||
                 state.showToolbarCustomizer || state.showAnnotationsSheet ||
                 state.activeDecorationAnnotation != null || state.pendingProgressConflict != null
         }
         if (!documentGestureSequenceBlocked) gestureDetector.onTouchEvent(ev)
 
+        if (ev.actionMasked == MotionEvent.ACTION_MOVE && ev.pointerCount == 1 &&
+            !documentGestureSequenceBlocked && !edgeBrightnessConsumed && selectionCallback?.isActive != true &&
+            kotlin.math.abs(ev.y - scrollTouchY) > android.view.ViewConfiguration.get(this).scaledTouchSlop) {
+            documentScrollActive = true
+            vm.setReadiumScrollActive(true)
+        }
         val sequenceEnded = ev.actionMasked == MotionEvent.ACTION_UP || ev.actionMasked == MotionEvent.ACTION_CANCEL
         if (sequenceEnded) {
             selectionCallback?.notifyFingerUp()
             if (!documentGestureSequenceBlocked && ev.actionMasked == MotionEvent.ACTION_UP) {
                 vm.noteReadiumUserInteraction()
             }
+            if (documentScrollActive && ev.actionMasked == MotionEvent.ACTION_UP) vm.finishReadiumScroll()
+            else vm.setReadiumScrollActive(false)
+            documentScrollActive = false
         }
         val consumed = edgeBrightnessConsumed
         if (sequenceEnded) {
@@ -348,8 +415,190 @@ class EbookReaderActivity : FragmentActivity() {
     }
 
     private fun readerTapBelongsToLinkOrNote(): Boolean =
-        readiumFootnoteDialog != null || foliateEngine?.footnoteOpen == true ||
+        readiumFootnoteDialog != null || foliateEngine?.footnoteOpen == true || illustration != null ||
             android.os.SystemClock.uptimeMillis() - readiumLinkActivatedAtMs < LINK_TAP_GRACE_MS
+
+    private fun canStartPinch(): Boolean =
+        reflowableDocument &&
+            (readiumNavigator != null || foliateReady) &&
+            !documentGestureSequenceBlocked &&
+            !edgeBrightnessConsumed &&
+            illustration == null &&
+            selectionCallback?.isActive != true &&
+            foliateEngine?.currentSelection == null
+
+    private fun beginPinch(ev: MotionEvent) {
+        vm.setReadiumScrollActive(false)
+        documentScrollActive = false
+        pinchActive = true
+        pinchCommitted = false
+        pinchStartSpan = spanOf(ev)
+        pinchStartScale = vm.state.value.prefs.fontSize
+        pinchTextScalePreview = null
+        edgeBrightnessGesture = false
+        edgeBrightnessConsumed = false
+        val cancel = MotionEvent.obtain(ev).apply { action = MotionEvent.ACTION_CANCEL }
+        gestureDetector.onTouchEvent(cancel)
+        super.dispatchTouchEvent(cancel)
+        cancel.recycle()
+    }
+
+    private fun continuePinch(ev: MotionEvent) {
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_MOVE -> if (!pinchCommitted && ev.pointerCount >= 2) {
+                pinchTextScalePreview = ReaderPinchTextScale.targetFor(pinchStartScale, pinchStartSpan, spanOf(ev))
+            }
+            MotionEvent.ACTION_POINTER_UP -> if (!pinchCommitted && ev.pointerCount == 2) {
+                pinchCommitted = true
+                commitPinchTextScale(ReaderPinchTextScale.targetFor(pinchStartScale, pinchStartSpan, spanOf(ev)))
+            }
+            MotionEvent.ACTION_UP -> {
+                if (!pinchCommitted) commitPinchTextScale(pinchTextScalePreview)
+                endPinch()
+            }
+            MotionEvent.ACTION_CANCEL -> endPinch()
+        }
+    }
+
+    private fun endPinch() {
+        pinchActive = false
+        pinchCommitted = false
+        pinchTextScalePreview = null
+    }
+
+    private fun commitPinchTextScale(scale: Float?) {
+        pinchTextScalePreview = null
+        val prefs = vm.state.value.prefs
+        if (scale == null || scale == prefs.fontSize) return
+        vm.updatePreferences(prefs.copy(fontSize = scale))
+    }
+
+    private fun spanOf(ev: MotionEvent): Float =
+        ReaderPinchTextScale.spanOf(ev.getX(0), ev.getY(0), ev.getX(1), ev.getY(1))
+
+    private fun handleCenterTap(e: MotionEvent) {
+        val webView = findWebViewUnderTouch(e.rawX, e.rawY, epubContainer)
+        if (!reflowableDocument || webView == null) {
+            vm.toggleChrome()
+            return
+        }
+        val location = IntArray(2)
+        webView.getLocationOnScreen(location)
+        val density = resources.displayMetrics.density
+        val cssX = (e.rawX - location[0]) / density
+        val cssY = (e.rawY - location[1]) / density
+        val request = illustrationRequest
+        val origin = foliateEngine?.currentLocator ?: readiumNavigator?.currentLocator?.value
+        lifecycleScope.launch {
+            val hit = withTimeoutOrNull(ILLUSTRATION_PROBE_TIMEOUT_MS) { probeIllustration(cssX, cssY) }
+            if (request != illustrationRequest || origin != (foliateEngine?.currentLocator ?: readiumNavigator?.currentLocator?.value)) return@launch
+            when {
+                hit == null -> vm.toggleChrome()
+                hit.linked -> Unit
+                else -> {
+                    val loaded = withContext(Dispatchers.IO) { loadIllustration(hit) }
+                    if (request != illustrationRequest || origin != (foliateEngine?.currentLocator ?: readiumNavigator?.currentLocator?.value)) return@launch
+                    if (loaded == null) vm.toggleChrome() else {
+                        vm.pauseReadingPace()
+                        illustration = loaded
+                    }
+                }
+            }
+        }
+    }
+
+    private suspend fun probeIllustration(cssX: Float, cssY: Float): ReaderIllustrationHit? {
+        foliateEngine?.let { engine ->
+            return suspendCancellableCoroutine { continuation ->
+                engine.illustrationAt(cssX, cssY) { hit ->
+                    if (continuation.isActive) continuation.resume(hit)
+                }
+            }
+        }
+        val nav = readiumNavigator ?: return null
+        return ReaderIllustrationProbe.parse(nav.evaluateQuietly(ReaderIllustrationProbe.readiumScript(cssX, cssY)))
+    }
+
+    private suspend fun loadIllustration(hit: ReaderIllustrationHit): ReaderIllustration? {
+        val bytes = if (foliateEngine != null) {
+            val archive = foliateArchive ?: return null
+            val path = hit.resource?.let(ReaderIllustrationLoader::containerPath) ?: return null
+            ReaderIllustrationLoader.readZipEntry(archive, path)
+        } else {
+            readiumIllustrationBytes(hit.src ?: return null)
+        } ?: return null
+        val bitmap = ReaderIllustrationLoader.decode(bytes) ?: return null
+        return ReaderIllustration(bitmap, hit.alt, hit.caption)
+    }
+
+    private suspend fun readiumIllustrationBytes(src: String): ByteArray? {
+        val publication = readiumPublication ?: return null
+        val base = readiumNavigator?.currentLocator?.value?.href ?: return null
+        val relative = parsePublicationHref(src) ?: return null
+        if (relative is AbsoluteUrl) return null
+        val link = publication.linkWithHref(base.resolve(relative)) ?: return null
+        val resource = publication.get(link) ?: return null
+        return try {
+            resource.read(0L..ReaderIllustrationLoader.MAX_SOURCE_BYTES.toLong()).getOrNull()
+                ?.takeIf { it.size <= ReaderIllustrationLoader.MAX_SOURCE_BYTES }
+        } finally {
+            resource.close()
+        }
+    }
+
+    private suspend fun EpubNavigatorFragment.evaluateQuietly(script: String): String? = try {
+        evaluateJavascript(script)
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun startReadiumReflowFit(nav: EpubNavigatorFragment) {
+        readiumReflowJob?.cancel()
+        readiumReflowJob = lifecycleScope.launch {
+            launch {
+                nav.currentLocator
+                    .map { it.href.toString() }
+                    .distinctUntilChanged()
+                    .collect { readiumReflowRequests.tryEmit(Unit) }
+            }
+            launch {
+                vm.state
+                    .map { it.prefs.reflowSignature() }
+                    .distinctUntilChanged()
+                    .drop(1)
+                    .collect { readiumReflowRequests.tryEmit(Unit) }
+            }
+            readiumReflowRequests
+                .debounce(WIDE_CONTENT_FIT_DEBOUNCE_MS)
+                .collect { fitReadiumWideContent(nav) }
+        }
+    }
+
+    private suspend fun fitReadiumWideContent(nav: EpubNavigatorFragment) {
+        if (!reflowableDocument || readiumNavigator !== nav || vm.state.value.readAlongActive || vm.state.value.autoScrollActive) return
+        val generation = vm.readiumUserNavigationGeneration
+        val anchor = vm.readiumReadingAnchor()
+        val layout = vm.beginReadiumLayout()
+        try {
+            repeat(WIDE_CONTENT_FIT_ATTEMPTS) {
+                val selectionChanged = ReaderSelectionHandleFix.parse(nav.evaluateQuietly(
+                    ReaderSelectionHandleFix.readiumScript(paginated = !vm.state.value.prefs.scroll)
+                )) == ReaderSelectionHandleFix.Result.CHANGED
+                val fit = ReaderWideContentFit.parse(nav.evaluateQuietly(ReaderWideContentFit.readiumScript()))
+                when (if (selectionChanged && fit == ReaderWideContentFit.Result.STABLE) ReaderWideContentFit.Result.CHANGED else fit) {
+                    ReaderWideContentFit.Result.CHANGED -> {
+                        if (anchor != null && readiumFootnoteDialog == null &&
+                            generation == vm.readiumUserNavigationGeneration) nav.go(anchor, animated = false)
+                        return
+                    }
+                    ReaderWideContentFit.Result.STABLE, ReaderWideContentFit.Result.BLOCKED -> return
+                    ReaderWideContentFit.Result.FAILED -> delay(WIDE_CONTENT_FIT_RETRY_MS)
+                }
+            }
+        } finally { vm.endReadiumLayout(layout) }
+    }
 
     override fun onActionModeStarted(mode: android.view.ActionMode) {
         super.onActionModeStarted(mode)
@@ -359,7 +608,7 @@ class EbookReaderActivity : FragmentActivity() {
     @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val volumeNav = vm.state.value.prefs.volumeButtonNavigation
-        val audioActive = vm.state.value.readAlongPlaying ||
+        val audioActive = vm.state.value.readAlongPlaying || vm.state.value.ttsPlayback.playing ||
             audioPlaybackManager.state.value.isPlaying
         val direction = ReaderHardwareKeyPolicy.directionFor(
             keyCode = event.keyCode,
@@ -482,6 +731,10 @@ class EbookReaderActivity : FragmentActivity() {
         private const val ZIP_END_RECORD_BYTES = 22L
         private const val MAX_ZIP_END_RECORD_SEARCH_BYTES = 65_557L
         private const val LINK_TAP_GRACE_MS = 700L
+        private const val ILLUSTRATION_PROBE_TIMEOUT_MS = 400L
+        private const val WIDE_CONTENT_FIT_DEBOUNCE_MS = 150L
+        private const val WIDE_CONTENT_FIT_ATTEMPTS = 3
+        private const val WIDE_CONTENT_FIT_RETRY_MS = 250L
 
         fun createIntent(
             context: Context,
@@ -544,6 +797,11 @@ class EbookReaderActivity : FragmentActivity() {
             insets
         }
         ViewCompat.requestApplyInsets(epubContainer)
+        epubContainer.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+            if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) {
+                readiumReflowRequests.tryEmit(Unit)
+            }
+        }
 
         bookId     = intent.getStringExtra(EXTRA_BOOK_ID)    ?: run { finish(); return }
         bookSource = intent.getStringExtra(EXTRA_BOOK_SOURCE)?.let { runCatching { BookSource.valueOf(it) }.getOrNull() } ?: BookSource.GRIMMORY
@@ -617,6 +875,9 @@ class EbookReaderActivity : FragmentActivity() {
                 }
             }
             val uiTextScale by hearthPreferences.uiTextScale.collectAsStateWithLifecycle(initialValue = 1f)
+            val paletteStyle by hearthPreferences.paletteStyle.collectAsStateWithLifecycle(
+                initialValue = HearthPaletteStyle.PARCHMENT,
+            )
             val readNextEnabled by hearthPreferences.readNextEnabled.collectAsStateWithLifecycle(initialValue = true)
             val readNextPosition by hearthPreferences.readNextPosition.collectAsStateWithLifecycle(
                 initialValue = ReadNextPosition.BOTTOM,
@@ -640,12 +901,19 @@ class EbookReaderActivity : FragmentActivity() {
                     ),
                 )
             }
+            val chromePalette = readerChromePalette(
+                readerState.prefs.theme,
+                themeState.einkProfile.active,
+                com.enve.hearth.design.EmberAccent,
+                paletteStyle,
+            )
             com.enve.hearth.design.HearthUiTextScale(uiTextScale) {
                 com.enve.app.ui.screens.reader.HearthReaderChrome(
                     vm = vm,
                     bookTitle = bookTitle,
                     bookAuthor = bookAuthor,
                     accentColor = com.enve.hearth.design.EmberAccent,
+                    paletteStyle = paletteStyle,
                     onBack = { finish() },
                     onAskLibrarian = onAskLibrarian,
                     onVerticalMarginsChanged = { margin -> applyVerticalReadingPadding(margin) },
@@ -655,6 +923,20 @@ class EbookReaderActivity : FragmentActivity() {
                     onReadNext = onReadNext,
                     restReminder = restReminder,
                 )
+                pinchTextScalePreview?.let { preview ->
+                    ReaderPinchTextScaleIndicator(preview, chromePalette, themeState.einkProfile.active)
+                }
+                illustration?.let { shown ->
+                    ReaderIllustrationViewer(
+                        illustration = shown,
+                        palette = chromePalette,
+                        eink = themeState.einkProfile.active,
+                        onDismiss = {
+                            vm.pauseReadingPace()
+                            illustration = null
+                        },
+                    )
+                }
                 readerState.pendingProgressConflict?.let { prompt ->
                     EnveTheme(
                         appTheme = themeState.effectiveAppTheme,
@@ -704,6 +986,9 @@ class EbookReaderActivity : FragmentActivity() {
         } else {
             EbookSourceFormat.fromServerType(bookFormat)
         }
+        reflowableDocument = false
+        readiumPublication = null
+        foliateArchive = null
 
         val openStartMs = android.os.SystemClock.elapsedRealtime()
         fun logPhase(phase: String, startMs: Long) {
@@ -713,26 +998,41 @@ class EbookReaderActivity : FragmentActivity() {
             )
         }
 
-        val hasOfflineSource = comicOfflineStorage.getDownloadedFile(bookId)
-            ?.let { it.exists() && it.length() > 0L }
-            ?: false
+        val cachedProgress = vm.cachedReaderProgress()
+        val localCheckpoint = EpubBridgeCheckpointCodec.decode(cachedProgress?.locator ?: locatorJson)
+        val cacheRoot = profileBinding.runtime.component.storageLocations().cacheDirectory
+        val cachedSource = withContext(Dispatchers.IO) {
+            if (!sourceFormat.isEpubPackage && sourceFormat != EbookSourceFormat.AZW3) null
+            else ReaderCachedSource.find(ReaderCachedSource.directory(cacheRoot, bookSource, bookConnectionId), bookId, sourceFormat)
+                ?: localCheckpoint?.let { checkpoint ->
+                    ReaderCachedSource.find(File(cacheRoot, "ebooks"), bookId, sourceFormat, checkpoint.providerFileId)
+                        ?.takeIf { ReaderCachedSource.matches(it, checkpoint.publicationSha256) }
+                }
+        }
+        val hasOfflineSource = cachedSource != null || comicOfflineStorage.getDownloadedFile(bookId)
+            ?.let { it.exists() && it.length() > 0L } == true
         val networkAvailable = hasNetworkConnection()
         val useReaderNetwork = shouldUseReaderNetwork(
             hasOfflineSource = hasOfflineSource,
             networkAvailable = networkAvailable,
         )
-        val ebookResource = if (sourceFormat.isEpubPackage && useReaderNetwork) {
+        val directAzw3 = sourceFormat == EbookSourceFormat.AZW3
+        val remoteResource = if ((sourceFormat.isEpubPackage || directAzw3) && useReaderNetwork) {
             runCatching { vm.getEbookResource() }.getOrNull()
         } else {
             null
         }
         val downloadStartMs = android.os.SystemClock.elapsedRealtime()
-        val sourceFile = try { downloadEbookSource(bookId, sourceFormat, ebookResource) }
+        val sourceFile = try { cachedSource ?: downloadEbookSource(bookId, sourceFormat, remoteResource) }
         catch (e: Exception) { showError("Download failed: ${e.message}"); return }
         logPhase("downloadOrResolveSource", downloadStartMs)
+        val ebookResource = remoteResource ?: if (sourceFormat.isEpubPackage || directAzw3) {
+            ProviderEbookResource(url = sourceFile.toURI().toString(), format = sourceFormat.name,
+                providerFileId = localCheckpoint?.providerFileId ?: ReaderCachedSource.providerFileId(sourceFile, bookId, sourceFormat))
+        } else null
 
         val normalizeStartMs = android.os.SystemClock.elapsedRealtime()
-        val epubFile = try {
+        val epubFile = if (directAzw3) sourceFile else try {
             setStatus(if (sourceFormat.isEpubPackage || sourceFormat == EbookSourceFormat.READALOUD) "Opening book…" else "Converting ${sourceFormat.displayName}…")
             OnDeviceEbookNormalizer(
                 kindleConverter = NativeKindleEpubConverter(applicationContext),
@@ -749,9 +1049,9 @@ class EbookReaderActivity : FragmentActivity() {
             showError("Could not prepare this ebook: ${e.message}")
             return
         }
-        logPhase("normalizeToEpub", normalizeStartMs)
+        logPhase(if (directAzw3) "directAzw3" else "normalizeToEpub", normalizeStartMs)
 
-        if (!looksLikeZip(epubFile)) {
+        if (!directAzw3 && !looksLikeZip(epubFile)) {
             showError("This file is not a valid EPUB package. It may be a PDF/CBZ or the server returned an invalid download.")
             return
         }
@@ -763,23 +1063,35 @@ class EbookReaderActivity : FragmentActivity() {
         }
 
         val customFonts = runCatching { customFontRepository.listFonts() }.getOrDefault(emptyList())
+        vm.setTtsBookFile(epubFile)
         val publicationSha256 = withContext(Dispatchers.IO) { epubFile.sha256() }
-        val mayUseFoliate = requestedReaderEngine == ReaderEngineKind.FOLIATE &&
-            sourceFormat.isEpubPackage &&
-            ebookResource?.format.equals("EPUB", ignoreCase = true) &&
-            FoliateReaderEngine.isSupported() &&
-            withContext(Dispatchers.IO) { isReflowableEpub(epubFile) }
+        val foliateSupported = FoliateReaderEngine.isSupported()
+        if (directAzw3 && !foliateSupported) {
+            showError("AZW3 reading requires an updated Android System WebView.")
+            return
+        }
+        val reflowable = directAzw3 || withContext(Dispatchers.IO) { isReflowableEpub(epubFile) }
+        reflowableDocument = reflowable
+        val mayUseFoliate = directAzw3 || (
+            requestedReaderEngine == ReaderEngineKind.FOLIATE &&
+                sourceFormat.isEpubPackage &&
+                (ebookResource == null || EbookSourceFormat.fromServerType(ebookResource.format).isEpubPackage) &&
+                foliateSupported &&
+                reflowable
+            )
         if (mayUseFoliate) {
+            requestedReaderEngine = ReaderEngineKind.FOLIATE
+            foliateArchive = epubFile.takeIf { !directAzw3 }
             val syncBook = currentSyncBook(locatorJson, epubProgress)
             syncCoordinator.registerBook(syncBook)
-            lifecycleScope.launch {
+            if (useReaderNetwork) lifecycleScope.launch {
                 runCatching { syncCoordinator.pullAnnotations(syncBook) }
                 syncCoordinator.flushAnnotations(syncBook.id)
             }
             val openProgress = resolveOpenProgress(
                 locatorJson = locatorJson,
                 epubProgress = epubProgress,
-                networkAvailable = networkAvailable,
+                networkAvailable = useReaderNetwork,
                 pullAnnotations = false,
                 cached = vm.cachedReaderProgress(),
                 epubFile = epubFile,
@@ -787,11 +1099,12 @@ class EbookReaderActivity : FragmentActivity() {
             )
             val plan = vm.prepareEpubEngineOpen(
                 engine = ReaderEngineKind.FOLIATE,
-                resource = requireNotNull(ebookResource),
+                resource = ebookResource?.copy(format = sourceFormat.name)
+                    ?: ProviderEbookResource(url = sourceFile.toURI().toString(), format = sourceFormat.name),
                 publicationSha256 = publicationSha256,
                 launcherLocator = openProgress.resolution.locatorJson,
                 launcherProgress = openProgress.resolution.progress,
-                launcherUpdatedAt = bookLastReadTime,
+                launcherUpdatedAt = maxOf(bookLastReadTime, openProgress.localUpdatedAt),
                 remote = openProgress.remote,
             )
             openFoliate(
@@ -832,7 +1145,7 @@ class EbookReaderActivity : FragmentActivity() {
         val openProgress = resolveOpenProgress(
             locatorJson = locatorJson,
             epubProgress = epubProgress,
-            networkAvailable = networkAvailable,
+            networkAvailable = useReaderNetwork,
             pullAnnotations = true,
             cached = cachedReaderProgress,
             epubFile = epubFile,
@@ -846,12 +1159,20 @@ class EbookReaderActivity : FragmentActivity() {
                 publicationSha256 = publicationSha256,
                 launcherLocator = progressResolution.locatorJson,
                 launcherProgress = progressResolution.progress,
-                launcherUpdatedAt = bookLastReadTime,
+                launcherUpdatedAt = maxOf(bookLastReadTime, openProgress.localUpdatedAt),
                 remote = openProgress.remote,
+                readiumEpubFile = epubFile.takeIf { sourceFormat.isEpubPackage },
             )
         }
         val bridgedCheckpoint = readiumBridgePlan?.initialCheckpoint
-        val resolvedLocatorJson = bridgedCheckpoint
+        val sharedLocator = progressResolution.locatorJson?.takeIf(SharedReadingLocation::isSharedPosition)
+        val localSharedCheckpoint = if (readiumBridgePlan == null && sharedLocator != null &&
+            sourceFormat != EbookSourceFormat.READALOUD && !directAzw3) {
+            EpubBridgeCheckpointCodec.fromReadiumLocator(sharedLocator, publicationSha256,
+                providerFileId = null, writerEpoch = 0, revision = 0, observedAt = openProgress.localUpdatedAt)
+                ?.let { checkpoint -> withContext(Dispatchers.IO) { EpubCfi.withReadiumAnchor(checkpoint, epubFile) } }
+        } else null
+        val resolvedLocatorJson = (bridgedCheckpoint ?: localSharedCheckpoint)
             ?.let(EpubBridgeCheckpointCodec::toReadiumLocatorJson)
             ?: progressResolution.locatorJson
         val resolvedProgress = bridgedCheckpoint
@@ -1039,8 +1360,10 @@ class EbookReaderActivity : FragmentActivity() {
             ?: run { showError("Navigator failed to start"); return }
 
         readiumNavigator = nav
+        readiumPublication = publication
         readiumFootnoteReturnLocator = nav.currentLocator.value
         vm.attachNavigator(nav, publication, epubFile = epubFile)
+        startReadiumReflowFit(nav)
         epubContainer.post { prepareReadiumWebViews(epubContainer) }
         lifecycleScope.launch {
             nav.currentLocator.debounce(250).collect { locator ->
@@ -1095,12 +1418,15 @@ class EbookReaderActivity : FragmentActivity() {
         bookFormat: String?,
         startupAttempt: Int = 1,
     ) {
+        val directAzw3 = bookFormat.equals("AZW3", ignoreCase = true)
         foliateReady = false
         foliateFallbackStarted = false
         epubContainer.visibility = View.VISIBLE
         epubContainer.alpha = 0f
         val startCompatibilityFallback: (String) -> Unit = { status ->
-            if (!foliateFallbackStarted) {
+            if (directAzw3) {
+                showError(status)
+            } else if (!foliateFallbackStarted) {
                 foliateFallbackStarted = true
                 lifecycleScope.launch {
                     foliateEngine?.close()
@@ -1117,14 +1443,17 @@ class EbookReaderActivity : FragmentActivity() {
             FoliateReaderEngine(
                 context = this,
                 container = epubContainer,
-                epubFile = epubFile,
+                bookFile = epubFile,
                 customFonts = customFonts,
                 initialCheckpoint = plan.initialCheckpoint,
                 identity = plan.identity,
                 initialPreferences = vm.state.value.prefs,
                 onReady = ready@ { toc, checkpoint, restoreMethod ->
                     if (!vm.onFoliateReady(toc, checkpoint, restoreMethod)) {
-                        startCompatibilityFallback("Opening with the compatible reader…")
+                        startCompatibilityFallback(
+                            if (directAzw3) "Could not restore the saved position in this AZW3 book."
+                            else "Opening with the compatible reader…",
+                        )
                         return@ready
                     }
                     foliateReady = true
@@ -1168,18 +1497,20 @@ class EbookReaderActivity : FragmentActivity() {
                         (!foliateReady || requiresCompatibilityFallback) &&
                         !foliateFallbackStarted
                     ) {
-                        startCompatibilityFallback("Opening with the compatible reader…")
+                        startCompatibilityFallback(
+                            if (directAzw3) "Could not open AZW3: $message"
+                            else "Opening with the compatible reader…",
+                        )
                     } else {
                         showError(message)
                     }
                 },
             )
         }.getOrElse {
-            requestedReaderEngine = ReaderEngineKind.READIUM
-            lifecycleScope.launch {
-                setStatus("Opening with the compatible reader…")
-                loadBook(bookId, locatorJson, epubProgress, bookFormat)
-            }
+            startCompatibilityFallback(
+                if (directAzw3) "Could not open AZW3: ${it.message}"
+                else "Opening with the compatible reader…",
+            )
             return
         }
         foliateEngine = engine
@@ -1382,8 +1713,11 @@ class EbookReaderActivity : FragmentActivity() {
             try {
                 val parsed = Locator.fromJSON(JSONObject(locatorJson))
                 val canUseParsedLocator = bookSource != BookSource.GRIMMORY ||
+                    SharedReadingLocation.isSharedPosition(openProgressPlan?.resolution?.locatorJson) ||
                     isDirectRestorableReadiumLocator(locatorJson)
-                if (parsed != null && parsed.href.toString().isNotBlank() && canUseParsedLocator) {
+                if (parsed != null && canUseParsedLocator && locatorResourceInReadingOrder(
+                        parsed.href.toString(), publication.readingOrder.map { it.url().toString() }
+                    )) {
                     return parsed
                 }
             } catch (_: Exception) {}
@@ -1441,6 +1775,10 @@ class EbookReaderActivity : FragmentActivity() {
         publication: org.readium.r2.shared.publication.Publication?,
     ): OpenProgressPlan {
         openProgressPlan?.let { return it }
+        sharedReadingOpenPlan(cached, bookLastReadTime)?.let {
+            openProgressPlan = it
+            return it
+        }
 
         val fallbackLocator = cached?.locator ?: locatorJson
         val fallbackProgress = cached?.progress?.takeIf { it > epubProgress } ?: epubProgress
@@ -1618,6 +1956,7 @@ class EbookReaderActivity : FragmentActivity() {
         }
 
         if (publication != null) return passages(publication)
+        if (epubFile.extension.equals("azw3", ignoreCase = true)) return null
 
         val readium = profileBinding.runtime.component.readium()
         val asset = readium.assetRetriever.retrieve(epubFile).getOrElse { return null }
@@ -1678,7 +2017,10 @@ class EbookReaderActivity : FragmentActivity() {
             return offlineFile
         }
 
-        val dir      = File(profileBinding.runtime.component.storageLocations().cacheDirectory, "ebooks").also { it.mkdirs() }
+        val cacheRoot = profileBinding.runtime.component.storageLocations().cacheDirectory
+        val dir = (if (format.isEpubPackage || format == EbookSourceFormat.AZW3)
+            ReaderCachedSource.directory(cacheRoot, bookSource, bookConnectionId)
+        else File(cacheRoot, "ebooks")).also { it.mkdirs() }
         val safeName = bookId.replace(Regex("[^a-zA-Z0-9_-]"), "_")
         val fileDiscriminator = resource?.providerFileId
             ?.replace(Regex("[^a-zA-Z0-9_-]"), "_")
@@ -1690,7 +2032,8 @@ class EbookReaderActivity : FragmentActivity() {
         } else {
             "$safeName$fileDiscriminator.${format.extension}"
         }
-        val cached   = File(dir, cachedName)
+        val cached = ReaderCachedSource.find(dir, bookId, format, resource?.providerFileId)
+            ?: File(dir, cachedName)
 
         if (cached.exists() && cached.length() > 0) {
             if (isZipBackedEbook(format) && !looksLikeZip(cached)) {
@@ -1878,7 +2221,7 @@ class EbookReaderActivity : FragmentActivity() {
         vm.flushProgress()
         vm.pauseReadingSession()
         vm.stopAutoScroll()
-        vm.stopTts()
+        vm.pauseTts()
         vm.onReaderBackgrounded()
     }
 
@@ -1890,11 +2233,15 @@ class EbookReaderActivity : FragmentActivity() {
     }
 
     override fun onDestroy() {
+        if (::profileBinding.isInitialized && !profileBinding.retired) vm.setTtsEngine(null)
         foliateEngine?.close()
         foliateEngine = null
+        foliateArchive = null
+        illustration = null
         readiumFootnoteDialog?.dismiss()
         readiumFootnoteDialog = null
         readiumNavigator = null
+        readiumPublication = null
         readiumFootnoteReturnLocator = null
         super.onDestroy()
         ttsEngine?.stop()
@@ -1926,44 +2273,32 @@ class EbookReaderActivity : FragmentActivity() {
 
     private fun initTts() {
         ttsEngine = TextToSpeech(this) { status ->
-            if (status != TextToSpeech.SUCCESS) {
-                vm.postTransientMessage("Text-to-speech is unavailable on this device.")
-                return@TextToSpeech
-            }
-            val engine = ttsEngine ?: return@TextToSpeech
+            lifecycleScope.launch {
+                if (status != TextToSpeech.SUCCESS) {
+                    vm.setTtsUnavailable("Text-to-speech is unavailable on this device.")
+                    return@launch
+                }
+                val engine = ttsEngine ?: return@launch
 
-            val preferred = Locale.getDefault()
-            val languageResult = engine.setLanguage(preferred)
-            if (languageResult == TextToSpeech.LANG_MISSING_DATA ||
-                languageResult == TextToSpeech.LANG_NOT_SUPPORTED) {
-                val fallbackResult = engine.setLanguage(Locale.US)
-                if (fallbackResult == TextToSpeech.LANG_MISSING_DATA ||
-                    fallbackResult == TextToSpeech.LANG_NOT_SUPPORTED) {
-                    vm.postTransientMessage(
-                        "No text-to-speech voice is installed. Install one from Android settings.",
-                    )
-                    return@TextToSpeech
-                } else {
-                    vm.postTransientMessage(
-                        "${preferred.displayLanguage} voice not installed. Using English.",
-                    )
+                val preferred = Locale.getDefault()
+                val languageResult = engine.setLanguage(preferred)
+                if (languageResult == TextToSpeech.LANG_MISSING_DATA ||
+                    languageResult == TextToSpeech.LANG_NOT_SUPPORTED) {
+                    val fallbackResult = engine.setLanguage(Locale.US)
+                    if (fallbackResult == TextToSpeech.LANG_MISSING_DATA ||
+                        fallbackResult == TextToSpeech.LANG_NOT_SUPPORTED) {
+                        vm.setTtsUnavailable(
+                            "No text-to-speech voice is installed. Install one from Android settings.",
+                        )
+                        return@launch
+                    } else {
+                        vm.postTransientMessage(
+                            "${preferred.displayLanguage} voice not installed. Using English.",
+                        )
+                    }
                 }
+                vm.setTtsEngine(engine)
             }
-            vm.setTtsEngine(engine)
-            engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                override fun onStart(utteranceId: String?) {}
-                override fun onDone(utteranceId: String?) {
-                    vm.clearTtsHighlight()
-                }
-                override fun onError(utteranceId: String?, errorCode: Int) {
-                    vm.clearTtsHighlight()
-                    vm.postTransientMessage("Couldn't speak that selection.")
-                }
-                @Deprecated("Deprecated in Java")
-                override fun onError(utteranceId: String?) {
-                    vm.clearTtsHighlight()
-                }
-            })
         }
     }
 }
@@ -1986,6 +2321,7 @@ private class ReaderSelectionCallback(
 ) : android.view.ActionMode.Callback {
 
     @Volatile private var active = false
+    val isActive: Boolean get() = active
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
     private val showPopup = Runnable { if (active) onShowPopup() }
     private val clearSelection = Runnable {
@@ -2031,4 +2367,15 @@ private class ReaderSelectionCallback(
         const val POPUP_DELAY_MS = 120L
         const val ACTION_MODE_REBUILD_GRACE_MS = 150L
     }
+}
+
+internal fun locatorResourceInReadingOrder(href: String, readingOrder: List<String>): Boolean {
+    if (href.isBlank()) return false
+    fun normalized(value: String): String? = try {
+        java.net.URI(value.substringBefore('#').replace(" ", "%20")).normalize().toASCIIString()
+            .replace(Regex("%[0-9a-fA-F]{2}")) { it.value.uppercase(Locale.ROOT) }
+            .takeIf(String::isNotBlank)
+    } catch (_: java.net.URISyntaxException) { null }
+    val resource = normalized(href) ?: return false
+    return readingOrder.any { normalized(it) == resource }
 }

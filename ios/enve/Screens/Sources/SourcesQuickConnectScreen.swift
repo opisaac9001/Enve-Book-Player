@@ -57,12 +57,12 @@ struct SourcesQuickConnectScreen: View {
                     connectButton
 
                     VStack(spacing: 10) {
-                        Text("Services like Plex and Real-Debrid have their own sign-in. Set those up here.")
+                        Text("Connect Google Drive, Dropbox, Plex, local files, and more.")
                             .font(.hearthCaption)
                             .foregroundStyle(hearth.textTertiary)
                             .multilineTextAlignment(.center)
                             .frame(maxWidth: .infinity)
-                        QuietButton(title: "Set up manually", systemImage: "slider.horizontal.3") {
+                        QuietButton(title: "Browse all sources", systemImage: "square.grid.2x2") {
                             showingManual = true
                         }
                     }
@@ -86,8 +86,15 @@ struct SourcesQuickConnectScreen: View {
         }) { server in
             detectedLogin(for: server).enveEnvironment()
         }
-        .sheet(isPresented: $showingManual) {
-            NavigationStack { AddSourceScreen() }.enveEnvironment()
+        .sheet(isPresented: $showingManual, onDismiss: {
+            guard didAddSource else { return }
+            didAddSource = false
+            dismiss()
+        }) {
+            NavigationStack {
+                AddSourceScreen { didAddSource = true }
+            }
+            .enveEnvironment()
         }
     }
 
@@ -149,7 +156,7 @@ struct SourcesQuickConnectScreen: View {
         case .oidcIssuerOnly:
             errorMessage = "That looks like a sign-in page, not a library server. Enter your server's address instead."
         case .unknown:
-            errorMessage = "We couldn't recognize that server. Use Set up manually to choose it yourself."
+            errorMessage = "We couldn't recognize that server. Use Browse all sources to choose it yourself."
         case .unreachable:
             errorMessage = "Couldn't reach that address. Check the URL and that you're on the same network as the server."
         }
