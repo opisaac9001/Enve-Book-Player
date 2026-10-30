@@ -55,6 +55,7 @@ import com.enve.engine.theme.HearthPaletteStyle
 import com.enve.hearth.design.EmberAccent
 import com.enve.hearth.design.EmberButton
 import com.enve.hearth.design.Hearth
+import com.enve.hearth.design.HearthChip
 import com.enve.hearth.design.HearthText
 import com.enve.hearth.design.LocalHearth
 import com.enve.hearth.design.LocalHearthEink
@@ -103,7 +104,7 @@ internal fun HearthPdfChrome(
                             bitmap = bitmap.asImageBitmap(),
                             contentDescription = "PDF ${pageLabel(state.spread.pages.toList(), state.pageCount).lowercase()}",
                             modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Fit,
+                            contentScale = pageAdjustValues.getValue(state.layout.pageAdjust),
                         )
                         else -> Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
@@ -261,6 +262,12 @@ private fun PdfAppearanceSheet(
             PdfToggleRow("Show cover separately", layout.showCoverSeparately, enabled = layout.twoPageView) {
                 onLayoutChange(layout.copy(showCoverSeparately = it))
             }
+            Overline("Page Adjust")
+            Row(horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S)) {
+                pageAdjustValues.forEach { entry ->
+                    HearthChip(entry.key, selected = layout.pageAdjust == entry.key, onClick = { onLayoutChange(layout.copy(pageAdjust = entry.key)) })
+                }
+            }
             EmberButton("Done", onDismiss, Modifier.fillMaxWidth())
         }
     }
@@ -284,3 +291,5 @@ private fun PdfToggleRow(label: String, checked: Boolean, enabled: Boolean, onCh
         )
     }
 }
+
+private val pageAdjustValues = mapOf("Crop" to ContentScale.Crop, "Fit" to ContentScale.Fit, "FillHeight" to ContentScale.FillHeight, "FillWidth" to ContentScale.FillWidth)
