@@ -7,6 +7,7 @@ data class PdfSpread(val first: Int, val last: Int) {
 data class PdfReadingLayout(
     val twoPageView: Boolean = false,
     val showCoverSeparately: Boolean = false,
+    val pageAdjust: String = "Fit",
 ) {
     val coverStandsAlone: Boolean get() = twoPageView && showCoverSeparately
 
