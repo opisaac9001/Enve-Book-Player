@@ -292,4 +292,4 @@ private fun PdfToggleRow(label: String, checked: Boolean, enabled: Boolean, onCh
     }
 }
 
-private val pageAdjustValues = mapOf("Crop" to ContentScale.Crop, "Fit" to ContentScale.Fit, "FillHeight" to ContentScale.FillHeight, "FillWidth" to ContentScale.FillWidth)
+private val pageAdjustValues = mapOf("Crop" to ContentScale.Crop, "Fit" to ContentScale.Fit, "Fill Height" to ContentScale.FillHeight, "Fill Width" to ContentScale.FillWidth)
