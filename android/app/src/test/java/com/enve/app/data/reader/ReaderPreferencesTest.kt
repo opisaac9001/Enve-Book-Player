@@ -4,7 +4,9 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.readium.r2.navigator.preferences.ColumnCount
+import org.readium.r2.shared.ExperimentalReadiumApi
 
+@OptIn(ExperimentalReadiumApi::class)
 class ReaderPreferencesTest {
     @Test
     fun supportsLargeAccessibilityFontScale() {
