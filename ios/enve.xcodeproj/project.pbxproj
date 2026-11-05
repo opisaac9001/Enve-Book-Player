@@ -1766,7 +1766,7 @@
 			repositoryURL = "https://github.com/readium/swift-toolkit.git";
 			requirement = {
 				kind = upToNextMajorVersion;
-				minimumVersion = 3.11.0;
+				minimumVersion = 3.11.1;
 			};
 		};
 		FA3A00010000000000000002 /* XCRemoteSwiftPackageReference "FluidAudio" */ = {
