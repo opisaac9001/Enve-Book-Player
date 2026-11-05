@@ -77,10 +77,12 @@ final class LibraryDisplayPreferencesStore {
 
     private let userDefaults: UserDefaults
     private(set) var readingEnabled = true
+    private(set) var bookCardStyle: BookCardStyle = .standard
 
     init(defaults: UserDefaults = .standard) {
         userDefaults = defaults
         readingEnabled = loadPreferences().readingEnabled
+        bookCardStyle = defaults.string(forKey: Self.bookCardStyleKey).flatMap(BookCardStyle.init(rawValue:)) ?? .standard
     }
 
     func includesLibraryBook(_ book: Book) -> Bool {
@@ -114,16 +116,8 @@ final class LibraryDisplayPreferencesStore {
     }
 
     func saveBookCardStyle(_ style: BookCardStyle) {
+        bookCardStyle = style
         userDefaults.set(style.rawValue, forKey: Self.bookCardStyleKey)
-    }
-
-    func loadBookCardStyle() -> BookCardStyle {
-        guard let rawValue = userDefaults.string(forKey: Self.bookCardStyleKey),
-            let style = BookCardStyle(rawValue: rawValue)
-        else {
-            return .standard
-        }
-        return style
     }
 
     func savePreferences(_ preferences: UserPreferences) {

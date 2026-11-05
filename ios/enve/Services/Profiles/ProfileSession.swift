@@ -166,6 +166,15 @@ final class ProfileSession {
         return service
     }
 
+    private var passageAlignmentStorage: PassageAlignmentService?
+    var passageAlignment: PassageAlignmentService {
+        if let passageAlignmentStorage { return passageAlignmentStorage }
+        let service = PassageAlignmentService(profileSession: self)
+        passageAlignmentStorage = service
+        return service
+    }
+    var createdPassageAlignment: PassageAlignmentService? { passageAlignmentStorage }
+
     #else
     var storyAlignService: StoryAlignService { .shared }
     #endif
@@ -416,6 +425,7 @@ final class ProfileSession {
         #endif
         #if os(iOS)
         if let service = storyAlignServiceStorage as? StoryAlignService { await service.retire() }
+        await passageAlignmentStorage?.retire()
         #endif
         await autoSaver.retire()
         if didCreateCloudProgress { await cloudProgress.retire() }

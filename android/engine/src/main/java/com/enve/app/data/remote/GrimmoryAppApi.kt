@@ -4,7 +4,6 @@ import com.enve.app.data.remote.dto.grimmoryapp.AppAuthorDetailDto
 import com.enve.app.data.remote.dto.grimmoryapp.AppBookDetailDto
 import com.enve.app.data.remote.dto.grimmoryapp.AppBookSummaryDto
 import com.enve.app.data.remote.dto.grimmoryapp.AppFilterOptionsDto
-import com.enve.app.data.remote.dto.grimmoryapp.AppLibrarySummaryDto
 import com.enve.app.data.remote.dto.grimmoryapp.AppMagicShelfSummaryDto
 import com.enve.app.data.remote.dto.grimmoryapp.AppPageDto
 import com.enve.app.data.remote.dto.grimmoryapp.AppShelfSummaryDto
@@ -22,9 +21,6 @@ import retrofit2.http.Path
 import retrofit2.http.Query
 
 interface GrimmoryAppApi {
-
-    @GET("api/v1/app/libraries")
-    suspend fun getLibraries(): Response<List<AppLibrarySummaryDto>>
 
     @GET("api/v1/app/books")
     suspend fun getBooks(

@@ -182,7 +182,7 @@ final class StoryAlignService {
         let url: URL
     }
 
-    struct PausedConversion: Codable {
+    struct PausedConversion: Codable, Equatable {
         let ebookStableId: String
         let audiobookStableId: String
         let method: StoryAlignMethod
@@ -215,6 +215,11 @@ final class StoryAlignService {
     private static let pausedConversionKey = "storyalign.pausedConversion"
 
     private func savePausedConversion() {
+        // Rewriting an unchanged job would drop fields a newer app version stored alongside it.
+        if let paused = pausedConversion, let stored = defaults.data(forKey: Self.pausedConversionKey),
+            (try? JSONDecoder().decode(PausedConversion.self, from: stored)) == paused {
+            return
+        }
         if let paused = pausedConversion,
             let data = try? JSONEncoder().encode(paused)
         {
@@ -284,7 +289,8 @@ final class StoryAlignService {
     }
 
     func resumeConversion(ebook: Book, audiobook: Book) {
-        guard !isRetired, let paused = pausedConversion else { return }
+        // A job saved by a newer system keeps its engine and progress; it is never relabeled or started here.
+        guard !isRetired, let paused = pausedConversion, paused.method.isAvailable else { return }
         method = paused.method
         downloadAndConvert(ebook: ebook, audiobook: audiobook)
     }

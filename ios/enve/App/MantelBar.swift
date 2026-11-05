@@ -543,6 +543,7 @@ struct MantelBar: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .frame(minHeight: 44)
                 .contentShape(Rectangle())
             }
             .buttonStyle(PressableStyle())

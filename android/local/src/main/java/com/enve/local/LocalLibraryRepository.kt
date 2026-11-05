@@ -16,9 +16,11 @@ import com.enve.core.data.provider.ProviderMetadataUpdate
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.coroutines.coroutineContext
 
 @Singleton
 class LocalLibraryRepository @Inject constructor(
@@ -34,6 +36,22 @@ class LocalLibraryRepository @Inject constructor(
         val books = mutableListOf<Book>()
         scanRecursive(rootDir, books, forcedStandaloneIds)
         books
+    }
+
+    suspend fun getAudioTracks(uriString: String, sourceId: String, book: Book): List<AudioTrack> = withContext(Dispatchers.IO) {
+        val rootDir = DocumentFile.fromTreeUri(context, uriString.toUri()) ?: return@withContext emptyList()
+        val target = findFileWithParent(rootDir, book.id) ?: return@withContext emptyList()
+        val forcedStandaloneIds = groupingOverrides.forcedStandaloneIds(BookSource.LOCAL, sourceId)
+        coroutineContext.ensureActive()
+        val group = audioGroups(target.directory.listFiles().toList(), forcedStandaloneIds)
+            .firstOrNull { files -> files.any { it.uri.toString() == book.id } }
+            ?: return@withContext emptyList()
+        val tracks = readAudioTracks(group)
+        if (tracks.size == 1 && tracks.single().durationMs <= 0L) {
+            listOf(tracks.single().copy(durationMs = book.duration * 1_000L))
+        } else {
+            tracks
+        }
     }
 
     suspend fun updateBookMetadata(
@@ -82,18 +100,14 @@ class LocalLibraryRepository @Inject constructor(
         }
     }
 
-    private fun scanRecursive(directory: DocumentFile, books: MutableList<Book>, forcedStandaloneIds: Set<String>) {
+    private suspend fun scanRecursive(directory: DocumentFile, books: MutableList<Book>, forcedStandaloneIds: Set<String>) {
+        coroutineContext.ensureActive()
         val files = directory.listFiles()
-        val audioFiles = files.filter { !it.isDirectory && it.extension() in audioExtensions }
-        val audioGroups = AudiobookFileGrouping.groups(
-            files = audioFiles,
-            name = { it.name.orEmpty() },
-            sizeBytes = DocumentFile::length,
-            forcedStandalone = { it.uri.toString() in forcedStandaloneIds },
-        )
+        val audioGroups = audioGroups(files.toList(), forcedStandaloneIds)
         val isCollectionFolder = audioGroups.size > 1
 
         audioGroups.forEach { group ->
+            coroutineContext.ensureActive()
             if (group.size == 1) {
                 mapFileToBook(group.first(), directory, allowFolderCover = !isCollectionFolder)?.let(books::add)
             } else {
@@ -107,7 +121,8 @@ class LocalLibraryRepository @Inject constructor(
             .forEach { mapFileToBook(it, directory)?.let(books::add) }
     }
 
-    private fun mapFileToBook(file: DocumentFile, directory: DocumentFile, allowFolderCover: Boolean = false): Book? {
+    private suspend fun mapFileToBook(file: DocumentFile, directory: DocumentFile, allowFolderCover: Boolean = false): Book? {
+        coroutineContext.ensureActive()
         val name = file.name ?: return null
         val extension = file.extension()
 
@@ -120,6 +135,7 @@ class LocalLibraryRepository @Inject constructor(
 
         val id = file.uri.toString()
         val audioMetadata = if (mediaType == AppMediaType.AUDIOBOOK) readAudioMetadata(file) else null
+        coroutineContext.ensureActive()
         val epubMetadata = if (extension == "epub" || extension == "kepub") {
             runCatching { EpubCoverExtractor.extractMetadata(context, file.uri, locations.cacheDirectory) }.getOrNull()
         } else null
@@ -152,26 +168,13 @@ class LocalLibraryRepository @Inject constructor(
         return loadSidecar(directory, name)?.let { LocalBookSidecarCodec.apply(book, it) } ?: book
     }
 
-    private fun mapAudioFolderToBook(
+    private suspend fun mapAudioFolderToBook(
         directory: DocumentFile,
         files: List<DocumentFile>,
         useFolderIdentity: Boolean,
     ): Book? {
         val primary = files.firstOrNull() ?: return null
-        val sorted = AudiobookFileGrouping.sorted(files) { it.name.orEmpty() }
-        var cumulativeStartMs = 0L
-        val tracks = sorted.mapIndexed { index, file ->
-            val metadata = readAudioMetadata(file)
-            AudioTrack(
-                index = index,
-                fileName = file.name.orEmpty(),
-                title = metadata.title ?: file.name.orEmpty().substringBeforeLast("."),
-                durationMs = metadata.durationMs,
-                cumulativeStartMs = cumulativeStartMs.also { cumulativeStartMs += metadata.durationMs },
-                fileId = file.uri.toString(),
-                contentUrl = file.uri.toString(),
-            )
-        }
+        val tracks = readAudioTracks(files)
         val chapters = tracks.mapIndexedNotNull { index, track ->
             if (track.durationMs <= 0L) return@mapIndexedNotNull null
             Chapter(
@@ -196,11 +199,37 @@ class LocalLibraryRepository @Inject constructor(
             addedOn = primary.lastModified(),
             primaryFileType = primary.extension().uppercase(),
             coverUrl = if (useFolderIdentity) folderCoverUri(directory) else null,
-            duration = cumulativeStartMs / 1_000L,
+            duration = tracks.sumOf { it.durationMs } / 1_000L,
             chapters = chapters,
             audioTracks = tracks,
         )
         return loadSidecar(directory, primary.name.orEmpty())?.let { LocalBookSidecarCodec.apply(book, it) } ?: book
+    }
+
+    private fun audioGroups(files: List<DocumentFile>, forcedStandaloneIds: Set<String>): List<List<DocumentFile>> =
+        AudiobookFileGrouping.groups(
+            files = files.filter { !it.isDirectory && it.extension() in audioExtensions },
+            name = { it.name.orEmpty() },
+            sizeBytes = DocumentFile::length,
+            forcedStandalone = { it.uri.toString() in forcedStandaloneIds },
+        )
+
+    private suspend fun readAudioTracks(files: List<DocumentFile>): List<AudioTrack> {
+        var cumulativeStartMs = 0L
+        return AudiobookFileGrouping.sorted(files) { it.name.orEmpty() }.mapIndexed { index, file ->
+            coroutineContext.ensureActive()
+            val metadata = readAudioMetadata(file)
+            coroutineContext.ensureActive()
+            AudioTrack(
+                index = index,
+                fileName = file.name.orEmpty(),
+                title = metadata.title ?: file.name.orEmpty().substringBeforeLast("."),
+                durationMs = metadata.durationMs,
+                cumulativeStartMs = cumulativeStartMs.also { cumulativeStartMs += metadata.durationMs },
+                fileId = file.uri.toString(),
+                contentUrl = file.uri.toString(),
+            )
+        }
     }
 
     private fun readAudioMetadata(file: DocumentFile): LocalAudioMetadata {
@@ -214,6 +243,8 @@ class LocalLibraryRepository @Inject constructor(
                 title = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE),
                 author = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST),
             )
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             LocalAudioMetadata()
         } finally {
@@ -246,8 +277,10 @@ class LocalLibraryRepository @Inject constructor(
         }.getOrNull()
     }
 
-    private fun findFileWithParent(directory: DocumentFile, uriString: String): LocalFileTarget? {
+    private suspend fun findFileWithParent(directory: DocumentFile, uriString: String): LocalFileTarget? {
+        coroutineContext.ensureActive()
         directory.listFiles().forEach { file ->
+            coroutineContext.ensureActive()
             if (file.isDirectory) {
                 findFileWithParent(file, uriString)?.let { return it }
             } else if (file.uri.toString() == uriString) {

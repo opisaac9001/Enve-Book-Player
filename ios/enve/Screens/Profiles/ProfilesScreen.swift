@@ -14,6 +14,10 @@ struct ProfilesScreen: View {
 
     var body: some View {
         SettingsScaffold(overline: "On this device", title: "Profiles", subtitle: "Separate libraries, settings and reading positions for each person.") {
+            if let message = profiles.availabilityMessage {
+                Text(message).font(.hearthBody).foregroundStyle(hearth.textSecondary)
+                    .accessibilityIdentifier("profiles-system-update")
+            }
             if !profiles.isEnabled {
                 Text("Your current library becomes the first adult profile. Books already on this device stay available.")
                     .font(.hearthBody)
@@ -21,6 +25,7 @@ struct ProfilesScreen: View {
                 EmberButton(title: "Set up profiles", systemImage: "person.crop.circle.badge.plus") {
                     editor = .enable
                 }
+                .disabled(!profiles.supportsMultipleProfiles)
                 .accessibilityIdentifier("profiles-enable")
             } else {
                 SourcesCard {
@@ -48,6 +53,7 @@ struct ProfilesScreen: View {
                                     perform { try await profiles.switchProfile(id: profile.id) }
                                 }
                             }
+                            .disabled(!profiles.supportsMultipleProfiles && profile.id != profiles.activeProfile.id)
                             .accessibilityIdentifier("profile-switch-\(profile.id)")
                             if !needsAuthorization {
                                 Toggle("Server syncing", isOn: Binding(
@@ -62,6 +68,7 @@ struct ProfilesScreen: View {
                                     Spacer()
                                     if profile.id != FamilyProfile.ownerID {
                                         Button("Remove", role: .destructive) { editor = .remove(profile) }
+                                            .disabled(!profiles.supportsMultipleProfiles)
                                     }
                                 }
                                 .font(.hearthCaption)
@@ -70,6 +77,7 @@ struct ProfilesScreen: View {
                                 } label: {
                                     SettingsLinkRow(title: "Import downloaded books", systemImage: "square.and.arrow.down")
                                 }
+                                .disabled(!profiles.supportsMultipleProfiles)
                             }
                         }
                         .padding(.vertical, 8)
@@ -80,6 +88,7 @@ struct ProfilesScreen: View {
                         .accessibilityIdentifier("profiles-unlock")
                 } else {
                     EmberButton(title: "Add profile", systemImage: "person.badge.plus") { editor = .add }
+                        .disabled(!profiles.supportsMultipleProfiles)
                         .accessibilityIdentifier("profiles-add")
                     QuietButton(title: profiles.hasPIN ? "Change adult PIN" : "Set adult PIN", systemImage: "lock") { editor = .pin }
                     if profiles.profiles.count == 1 {

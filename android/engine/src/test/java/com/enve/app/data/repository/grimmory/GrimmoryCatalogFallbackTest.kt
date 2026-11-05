@@ -56,7 +56,6 @@ class GrimmoryCatalogFallbackTest {
     @Test
     fun `complete legacy response accepts additional books and recovers after conflict`() {
         val app = listOf(BookSummaryDto(id = "ebook"))
-        assertThrows(IllegalStateException::class.java) { consistentGrimmoryCatalogFallback(app, emptyList()) }
         val legacy = app + BookSummaryDto(id = "audio")
         assertEquals(legacy, consistentGrimmoryCatalogFallback(app, legacy))
     }

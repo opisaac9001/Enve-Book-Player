@@ -380,7 +380,7 @@ private final class StubBookStarter: CarPlayReadAloudStarting {
     private(set) var readAloudPlayed: [Book] = []
     var onPlay: ((Book) -> Void)?
 
-    func play(_ book: Book, presentPlayer: Bool) {
+    func play(_ book: Book, from startPosition: TimeInterval?, presentPlayer: Bool) {
         played.append(book)
         onPlay?(book)
     }

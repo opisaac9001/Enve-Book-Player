@@ -1,5 +1,7 @@
 package com.enve.app.viewmodel
 
+import com.enve.core.data.local.toBook
+
 import com.enve.core.reader.ReadAloudHighlightStyle
 import android.graphics.Color
 import com.enve.core.reader.highlightColorHex
@@ -245,6 +247,12 @@ data class ReaderUiState(
     val transientMessage: String? = null,
 
     val readAlongPreparing: Boolean = false,
+    val liveReadAlongAvailable: Boolean = false,
+    val liveReadAlongActive: Boolean = false,
+    val liveReadAlongPlaying: Boolean = false,
+    val liveReadAlongPreparing: Boolean = false,
+    val liveReadAlongFollowing: Boolean = true,
+    val liveReadAlongStatus: String = "",
     val linkReturnLocator: Locator? = null,
 )
 
@@ -361,6 +369,9 @@ class ReaderViewModel @Inject constructor(
     private val readium: ReadiumManager,
     private val hearthPreferences: HearthPreferencesStore,
     private val hardcoverSync: com.enve.app.data.hardcover.HardcoverSyncService,
+    private val passageAlignment: com.enve.app.storyalign.PassageAlignmentService,
+    private val bookLinks: com.enve.app.data.links.BookLinkRepository,
+    private val playbackFacade: com.enve.engine.playback.PlaybackFacade,
 ) : ViewModel() {
 
     private val einkBoldActive: Boolean
@@ -493,6 +504,11 @@ class ReaderViewModel @Inject constructor(
     private var audioIsNavigating: Boolean = false
     private var readAlongSyncJob: Job? = null
     private var readAlongStartJob: Job? = null
+    private var liveReadAlongJob: Job? = null
+    private var liveReadAlongBooks: Pair<Book, Book>? = null
+    private var liveReadAlongSentence: Int? = null
+    @Volatile private var liveReadAlongForeground = true
+    private var liveReadAlongGeneration = 0
     private var searchJob: Job? = null
     private var searchEpubFile: java.io.File? = null
     private var searchLimit = MAX_SEARCH_RESULTS
@@ -669,7 +685,7 @@ class ReaderViewModel @Inject constructor(
         viewModelScope.launch {
             delay(1_000)
             engineNavigator?.goToLocator(result.locator) ?: navigator?.let { nav ->
-                readiumUserInteractionPending = true
+                beginReadiumUserNavigation()
                 val sameResource = EpubBridgeRestoreMatcher.hrefMatches(
                     expected = result.locator.href.toString(),
                     actual = nav.currentLocator.value.href.toString(),
@@ -1035,6 +1051,9 @@ class ReaderViewModel @Inject constructor(
         engine: ReaderEngineNavigator,
         plan: FoliateOpenPlan,
     ) {
+        stopLiveReadAlong()
+        liveReadAlongBooks = null
+        _state.update { it.copy(liveReadAlongAvailable = false) }
         cancelSearch()
         searchEpubFile = null
         _state.update { it.copy(searchOptionsAvailable = false) }
@@ -1261,6 +1280,22 @@ class ReaderViewModel @Inject constructor(
         val engine = buildMediaOverlayEngine(pub, epubFile, checkpointToken)
         mediaOverlayEngine = engine
         val supportsReadAlong = engine.detectsSmil()
+        stopLiveReadAlong()
+        liveReadAlongBooks = null
+        _state.update { it.copy(liveReadAlongAvailable = false) }
+        if (!supportsReadAlong && epubFile != null) {
+            viewModelScope.launch {
+                val key = Book(id = bookId, title = bookTitle, source = bookSource,
+                    mediaType = com.enve.core.data.model.AppMediaType.EBOOK, connectionId = bookConnectionId).uniqueKey
+                val cached = db?.bookCacheDao()?.getByCacheKey(key)
+                val ebook = cached?.toBook()
+                val audiobook = ebook?.let { bookLinks.linkedAudiobook(it) }
+                if (navigator === nav && ebook != null && audiobook != null) {
+                    liveReadAlongBooks = ebook to audiobook
+                    _state.update { it.copy(liveReadAlongAvailable = true) }
+                }
+            }
+        }
         if (supportsReadAlong) {
             viewModelScope.launch(Dispatchers.IO) {
                 db?.bookCacheDao()?.markReadAlongAvailable("${bookConnectionId ?: bookSource.name}:$bookId")
@@ -1410,6 +1445,9 @@ class ReaderViewModel @Inject constructor(
                     recordReadingPace(locator.locations.totalProgression ?: 0.0)
                 }
 
+                if (_state.value.liveReadAlongActive && readiumUserInteractionPending && !audioIsNavigating) {
+                    _state.update { it.copy(liveReadAlongFollowing = false) }
+                }
                 val href = locator.href.toString()
                 if (href != lastBionicHref) {
                     lastBionicHref = href
@@ -1850,7 +1888,7 @@ class ReaderViewModel @Inject constructor(
             val link = find(pub.tableOfContents)
                 ?: pub.readingOrder.firstOrNull { it.url().toString() == entry.href }
                 ?: return@launch
-            readiumUserInteractionPending = true
+            beginReadiumUserNavigation()
             if (!nav.go(link)) readiumUserInteractionPending = false
         }
     }
@@ -2168,6 +2206,7 @@ class ReaderViewModel @Inject constructor(
 
     @OptIn(ExperimentalReadiumApi::class)
     fun startTts() {
+        if (_state.value.liveReadAlongActive) stopLiveReadAlong()
         if (!_state.value.ttsReady) {
             postTransientMessage(ttsUnavailableReason)
             return
@@ -2208,6 +2247,7 @@ class ReaderViewModel @Inject constructor(
             postTransientMessage(ttsUnavailableReason)
             return
         }
+        if (_state.value.liveReadAlongActive) stopLiveReadAlong()
         if (_state.value.readAlongActive) stopReadAlongMode()
         if (audioPlaybackManager.state.value.isPlaying) audioPlaybackManager.togglePlayPause()
         var pending = true
@@ -2223,7 +2263,138 @@ class ReaderViewModel @Inject constructor(
         ttsPlayback.stop()
     }
 
+    fun resumeLiveReadAlongFollowing() {
+        liveReadAlongSentence = null
+        keepChromeAlive()
+        _state.update { it.copy(liveReadAlongFollowing = true) }
+    }
+
+    fun skipLiveReadAlongBackward() = playbackFacade.skipBackward()
+    fun skipLiveReadAlongForward() = playbackFacade.skipForward()
+
+    private fun startLiveReadAlong() {
+        val pair = liveReadAlongBooks ?: return
+        val epub = searchEpubFile ?: return
+        val nav = navigator ?: return
+        stopLiveReadAlong()
+        stopTts()
+        stopAutoScroll()
+        val ebook = pair.first
+        val audiobook = pair.second
+        _state.update { it.copy(liveReadAlongActive = true, liveReadAlongFollowing = true,
+            liveReadAlongStatus = "Preparing read along…", showChrome = true) }
+        val generation = liveReadAlongGeneration
+        liveReadAlongJob = viewModelScope.launch {
+            try {
+                var lastLinkProbe = 0L
+                if (playbackFacade.nowPlaying.value?.bookKey != audiobook.uniqueKey) {
+                    playbackFacade.open(audiobook)
+                    kotlinx.coroutines.withTimeout(15_000) {
+                        playbackFacade.nowPlaying.first { it?.bookKey == audiobook.uniqueKey }
+                    }
+                }
+                kotlinx.coroutines.withTimeout(15_000) {
+                    audioPlaybackManager.state.first {
+                        it.isReady && it.mediaId == audioPlaybackManager.nowPlayingMetadata.value?.mediaId
+                    }
+                }
+                passageAlignment.follow(ebook, audiobook, epub, audioPlaybackManager.currentAudioTracks(),
+                    playback = { audioPlaybackManager.state.value },
+                    isForeground = { liveReadAlongForeground },
+                    onUpdate = update@{ prepared ->
+                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                        if (generation != liveReadAlongGeneration || navigator !== nav || playbackFacade.nowPlaying.value?.bookKey != audiobook.uniqueKey) {
+                            throw CancellationException("Read-along playback changed")
+                        }
+                        val now = android.os.SystemClock.elapsedRealtime()
+                        if (now - lastLinkProbe >= 1_000) {
+                            lastLinkProbe = now
+                            if (bookLinks.linkedAudiobook(ebook)?.uniqueKey != audiobook.uniqueKey) {
+                                throw CancellationException("Books were unlinked")
+                            }
+                        }
+                        _state.update { it.copy(
+                            liveReadAlongPlaying = audioPlaybackManager.state.value.isPlaying,
+                            liveReadAlongPreparing = prepared.preparing,
+                            liveReadAlongStatus = when {
+                                !it.liveReadAlongFollowing -> "Browsing independently"
+                                prepared.cannotKeepUp -> "Preparing more slowly than playback. Lower the speed for fewer gaps."
+                                else -> prepared.message
+                            },
+                        ) }
+                        if (!liveReadAlongForeground) return@update
+                        val mapping = prepared.mapping
+                        if (mapping == null) {
+                            liveReadAlongSentence = null
+                            clearReadAlongHighlight()
+                            return@update
+                        }
+                        if (isTextSelectionActive() || !_state.value.liveReadAlongFollowing || mapping.sentence == liveReadAlongSentence) return@update
+                        val href = parsePublicationHref(mapping.href) ?: return@update
+                        val link = publication?.linkWithHref(href) ?: return@update
+                        val base = publication?.locatorFromLink(link) ?: return@update
+                        val locator = base.copy(
+                            locations = base.locations.copy(progression = mapping.progression),
+                            text = Locator.Text(highlight = mapping.text,
+                                before = mapping.before.takeLast(120).takeIf(String::isNotEmpty),
+                                after = mapping.after.take(120).takeIf(String::isNotEmpty)),
+                        )
+                        readiumUserInteractionPending = false
+                        audioIsNavigating = true
+                        try {
+                            if (nav.go(locator, animated = false)) {
+                                val reached = kotlinx.coroutines.withTimeoutOrNull(10_000) {
+                                    nav.currentLocator.first {
+                                        normalizePublicationHref(it.href.toString()) == normalizePublicationHref(locator.href.toString())
+                                    }
+                                    nav.evaluateJavascript("true")
+                                    true
+                                } ?: false
+                                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                                if (!reached || generation != liveReadAlongGeneration || navigator !== nav || !_state.value.liveReadAlongFollowing) return@update
+                                applyReadAlongHighlight(locator)
+                                liveReadAlongSentence = mapping.sentence
+                                if (epubCheckpointLease == null) scheduleSync(locator) else {
+                                    readiumCheckpointDirty = true
+                                    scheduleReadiumCheckpointSync(nav)
+                                }
+                            }
+                        } finally { if (generation == liveReadAlongGeneration) audioIsNavigating = false }
+                    },
+                )
+            } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
+                postTransientMessage("The linked audiobook couldn't start. Check its source connection and try again.")
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: com.enve.app.storyalign.PassagePreparationException) {
+                postTransientMessage(error.message.orEmpty())
+            }
+            catch (_: Exception) {
+                postTransientMessage("Couldn't prepare read along. Check the linked audiobook, connection and free storage, then try again.")
+            } finally {
+                if (generation == liveReadAlongGeneration) {
+                    _state.update { it.copy(liveReadAlongActive = false, liveReadAlongPlaying = false, liveReadAlongPreparing = false) }
+                    clearReadAlongHighlight()
+                }
+            }
+        }
+    }
+
+    private fun stopLiveReadAlong() {
+        liveReadAlongGeneration++
+        liveReadAlongJob?.cancel()
+        liveReadAlongJob = null
+        liveReadAlongSentence = null
+        audioIsNavigating = false
+        _state.update { it.copy(liveReadAlongActive = false, liveReadAlongPlaying = false, liveReadAlongPreparing = false) }
+        clearReadAlongHighlight()
+    }
+
     fun toggleReadAlongPlayback() {
+        if (!_state.value.readAlongSupported && _state.value.liveReadAlongAvailable) {
+            keepChromeAlive()
+            if (_state.value.liveReadAlongActive) playbackFacade.togglePlayPause() else startLiveReadAlong()
+            return
+        }
         if (!_state.value.readAlongActive) {
             startReadAlongMode()
             return
@@ -2247,6 +2418,14 @@ class ReaderViewModel @Inject constructor(
     }
 
     fun toggleReadAlongMode() {
+        if (_state.value.liveReadAlongActive) {
+            stopLiveReadAlong()
+            return
+        }
+        if (!_state.value.readAlongSupported && _state.value.liveReadAlongAvailable) {
+            startLiveReadAlong()
+            return
+        }
         if (!_state.value.readAlongSupported) {
             postTransientMessage("This book doesn't have read-aloud audio.")
             return
@@ -2357,10 +2536,14 @@ class ReaderViewModel @Inject constructor(
     }
 
     fun onReaderBackgrounded() {
+        liveReadAlongForeground = false
+        if (_state.value.liveReadAlongActive) clearReadAlongHighlight()
         submitCurrentReadAloudCheckpoint()
     }
 
     fun onReaderForegrounded() {
+        liveReadAlongForeground = true
+        if (_state.value.liveReadAlongActive) liveReadAlongSentence = null
         if (_state.value.readAlongActive) {
             mediaOverlayEngine?.reconcilePlaybackPosition()
         }
@@ -2670,6 +2853,7 @@ class ReaderViewModel @Inject constructor(
     }
 
     private fun refreshReadAlongHighlight() {
+        if (_state.value.liveReadAlongActive) { liveReadAlongSentence = null; return }
         val engine = mediaOverlayEngine ?: return
         if (!_state.value.readAlongActive) return
         viewModelScope.launch {
@@ -3052,7 +3236,7 @@ class ReaderViewModel @Inject constructor(
         _state.update { it.copy(linkReturnLocator = null) }
         val nav = navigator ?: return
         viewModelScope.launch {
-            readiumUserInteractionPending = true
+            beginReadiumUserNavigation()
             if (!nav.go(locator, animated = false)) {
                 readiumUserInteractionPending = false
                 return@launch
@@ -3068,6 +3252,14 @@ class ReaderViewModel @Inject constructor(
         _state.update { it.copy(linkReturnLocator = null) }
     }
 
+    private suspend fun beginReadiumUserNavigation() {
+        if (_state.value.liveReadAlongActive) {
+            _state.update { it.copy(liveReadAlongFollowing = false) }
+            while (audioIsNavigating) delay(16)
+        }
+        noteReadiumUserInteraction()
+    }
+
     fun noteReadiumUserInteraction() {
         if (navigator != null && engineNavigator == null) readiumUserInteractionPending = true
     }
@@ -3081,6 +3273,7 @@ class ReaderViewModel @Inject constructor(
         if (readiumScrollCaptureJob?.isActive == true || !_state.value.prefs.scroll ||
             _state.value.readAlongActive || readiumLayoutInProgress) return
         val nav = navigator ?: return
+        if (_state.value.liveReadAlongActive) _state.update { it.copy(liveReadAlongFollowing = false) }
         readiumScrollCaptureJob = viewModelScope.launch {
             while (navigator === nav && sessionResumedAtMs != null && !readiumLayoutInProgress) {
                 captureHeldReadingPosition(nav, nav.currentLocator.value, heldReadingPosition.generation, userMoved = true)
@@ -3128,7 +3321,7 @@ class ReaderViewModel @Inject constructor(
         }
         viewModelScope.launch {
             navigator?.let {
-                readiumUserInteractionPending = true
+                beginReadiumUserNavigation()
                 if (_state.value.prefs.scroll) {
                     if (!scrollReadiumPage(it, forward = true)) readiumUserInteractionPending = false
                 } else if (!it.goForward()) {
@@ -3145,7 +3338,7 @@ class ReaderViewModel @Inject constructor(
         }
         viewModelScope.launch {
             navigator?.let {
-                readiumUserInteractionPending = true
+                beginReadiumUserNavigation()
                 if (_state.value.prefs.scroll) {
                     if (!scrollReadiumPage(it, forward = false)) readiumUserInteractionPending = false
                 } else if (!it.goBackward()) {
@@ -3175,7 +3368,7 @@ class ReaderViewModel @Inject constructor(
             if (positions.isNotEmpty()) {
                 val idx = (f * positions.size).toInt().coerceIn(0, positions.size - 1)
                 navigator?.let {
-                    readiumUserInteractionPending = true
+                    beginReadiumUserNavigation()
                     if (!it.go(positions[idx])) readiumUserInteractionPending = false
                 }
             } else {
@@ -3185,7 +3378,7 @@ class ReaderViewModel @Inject constructor(
                 if (order.isEmpty()) return@launch
                 val linkIdx = (f * order.size).toInt().coerceIn(0, order.size - 1)
                 navigator?.let {
-                    readiumUserInteractionPending = true
+                    beginReadiumUserNavigation()
                     if (!it.go(order[linkIdx])) readiumUserInteractionPending = false
                 }
             }
@@ -3410,7 +3603,7 @@ class ReaderViewModel @Inject constructor(
         }
         val nav = navigator ?: return
         viewModelScope.launch {
-            readiumUserInteractionPending = true
+            beginReadiumUserNavigation()
 
             a.locatorJson?.takeIf { it.isNotBlank() }?.let { json ->
                 runCatching { Locator.fromJSON(org.json.JSONObject(json)) }
@@ -3821,6 +4014,7 @@ class ReaderViewModel @Inject constructor(
     }
 
     override fun onCleared() {
+        stopLiveReadAlong()
         ebookProgressSync.setReaderActive(false)
         applicationScope.launch { ebookProgressSync.flush() }
         submitCurrentReadAloudCheckpoint()

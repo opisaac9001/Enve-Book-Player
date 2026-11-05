@@ -6,8 +6,10 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -30,6 +32,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
@@ -44,6 +47,32 @@ fun Overline(text: String, modifier: Modifier = Modifier, color: Color? = null) 
         color = color ?: Hearth.palette.textSecondary,
         modifier = modifier,
     )
+}
+
+@Composable
+fun ScreenHeader(
+    title: String,
+    modifier: Modifier = Modifier,
+    overline: String? = null,
+    subtitle: (@Composable () -> Unit)? = null,
+    trailing: (@Composable RowScope.() -> Unit)? = null,
+) {
+    val palette = Hearth.palette
+    Row(
+        modifier
+            .fillMaxWidth()
+            .padding(horizontal = Hearth.Spacing.XL)
+            .padding(top = Hearth.Spacing.L),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            overline?.let { Overline(it) }
+            Text(title, style = HearthText.ScreenTitle, color = palette.text, modifier = Modifier.semantics { heading() })
+            subtitle?.invoke()
+        }
+        trailing?.let { Row(verticalAlignment = Alignment.CenterVertically, content = it) }
+    }
 }
 
 @Composable

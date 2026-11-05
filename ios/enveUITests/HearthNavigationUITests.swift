@@ -6,19 +6,19 @@ final class HearthNavigationUITests: XCTestCase {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = [
-            "-imagineSeed", "48", "-imagineScenario", "mixed", "-imagineScreen", "library",
-            "-imagine.library.source", "all", "-imagine.library.status", "all",
+            "-imagineTeardownSynthetic", "YES", "-imagineSeed", "48", "-imagineScenario", "mixed", "-imagineScreen", "library",
+            "-imagine.library.source", "all", "-imagine.library.source.media.all", "all", "-imagine.library.status", "all",
             "-imagine.library.media", "all", "-imagine.library.facet", "books",
+            "-imagine.library.layout", "list", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryL",
         ]
         app.launch()
+        XCUIDevice.shared.orientation = .portrait
         let libraryTab = app.buttons["tab_library"]
         XCTAssertTrue(libraryTab.waitForExistence(timeout: 30))
         libraryTab.tap()
         let library = app.scrollViews["library-screen"].firstMatch
         XCTAssertTrue(library.waitForExistence(timeout: 30))
-        let books = library.buttons.matching(NSPredicate(format:
-            "label CONTAINS ', ' AND NOT label BEGINSWITH 'SOURCE,' AND NOT label BEGINSWITH 'LIBRARY,' AND NOT label BEGINSWITH 'Everything,' AND NOT label BEGINSWITH 'In progress,' AND NOT label BEGINSWITH 'Reading,' AND NOT label BEGINSWITH 'Downloaded,'"
-        ))
+        let books = library.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Synthetic Book "))
         XCTAssertTrue(books.firstMatch.waitForExistence(timeout: 10))
         let windowFrame = app.windows.firstMatch.frame
         let contentFrame = windowFrame.insetBy(dx: 0, dy: 180)
@@ -30,9 +30,7 @@ final class HearthNavigationUITests: XCTestCase {
             if visibleBook != nil { break }
             library.swipeUp()
         }
-        guard let book = visibleBook else {
-            throw XCTSkip("A library book is required to check detail navigation")
-        }
+        let book = try XCTUnwrap(visibleBook, "The seeded fixture must expose a book to check detail navigation")
         book.tap()
         let back = app.buttons["Back"].firstMatch
         XCTAssertTrue(back.waitForExistence(timeout: 10))

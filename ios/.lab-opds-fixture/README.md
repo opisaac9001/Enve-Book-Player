@@ -1,7 +1,7 @@
 # Enve OPDS WireMock fixture
 
-A deterministic OPDS test catalog for the lab's WireMock instance (`http://10.0.0.116:9091`,
-`http://100.114.100.51:9091` over Tailscale). Every endpoint lives under `/opds`, so the fixture can be
+A deterministic OPDS test catalog for the lab's WireMock instance (`http://192.0.2.10:9091`,
+`http://198.51.100.10:9091` over Tailscale). Every endpoint lives under `/opds`, so the fixture can be
 added to and removed from the existing WireMock root without touching the RSS and API fixtures already
 there.
 
@@ -37,13 +37,13 @@ bin/verify-opds-fixture.sh      curl + jq verification
 
 ## Deploying
 
-WireMock's root on the lab is `/srv/enve-lab/repo/config/wiremock`. Copy the two served trees into it and
+WireMock's root on the lab is `<wiremock-root>`. Copy the two served trees into it and
 keep the script with the lab's other tooling:
 
 ```bash
-cp -R mappings/. /srv/enve-lab/repo/config/wiremock/mappings/
-cp -R __files/.  /srv/enve-lab/repo/config/wiremock/__files/
-install -m 0755 bin/verify-opds-fixture.sh /srv/enve-lab/repo/bin/verify-opds-fixture
+cp -R mappings/. <wiremock-root>/mappings/
+cp -R __files/.  <wiremock-root>/__files/
+install -m 0755 bin/verify-opds-fixture.sh <lab-bin>/verify-opds-fixture
 ```
 
 Then reload WireMock without restarting the container:
@@ -52,13 +52,13 @@ Then reload WireMock without restarting the container:
 curl -sS -X POST http://127.0.0.1:9091/__admin/mappings/reset
 ```
 
-`bin/lab restart wiremock` works too. Check the JSON before reloading — a malformed mapping file makes
+Check the JSON before reloading — a malformed mapping file makes
 WireMock drop the whole file:
 
 ```bash
-find /srv/enve-lab/repo/config/wiremock/mappings -name 'opds-*.json' -exec jq -e . {} + > /dev/null
-xmllint --noout /srv/enve-lab/repo/config/wiremock/__files/opds/v1/*.xml
-bash -n /srv/enve-lab/repo/bin/verify-opds-fixture
+find <wiremock-root>/mappings -name 'opds-*.json' -exec jq -e . {} + > /dev/null
+xmllint --noout <wiremock-root>/__files/opds/v1/*.xml
+bash -n <lab-bin>/verify-opds-fixture
 ```
 
 The two `__files/opds/malformed/truncated*` bodies are invalid on purpose; exclude them from any bulk
@@ -70,12 +70,12 @@ The mappings reference these paths. Everything else in the fixture is complete a
 
 | Expected path under `__files/` | Content type served | Source |
 | --- | --- | --- |
-| `opds/files/lab-ebook-001.epub` | `application/epub+zip` | a small DRM-free EPUB from `/srv/enve-lab/media/books` |
-| `opds/files/lab-ebook-002.epub` | `application/epub+zip` | a second, different EPUB from `/srv/enve-lab/media/books` |
-| `opds/files/lab-ebook-003.pdf` | `application/pdf` | a small PDF from `/srv/enve-lab/media/books` |
-| `opds/files/lab-comic-001.cbz` | `application/vnd.comicbook+zip` | a small CBZ from `/srv/enve-lab/media/comics` |
-| `opds/files/lab-audiobook-001.mp3` | `audio/mpeg` | a short single-file MP3 from `/srv/enve-lab/media/audiobooks` |
-| `opds/files/lab-audiobook-002.m4b` | `audio/mp4` | a short M4B from `/srv/enve-lab/media/audiobooks` |
+| `opds/files/lab-ebook-001.epub` | `application/epub+zip` | a small DRM-free EPUB from the lab corpus |
+| `opds/files/lab-ebook-002.epub` | `application/epub+zip` | a second, different EPUB from the lab corpus |
+| `opds/files/lab-ebook-003.pdf` | `application/pdf` | a small PDF from the lab corpus |
+| `opds/files/lab-comic-001.cbz` | `application/vnd.comicbook+zip` | a small CBZ from the lab corpus |
+| `opds/files/lab-audiobook-001.mp3` | `audio/mpeg` | a short single-file MP3 from the lab corpus |
+| `opds/files/lab-audiobook-002.m4b` | `audio/mp4` | a short M4B from the lab corpus |
 | `opds/files/lab-audiobook-003.audiobook` | `application/audiobook+zip` | any small zip; Enve refuses this format before downloading, so the bytes only matter to other clients |
 | `opds/images/cover-blue.png` | `image/png` | cover art, or generate one |
 | `opds/images/cover-amber.png` | `image/png` | cover art, or generate one |
@@ -87,7 +87,7 @@ the audio and under a megabyte for everything else is plenty.
 Generated covers, if the corpus art is inconvenient:
 
 ```bash
-cd /srv/enve-lab/repo/config/wiremock/__files/opds/images
+cd <wiremock-root>/__files/opds/images
 ffmpeg -loglevel error -f lavfi -i color=c=0x121A2B:s=600x900 -frames:v 1 cover-blue.png
 ffmpeg -loglevel error -f lavfi -i color=c=0x5E3612:s=600x900 -frames:v 1 cover-amber.png
 ffmpeg -loglevel error -f lavfi -i color=c=0x121A2B:s=200x300 -frames:v 1 thumb-blue.png
@@ -201,8 +201,8 @@ fixtures this one does not own.
 | `GET /opds/redirect/same-origin/epub` | 302 to `/opds/files/lab-ebook-001.epub` |
 | `GET /opds/echo/headers` | 200 JSON reporting **whether** `Authorization`, `Proxy-Authorization`, `Cookie`, `X-Enve-Token`, `X-Auth-Token` and `X-Api-Key` arrived, never their values |
 
-Cross-origin targets by request host: `10.0.0.116` → `100.114.100.51:9091`, `100.114.100.51` →
-`10.0.0.116:9091`, `localhost` → `127.0.0.1:9091`, anything else → `localhost:9091`. The client under test
+Cross-origin targets by request host: `192.0.2.10` → `198.51.100.10:9091`, `198.51.100.10` →
+`192.0.2.10:9091`, `localhost` → `127.0.0.1:9091`, anything else → `localhost:9091`. The client under test
 has to be able to reach both addresses for the hop to complete; a client that can only reach one of them
 still proves the interesting half, because the request that leaves for the second origin is the one whose
 headers matter.
@@ -211,13 +211,13 @@ headers matter.
 
 | Connection URL | Exercises |
 | --- | --- |
-| `http://10.0.0.116:9091/opds/v2/root.json` | the OPDS 2.0 catalog, its sub-feeds and the progression services |
-| `http://10.0.0.116:9091/opds/v1/root.xml` | the OPDS 1.2 catalog |
-| `http://10.0.0.116:9091/opds/v2/protected.json` | the unauthorized path at connection time |
-| `http://10.0.0.116:9091/opds/malformed/html-as-feed` | a URL that answers 200 with a sign-in page |
-| `http://10.0.0.116:9091/opds/malformed/not-a-feed.json` | JSON that is not an OPDS document |
+| `http://192.0.2.10:9091/opds/v2/root.json` | the OPDS 2.0 catalog, its sub-feeds and the progression services |
+| `http://192.0.2.10:9091/opds/v1/root.xml` | the OPDS 1.2 catalog |
+| `http://192.0.2.10:9091/opds/v2/protected.json` | the unauthorized path at connection time |
+| `http://192.0.2.10:9091/opds/malformed/html-as-feed` | a URL that answers 200 with a sign-in page |
+| `http://192.0.2.10:9091/opds/malformed/not-a-feed.json` | JSON that is not an OPDS document |
 
-Substitute `100.114.100.51` for the Tailscale run. Importing the OPDS 2.0 root visits the root, its four
+Substitute `198.51.100.10` for the Tailscale run. Importing the OPDS 2.0 root visits the root, its four
 sub-feeds, the group collection, the partner catalog and page 2 — eight requests, all of which must succeed
 for the snapshot to count as complete. Facet targets are not followed, and the 401 and malformed endpoints
 are deliberately not linked from any feed, so a normal import never turns partial.
@@ -225,8 +225,8 @@ are deliberately not linked from any feed, so a normal import never turns partia
 ## Verification
 
 ```bash
-bin/verify-opds-fixture.sh http://10.0.0.116:9091
-bin/verify-opds-fixture.sh http://10.0.0.116:9091 --with-binaries
+bin/verify-opds-fixture.sh http://192.0.2.10:9091
+bin/verify-opds-fixture.sh http://192.0.2.10:9091 --with-binaries
 ```
 
 With no argument the script uses `$OPDS_FIXTURE_BASE_URL`, then `http://127.0.0.1:9091`. It needs `curl`

@@ -9,6 +9,7 @@ enum ProfileAccessError: Error {
     case operationInProgress
     case removeOtherProfilesFirst
     case cannotRemoveActiveProfile
+    case systemUpdateRequired
 }
 
 struct ProfileDownloadImportCandidate: Identifiable {
@@ -44,6 +45,16 @@ final class ProfileSwitchCoordinator {
     private(set) var errorMessage: String?
     private(set) var hasPIN = false
     private(set) var isParentAuthorized = false
+    let supportsMultipleProfiles: Bool
+
+    nonisolated static var supportsMultipleProfileStorage: Bool {
+        if #available(iOS 17.5, *) { return true }
+        return false
+    }
+
+    var availabilityMessage: String? {
+        supportsMultipleProfiles ? nil : "Profiles require iOS 17.5 or later. Update your device to use them. Your saved profiles and their data have been kept."
+    }
 
     var profiles: [FamilyProfile] { catalog?.profiles ?? [] }
     var activeProfile: FamilyProfile {
@@ -52,6 +63,8 @@ final class ProfileSwitchCoordinator {
     var isParentAuthorizationRequired: Bool { profiles.contains(where: { $0.role == .child }) }
 
     private init() {
+        let supportsMultipleProfiles = Self.supportsMultipleProfileStorage
+        self.supportsMultipleProfiles = supportsMultipleProfiles
         defaults = .standard
         sessionFactory = { try ProfileSession(profile: $0, libraryDatabase: $1) }
         pinStore = .shared
@@ -65,11 +78,16 @@ final class ProfileSwitchCoordinator {
                 guard let profile = catalog.profiles.first(where: { $0.id == selectedID }) else {
                     throw ProfileAccessError.profileUnavailable
                 }
-                activeSession = profile.id == FamilyProfile.ownerID ? .owner : try ProfileSession(profile: profile)
+                if !supportsMultipleProfiles && profile.id != FamilyProfile.ownerID {
+                    activeSession = .owner
+                    isLocked = true
+                } else {
+                    activeSession = profile.id == FamilyProfile.ownerID ? .owner : try ProfileSession(profile: profile)
+                }
             } else {
                 activeSession = .owner
             }
-            isLocked = isEnabled && activeProfile.role == .adult && isParentAuthorizationRequired
+            isLocked = isLocked || (isEnabled && activeProfile.role == .adult && isParentAuthorizationRequired)
         } catch {
             catalog = nil
             activeSession = .owner
@@ -86,11 +104,13 @@ final class ProfileSwitchCoordinator {
         pinStore: AdultPINStore,
         defaults: UserDefaults,
         initialSession: ProfileSession,
+        supportsMultipleProfiles: Bool? = nil,
         sessionFactory: @escaping (FamilyProfile, BookStoreManager?) throws -> ProfileSession
     ) throws {
         self.catalog = catalog
         self.pinStore = pinStore
         self.defaults = defaults
+        self.supportsMultipleProfiles = supportsMultipleProfiles ?? Self.supportsMultipleProfileStorage
         self.sessionFactory = sessionFactory
         activeSession = initialSession
         isEnabled = defaults.bool(forKey: enabledKey)
@@ -100,6 +120,7 @@ final class ProfileSwitchCoordinator {
     }
 
     func enable(ownerName: String, pin: String? = nil) throws {
+        try requireSupportedSystem()
         try requireIdle()
         let catalog = try availableCatalog()
         guard activeProfile.id == FamilyProfile.ownerID else { throw ProfileAccessError.parentAuthorizationRequired }
@@ -165,6 +186,7 @@ final class ProfileSwitchCoordinator {
 
     @discardableResult
     func addProfile(name: String, role: FamilyProfileRole, serverSyncEnabled: Bool = false) throws -> FamilyProfile {
+        try requireSupportedSystem()
         try requireIdle()
         try requireParentAuthorization()
         guard isEnabled else { throw ProfileAccessError.profileUnavailable }
@@ -358,7 +380,8 @@ final class ProfileSwitchCoordinator {
     }
 
     func handleBackgroundSession(identifier: String, completionHandler: @escaping () -> Void) {
-        guard let id = UnifiedDownloadService.profileID(forBackgroundSessionIdentifier: identifier),
+        guard let id = UnifiedDownloadService.profileID(forBackgroundSessionIdentifier: identifier)
+            ?? BookDownloadManager.profileID(forBackgroundSessionIdentifier: identifier),
             let profile = profiles.first(where: { $0.id == id })
         else { completionHandler(); return }
         do { try session(for: profile).downloads.handleBackgroundSession(identifier: identifier) }
@@ -366,6 +389,7 @@ final class ProfileSwitchCoordinator {
     }
 
     private func session(for profile: FamilyProfile) throws -> ProfileSession {
+        if profile.id != activeSession.profile.id { try requireSupportedSystem() }
         if activeSession.profile.id == profile.id && !activeSession.isRetired { return activeSession }
         if let session = inactiveSessions[profile.id], !session.isRetired { return session }
         let session = try sessionFactory(profile, libraryDatabases[profile.id])
@@ -384,6 +408,10 @@ final class ProfileSwitchCoordinator {
             throw ProfileAccessError.profileUnavailable
         }
         try requireParentAuthorization()
+    }
+
+    private func requireSupportedSystem() throws {
+        guard supportsMultipleProfiles else { throw ProfileAccessError.systemUpdateRequired }
     }
 
     private func requireIdle() throws {

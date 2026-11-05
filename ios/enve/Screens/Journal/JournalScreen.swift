@@ -28,6 +28,7 @@ struct JournalScreen: View {
 
     var body: some View {
         GeometryReader { geo in
+            let contentWidth = HearthAdaptive.contentWidth(for: geo.size.width, maximum: HearthAdaptive.wideReadableWidth)
             ScrollView {
                 VStack(alignment: .leading, spacing: 32) {
                     header
@@ -51,7 +52,7 @@ struct JournalScreen: View {
                     if hasHeatmap {
                         VStack(alignment: .leading, spacing: 14) {
                             ShelfHeader(title: "The past year")
-                            JournalHeatmap(daily: daily, width: geo.size.width - 48)
+                            JournalHeatmap(daily: daily, width: contentWidth - 48)
                                 .padding(.horizontal, 24)
                         }
                     }
@@ -61,11 +62,12 @@ struct JournalScreen: View {
                     }
 
                     if !finished.isEmpty {
-                        mantel(width: geo.size.width - 48)
+                        mantel(width: contentWidth - 48)
                     }
 
                     closerLook
                 }
+                .hearthReadableFrame(width: geo.size.width, maximum: HearthAdaptive.wideReadableWidth)
                 .padding(.top, 8)
                 .padding(.bottom, mantelInset + 16)
             }
@@ -85,14 +87,7 @@ struct JournalScreen: View {
     }
 
     private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 6) {
-                Overline("Your reading life")
-                Text("Journal")
-                    .font(.hearthScreenTitle)
-                    .foregroundStyle(hearth.text)
-            }
-            Spacer()
+        TabHeader(overline: "Your reading life", title: "Journal") {
             NavigationLink {
                 SettingsScreen(profileSession: profileSession ?? .owner)
             } label: {
@@ -103,12 +98,11 @@ struct JournalScreen: View {
                     .background {
                         Circle()
                             .fill(hearth.bgElevated)
-                            .overlay(Circle().strokeBorder(hearth.hairline, lineWidth: 1))
+                            .hearthOutlined(Circle())
                     }
             }
             .accessibilityLabel("Settings")
         }
-        .padding(.horizontal, 24)
     }
 
     private var thisWeek: some View {

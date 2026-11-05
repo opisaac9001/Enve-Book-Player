@@ -271,6 +271,14 @@ final class PlaybackManager {
 
     var hasActivePlayer: Bool { player != nil }
 
+    /// Read-only: nil while seeking, loading or switching tracks, so the track offset always matches the item.
+    var livePosition: TimeInterval? {
+        guard let player, !isSeeking, !isLoading, player.currentItem?.status == .readyToPlay else { return nil }
+        let local = CMTimeGetSeconds(player.currentTime())
+        guard local.isFinite, local >= 0 else { return nil }
+        return local + currentTrackStartOffset
+    }
+
     @ObservationIgnored let isPlayingSubject = CurrentValueSubject<Bool, Never>(false)
     @ObservationIgnored let currentTimeSubject = CurrentValueSubject<TimeInterval, Never>(0)
     @ObservationIgnored let durationSubject = CurrentValueSubject<TimeInterval, Never>(0)
@@ -853,11 +861,13 @@ final class PlaybackManager {
         )
     }
 
-    func playDirectURL(_ book: Book, url: URL) {
+    func playDirectURL(_ book: Book, url: URL, startPosition: TimeInterval? = nil) {
         guard !isRetired else { return }
+        let requestedStart = startPosition.map { max(0, $0) }
         AppLogger.player.debug("playDirectURL bookDiagnosticID=\(diagnosticBookID(book)) url=\(url.redacted)")
 
         if currentBook?.stableId == book.stableId && player != nil {
+            if let requestedStart { seek(to: requestedStart) }
             resume()
             return
         }
@@ -865,7 +875,9 @@ final class PlaybackManager {
         stop()
 
         var resumeTime: TimeInterval = 0
-        if let stored = profileSession.bookProgress.loadProgress(for: book) {
+        if let requestedStart {
+            resumeTime = requestedStart
+        } else if let stored = profileSession.bookProgress.loadProgress(for: book) {
             resumeTime = stored.progress
         } else if let appProgress = profileSession.progress.progress(for: book) {
             resumeTime = appProgress.currentTime
@@ -968,12 +980,14 @@ final class PlaybackManager {
         }
     }
 
-    func playLocalBook(_ book: Book) {
+    func playLocalBook(_ book: Book, startPosition: TimeInterval? = nil) {
         guard !isRetired else { return }
+        let requestedStart = startPosition.map { max(0, $0) }
         AppLogger.player.debug("playLocalBook bookDiagnosticID=\(diagnosticBookID(book)) source=\(book.source)")
 
         if currentBook?.stableId == book.stableId && player != nil {
             AppLogger.player.info("Same book already loaded, resuming...")
+            if let requestedStart { seek(to: requestedStart) }
             resume()
             return
         }
@@ -982,7 +996,10 @@ final class PlaybackManager {
 
         var resumeTime: TimeInterval = 0
         var localUpdate = Date.distantPast
-        if let storedProgress = profileSession.bookProgress.loadProgress(for: book) {
+        if let requestedStart {
+            resumeTime = requestedStart
+            localUpdate = Date()
+        } else if let storedProgress = profileSession.bookProgress.loadProgress(for: book) {
             resumeTime = storedProgress.progress
             localUpdate = Date(timeIntervalSince1970: storedProgress.lastUpdated)
             AppLogger.player.info("Using stored progress: \(resumeTime)s")
@@ -1002,12 +1019,14 @@ final class PlaybackManager {
 
         runOperation { [self] in
             do {
-                let resolvedResumeTime = await resolveProviderOpenResumeTime(
-                    for: book,
-                    provider: currentProvider,
-                    initialResumeTime: resumeTime,
-                    localUpdate: localUpdate
-                )
+                let resolvedResumeTime = requestedStart != nil
+                    ? resumeTime
+                    : await resolveProviderOpenResumeTime(
+                        for: book,
+                        provider: currentProvider,
+                        initialResumeTime: resumeTime,
+                        localUpdate: localUpdate
+                    )
                 try await setupLocalPlayer(for: book, resumeTime: resolvedResumeTime)
                 await MainActor.run {
                     self.isLoading = false
@@ -1171,8 +1190,9 @@ final class PlaybackManager {
         throw PlaybackError.noAudioSource
     }
 
-    func playBook(_ book: Book, provider: any PlaybackSessionProvider) {
+    func playBook(_ book: Book, provider: any PlaybackSessionProvider, startPosition: TimeInterval? = nil) {
         guard !isRetired else { return }
+        let requestedStart = startPosition.map { max(0, $0) }
         AppLogger.player.debug("playBook bookDiagnosticID=\(diagnosticBookID(book))")
         AppLogger.player.debug("Provider: \(type(of: provider))")
         let currentBookID = currentBook.map(diagnosticBookID) ?? "none"
@@ -1184,6 +1204,7 @@ final class PlaybackManager {
         if currentBook?.stableId == book.stableId, !isLoading, player?.currentItem?.status == .readyToPlay {
             AppLogger.player.info("Same book already loaded, resuming from currentTime: \(currentTime)s...")
             refreshCurrentTimeFromPlayer()
+            if let requestedStart { seek(to: requestedStart) }
             resume()
             return
         }
@@ -1208,12 +1229,21 @@ final class PlaybackManager {
             AppLogger.player.debug("No scoped playback progress found for bookDiagnosticID=\(diagnosticBookID(book))")
         }
 
+        if let requestedStart {
+            startResolvedPlayback(book: book, provider: provider, resumeTime: requestedStart, usesSessionResume: false)
+            return
+        }
+
         if book.source == .booklore, book.mediaType == .audiobook {
             currentBook = book
             currentProvider = provider
             duration = book.duration ?? 0
+            currentTime = localTime
             isLoading = true
-            runOperation { [self] in await reconcileGrimmoryAudiobook(book: book, provider: provider, localTime: localTime) }
+            let generation = playbackGeneration
+            startupTask = makeOperation { [self] in
+                await reconcileGrimmoryAudiobook(book: book, provider: provider, localTime: localTime, generation: generation)
+            }
             return
         }
 
@@ -1232,6 +1262,7 @@ final class PlaybackManager {
             self.syncConflict = (local: localTime, server: serverTime, bookId: book.id)
             self.currentBook = book
             self.currentProvider = provider
+            self.currentTime = localTime
             return
         }
 
@@ -1271,15 +1302,24 @@ final class PlaybackManager {
     private func reconcileGrimmoryAudiobook(
         book: Book,
         provider: any PlaybackSessionProvider,
-        localTime: TimeInterval
+        localTime: TimeInterval,
+        generation: Int
     ) async {
-        guard profileSession.serverSyncEnabled else { return }
+        guard profileSession.serverSyncEnabled else {
+            startResolvedPlayback(book: book, provider: provider, resumeTime: localTime)
+            return
+        }
         let grimmory = provider as? BookloreProvider
+        func isCurrent() -> Bool {
+            !Task.isCancelled && !isRetired && generation == playbackGeneration && currentBook?.uniqueId == book.uniqueId
+        }
 
         var resolvedBook = book
         var duration = book.duration ?? 0
         if duration <= 0, let grimmory,
-            let session = try? await grimmory.startPlaybackSession(for: book)
+            let session = try? await PlaybackStartupDeadline.run(seconds: progressTimeout, operation: {
+                try await grimmory.startPlaybackSession(for: book)
+            })
         {
             let trackDuration = session.audioTracks.reduce(0.0) { $0 + max($1.duration, 0) }
             if trackDuration > 0 {
@@ -1287,11 +1327,14 @@ final class PlaybackManager {
                 resolvedBook.duration = duration
             }
         }
+        guard isCurrent() else { return }
 
         var serverTime: TimeInterval = 0
         var serverStamp: Date?
         if let grimmory,
-            let result = try? await grimmory.fetchAudiobookProgress(for: resolvedBook),
+            let result = try? await PlaybackStartupDeadline.run(seconds: progressTimeout, operation: {
+                try await grimmory.fetchAudiobookProgress(for: resolvedBook)
+            }),
             let stamp = result.updatedAt
         {
             serverTime =
@@ -1300,8 +1343,12 @@ final class PlaybackManager {
                 : (duration > 0 ? result.percentage * duration : 0)
             serverStamp = stamp
         }
+        guard isCurrent() else { return }
 
-        guard profileSession.serverSyncEnabled else { return }
+        guard profileSession.serverSyncEnabled else {
+            startResolvedPlayback(book: resolvedBook, provider: provider, resumeTime: localTime)
+            return
+        }
         let decision = decideGrimmoryOpen(
             localTime: localTime,
             serverTime: serverTime,
@@ -1312,7 +1359,7 @@ final class PlaybackManager {
 
         switch decision {
         case .noServerData:
-            startGrimmoryPlayback(book: resolvedBook, provider: provider, resumeTime: localTime)
+            startResolvedPlayback(book: resolvedBook, provider: provider, resumeTime: localTime)
 
         case .adoptServer(let resume):
             profileSession.bookProgress.saveProgress(for: resolvedBook, progress: resume, duration: duration)
@@ -1320,17 +1367,19 @@ final class PlaybackManager {
             AppLogger.player.debug(
                 "[Booklore open] pulling server \(Int(resume))s over local \(Int(localTime))s for bookDiagnosticID=\(diagnosticBookID(resolvedBook))"
             )
-            startGrimmoryPlayback(book: resolvedBook, provider: provider, resumeTime: resume)
+            startResolvedPlayback(book: resolvedBook, provider: provider, resumeTime: resume)
 
         case .keepLocal(let resume, let push):
             if let serverStamp { profileSession.bookProgress.saveServerStamp(for: resolvedBook, serverStamp) }
-            startGrimmoryPlayback(book: resolvedBook, provider: provider, resumeTime: resume)
+            startResolvedPlayback(book: resolvedBook, provider: provider, resumeTime: resume)
             if push {
-                await profileSession.sync.pushProgress(
-                    book: resolvedBook,
-                    forceImmediate: true,
-                    domain: .audiobook
-                )
+                runOperation { [self] in
+                    await profileSession.sync.pushProgress(
+                        book: resolvedBook,
+                        forceImmediate: true,
+                        domain: .audiobook
+                    )
+                }
             }
 
         case .conflict(let local, let server):
@@ -1341,16 +1390,19 @@ final class PlaybackManager {
             currentBook = resolvedBook
             currentProvider = provider
             self.duration = duration
+            currentTime = local
             isLoading = false
+            startupTask = nil
             pendingGrimmoryServerStamp = serverStamp
             syncConflict = (local: local, server: server, bookId: resolvedBook.id)
         }
     }
 
-    private func startGrimmoryPlayback(
+    private func startResolvedPlayback(
         book: Book,
         provider: any PlaybackSessionProvider,
-        resumeTime: TimeInterval
+        resumeTime: TimeInterval,
+        usesSessionResume: Bool = true
     ) {
         currentBook = book
         currentProvider = provider
@@ -1360,7 +1412,7 @@ final class PlaybackManager {
         isLoading = true
         playbackError = nil
         startPlaybackPreparation(for: book) { [self] in
-            try await setupPlayer(for: book, provider: provider, resumeTime: resumeTime)
+            try await setupPlayer(for: book, provider: provider, resumeTime: resumeTime, usesSessionResume: usesSessionResume)
         }
     }
 
@@ -1482,7 +1534,7 @@ final class PlaybackManager {
         }
     }
 
-    private func setupPlayer(for book: Book, provider: any PlaybackSessionProvider, resumeTime: TimeInterval) async throws {
+    private func setupPlayer(for book: Book, provider: any PlaybackSessionProvider, resumeTime: TimeInterval, usesSessionResume: Bool = true) async throws {
         let generation = playbackGeneration
         try Task.checkCancellation()
         AppLogger.player.debug("Setting up player bookDiagnosticID=\(diagnosticBookID(book))")
@@ -1572,10 +1624,11 @@ final class PlaybackManager {
         }
         self.currentTracks = orderedTracks
 
+        let hasUnknownTrackDuration = orderedTracks.count > 1 && orderedTracks.contains { $0.duration <= 0 }
         let effectiveResumeTime = resolvePlaybackResumeTime(
             requestedTime: resumeTime,
-            sessionTime: profileSession.serverSyncEnabled ? session.serverCurrentTime : nil,
-            duration: sessionDuration,
+            sessionTime: profileSession.serverSyncEnabled && usesSessionResume ? session.serverCurrentTime : nil,
+            duration: hasUnknownTrackDuration ? 0 : sessionDuration,
             tolerance: AppConstants.Playback.resumeTimeTolerance
         )
         if profileSession.serverSyncEnabled, resumeTime <= AppConstants.Playback.resumeTimeTolerance,
@@ -2360,6 +2413,7 @@ final class PlaybackManager {
         currentBook = nil
         currentProvider = nil
         currentSessionId = nil
+        currentTime = 0
         timeListenedSinceLastSync = 0
         currentTracks = []
         currentTrackIndex = 0
@@ -2646,6 +2700,24 @@ final class PlaybackManager {
         }
 
         return result.isEmpty ? nil : result
+    }
+
+    /// The on-device track layout playback would use for this book: the timeline passage mappings are expressed in.
+    func localPlaybackLayout(for book: Book) -> [AudioTrackInfo]? {
+        if let tracks = makeLocalTracks(for: book), !tracks.isEmpty { return tracks }
+        if let tracks = buildLocalTrackInfos(from: book) { return normalizedTracks(tracks) }
+        guard let filePath = book.filePath else { return nil }
+        let url = Self.resolveLocalPath(filePath)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return [AudioTrackInfo(index: 0, startOffset: 0, duration: book.duration ?? 0, contentUrl: url.absoluteString, mimeType: mimeType(forFileExtension: url.pathExtension))]
+    }
+
+    func readAlongPlaybackLayout(for book: Book) -> (tracks: [AudioTrackInfo], headers: [String: String], streamSession: String?)? {
+        if let local = localPlaybackLayout(for: book) { return (local, [:], nil) }
+        guard !isRetired, currentBook?.stableId == book.stableId, let currentSessionId,
+            !currentTracks.isEmpty, currentTracks.allSatisfy({ $0.duration.isFinite && $0.duration > 0 && $0.startOffset.isFinite }), hasReliableTrackTimeline
+        else { return nil }
+        return (currentTracks, currentProvider?.getStreamingHeaders() ?? [:], "\(currentSessionId):\(playbackGeneration)")
     }
 
     private func buildLocalTrackInfos(from book: Book) -> [AudioTrackInfo]? {

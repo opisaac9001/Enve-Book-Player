@@ -28,6 +28,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import javax.inject.Inject
 import javax.inject.Singleton
+import java.util.concurrent.atomic.AtomicReference
 
 internal fun cumulativeTrackOffsets(durationsMs: List<Long>): List<Long> =
     buildList(durationsMs.size) {
@@ -153,7 +154,13 @@ class AudioPlaybackManager @Inject constructor(
     private var activeTrackDurationsMs: List<Long> = emptyList()
     private var activeTrackOffsetsMs: List<Long> = emptyList()
     private var activeQueueKey: String? = null
-    private var pendingPlayback: PendingPlayback? = null
+    private val pendingPlayback = AtomicReference<PendingPlayback?>(null)
+
+    val hasPendingPlayback: Boolean
+        get() = pendingPlayback.get()?.let { it.requestJob?.isCancelled != true } == true
+
+    val pendingMediaId: String?
+        get() = pendingPlayback.get()?.takeUnless { it.requestJob?.isCancelled == true }?.mediaId
 
     private val _currentBookId = MutableStateFlow<String?>(null)
     val currentBookIdFlow: StateFlow<String?> = _currentBookId.asStateFlow()
@@ -202,10 +209,7 @@ class AudioPlaybackManager @Inject constructor(
                     try {
                         controller = future.get()
                         setupPlayerListener()
-                        pendingPlayback?.let { pending ->
-                            pendingPlayback = null
-                            playPending(pending)
-                        }
+                        pendingPlayback.getAndSet(null)?.let(::playPending)
                     } catch (e: kotlinx.coroutines.CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -228,10 +232,8 @@ class AudioPlaybackManager @Inject constructor(
         authToken: String? = null,
         format: String? = null,
         connectionId: String? = null,
+        requestJob: Job? = null,
     ) {
-        resetTransientStateForNewBook(bookId)
-        currentBookId = bookId
-        _nowPlayingMetadata.value = NowPlayingMetadata(bookId, mediaId, title, author, coverUrl)
         val pending = PendingPlayback.Single(
             streamUrl = streamUrl,
             bookId = bookId,
@@ -243,13 +245,9 @@ class AudioPlaybackManager @Inject constructor(
             authToken = authToken,
             format = format,
             connectionId = connectionId,
+            requestJob = requestJob,
         )
-        if (controller == null) {
-            pendingPlayback = pending
-            connect()
-            return
-        }
-        runOnMain { playPending(pending) }
+        submitPlayback(pending)
     }
 
     private fun playSingleOnController(
@@ -308,10 +306,8 @@ class AudioPlaybackManager @Inject constructor(
         mediaId: String = "",
         authToken: String? = null,
         connectionId: String? = null,
+        requestJob: Job? = null,
     ) {
-        resetTransientStateForNewBook(bookId)
-        currentBookId = bookId
-        _nowPlayingMetadata.value = NowPlayingMetadata(bookId, mediaId, title, author, coverUrl)
         val pending = PendingPlayback.Multi(
             tracks = tracks,
             bookId = bookId,
@@ -322,13 +318,26 @@ class AudioPlaybackManager @Inject constructor(
             mediaId = mediaId,
             authToken = authToken,
             connectionId = connectionId,
+            requestJob = requestJob,
         )
-        if (controller == null) {
-            pendingPlayback = pending
-            connect()
-            return
+        submitPlayback(pending)
+    }
+
+    private fun submitPlayback(pending: PendingPlayback) {
+        if (pending.requestJob?.isCancelled == true) return
+        pendingPlayback.set(pending)
+        runOnMain {
+            if (pendingPlayback.get() !== pending) return@runOnMain
+            if (controller == null) {
+                connect()
+            } else if (pendingPlayback.compareAndSet(pending, null)) {
+                playPending(pending)
+            }
         }
-        runOnMain { playPending(pending) }
+    }
+
+    fun cancelPendingPlayback() {
+        pendingPlayback.set(null)
     }
 
     private fun playMultiTrackOnController(
@@ -408,6 +417,28 @@ class AudioPlaybackManager @Inject constructor(
         }
     }
 
+    fun currentAudioTracks(): List<com.enve.core.data.model.AudioTrack> {
+        val player = controller ?: return emptyList()
+        refreshTrackOffsetsFromQueue(player)
+        return (0 until player.mediaItemCount).mapNotNull { index ->
+            val item = player.getMediaItemAt(index)
+            val uri = item.localConfiguration?.uri ?: return@mapNotNull null
+            com.enve.core.data.model.AudioTrack(
+                index = index,
+                fileName = uri.lastPathSegment.orEmpty(),
+                durationMs = activeTrackDurationsMs.getOrNull(index) ?: if (player.mediaItemCount == 1) player.duration.coerceAtLeast(0L) else 0L,
+                contentUrl = uri.toString(),
+            )
+        }
+    }
+
+    fun resume() {
+        runOnMain {
+            val player = controller ?: return@runOnMain
+            if (!player.isPlaying) player.play()
+        }
+    }
+
     fun seekTo(positionMs: Long) {
         runOnMain {
             val player = controller ?: return@runOnMain
@@ -471,7 +502,7 @@ class AudioPlaybackManager @Inject constructor(
     fun stop() {
         currentBookId = null
         _nowPlayingMetadata.value = null
-        pendingPlayback = null
+        cancelPendingPlayback()
         activeTrackDurationsMs = emptyList()
         activeTrackOffsetsMs = emptyList()
         activeQueueKey = null
@@ -486,7 +517,7 @@ class AudioPlaybackManager @Inject constructor(
     fun release() {
         currentBookId = null
         _nowPlayingMetadata.value = null
-        pendingPlayback = null
+        cancelPendingPlayback()
         activeTrackDurationsMs = emptyList()
         activeTrackOffsetsMs = emptyList()
         activeQueueKey = null
@@ -683,8 +714,14 @@ class AudioPlaybackManager @Inject constructor(
     }
 
     private fun playPending(pending: PendingPlayback) {
-        currentBookId = pending.bookId
         val player = controller ?: return
+        if (pending.requestJob?.isCancelled == true) return
+        resetTransientStateForNewBook(pending.bookId)
+        currentBookId = pending.bookId
+        _nowPlayingMetadata.value = when (pending) {
+            is PendingPlayback.Single -> NowPlayingMetadata(pending.bookId, pending.mediaId, pending.title, pending.author, pending.coverUrl)
+            is PendingPlayback.Multi -> NowPlayingMetadata(pending.bookId, pending.mediaId, pending.title, pending.author, pending.coverUrl)
+        }
         when (pending) {
             is PendingPlayback.Single -> playSingleOnController(
                 player = player,
@@ -723,6 +760,8 @@ class AudioPlaybackManager @Inject constructor(
 
     private sealed interface PendingPlayback {
         val bookId: String
+        val mediaId: String
+        val requestJob: Job?
 
         data class Single(
             val streamUrl: String,
@@ -731,10 +770,11 @@ class AudioPlaybackManager @Inject constructor(
             val author: String?,
             val coverUrl: String?,
             val startPositionMs: Long,
-            val mediaId: String,
+            override val mediaId: String,
             val authToken: String?,
             val format: String?,
             val connectionId: String?,
+            override val requestJob: Job?,
         ) : PendingPlayback
 
         data class Multi(
@@ -744,9 +784,10 @@ class AudioPlaybackManager @Inject constructor(
             val author: String?,
             val coverUrl: String?,
             val startPositionMs: Long,
-            val mediaId: String,
+            override val mediaId: String,
             val authToken: String?,
             val connectionId: String?,
+            override val requestJob: Job?,
         ) : PendingPlayback
     }
 

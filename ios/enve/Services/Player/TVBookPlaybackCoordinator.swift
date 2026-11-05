@@ -60,18 +60,23 @@ final class TVBookPlaybackCoordinator: BookPlaybackStarting, RestoredPlaybackPre
 
     // MARK: - BookPlaybackStarting
 
-    func play(_ book: Book, presentPlayer: Bool) {
-        Task { await start(book) }
+    func play(_ book: Book, from startPosition: TimeInterval?, presentPlayer: Bool) {
+        Task { await start(book, startPosition: startPosition) }
     }
 
-    func start(_ book: Book) async {
+    func start(_ book: Book, startPosition: TimeInterval? = nil) async {
         prewarmTask?.cancel()
         prewarmTask = nil
 
         if controller.snapshot.currentBook?.id == book.id,
             controller.snapshot.isLoaded
         {
-            controller.togglePlay()
+            if let startPosition {
+                controller.seek(to: max(0, startPosition))
+                controller.play()
+            } else {
+                controller.togglePlay()
+            }
             return
         }
 
@@ -79,11 +84,12 @@ final class TVBookPlaybackCoordinator: BookPlaybackStarting, RestoredPlaybackPre
 
         let playToken = UUID()
         await prepareForNewBook(playToken: playToken, newBook: book)
+        guard activePlayToken == playToken, !Task.isCancelled else { return }
 
         resolvedGrimmoryTracks = nil
 
         do {
-            try await loadAndStart(book, playToken: playToken)
+            try await loadAndStart(book, playToken: playToken, startPosition: startPosition)
             if activePlayToken == playToken {
                 preparationReporter.endPreparation(errorDescription: nil)
             }
@@ -117,7 +123,7 @@ final class TVBookPlaybackCoordinator: BookPlaybackStarting, RestoredPlaybackPre
         PlayerStateStore.shared.saveLastPlayedBookId(newBook.stableId)
     }
 
-    private func loadAndStart(_ book: Book, playToken: UUID) async throws {
+    private func loadAndStart(_ book: Book, playToken: UUID, startPosition requestedPosition: TimeInterval?) async throws {
         await chapterService.loadChapters(for: book)
         let knownBookIds = await bookQuerying.allBookIds()
         ReaderDataMigration.recoverOrphanedFileShareBookmarks(for: book, knownBookIds: knownBookIds)
@@ -162,10 +168,10 @@ final class TVBookPlaybackCoordinator: BookPlaybackStarting, RestoredPlaybackPre
 
         let localPosition = progressService.loadProgress(for: book)?.position ?? 0
         let serverPosition = manifestSession?.serverCurrentTime ?? sessionService.lastServerCurrentTime ?? 0
-        var startPosition: TimeInterval = max(localPosition, serverPosition)
+        var startPosition: TimeInterval = requestedPosition.map { max(0, $0) } ?? max(localPosition, serverPosition)
         let bookDuration = book.duration ?? controller.snapshot.duration
 
-        if startPosition < 1 {
+        if requestedPosition == nil, startPosition < 1 {
             if let cloudProgress = await SyncCoordinator.shared.getCloudProgress(for: book) {
                 if cloudProgress.position > 5 {
                     AppLogger.player.info("Using CloudKit position (\(Int(cloudProgress.position))s) - local and server were 0")
@@ -173,12 +179,13 @@ final class TVBookPlaybackCoordinator: BookPlaybackStarting, RestoredPlaybackPre
                     progressService.saveProgress(book: book, position: startPosition, duration: bookDuration)
                 }
             }
-        } else if serverPosition > localPosition + 5 {
+        } else if requestedPosition == nil, serverPosition > localPosition + 5 {
             AppLogger.player.info("Using server position (\(Int(serverPosition))s) over local (\(Int(localPosition))s)")
             startPosition = serverPosition
             progressService.saveProgress(book: book, position: serverPosition, duration: bookDuration)
         }
 
+        guard activePlayToken == playToken, !Task.isCancelled else { return }
         if !localFiles.isEmpty {
             if localFiles.count > 1 {
                 let remoteTracks = (book.audioTracks ?? []).sorted { $0.index < $1.index }
@@ -225,8 +232,11 @@ final class TVBookPlaybackCoordinator: BookPlaybackStarting, RestoredPlaybackPre
             loader.load(url: streamURL, book: book, startingAt: startPosition)
         }
 
-        let serverPositionResolved = manifestSession?.serverCurrentTime != nil || sessionService.lastServerCurrentTime != nil
-        await handleProgressConflicts(book: book, localProgress: startPosition, serverPositionAlreadyResolved: serverPositionResolved)
+        if requestedPosition == nil {
+            let serverPositionResolved = manifestSession?.serverCurrentTime != nil || sessionService.lastServerCurrentTime != nil
+            await handleProgressConflicts(book: book, localProgress: startPosition, serverPositionAlreadyResolved: serverPositionResolved)
+        }
+        guard activePlayToken == playToken, !Task.isCancelled else { return }
 
         controller.setPlaybackRate(LibraryDisplayPreferencesStore.shared.loadPreferences().playbackSpeed)
         loader.setupNowPlaying(book: book)

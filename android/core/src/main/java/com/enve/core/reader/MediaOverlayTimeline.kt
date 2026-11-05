@@ -46,6 +46,7 @@ class MediaOverlayTimeline(
     )
 
     private val audioStartBySource: Map<String, Double>
+    private val audioDurationBySource: Map<String, Double>
     val clipTimings: List<ClipTiming>
     val totalAudioDuration: Double
     private val totalSpokenDuration: Double
@@ -60,9 +61,12 @@ class MediaOverlayTimeline(
         }
         val starts = HashMap<String, Double>()
         var audioOffset = 0.0
-        for ((source, maximumClipEnd) in maximumClipEndBySource) {
+        audioDurationBySource = maximumClipEndBySource.mapValues { (source, maximumClipEnd) ->
+            maxOf(audioDurationsBySource[source] ?: 0.0, maximumClipEnd)
+        }
+        for ((source, duration) in audioDurationBySource) {
             starts[source] = audioOffset
-            audioOffset += maxOf(audioDurationsBySource[source] ?: 0.0, maximumClipEnd)
+            audioOffset += duration
         }
         var spokenOffset = 0.0
         clipTimings = clips.map { clip ->
@@ -181,16 +185,45 @@ class MediaOverlayTimeline(
         val locations = locator.optObject("locations") ?: return null
         val href = locator.optString("href")
         val type = locator.optString("type")?.lowercase().orEmpty()
+        val fragments = fragments(locations)
 
         fun resolved(clipIndex: Int?, source: Source): ResolvedPosition? =
             clipIndex?.let { index -> clipTimings.getOrNull(index)?.let { ResolvedPosition(index, it.audioStart, source) } }
 
         if (type.contains("audio") || href?.lowercase()?.startsWith("audiobook://") == true) {
-            return resolved(clipIndexAtSpokenProgression(locations.optDouble("totalProgression") ?: 0.0), Source.PROGRESSION)
+            if (href != null) {
+                val normalized = normalizedHref(href)
+                val exact = audioStartBySource.keys.firstOrNull { normalizedHref(it) == normalized }
+                val file = exact ?: audioStartBySource.keys.filter {
+                    normalizedHref(it).substringAfterLast('/') == normalized.substringAfterLast('/')
+                }.singleOrNull()
+                if (file != null) {
+                    val duration = audioDurationBySource.getValue(file)
+                    val fragmentTime = fragments.firstNotNullOfOrNull(::audioTimeFragment)
+                    val progressionTime = locations.optDouble("progression")?.takeIf { it.isFinite() }
+                        ?.coerceIn(0.0, 1.0)?.times(duration)
+                    val localTime = fragmentTime ?: progressionTime
+                    if (localTime != null) {
+                        val time = audioStartBySource.getValue(file) + localTime.coerceIn(0.0, duration)
+                        clipIndexAtAudioTime(time)?.let {
+                            return ResolvedPosition(it, time, if (fragmentTime != null) Source.FRAGMENT else Source.PROGRESSION)
+                        }
+                    }
+                }
+            }
+            val progression = locations.optDouble("totalProgression") ?: return null
+            if (!progression.isFinite()) return null
+            val time = progression.coerceIn(0.0, 1.0) * totalAudioDuration
+            return clipIndexAtAudioTime(time)?.let { ResolvedPosition(it, time, Source.PROGRESSION) }
         }
-        fragments(locations).firstOrNull { !it.startsWith("t=") && !it.startsWith("epubcfi(") }
+        fragments.firstOrNull { !it.startsWith("t=") && !it.startsWith("epubcfi(") }
             ?.let { clipIndex(it, href) }
-            ?.let { return resolved(it, Source.FRAGMENT) }
+            ?.let { index ->
+                val time = fragments.firstNotNullOfOrNull(::audioTimeFragment)
+                    ?.takeIf { clipIndexAtAudioTime(it) == index }
+                    ?: clipTimings[index].audioStart
+                return ResolvedPosition(index, time, Source.FRAGMENT)
+            }
         if (href != null) {
             locations.optDouble("progression")
                 ?.let { clipIndexAtChapterProgression(it, href) }
@@ -208,13 +241,20 @@ class MediaOverlayTimeline(
             put("href", clip.textHref)
             put("type", "application/xhtml+xml")
             put("locations", buildJsonObject {
-                put("fragments", JsonArray(listOf(JsonPrimitive(clip.fragmentId))))
+                put("fragments", JsonArray(listOf(JsonPrimitive(clip.fragmentId), JsonPrimitive("t=$clampedAudioTime"))))
                 EpubCfi.idSelector(clip.fragmentId)?.let { put("cssSelector", it) }
                 put("progression", chapterProgression(clampedAudioTime, clipIndex))
                 put("totalProgression", readingProgression(clampedAudioTime, clipIndex).coerceIn(0.0, 1.0))
             })
         }.toString()
     }
+
+    private fun audioTimeFragment(fragment: String): Double? = fragment
+        .takeIf { it.startsWith("t=") }
+        ?.removePrefix("t=")
+        ?.substringBefore(',')
+        ?.toDoubleOrNull()
+        ?.takeIf { it.isFinite() && it >= 0.0 }
 
     private fun fragments(locations: kotlinx.serialization.json.JsonObject): List<String> {
         locations.optArray("fragments")?.mapNotNull { it.stringOrNull() }?.takeIf { it.isNotEmpty() }?.let { return it }

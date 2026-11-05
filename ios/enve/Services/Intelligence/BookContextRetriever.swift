@@ -21,7 +21,7 @@ final class BookContextRetriever {
         let transcript = transcriptStore.loadTranscript(bookStableId: book.stableId)
 
         let selectedSegments = (transcript?.segments ?? [])
-            .filter { $0.endTime >= range.lowerBound && $0.startTime <= range.upperBound }
+            .filter { $0.endTime > range.lowerBound && $0.startTime < range.upperBound && $0.endTime <= range.upperBound }
             .sorted { $0.startTime < $1.startTime }
 
         let text =
@@ -123,22 +123,22 @@ final class BookContextRetriever {
             .sorted { $0.startProgress < $1.startProgress }
         let selectedChunks = chunks.filter { $0.endProgress >= range.lowerBound && $0.startProgress <= range.upperBound }
 
-        let text =
+        let textChunks =
             selectedChunks
-            .map { chunk -> String in
+            .compactMap { chunk -> String? in
+                let bounded = boundedText(for: chunk, in: range)
+                guard !bounded.isEmpty else { return nil }
                 let title = chunk.title?.trimmingCharacters(in: .whitespacesAndNewlines)
                 let label = title?.isEmpty == false ? "[\(title!)] " : ""
-                return label + boundedText(for: chunk, in: range)
+                return label + bounded
             }
-            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            .joined(separator: "\n\n")
 
         return BookContextResult(
             scope: scope,
             source: .ebookText,
             range: range,
-            text: trimmedContext(text),
-            segmentCount: selectedChunks.count
+            text: trimmedContext(textChunks.joined(separator: "\n\n")),
+            segmentCount: textChunks.count
         )
     }
 
@@ -186,7 +186,7 @@ final class BookContextRetriever {
         case .bookSoFar:
             return 0...currentProgress
         case .currentChapterSoFar:
-            return current.startProgress...min(currentProgress, current.endProgress)
+            return min(current.startProgress, currentProgress)...min(currentProgress, current.endProgress)
         case .previousChapter:
             guard currentIndex > 0 else {
                 return 0...currentProgress
@@ -209,36 +209,15 @@ final class BookContextRetriever {
     }
 
     private func boundedText(for chunk: EbookContextChunk, in range: ClosedRange<Double>) -> String {
-        var text = chunk.text
-        let span = max(chunk.endProgress - chunk.startProgress, 0.0001)
-
-        if range.lowerBound > chunk.startProgress + 0.0001 {
-            let lowerFraction = min(max((range.lowerBound - chunk.startProgress) / span, 0), 1)
-            text = suffix(text, fromFraction: lowerFraction)
-        }
-
-        if range.upperBound < chunk.endProgress - 0.0001 {
-            let upperFraction = min(max((range.upperBound - chunk.startProgress) / span, 0), 1)
-            text = prefix(text, throughFraction: upperFraction)
-        }
-
-        return text.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private func prefix(_ text: String, throughFraction fraction: Double) -> String {
-        guard fraction < 0.995 else { return text }
-        let words = text.split(separator: " ")
-        guard !words.isEmpty else { return text }
-        let count = max(1, min(words.count, Int((Double(words.count) * fraction).rounded(.up))))
-        return words.prefix(count).joined(separator: " ")
-    }
-
-    private func suffix(_ text: String, fromFraction fraction: Double) -> String {
-        guard fraction > 0.005 else { return text }
-        let words = text.split(separator: " ")
-        guard !words.isEmpty else { return text }
-        let start = max(0, min(words.count - 1, Int((Double(words.count) * fraction).rounded(.down))))
-        return words[start...].joined(separator: " ")
+        let span = chunk.endProgress - chunk.startProgress
+        guard span > 0, range.lowerBound < range.upperBound else { return "" }
+        let words = chunk.text.split(whereSeparator: \.isWhitespace)
+        let lowerFraction = min(max((range.lowerBound - chunk.startProgress) / span, 0), 1)
+        let upperFraction = min(max((range.upperBound - chunk.startProgress) / span, 0), 1)
+        let start = Int((Double(words.count) * lowerFraction).rounded(.down))
+        let end = Int((Double(words.count) * upperFraction).rounded(.down))
+        guard start < end else { return "" }
+        return words[start..<end].joined(separator: " ")
     }
 
     private func chapter(at time: TimeInterval, chapters: [Chapter]) -> Chapter? {

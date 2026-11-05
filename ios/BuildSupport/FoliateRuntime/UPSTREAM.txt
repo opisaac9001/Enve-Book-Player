@@ -2,6 +2,7 @@ Foliate JS
 Repository: https://github.com/johnfactotum/foliate-js
 Commit: 6b11e1744346f60504b727984f7d42f0fef3ab54
 License: MIT
+Packaging uses local grouping helpers for EPUB metadata on older WebKit versions.
 
 zip.js
 Repository: https://github.com/gildas-lormeau/zip.js

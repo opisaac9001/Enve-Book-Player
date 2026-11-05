@@ -102,7 +102,6 @@ class SavedBooksFacadeImpl @Inject constructor(
             if (source == BookSource.AUDIOBOOKSHELF && libraryIds.isEmpty()) return@withLock
             try {
                 withContext(ConnectionScope.asContextElement(connectionId)) {
-                    if (source == BookSource.BOOKORBIT && !bookOrbit.isCurrentUserAdmin().getOrThrow()) return@withContext
                     if (connectionId !in syncedConnections) {
                         for (list in SavedBookList.entries) {
                             for (key in mutableSaved.value[list].orEmpty().filter { it.startsWith("$connectionId:") }) {
@@ -159,7 +158,7 @@ class SavedBooksFacadeImpl @Inject constructor(
             BookSource.GRIMMORY -> grimmory.setSavedShelfBook(book, name, isSaved).getOrThrow()
             BookSource.BOOKORBIT -> {
                 val bookId = book.id.toIntOrNull() ?: error("BookOrbit book ID is invalid")
-                val collections = bookOrbit.getCollections().getOrThrow()
+                val collections = bookOrbit.getCollections().getOrThrow().filter { it.isOwner }
                 val collection = collections.firstOrNull { it.name.equals(name, ignoreCase = true) }
                 if (collection == null) {
                     if (isSaved) {
@@ -195,7 +194,7 @@ class SavedBooksFacadeImpl @Inject constructor(
                 }
             }
             BookSource.BOOKORBIT -> {
-                val collections = bookOrbit.getCollections().getOrThrow()
+                val collections = bookOrbit.getCollections().getOrThrow().filter { it.isOwner }
                 for (list in SavedBookList.entries) {
                     val collection = collections.firstOrNull { it.name.equals(list.remoteName(source), ignoreCase = true) } ?: continue
                     var page = 0

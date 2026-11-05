@@ -12,7 +12,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.MenuBook
-import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -124,14 +124,14 @@ fun CoverTile(
                     .align(Alignment.TopEnd)
                     .padding(6.dp)
                     .clip(CircleShape)
-                    .background(palette.bg)
-                    .padding(2.dp),
+                    .background(palette.bgElevated.copy(alpha = 0.92f))
+                    .padding(4.dp),
             ) {
                 Icon(
-                    Icons.Filled.CheckCircle,
+                    Icons.Outlined.Check,
                     contentDescription = null,
-                    tint = if (eink.active) palette.text else palette.statusOK,
-                    modifier = Modifier.size(28.dp),
+                    tint = if (eink.active) palette.text else palette.textSecondary,
+                    modifier = Modifier.size(14.dp),
                 )
             }
         } else if (progress > 0f) {

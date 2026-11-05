@@ -56,6 +56,7 @@ struct HomePreferencesScreen: View {
                         Button("Reset") {
                             withAnimation(.snappy) {
                                 preferences.homeSectionOrder = UserPreferences.HomeSection.allCases
+                                preferences.hiddenHomeSections = []
                                 save()
                             }
                         }
@@ -66,17 +67,28 @@ struct HomePreferencesScreen: View {
                     SourcesCard {
                         ForEach(order.indices, id: \.self) { index in
                             let section = order[index]
+                            let isHidden = preferences.hiddenHomeSections.contains(section)
                             HStack(spacing: 12) {
                                 Image(systemName: section.glyph)
                                     .font(.hearthUI(15, weight: .medium))
-                                    .foregroundStyle(hearth.ember)
+                                    .foregroundStyle(isHidden ? hearth.textTertiary : hearth.ember)
                                     .frame(width: 24)
 
                                 Text(section.displayName)
                                     .font(.hearthBody)
-                                    .foregroundStyle(hearth.text)
+                                    .foregroundStyle(isHidden ? hearth.textTertiary : hearth.text)
 
                                 Spacer()
+
+                                Button {
+                                    toggleHidden(section)
+                                } label: {
+                                    Image(systemName: isHidden ? "eye.slash" : "eye")
+                                        .frame(width: 32, height: 32)
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(hearth.textSecondary)
+                                .accessibilityLabel(isHidden ? "Show \(section.displayName)" : "Hide \(section.displayName)")
 
                                 Button {
                                     move(section, by: -1)
@@ -103,7 +115,7 @@ struct HomePreferencesScreen: View {
                         }
                     }
 
-                    Text("Only shelves with books appear. The hero and reading pulse stay at the top.")
+                    Text("Hidden shelves stay off the Hearth. Only shelves with books appear. The hero and reading pulse stay at the top.")
                         .font(.hearthCaption)
                         .foregroundStyle(hearth.textTertiary)
                 }
@@ -144,6 +156,18 @@ struct HomePreferencesScreen: View {
             save()
         }
         PlatformHaptics.impact(.light)
+    }
+
+    private func toggleHidden(_ section: UserPreferences.HomeSection) {
+        withAnimation(.snappy) {
+            if preferences.hiddenHomeSections.contains(section) {
+                preferences.hiddenHomeSections.remove(section)
+            } else {
+                preferences.hiddenHomeSections.insert(section)
+            }
+            save()
+        }
+        PlatformHaptics.selection()
     }
 
     private func save() {

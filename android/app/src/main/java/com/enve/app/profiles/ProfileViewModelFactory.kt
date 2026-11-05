@@ -61,6 +61,7 @@ class ProfileViewModelFactory(private val component: com.enve.app.profiles.Profi
             component.connections(),
             component.downloads(),
             component.comicDownloads(),
+            component.preferencesFacade(),
         )
         com.enve.app.viewmodel.PlayerViewModel::class.java -> com.enve.app.viewmodel.PlayerViewModel(
             component.grimmoryRepository(),
@@ -116,6 +117,9 @@ class ProfileViewModelFactory(private val component: com.enve.app.profiles.Profi
             component.readium(),
             component.hearthPreferences(),
             component.hardcoverSync(),
+            component.passageAlignment(),
+            component.bookLinks(),
+            component.playback(),
         )
         com.enve.app.viewmodel.DictionariesSettingsViewModel::class.java -> com.enve.app.viewmodel.DictionariesSettingsViewModel(
             component.installedDictionariesStore(),

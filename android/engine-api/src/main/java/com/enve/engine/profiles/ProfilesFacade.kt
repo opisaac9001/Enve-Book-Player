@@ -38,6 +38,7 @@ interface ProfilesFacade {
     suspend fun setServerSyncEnabled(profileId: String, enabled: Boolean, pin: String? = null)
     suspend fun removeProfile(profileId: String, pin: String? = null)
     suspend fun verifyAdultPin(pin: String): AdultPinResult
+    suspend fun setProfilePinRequired(profileId: String, required: Boolean, pin: String)
     suspend fun switchProfile(profileId: String, pin: String? = null)
     suspend fun importCandidates(sourceProfileId: String, pin: String? = null): List<ProfileDownloadCandidate>
     suspend fun importCompleted(

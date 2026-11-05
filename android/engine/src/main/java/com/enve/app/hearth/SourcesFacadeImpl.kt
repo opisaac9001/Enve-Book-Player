@@ -25,13 +25,11 @@ class SourcesFacadeImpl @Inject constructor(
     override val connections: Flow<List<ProviderConnection>> = registry.connections
 
     override suspend fun update(connection: ProviderConnection) {
-        val previous = registry.connections.first().firstOrNull { it.id == connection.id }
-        registry.upsert(connection.copy(serverUrl = connection.serverUrl.trim().trimEnd('/')))
-        if (previous?.serverUrl != connection.serverUrl) {
-            cache.clearForConnection(connection.id)
-            aggregator.invalidateCaches()
-            aggregator.clearHomeSnapshotCache()
-            if (connection.enabled) cache.ingestConnectionsInBackground(listOf(connection.id))
+        val normalized = connection.copy(serverUrl = connection.serverUrl.trim().trimEnd('/'))
+        val previous = registry.connections.first().firstOrNull { it.id == normalized.id }
+        registry.upsert(normalized)
+        if (previous != null && previous.serverUrl.trim().trimEnd('/') != normalized.serverUrl && normalized.enabled) {
+            cache.invalidateAndRefresh(listOf(normalized.id))
         }
     }
 

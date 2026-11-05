@@ -53,12 +53,21 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.readium.r2.navigator.epub.EpubNavigatorFragment
+import org.readium.r2.shared.ExperimentalReadiumApi
 import kotlin.coroutines.resume
 import kotlin.math.abs
 
 @RunWith(AndroidJUnit4::class)
 class ReaderRenderingQualityTest {
     @get:Rule val compose = createEmptyComposeRule()
+
+    @OptIn(ExperimentalReadiumApi::class)
+    @Test
+    fun paragraphIndentIsForwardedToReadium() {
+        val preferences = ReaderPreferences(paragraphIndent = 1.5f)
+
+        assertEquals(1.5, preferences.toEpubPreferences().paragraphIndent!!, 0.0)
+    }
 
     @Test
     fun jpegOrientationMatchesTheInlineImage() {

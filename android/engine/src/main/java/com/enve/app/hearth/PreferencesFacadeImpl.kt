@@ -1,6 +1,7 @@
 package com.enve.app.hearth
 
 import com.enve.core.data.local.PreferencesManager
+import com.enve.core.data.model.BookCardStyle
 import com.enve.core.data.model.ComicPageLoadingMode
 import com.enve.engine.prefs.EbookSyncInterval
 import com.enve.engine.prefs.PreferencesFacade
@@ -40,12 +41,14 @@ class PreferencesFacadeImpl @Inject constructor(
     override val restReminderMinutes: Flow<Int> = hearthPrefs.restReminderMinutes
     override val restReminderIntroShown: Flow<Boolean> = hearthPrefs.restReminderIntroShown
     override val libraryColumns: Flow<Int> = hearthPrefs.libraryColumns
+    override val bookCardStyle: Flow<BookCardStyle> = prefs.bookCardStyle
     override val librarySortStack: Flow<String> = hearthPrefs.librarySortStack
     override val libraryAdvancedFilters: Flow<String> = hearthPrefs.libraryAdvancedFilters
     override val excludedLibraryIds: Flow<Set<String>> = prefs.excludedLibraryIds
     override val comicPageLoadingMode: Flow<ComicPageLoadingMode> = prefs.comicPageLoadingMode
     override val preferredStartTab: Flow<HearthStartTab> = hearthPrefs.preferredStartTab
     override val homeSectionOrder: Flow<List<HearthHomeSection>> = hearthPrefs.homeSectionOrder
+    override val hiddenHomeSections: Flow<Set<HearthHomeSection>> = hearthPrefs.hiddenHomeSections
     override val showDockBookShortcut: Flow<Boolean> = hearthPrefs.showDockBookShortcut
     override val showTodayStack: Flow<Boolean> = hearthPrefs.showTodayStack
     override val ebookSyncInterval: Flow<EbookSyncInterval> = hearthPrefs.ebookSyncInterval
@@ -83,6 +86,8 @@ class PreferencesFacadeImpl @Inject constructor(
         hearthPrefs.setPreferredStartTab(tab)
     override suspend fun setHomeSectionOrder(order: List<HearthHomeSection>) =
         hearthPrefs.setHomeSectionOrder(order)
+    override suspend fun setHomeSectionHidden(section: HearthHomeSection, hidden: Boolean) =
+        hearthPrefs.setHomeSectionHidden(section, hidden)
     override suspend fun setShowDockBookShortcut(show: Boolean) = hearthPrefs.setShowDockBookShortcut(show)
     override suspend fun setShowTodayStack(show: Boolean) = hearthPrefs.setShowTodayStack(show)
     override suspend fun setEbookSyncInterval(interval: EbookSyncInterval) =

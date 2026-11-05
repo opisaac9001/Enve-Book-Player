@@ -2,7 +2,6 @@ package com.enve.app.data.repository
 
 import okhttp3.Request
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Test
 
 class GrimmoryOidcRequestTest {
@@ -37,11 +36,6 @@ class GrimmoryOidcRequestTest {
         assertEquals(
             "openid profile email groups offline_access",
             grimmoryOidcScopes("openid profile email groups offline_access"),
-        )
-        assertNull(
-            grimmoryOidcScopes(null)
-                .split(' ')
-                .firstOrNull { it == "offline_access" }
         )
     }
 

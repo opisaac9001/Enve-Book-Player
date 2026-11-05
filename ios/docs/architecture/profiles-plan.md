@@ -6,6 +6,12 @@ Initial foundation verification: iOS AllTests passed 1,182 tests with 10 skipped
 
 Profiles let people share a device while keeping separate server logins, libraries, reading positions, and listening history. Downloaded media can be explicitly shared between profiles without downloading or copying it again. The feature is optional and off by default. Existing installations keep their current experience until Profiles is enabled.
 
+## iOS runtime requirement — November 4, 2026
+
+Profiles requires iOS/iPadOS 17.5 or later; the rest of the app retains its iOS 17.0 minimum. On 17.0, a native SwiftData reproduction loses the ability to insert into an earlier container after a second container opens (Core Data error 134020). The failure reproduces without Enve's repository, SQL tuning, or migration plan. The same cases and profile persistence tests pass on 17.5. This storage finding does not explain the separate CFNetwork crash reported on 17.7.11.
+
+Earlier systems show an update message and reject setup, adding profiles, and opening another profile's storage before mutation. Catalogs, selected profile, PINs, credentials and files remain intact. A saved child selection never opens child storage on an unsupported runtime or exposes the owner automatically: the existing parent PIN is still required to enter the owner. Ordinary owner use remains available. Multi-container persistence regressions run on supported systems; unsupported-runtime coordinator guards are tested independently.
+
 The request comes from [eaglescreech’s readaloud feedback](https://discord.com/channels/1481752416247615642/1503166047501549619/1557010981069262880) and [erictb’s suggestion of separate logins and an adult PIN](https://discord.com/channels/1481752416247615642/1503166047501549619/1557074822574510111).
 
 This contract is kept at docs/architecture/profiles-plan.md in both app repositories. Update both copies when a shared decision changes.
@@ -14,7 +20,7 @@ This contract is kept at docs/architecture/profiles-plan.md in both app reposito
 
 - iOS: AllTests on iPhone Air Simulator passed 1,247 tests, with 10 skipped and zero failures (1,257 total). Existing audio-session runtime warnings remain. The profile UI workflow passed setup with sync enabled, changing sync to off, switching, relaunch, empty destination library, returning to the owner, removal, and disabling Profiles. A WebKit identifier-removal crash found during simulator testing is avoided by clearing the captured profile website data instead.
 - iOS: signed physical-device build-for-testing and the watchOS Simulator build passed with zero new compiler warnings. The physical iPhone remains unavailable to Xcode, so physical iPhone behavior has not been verified.
-- Android: core/engine/app unit suites ran 837 tests: 836 passed, one skipped and zero failures. Debug, test APK and minified release builds passed with zero new warnings. Final Pixel instrumentation reported OK (147 tests), including profile media import, sync preferences, screen-disposal switch lifetime and all eight Android Auto tests. Manual Pixel setup verified default sync off, opting in before save, changing to off, switching, relaunch, an empty destination library, returning to the owner, removal and disabling Profiles. Switching now completes in the application scope after the initiating screen is disposed. A cold launch reported zero fatal or Compose errors; Tailscale was running on the Pixel. Remaining hands-on checks are listed in the desktop sticky note “Enve Book Player — remaining hands-on checks”.
+- Android: core/engine/app unit suites ran 837 tests: 836 passed, one skipped and zero failures. Debug, test APK and minified release builds passed with zero new warnings. Final Pixel instrumentation reported OK (147 tests), including profile media import, sync preferences, screen-disposal switch lifetime and all eight Android Auto tests. Manual Pixel setup verified default sync off, opting in before save, changing to off, switching, relaunch, an empty destination library, returning to the owner, removal and disabling Profiles. Switching now completes in the application scope after the initiating screen is disposed. A cold launch reported zero fatal or Compose errors.
 - Both provenance checks pass. Release acceptance still requires the remaining device and real-server scenarios below; these results do not certify every provider or companion surface.
 
 ## Settings and reader experience
@@ -190,7 +196,7 @@ Legacy account fallbacks, credential decoding, history queues, custom covers, im
 4. **Companion and sync coverage.** Complete ownership for widgets, watch, car, cloud sync, exports, search and automation, or block unsupported child routes. Gate: no inactive adult book, artwork, progress, or controls appears externally.
 5. **Release verification.** Run migration, isolation, PIN and failure tests; build both apps; exercise real accounts and offline content. Gate: all scenarios below pass before the optional feature becomes visible.
 
-Implement each slice on both platforms before moving to the next. iOS remains compatible with iOS/iPadOS 17; Android retains its current supported minimum. No new service account system or subscription is needed.
+Implement each slice on both platforms before moving to the next. The iOS app remains compatible with iOS/iPadOS 17; Profiles requires 17.5 or later. Android retains its current supported minimum. No new service account system or subscription is needed.
 
 ## Required verification
 

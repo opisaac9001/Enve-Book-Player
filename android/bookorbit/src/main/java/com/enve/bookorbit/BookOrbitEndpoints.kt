@@ -16,10 +16,10 @@ class BookOrbitEndpoints @Inject constructor(
     fun currentConnection(): ProviderConnection? {
         val connections = connectionRegistry.getConnectionsSync()
         ConnectionScope.getConnectionId()?.let { scopedId ->
-            connections.firstOrNull { it.id == scopedId }?.let { return it }
+            return connections.firstOrNull { it.id == scopedId && it.source == BookSource.BOOKORBIT }
         }
         prefs.getActiveConnectionIdSync()?.let { activeId ->
-            connections.firstOrNull { it.id == activeId }?.let { return it }
+            connections.firstOrNull { it.id == activeId && it.source == BookSource.BOOKORBIT }?.let { return it }
         }
         return connections.firstOrNull { it.source == BookSource.BOOKORBIT }
     }
@@ -30,6 +30,6 @@ class BookOrbitEndpoints @Inject constructor(
 
     private fun serverUrl(): String {
         currentConnection()?.serverUrl?.let { return it }
-        return prefs.getServerUrlSync()?.takeIf { it.isNotBlank() } ?: error("No BookOrbit server URL configured")
+        error("No BookOrbit server URL configured")
     }
 }

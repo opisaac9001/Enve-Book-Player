@@ -55,6 +55,14 @@ struct JellyfinCompatibilityTests {
                 else { _ = try await provider.fetchBooks(libraryId: "library") }
                 Issue.record("HTTP failure was accepted as a catalog")
             } catch {
+                if status == 401 {
+                    guard case ProviderError.unauthorized = error else {
+                        Issue.record("Expected an authentication error")
+                        continue
+                    }
+                } else {
+                    #expect((error as? JellyfinResponseError)?.statusCode == status)
+                }
                 let failure = LibraryRefreshFailure(providerId: provider.connection.id, libraryId: nil, error: error)
                 #expect(failure.statusCode == status)
                 #expect(!failure.message.contains("private response"))

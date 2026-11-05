@@ -36,17 +36,17 @@ struct ProfilePersonalPreferencesTests {
         firstLibrary.saveBookCardStyle(.coverOnly)
         firstPlayer.saveLastPlayedBookId("owner-book")
         firstPlayer.saveWeeklyGoal(hours: 5)
-        #expect(secondLibrary.loadBookCardStyle() == .standard)
+        #expect(secondLibrary.bookCardStyle == .standard)
         #expect(secondPlayer.loadLastPlayedBookId() == nil)
         secondLibrary.saveBookCardStyle(.compact)
         secondPlayer.saveLastPlayedBookId("child-book")
         secondPlayer.saveWeeklyGoal(hours: 1.5)
 
-        #expect(firstLibrary.loadBookCardStyle() == .coverOnly)
+        #expect(firstLibrary.bookCardStyle == .coverOnly)
         #expect(firstPlayer.loadLastPlayedBookId() == "owner-book")
         #expect(firstPlayer.loadWeeklyGoal() == 5)
         #expect(secondPlayer.loadWeeklyGoal() == 1.5)
-        #expect(LibraryDisplayPreferencesStore(defaults: second).loadBookCardStyle() == .compact)
+        #expect(LibraryDisplayPreferencesStore(defaults: second).bookCardStyle == .compact)
         #expect(PlayerStateStore(defaults: second).loadLastPlayedBookId() == "child-book")
     }
 }

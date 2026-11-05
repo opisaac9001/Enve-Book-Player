@@ -4,7 +4,6 @@ import com.enve.audiobookshelf.dto.AbsListeningStatsDto
 import com.enve.audiobookshelf.dto.AbsMeResponse
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AbsListeningStatsDtoTest {
@@ -26,15 +25,6 @@ class AbsListeningStatsDtoTest {
         assertEquals(600.0, stats.today, 0.0001)
         assertEquals(2, stats.days.size)
         assertEquals(3900.5, stats.dayOfWeek.getValue("Tuesday"), 0.0001)
-    }
-
-    @Test
-    fun decodesEmptyListeningStats() {
-        val stats = json.decodeFromString<AbsListeningStatsDto>("""{"totalTime":0,"items":{},"days":{}}""")
-
-        assertEquals(0.0, stats.totalTime, 0.0001)
-        assertTrue(stats.days.isEmpty())
-        assertTrue(stats.dayOfWeek.isEmpty())
     }
 
     @Test

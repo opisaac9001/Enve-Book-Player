@@ -15,13 +15,12 @@ fi
 rm -rf "${bundle_destination}"
 mkdir -p "${foliate_destination}/vendor" "${license_destination}"
 
-for file in index.html reader.css adapter.js; do
+for file in index.html reader.css adapter.js grouping.js; do
     cp "${host_source}/${file}" "${bundle_destination}/${file}"
 done
 
 for file in \
     view.js \
-    epub.js \
     fb2.js \
     mobi.js \
     epubcfi.js \
@@ -34,6 +33,14 @@ for file in \
 do
     cp "${foliate_source}/${file}" "${foliate_destination}/${file}"
 done
+
+{
+    printf '%s\n' "import { groupObject, groupMap } from '../grouping.js'"
+    sed \
+        -e 's/Object[.]groupBy/groupObject/g' \
+        -e 's/Map[.]groupBy/groupMap/g' \
+        "${foliate_source}/epub.js"
+} > "${foliate_destination}/epub.js"
 
 for file in fixed-layout.js paginator.js; do
     sed \

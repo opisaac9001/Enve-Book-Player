@@ -92,6 +92,7 @@ data class BookOrbitCollectionDto(
     val displayOrder: Int = 0,
     val bookCount: Int = 0,
     val memberCount: Int? = null,
+    val isOwner: Boolean = false,
 )
 
 @Serializable
@@ -126,7 +127,11 @@ data class BookOrbitPaginationRequest(
 @Serializable
 data class BookOrbitBooksPageRequest(
     val pagination: BookOrbitPaginationRequest,
+    val sort: List<BookOrbitSort> = emptyList(),
 )
+
+@Serializable
+data class BookOrbitSort(val field: String, val dir: String)
 
 @Serializable
 data class BookOrbitBooksPageDto(
@@ -143,7 +148,15 @@ data class BookOrbitFileDto(
     val role: String? = null,
     val durationSeconds: Double? = null,
     val filename: String? = null,
-)
+    val mediaOverlay: BookOrbitMediaOverlayDto? = null,
+) {
+    val isAudio: Boolean get() = format?.lowercase() in setOf("m4b", "mp3", "m4a", "opus", "ogg", "flac")
+    val isReadable: Boolean get() = format?.lowercase() in setOf("epub", "kepub", "pdf", "cbz", "cbr", "cb7", "mobi", "azw3", "azw", "fb2", "djvu")
+    val isContent: Boolean get() = role in setOf("primary", "content") && (isAudio || isReadable)
+}
+
+@Serializable
+data class BookOrbitMediaOverlayDto(val available: Boolean = false, val durationSeconds: Double? = null)
 
 @Serializable
 data class BookOrbitBookCardDto(
@@ -249,7 +262,11 @@ data class BookOrbitFileProgressDto(
     val percentage: Double? = null,
     val positionSeconds: Double? = null,
     val updatedAt: String? = null,
-)
+    val textUpdatedAt: String? = null,
+    val narrationUpdatedAt: String? = null,
+) {
+    val textPositionUpdatedAt: String? get() = textUpdatedAt ?: updatedAt.takeIf { narrationUpdatedAt == null }
+}
 
 @Serializable
 data class BookOrbitAudiobookManifestDto(

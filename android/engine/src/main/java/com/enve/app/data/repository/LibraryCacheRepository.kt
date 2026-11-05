@@ -51,7 +51,6 @@ import kotlinx.coroutines.flow.transformLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.encodeToString
 import javax.inject.Inject
@@ -84,13 +83,28 @@ class LibraryCacheRepository @Inject constructor(
     private val _refreshError = MutableStateFlow<String?>(null)
     val refreshError: StateFlow<String?> = _refreshError.asStateFlow()
     val importIssues: StateFlow<List<CatalogImportIssue>> = combine(
-        catalogImports.issues, connectionRegistry.connections,
+        catalogImports.visibleIssues, connectionRegistry.connections,
     ) { issues, connections ->
         val enabled = connections.filter { it.enabled }.mapTo(mutableSetOf()) { catalogImportConnectionKey(it.id) }
         issues.filter { it.connectionKey in enabled || (connections.isEmpty() && it.connectionKey == catalogImportConnectionKey(null)) }
     }.stateIn(scope, SharingStarted.Eagerly, emptyList())
 
+    fun dismissImportIssues(issues: List<CatalogImportIssue>) = catalogImports.dismiss(issues)
+
     init {
+        scope.launch {
+            var previous: Map<String, String>? = null
+            connectionRegistry.connections.collect { connections ->
+                val current = connections.associate { it.id to "${it.source.name}|${it.serverUrl.trim().trimEnd('/')}" }
+                val changed = connections.filter { connection ->
+                    previous?.get(connection.id)?.let { it != current[connection.id] } == true
+                }
+                previous = current
+                val enabled = changed.filter { it.enabled }.mapTo(mutableSetOf()) { it.id }
+                changed.filterNot { it.enabled }.forEach { catalogImports.clearConnection(it.id) }
+                if (enabled.isNotEmpty()) doRefresh(enabled, awaitRefresh = true, resetImportConnections = enabled)
+            }
+        }
         scope.launch { pruneRemovedConnections() }
         scope.launch {
             torBoxCatalog.updates.collect { connectionId ->
@@ -257,11 +271,7 @@ class LibraryCacheRepository @Inject constructor(
     private val defaultStalenessMs: Long = 6 * 60 * 60 * 1000L
 
     suspend fun refreshIfStale(maxAgeMs: Long = defaultStalenessMs) {
-        val enabled = runCatching {
-
-            emptyList<String>()
-        }.getOrDefault(emptyList())
-        if (shouldRefresh(enabled, maxAgeMs)) {
+        if (shouldRefresh(emptyList(), maxAgeMs)) {
             refreshInBackground()
         }
     }
@@ -301,7 +311,7 @@ class LibraryCacheRepository @Inject constructor(
 
     suspend fun invalidateAndRefresh(connectionIds: List<String>? = null) {
         aggregator.invalidateCaches()
-        doRefresh(connectionIds?.toSet()?.takeIf { it.isNotEmpty() }, awaitRefresh = true)
+        doRefresh(connectionIds?.toSet()?.takeIf { it.isNotEmpty() }, awaitRefresh = true, resetImportConnections = connectionIds.orEmpty().toSet())
     }
 
     suspend fun clearForConnection(connectionId: String) {
@@ -381,6 +391,7 @@ class LibraryCacheRepository @Inject constructor(
         connectionIds: Set<String>? = null,
         awaitRefresh: Boolean = false,
         completedTorBox: Boolean = false,
+        resetImportConnections: Set<String> = emptySet(),
     ) {
         if (awaitRefresh) refreshMutex.lock()
         else if (!refreshMutex.tryLock()) {
@@ -390,6 +401,11 @@ class LibraryCacheRepository @Inject constructor(
         _isRefreshing.value = true
         _refreshError.value = null
         try {
+            if (resetImportConnections.isNotEmpty()) {
+                resetImportConnections.forEach(catalogImports::clearConnection)
+                aggregator.invalidateCaches()
+                aggregator.clearHomeSnapshotCache()
+            }
             val libraries: List<Library> = aggregator.getLibraries(connectionIds).getOrThrow()
             Log.i(TAG, "Discovered ${libraries.size} libraries")
 

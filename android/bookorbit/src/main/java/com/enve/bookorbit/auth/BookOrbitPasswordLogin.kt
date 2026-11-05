@@ -7,6 +7,7 @@ import com.enve.core.data.auth.PasswordLogin
 import com.enve.core.auth.CredentialVault
 import com.enve.core.data.local.PreferencesManager
 import com.enve.core.data.model.BookSource
+import com.enve.core.data.util.runSuspendCatching
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -18,7 +19,7 @@ class BookOrbitPasswordLogin @Inject constructor(
 ) : PasswordLogin {
     override val source: BookSource = BookSource.BOOKORBIT
 
-    override suspend fun login(serverUrl: String, username: String, password: String): Result<Unit> = runCatching {
+    override suspend fun login(serverUrl: String, username: String, password: String): Result<Unit> = runSuspendCatching {
         val normalizedUrl = serverUrl.trimEnd('/')
         val response = api.login(
             "$normalizedUrl/api/v1/auth/login",

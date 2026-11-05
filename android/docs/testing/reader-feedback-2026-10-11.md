@@ -55,3 +55,11 @@ Read Aloud → Mark spoken text offers Highlight or Underline. The selection is 
 `ReaderScrollingNavigationTest.underlineSelectionPersistsAndChangesTheRenderedNarration` exercises both choices in the real reader sheet, verifies the stored preference, inspects the rendered Readium underline/background styles, and checks playback session continuity. It passed on the Android 16 emulator. Physical e-ink verification remains outstanding.
 
 Reference implementations reviewed: Silveran Reader `669a56903316fa51bf9c2850bdc89d9bbcac37dc` (read-aloud style picker) and Storyteller `a78749795` (Readium underline decoration). Both upstreams were fetched; Storyteller's clean reference checkout was fast-forwarded before review.
+
+## Storyteller regenerated read-aloud archives — 2026-10-29
+
+When opening a downloaded/cached Storyteller READALOUD EPUB with a network available, the reader probes the read-aloud download endpoint with `Range: bytes=0-0` and compares its ETag (or Last-Modified). An unchanged revision retains the local file; a changed revision downloads and validates a replacement before atomically replacing it. Copies without saved revision metadata refresh once when the server exposes a revision. New full downloads save that revision immediately. The check is scoped to the book's original connection and does not substitute audiobook audio. Offline/network/HTTP failures retain the existing copy.
+
+`StorytellerReadaloudCacheTest` uses a local HTTP fixture to verify an old archive with an Opus-named entry is replaced by an MP3-named archive, unchanged revisions avoid a second full download, and HTTP/invalid-ZIP failures preserve the original bytes. These test entries are synthetic; this does not verify codec decoding or diagnose the affected user's file. The actual regenerated EPUB and playback error are still needed if playback fails with the current server copy.
+
+Storyteller upstream `6d0de764815347983bbab287efb0325a57d1599d` was reviewed for the download endpoint's ETag, Last-Modified and byte-range behavior. Silveran Reader `669a56903316fa51bf9c2850bdc89d9bbcac37dc` was reviewed for media-overlay audio selection.
