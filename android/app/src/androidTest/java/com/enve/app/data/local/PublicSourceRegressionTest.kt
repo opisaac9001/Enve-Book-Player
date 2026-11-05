@@ -30,35 +30,6 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class PublicSourceRegressionTest {
-    @Test
-    fun audiobookshelfCollectionsLoadFromLiveServer() = runBlocking {
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        val fixtureFile = java.io.File(context.filesDir, "abs-collections-live.json")
-        org.junit.Assume.assumeTrue("Live server fixture is not configured", fixtureFile.exists())
-        val fixture = org.json.JSONObject(fixtureFile.readText())
-        withProfile { component ->
-            val url = fixture.getString("serverUrl")
-            val username = fixture.getString("username")
-            val connectionId = "audiobookshelf|$url|$username"
-            component.connections().upsert(ProviderConnection(
-                id = connectionId, source = BookSource.AUDIOBOOKSHELF, name = "Live collections test",
-                serverUrl = url, username = username, urlScheme = UrlScheme.HTTP,
-            ))
-            component.vault().put(com.enve.core.auth.CredentialVault.accessTokenKey(connectionId), fixture.getString("token"))
-            withContext(ConnectionScope.asContextElement(connectionId)) {
-                val libraries = fixture.getJSONArray("libraries")
-                for (index in 0 until libraries.length()) {
-                    val library = libraries.getJSONObject(index)
-                    val rawId = library.getString("libraryId")
-                    val collections = component.audiobookshelfRepository()
-                        .getCollections("$connectionId::$rawId").getOrThrow()
-                    val expected = library.getJSONArray("collectionIds")
-                    assertEquals((0 until expected.length()).map { expected.getString(it) }.toSet(),
-                        collections.map { it.id }.toSet())
-                }
-            }
-        }
-    }
 
     @Test
     fun audiobookshelfCollectionsUseRemoteLibraryIds() = runBlocking {

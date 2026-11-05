@@ -9,6 +9,13 @@ extension UnifiedDownloadService {
         let bookId = book.downloadKey
         let diagnosticID = DiagnosticLogSanitizer.identifier(for: book.stableId)
 
+        do {
+            try persistOfflineMetadata(for: book)
+            acknowledgeOfflineAudioMetadata(bookId: bookId)
+        } catch {
+            AppLogger.network.error("Could not persist offline download metadata")
+        }
+
         if let coverURL = book.coverURL {
             do {
                 if !imageCache.hasImage(for: coverURL) {
@@ -50,28 +57,16 @@ extension UnifiedDownloadService {
         }
 
         guard !Task.isCancelled, !isRetired else { return }
-        do {
-            let metadata = OfflineBookMetadata(
-                id: book.id,
-                stableId: book.stableId,
-                title: book.title,
-                author: book.author,
-                narrator: book.narrator,
-                duration: book.duration,
-                chapters: book.chapters,
-                audioTracks: book.audioTracks,
-                coverURLString: book.coverURL?.absoluteString,
-                source: book.source
-            )
-            try storageManager.saveMetadataOverride(metadata, for: bookId)
-            AppLogger.network.debug("Metadata saved for offline use bookDiagnosticID=\(diagnosticID)")
-        } catch {
-            AppLogger.network.error(
-                "Failed to save metadata bookDiagnosticID=\(diagnosticID): \(error.localizedDescription)"
-            )
-        }
-
         await refreshOfflineMetadataFromDownloadedFiles(book: book, bookId: bookId)
+    }
+
+    func persistOfflineMetadata(for book: Book) throws {
+        let metadata = OfflineBookMetadata(
+            id: book.id, stableId: book.stableId, title: book.title, author: book.author,
+            narrator: book.narrator, duration: book.duration, chapters: book.chapters,
+            audioTracks: book.audioTracks, coverURLString: book.coverURL?.absoluteString, source: book.source
+        )
+        try storageManager.saveMetadataOverride(metadata, for: book.downloadKey)
     }
 
     func refreshOfflineMetadataFromDownloadedFiles(book: Book, bookId: String) async {

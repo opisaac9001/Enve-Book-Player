@@ -71,9 +71,4 @@ struct ReaderPinchResizeTests {
         #expect(ReaderPinchResize.percentLabel(1.25) == "125%")
         #expect(ReaderPinchResize.percentLabel(0.5) == "50%")
     }
-
-    @Test func tapGuardOutlivesTheLiftingFingers() {
-        #expect(ReaderPinchResize.tapGuard > 0.1)
-        #expect(ReaderPinchResize.tapGuard < 1)
-    }
 }

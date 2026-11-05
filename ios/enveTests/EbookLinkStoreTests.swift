@@ -14,6 +14,8 @@ private final class LinkNoopWriter: BookWriting {
         restrictedLibraryIds: [String: Set<String>]
     ) async -> Int { 0 }
     func updateEbookFileURL(uniqueId: String, url: URL?) async {}
+    func updateDownloadedEbook(uniqueId: String, fileURL: URL, epub3Features: EPUB3Features?) async throws -> Bool { false }
+    func registerDownloadIfMissing(_ book: Book) async throws {}
     func setHidden(_ hidden: Bool, stableId: String) async {}
     func setDeleted(_ deleted: Bool, stableId: String) async {}
     func deleteBooks(uniqueIds: Set<String>) async {}

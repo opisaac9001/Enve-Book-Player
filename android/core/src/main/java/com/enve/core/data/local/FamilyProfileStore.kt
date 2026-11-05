@@ -64,6 +64,16 @@ class FamilyProfileStore @Inject constructor(@ApplicationContext context: Contex
     }
 
     @Synchronized
+    fun setPinRequired(profileId: String, required: Boolean) {
+        val profile = _profiles.value.first { it.id == profileId }
+        require(profile.role == FamilyProfileRole.ADULT)
+        require(!required || hasAdultPin)
+        val updated = _profiles.value.map { if (it.id == profileId) it.copy(requiresPin = required) else it }
+        check(prefs.edit().putString("profiles", json.encodeToString(serializer, updated)).commit())
+        _profiles.value = updated
+    }
+
+    @Synchronized
     fun remove(profileId: String) {
         require(profileId != DEFAULT_ADULT_PROFILE_ID)
         require(_profiles.value.any { it.id == profileId })

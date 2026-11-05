@@ -6,6 +6,7 @@ import android.util.Log
 import com.enve.app.playback.AudioPlaybackManager
 import com.enve.app.playback.AutoMediaBrowserHelper
 import com.enve.app.playback.PlaybackQueueCoordinator
+import com.enve.app.playback.PlaybackQueuePolicy
 import com.enve.app.playback.PlaybackStartException
 import com.enve.core.data.local.BookCacheDao
 import com.enve.core.data.local.PreferencesManager
@@ -59,23 +60,25 @@ class PlaybackFacadeImpl @Inject constructor(
     }
 
     override val queue: StateFlow<List<PlaybackQueueItem>> = queueCoordinator.queue
+    override val starting: StateFlow<Book?> = queueCoordinator.starting
 
     override fun open(book: Book) {
-        openInternal(book, seekAfterStartMs = null)
+        openInternal(book, positionMs = null)
     }
 
     override fun open(book: Book, positionMs: Long) {
-        openInternal(book, seekAfterStartMs = positionMs.coerceAtLeast(0L))
+        openInternal(book, positionMs = positionMs.coerceAtLeast(0L))
     }
 
-    private fun openInternal(book: Book, seekAfterStartMs: Long?) {
-        launchPlayback("Couldn't start \"${book.title}\". Check the source connection.") {
-            queueCoordinator.open(book, seekAfterStartMs)
+    private fun openInternal(book: Book, positionMs: Long?) {
+        if (positionMs == null && queueCoordinator.starting.value?.uniqueKey == book.uniqueKey) return
+        launchStart(book, "Couldn't start \"${book.title}\". Check the source connection.") {
+            queueCoordinator.open(book, positionMs)
         }
     }
 
     override fun playAll(books: List<Book>, groupKey: String?) {
-        launchPlayback("Couldn't start this group. Check the source connection.") {
+        launchStart(PlaybackQueuePolicy.playAllCandidates(books).firstOrNull(), "Couldn't start this group. Check the source connection.") {
             queueCoordinator.playAll(books, groupKey)
         }
     }
@@ -99,7 +102,7 @@ class PlaybackFacadeImpl @Inject constructor(
     }
 
     override fun playQueued(bookKey: String) {
-        launchPlayback("Couldn't start that queued book.") {
+        launchStart(null, "Couldn't start that queued book.") {
             queueCoordinator.playQueued(bookKey)
         }
     }
@@ -116,21 +119,27 @@ class PlaybackFacadeImpl @Inject constructor(
         scope.launch { queueCoordinator.clear() }
     }
 
+    private fun launchStart(book: Book?, errorMessage: String, action: suspend () -> Boolean) {
+        queueCoordinator.launchStart(book) { reportFailure(errorMessage, action) }
+    }
+
     private fun launchPlayback(errorMessage: String, action: suspend () -> Boolean) {
-        scope.launch {
-            val failure = try {
-                if (action()) null else errorMessage
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: PlaybackStartException) {
-                Log.w("PlaybackFacade", "Provider playback session failed: ${e.cause?.javaClass?.simpleName}")
-                e.message ?: errorMessage
-            } catch (e: Exception) {
-                Log.e("PlaybackFacade", errorMessage, e)
-                errorMessage
-            }
-            failure?.let { _errors.emit(it) }
+        scope.launch { reportFailure(errorMessage, action) }
+    }
+
+    private suspend fun reportFailure(errorMessage: String, action: suspend () -> Boolean) {
+        val failure = try {
+            if (action()) null else errorMessage
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: PlaybackStartException) {
+            Log.w("PlaybackFacade", "Provider playback session failed: ${e.cause?.javaClass?.simpleName}")
+            e.message ?: errorMessage
+        } catch (e: Exception) {
+            Log.e("PlaybackFacade", errorMessage, e)
+            errorMessage
         }
+        failure?.let { _errors.emit(it) }
     }
 
     override val transport: StateFlow<PlaybackTransport> =

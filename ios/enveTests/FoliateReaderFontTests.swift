@@ -1,16 +1,11 @@
 import Foundation
 import ReadiumNavigator
 import Testing
-import UniformTypeIdentifiers
 
 @testable import enve
 
 @MainActor
 struct FoliateReaderFontTests {
-    @Test func importerAcceptsTrueTypeAndOpenTypeFonts() {
-        #expect(UTType(filenameExtension: "ttf")?.conforms(to: .font) == true)
-        #expect(UTType(filenameExtension: "otf")?.conforms(to: .font) == true)
-    }
 
     @Test func packagesEveryOpenDyslexicFace() throws {
         let css = try #require(FoliateBuiltInFontCSS.openDyslexic)

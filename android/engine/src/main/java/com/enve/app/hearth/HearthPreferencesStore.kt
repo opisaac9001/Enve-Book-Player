@@ -37,6 +37,7 @@ private val KEY_LIBRARY_ADVANCED_FILTERS = stringPreferencesKey("hearth.library.
 private val KEY_READER_TTS_VOICE = stringPreferencesKey("hearth.reader.ttsVoice")
 private val KEY_START_TAB = stringPreferencesKey("hearth.startTab")
 private val KEY_HOME_SECTION_ORDER = stringPreferencesKey("hearth.home.sectionOrder")
+private val KEY_HOME_HIDDEN_SECTIONS = stringPreferencesKey("hearth.home.hiddenSections")
 private val KEY_SHOW_DOCK_BOOK_SHORTCUT = booleanPreferencesKey("hearth.dock.showBookShortcut")
 private val KEY_SHOW_TODAY_STACK = booleanPreferencesKey("hearth.home.showTodayStack")
 private val KEY_EBOOK_SYNC_INTERVAL = stringPreferencesKey("hearth.reader.ebookSyncInterval")
@@ -93,6 +94,13 @@ class HearthPreferencesStore(
             .split(',')
             .mapNotNull { raw -> runCatching { HearthHomeSection.valueOf(raw) }.getOrNull() }
         (saved + HearthHomeSection.entries).distinct()
+    }
+    val hiddenHomeSections: Flow<Set<HearthHomeSection>> = dataStore.data.map { prefs ->
+        prefs[KEY_HOME_HIDDEN_SECTIONS]
+            .orEmpty()
+            .split(',')
+            .mapNotNull { raw -> runCatching { HearthHomeSection.valueOf(raw) }.getOrNull() }
+            .toSet()
     }
     val showDockBookShortcut: Flow<Boolean> = dataStore.data.map { it[KEY_SHOW_DOCK_BOOK_SHORTCUT] ?: true }
     val showTodayStack: Flow<Boolean> = dataStore.data.map { it[KEY_SHOW_TODAY_STACK] ?: true }
@@ -165,6 +173,14 @@ class HearthPreferencesStore(
         val normalized = (order + HearthHomeSection.entries).distinct()
         dataStore.edit {
             it[KEY_HOME_SECTION_ORDER] = normalized.joinToString(",") { section -> section.name }
+        }
+    }
+
+    suspend fun setHomeSectionHidden(section: HearthHomeSection, hidden: Boolean) {
+        dataStore.edit { prefs ->
+            val current = prefs[KEY_HOME_HIDDEN_SECTIONS].orEmpty().split(',').filter(String::isNotEmpty).toMutableSet()
+            if (hidden) current += section.name else current -= section.name
+            prefs[KEY_HOME_HIDDEN_SECTIONS] = current.joinToString(",")
         }
     }
 

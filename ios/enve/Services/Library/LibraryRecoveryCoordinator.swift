@@ -452,20 +452,26 @@ final class LibraryRecoveryCoordinator {
     func rescueOrphanedDownloads() async {
         let storage = profileSession?.localStorage ?? LocalStorageManager.shared
 
-        reconcileRescuedDownloads()
+        await reconcilePersistedRescuedDownloads()
 
         let allDiskIds = await Task.detached(priority: .utility) {
             Set(storage.downloadedAudiobookIds())
         }.value
+        guard !isRetired, !Task.isCancelled else { return }
 
         let acknowledgedDiskIds = acknowledgedRescuedDownloads().intersection(allDiskIds)
         saveAcknowledgedRescuedDownloads(acknowledgedDiskIds)
 
         guard !allDiskIds.isEmpty else { return }
 
-        let knownBooks = library.books
+        let storedRescuedBooks = await bookStore.books(
+            source: Book.BookSource.local.rawValue, providerId: Self.rescueProviderId
+        ).filter { $0.libraryId == Self.rescueLibraryId }
+        guard !isRetired, !Task.isCancelled else { return }
+        // A rescued row still owns its folder when a collision gave the row a different id.
+        let knownBooks = library.books + storedRescuedBooks
         let bookKeys: [(downloadKey: String, stableId: String, id: String)] = knownBooks.map {
-            ($0.downloadKey, $0.stableId, $0.id)
+            ($0.downloadKey, $0.stableId, $0.libraryId == Self.rescueLibraryId ? ($0.partKey ?? $0.downloadKey) : $0.stableId)
         }
         let knownSanitizedIds: Set<String> = await Task.detached(priority: .utility) {
             let sanitize: (String) -> String = { input in
@@ -486,19 +492,26 @@ final class LibraryRecoveryCoordinator {
             return ids
         }.value
 
-        let orphanedDiskIds = allDiskIds
+        let unmirroredDiskIds = allDiskIds
             .subtracting(knownSanitizedIds)
             .subtracting(acknowledgedDiskIds)
+        guard !unmirroredDiskIds.isEmpty else { return }
+        // The startup mirror holds only the first page of the catalog; the store decides what is owned.
+        let orphanedDiskIds = unmirroredDiskIds.subtracting(await persistedOwnedDiskIds(unmirroredDiskIds, storage: storage))
 
-        guard !orphanedDiskIds.isEmpty else { return }
+        guard !orphanedDiskIds.isEmpty, !isRetired, !Task.isCancelled else { return }
 
         AppLogger.general.info("[Recovery] Found \(orphanedDiskIds.count) orphaned download(s) on disk - rescuing...")
 
         let localProviderId = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
         let rescueLibraryId = "rescued-downloads"
         var rescuedBooks: [Book] = []
+        // New rows take their folder's name, made unique against every rescued row; existing rows keep their ids.
+        var usedIds = Set(await bookStore.books(source: Book.BookSource.local.rawValue, providerId: Self.rescueProviderId)
+            .filter { $0.libraryId == Self.rescueLibraryId }.map(\.id))
+        guard !isRetired, !Task.isCancelled else { return }
 
-        for diskId in orphanedDiskIds {
+        for diskId in orphanedDiskIds.sorted() {
             guard let audioFiles = storage.localAudiobookFilesIfExists(bookId: diskId),
                 !audioFiles.isEmpty
             else {
@@ -507,16 +520,22 @@ final class LibraryRecoveryCoordinator {
 
             let metadata = try? storage.loadMetadataOverride(OfflineBookMetadata.self, for: diskId)
 
-            if let metadata,
-                let serverBook = serverBookMatchingRescuedDownload(metadata),
-                !storage.isAudiobookDownloaded(serverBook.downloadKey),
-                storage.reassociateDownload(from: diskId, to: serverBook.downloadKey)
-            {
-                saveOfflineMetadata(for: serverBook, preserving: metadata, storage: storage)
-                AppLogger.general.info(
-                    "[Recovery] Reassociated orphaned download bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: serverBook.stableId))"
-                )
-                continue
+            if let metadata, let serverBook = await persistedBook(owning: metadata, storage: storage) {
+                guard !isRetired, !Task.isCancelled else { return }
+                // Its owner already has a complete copy: this tree is left as it is and not listed again.
+                if storage.isAudiobookDownloaded(serverBook) {
+                    AppLogger.general.info(
+                        "[Recovery] Kept a second copy of a downloaded book bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: serverBook.stableId))"
+                    )
+                    continue
+                }
+                if storage.reassociateDownload(from: diskId, to: serverBook.downloadKey) {
+                    saveOfflineMetadata(for: serverBook, preserving: metadata, storage: storage)
+                    AppLogger.general.info(
+                        "[Recovery] Reassociated orphaned download bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: serverBook.stableId))"
+                    )
+                    continue
+                }
             }
 
             var tracks: [AudioTrack] = []
@@ -544,7 +563,13 @@ final class LibraryRecoveryCoordinator {
             let coverPath = storage.coverOverridePath(for: diskId)
             let hasCover = FileManager.default.fileExists(atPath: coverPath.path)
 
-            let bookId = metadata?.id ?? diskId
+            var bookId = diskId
+            var suffix = 2
+            while usedIds.contains(bookId) {
+                bookId = "\(diskId)-\(suffix)"
+                suffix += 1
+            }
+            usedIds.insert(bookId)
             let book = Book(
                 id: bookId,
                 ratingKey: bookId,
@@ -576,7 +601,7 @@ final class LibraryRecoveryCoordinator {
             )
         }
 
-        guard !rescuedBooks.isEmpty else { return }
+        guard !rescuedBooks.isEmpty, !isRetired, !Task.isCancelled else { return }
 
         var booksToPersist: [Book] = []
         await MainActor.run {
@@ -609,37 +634,82 @@ final class LibraryRecoveryCoordinator {
             }
         }
 
-        if !booksToPersist.isEmpty {
+        if !booksToPersist.isEmpty, !isRetired {
             await bookStore.upsertBooks(booksToPersist)
         }
     }
 
     func reconcileRescuedDownloads() {
-        let storage = profileSession?.localStorage ?? LocalStorageManager.shared
-        let rescuedBooks = library.books.filter { $0.libraryId == "rescued-downloads" }
+        retainOperation(priority: .utility) { [self] in await reconcilePersistedRescuedDownloads() }
+    }
 
-        for rescuedBook in rescuedBooks {
+    private func reconcilePersistedRescuedDownloads() async {
+        let storage = profileSession?.localStorage ?? LocalStorageManager.shared
+        let rescuedBooks = await bookStore.books(
+            source: Book.BookSource.local.rawValue, providerId: Self.rescueProviderId
+        ).filter { $0.libraryId == Self.rescueLibraryId }
+        guard !rescuedBooks.isEmpty else { return }
+        // A rescued row a book links to, by its own field or the link table, or that is a read-aloud source, stays.
+        var inUse = await bookStore.referencedAudiobookStableIds(among: Set(rescuedBooks.map(\.stableId)))
+        inUse.formUnion(library.books.compactMap(\.linkedAudiobookStableId))
+        guard !isRetired, !Task.isCancelled else { return }
+
+        for rescuedBook in rescuedBooks where !inUse.contains(rescuedBook.stableId) {
             let diskId = rescuedBook.partKey ?? rescuedBook.downloadKey
             guard let metadata = try? storage.loadMetadataOverride(OfflineBookMetadata.self, for: diskId),
-                let serverBook = serverBookMatchingRescuedDownload(metadata),
-                !storage.isAudiobookDownloaded(serverBook.downloadKey)
+                let serverBook = await persistedBook(owning: metadata, storage: storage)
             else {
                 continue
             }
+            guard !isRetired, !Task.isCancelled else { return }
             matchRescuedBook(rescuedBook, to: serverBook)
         }
     }
 
-    private func serverBookMatchingRescuedDownload(_ metadata: OfflineBookMetadata) -> Book? {
-        guard metadata.source != .local else { return nil }
+    private static let rescueLibraryId = "rescued-downloads"
+    private static let rescueProviderId = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
 
-        let candidates = library.books.filter {
+    /// The one stored book with the metadata's identity; a raw id alone is not one, as two connections can serve it.
+    private func persistedBook(owning metadata: OfflineBookMetadata, storage: LocalStorageManager) async -> Book? {
+        guard metadata.source != .local else { return nil }
+        let candidates = await bookStore.books(withIds: [metadata.id, metadata.stableId]).filter {
             $0.source == metadata.source
-                && $0.id == metadata.id
                 && $0.mediaType != .ebook
-                && $0.libraryId != "rescued-downloads"
+                && $0.libraryId != Self.rescueLibraryId
+                && ($0.stableId == metadata.stableId || storage.ownedCandidateBookIds(for: $0).contains(metadata.stableId))
         }
-        return candidates.count == 1 ? candidates[0] : nil
+        let owners = Set(candidates.map(\.uniqueId))
+        return owners.count == 1 ? candidates[0] : nil
+    }
+
+    /// Folders a stored book claims under its canonical, legacy or metadata-confirmed key.
+    private func persistedOwnedDiskIds(_ diskIds: Set<String>, storage: LocalStorageManager) async -> Set<String> {
+        var owned = Set(
+            await bookStore.downloadedAudiobooks(storageKeys: diskIds).map { LocalStorageManager.sanitizedId(for: $0.stableId) }
+        )
+        let remaining = diskIds.subtracting(owned)
+        guard !remaining.isEmpty else { return owned }
+        // A legacy tree is named by a raw or provider-scoped id; every suffix after a separator is a possible raw id.
+        var candidateIds = Set<String>()
+        for diskId in remaining {
+            candidateIds.insert(diskId)
+            if let metadata = try? storage.loadMetadataOverride(OfflineBookMetadata.self, for: diskId) {
+                candidateIds.insert(metadata.id)
+                candidateIds.insert(metadata.stableId)
+            }
+            var start = diskId.startIndex
+            while let separator = diskId[start...].firstIndex(of: "-") {
+                start = diskId.index(after: separator)
+                if start < diskId.endIndex { candidateIds.insert(String(diskId[start...])) }
+            }
+        }
+        for book in await bookStore.books(withIds: Array(candidateIds)) {
+            for key in storage.ownedCandidateBookIds(for: book).map(LocalStorageManager.sanitizedId(for:))
+            where remaining.contains(key) {
+                owned.insert(key)
+            }
+        }
+        return owned
     }
 
     private func saveOfflineMetadata(
@@ -699,27 +769,67 @@ final class LibraryRecoveryCoordinator {
 
         let rescuedUniqueId = rescuedBook.uniqueId
         let serverUniqueId = serverBook.uniqueId
+        let bookProgress = profileSession?.bookProgress ?? BookProgressStore.shared
 
-        progress.transferProgress(fromUniqueId: rescuedUniqueId, to: serverBook)
-
-        var updatedServerBook: Book?
-        if rescuedBook.currentTime > 0,
-            let serverIdx = library.books.firstIndex(where: { $0.uniqueId == serverUniqueId })
-        {
-            var updated = library.books[serverIdx]
-            updated.currentTime = rescuedBook.currentTime
-            updated.isFinished = rescuedBook.isFinished
-            updated.lastUpdate = Date()
-            library.books[serverIdx] = updated
-            library.hot.insert(updated)
-            updatedServerBook = updated
+        // The rescued copy's newest listening, even a return to 0, wins only over older original observations.
+        let rescuedEntry = progress.progress(forUniqueId: rescuedUniqueId)
+        var observations: [ListeningObservation] = []
+        if let rescuedEntry {
+            observations.append(.init(source: .progressEntry, time: rescuedEntry.currentTime, isFinished: rescuedEntry.isFinished,
+                duration: rescuedEntry.duration, at: rescuedEntry.lastUpdate))
         }
+        if let saved = bookProgress.loadProgress(for: rescuedBook) {
+            observations.append(.init(source: .savedProgress, time: saved.progress, isFinished: rescuedBook.isFinished,
+                duration: saved.duration, at: Date(timeIntervalSince1970: saved.lastUpdated)))
+        }
+        // A rescued row starts at zero, stamped when it was rescued; only listening on it is an observation.
+        if rescuedBook.currentTime > 0 || rescuedBook.isFinished {
+            observations.append(.init(source: .row, time: rescuedBook.currentTime, isFinished: rescuedBook.isFinished,
+                duration: rescuedBook.duration ?? 0, at: rescuedBook.lastUpdate))
+        }
+        let originalObservedAt = [
+            serverBook.lastUpdate,
+            library.bookInMemory(uniqueId: serverUniqueId)?.lastUpdate,
+            progress.progress(forUniqueId: serverUniqueId)?.lastUpdate,
+            bookProgress.loadProgress(for: serverBook).map { Date(timeIntervalSince1970: $0.lastUpdated) },
+        ].compactMap { $0?.timeIntervalSince1970 }.max() ?? -Double.infinity
+        // Saved timestamps use Unix seconds; compare in that same representation before breaking ties.
+        let winner = observations.max {
+            let first = $0.at.timeIntervalSince1970
+            let second = $1.at.timeIntervalSince1970
+            return first != second ? first < second : $0.source.rawValue > $1.source.rawValue
+        }.flatMap { $0.at.timeIntervalSince1970 > originalObservedAt ? $0 : nil }
 
-        if let savedProgress = (profileSession?.bookProgress ?? BookProgressStore.shared).loadProgress(for: rescuedBook) {
-            (profileSession?.bookProgress ?? BookProgressStore.shared).saveProgress(
-                for: serverBook,
-                progress: savedProgress.progress,
-                duration: savedProgress.duration
+        if winner?.source == .progressEntry {
+            progress.transferProgress(fromUniqueId: rescuedUniqueId, to: serverBook)
+        } else {
+            progress.forget(keys: [rescuedUniqueId])
+        }
+        if let winner {
+            let duration = winner.duration > 0 ? winner.duration : serverBook.duration ?? 0
+            if winner.source != .progressEntry {
+                progress.update(UserMediaProgress(
+                    id: serverBook.id, libraryItemId: serverBook.id, providerId: serverBook.providerId, episodeId: nil,
+                    currentTime: winner.time, progress: duration > 0 ? winner.time / duration : 0,
+                    isFinished: winner.isFinished, duration: duration, lastUpdate: winner.at, ebookProgress: nil
+                ))
+            }
+            library.applyStored(uniqueId: serverUniqueId) {
+                $0.currentTime = winner.time
+                $0.isFinished = winner.isFinished
+                $0.lastUpdate = winner.at
+            }
+            bookProgress.saveProgress(for: serverBook, progress: winner.time, duration: duration, at: winner.at)
+            var queuedBook = serverBook
+            queuedBook.currentTime = winner.time
+            queuedBook.isFinished = winner.isFinished
+            queuedBook.lastUpdate = winner.at
+            (profileSession?.sync ?? SyncCoordinator.shared).enqueuePendingSync(
+                book: queuedBook,
+                position: winner.time,
+                duration: duration,
+                serverItemId: queuedBook.partKey ?? queuedBook.id,
+                isFinished: winner.isFinished
             )
         }
 
@@ -727,35 +837,29 @@ final class LibraryRecoveryCoordinator {
         library.hot.remove(uniqueId: rescuedUniqueId)
         presentation.orphanedBooks.removeAll { $0.uniqueId == rescuedUniqueId }
 
-        if let serverProgress = progress.progress(forUniqueId: serverUniqueId) {
-            var queuedBook = updatedServerBook ?? serverBook
-            queuedBook.currentTime = serverProgress.currentTime
-            queuedBook.isFinished = serverProgress.isFinished
-            queuedBook.lastUpdate = serverProgress.lastUpdate
-            (profileSession?.sync ?? SyncCoordinator.shared).enqueuePendingSync(
-                book: queuedBook,
-                position: serverProgress.currentTime,
-                duration: serverProgress.duration,
-                serverItemId: queuedBook.partKey ?? queuedBook.id,
-                isFinished: serverProgress.isFinished
-            )
-        }
-
         cleanupRescuedLibraryIfEmpty()
         progress.persist()
         catalog.saveMetadata()
 
         let rescuedId = rescuedUniqueId
-        let updated = updatedServerBook
         let store = bookStore
         retainOperation(priority: .utility) {
             await store.deleteBooks(uniqueIds: [rescuedId])
-            if let updated {
-                await store.upsertBooks([updated])
+            if let winner {
+                await store.updateProgress(
+                    uniqueId: serverUniqueId, currentTime: winner.time, isFinished: winner.isFinished, lastUpdate: winner.at
+                )
             }
         }
 
         let storage = profileSession?.localStorage ?? LocalStorageManager.shared
+        // An original that already has its own complete copy keeps it; the rescued tree is left untouched.
+        guard !storage.isAudiobookDownloaded(serverBook) else {
+            AppLogger.general.info(
+                "Matched rescued bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: serverBook.stableId)); original copy kept"
+            )
+            return
+        }
         let moved = storage.reassociateDownload(from: diskId, to: serverKey)
         if !moved {
             if !storage.reassociateDownload(from: rescuedKey, to: serverKey) {
@@ -774,6 +878,15 @@ final class LibraryRecoveryCoordinator {
         AppLogger.general.info(
             "Matched rescued bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: serverBook.stableId)); file move queued"
         )
+    }
+
+    private struct ListeningObservation {
+        enum Source: Int { case progressEntry, savedProgress, row }
+        let source: Source
+        let time: TimeInterval
+        let isFinished: Bool
+        let duration: TimeInterval
+        let at: Date
     }
 
     func dismissOrphanedBook(_ book: Book) {

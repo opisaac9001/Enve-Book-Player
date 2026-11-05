@@ -42,6 +42,8 @@ class HearthShellViewModel @Inject constructor(
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
     val einkState: StateFlow<EinkState> = eink.state
 
+    val startingBook: StateFlow<Book?> = playback.starting
+
     private val _playbackNotice = MutableStateFlow<String?>(null)
     val playbackNotice: StateFlow<String?> = _playbackNotice
 

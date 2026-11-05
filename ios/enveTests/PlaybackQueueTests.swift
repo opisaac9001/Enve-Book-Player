@@ -62,10 +62,10 @@ struct PlaybackQueuePolicyTests {
 
 @MainActor
 private final class BookPlaybackStarterSpy: BookPlaybackStarting {
-    private(set) var started: [(book: Book, presentPlayer: Bool)] = []
+    private(set) var started: [(book: Book, presentPlayer: Bool, startPosition: TimeInterval?)] = []
 
-    func play(_ book: Book, presentPlayer: Bool) {
-        started.append((book, presentPlayer))
+    func play(_ book: Book, from startPosition: TimeInterval?, presentPlayer: Bool) {
+        started.append((book, presentPlayer, startPosition))
     }
 }
 
@@ -75,12 +75,13 @@ private final class FakePlaybackController: PlaybackControlling, PlaybackEventPu
     private let eventSubject = PassthroughSubject<PlaybackEvent, Never>()
 
     let ownsProgressPersistence = false
+    private(set) var seeks: [TimeInterval] = []
 
     var snapshot: PlaybackSnapshot { snapshotSubject.value }
     var snapshots: AnyPublisher<PlaybackSnapshot, Never> { snapshotSubject.eraseToAnyPublisher() }
     var playbackEvents: AnyPublisher<PlaybackEvent, Never> { eventSubject.eraseToAnyPublisher() }
 
-    func becomeActive(with book: Book, isLoading: Bool = false) {
+    func becomeActive(with book: Book, isLoading: Bool = false, isLoaded: Bool? = nil) {
         snapshotSubject.send(
             PlaybackSnapshot(
                 currentBook: book,
@@ -89,7 +90,7 @@ private final class FakePlaybackController: PlaybackControlling, PlaybackEventPu
                 duration: book.duration ?? 0,
                 playbackSpeed: 1,
                 volume: 1,
-                isLoaded: !isLoading,
+                isLoaded: isLoaded ?? !isLoading,
                 isLoading: isLoading,
                 isOverlayPlaybackActive: false,
                 errorDescription: nil
@@ -105,7 +106,7 @@ private final class FakePlaybackController: PlaybackControlling, PlaybackEventPu
     func pause() {}
     func stop() {}
     func togglePlay() {}
-    func seek(to time: TimeInterval) {}
+    func seek(to time: TimeInterval) { seeks.append(time) }
     func skipForward(seconds: TimeInterval) {}
     func skipBackward(seconds: TimeInterval) {}
     func setPlaybackRate(_ rate: Double) {}
@@ -116,6 +117,36 @@ private final class FakePlaybackController: PlaybackControlling, PlaybackEventPu
 @MainActor
 @Suite(.serialized)
 struct PlaybackQueueRoutingTests {
+    @Test(arguments: [false, true])
+    func selectingAChapterDuringStartupReplacesThePendingStart(isLoading: Bool) async throws {
+        let fixture = try makeFixture()
+        defer { fixture.tearDown() }
+        let book = makeBook("chapter-during-startup")
+        fixture.controller.becomeActive(with: book, isLoading: isLoading, isLoaded: true)
+        let engine = PlaybackEngine(
+            appState: fixture.appState,
+            playbackController: fixture.controller, playbackEvents: fixture.controller,
+            queueStore: fixture.store, playbackStarter: fixture.starter
+        )
+        let chapter = Chapter(id: "selected", start: 42, end: 90, title: "Selected", index: 0)
+
+        engine.playChapter(chapter, in: book)
+
+        if isLoading {
+            await waitUntil { !fixture.starter.started.isEmpty }
+            #expect(fixture.controller.seeks.isEmpty)
+            #expect(fixture.starter.started.count == 1)
+            #expect(fixture.starter.started.first?.book.uniqueId == book.uniqueId)
+            #expect(fixture.starter.started.first?.startPosition == chapter.start)
+            #expect(fixture.starter.started.first?.presentPlayer == true)
+        } else {
+            #expect(fixture.controller.seeks == [chapter.start])
+            #expect(fixture.starter.started.isEmpty)
+            #expect(fixture.appState.presentation.isPlayerPresented)
+        }
+        await engine.retire()
+    }
+
     @Test func manualStartRoutesThroughInjectedBookStarter() async throws {
         let fixture = try makeFixture()
         defer { fixture.tearDown() }
@@ -127,6 +158,49 @@ struct PlaybackQueueRoutingTests {
         #expect(fixture.starter.started.count == 1)
         #expect(fixture.starter.started.first?.book.uniqueId == book.uniqueId)
         #expect(fixture.starter.started.first?.presentPlayer == false)
+        #expect(fixture.starter.started.first?.startPosition == nil)
+    }
+
+    @Test func anExplicitStartKeepsItsPositionThroughQueuedBookResolution() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.tearDown() }
+        let book = makeBook("explicit-start")
+
+        fixture.queue.playManually(book, presentPlayer: false, reconcilingLinkedPosition: false, startPosition: 3)
+        await waitUntil { !fixture.starter.started.isEmpty }
+
+        #expect(fixture.starter.started.count == 1)
+        #expect(fixture.starter.started.first?.book.uniqueId == book.uniqueId)
+        #expect(fixture.starter.started.first?.startPosition == 3)
+    }
+
+    @Test func aNormalStartSupersedingAnExplicitStartNeverInheritsItsPosition() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.tearDown() }
+        let book = makeBook("superseded-explicit")
+
+        fixture.queue.playManually(book, presentPlayer: false, reconcilingLinkedPosition: false, startPosition: 70)
+        fixture.queue.playManually(book, presentPlayer: false, reconcilingLinkedPosition: false)
+        await waitUntil { !fixture.starter.started.isEmpty }
+
+        #expect(fixture.starter.started.count == 1)
+        #expect(fixture.starter.started.first?.book.uniqueId == book.uniqueId)
+        #expect(fixture.starter.started.first?.startPosition == nil)
+    }
+
+    @Test func supersedingAnExplicitStartWithAnotherBookKeepsTheNewBooksPosition() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.tearDown() }
+        let first = makeBook("old-explicit")
+        let second = makeBook("new-explicit")
+
+        fixture.queue.playManually(first, presentPlayer: false, reconcilingLinkedPosition: false, startPosition: 70)
+        fixture.queue.playManually(second, presentPlayer: false, reconcilingLinkedPosition: false, startPosition: 0)
+        await waitUntil { !fixture.starter.started.isEmpty }
+
+        #expect(fixture.starter.started.count == 1)
+        #expect(fixture.starter.started.first?.book.uniqueId == second.uniqueId)
+        #expect(fixture.starter.started.first?.startPosition == 0)
     }
 
     @Test func playAllStartsFirstQueuedBookThroughInjectedBookStarter() async throws {
@@ -225,10 +299,7 @@ struct PlaybackQueueRoutingTests {
         fixture.controller.becomeActive(with: playing)
         fixture.store.addLast(next)
 
-        let presentation = AppState.shared.presentation
-        let originalPresented = presentation.isPlayerPresented
-        presentation.isPlayerPresented = true
-        defer { presentation.isPlayerPresented = originalPresented }
+        fixture.appState.presentation.isPlayerPresented = true
 
         fixture.controller.send(.completed(playing))
         await waitUntil { !fixture.starter.started.isEmpty }
@@ -369,6 +440,7 @@ struct PlaybackQueueRoutingTests {
 
     private struct Fixture {
         let directory: URL
+        let appState: AppState
         let store: PlaybackQueueStore
         let controller: FakePlaybackController
         let starter: BookPlaybackStarterSpy
@@ -385,9 +457,11 @@ struct PlaybackQueueRoutingTests {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("enve-queue-routing-tests-\(UUID().uuidString)", isDirectory: true)
         let store = PlaybackQueueStore(fileURL: directory.appendingPathComponent("queue.json"))
+        let appState = AppState(bookStore: AppState.shared.bookStore, providerConnections: ProfileSession.owner.providerConnections)
         let controller = FakePlaybackController()
         let starter = BookPlaybackStarterSpy()
         let queue = PlaybackQueueCoordinator(
+            appState: appState,
             playback: controller,
             playbackEvents: controller,
             playbackStarter: starter,
@@ -403,6 +477,7 @@ struct PlaybackQueueRoutingTests {
 
         return Fixture(
             directory: directory,
+            appState: appState,
             store: store,
             controller: controller,
             starter: starter,

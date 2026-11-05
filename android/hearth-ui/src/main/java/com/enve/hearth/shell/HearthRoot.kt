@@ -10,17 +10,23 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -58,6 +64,7 @@ import com.enve.hearth.journal.HearthInsightsScreen
 import com.enve.hearth.journal.HearthJournalScreen
 import com.enve.hearth.journal.HearthStatsHubScreen
 import com.enve.hearth.library.HearthLibraryScreen
+import com.enve.hearth.listeningposition.ListeningPositionScanScreen
 import com.enve.hearth.player.PlayerScreen
 import com.enve.hearth.podcasts.PodcastShowScreen
 import com.enve.hearth.podcasts.PodcastEpisodeScreen
@@ -76,6 +83,8 @@ fun HearthRoot(
     initialShowSettings: Boolean = false,
     showPlayerRequest: Boolean = false,
     onPlayerRequestConsumed: () -> Unit = {},
+    positionLinkRequest: String? = null,
+    onPositionLinkConsumed: () -> Unit = {},
     openBookRequest: Book? = null,
     onBookRequestConsumed: () -> Unit = {},
     onOpenEbook: (Book) -> Unit = {},
@@ -176,6 +185,13 @@ fun HearthRoot(
                 )
             }
             var pendingPlayerBookId by remember { mutableStateOf<String?>(null) }
+            var positionLink by remember { mutableStateOf<String?>(null) }
+            LaunchedEffect(positionLinkRequest) {
+                if (positionLinkRequest != null) {
+                    positionLink = positionLinkRequest
+                    onPositionLinkConsumed()
+                }
+            }
             LaunchedEffect(showPlayerRequest, nowPlaying) {
                 if (showPlayerRequest && nowPlaying != null) {
                     showPlayer = true
@@ -505,9 +521,15 @@ fun HearthRoot(
                     )
                 }
 
+                positionLink?.let { message ->
+                    key(message) { ListeningPositionScanScreen(initialMessage = message) { positionLink = null } }
+                }
+
                 playerOverlay()
 
                 val playbackNotice by vm.playbackNotice.collectAsStateWithLifecycle()
+                val startingBook by vm.startingBook.collectAsStateWithLifecycle()
+                val startingTitle = startingBook?.takeIf { nowPlaying?.bookKey != it.uniqueKey }?.title
                 playbackNotice?.let { msg ->
                     LaunchedEffect(msg) {
                         kotlinx.coroutines.delay(4000)
@@ -518,6 +540,15 @@ fun HearthRoot(
                         Modifier
                             .align(Alignment.BottomCenter)
                             .padding(bottom = LocalMantelInset.current + Hearth.Spacing.S),
+                    )
+                }
+                if (playbackNotice == null && startingTitle != null) {
+                    NoticeCapsule(
+                        "Starting $startingTitle…",
+                        Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = LocalMantelInset.current + Hearth.Spacing.S),
+                        busy = true,
                     )
                 }
             }
@@ -533,17 +564,22 @@ private fun HearthStartTab.toHearthTab(): HearthTab = when (this) {
 }
 
 @Composable
-private fun NoticeCapsule(text: String, modifier: Modifier = Modifier) {
+private fun NoticeCapsule(text: String, modifier: Modifier = Modifier, busy: Boolean = false) {
     val palette = Hearth.palette
     val shape = if (Hearth.eink.sharpCorners) RectangleShape else RoundedCornerShape(999.dp)
-    Box(
+    Row(
         modifier
             .padding(horizontal = 32.dp)
             .clip(shape)
             .background(palette.bgElevated)
             .border(0.5.dp, palette.hairline, shape)
             .padding(horizontal = 18.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
+        if (busy && !Hearth.eink.suppressAnimations) {
+            CircularProgressIndicator(Modifier.size(14.dp), color = palette.ember, strokeWidth = 2.dp)
+            Spacer(Modifier.width(Hearth.Spacing.S))
+        }
         Text(text, style = HearthText.Caption, color = palette.text)
     }
 }

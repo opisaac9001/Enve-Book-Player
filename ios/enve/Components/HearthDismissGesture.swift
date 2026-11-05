@@ -35,7 +35,8 @@ private struct HearthDismissGesture: ViewModifier {
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        if style == .cover {
+        // Transparent covers trigger a presentation loop on iOS 17.5.
+        if #available(iOS 18, *), style == .cover {
             gestured(content)
                 .presentationBackground(.clear)
         } else {
@@ -218,6 +219,11 @@ private final class DismissGestureCoordinator: NSObject, UIGestureRecognizerDele
             return true
         }
         return false
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+        // A scroll view whose content fits still rubber-bands and would otherwise swallow the pull.
+        gestureRecognizer === pan && !touchInScrollView && other.view is UIScrollView
     }
 
     @objc private func handlePan(_ pan: UIPanGestureRecognizer) {

@@ -92,6 +92,11 @@ protocol ReaderEngineAdapter: AnyObject {
     func ttsLocator(at point: CGPoint?) async -> Locator?
     func applyTTSDecoration(locatorJSON: String?) async
     func followTTS(locatorJSON: String) async
+    /// Linked read-along highlight, kept separate from the read-aloud TTS highlight so neither clears the other.
+    func applyReadAlongDecoration(locatorJSON: String?, color: ReadAloudHighlightColor) async
+    /// The narrated word inside the read-along sentence, in its own layer; never turns the page.
+    func applyReadAlongWordDecoration(locatorJSON: String?, color: ReadAloudHighlightColor) async
+    func followReadAlong(locatorJSON: String) async
     func tearDown()
 }
 
@@ -703,6 +708,33 @@ final class ReadiumReaderEngineAdapter: ReaderEngineAdapter {
         // A selection that began while the visibility check ran cancels the follow.
         guard !Task.isCancelled else { return }
         _ = await navigator.go(to: locator, options: .init(animated: false))
+    }
+
+    func applyReadAlongDecoration(locatorJSON: String?, color: ReadAloudHighlightColor) async {
+        guard let locatorJSON, let locator = try? Locator(jsonString: locatorJSON) else {
+            navigator.apply(decorations: [], in: "linked-readalong")
+            return
+        }
+        navigator.apply(
+            decorations: [Decoration(id: "readalong-current", locator: locator, style: .highlight(tint: color.uiColor, isActive: true))],
+            in: "linked-readalong"
+        )
+    }
+
+    func applyReadAlongWordDecoration(locatorJSON: String?, color: ReadAloudHighlightColor) async {
+        guard let locatorJSON, let locator = try? Locator(jsonString: locatorJSON) else {
+            navigator.apply(decorations: [], in: "linked-readalong-word")
+            return
+        }
+        navigator.apply(
+            decorations: [Decoration(id: "readalong-word", locator: locator, style: .underline(tint: color.uiColor, isActive: true))],
+            in: "linked-readalong-word"
+        )
+    }
+
+    func followReadAlong(locatorJSON: String) async {
+        guard let locator = try? Locator(jsonString: locatorJSON) else { return }
+        _ = await navigator.go(to: locator, options: NavigatorGoOptions(animated: false))
     }
 
     func tearDown() {

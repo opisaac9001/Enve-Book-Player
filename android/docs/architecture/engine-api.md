@@ -76,3 +76,9 @@ class HearthHomeViewModel @Inject constructor(
 4. Inject the interface into the `:hearth-ui` ViewModel that needs it.
 
 Keep the facade thin. It exists to hide backend types from the UI, not to become a second place where domain logic lives.
+
+### Import notices
+
+`LibraryFacade.importIssues` exposes undismissed catalog notices for the active profile. `dismissImportIssues` hides the supplied reports without marking their imports complete or deleting books. Dismissal is persisted separately from diagnostic status; recording a new import attempt resurfaces failures. The library presents a compact count, bounded expandable source/library details, Retry, and Dismiss. HTTP 401/403/404 statuses are retained when available without retaining raw server response text.
+
+Changing an existing connection URL schedules a refresh using the current registry entry. Old endpoint diagnostics and provider caches are invalidated after acquiring the refresh lock, so an older in-flight import cannot restore stale errors afterward. Books stay available until a complete refreshed catalog can reconcile them. A connection-address edit no longer immediately deletes its cached books.

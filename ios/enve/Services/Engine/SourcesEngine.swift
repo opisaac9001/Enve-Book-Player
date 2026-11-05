@@ -10,6 +10,7 @@ struct LibrarySourceConnectionSummary: Identifiable, Sendable {
     let id: UUID
     let name: String
     let type: ProviderType
+    var username: String?
 }
 
 struct LibrarySourceLibrarySummary: Identifiable, Sendable {
@@ -85,7 +86,7 @@ final class SourcesEngine {
         _ = librarySourceRevision
         let connections = appState.providerConnections.connections
             .filter { !$0.isArchived }
-            .map { LibrarySourceConnectionSummary(id: $0.id, name: $0.name, type: $0.type) }
+            .map { LibrarySourceConnectionSummary(id: $0.id, name: $0.name, type: $0.type, username: $0.username) }
 
         let activeIds = Set(connections.map(\.id))
         var librariesByKey: [String: LibrarySourceLibrarySummary] = [:]
@@ -125,17 +126,23 @@ final class SourcesEngine {
         return LibrarySourceSnapshot(connections: connections, libraries: libraries)
     }
 
-    func refreshLibrarySourceNamesIfNeeded() async {
-        guard !hasRefreshedLibrarySourceNames else { return }
+    func refreshLibrarySourceNamesIfNeeded(force: Bool = false) async {
+        guard force || !hasRefreshedLibrarySourceNames else { return }
         hasRefreshedLibrarySourceNames = true
 
         let activeConnections = appState.providerConnections.connections.filter { !$0.isArchived }
         var changed = false
+        var failed = false
         for connection in activeConnections {
             guard let provider = appState.getProvider(connection.id) else { continue }
-            guard let libraries = try? await provider.fetchLibraries() else { continue }
+            guard let libraries = try? await provider.fetchLibraries() else {
+                failed = true
+                continue
+            }
             changed = upsertSourceLibraries(libraries) || changed
+            changed = pruneRemovedLibraries(for: connection.id, keeping: libraries) || changed
         }
+        if failed { hasRefreshedLibrarySourceNames = false }
 
         if changed {
             librarySourceRevision &+= 1
@@ -158,6 +165,14 @@ final class SourcesEngine {
 
     func activeConnections(type: ProviderType) -> [ServerConnection] {
         appState.providerConnections.connections.filter { $0.type == type && !$0.isArchived }
+    }
+
+    private func pruneRemovedLibraries(for providerId: UUID, keeping libraries: [Library]) -> Bool {
+        guard !libraries.isEmpty else { return false }
+        let current = Set(libraries.map(\.id))
+        let before = catalog.libraries.count
+        catalog.libraries.removeAll { $0.providerId == providerId && !current.contains($0.id) }
+        return catalog.libraries.count != before
     }
 
     private func upsertSourceLibraries(_ libraries: [Library]) -> Bool {

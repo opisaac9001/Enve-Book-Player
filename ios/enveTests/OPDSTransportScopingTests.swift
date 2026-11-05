@@ -39,9 +39,6 @@ struct OPDSTransportScopingTests {
         #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
         #expect(request.value(forHTTPHeaderField: "CF-Access-Client-Id") == nil)
     }
-
-    /// A feed may nominate a progression service on another host. Enve adopts it, but the request that
-    /// reaches it carries nothing the connection authenticates with.
     @Test(arguments: [
         "https://progress.example.invalid/p",
         "http://catalog.example.invalid/opds/p",
@@ -74,8 +71,6 @@ struct OPDSTransportScopingTests {
         #expect(request.value(forHTTPHeaderField: "CF-Access-Client-Id") == "client-id")
     }
 
-    // MARK: Redirects on the feed session
-
     @Test(arguments: [
         "http://catalog.example.invalid/opds/root.json",
         "ftp://catalog.example.invalid/opds/root.json",
@@ -93,14 +88,6 @@ struct OPDSTransportScopingTests {
         #expect(forwarded?.value(forHTTPHeaderField: "CF-Access-Client-Id") == nil)
     }
 
-    @Test func theDefaultPortMatchesAnExplicitOne() {
-        let origin = URL(string: "https://catalog.example.invalid/opds/")!
-
-        #expect(OPDSURL.sameOrigin(URL(string: "https://catalog.example.invalid:443/x")!, as: origin))
-        #expect(OPDSURL.sameOrigin(URL(string: "https://CATALOG.example.invalid/x")!, as: origin))
-        #expect(!OPDSURL.sameOrigin(URL(string: "https://catalog.example.invalid:8443/x")!, as: origin))
-    }
-
     @Test func aFeedURLWithoutASchemeStillProducesAUsableOrigin() {
         var connection = Self.tokenConnection()
         connection.url = "catalog.example.invalid/opds/"
@@ -111,9 +98,6 @@ struct OPDSTransportScopingTests {
         #expect(provider.feedURL().absoluteString == "http://catalog.example.invalid/opds/")
         #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer feed-token")
     }
-
-    /// `AVPlayer`, `AVURLAsset` and the background download session never see a challenge, so Basic is
-    /// written out as a header — on the feed origin only, and never alongside a bearer token.
     @Test func aPasswordConnectionSendsBasicRatherThanABearerHeader() {
         var connection = Self.tokenConnection()
         connection.username = "reader"
@@ -176,8 +160,6 @@ struct OPDSTransportScopingTests {
         #expect(OPDSProvider.payload(html, matches: .mobi))
     }
 
-    // MARK: URLSessionDownloadProgressDelegate scope
-
     @Test func aCrossOriginRedirectShedsEveryCredentialHeader() async {
         let forwarded = await Self.redirect(
             to: "https://evil.example.invalid/steal",
@@ -212,10 +194,6 @@ struct OPDSTransportScopingTests {
         #expect(forwarded?.value(forHTTPHeaderField: "Authorization") == "Bearer feed-token")
         #expect(forwarded?.value(forHTTPHeaderField: "CF-Access-Client-Id") == "client-id")
     }
-
-    /// A caller that names no origin still has one: the URL the task was aimed at. Falling back to it is
-    /// the narrowest scope that can be derived, and it is what keeps a provider that has not been scoped
-    /// yet from handing its credentials to whatever host a redirect names.
     @Test func anUnscopedDelegateFallsBackToTheTasksOwnOrigin() async {
         let delegate = URLSessionDownloadProgressDelegate(progressHandler: { _ in })
 

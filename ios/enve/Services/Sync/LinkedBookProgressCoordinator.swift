@@ -10,17 +10,11 @@ struct LinkedBookCalibrationAnchor: Codable, Equatable, Sendable {
 
 enum LinkedBookQuickSyncError: LocalizedError {
     case emptyEbook
-    case downloadFailed
-    case downloadTimeout
 
     var errorDescription: String? {
         switch self {
         case .emptyEbook:
             return "Enve could not find enough readable text in this ebook."
-        case .downloadFailed:
-            return "The audiobook download failed."
-        case .downloadTimeout:
-            return "The audiobook download did not finish in time."
         }
     }
 }
@@ -169,13 +163,14 @@ final class LinkedBookProgressCoordinator {
     func installCalibration(
         ebookStableId: String,
         audiobookStableId: String,
-        anchors: [LinkedBookCalibrationAnchor]
+        anchors: [LinkedBookCalibrationAnchor],
+        keepingRollback rollback: LinkedBookCalibrationVersions? = nil
     ) -> LinkedBookAlignmentDecision {
         var versions = calibrationVersions(
             ebookStableId: ebookStableId,
             audiobookStableId: audiobookStableId
         )
-        let decision = versions.install(anchors)
+        let decision = rollback.map { versions.install(anchors, keepingRollback: $0) } ?? versions.install(anchors)
         guard decision.isAccepted else { return decision }
 
         updateMapping(ebookStableId: ebookStableId, audiobookStableId: audiobookStableId) {
@@ -221,6 +216,10 @@ final class LinkedBookProgressCoordinator {
         )
     }
 
+    func calibration(ebookStableId: String, audiobookStableId: String) -> LinkedBookCalibrationVersions {
+        calibrationVersions(ebookStableId: ebookStableId, audiobookStableId: audiobookStableId)
+    }
+
     private func calibrationVersions(
         ebookStableId: String,
         audiobookStableId: String
@@ -256,6 +255,7 @@ final class LinkedBookProgressCoordinator {
         progression rawProgression: Double,
         exactAudioTime: TimeInterval? = nil,
         exactAudioDuration: TimeInterval? = nil,
+        locatorJSON: String? = nil,
         observedAt: Date = Date(),
         authoritative: Bool = false
     ) async {
@@ -292,18 +292,22 @@ final class LinkedBookProgressCoordinator {
             return
         }
 
-        let audioProgress: Double
         if let exactAudioProgress {
-            audioProgress = exactAudioProgress
-        } else {
-            audioProgress = mappedAudioProgress(for: progression, pair: pair)
+            _ = await applyAudioProgress(
+                exactAudioProgress,
+                to: pair.audiobook,
+                isFinished: progression >= Book.finishedProgressThreshold,
+                observedAt: observedAt,
+                forceRemote: authoritative
+            )
+            return
         }
-
-        _ = await applyAudioProgress(
-            audioProgress,
-            to: pair.audiobook,
+        await applyReadingObservation(
+            progression: progression,
+            locatorJSON: locatorJSON ?? book.epubLocator,
             isFinished: progression >= Book.finishedProgressThreshold,
             observedAt: observedAt,
+            pair: pair,
             forceRemote: authoritative
         )
     }
@@ -326,14 +330,9 @@ final class LinkedBookProgressCoordinator {
             return
         }
 
-        let audioProgress = isFinished ? 1 : Self.clamp(currentTime / duration)
-        let ebookProgress = mappedEbookProgress(for: audioProgress, pair: pair)
-        _ = await applyEbookProgress(
-            ebookProgress,
-            to: pair.ebook,
-            isFinished: isFinished,
-            clearLocator: true,
-            observedAt: observedAt,
+        await applyListeningObservation(
+            AudioObservation(time: currentTime, duration: duration, observedAt: observedAt, isFinished: isFinished),
+            pair: pair,
             forceRemote: authoritative
         )
     }
@@ -358,50 +357,33 @@ final class LinkedBookProgressCoordinator {
         case (nil, nil):
             return
         case (let ebook?, nil):
-            let audioProgress = mappedAudioProgress(for: ebook.progress, pair: pair)
-            _ = await applyAudioProgress(
-                audioProgress,
-                to: pair.audiobook,
-                isFinished: ebook.isFinished,
-                observedAt: ebook.observedAt,
-                forceRemote: false
+            await applyReadingObservation(
+                progression: ebook.progress, locatorJSON: pair.ebook.epubLocator, isFinished: ebook.isFinished,
+                observedAt: ebook.observedAt, pair: pair, forceRemote: false
             )
         case (nil, let audio?):
-            let ebookProgress = mappedEbookProgress(for: audio.progress, pair: pair)
-            _ = await applyEbookProgress(
-                ebookProgress,
-                to: pair.ebook,
-                isFinished: audio.isFinished,
-                clearLocator: true,
-                observedAt: audio.observedAt,
-                forceRemote: false
-            )
+            await applyListeningObservation(audio, pair: pair, forceRemote: false)
         case (let ebook?, let audio?):
             if ebook.observedAt >= audio.observedAt {
-                let audioProgress = mappedAudioProgress(for: ebook.progress, pair: pair)
-                _ = await applyAudioProgress(
-                    audioProgress,
-                    to: pair.audiobook,
-                    isFinished: ebook.isFinished,
-                    observedAt: ebook.observedAt,
-                    forceRemote: false
+                await applyReadingObservation(
+                    progression: ebook.progress, locatorJSON: pair.ebook.epubLocator, isFinished: ebook.isFinished,
+                    observedAt: ebook.observedAt, pair: pair, forceRemote: false
                 )
             } else {
-                let ebookProgress = mappedEbookProgress(for: audio.progress, pair: pair)
-                _ = await applyEbookProgress(
-                    ebookProgress,
-                    to: pair.ebook,
-                    isFinished: audio.isFinished,
-                    clearLocator: true,
-                    observedAt: audio.observedAt,
-                    forceRemote: false
-                )
+                await applyListeningObservation(audio, pair: pair, forceRemote: false)
             }
         }
     }
 
     func resetPair(from book: Book, observedAt: Date = Date()) async {
         await setPairFinished(from: book, finished: false, observedAt: observedAt)
+    }
+
+    /// The calibrated or proportional audio estimate for a reading position; a search hint, never an exact match.
+    func estimatedAudioTime(forEbook book: Book, progression: Double) async -> TimeInterval? {
+        guard let pair = await resolvePair(for: book) else { return nil }
+        let duration = resolvedAudioDuration(for: pair.audiobook)
+        return duration > 0 ? mappedAudioProgress(for: Self.clamp(progression), pair: pair) * duration : nil
     }
 
     func pairedStableId(for book: Book) async -> String? {
@@ -421,7 +403,7 @@ final class LinkedBookProgressCoordinator {
             progress,
             to: pair.ebook,
             isFinished: finished,
-            clearLocator: true,
+            locator: nil,
             observedAt: observedAt,
             forceRemote: true
         )
@@ -437,6 +419,55 @@ final class LinkedBookProgressCoordinator {
     // One recording re-muxed into overlay files drifts under 1% (padding, trimmed silence); other narrations drift more.
     nonisolated static func narrationMatchesAudio(narrationDuration: TimeInterval, audioDuration: TimeInterval) -> Bool {
         narrationDuration > 0 && audioDuration > 0 && abs(narrationDuration - audioDuration) <= audioDuration * 0.01
+    }
+
+    /// Within prepared coverage the listening position maps to a sentence of the original EPUB and is saved as a
+    /// precise locator. Elsewhere the existing estimate replaces any older precise locator so it cannot go stale.
+    private func applyListeningObservation(_ audio: AudioObservation, pair: Pair, forceRemote: Bool) async {
+        if !audio.isFinished, let mapping = await preparedEbookPassage(pair: pair, audioTime: audio.time) {
+            _ = await applyEbookProgress(
+                mapping.totalProgression, to: pair.ebook, isFinished: false, locator: mapping.locatorJSON,
+                observedAt: audio.observedAt, forceRemote: forceRemote
+            )
+            return
+        }
+        _ = await applyEbookProgress(
+            mappedEbookProgress(for: audio.progress, pair: pair), to: pair.ebook, isFinished: audio.isFinished,
+            locator: nil, observedAt: audio.observedAt, forceRemote: forceRemote
+        )
+    }
+
+    private func applyReadingObservation(progression: Double, locatorJSON: String?, isFinished: Bool, observedAt: Date, pair: Pair, forceRemote: Bool) async {
+        var audioProgress = mappedAudioProgress(for: progression, pair: pair)
+        if !isFinished, let prepared = await preparedAudioProgress(pair: pair, locatorJSON: locatorJSON, progression: progression) {
+            audioProgress = prepared
+        }
+        _ = await applyAudioProgress(audioProgress, to: pair.audiobook, isFinished: isFinished, observedAt: observedAt, forceRemote: forceRemote)
+    }
+
+    private func preparedEbookPassage(pair: Pair, audioTime: TimeInterval) async -> PassageMapping? {
+        #if os(iOS)
+        await profileSession.passageAlignment.audioResolution(ebook: pair.ebook, audiobook: pair.audiobook, bookTime: audioTime).handoffMapping
+        #else
+        nil
+        #endif
+    }
+
+    /// Only a locator that agrees with the recorded progression and quotes a matched original sentence is exact.
+    private func preparedAudioProgress(pair: Pair, locatorJSON: String?, progression: Double) async -> Double? {
+        #if os(iOS)
+        guard let quote = PassageLocatorQuote(locatorJSON: locatorJSON),
+            quote.totalProgression.map({ abs($0 - progression) <= 0.02 }) ?? true
+        else { return nil }
+        let passages = profileSession.passageAlignment
+        guard case .matched(let mapping) = await passages.textResolution(
+            ebook: pair.ebook, audiobook: pair.audiobook, href: quote.href, quote: quote.highlight, chapterProgression: quote.progression
+        ), let time = passages.bookTime(of: mapping, audiobook: pair.audiobook) else { return nil }
+        let duration = resolvedAudioDuration(for: pair.audiobook)
+        return duration > 0 ? Self.clamp(time / duration) : nil
+        #else
+        nil
+        #endif
     }
 
     private func shouldPropagate(pairKey: String, direction: String, at date: Date) -> Bool {
@@ -640,7 +671,7 @@ final class LinkedBookProgressCoordinator {
         _ rawProgress: Double,
         to target: Book,
         isFinished: Bool,
-        clearLocator: Bool,
+        locator newLocator: String?,
         observedAt: Date,
         forceRemote: Bool
     ) async -> Book? {
@@ -652,7 +683,7 @@ final class LinkedBookProgressCoordinator {
             isFinished
             ? current.serverReadStatus == "READ"
             : current.serverReadStatus == nil
-        let locatorMatches = !clearLocator || current.epubLocator == nil
+        let locatorMatches = current.epubLocator == newLocator
         if current.lastUpdate == observedAt,
             abs(current.canonicalEbookProgress - progress) < 0.000_5,
             current.isFinished == isFinished,
@@ -667,9 +698,7 @@ final class LinkedBookProgressCoordinator {
         updated.isFinished = isFinished
         updated.serverReadStatus = isFinished ? "READ" : nil
         updated.lastUpdate = observedAt
-        if clearLocator {
-            updated.epubLocator = nil
-        }
+        updated.epubLocator = newLocator
 
         if self.libraryCache.mutateBook(
             stableId: current.stableId,
@@ -678,9 +707,7 @@ final class LinkedBookProgressCoordinator {
                 $0.isFinished = isFinished
                 $0.serverReadStatus = isFinished ? "READ" : nil
                 $0.lastUpdate = observedAt
-                if clearLocator {
-                    $0.epubLocator = nil
-                }
+                $0.epubLocator = newLocator
             }
         ) == nil {
             self.libraryCache.hot.insert(updated)

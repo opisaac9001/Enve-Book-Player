@@ -1,5 +1,6 @@
 package com.enve.app.ui.screens
 
+import kotlinx.coroutines.ensureActive
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
@@ -44,20 +45,18 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.fragment.app.commitNow
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.lifecycleScope
 import com.enve.app.R
-import com.enve.core.data.local.LastOpenedBookStore
-import com.enve.core.data.local.PreferencesManager
 import com.enve.core.data.model.*
 import com.enve.core.listeningposition.SharedReadingLocation
 import com.enve.app.data.reader.*
-import com.enve.app.data.repository.GrimmoryRepository
 import com.enve.app.data.repository.CustomFontRepository
 import com.enve.app.document.EbookNormalizationException
 import com.enve.app.document.EbookSourceFormat
 import com.enve.app.document.NativeKindleEpubConverter
 import com.enve.app.document.OnDeviceEbookNormalizer
-import com.enve.app.eink.EpdRefreshManager
 import com.enve.app.readium.MediaOverlayEngine
 import com.enve.app.readium.MediaOverlayTextProgression
 import com.enve.app.readium.SmilClip
@@ -112,7 +111,6 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
-import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
 import org.readium.r2.navigator.HyperlinkNavigator
@@ -557,29 +555,36 @@ class EbookReaderActivity : FragmentActivity() {
     private fun startReadiumReflowFit(nav: EpubNavigatorFragment) {
         readiumReflowJob?.cancel()
         readiumReflowJob = lifecycleScope.launch {
-            launch {
-                nav.currentLocator
-                    .map { it.href.toString() }
-                    .distinctUntilChanged()
-                    .collect { readiumReflowRequests.tryEmit(Unit) }
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                launch {
+                    nav.currentLocator
+                        .map { it.href.toString() }
+                        .distinctUntilChanged()
+                        .collect { readiumReflowRequests.tryEmit(Unit) }
+                }
+                launch {
+                    vm.state
+                        .map { it.prefs.reflowSignature() }
+                        .distinctUntilChanged()
+                        .drop(1)
+                        .collect { readiumReflowRequests.tryEmit(Unit) }
+                }
+                readiumReflowRequests
+                    .debounce(WIDE_CONTENT_FIT_DEBOUNCE_MS)
+                    .collect { fitReadiumWideContent(nav) }
             }
-            launch {
-                vm.state
-                    .map { it.prefs.reflowSignature() }
-                    .distinctUntilChanged()
-                    .drop(1)
-                    .collect { readiumReflowRequests.tryEmit(Unit) }
-            }
-            readiumReflowRequests
-                .debounce(WIDE_CONTENT_FIT_DEBOUNCE_MS)
-                .collect { fitReadiumWideContent(nav) }
         }
     }
 
     private suspend fun fitReadiumWideContent(nav: EpubNavigatorFragment) {
-        if (!reflowableDocument || readiumNavigator !== nav || vm.state.value.readAlongActive || vm.state.value.autoScrollActive) return
+        fun isCurrent(): Boolean = reflowableDocument && readiumNavigator === nav && !isFinishing && !isDestroyed &&
+            nav.viewLifecycleOwnerLiveData.value?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.STARTED) == true &&
+            !vm.state.value.readAlongActive && !vm.state.value.liveReadAlongActive && !vm.state.value.autoScrollActive
+        if (!isCurrent()) return
         val generation = vm.readiumUserNavigationGeneration
         val anchor = vm.readiumReadingAnchor()
+        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+        if (!isCurrent()) return
         val layout = vm.beginReadiumLayout()
         try {
             repeat(WIDE_CONTENT_FIT_ATTEMPTS) {
@@ -587,10 +592,14 @@ class EbookReaderActivity : FragmentActivity() {
                     ReaderSelectionHandleFix.readiumScript(paginated = !vm.state.value.prefs.scroll)
                 )) == ReaderSelectionHandleFix.Result.CHANGED
                 val fit = ReaderWideContentFit.parse(nav.evaluateQuietly(ReaderWideContentFit.readiumScript()))
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                if (!isCurrent() || generation != vm.readiumUserNavigationGeneration) return
                 when (if (selectionChanged && fit == ReaderWideContentFit.Result.STABLE) ReaderWideContentFit.Result.CHANGED else fit) {
                     ReaderWideContentFit.Result.CHANGED -> {
                         if (anchor != null && readiumFootnoteDialog == null &&
-                            generation == vm.readiumUserNavigationGeneration) nav.go(anchor, animated = false)
+                            anchor.href.normalize().removeFragment() == nav.currentLocator.value.href.normalize().removeFragment()) {
+                            nav.go(anchor, animated = false)
+                        }
                         return
                     }
                     ReaderWideContentFit.Result.STABLE, ReaderWideContentFit.Result.BLOCKED -> return
@@ -1025,6 +1034,17 @@ class EbookReaderActivity : FragmentActivity() {
         val downloadStartMs = android.os.SystemClock.elapsedRealtime()
         val sourceFile = try { cachedSource ?: downloadEbookSource(bookId, sourceFormat, remoteResource) }
         catch (e: Exception) { showError("Download failed: ${e.message}"); return }
+        if (bookSource == BookSource.STORYTELLER && sourceFormat == EbookSourceFormat.READALOUD && networkAvailable) {
+            try {
+                withContext(com.enve.core.data.remote.ConnectionScope.asContextElement(bookConnectionId)) {
+                    StorytellerReadaloudCache.refresh(sourceFile, vm.getEbookDownloadUrl(readaloud = true), okHttpClient)
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            }
+        }
         logPhase("downloadOrResolveSource", downloadStartMs)
         val ebookResource = remoteResource ?: if (sourceFormat.isEpubPackage || directAzw3) {
             ProviderEbookResource(url = sourceFile.toURI().toString(), format = sourceFormat.name,
@@ -1072,12 +1092,18 @@ class EbookReaderActivity : FragmentActivity() {
         }
         val reflowable = directAzw3 || withContext(Dispatchers.IO) { isReflowableEpub(epubFile) }
         reflowableDocument = reflowable
+        val hasMediaOverlay = !directAzw3 && withContext(Dispatchers.IO) {
+            ZipFile(epubFile).use { zip ->
+                zip.entries().asSequence().any { !it.isDirectory && it.name.endsWith(".smil", ignoreCase = true) }
+            }
+        }
         val mayUseFoliate = directAzw3 || (
             requestedReaderEngine == ReaderEngineKind.FOLIATE &&
                 sourceFormat.isEpubPackage &&
                 (ebookResource == null || EbookSourceFormat.fromServerType(ebookResource.format).isEpubPackage) &&
                 foliateSupported &&
-                reflowable
+                reflowable &&
+                !hasMediaOverlay
             )
         if (mayUseFoliate) {
             requestedReaderEngine = ReaderEngineKind.FOLIATE
@@ -2112,6 +2138,9 @@ class EbookReaderActivity : FragmentActivity() {
             if (!tmp.renameTo(cached)) {
                 tmp.copyTo(cached, overwrite = true)
                 tmp.delete()
+            }
+            if (bookSource == BookSource.STORYTELLER && format == EbookSourceFormat.READALOUD) {
+                StorytellerReadaloudCache.recordRevision(cached, resp.header("ETag"), resp.header("Last-Modified"))
             }
             cached
         }

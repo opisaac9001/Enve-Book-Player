@@ -59,6 +59,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
@@ -105,7 +106,6 @@ import com.enve.hearth.design.HearthText
 import com.enve.hearth.design.LocalHearth
 import com.enve.hearth.design.LocalHearthEink
 import com.enve.hearth.design.Overline
-import com.enve.hearth.design.hearthDisplay
 import com.enve.hearth.design.parseHexColor
 
 private val INKS = listOf("#FFF59D", "#A5D6A7", "#90CAF9", "#F8BBD0", "#FFCC80", "#CE93D8")
@@ -148,6 +148,7 @@ fun HearthReaderChrome(
         state.showReadAloudLyrics,
         state.showMoreMenu,
         state.readAlongPreparing,
+        state.liveReadAlongPreparing,
         chromeInteraction,
     ) {
         if (
@@ -161,7 +162,7 @@ fun HearthReaderChrome(
             !state.showTtsSheet &&
             !state.showReadAloudLyrics &&
             !state.showMoreMenu &&
-            !state.readAlongPreparing
+            !state.readAlongPreparing && !state.liveReadAlongPreparing
         ) {
             kotlinx.coroutines.delay(if (einkActive) 15_000L else 5_000L)
             vm.hideChrome()
@@ -289,54 +290,77 @@ fun HearthReaderChrome(
             }
 
             val bottomVeil: @Composable () -> Unit = {
-                BottomVeil(
-                    progress = state.progressPct / 100f,
-                    summary = pageSummary(
-                        state.currentPage,
-                        state.totalPages,
-                        state.hasPageList,
-                        state.currentPageLabel,
-                        state.lastPageLabel,
-                        state.progressPct,
-                        state.currentSection,
-                        state.minutesLeftInBook,
-                    ),
-                    readAlongSupported = state.readAlongSupported,
-                    onSeek = vm::seekToProgress,
-                    onContents = { vm.showToc(true) },
-                    onBookmark = {
-                        if (vm.addBookmark()) vm.postTransientMessage("Bookmark added.")
-                        else vm.postTransientMessage("Reader is still loading.")
-                    },
-                    onAnnotations = { vm.showAnnotationsSheet(true) },
-                    onNarrate = vm::toggleReadAlongPlayback,
-                    onReadBack = vm::toggleTtsPlayback,
-                    ttsActive = state.ttsPlayback.active,
-                    ttsControls = {
-                        ReaderSpeechTransport(
-                            playing = state.ttsPlayback.playing,
-                            preparing = state.ttsPlayback.preparing,
-                            narrated = false,
-                            onToggle = vm::toggleTtsPlayback,
-                            onBack = vm::previousTtsParagraph,
-                            onForward = vm::nextTtsParagraph,
-                            onSettings = { vm.showTtsSheet(true) },
-                        )
-                    },
-                )
+                Column {
+                    if (state.liveReadAlongActive) {
+                        Column(Modifier.padding(horizontal = Hearth.Spacing.M).fillMaxWidth()
+                            .background(palette.bgElevated, RoundedCornerShape(if (einkActive) 0.dp else Hearth.Radius.Card))
+                            .padding(Hearth.Spacing.S)) {
+                            Text(state.liveReadAlongStatus, color = palette.textSecondary)
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S)) {
+                                IconButton(onClick = vm::toggleReadAlongPlayback) {
+                                    Icon(if (state.liveReadAlongPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                                        contentDescription = if (state.liveReadAlongPlaying) "Pause audiobook" else "Play audiobook", tint = palette.text)
+                                }
+                                TextButton(onClick = vm::resumeLiveReadAlongFollowing) {
+                                    Text(if (state.liveReadAlongFollowing) "Following audiobook" else "Return to audiobook", color = palette.text)
+                                }
+                                Spacer(Modifier.weight(1f))
+                                IconButton(onClick = vm::toggleReadAlongMode) {
+                                    Icon(Icons.Outlined.Close, contentDescription = "Stop following audiobook", tint = palette.text)
+                                }
+                            }
+                        }
+                    }
+                    BottomVeil(
+                        progress = state.progressPct / 100f,
+                        summary = pageSummary(
+                            state.currentPage,
+                            state.totalPages,
+                            state.hasPageList,
+                            state.currentPageLabel,
+                            state.lastPageLabel,
+                            state.progressPct,
+                            state.currentSection,
+                            state.minutesLeftInBook,
+                        ),
+                        readAlongSupported = state.readAlongSupported || state.liveReadAlongAvailable,
+                        onSeek = vm::seekToProgress,
+                        onContents = { vm.showToc(true) },
+                        onBookmark = {
+                            if (vm.addBookmark()) vm.postTransientMessage("Bookmark added.")
+                            else vm.postTransientMessage("Reader is still loading.")
+                        },
+                        onAnnotations = { vm.showAnnotationsSheet(true) },
+                        onNarrate = vm::toggleReadAlongPlayback,
+                        onReadBack = vm::toggleTtsPlayback,
+                        ttsActive = state.ttsPlayback.active,
+                        ttsControls = {
+                            ReaderSpeechTransport(
+                                playing = state.ttsPlayback.playing,
+                                preparing = state.ttsPlayback.preparing,
+                                narrated = false,
+                                onToggle = vm::toggleTtsPlayback,
+                                onBack = vm::previousTtsParagraph,
+                                onForward = vm::nextTtsParagraph,
+                                onSettings = { vm.showTtsSheet(true) },
+                            )
+                        },
+                    )
+                }
             }
 
-            if (!state.showChrome && (state.ttsPlayback.active || state.readAlongActive)) {
-                val narrated = state.readAlongActive
+            if (!state.showChrome && (state.ttsPlayback.active || state.readAlongActive || state.liveReadAlongActive)) {
+                val live = state.liveReadAlongActive
+                val narrated = state.readAlongActive || live
                 Box(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(Hearth.Spacing.M)) {
                     ReaderSpeechTransport(
-                        playing = if (narrated) state.readAlongPlaying else state.ttsPlayback.playing,
-                        preparing = if (narrated) state.readAlongPreparing else state.ttsPlayback.preparing,
+                        playing = if (live) state.liveReadAlongPlaying else if (narrated) state.readAlongPlaying else state.ttsPlayback.playing,
+                        preparing = if (live) state.liveReadAlongPreparing else if (narrated) state.readAlongPreparing else state.ttsPlayback.preparing,
                         narrated = narrated,
                         onToggle = if (narrated) vm::toggleReadAlongPlayback else vm::toggleTtsPlayback,
-                        onBack = if (narrated) vm::skipReadAlongBackward else vm::previousTtsParagraph,
-                        onForward = if (narrated) vm::skipReadAlongForward else vm::nextTtsParagraph,
-                        onSettings = { if (narrated) vm.showReadAloudSheet(true) else vm.showTtsSheet(true) },
+                        onBack = if (live) vm::skipLiveReadAlongBackward else if (narrated) vm::skipReadAlongBackward else vm::previousTtsParagraph,
+                        onForward = if (live) vm::skipLiveReadAlongForward else if (narrated) vm::skipReadAlongForward else vm::nextTtsParagraph,
+                        onSettings = { if (live) vm.toggleChrome() else if (narrated) vm.showReadAloudSheet(true) else vm.showTtsSheet(true) },
                         onShowControls = { vm.toggleChrome() },
                     )
                 }

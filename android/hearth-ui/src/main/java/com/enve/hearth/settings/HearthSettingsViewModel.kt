@@ -76,6 +76,11 @@ class HearthSettingsViewModel @Inject constructor(
         SharingStarted.WhileSubscribed(5000),
         HearthHomeSection.entries,
     )
+    val hiddenHomeSections = prefs.hiddenHomeSections.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5000),
+        emptySet(),
+    )
     val showDockBookShortcut = prefs.showDockBookShortcut.stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5000),
@@ -117,7 +122,11 @@ class HearthSettingsViewModel @Inject constructor(
             prefs.setHomeSectionOrder(order)
         }
     }
-    fun resetHomeSectionOrder() = launch { prefs.setHomeSectionOrder(HearthHomeSection.entries) }
+    fun setHomeSectionHidden(section: HearthHomeSection, hidden: Boolean) = launch { prefs.setHomeSectionHidden(section, hidden) }
+    fun resetHomeSectionOrder() = launch {
+        prefs.setHomeSectionOrder(HearthHomeSection.entries)
+        hiddenHomeSections.value.forEach { prefs.setHomeSectionHidden(it, false) }
+    }
     fun setShowDockBookShortcut(show: Boolean) = launch { prefs.setShowDockBookShortcut(show) }
     fun setShowTodayStack(show: Boolean) = launch { prefs.setShowTodayStack(show) }
     fun setEbookSyncInterval(interval: EbookSyncInterval) = launch { prefs.setEbookSyncInterval(interval) }

@@ -1,7 +1,6 @@
 package com.enve.core.data.remote
 
 import com.enve.core.data.local.PreferencesManager
-import kotlinx.coroutines.runBlocking
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Interceptor
@@ -26,7 +25,7 @@ class DynamicUrlInterceptor @Inject constructor(
             connectionRegistry.getConnectionsSync().find { it.id == connectionId }
         } else null
 
-        var serverUrl = matchingConnection?.serverUrl ?: preferencesManager.getServerUrlSync()
+        val serverUrl = if (connectionId != null) matchingConnection?.serverUrl else preferencesManager.getServerUrlSync()
 
         if (serverUrl.isNullOrBlank()) {
             if (isPlaceholder) throw IOException("No server URL configured for request ${originalUrl.encodedPath}")

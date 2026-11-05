@@ -57,11 +57,21 @@ struct EnveApp: App {
             BGTaskScheduler.shared.register(forTaskWithIdentifier: "com.enve.enve.storyalign", using: .main) { task in
                 guard let task = task as? BGContinuedProcessingTask else { return }
                 let coordinator = ProfileSwitchCoordinator.shared
-                guard coordinator.activeSession.isOwner, !coordinator.isLocked, !coordinator.activeSession.isRetired else {
+                let session = coordinator.activeSession
+                guard !coordinator.isLocked, !session.isRetired else {
                     task.setTaskCompleted(success: false)
                     return
                 }
-                coordinator.activeSession.storyAlignService.handleContinuedProcessingTask(task)
+                // Passage preparation claims the task only for the profile and pair that submitted it.
+                if let passages = session.createdPassageAlignment, passages.claimsContinuedProcessing {
+                    passages.handleContinuedProcessingTask(task)
+                    return
+                }
+                guard session.isOwner else {
+                    task.setTaskCompleted(success: false)
+                    return
+                }
+                session.storyAlignService.handleContinuedProcessingTask(task)
             }
         }
         #endif
@@ -112,12 +122,14 @@ struct EnveApp: App {
                     HardcoverSyncService.shared.resume()
                     guard !profiles.isLocked else { return }
                     #if os(iOS)
+                    session.createdPassageAlignment?.sceneDidBecomeActive()
                     session.fileSharing.startWatching()
                     session.fileSharing.scheduleRefresh(reason: "scene-active")
                     #endif
                 } else if phase == .background {
                     #if os(iOS)
                     if session.isOwner { session.storyAlignService.sceneDidEnterBackground() }
+                    session.createdPassageAlignment?.sceneDidEnterBackground()
                     #endif
                     profiles.onBackground()
                     #if os(iOS)

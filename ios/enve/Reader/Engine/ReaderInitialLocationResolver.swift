@@ -130,7 +130,7 @@ final class ReaderInitialLocationResolver {
             return ReaderInitialLocation(locator: bridgeLocator, locatorJSON: bridgeLocatorJSON)
         }
 
-        let preferred = await preferredLocation(in: request.publication)
+        let preferred = await preferredLocation(in: request.publication, epubFileURL: request.epubFileURL)
         let latestBook = libraryCache.bookInMemory(uniqueId: book.uniqueId) ?? book
         guard !request.usesMediaOverlayPosition,
             request.engineKind == .foliate,
@@ -219,15 +219,21 @@ final class ReaderInitialLocationResolver {
         return location.locator == nil ? nil : location
     }
 
-    private func preferredLocation(in publication: Publication) async -> Locator? {
+    private func preferredLocation(in publication: Publication, epubFileURL: URL?) async -> Locator? {
         profileSession.playback.mediaOverlay.syncCurrentPlaybackPositionIfActive(for: book)
         let freshestBook = libraryCache.bookInMemory(uniqueId: book.uniqueId) ?? book
         let isReadAloudLike = freshestBook.hasEPUB3MediaOverlay || readAloud.hasMediaOverlay
         let rawLocator = freshestBook.epubLocator.flatMap { $0.isEmpty ? nil : $0 }
         let parsed = rawLocator.flatMap { try? Locator(jsonString: $0) }
 
+        if !isReadAloudLike, let rawLocator, let parsed,
+            await isPreparedPassageLocator(rawLocator, for: freshestBook, epubFileURL: epubFileURL)
+        {
+            return parsed
+        }
+
         if !isReadAloudLike, rawLocator == nil,
-            let calibrated = await calibratedLinkedAudioLocation(for: freshestBook, in: publication)
+            let calibrated = await calibratedLinkedAudioLocation(for: freshestBook, in: publication, epubFileURL: epubFileURL)
         {
             return calibrated
         }
@@ -273,9 +279,25 @@ final class ReaderInitialLocationResolver {
         return nil
     }
 
+    /// A saved locator that is exactly a prepared passage of this reading revision opens by its quote and
+    /// context, so a repeated sentence cannot resolve to its first occurrence.
+    private func isPreparedPassageLocator(_ locatorJSON: String, for ebook: Book, epubFileURL: URL?) async -> Bool {
+        guard let epubFileURL, let quote = PassageLocatorQuote(locatorJSON: locatorJSON),
+            let audiobook = profileSession.playback.linker.linkedAudiobook(for: ebook)
+        else { return false }
+        let passages = profileSession.passageAlignment
+        guard await passages.isPreparedReadingRevision(ebook: ebook, audiobook: audiobook, openedFileURL: epubFileURL),
+            case .matched(let mapping) = await passages.textResolution(
+                ebook: ebook, audiobook: audiobook, href: quote.href, quote: quote.highlight, chapterProgression: quote.progression
+            )
+        else { return false }
+        return mapping.locatorJSON == locatorJSON
+    }
+
     private func calibratedLinkedAudioLocation(
         for freshestBook: Book,
-        in publication: Publication
+        in publication: Publication,
+        epubFileURL: URL?
     ) async -> Locator? {
         guard let linkedBook = profileSession.playback.linker.linkedAudiobook(for: freshestBook) else {
             return nil
@@ -287,14 +309,20 @@ final class ReaderInitialLocationResolver {
         let storedDate = stored.map { Date(timeIntervalSince1970: $0.lastUpdated) } ?? .distantPast
         let audioDate = max(linkedDate, storedDate)
         let audioTime = storedDate > linkedDate ? (stored?.progress ?? 0) : linked.currentTime
-        guard duration > 0,
-            audioDate >= freshestBook.lastUpdate,
-            let hint = profileSession.linkedProgress.calibratedLocatorHint(
-                ebookStableId: freshestBook.stableId,
-                audiobookStableId: linked.stableId,
-                audioProgress: min(max(audioTime / duration, 0), 1)
-            )
-        else { return nil }
+        guard duration > 0, audioDate >= freshestBook.lastUpdate else { return nil }
+        let passages = profileSession.passageAlignment
+        if let epubFileURL,
+            await passages.isPreparedReadingRevision(ebook: freshestBook, audiobook: linked, openedFileURL: epubFileURL),
+            let mapping = await passages.audioResolution(ebook: freshestBook, audiobook: linked, bookTime: audioTime).handoffMapping,
+            let locator = try? Locator(jsonString: mapping.locatorJSON)
+        {
+            return locator
+        }
+        guard let hint = profileSession.linkedProgress.calibratedLocatorHint(
+            ebookStableId: freshestBook.stableId,
+            audiobookStableId: linked.stableId,
+            audioProgress: min(max(audioTime / duration, 0), 1)
+        ) else { return nil }
 
         return await resolveLocatorBySnippet(
             highlight: hint.quote,

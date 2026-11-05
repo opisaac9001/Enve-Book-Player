@@ -220,9 +220,14 @@ interface BookCacheDao {
                 WHEN serverReadStatus IN ('READ', 'COMPLETED', 'FINISHED') OR :progress >= 0.99 THEN 1
                 ELSE 0
             END,
+            serverReadStatus = CASE
+                WHEN source IN ('GRIMMORY', 'BOOKORBIT') AND (serverReadStatus IS NULL OR serverReadStatus = 'UNREAD')
+                    AND :progress < 0.99 AND (:progress > 0.001 OR :currentTimeSec > 0)
+                THEN 'READING' ELSE serverReadStatus
+            END,
             inProgress = CASE
                 WHEN hideFromContinue = 0
-                    AND (source != 'GRIMMORY' OR serverReadStatus IS NULL OR serverReadStatus IN ('READING', 'RE_READING'))
+                    AND (source != 'GRIMMORY' OR serverReadStatus IS NULL OR serverReadStatus IN ('READING', 'RE_READING', 'UNREAD'))
                     AND :progress < 0.99 AND (:progress > 0.001 OR :currentTimeSec > 0)
                 THEN 1 ELSE 0
             END
@@ -409,9 +414,14 @@ interface BookCacheDao {
             END,
             epubLocator = COALESCE(:locatorJson, epubLocator),
             lastReadTime = :nowMs,
+            serverReadStatus = CASE
+                WHEN source IN ('GRIMMORY', 'BOOKORBIT') AND (serverReadStatus IS NULL OR serverReadStatus = 'UNREAD')
+                    AND :progress < 0.99 AND (:progress > 0.001 OR :currentTimeSec > 0)
+                THEN 'READING' ELSE serverReadStatus
+            END,
             inProgress = CASE
                 WHEN hideFromContinue = 0
-                    AND (source != 'GRIMMORY' OR serverReadStatus IS NULL OR serverReadStatus IN ('READING', 'RE_READING'))
+                    AND (source != 'GRIMMORY' OR serverReadStatus IS NULL OR serverReadStatus IN ('READING', 'RE_READING', 'UNREAD'))
                     AND :progress < 0.99
                     AND (:progress > 0.001 OR :currentTimeSec > 0)
                 THEN 1

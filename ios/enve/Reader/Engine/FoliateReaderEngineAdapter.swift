@@ -67,6 +67,7 @@ enum FoliateRuntimeSupport {
         return [
             "index.html",
             "adapter.js",
+            "grouping.js",
             "reader.css",
             "foliate/view.js",
             "foliate/epub.js",
@@ -88,6 +89,11 @@ enum FoliateRuntimeSupport {
         }
     }
 
+    static var isAvailable: Bool {
+        guard #available(iOS 17.2, *) else { return false }
+        return isPackaged
+    }
+
     static let streamedResourcePrefix = "/book/resource/"
 
     static func isAllowedRuntimePath(_ path: String) -> Bool {
@@ -97,6 +103,7 @@ enum FoliateRuntimeSupport {
         switch path {
         case "/index.html",
             "/adapter.js",
+            "/grouping.js",
             "/reader.css",
             "/session.json",
             "/book/current.epub",
@@ -773,8 +780,6 @@ final class FoliateReaderEngineAdapter: UIViewController, ReaderEngineAdapter {
     private var pendingCommandContinuation: CheckedContinuation<Data, Error>?
     private var commandExecutionTask: Task<Void, Never>?
     private var commandTimeoutTask: Task<Void, Never>?
-    private var pageDragUpdateTask: Task<Void, Never>?
-    private var pendingPageDragDelta = CGPoint.zero
     private var startupContinuation: CheckedContinuation<Void, Error>?
     private var startupTimeoutTask: Task<Void, Never>?
     private var hasStarted = false
@@ -816,7 +821,7 @@ final class FoliateReaderEngineAdapter: UIViewController, ReaderEngineAdapter {
         annotations: [ReaderAnnotation],
         onPrepared: @MainActor (FoliateReaderEngineAdapter) -> Void
     ) async throws -> FoliateReaderEngineAdapter {
-        guard FoliateRuntimeSupport.isPackaged,
+        guard FoliateRuntimeSupport.isAvailable,
             let runtimeRoot = FoliateRuntimeSupport.resourceRoot
         else {
             throw FoliateReaderError.runtimeUnavailable
@@ -1259,22 +1264,23 @@ final class FoliateReaderEngineAdapter: UIViewController, ReaderEngineAdapter {
         return result["moved"] as? Bool == true
     }
 
+    // Each pan step is sent without waiting for a reply; a request/response per step would cap finger tracking at the bridge round-trip.
     func updateInteractivePageDrag(delta: CGPoint) {
-        guard !isTornDown else { return }
-        pendingPageDragDelta.x += delta.x
-        pendingPageDragDelta.y += delta.y
-        guard pageDragUpdateTask == nil else { return }
-        pageDragUpdateTask = Task { @MainActor [weak self] in
-            await self?.flushInteractivePageDrag()
-        }
+        guard isReady, !isTornDown else { return }
+        webView.callAsyncJavaScript(
+            "globalThis.EnveFoliateRuntime.pageDrag(capability, deltaX, deltaY);",
+            arguments: [
+                "capability": capability,
+                "deltaX": min(max(delta.x, -2000), 2000),
+                "deltaY": min(max(delta.y, -2000), 2000),
+            ],
+            in: nil,
+            in: .page
+        ) { _ in }
     }
 
     func endInteractivePageDrag(velocity: CGPoint) {
-        let updateTask = pageDragUpdateTask
         Task { @MainActor [weak self] in
-            if let updateTask {
-                await updateTask.value
-            }
             guard let self, !isTornDown else { return }
             _ = try? await command(
                 "pageDragEnd",
@@ -1286,38 +1292,31 @@ final class FoliateReaderEngineAdapter: UIViewController, ReaderEngineAdapter {
         }
     }
 
-    // iOS WebKit doesn't deliver a click on plain text to Foliate's document listener, so highlight taps are hit-tested here.
-    func annotationID(at point: CGPoint) async -> String? {
-        let webPoint = webView.convert(point, from: view)
-        guard let result = try? await command("annotationAt", payload: ["x": webPoint.x, "y": webPoint.y]),
-            Set(result.keys) == ["id"]
-        else {
-            return nil
-        }
-        return result["id"] as? String
+    enum TapTarget {
+        case link
+        case annotation(id: String)
+        case illustration(ReaderIllustrationReference)
+        case none
     }
 
-    /// Activates a link or dismisses the note popup under the tap; returns whether the tap was consumed.
-    func activateLink(at point: CGPoint) async -> Bool {
+    // iOS WebKit doesn't deliver clicks on plain text to Foliate's document listener, so links, highlights
+    // and images under a tap are hit-tested here; a link or note popup is activated in the same round trip.
+    func tapTarget(at point: CGPoint) async -> TapTarget {
         let webPoint = webView.convert(point, from: view)
-        guard let result = try? await command("activateLinkAt", payload: ["x": webPoint.x, "y": webPoint.y]),
-            Set(result.keys) == ["handled"]
+        guard let result = try? await command("tapAt", payload: ["x": webPoint.x, "y": webPoint.y]),
+            Set(result.keys) == ["linkHandled", "annotationId", "illustration"]
         else {
-            return false
+            return .none
         }
-        return result["handled"] as? Bool == true
-    }
-
-    func illustration(at point: CGPoint) async -> ReaderIllustrationReference? {
-        let webPoint = webView.convert(point, from: view)
-        guard let result = try? await command("illustrationAt", payload: ["x": webPoint.x, "y": webPoint.y]),
-            Set(result.keys) == ["illustration"],
-            let payload = result["illustration"] as? [String: Any],
-            let documentHref = payload["documentHref"] as? String
-        else {
-            return nil
+        if result["linkHandled"] as? Bool == true { return .link }
+        if let id = result["annotationId"] as? String, !id.isEmpty { return .annotation(id: id) }
+        if let payload = result["illustration"] as? [String: Any],
+            let documentHref = payload["documentHref"] as? String,
+            let reference = ReaderIllustrationScript.reference(from: payload, documentHref: documentHref)
+        {
+            return .illustration(reference)
         }
-        return ReaderIllustrationScript.reference(from: payload, documentHref: documentHref)
+        return .none
     }
 
     func refreshSelection() async -> Bool {
@@ -1435,7 +1434,8 @@ final class FoliateReaderEngineAdapter: UIViewController, ReaderEngineAdapter {
 
     func ttsLocator(at point: CGPoint?) async -> Locator? {
         let commandName = point == nil ? "ttsStart" : "ttsAt"
-        let payload = point.map { ["x": $0.x, "y": $0.y] } ?? [:]
+        // Gesture points are in the reader view; the web view sits inside its safe area, so they are converted.
+        let payload = point.map { webView.convert($0, from: view) }.map { ["x": $0.x, "y": $0.y] } ?? [:]
         guard let result = try? await command(commandName, payload: payload),
             Set(result.keys) == ["locator"],
             let object = result["locator"] as? [String: Any],
@@ -1456,12 +1456,28 @@ final class FoliateReaderEngineAdapter: UIViewController, ReaderEngineAdapter {
         _ = try? await command("ttsFollow", payload: ["locatorJSON": locatorJSON])
     }
 
+    func applyReadAlongDecoration(locatorJSON: String?, color: ReadAloudHighlightColor) async {
+        _ = try? await command("readAlong", payload: ["locatorJSON": locatorJSON ?? NSNull(), "color": Self.opaqueHex(color)])
+    }
+
+    func applyReadAlongWordDecoration(locatorJSON: String?, color: ReadAloudHighlightColor) async {
+        _ = try? await command("readAlongWord", payload: ["locatorJSON": locatorJSON ?? NSNull(), "color": Self.opaqueHex(color)])
+    }
+
+    /// Foliate's overlay applies its own highlight opacity, so the selected color is sent opaque.
+    private static func opaqueHex(_ color: ReadAloudHighlightColor) -> String {
+        var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+        color.uiColor.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+        return String(format: "#%02X%02X%02X", Int(red * 255), Int(green * 255), Int(blue * 255))
+    }
+
+    func followReadAlong(locatorJSON: String) async {
+        _ = try? await command("readAlongFollow", payload: ["locatorJSON": locatorJSON])
+    }
+
     func tearDown() {
         guard !isTornDown else { return }
         isTornDown = true
-        pageDragUpdateTask?.cancel()
-        pageDragUpdateTask = nil
-        pendingPageDragDelta = .zero
         if let pendingCommandID {
             finishCommand(
                 id: pendingCommandID,
@@ -1606,26 +1622,6 @@ final class FoliateReaderEngineAdapter: UIViewController, ReaderEngineAdapter {
         ) as? String
     }
     #endif
-
-    private func flushInteractivePageDrag() async {
-        while !Task.isCancelled {
-            let delta = pendingPageDragDelta
-            pendingPageDragDelta = .zero
-            guard delta != .zero else { break }
-            guard
-                let result = try? await command(
-                    "pageDrag",
-                    payload: [
-                        "deltaX": min(max(delta.x, -2000), 2000),
-                        "deltaY": min(max(delta.y, -2000), 2000),
-                    ]
-                ), result["applied"] as? Bool == true
-            else {
-                break
-            }
-        }
-        pageDragUpdateTask = nil
-    }
 
     private func finishCommand(
         id: UUID,

@@ -42,9 +42,19 @@ struct BookDetailScreen: View {
     @State private var separationError: String?
     @State private var sharePositionShown = false
 
-    private enum DetailMetadataTool: String, Identifiable {
+    private enum DetailMetadataTool: Identifiable {
         case editMetadata, findMatch, linkFormats
-        var id: String { rawValue }
+        /// Fixed when chosen, so a refresh or unlink cannot change which pair is calibrated.
+        case quickSync(ebook: Book, audiobook: Book)
+
+        var id: String {
+            switch self {
+            case .editMetadata: "editMetadata"
+            case .findMatch: "findMatch"
+            case .linkFormats: "linkFormats"
+            case .quickSync(let ebook, let audiobook): "quickSync-\(ebook.stableId)-\(audiobook.stableId)"
+            }
+        }
     }
 
     private struct PendingChapterSeparation {
@@ -196,6 +206,8 @@ struct BookDetailScreen: View {
                     MetadataMatchScreen(book: shown)
                 case .linkFormats:
                     EbookAudiobookMatchScreen(book: shown)
+                case .quickSync(let ebook, let audiobook):
+                    LinkedBookQuickSyncSheet(ebook: ebook, audiobook: audiobook, profile: profileSession)
                 }
             }
             .enveEnvironment()
@@ -740,6 +752,18 @@ struct BookDetailScreen: View {
                 } label: {
                     Label("Link ebook/audiobook", systemImage: "link")
                 }
+            }
+            if LinkedBookQuickSyncService.isAvailable(for: profileSession), let counterpart,
+                Set([shown.mediaType, counterpart.mediaType]) == [.ebook, .audiobook]
+            {
+                Button {
+                    metadataTool = isEbook
+                        ? .quickSync(ebook: shown, audiobook: counterpart)
+                        : .quickSync(ebook: counterpart, audiobook: shown)
+                } label: {
+                    Label("Quick Sync", systemImage: "waveform.and.magnifyingglass")
+                }
+                .accessibilityIdentifier("detail.quickSyncButton")
             }
             if shown.mediaType == .audiobook || shown.mediaType == .ebook {
                 Button {

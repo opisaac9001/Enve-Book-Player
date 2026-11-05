@@ -124,7 +124,7 @@ struct BookOrbitCatalogTests {
         #expect(books.map { $0.seriesInfo?.sequence } == expected)
         #expect(books.map(\.ebookFormat) == Array(repeating: "epub", count: 7) + ["pdf"])
         let recent = try await provider.fetchRecentBooks(libraryId: "1", limit: 10)
-        #expect(recent.map { $0.seriesInfo?.sequence } == expected.reversed())
+        #expect(recent.map { $0.seriesInfo?.sequence } == expected)
         for (book, sequence) in zip(books, expected) {
             let detail = try await provider.fetchFullBookDetails(bookId: book.id, libraryId: "1")
             #expect(detail.seriesInfo?.sequence == sequence)

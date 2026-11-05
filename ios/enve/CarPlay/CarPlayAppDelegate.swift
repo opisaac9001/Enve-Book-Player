@@ -5,15 +5,15 @@ import UIKit
 
 final class CarPlayAppDelegate: NSObject, UIApplicationDelegate {
 
-    private var backgroundSessionCompletionHandlers: [String: () -> Void] = [:]
+    private static var backgroundSessionCompletionHandlers: [String: () -> Void] = [:]
 
     @MainActor
-    func consumeBackgroundCompletionHandler(forIdentifier identifier: String) -> (() -> Void)? {
+    static func consumeBackgroundCompletionHandler(forIdentifier identifier: String) -> (() -> Void)? {
         backgroundSessionCompletionHandlers.removeValue(forKey: identifier)
     }
 
     @MainActor
-    func storeBackgroundCompletionHandler(_ handler: @escaping () -> Void, forIdentifier identifier: String) {
+    static func storeBackgroundCompletionHandler(_ handler: @escaping () -> Void, forIdentifier identifier: String) {
         backgroundSessionCompletionHandlers[identifier] = handler
     }
 
@@ -40,11 +40,13 @@ final class CarPlayAppDelegate: NSObject, UIApplicationDelegate {
         completionHandler: @escaping () -> Void
     ) {
         AppLogger.general.info("handleEventsForBackgroundURLSession identifier=\(identifier)")
-        backgroundSessionCompletionHandlers[identifier] = completionHandler
+        Self.storeBackgroundCompletionHandler(completionHandler, forIdentifier: identifier)
 
-        if UnifiedDownloadService.profileID(forBackgroundSessionIdentifier: identifier) != nil {
-            ProfileSwitchCoordinator.shared.handleBackgroundSession(identifier: identifier) { [weak self] in
-                self?.consumeBackgroundCompletionHandler(forIdentifier: identifier)?()
+        if UnifiedDownloadService.profileID(forBackgroundSessionIdentifier: identifier) != nil
+            || BookDownloadManager.profileID(forBackgroundSessionIdentifier: identifier) != nil
+        {
+            ProfileSwitchCoordinator.shared.handleBackgroundSession(identifier: identifier) {
+                Self.consumeBackgroundCompletionHandler(forIdentifier: identifier)?()
             }
             return
         }

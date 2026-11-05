@@ -305,6 +305,11 @@ final class AudiobookTranscriptionService {
     #if os(iOS)
     @available(iOS 26.0, *)
     private func supportedLocale(for book: Book) async throws -> Locale {
+        try await supportedLocale(language: book.language)
+    }
+
+    @available(iOS 26.0, *)
+    func supportedLocale(language: String?) async throws -> Locale {
         let status = await Self.requestSpeechAuthorization()
         guard status == .authorized else {
             throw AudiobookTranscriptionError.speechAuthorizationDenied
@@ -314,11 +319,67 @@ final class AudiobookTranscriptionService {
             throw AudiobookTranscriptionError.speechTranscriberUnavailable
         }
 
-        let requested = Locale(identifier: (book.language?.isEmpty == false ? book.language : nil) ?? Locale.current.identifier)
+        let requested = Locale(identifier: (language?.isEmpty == false ? language : nil) ?? Locale.current.identifier)
         guard let supported = await SpeechTranscriber.supportedLocale(equivalentTo: requested) else {
             throw AudiobookTranscriptionError.localeUnsupported
         }
         return supported
+    }
+
+    /// Diagnostic readiness code; never asks for permission and never downloads speech assets.
+    @available(iOS 26.0, *)
+    func passageReadiness(language: String?) async -> String {
+        guard SFSpeechRecognizer.authorizationStatus() == .authorized else { return "permissionNotAuthorized" }
+        guard SpeechTranscriber.isAvailable else { return "transcriberUnavailable" }
+        let requested = Locale(identifier: (language?.isEmpty == false ? language : nil) ?? Locale.current.identifier)
+        guard let locale = await SpeechTranscriber.supportedLocale(equivalentTo: requested) else { return "localeUnsupported" }
+        let modules: [any SpeechModule] = [SpeechTranscriber(locale: locale, preset: .timeIndexedTranscriptionWithAlternatives)]
+        switch await AssetInventory.status(forModules: modules) {
+        case .installed: return "installed"
+        case .supported: return "assetsNotInstalled"
+        case .downloading: return "assetsDownloading"
+        case .unsupported: return "assetsUnsupported"
+        @unknown default: return "unknown"
+        }
+    }
+
+    /// Word-timed transcription of one track span in track-local seconds, keeping the transcriber's
+    /// per-run audio time ranges. Shares the single transcription owner with transcript generation.
+    @available(iOS 26.0, *)
+    func transcribeWords(trackURL: URL, ownerID: String, startTime: TimeInterval, endTime: TimeInterval, locale: Locale) async throws -> [TranscribedWord] {
+        guard activeBookStableId == nil else { throw AudiobookTranscriptionError.transcriptionBusy }
+        activeBookStableId = ownerID
+        defer { activeBookStableId = nil }
+        let transcriber = SpeechTranscriber(locale: locale, preset: .timeIndexedTranscriptionWithAlternatives)
+        try await ensureAssetsInstalled(for: transcriber)
+        let analyzer = SpeechAnalyzer(modules: [transcriber], options: SpeechAnalyzer.Options(priority: .utility, modelRetention: .lingering))
+        let resultTask = Task.detached { () throws -> [TranscribedWord] in
+            var words: [TranscribedWord] = []
+            for try await result in transcriber.results where result.isFinal {
+                for run in result.text.runs {
+                    guard let range = run.audioTimeRange else { continue }
+                    let text = String(result.text[run.range].characters).trimmingCharacters(in: .whitespacesAndNewlines)
+                    let start = CMTimeGetSeconds(range.start)
+                    let end = CMTimeGetSeconds(range.end)
+                    guard !text.isEmpty, start.isFinite, end.isFinite, end >= start else { continue }
+                    words.append(TranscribedWord(text: text, start: start, end: end))
+                }
+            }
+            return words
+        }
+        do {
+            let input = AudioFileAnalyzerInputSequence(url: trackURL, trackStartOffset: 0, startTime: startTime, endTime: endTime)
+            if let last = try await analyzer.analyzeSequence(input) {
+                try await analyzer.finalizeAndFinish(through: last)
+            } else {
+                await analyzer.cancelAndFinishNow()
+            }
+            return try await resultTask.value.sorted { $0.start < $1.start }
+        } catch {
+            resultTask.cancel()
+            await analyzer.cancelAndFinishNow()
+            throw error
+        }
     }
 
     @available(iOS 26.0, *)
@@ -422,6 +483,12 @@ final class AudiobookTranscriptionService {
         }
     }
     #endif
+}
+
+struct TranscribedWord: Sendable, Equatable {
+    let text: String
+    let start: TimeInterval
+    let end: TimeInterval
 }
 
 private struct TranscriptionJob {

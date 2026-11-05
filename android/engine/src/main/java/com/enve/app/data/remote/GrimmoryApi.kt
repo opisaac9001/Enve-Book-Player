@@ -138,11 +138,8 @@ interface GrimmoryApi {
         @Query("StartIndex") startIndex: Int = 0,
     ): Response<MediaBrowserItemsDto>
 
-    @GET("api/v1/app/libraries")
-    suspend fun getLibraries(): Response<List<LibraryDto>>
-
     @GET("api/v1/libraries")
-    suspend fun getLibrariesLegacy(): Response<List<LibraryDto>>
+    suspend fun getLibraries(): Response<List<LibraryDto>>
 
     @GET("api/v1/libraries/{libraryId}/book")
     suspend fun getBooksLegacy(
@@ -214,6 +211,9 @@ interface GrimmoryApi {
         @Query("dir") dir: String = "desc",
     ): Response<PaginatedBooksResponse>
 
+    @GET("api/v1/app/books/ids")
+    fun getCatalogBookIds(@Query("libraryId") libraryId: String?): retrofit2.Call<kotlinx.serialization.json.JsonElement>
+
     @GET("api/v1/app/books")
     fun getCatalogBooks(
         @Query("libraryId") libraryId: String?,
@@ -229,11 +229,8 @@ interface GrimmoryApi {
     @GET("api/v1/libraries/{libraryId}/book")
     fun getCatalogBooksLegacy(@Path("libraryId") libraryId: String): retrofit2.Call<kotlinx.serialization.json.JsonElement>
 
-    @GET("api/v1/app/libraries")
-    fun getCatalogLibraries(): retrofit2.Call<List<LibraryDto>>
-
     @GET("api/v1/libraries")
-    fun getCatalogLibrariesLegacy(): retrofit2.Call<List<LibraryDto>>
+    fun getCatalogLibraries(): retrofit2.Call<List<LibraryDto>>
 
     @GET("api/v1/app/books/{bookId}")
     suspend fun getBookDetail(@Path("bookId") bookId: String): Response<BookDetailDto>

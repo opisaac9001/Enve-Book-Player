@@ -32,7 +32,9 @@ internal fun libraryImportIssueMessage(report: CatalogImportReport): String = bu
     report.failures.firstOrNull()?.let { failure ->
         val page = failure.page?.let { " on page ${it + 1}" }.orEmpty()
         add(when (failure.kind) {
-            CatalogFailureKind.ACCESS_DENIED -> "Access denied (HTTP ${failure.httpStatus}). Check this account's library permissions and retry."
+            CatalogFailureKind.ACCESS_DENIED -> if (failure.httpStatus == 401) {
+                "Authentication failed (HTTP 401). Sign in to this source again and retry."
+            } else "Access denied (HTTP ${failure.httpStatus}). Check this account's library permissions and retry."
             CatalogFailureKind.HTTP -> "The server returned HTTP ${failure.httpStatus}$page. Retry when the server is available."
             CatalogFailureKind.NETWORK -> "The connection failed or timed out$page. Check the connection and retry."
             CatalogFailureKind.INVALID_PAGE -> "The server returned an unreadable response$page. Check the server log and retry."

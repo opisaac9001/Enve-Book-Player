@@ -179,6 +179,7 @@ data class BookFileDto(
     @SerialName("extension") val fileExtension: String? = null,
     val isPrimary: Boolean? = null,
     val primary: Boolean? = null,
+    val fileSizeKb: Long? = null,
 )
 
 @Serializable
@@ -226,6 +227,11 @@ data class LegacyBookloreBookDto(
     val lastReadTime: String? = null,
     val readProgress: Float? = null,
     val readStatus: String? = null,
+    val libraryName: String? = null,
+    val personalRating: Float? = null,
+    val dateFinished: String? = null,
+    val isPhysical: Boolean? = null,
+    val metadataMatchScore: Float? = null,
     val metadata: LegacyBookloreMetadataDto? = null,
     val primaryFile: BookFileDto? = null,
     val alternativeFormats: List<BookFileDto>? = null,
@@ -247,6 +253,11 @@ data class LegacyBookloreMetadataDto(
     val thumbnailUrl: String? = null,
     val coverUpdatedOn: String? = null,
     val audiobookCoverUpdatedOn: String? = null,
+    val categories: List<String>? = null,
+    val goodreadsRating: Float? = null,
+    val isbn10: String? = null,
+    val ageRating: Int? = null,
+    val contentRating: String? = null,
 )
 
 @Serializable

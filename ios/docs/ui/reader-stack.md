@@ -34,6 +34,8 @@ Swift mapping for Enve:
 
 **Readium and Foliate share the ebook reader surface.** Ordinary reflowable EPUBs from Grimmory, Silo, and BookOrbit prefer Foliate; read-aloud and media-overlay EPUBs use Readium. AZW3 and FB2 files open directly in Foliate. AZW3 does not enter MOBI-to-EPUB conversion or fall back to Readium.
 
+The complete Foliate runtime requires iOS 17.2 or newer because Bionic reading uses the CSS Custom Highlight API. On iOS 17.0 and 17.1, EPUBs use Readium; AZW3 and FB2 require iOS 17.2. The app deployment target remains iOS 17.0.
+
 - SPM dependency `https://github.com/readium/swift-toolkit.git`, minimum `upToNextMajorVersion 3.11.0`, **resolved 3.11.0** (`enve.xcodeproj/.../swiftpm/Package.resolved`). Products linked: `ReadiumShared`, `ReadiumStreamer`, `ReadiumNavigator`, `ReadiumOPDS`, `ReadiumAdapterGCDWebServer`, plus Readium's `ReadiumZIPFoundation` fork.
 **Reader view hierarchy today:**
 

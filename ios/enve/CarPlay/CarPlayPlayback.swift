@@ -144,7 +144,7 @@ final class CarPlayPlaybackService {
         if isReadaloudPlayable(book) {
             playReadaloud(book)
         } else {
-            bookStarter.play(book, presentPlayer: false)
+            bookStarter.play(book, from: nil, presentPlayer: false)
         }
         let started = await waitForActivePlayback(of: book, ignoring: errorBeforeStart)
         if started {

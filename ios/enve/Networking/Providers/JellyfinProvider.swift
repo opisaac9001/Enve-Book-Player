@@ -463,19 +463,25 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
             ]
         } else {
             var currentOffset: Double = 0
-            tracks = children.enumerated().map { index, track in
-                let trackDuration = Double(track.RunTimeTicks ?? 0) / 10_000_000.0
+            var built: [AudioTrackInfo] = []
+            for (index, track) in children.enumerated() {
                 let url = "\(normalizeServerURL(connection.url))/Audio/\(track.Id)/stream?static=true&ApiKey=\(connection.token ?? "")"
-                let info = AudioTrackInfo(
-                    index: index,
-                    startOffset: currentOffset,
-                    duration: trackDuration,
-                    contentUrl: url,
-                    mimeType: "audio/mpeg"
+                var trackDuration = Double(track.RunTimeTicks ?? 0) / 10_000_000.0
+                if trackDuration <= 0, let assetURL = URL(string: url) {
+                    trackDuration = await resolveTrackDuration(for: assetURL)
+                }
+                built.append(
+                    AudioTrackInfo(
+                        index: index,
+                        startOffset: currentOffset,
+                        duration: trackDuration,
+                        contentUrl: url,
+                        mimeType: "audio/mpeg"
+                    )
                 )
                 currentOffset += trackDuration
-                return info
             }
+            tracks = built
         }
 
         return PlaybackSessionInfo(
@@ -483,6 +489,11 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
             audioTracks: tracks,
             chapters: fullBook.chapters ?? []
         )
+    }
+
+    private func resolveTrackDuration(for url: URL) async -> Double {
+        guard let duration = try? await AVURLAsset(url: url).load(.duration) else { return 0 }
+        return duration.seconds.isFinite ? duration.seconds : 0
     }
 
     func reportPlayback(_ event: ServerPlaybackEvent, book: Book, sessionId: String, position: TimeInterval) async {

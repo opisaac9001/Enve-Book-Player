@@ -3,16 +3,12 @@ package com.enve.app.data.repository
 import com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
 import com.enve.core.data.local.ProfileStorageLocations
 
-import com.enve.core.data.util.runSuspendCatching
 import com.enve.core.data.local.ConnectionRegistry
 import com.enve.core.data.provider.ProviderPlaybackSession
 import com.enve.core.data.local.toBook
 import com.enve.core.data.model.Book
 import com.enve.core.data.provider.CatalogImportException
 import com.enve.core.data.provider.CatalogImportReport
-import com.enve.core.data.provider.CatalogFailure
-import com.enve.core.data.provider.CatalogFailureKind
-import com.enve.core.data.provider.CatalogImportStage
 import com.enve.core.data.provider.CatalogImportIssue
 import com.enve.core.data.provider.catalogImportConnectionKey
 import com.enve.core.data.provider.catalogImportScopeKey
@@ -332,7 +328,7 @@ class AggregatorRepository @Inject constructor(
                         ) }
                     } else {
                         val report = CatalogImportReport(source = connection.source, failures = listOf(
-                            CatalogFailure(CatalogFailureKind.NETWORK, CatalogImportStage.BOOKS),
+                            com.enve.core.data.provider.catalogFailureFor(err),
                         ))
                         reports += report
                         importIssues += CatalogImportIssue(

@@ -31,17 +31,35 @@ struct ListeningPositionShareSheet: View {
                         .frame(maxWidth: .infinity)
                         .accessibilityLabel("Book-position code for \(payload.title) at \(ListeningPositionText.position(payload))")
 
-                    Text("In Enve, they open Library, choose More, then Scan book position. The code holds only this book's details and position.")
+                    Text("Send the link and they can tap it to open this position in Enve. In person, they can scan the code from Library → More → Scan book position. Both hold only this book's details and position.")
                         .font(.hearthUI(13))
                         .foregroundStyle(hearth.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
+
+                    ShareLink(
+                        item: ListeningPositionLink.shareURL(for: payload),
+                        // A message would ride along with Copy and break the URL when pasted into Safari.
+                        subject: Text("Pick up where I am in \(payload.title)"),
+                        preview: SharePreview(payload.title)
+                    ) {
+                        Label("Share link", systemImage: "link")
+                            .font(.hearthUI(16, weight: .semibold))
+                            .foregroundStyle(HearthPalette.readableForeground(on: hearth.ember, dark: hearth.onEmber))
+                            .padding(.horizontal, 24)
+                            .padding(.vertical, 14)
+                            .frame(minHeight: 52)
+                            .background {
+                                HearthChromeBackground(shape: .capsule, fill: hearth.ember, tint: hearth.ember)
+                            }
+                    }
+                    .buttonStyle(PressableStyle())
 
                     HStack(spacing: 12) {
                         ShareLink(
                             item: Image(uiImage: code),
                             preview: SharePreview(payload.title, image: Image(uiImage: code))
                         ) {
-                            Label("Share image", systemImage: "square.and.arrow.up")
+                            Label("Share QR image", systemImage: "qrcode")
                                 .font(.hearthUI(15, weight: .medium))
                                 .foregroundStyle(hearth.text)
                                 .padding(.horizontal, 18)

@@ -94,9 +94,11 @@ struct FoliateRuntimeSecurityTests {
         )
 
         #expect(source.contains("if (!content?.doc && navigateToResource)"))
-        #expect(source.contains("overlayer.add(ttsAnnotationKey, resolved.range, Overlayer.highlight"))
+        #expect(source.contains("isCurrent, draw = Overlayer.highlight) => {"))
+        #expect(source.contains("overlayer.add(key, resolved.range, draw, { color })"))
+        #expect(source.contains("ttsAnnotationKey, locatorJSON, ttsHighlightColor, false"))
         #expect(source.contains("const ttsAnnotationKey = 'enve-tts-current'"))
-        #expect(source.contains("const followTTSLocator = async locatorJSON =>"))
+        #expect(source.contains("const followTTSLocator = async (locatorJSON, strictQuote = false) =>"))
         #expect(source.contains("case 'ttsStart':"))
         #expect(source.contains("case 'ttsAt':"))
         #expect(source.contains("new Intl.Segmenter(language, { granularity: 'sentence' })"))
@@ -118,8 +120,45 @@ struct FoliateRuntimeSecurityTests {
         )
 
         #expect(source.contains("Promise.resolve().then(drawTTSHighlight)"))
-        #expect(source.contains("overlayer.hitTest = hitTestSkippingTTS"))
+        #expect(source.contains("overlayer.hitTest = hitTestSkippingNarration"))
         #expect(source.contains("if (lastSelection) return"))
+    }
+
+    @Test func readAlongHighlightIsSeparateFromNarrationAndNeverUsesAnUnanchoredQuote() throws {
+        let runtimeRoot = try #require(FoliateRuntimeSupport.resourceRoot)
+        let source = try String(
+            contentsOf: runtimeRoot.appendingPathComponent("adapter.js"),
+            encoding: .utf8
+        )
+
+        #expect(source.contains("const readAlongAnnotationKey = 'enve-readalong-current'"))
+        #expect(source.contains("case 'readAlong':"))
+        #expect(source.contains("case 'readAlongFollow':"))
+        #expect(source.contains("await followTTSLocator(payload.locatorJSON, true)"))
+        #expect(source.contains("Promise.resolve().then(drawReadAlongHighlight)"))
+        #expect(source.contains("strictQuote && (locator.prefix || locator.suffix)"))
+        #expect(source.contains("readAlongAnnotationKey, locatorJSON, color, true"))
+        let readAlong = try #require(source.range(of: "const applyReadAlongLocator"))
+        let next = try #require(source.range(of: "const textPointAtOffset"))
+        let readAlongBody = source[readAlong.lowerBound..<next.lowerBound]
+        #expect(!readAlongBody.contains("ttsAnnotationKey"))
+        #expect(!readAlongBody.contains("view.goTo"))
+    }
+
+    @Test func readAlongWordIsAnUnderlineLayerThatNeverNavigates() throws {
+        let runtimeRoot = try #require(FoliateRuntimeSupport.resourceRoot)
+        let source = try String(contentsOf: runtimeRoot.appendingPathComponent("adapter.js"), encoding: .utf8)
+
+        #expect(source.contains("const readAlongWordAnnotationKey = 'enve-readalong-word'"))
+        #expect(source.contains("case 'readAlongWord':"))
+        #expect(source.contains("Overlayer.underline"))
+        #expect(source.contains(".then(drawReadAlongWordHighlight)"))
+        let word = try #require(source.range(of: "const applyReadAlongWordLocator"))
+        let next = try #require(source.range(of: "const textPointAtOffset"))
+        let body = source[word.lowerBound..<next.lowerBound]
+        #expect(body.contains("readAlongWordAnnotationKey"))
+        #expect(!body.contains("view.goTo"))
+        #expect(!body.contains("followTTSLocator"))
     }
 
     @Test func readerFontUsesPrivateFamilyAndReachesInlinePublisherRules() throws {

@@ -73,7 +73,20 @@ final class LibraryLayoutUITests: XCTestCase {
         for identifier in ["library-more-menu", "library-source-menu", "library-library-menu", "library-shelves-menu", "library-controls-button"] {
             let button = app.buttons[identifier].firstMatch
             XCTAssertTrue(button.exists, identifier)
-            for _ in 0..<5 where !button.isHittable { library.swipeUp() }
+            for _ in 0..<5 {
+                let window = app.windows.firstMatch
+                let windowFrame = window.frame
+                let mantelTop = [app.buttons["mantel-pill"], app.buttons["tab_hearth"]]
+                    .filter { $0.exists && $0.frame.intersects(windowFrame) }
+                    .map { $0.frame.minY }.min() ?? windowFrame.maxY
+                if button.isHittable && button.frame.maxY < mantelTop - 12 { break }
+                let startY = min(library.frame.maxY, mantelTop) - 24
+                let endY = max(library.frame.minY + 120, startY - 240)
+                window.coordinate(withNormalizedOffset: .zero)
+                    .withOffset(CGVector(dx: windowFrame.width / 2, dy: startY - windowFrame.minY))
+                    .press(forDuration: 0.05, thenDragTo: window.coordinate(withNormalizedOffset: .zero)
+                        .withOffset(CGVector(dx: windowFrame.width / 2, dy: endY - windowFrame.minY)))
+            }
             XCTAssertTrue(button.isHittable, identifier)
             // Accessibility frames can round by a physical pixel.
             XCTAssertGreaterThanOrEqual(button.frame.width + 0.5, 44)

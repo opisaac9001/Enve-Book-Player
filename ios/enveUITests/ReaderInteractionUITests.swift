@@ -486,7 +486,7 @@ final class ReaderInteractionUITests: XCTestCase {
             else { web.swipeLeft(); web.swipeRight() }
             expandNarration(app)
             openContents(app)
-            let two = app.buttons["Two"].firstMatch
+            let two = chapterButton("Two", in: app)
             XCTAssertTrue(two.waitForExistence(timeout: 5))
             two.tap()
             XCTAssertTrue(app.otherElements["reader-contents-tray"].firstMatch.waitForNonExistence(timeout: 5))
@@ -501,7 +501,7 @@ final class ReaderInteractionUITests: XCTestCase {
                 XCTAssertTrue(pause.exists)
             } else { XCTAssertEqual(after, pausedAt, accuracy: 1) }
             openContents(app)
-            app.buttons["One"].firstMatch.tap()
+            chapterButton("One", in: app).tap()
             XCTAssertTrue(app.otherElements["reader-contents-tray"].firstMatch.waitForNonExistence(timeout: 5))
             expandNarration(app)
             if !playing { XCTAssertEqual(try narrationTime(app), pausedAt, accuracy: 1) }
@@ -512,7 +512,7 @@ final class ReaderInteractionUITests: XCTestCase {
         XCTAssertEqual(skip.value as? String, "1")
         dismissReaderSheet(app.scrollViews.containing(.switch, identifier: "Skip audio on page turn").firstMatch, app: app)
         openContents(app)
-        app.buttons["Two"].firstMatch.tap()
+        chapterButton("Two", in: app).tap()
         XCTAssertTrue(app.otherElements["reader-contents-tray"].firstMatch.waitForNonExistence(timeout: 5))
         expandNarration(app)
         let audioFollowed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
@@ -535,6 +535,15 @@ final class ReaderInteractionUITests: XCTestCase {
             app.buttons["Paged"].firstMatch.tap()
         }
         app.terminate()
+    }
+
+    @MainActor
+    private func chapterButton(_ title: String, in app: XCUIApplication) -> XCUIElement {
+        let tray = app.descendants(matching: .any)["reader-contents-tray"].firstMatch
+        return tray.buttons.matching(NSPredicate(
+            format: "label == %@ OR (label BEGINSWITH %@ AND label CONTAINS[c] %@)",
+            title, "\(title),", "page"
+        )).firstMatch
     }
 
     @MainActor

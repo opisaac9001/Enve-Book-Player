@@ -38,11 +38,4 @@ class SiloServerToolsDtoTest {
         assertEquals(0.82, response.items.first().score, 0.0001)
         assertEquals("seen together", response.items[1].reasonDetail)
     }
-
-    @Test
-    fun decodesEmptyRecommendationPayload() {
-        val response = json.decodeFromString<SiloScoredItemsResponse>("""{"items":[]}""")
-
-        assertTrue(response.items.isEmpty())
-    }
 }

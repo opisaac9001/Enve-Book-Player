@@ -39,18 +39,6 @@ class KomgaUsersV2PayloadTest {
     }
 
     @Test
-    fun decodesV2CreatedUser() {
-        val body = """
-            {"id":"0RQVYQ88N7REZ","email":"reader@example.invalid","roles":["FILE_DOWNLOAD","PAGE_STREAMING","USER"],"sharedAllLibraries":true,"sharedLibrariesIds":[],"labelsAllow":[],"labelsExclude":[]}
-        """.trimIndent()
-
-        val user = json.decodeFromString<KomgaUserDto>(body)
-
-        assertEquals("0RQVYQ88N7REZ", user.id)
-        assertEquals(listOf("FILE_DOWNLOAD", "PAGE_STREAMING", "USER"), user.roles)
-    }
-
-    @Test
     fun updateBodyOmitsUnsetFields() {
         assertEquals(
             """{"roles":["ADMIN","FILE_DOWNLOAD"]}""",

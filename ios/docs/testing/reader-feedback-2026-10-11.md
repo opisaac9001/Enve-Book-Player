@@ -16,7 +16,7 @@ Automatic read-along following now places an off-screen passage in the middle of
 - A new playback regression test visited all four chapters across separate audio files on iPadOS 17.5. The existing paused-seek regression also passed.
 - Builds had no compiler errors or new compiler warnings. Whitespace and repository provenance checks passed.
 
-The final UI runs used serial execution and disabled automatic diagnostic collection. Earlier attempts exposed insufficient fixture length, control-opening assumptions, and test cleanup problems; those were corrected before the passing runs. An initial newer-simulator installation failed because the Mac's internal disk was full. This session's generated test-product copies were archived on the external build volume, with links preserving their original artifact paths. Application data was not deleted.
+The final UI runs used serial execution and disabled automatic diagnostic collection. Earlier attempts exposed insufficient fixture length, control-opening assumptions, and test cleanup problems; those were corrected before the passing runs.
 
 ## Remaining report
 

@@ -3,7 +3,7 @@ package com.enve.app.data.librarian
 import javax.inject.Inject
 import javax.inject.Singleton
 import java.util.Locale
-import kotlin.math.roundToInt
+import kotlin.math.floor
 
 @Singleton
 class BookContextRetriever @Inject constructor(
@@ -62,21 +62,20 @@ class BookContextRetriever @Inject constructor(
     ): BookContextResult {
         val range = rangeForScope(scope, currentProgress.coerceIn(0.0, 1.0), chunks)
         val selected = chunks.filter { it.endProgress >= range.start && it.startProgress <= range.end }
-        val text = selected
+        val textChunks = selected
             .mapNotNull { chunk ->
                 val bounded = boundedText(chunk, range.start, range.end).trim()
                 if (bounded.isBlank()) return@mapNotNull null
                 val title = chunk.title?.trim()?.takeIf { it.isNotBlank() }
                 if (title == null) bounded else "[$title] $bounded"
             }
-            .joinToString("\n\n")
 
         return BookContextResult(
             scope = scope,
             rangeStart = range.start,
             rangeEnd = range.end,
-            text = trimContext(text),
-            chunkCount = selected.size,
+            text = trimContext(textChunks.joinToString("\n\n")),
+            chunkCount = textChunks.size,
         )
     }
 
@@ -185,7 +184,7 @@ class BookContextRetriever @Inject constructor(
             BookIntelligenceScope.BOOK_SO_FAR ->
                 ProgressRange(0.0, currentProgress)
             BookIntelligenceScope.CURRENT_CHAPTER_SO_FAR ->
-                ProgressRange(current.startProgress, minOf(currentProgress, current.endProgress))
+                ProgressRange(minOf(current.startProgress, currentProgress), minOf(currentProgress, current.endProgress))
             BookIntelligenceScope.PREVIOUS_CHAPTER -> {
                 if (currentIndex <= 0) ProgressRange(0.0, currentProgress)
                 else {
@@ -205,23 +204,14 @@ class BookContextRetriever @Inject constructor(
     }
 
     private fun boundedText(chunk: EbookContextChunk, lower: Double, upper: Double): String {
-        val span = (chunk.endProgress - chunk.startProgress).coerceAtLeast(0.0001)
+        val span = chunk.endProgress - chunk.startProgress
+        if (span <= 0.0 || lower >= upper) return ""
         val words = chunk.text.split(Regex("\\s+")).filter { it.isNotBlank() }
-        if (words.isEmpty()) return chunk.text
-
-        val startFraction = if (lower > chunk.startProgress + 0.0001) {
-            ((lower - chunk.startProgress) / span).coerceIn(0.0, 1.0)
-        } else {
-            0.0
-        }
-        val endFraction = if (upper < chunk.endProgress - 0.0001) {
-            ((upper - chunk.startProgress) / span).coerceIn(0.0, 1.0)
-        } else {
-            1.0
-        }
-        val startIndex = (words.size * startFraction).roundToInt().coerceIn(0, words.lastIndex)
-        val endIndex = (words.size * endFraction).roundToInt().coerceIn(startIndex + 1, words.size)
-        return words.subList(startIndex, endIndex).joinToString(" ")
+        val startFraction = ((lower - chunk.startProgress) / span).coerceIn(0.0, 1.0)
+        val endFraction = ((upper - chunk.startProgress) / span).coerceIn(0.0, 1.0)
+        val start = floor(words.size * startFraction).toInt()
+        val end = floor(words.size * endFraction).toInt()
+        return words.subList(start, end).joinToString(" ")
     }
 
     private fun trimContext(text: String): String {

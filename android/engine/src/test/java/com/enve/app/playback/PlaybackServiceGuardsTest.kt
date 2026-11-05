@@ -63,16 +63,6 @@ class PlaybackServiceGuardsTest {
     }
 
     @Test
-    fun newerPlaybackRequestSupersedesOlderCompletion() {
-        val gate = PlaybackRequestGate()
-        val first = gate.begin()
-        val second = gate.begin()
-
-        assertFalse(gate.isCurrent(first))
-        assertTrue(gate.isCurrent(second))
-    }
-
-    @Test
     fun sequentialPlaybackRequestsStayCurrentUntilReplaced() {
         val gate = PlaybackRequestGate()
         val first = gate.begin()

@@ -1,5 +1,6 @@
 package com.enve.app.playback
 
+import android.util.Log
 import com.enve.app.data.NetworkStateProvider
 import com.enve.app.data.offline.OfflineDownloadManager
 import com.enve.app.data.offline.OfflineTrackInfo
@@ -22,11 +23,15 @@ import com.enve.core.data.model.Chapter
 import com.enve.core.data.provider.synthesizeChaptersFromTracks
 import com.enve.core.data.remote.ConnectionScope
 import com.enve.core.data.remote.NetworkErrorMapper
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.EmptyCoroutineContext
+import kotlin.coroutines.coroutineContext
 
 class PlaybackStartException(message: String, cause: Throwable?) : Exception(message, cause)
 
@@ -50,7 +55,7 @@ class PlaybackStarter @Inject constructor(
     private val network: NetworkStateProvider,
 ) {
 
-    suspend fun start(book: Book, resolveOpenProgress: Boolean = true): Boolean {
+    suspend fun start(book: Book, startPositionMs: Long? = null): Boolean {
         val scoped = book.connectionId?.let { ConnectionScope.asContextElement(it) } ?: EmptyCoroutineContext
         return withContext(scoped) {
             readAloudPlayback.stopActiveAndAwait()
@@ -66,14 +71,18 @@ class PlaybackStarter @Inject constructor(
             if (embedded != null) {
                 val durationMs = embedded.tracks.sumOf { it.durationMs }
                 val resolved = original.forAudioPlayback().copy(duration = durationMs / 1000L)
-                val startSec = if (resolveOpenProgress) openProgress.resolveStartSeconds(resolved) else localStartSeconds(resolved)
+                val startSec = startPositionMs?.let { it / 1000L } ?: openProgress.resolveStartSeconds(resolved)
                 val chapters = synthesize(embedded.tracks.map { it.title }, embedded.tracks.map { it.durationMs })
                 storeChapters(resolved, chapters)
-                audioManager.playMultiTrack(
-                    tracks = embedded.tracks, bookId = resolved.id, title = resolved.title,
-                    author = resolved.author, coverUrl = resolved.coverUrl, startPositionMs = startSec * 1000L,
-                    mediaId = AutoMediaBrowserHelper.mediaIdForCacheKey(resolved.uniqueKey),
-                )
+                coroutineContext.ensureActive()
+                submitPlayback { requestJob ->
+                    audioManager.playMultiTrack(
+                        tracks = embedded.tracks, bookId = resolved.id, title = resolved.title,
+                        author = resolved.author, coverUrl = resolved.coverUrl, startPositionMs = startSec * 1000L,
+                        mediaId = AutoMediaBrowserHelper.mediaIdForCacheKey(resolved.uniqueKey),
+                        requestJob = requestJob,
+                    )
+                }
                 sessionService.start(resolved, startSec, resolved.duration)
                 lastOpenedBookStore.record(resolved)
                 return@withContext true
@@ -92,11 +101,13 @@ class PlaybackStarter @Inject constructor(
             val mediaId = AutoMediaBrowserHelper.mediaIdForCacheKey(resolved.uniqueKey)
             val feedEnclosureUrl = resolved.podcastEnclosureUrl
             val startSec = when {
+                startPositionMs != null -> startPositionMs / 1000L
                 offlineOnly -> audioLocalStartSeconds(resolved)
-                resolveOpenProgress && feedEnclosureUrl == null -> openProgress.resolveStartSeconds(resolved)
+                feedEnclosureUrl == null -> openProgress.resolveStartSeconds(resolved)
                 else -> localStartSeconds(resolved)
             }
 
+            coroutineContext.ensureActive()
             val started = when {
                 !localTracks.isNullOrEmpty() -> {
                     startOffline(resolved, localTracks, startSec, mediaId)
@@ -114,6 +125,14 @@ class PlaybackStarter @Inject constructor(
             }
             if (started) lastOpenedBookStore.record(resolved)
             started
+        }
+    }
+
+    private suspend fun submitPlayback(block: (Job?) -> Unit) {
+        val requestJob = coroutineContext[Job]
+        withContext(Dispatchers.Main.immediate) {
+            coroutineContext.ensureActive()
+            block(requestJob)
         }
     }
 
@@ -138,16 +157,22 @@ class PlaybackStarter @Inject constructor(
         }
         storeChapters(book, book.chapters.ifEmpty { synthesize(tracks.map { it.title }, tracks.map { it.durationMs }) })
         if (tracks.size > 1) {
-            audioManager.playMultiTrack(
-                tracks = tracks.map { AudioPlaybackManager.TrackInfo(it.uri, it.title, it.durationMs) },
-                bookId = book.id, title = book.title, author = book.author, coverUrl = book.coverUrl,
-                startPositionMs = startSec * 1000, mediaId = mediaId,
-            )
+            submitPlayback { requestJob ->
+                audioManager.playMultiTrack(
+                    tracks = tracks.map { AudioPlaybackManager.TrackInfo(it.uri, it.title, it.durationMs) },
+                    bookId = book.id, title = book.title, author = book.author, coverUrl = book.coverUrl,
+                    startPositionMs = startSec * 1000, mediaId = mediaId,
+                    requestJob = requestJob,
+                )
+            }
         } else {
-            audioManager.play(
-                streamUrl = tracks.first().uri, bookId = book.id, title = book.title, author = book.author,
-                coverUrl = book.coverUrl, startPositionMs = startSec * 1000, mediaId = mediaId,
-            )
+            submitPlayback { requestJob ->
+                audioManager.play(
+                    streamUrl = tracks.first().uri, bookId = book.id, title = book.title, author = book.author,
+                    coverUrl = book.coverUrl, startPositionMs = startSec * 1000, mediaId = mediaId,
+                    requestJob = requestJob,
+                )
+            }
         }
         sessionService.start(book.copy(duration = durationSec), startSec, durationSec)
     }
@@ -174,22 +199,31 @@ class PlaybackStarter @Inject constructor(
             )
         }?.ifEmpty { synthesizeChaptersFromTracks(audioTracks, durationSec) } ?: book.chapters
         storeChapters(book, chapters)
+        coroutineContext.ensureActive()
         if (tracks != null && tracks.size > 1) {
-            audioManager.playMultiTrack(
-                tracks = tracks.mapIndexed { i, t ->
-                    AudioPlaybackManager.TrackInfo(
-                        url = grimmory.getTrackStreamUrl(book.id, t.index.takeIf { it >= 0 } ?: i),
-                        title = t.title ?: t.fileName, durationMs = t.durationMs ?: 0L,
-                    )
-                },
-                bookId = book.id, title = book.title, author = book.author, coverUrl = book.coverUrl,
-                startPositionMs = startSec * 1000, mediaId = mediaId,
-            )
+            val playbackTracks = tracks.mapIndexed { i, t ->
+                AudioPlaybackManager.TrackInfo(
+                    url = grimmory.getTrackStreamUrl(book.id, t.index.takeIf { it >= 0 } ?: i),
+                    title = t.title ?: t.fileName, durationMs = t.durationMs ?: 0L,
+                )
+            }
+            submitPlayback { requestJob ->
+                audioManager.playMultiTrack(
+                    tracks = playbackTracks,
+                    bookId = book.id, title = book.title, author = book.author, coverUrl = book.coverUrl,
+                    startPositionMs = startSec * 1000, mediaId = mediaId,
+                    requestJob = requestJob,
+                )
+            }
         } else {
-            audioManager.play(
-                streamUrl = grimmory.getStreamUrl(book.id), bookId = book.id, title = book.title,
-                author = book.author, coverUrl = book.coverUrl, startPositionMs = startSec * 1000, mediaId = mediaId,
-            )
+            val streamUrl = grimmory.getStreamUrl(book.id)
+            submitPlayback { requestJob ->
+                audioManager.play(
+                    streamUrl = streamUrl, bookId = book.id, title = book.title,
+                    author = book.author, coverUrl = book.coverUrl, startPositionMs = startSec * 1000, mediaId = mediaId,
+                    requestJob = requestJob,
+                )
+            }
         }
         sessionService.start(book.copy(duration = durationSec), startSec, durationSec)
     }
@@ -213,43 +247,64 @@ class PlaybackStarter @Inject constructor(
             else -> 0L
         }
         val effectiveStart = startSec.coerceAtLeast(0L)
-        val chapters = session?.chapters?.takeIf { it.isNotEmpty() }
-            ?: book.chapters.takeIf { it.size > 1 }
-            ?: tracks.takeIf { it.size == 1 }
-                ?.let { embeddedChapterExtractor.fetchEmbeddedChapters(it, durationSec) }
-                ?.takeIf { it.isNotEmpty() }
-            ?: book.chapters.ifEmpty { synthesize(tracks.map { it.title ?: it.fileName }, tracks.map { it.durationMs }) }
-        storeChapters(book, chapters)
+        val knownChapters = session?.chapters?.takeIf { it.isNotEmpty() } ?: book.chapters.takeIf { it.size > 1 }
+        storeChapters(
+            book,
+            knownChapters ?: book.chapters.ifEmpty { synthesize(tracks.map { it.title ?: it.fileName }, tracks.map { it.durationMs }) },
+        )
 
         val castToken = if (book.source == BookSource.AUDIOBOOKSHELF) absRepository.currentAccessToken() else null
 
+        coroutineContext.ensureActive()
         if (tracks.size > 1) {
-            audioManager.playMultiTrack(
-                tracks = tracks.map {
-                    AudioPlaybackManager.TrackInfo(it.contentUrl.orEmpty(), it.title ?: it.fileName, it.durationMs, it.format)
-                },
-                bookId = book.id, title = book.title, author = book.author, coverUrl = book.coverUrl,
-                startPositionMs = effectiveStart * 1000, mediaId = mediaId, authToken = castToken,
-                connectionId = book.connectionId,
-            )
+            submitPlayback { requestJob ->
+                audioManager.playMultiTrack(
+                    tracks = tracks.map {
+                        AudioPlaybackManager.TrackInfo(it.contentUrl.orEmpty(), it.title ?: it.fileName, it.durationMs, it.format)
+                    },
+                    bookId = book.id, title = book.title, author = book.author, coverUrl = book.coverUrl,
+                    startPositionMs = effectiveStart * 1000, mediaId = mediaId, authToken = castToken,
+                    connectionId = book.connectionId,
+                    requestJob = requestJob,
+                )
+            }
         } else {
-            audioManager.play(
-                streamUrl = tracks.first().contentUrl.orEmpty(), bookId = book.id, title = book.title,
-                author = book.author, coverUrl = book.coverUrl, startPositionMs = effectiveStart * 1000,
-                mediaId = mediaId, authToken = castToken, format = tracks.first().format,
-                connectionId = book.connectionId,
-            )
+            submitPlayback { requestJob ->
+                audioManager.play(
+                    streamUrl = tracks.first().contentUrl.orEmpty(), bookId = book.id, title = book.title,
+                    author = book.author, coverUrl = book.coverUrl, startPositionMs = effectiveStart * 1000,
+                    mediaId = mediaId, authToken = castToken, format = tracks.first().format,
+                    connectionId = book.connectionId,
+                    requestJob = requestJob,
+                )
+            }
         }
         sessionService.start(book.copy(duration = durationSec), effectiveStart, durationSec, session?.sessionId)
+        if (knownChapters == null && tracks.size == 1) probeEmbeddedChapters(book, tracks, durationSec)
         return true
+    }
+
+    private suspend fun probeEmbeddedChapters(book: Book, tracks: List<com.enve.core.data.model.AudioTrack>, durationSec: Long) {
+        val embedded = try {
+            embeddedChapterExtractor.fetchEmbeddedChapters(tracks, durationSec)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w("PlaybackStarter", "Embedded chapter probe failed for ${book.uniqueKey}", e)
+            return
+        }
+        if (embedded.isNotEmpty()) storeChapters(book, embedded)
     }
 
     private suspend fun startFeedEpisode(book: Book, enclosureUrl: String, startSec: Long, mediaId: String) {
         storeChapters(book, emptyList())
-        audioManager.play(
-            streamUrl = publicStreamUrl(enclosureUrl), bookId = book.id, title = book.title, author = book.author,
-            coverUrl = book.coverUrl, startPositionMs = startSec * 1000, mediaId = mediaId,
-        )
+        submitPlayback { requestJob ->
+            audioManager.play(
+                streamUrl = publicStreamUrl(enclosureUrl), bookId = book.id, title = book.title, author = book.author,
+                coverUrl = book.coverUrl, startPositionMs = startSec * 1000, mediaId = mediaId,
+                requestJob = requestJob,
+            )
+        }
         sessionService.start(book, startSec, book.duration)
     }
 

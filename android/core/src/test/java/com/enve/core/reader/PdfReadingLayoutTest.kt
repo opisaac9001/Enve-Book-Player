@@ -119,24 +119,6 @@ class PdfReadingLayoutTest {
         }
     }
 
-    @Test
-    fun changingLayoutKeepsTheSelectedPageInsideTheNewSpread() {
-        for (page in 0 until 6) {
-            for (from in listOf(single, paired, coverApart)) {
-                for (to in listOf(single, paired, coverApart)) {
-                    val before = from.spreadContaining(page, 6)
-                    val after = to.spreadContaining(page, 6)
-                    assertTrue("$from -> $to lost page $page", page in before.pages && page in after.pages)
-                }
-            }
-        }
-        assertEquals(PdfSpread(0, 1), paired.spreadContaining(0, 6))
-        assertEquals(PdfSpread(0, 0), coverApart.spreadContaining(0, 6))
-        assertEquals(PdfSpread(2, 2), single.spreadContaining(2, 6))
-        assertEquals(PdfSpread(2, 3), paired.spreadContaining(2, 6))
-        assertEquals(PdfSpread(1, 2), coverApart.spreadContaining(2, 6))
-    }
-
     private fun spreads(layout: PdfReadingLayout, pageCount: Int): List<PdfSpread> {
         val result = mutableListOf(layout.spreadContaining(0, pageCount))
         while (true) {

@@ -7,6 +7,55 @@ import Testing
 
 @MainActor
 struct NowPlayingSessionLifecycleTests {
+    @Test func repeatedResumeKeepsTheCommandRegistrationAndRoutesToTheActiveTarget() throws {
+        let coordinator = NowPlayingCoordinator()
+        let target = SessionTarget()
+        let session = MPNowPlayingSession(players: [AVPlayer()])
+        coordinator.setNowPlayingSession(session, for: target)
+        coordinator.setActive(target)
+        defer {
+            coordinator.resignIfActive(target)
+            coordinator.clearNowPlayingSession(if: target)
+        }
+        let registration = try #require(coordinator.commandRegistrationID)
+        for _ in 0..<25 {
+            coordinator.setNowPlayingSession(session, for: target)
+            coordinator.setActive(target)
+            #expect(coordinator.commandRegistrationID == registration)
+        }
+        coordinator.remoteTarget(for: registration)?.remotePlay()
+        #expect(target.playCount == 1)
+        coordinator.resignIfActive(target)
+        #expect(coordinator.remoteTarget(for: registration) == nil)
+    }
+
+    @Test func replacedCommandCentersCannotControlTheNewSessionAndCanBeReused() throws {
+        let coordinator = NowPlayingCoordinator()
+        let first = SessionTarget()
+        let second = SessionTarget()
+        let firstSession = MPNowPlayingSession(players: [AVPlayer()])
+        let secondSession = MPNowPlayingSession(players: [AVPlayer()])
+        coordinator.setNowPlayingSession(firstSession, for: first)
+        coordinator.setActive(first)
+        let original = try #require(coordinator.commandRegistrationID)
+        coordinator.setNowPlayingSession(secondSession, for: second)
+        coordinator.setActive(second)
+        let replacement = try #require(coordinator.commandRegistrationID)
+        #expect(original != replacement)
+        coordinator.remoteTarget(for: original)?.remotePlay()
+        coordinator.remoteTarget(for: replacement)?.remotePlay()
+        #expect(first.playCount == 0)
+        #expect(second.playCount == 1)
+        coordinator.setNowPlayingSession(firstSession, for: first)
+        coordinator.setActive(first)
+        #expect(coordinator.commandRegistrationID == original)
+        #expect(coordinator.remoteTarget(for: replacement) == nil)
+        coordinator.remoteTarget(for: original)?.remotePlay()
+        #expect(first.playCount == 1)
+        coordinator.resignIfActive(first)
+        coordinator.clearNowPlayingSession(if: first)
+    }
+
     @Test func clearingSessionLeavesItsPlayerAssociationIntact() {
         let coordinator = NowPlayingCoordinator()
         let target = SessionTarget()
@@ -145,7 +194,8 @@ struct NowPlayingSessionLifecycleTests {
 
 @MainActor
 private final class SessionTarget: RemoteCommandTarget {
-    func remotePlay() {}
+    var playCount = 0
+    func remotePlay() { playCount += 1 }
     func remotePause() {}
     func remoteToggle() {}
     func remoteNext() {}

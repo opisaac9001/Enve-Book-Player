@@ -49,76 +49,71 @@ struct PodcastsHomeScreen: View {
     }
 
     private var content: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 32) {
-                header
+        GeometryReader { geo in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 32) {
+                    header
 
-                if (model.isLoading || !loaded) && model.allShows.isEmpty {
-                    loading
-                } else if model.loadFailed {
-                    failedState
-                } else if !model.hasAnySubscription {
-                    emptyState
-                } else if model.playableShows.isEmpty {
-                    quietFeeds
-                } else {
-                    if let upNext = model.continueListening.first {
-                        upNextHero(upNext)
-                            .padding(.horizontal, 24)
+                    if (model.isLoading || !loaded) && model.allShows.isEmpty {
+                        loading
+                    } else if model.loadFailed {
+                        failedState
+                    } else if !model.hasAnySubscription {
+                        emptyState
+                    } else if model.playableShows.isEmpty {
+                        quietFeeds
+                    } else {
+                        if let upNext = model.continueListening.first {
+                            upNextHero(upNext)
+                                .padding(.horizontal, 24)
+                        }
+
+                        let remaining = Array(model.continueListening.dropFirst())
+                        if !remaining.isEmpty {
+                            stillPlaying(remaining)
+                        }
+
+                        if !model.newEpisodes.isEmpty {
+                            newEpisodes
+                        }
+
+                        if model.continueListening.isEmpty && model.newEpisodes.isEmpty {
+                            caughtUp
+                                .padding(.horizontal, 24)
+                        }
+
+                        yourShows
+                        doorways
                     }
-
-                    let remaining = Array(model.continueListening.dropFirst())
-                    if !remaining.isEmpty {
-                        stillPlaying(remaining)
-                    }
-
-                    if !model.newEpisodes.isEmpty {
-                        newEpisodes
-                    }
-
-                    if model.continueListening.isEmpty && model.newEpisodes.isEmpty {
-                        caughtUp
-                            .padding(.horizontal, 24)
-                    }
-
-                    yourShows
-                    doorways
                 }
+                .hearthReadableFrame(width: geo.size.width, maximum: HearthAdaptive.wideReadableWidth)
+                .padding(.top, 8)
+                .padding(.bottom, mantelInset + 16)
             }
-            .padding(.top, 8)
-            .padding(.bottom, mantelInset + 16)
+            .scrollIndicators(.hidden)
         }
-        .scrollIndicators(.hidden)
         .background(HearthBackground())
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Overline(headerLine)
-            HStack(alignment: .center) {
-                Text("Podcasts")
-                    .font(.hearthScreenTitle)
-                    .foregroundStyle(hearth.text)
-                Spacer(minLength: 12)
-                Menu {
-                    Section("Sources") {
-                        Toggle("Audiobookshelf podcasts", isOn: $includeAudiobookshelfPodcasts)
-                    }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.hearthUI(15, weight: .semibold))
-                        .foregroundStyle(hearth.text)
-                        .frame(width: 44, height: 44)
-                        .background {
-                            Circle()
-                                .fill(hearth.bgElevated)
-                                .overlay(Circle().strokeBorder(hearth.hairline, lineWidth: 1))
-                        }
+        TabHeader(overline: headerLine, title: "Podcasts") {
+            Menu {
+                Section("Sources") {
+                    Toggle("Audiobookshelf podcasts", isOn: $includeAudiobookshelfPodcasts)
                 }
-                .accessibilityLabel("Podcast options")
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.hearthUI(15, weight: .semibold))
+                    .foregroundStyle(hearth.text)
+                    .frame(width: 44, height: 44)
+                    .background {
+                        Circle()
+                            .fill(hearth.bgElevated)
+                            .hearthOutlined(Circle())
+                    }
             }
+            .accessibilityLabel("Podcast options")
         }
-        .padding(.horizontal, 24)
     }
 
     private var headerLine: String {

@@ -27,7 +27,7 @@ struct EbookTTSEngineChoiceTests {
         #expect(EbookTTSService(userDefaults: defaults).engineChoice == .apple)
     }
 
-    @Test func kokoroWithoutAnInstalledModelReturnsToApple() throws {
+    @Test func kokoroWithoutAnInstalledModelUsesApple() throws {
         let name = "EbookTTSEngineChoiceTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: name))
         defer { defaults.removePersistentDomain(forName: name) }
@@ -38,6 +38,8 @@ struct EbookTTSEngineChoiceTests {
 
         #expect(service.engineChoice == .apple)
         #expect(service.kokoroDownloadState == .notDownloaded)
-        #expect(defaults.string(forKey: "ebookTTS.engine") == "apple")
+        let storedChoice = KokoroTTSRuntime.isSupportedOnCurrentOS ? "apple" : "kokoro"
+        #expect(defaults.string(forKey: "ebookTTS.engine") == storedChoice)
+        #expect(!defaults.bool(forKey: "ebookTTS.kokoroModelReady"))
     }
 }

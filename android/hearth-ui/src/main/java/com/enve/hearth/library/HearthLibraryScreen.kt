@@ -41,6 +41,7 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -48,9 +49,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -67,9 +73,11 @@ import com.enve.hearth.design.Hearth
 import com.enve.hearth.design.HearthText
 import com.enve.hearth.design.LocalMantelInset
 import com.enve.hearth.design.Overline
+import com.enve.hearth.design.ScreenHeader
 import com.enve.hearth.design.hearthDisplay
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -81,7 +89,7 @@ fun HearthLibraryScreen(
     onAddSource: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
 ) {
-    var showPositionScanner by remember { mutableStateOf(false) }
+    var showPositionScanner by rememberSaveable { mutableStateOf(false) }
     if (showPositionScanner) {
         ListeningPositionScanScreen { showPositionScanner = false }
         return
@@ -108,16 +116,21 @@ fun HearthLibraryScreen(
     val narrators by vm.narrators.collectAsStateWithLifecycle()
     val shelves by vm.shelves.collectAsStateWithLifecycle()
     val shelvesLoading by vm.shelvesLoading.collectAsStateWithLifecycle()
-    val bookOrbitAdminConnections by vm.bookOrbitAdminConnections.collectAsStateWithLifecycle()
+    val bookOrbitCollectionConnections by vm.bookOrbitCollectionConnections.collectAsStateWithLifecycle()
     val hasGrimmoryConnection by vm.hasGrimmoryConnection.collectAsStateWithLifecycle()
     val drill by vm.drill.collectAsStateWithLifecycle()
     val total by vm.totalCount.collectAsStateWithLifecycle()
     val refreshing by vm.isRefreshing.collectAsStateWithLifecycle()
     val refreshError by vm.refreshError.collectAsStateWithLifecycle()
     val importIssues by vm.importIssues.collectAsStateWithLifecycle()
-    val importMessage = importIssues.takeIf { it.isNotEmpty() }?.joinToString("\n") { libraryImportIssueMessage(it.report) }
-    val refreshMessage = importMessage ?: refreshError?.let(::libraryRefreshErrorMessage)
+    var dismissedRefreshError by rememberSaveable { mutableStateOf<Int?>(null) }
+    val refreshFailureKey = refreshError?.hashCode()
+    val showRefreshNotice = importIssues.isNotEmpty() || (refreshFailureKey != null && refreshFailureKey != dismissedRefreshError)
+    LaunchedEffect(refreshing) {
+        if (refreshing) dismissedRefreshError = null
+    }
     val columns by vm.columns.collectAsStateWithLifecycle()
+    val cardStyle by vm.cardStyle.collectAsStateWithLifecycle()
     val selectionMode by vm.selectionMode.collectAsStateWithLifecycle()
     val selection by vm.selection.collectAsStateWithLifecycle()
     val batchCollectionPicker by vm.batchCollectionPicker.collectAsStateWithLifecycle()
@@ -151,23 +164,45 @@ fun HearthLibraryScreen(
     } else {
         savedList?.let { savedBooks[it].orEmpty().size } ?: books.size.takeIf { facet == LibraryFacet.BOOKS }
     }
+    var headerOffsetPx by remember { mutableFloatStateOf(0f) }
+    var headerHeightPx by remember { mutableFloatStateOf(0f) }
+    val headerScroll = remember {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (available.y >= 0f) return Offset.Zero
+                val target = (headerOffsetPx + available.y).coerceAtLeast(-headerHeightPx)
+                val consumed = target - headerOffsetPx
+                headerOffsetPx = target
+                return Offset(0f, consumed)
+            }
+
+            override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
+                if (available.y <= 0f) return Offset.Zero
+                val target = (headerOffsetPx + available.y).coerceAtMost(0f)
+                val used = target - headerOffsetPx
+                headerOffsetPx = target
+                return Offset(0f, used)
+            }
+        }
+    }
     PullToRefreshBox(
         isRefreshing = refreshing,
         onRefresh = vm::refresh,
         modifier = Modifier.fillMaxSize(),
     ) {
         Box(Modifier.fillMaxSize().background(palette.bg)) {
-        Column(Modifier.fillMaxSize().statusBarsPadding()) {
-        Row(
-            Modifier.fillMaxWidth().padding(start = Hearth.Spacing.XL, end = Hearth.Spacing.S, top = Hearth.Spacing.S),
-            verticalAlignment = Alignment.CenterVertically,
+        Column(Modifier.fillMaxSize().statusBarsPadding().nestedScroll(headerScroll)) {
+        Column(
+            Modifier
+                .clipToBounds()
+                .layout { measurable, constraints ->
+                    val placeable = measurable.measure(constraints)
+                    headerHeightPx = placeable.height.toFloat()
+                    val visible = (placeable.height + headerOffsetPx).roundToInt().coerceIn(0, placeable.height)
+                    layout(placeable.width, visible) { placeable.placeRelative(0, headerOffsetPx.roundToInt()) }
+                },
         ) {
-            Text(
-                "Library",
-                style = HearthText.ScreenTitle,
-                color = palette.text,
-                modifier = Modifier.weight(1f).semantics { heading() },
-            )
+        ScreenHeader("Library", overline = "The Reading Room") {
             if (selectionMode) {
                 TextButton(onClick = vm::endSelection) {
                     Text("Done", style = HearthText.Label, color = palette.ember)
@@ -227,24 +262,21 @@ fun HearthLibraryScreen(
             onLibrary = vm::setLibraryFilter,
             modifier = Modifier.padding(horizontal = Hearth.Spacing.L),
         )
-        refreshMessage?.let { message ->
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = Hearth.Spacing.XL, vertical = Hearth.Spacing.S)
-                    .background(palette.bgElevated, RoundedCornerShape(Hearth.Radius.Inner))
-                    .padding(Hearth.Spacing.M),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text(if (importMessage != null) "Library import incomplete" else "Couldn't refresh your library", style = HearthText.Label, color = palette.text)
-                    Text(message, style = HearthText.Caption, color = palette.textSecondary)
-                    if (total > 0) {
-                        Text("Your saved library is still available.", style = HearthText.Caption, color = palette.textSecondary)
-                    }
+        if (showRefreshNotice) {
+            val details = importIssues.map { issue ->
+                val match = libraries.firstOrNull {
+                    com.enve.core.data.provider.catalogImportScopeKey(it.connectionId, it.id) == issue.scopeKey
                 }
-                TextButton(onClick = { vm.refresh() }, enabled = !refreshing) {
-                    Text("Retry", color = palette.ember)
-                }
-            }
+                val label = listOfNotNull(issue.report.source.displayName, match?.name).joinToString(" · ")
+                label to libraryImportIssueMessage(issue.report)
+            }.ifEmpty { listOf("Library refresh" to libraryRefreshErrorMessage(refreshError.orEmpty())) }
+            LibraryImportNotice(details, refreshing, onRetry = {
+                dismissedRefreshError = null
+                vm.refresh()
+            }, onDismiss = {
+                dismissedRefreshError = refreshFailureKey
+                vm.dismissImportIssues(importIssues)
+            })
         }
         FlowRow(
             Modifier.fillMaxWidth().padding(horizontal = Hearth.Spacing.XL),
@@ -282,6 +314,7 @@ fun HearthLibraryScreen(
                 )
             }
         }
+        }
         FacetRow(selected = facet.takeIf { savedList == null }) { selected -> savedList = null; vm.setFacet(selected) }
         Spacer(Modifier.size(Hearth.Spacing.XS))
 
@@ -296,7 +329,7 @@ fun HearthLibraryScreen(
                 }
                 val items = savedBooks[list].orEmpty()
                 if (items.isEmpty()) BrowseEmptyState("Nothing saved yet", "Save a book from its details to find it here.")
-                else BookGrid(items, columns, vm, selectionMode, selection, onSelectBook, onPlayBook)
+                else BookGrid(items, columns, vm, selectionMode, selection, onSelectBook, onPlayBook, cardStyle = cardStyle)
             }
             drillNow != null -> Column(Modifier.fillMaxSize()) {
                 Row(
@@ -324,6 +357,7 @@ fun HearthLibraryScreen(
                     selection,
                     onSelectBook,
                     onPlayBook,
+                    cardStyle = cardStyle,
                     onRemove = if (drillNow.shelf?.isEditable == true) ({ pendingBookRemoval = it }) else null,
                 )
                 if (drillNow.hasMore) {
@@ -335,10 +369,11 @@ fun HearthLibraryScreen(
                 }
             }
 
-            refreshMessage != null && total == 0 -> Box(Modifier.fillMaxSize())
+            showRefreshNotice && total == 0 -> Box(Modifier.fillMaxSize())
 
             facet == LibraryFacet.BOOKS -> BookGrid(
                 books, columns, vm, selectionMode, selection, onSelectBook, onPlayBook,
+                cardStyle = cardStyle,
                 hasLibraryBooks = total > 0,
                 onAddSource = onAddSource,
             )
@@ -382,14 +417,14 @@ fun HearthLibraryScreen(
                 }
                 when {
                 shelvesLoading -> BrowseLoadingState()
-                shelves.isEmpty() && bookOrbitAdminConnections.isEmpty() -> if (hasGrimmoryConnection) {
+                shelves.isEmpty() && bookOrbitCollectionConnections.isEmpty() -> if (hasGrimmoryConnection) {
                     BrowseEmptyState("No shelves found", "Create a shelf in Grimmory, then refresh.")
                 } else {
                     BrowseEmptyState("No server collections found", "BookOrbit collections and Grimmory shelves will appear here.")
                 }
                 else -> ShelvesList(
                     groups = shelves,
-                    canCreate = bookOrbitAdminConnections.isNotEmpty(),
+                    canCreate = bookOrbitCollectionConnections.isNotEmpty(),
                     onCreate = { creatingCollection = true },
                     onOpen = vm::openShelf,
                     onEdit = { collectionEditor = it },
@@ -456,7 +491,7 @@ fun HearthLibraryScreen(
     if (creatingCollection) {
         BookOrbitCollectionDialog(
             collection = null,
-            connections = bookOrbitAdminConnections,
+            connections = bookOrbitCollectionConnections,
             onDismiss = { creatingCollection = false },
             onSave = { connectionId, edit ->
                 vm.createBookOrbitCollection(connectionId, edit)
@@ -489,7 +524,7 @@ fun HearthLibraryScreen(
     collectionEditor?.let { collection ->
         BookOrbitCollectionDialog(
             collection = collection,
-            connections = bookOrbitAdminConnections,
+            connections = bookOrbitCollectionConnections,
             onDismiss = { collectionEditor = null },
             onSave = { _, edit ->
                 vm.updateBookOrbitCollection(collection, edit)
