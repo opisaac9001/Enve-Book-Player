@@ -129,7 +129,7 @@ struct LibraryHealthScreen: View {
                 Text(source.name)
                     .font(.hearthBody.weight(.medium))
                     .foregroundStyle(hearth.text)
-                    .lineLimit(1)
+                    .fixedSize(horizontal: false, vertical: true)
                 Text(sourceDetail(source))
                     .font(.hearthCaption)
                     .foregroundStyle(hearth.text)

@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.enve.core.data.local.ConnectionRegistry
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
+import com.enve.core.data.model.BookCardStyle
 import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.BrowseGroup
 import com.enve.core.data.model.Library
@@ -235,6 +236,8 @@ class HearthLibraryViewModel @Inject constructor(
 
     val columns: StateFlow<Int> =
         prefs.libraryColumns.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 3)
+    val cardStyle: StateFlow<BookCardStyle> =
+        prefs.bookCardStyle.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), BookCardStyle.STANDARD)
 
     private data class Scope(
         val source: BookSource?,
@@ -320,8 +323,8 @@ class HearthLibraryViewModel @Inject constructor(
     val shelves: StateFlow<List<BrowseGroup>> = _shelves
     private val _shelvesLoading = MutableStateFlow(false)
     val shelvesLoading: StateFlow<Boolean> = _shelvesLoading
-    private val _bookOrbitAdminConnections = MutableStateFlow<List<LibraryConnectionOption>>(emptyList())
-    val bookOrbitAdminConnections: StateFlow<List<LibraryConnectionOption>> = _bookOrbitAdminConnections
+    private val _bookOrbitCollectionConnections = MutableStateFlow<List<LibraryConnectionOption>>(emptyList())
+    val bookOrbitCollectionConnections: StateFlow<List<LibraryConnectionOption>> = _bookOrbitCollectionConnections
     private val _batchCollectionPicker = MutableStateFlow(BatchCollectionPickerState())
     val batchCollectionPicker: StateFlow<BatchCollectionPickerState> = _batchCollectionPicker
 
@@ -575,11 +578,15 @@ class HearthLibraryViewModel @Inject constructor(
             _shelvesLoading.value = true
             try {
                 _shelves.value = library.browseShelves()
-                _bookOrbitAdminConnections.value = library.bookOrbitAdminConnections()
+                _bookOrbitCollectionConnections.value = library.bookOrbitCollectionConnections()
             } finally {
                 _shelvesLoading.value = false
             }
         }
+    }
+
+    fun dismissImportIssues(issues: List<com.enve.core.data.provider.CatalogImportIssue>) = viewModelScope.launch {
+        library.dismissImportIssues(issues)
     }
 
     fun refresh() = viewModelScope.launch {
@@ -647,7 +654,7 @@ class HearthLibraryViewModel @Inject constructor(
 
     private suspend fun reloadShelves() {
         _shelves.value = library.browseShelves()
-        _bookOrbitAdminConnections.value = library.bookOrbitAdminConnections()
+        _bookOrbitCollectionConnections.value = library.bookOrbitCollectionConnections()
     }
 
     fun openBatchCollectionPicker() {
@@ -660,10 +667,10 @@ class HearthLibraryViewModel @Inject constructor(
 
         _batchCollectionPicker.value = BatchCollectionPickerState(isVisible = true, isLoading = true)
         viewModelScope.launch {
-            val connection = library.bookOrbitAdminConnections().firstOrNull { it.id == connectionId }
+            val connection = library.bookOrbitCollectionConnections().firstOrNull { it.id == connectionId }
             if (connection == null) {
                 _batchCollectionPicker.value = BatchCollectionPickerState()
-                notice.value = "An administrator account is required to edit BookOrbit collections."
+                notice.value = "Reconnect to BookOrbit to edit your collections."
                 return@launch
             }
             val collections = library.browseShelves().filter {

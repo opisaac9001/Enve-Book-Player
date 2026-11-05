@@ -49,4 +49,47 @@ nonisolated struct KokoroVoiceTests {
         first.set("unknown_voice", forKey: "ebookTTS.kokoroVoice")
         #expect(EbookTTSService(userDefaults: first).kokoroVoice == .heart)
     }
+
+    #if !targetEnvironment(macCatalyst)
+    @Test(arguments: [
+        (17, 7, true), (26, 3, true), (26, 4, false), (26, 5, false), (26, 6, false), (27, 0, false), (27, 2, false),
+    ])
+    func kokoroIsOffWhereItsModelsCanCrash(major: Int, minor: Int, supported: Bool) {
+        let version = OperatingSystemVersion(majorVersion: major, minorVersion: minor, patchVersion: 0)
+        #expect(KokoroTTSRuntime.isSupported(on: version) == supported)
+    }
+    #endif
+
+    @Test(.enabled(if: !KokoroTTSRuntime.isSupportedOnCurrentOS)) @MainActor
+    func aBlockedSystemKeepsTheStoredKokoroChoiceAndNeverPreparesIt() throws {
+        let name = "KokoroVoiceTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        defaults.set("kokoro", forKey: "ebookTTS.engine")
+        defaults.set(KokoroTTSVoice.michael.rawValue, forKey: "ebookTTS.kokoroVoice")
+        defaults.set(true, forKey: "ebookTTS.kokoroModelReady")
+
+        let service = EbookTTSService(userDefaults: defaults)
+        #expect(service.engineChoice == .apple)
+        #expect(service.kokoroVoice == .michael)
+        #expect(defaults.string(forKey: "ebookTTS.engine") == "kokoro")
+
+        let unavailable = NeuralTTSError.unsupportedOS.localizedDescription
+        for attempt in [{ service.setEngineChoice(.kokoro) }, { service.downloadModel(for: .kokoro) }] {
+            attempt()
+            #expect(service.engineChoice == .apple)
+            if service.kokoroDownloadState == .ready {
+                #expect(service.speechError == unavailable)
+            } else {
+                #expect(service.kokoroDownloadState == .failed(unavailable))
+            }
+        }
+        #expect(defaults.string(forKey: "ebookTTS.engine") == "kokoro")
+        #expect(defaults.bool(forKey: "ebookTTS.kokoroModelReady"))
+        #expect(EbookTTSService(userDefaults: defaults).kokoroVoice == .michael)
+
+        service.setEngineChoice(.apple)
+        #expect(defaults.string(forKey: "ebookTTS.engine") == "apple")
+        #expect(EbookTTSService(userDefaults: defaults).engineChoice == .apple)
+    }
 }

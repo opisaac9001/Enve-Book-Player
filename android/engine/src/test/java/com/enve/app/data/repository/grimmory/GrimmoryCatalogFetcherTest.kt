@@ -5,6 +5,7 @@ import com.enve.core.data.provider.CatalogFailureKind
 import com.enve.core.data.provider.CatalogRejectionReason
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -34,6 +35,8 @@ class GrimmoryCatalogFetcherTest {
     private class Fixture(val mode: String, val total: Int = 5000) : AutoCloseable {
         val server = MockWebServer()
         val requests = CopyOnWriteArrayList<RecordedRequest>()
+        val inventoryActive = AtomicInteger()
+        val inventoryPeak = AtomicInteger()
         init {
             server.dispatcher = object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse {
@@ -41,8 +44,19 @@ class GrimmoryCatalogFetcherTest {
                     val url = requireNotNull(request.requestUrl)
                     val path = url.encodedPath
                     val page = url.queryParameter("page")?.toInt() ?: 0
-                    val size = url.queryParameter("size")?.toInt() ?: 500
+                    val requestedSize = url.queryParameter("size")?.toInt() ?: 500
+                    val size = if (mode == "capped") requestedSize.coerceAtMost(50) else requestedSize
                     val last = (total - 1).coerceAtLeast(0) / size
+                    if (path == "/api/v1/app/books/ids") {
+                        if (mode == "ids-denied") return reply("{}", 403)
+                        if (!mode.startsWith("ids")) return reply("{}", 404)
+                        val ids = (1..total).map { id -> when {
+                            mode == "ids-invalid" && id == 1 -> JsonNull
+                            mode == "ids-duplicate" && id == total -> JsonPrimitive(1)
+                            else -> JsonPrimitive(id)
+                        } }
+                        return reply(JsonArray(ids).toString())
+                    }
                     if (path == "/api/v1/app/books") {
                         if (mode == "denied") return reply("{}", 403)
                         if (mode == "legacy") return reply("{}", 404)
@@ -68,7 +82,13 @@ class GrimmoryCatalogFetcherTest {
                     if (path == "/api/v1/books/batch") {
                         if (mode == "conflict") return reply("{}", 404)
                         val ids = url.queryParameter("ids").orEmpty().split(',').filter { it.isNotBlank() }.map(String::toInt)
-                        return reply(JsonArray(ids.map(::book)).toString())
+                        if (mode == "inventory-http" && ids.first() == 2501) return reply("{}", 503)
+                        if (mode == "parallel-inventory") {
+                            val active = inventoryActive.incrementAndGet()
+                            inventoryPeak.updateAndGet { maxOf(it, active) }
+                            try { Thread.sleep(30) } finally { inventoryActive.decrementAndGet() }
+                        }
+                        return reply(JsonArray(ids.filterNot { mode == "ids-missing" && it == 2601 }.map(::book)).toString())
                     }
                     if (path == "/api/v1/libraries/1/book") {
                         return reply(JsonArray(if (mode == "conflict") emptyList() else (1..total).map(::book)).toString())
@@ -84,8 +104,11 @@ class GrimmoryCatalogFetcherTest {
 
         private fun book(id: Int): JsonObject = JsonObject(mapOf(
             "id" to JsonPrimitive(id), "title" to JsonPrimitive("Synthetic $id"), "libraryId" to JsonPrimitive(1),
+            "metadata" to JsonObject(mapOf("authors" to JsonArray(listOf(JsonPrimitive("Fixture Author"))),
+                "publisher" to JsonPrimitive("Fixture Publisher"), "language" to JsonPrimitive("en"))),
             "primaryFileType" to JsonPrimitive("EPUB"),
-            "primaryFile" to JsonObject(mapOf("id" to JsonPrimitive(id), "bookType" to JsonPrimitive("EPUB"))),
+            "primaryFile" to JsonObject(mapOf("id" to JsonPrimitive(id), "bookType" to JsonPrimitive("EPUB"),
+                "fileName" to JsonPrimitive("fixture.epub"), "fileSizeKb" to JsonPrimitive(1234))),
         ))
 
         override fun close() = server.shutdown()
@@ -100,11 +123,66 @@ class GrimmoryCatalogFetcherTest {
         }
     }
 
+    @Test fun bulkIdsAvoidPagedCatalogAndPreserveMetadata() = fetch("ids") { batch, fixture ->
+        assertEquals(5000, batch.books.size)
+        assertTrue(batch.report.isComplete)
+        assertEquals("Synthetic 1", batch.books.first().title)
+        assertEquals(listOf("Fixture Author"), batch.books.first().authors)
+        assertEquals("Fixture Publisher", batch.books.first().publisher)
+        assertEquals("en", batch.books.first().language)
+        assertEquals("EPUB", batch.books.first().primaryFileType)
+        assertEquals("fixture.epub", batch.books.first().primaryFileName)
+        assertEquals(1234L, batch.books.first().fileSizeKb)
+        assertTrue(fixture.requests.none { it.requestUrl?.encodedPath == "/api/v1/app/books" })
+        assertEquals(50, fixture.requests.count { it.requestUrl?.encodedPath == "/api/v1/books/batch" })
+    }
+
+    @Test fun deniedBulkIdsCannotFallBackToAnotherCatalog() = fetch("ids-denied") { batch, fixture ->
+        assertEquals(CatalogFailureKind.ACCESS_DENIED, batch.report.failures.single().kind)
+        assertEquals(1, fixture.requests.size)
+    }
+
+    @Test fun malformedAndDuplicateBulkIdsRemainIncomplete() {
+        for (mode in listOf("ids-invalid", "ids-duplicate")) fetch(mode) { batch, _ ->
+            assertEquals(4999, batch.books.size)
+            assertFalse(batch.report.isComplete)
+        }
+    }
+
+    @Test fun missingBulkInventoryPreservesOtherBooksWithoutClaimingComplete() = fetch("ids-missing") { batch, _ ->
+        assertEquals(4999, batch.books.size)
+        assertEquals(1, batch.report.rejections[CatalogRejectionReason.MISSING_INVENTORY])
+        assertFalse(batch.report.isComplete)
+    }
+
     @Test fun fiveThousandValidBooksCompleteAcrossTenPages() = fetch("valid") { batch, fixture ->
         assertEquals(5000, batch.books.size)
         assertTrue(batch.report.isComplete)
         assertEquals(10, fixture.requests.count { it.requestUrl?.encodedPath == "/api/v1/app/books" })
         assertEquals(50, fixture.requests.count { it.requestUrl?.encodedPath == "/api/v1/books/batch" })
+    }
+
+    @Test fun formatInventoryUsesBoundedParallelRequests() = fetch("parallel-inventory") { batch, fixture ->
+        assertEquals(5000, batch.books.size)
+        assertTrue(batch.report.isComplete)
+        assertTrue(fixture.inventoryPeak.get() in 2..4)
+    }
+
+    @Test fun failedInventoryBatchKeepsOtherValidatedBooksAndReportsIncomplete() = fetch("inventory-http") { batch, _ ->
+        assertEquals(4900, batch.books.size)
+        assertFalse(batch.report.isComplete)
+        assertTrue(batch.report.failures.any { it.kind == CatalogFailureKind.HTTP && it.httpStatus == 503 })
+        assertTrue(batch.books.any { it.id == "5000" })
+    }
+
+    @Test fun serverPageSizeCapStillLoadsEveryBook() = fetch("capped") { batch, fixture ->
+        assertEquals(5000, batch.books.size)
+        assertTrue(batch.report.isComplete)
+        val pages = fixture.requests.filter { it.requestUrl?.encodedPath == "/api/v1/app/books" }
+        assertEquals(100, pages.size)
+        assertEquals((0 until 100).toSet(), pages.map { it.requestUrl?.queryParameter("page")?.toInt() }.toSet())
+        assertEquals("500", pages.first().requestUrl?.queryParameter("size"))
+        assertTrue(pages.drop(1).all { it.requestUrl?.queryParameter("size") == "50" })
     }
 
     @Test fun missingIdentityEarlyAndLateRejectsOnlyOneRecord() {
@@ -162,7 +240,7 @@ class GrimmoryCatalogFetcherTest {
     @Test fun accessDeniedDoesNotBroadenToLegacyEndpoints() = fetch("denied") { batch, fixture ->
         assertTrue(batch.books.isEmpty())
         assertEquals(CatalogFailureKind.ACCESS_DENIED, batch.report.failures.single().kind)
-        assertEquals(1, fixture.requests.size)
+        assertEquals(2, fixture.requests.size)
     }
 
     @Test fun unexpectedLibraryAndBadMetadataRejectIndividualRecords() {

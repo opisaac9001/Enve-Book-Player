@@ -30,7 +30,6 @@ import com.enve.silo.dto.SiloCatalogItemDto
 import com.enve.silo.dto.SiloAdminServerStatusDto
 import com.enve.silo.dto.SiloAdminStatsDto
 import com.enve.silo.dto.SiloAdminUserDto
-import com.enve.silo.dto.SiloChapterDto
 import com.enve.silo.dto.SiloEbookProgressRequest
 import com.enve.silo.dto.SiloEbookProgressResponse
 import com.enve.silo.dto.SiloFileVersionDto
@@ -392,7 +391,6 @@ class SiloRepository @Inject constructor(
         if (!response.isSuccessful) error(httpMessage("Silo audiobook progress sync failed", response))
     }
 
-    // Used for multi-part books and when no playback session is held (after a restart or offline start).
     private suspend fun syncProgressWithoutSession(profileId: String, book: Book, positionSec: Long) {
         val result = api.syncProgress(
             profileId = profileId,

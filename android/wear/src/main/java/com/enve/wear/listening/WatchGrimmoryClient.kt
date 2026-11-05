@@ -36,7 +36,7 @@ class WatchGrimmoryClient(private val vault: CredentialVault) : WatchAudiobookPr
         .build()
 
     override suspend fun libraries(account: WatchAccount): List<WatchLibraryChoice> = withContext(Dispatchers.IO) {
-        get(account, "api/v1/app/libraries").jsonArray.map { library ->
+        get(account, "api/v1/libraries").jsonArray.map { library ->
             library.jsonObject.let { WatchLibraryChoice(it.gString("id"), it.gString("name")) }
         }
     }

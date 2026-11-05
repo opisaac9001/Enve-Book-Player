@@ -43,6 +43,7 @@ final class ServerConnectionCloudKitSync {
     private let recordType = "ServerConnection"
     private let subscriptionID = "server-connections-changes"
     private let enabledKey = "ServerConnectionCloudKitSync.enabled"
+    private let deletedKey = "ServerConnectionCloudKitSync.deletedConnectionIDs"
 
     private var zoneEnsured = false
 
@@ -73,15 +74,32 @@ final class ServerConnectionCloudKitSync {
     }
 
     func deleteConnection(id: UUID) async {
+        // Remembered even while sync is off: other devices keep re-pushing the record until they delete it too.
+        deletedConnectionIDs.insert(id)
         guard isEnabled else { return }
-        let recordID = CKRecord.ID(recordName: id.uuidString, zoneID: zoneID)
-        do {
-            try await database.deleteRecord(withID: recordID)
-        } catch let error as CKError where error.code == .unknownItem {
+        await deleteRecords(for: [id])
+    }
 
+    private func deleteRecords(for ids: [UUID]) async {
+        let recordIDs = ids.map { CKRecord.ID(recordName: $0.uuidString, zoneID: zoneID) }
+        do {
+            let (_, deleteResults) = try await database.modifyRecords(saving: [], deleting: recordIDs)
+            for (recordID, result) in deleteResults {
+                if case .failure(let error) = result, (error as? CKError)?.code != .unknownItem {
+                    AppLogger.sync.warning("[CKSync] Failed to delete \(recordID.recordName): \(error.localizedDescription)")
+                }
+            }
         } catch {
-            AppLogger.sync.warning("[CKSync] Failed to delete \(id): \(error.localizedDescription)")
+            AppLogger.sync.warning("[CKSync] Failed to delete \(ids.count) connection(s): \(error.localizedDescription)")
         }
+    }
+
+    private var deletedConnectionIDs: Set<UUID> {
+        get {
+            let stored = UserDefaults.standard.stringArray(forKey: deletedKey) ?? []
+            return Set(stored.compactMap(UUID.init(uuidString:)))
+        }
+        set { UserDefaults.standard.set(newValue.map(\.uuidString), forKey: deletedKey) }
     }
 
     func pushAll() async {
@@ -121,7 +139,12 @@ final class ServerConnectionCloudKitSync {
                 changeToken = page.changeToken
                 if !page.moreComing { break }
             }
-            mergeIntoAppState(Array(fetched.values))
+            let deleted = deletedConnectionIDs
+            let resurrected = fetched.values.map(\.id).filter(deleted.contains)
+            if !resurrected.isEmpty {
+                await deleteRecords(for: resurrected)
+            }
+            mergeIntoAppState(fetched.values.filter { !deleted.contains($0.id) })
             status = .lastSyncedAt(Date())
         } catch {
             AppLogger.sync.warning("[CKSync] pullAll failed: \(error.localizedDescription)")

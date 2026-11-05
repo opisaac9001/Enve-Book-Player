@@ -12,13 +12,19 @@ struct ProfilePickerScreen: View {
             VStack(alignment: .leading, spacing: 24) {
                 Overline("On this device")
                 Text("Who's reading?").font(.hearthScreenTitle).foregroundStyle(hearth.text)
-                Text("Choose a profile to continue.").font(.hearthBody).foregroundStyle(hearth.textSecondary)
+                if let message = profiles.availabilityMessage {
+                    Text(message).font(.hearthBody).foregroundStyle(hearth.textSecondary)
+                        .accessibilityIdentifier("profiles-system-update")
+                } else {
+                    Text("Choose a profile to continue.").font(.hearthBody).foregroundStyle(hearth.textSecondary)
+                }
                 ForEach(profiles.profiles) { profile in
                     QuietButton(title: profile.name, systemImage: profile.role == .child ? "figure.child" : "person.crop.circle") {
                         if profile.role == .adult && profiles.isParentAuthorizationRequired && !profiles.isParentAuthorized {
                             selectedAdult = profile
                         } else { choose(profile) }
                     }
+                    .disabled(!profiles.supportsMultipleProfiles && profile.id != profiles.activeProfile.id)
                     .accessibilityIdentifier("profile-picker-\(profile.id)")
                 }
                 if profiles.isSwitching { ProgressView() }

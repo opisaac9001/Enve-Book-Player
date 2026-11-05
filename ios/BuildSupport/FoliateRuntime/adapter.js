@@ -44,8 +44,15 @@ let activeFootnote = null
 let footnoteClosedAt = -Infinity
 const ttsAnnotationKey = 'enve-tts-current'
 const ttsHighlightColor = '#3399FF'
-const ttsHighlightRanges = new WeakMap()
+const readAlongAnnotationKey = 'enve-readalong-current'
+const readAlongWordAnnotationKey = 'enve-readalong-word'
+// Overlayer -> drawn narration highlights (TTS and linked read-along), keyed by annotation key.
+const narrationHighlights = new WeakMap()
 let ttsLocatorJSON = null
+let readAlongLocatorJSON = null
+let readAlongColor = null
+let readAlongWordLocatorJSON = null
+let readAlongWordColor = null
 const annotationByCFI = new Map()
 const drawnAnnotationCFIs = new Set()
 const selectionCleanups = []
@@ -475,8 +482,12 @@ const sanitizeMarkup = (source, mediaType, name = '', requiresCSP = false, origi
             "default-src 'none'; style-src 'unsafe-inline' blob: data:; img-src blob: data:; font-src blob: data:; media-src blob: data:; script-src 'none'; connect-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
         )
         head.prepend(meta)
-    } else if (requiresCSP || root?.localName !== 'svg') {
+    } else if (requiresCSP) {
         throw new Error('Publication document does not have a securable root')
+    } else if (root?.localName !== 'svg') {
+        // Linked XML that isn't a document, such as an Adobe page template, can't render, so it is dropped
+        // rather than failing the section that links it.
+        return ''
     }
     return new XMLSerializer().serializeToString(doc)
 }
@@ -1178,7 +1189,9 @@ const normalizedQuote = value =>
         ? value.normalize('NFC').replace(/\s+/gu, ' ').trim()
         : ''
 
-const rangeFromTextQuote = (root, exact, prefix, suffix) => {
+// Several matching occurrences are resolved by `progression` (0...1 through the root's text) when given,
+// otherwise by document order.
+const rangeFromTextQuote = (root, exact, prefix, suffix, progression = null) => {
     if (!root || typeof exact !== 'string' || !exact) return null
     const doc = root.ownerDocument
     const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT)
@@ -1193,10 +1206,11 @@ const rangeFromTextQuote = (root, exact, prefix, suffix) => {
     const normalizedPrefix = normalizedQuote(prefix)
     const normalizedSuffix = normalizedQuote(suffix)
     if (!needle) return null
+    const matches = []
     let searchFrom = 0
     while (searchFrom <= mapped.text.length) {
         const index = mapped.text.indexOf(needle, searchFrom)
-        if (index < 0) return null
+        if (index < 0) break
         const preceding = mapped.text.slice(
                 Math.max(0, index - normalizedPrefix.length - 32),
                 index
@@ -1213,19 +1227,29 @@ const rangeFromTextQuote = (root, exact, prefix, suffix) => {
             || following.startsWith(normalizedSuffix)
             || (following.length > 0 && normalizedSuffix.startsWith(following))
         if (prefixMatches && suffixMatches) {
-            const rawStart = mapped.rawStarts[index]
-            const rawEnd = mapped.rawEnds[normalizedEnd - 1] ?? rawStart
-            const startEntry = nodes.findLast(entry => entry.start <= rawStart)
-            const endEntry = nodes.findLast(entry => entry.start < rawEnd) ?? startEntry
-            if (!startEntry || !endEntry) return null
-            const range = doc.createRange()
-            range.setStart(startEntry.node, rawStart - startEntry.start)
-            range.setEnd(endEntry.node, rawEnd - endEntry.start)
-            return range
+            if (typeof progression !== 'number') {
+                matches.push(index)
+                break
+            }
+            matches.push(index)
         }
         searchFrom = index + 1
     }
-    return null
+    if (!matches.length) return null
+    const target = mapped.text.length * (progression ?? 0)
+    const index = matches.reduce((best, candidate) =>
+        Math.abs(candidate - target) < Math.abs(best - target) ? candidate : best
+    )
+    const normalizedEnd = index + needle.length
+    const rawStart = mapped.rawStarts[index]
+    const rawEnd = mapped.rawEnds[normalizedEnd - 1] ?? rawStart
+    const startEntry = nodes.findLast(entry => entry.start <= rawStart)
+    const endEntry = nodes.findLast(entry => entry.start < rawEnd) ?? startEntry
+    if (!startEntry || !endEntry) return null
+    const range = doc.createRange()
+    range.setStart(startEntry.node, rawStart - startEntry.start)
+    range.setEnd(endEntry.node, rawEnd - endEntry.start)
+    return range
 }
 
 const parseLocator = locatorJSON => {
@@ -1271,7 +1295,9 @@ const parseLocator = locatorJSON => {
     }
 }
 
-const semanticRangeForLocator = async (locator, navigateToResource = true) => {
+// `strictQuote` is for prepared read-along passages: a quote whose context does not match is not
+// re-tried without context, so a repeated sentence never resolves to another occurrence.
+const semanticRangeForLocator = async (locator, navigateToResource = true, strictQuote = false) => {
     if (!locator.href
         || (!locator.domRange && !locator.exact && !locator.cssSelector && !locator.htmlID)) {
         return null
@@ -1313,13 +1339,16 @@ const semanticRangeForLocator = async (locator, navigateToResource = true) => {
             range.collapse(true)
         }
     }
+    const contextFree = (root, progression) => strictQuote && (locator.prefix || locator.suffix)
+        ? null
+        : rangeFromTextQuote(root, locator.exact, null, null, progression)
     if (!range && locator.exact && selectedElement) {
         range = rangeFromTextQuote(
             selectedElement,
             locator.exact,
             locator.prefix,
             locator.suffix
-        ) ?? rangeFromTextQuote(selectedElement, locator.exact, null, null)
+        ) ?? contextFree(selectedElement, null)
     }
     if (!range && locator.exact) {
         const searchRoot = content.doc.body ?? content.doc.documentElement
@@ -1327,8 +1356,9 @@ const semanticRangeForLocator = async (locator, navigateToResource = true) => {
             searchRoot,
             locator.exact,
             locator.prefix,
-            locator.suffix
-        ) ?? rangeFromTextQuote(searchRoot, locator.exact, null, null)
+            locator.suffix,
+            locator.resourceProgression
+        ) ?? contextFree(searchRoot, locator.resourceProgression)
     }
     if (!range && selectedElement) {
         range = content.doc.createRange()
@@ -1415,42 +1445,92 @@ const restoreLocator = async (locatorJSON, animated = false) => {
     return false
 }
 
-// The narration highlight is the newest overlay, so Foliate's own hit test would
-// report it instead of a saved highlight underneath.
-function hitTestSkippingTTS(point) {
+// Narration highlights are the newest overlays, so Foliate's own hit test would
+// report them instead of a saved highlight underneath.
+function hitTestSkippingNarration(point) {
     const hit = Overlayer.prototype.hitTest.call(this, point)
-    const range = ttsHighlightRanges.get(this)
-    if (hit[0] !== ttsAnnotationKey || !range) return hit
-    this.remove(ttsAnnotationKey)
+    const drawn = narrationHighlights.get(this)
+    if (!drawn?.has(hit[0])) return hit
+    for (const key of drawn.keys()) this.remove(key)
     const saved = Overlayer.prototype.hitTest.call(this, point)
-    this.add(ttsAnnotationKey, range, Overlayer.highlight, { color: ttsHighlightColor })
+    for (const [key, { range, color, draw }] of drawn) this.add(key, range, draw, { color })
     return saved
+}
+
+const removeNarrationHighlight = key => {
+    for (const content of view.renderer?.getContents?.() ?? []) {
+        content.overlayer?.remove(key)
+        narrationHighlights.get(content.overlayer)?.delete(key)
+    }
+}
+
+const drawNarrationHighlight = async (key, locatorJSON, color, strictQuote, isCurrent, draw = Overlayer.highlight) => {
+    const locator = parseLocator(locatorJSON)
+    locator.cfi = null
+    locator.domRange = null
+    const resolved = await semanticRangeForLocator(locator, false, strictQuote)
+    const overlayer = resolved?.content.overlayer
+    if (!isCurrent() || !overlayer || resolved.range.collapsed) return false
+    overlayer.hitTest = hitTestSkippingNarration
+    if (!narrationHighlights.has(overlayer)) narrationHighlights.set(overlayer, new Map())
+    narrationHighlights.get(overlayer).set(key, { range: resolved.range, color, draw })
+    overlayer.add(key, resolved.range, draw, { color })
+    return resolved.range.getClientRects().length > 0
 }
 
 const drawTTSHighlight = async () => {
     const locatorJSON = ttsLocatorJSON
     if (locatorJSON === null) return false
-    const locator = parseLocator(locatorJSON)
-    locator.cfi = null
-    locator.domRange = null
-    const resolved = await semanticRangeForLocator(locator, false)
-    const overlayer = resolved?.content.overlayer
-    if (locatorJSON !== ttsLocatorJSON || !overlayer || resolved.range.collapsed) return false
-    overlayer.hitTest = hitTestSkippingTTS
-    ttsHighlightRanges.set(overlayer, resolved.range)
-    overlayer.add(ttsAnnotationKey, resolved.range, Overlayer.highlight, { color: ttsHighlightColor })
-    return resolved.range.getClientRects().length > 0
+    return drawNarrationHighlight(
+        ttsAnnotationKey, locatorJSON, ttsHighlightColor, false, () => locatorJSON === ttsLocatorJSON
+    )
+}
+
+const drawReadAlongHighlight = async () => {
+    const locatorJSON = readAlongLocatorJSON
+    const color = readAlongColor
+    if (locatorJSON === null) return false
+    return drawNarrationHighlight(
+        readAlongAnnotationKey, locatorJSON, color, true,
+        () => locatorJSON === readAlongLocatorJSON && color === readAlongColor
+    )
+}
+
+// The word is underlined on top of the sentence highlight; it never navigates.
+const drawReadAlongWordHighlight = async () => {
+    const locatorJSON = readAlongWordLocatorJSON
+    const color = readAlongWordColor
+    if (locatorJSON === null) return false
+    return drawNarrationHighlight(
+        readAlongWordAnnotationKey, locatorJSON, color, true,
+        () => locatorJSON === readAlongWordLocatorJSON && color === readAlongWordColor,
+        Overlayer.underline
+    )
 }
 
 // The locator is retained so a section rendered later (page follow, reflow, or a
 // relayout) draws the current narration highlight when its overlay is created.
 const applyTTSLocator = async locatorJSON => {
     ttsLocatorJSON = locatorJSON
-    for (const content of view.renderer?.getContents?.() ?? []) {
-        content.overlayer?.remove(ttsAnnotationKey)
-    }
+    removeNarrationHighlight(ttsAnnotationKey)
     if (locatorJSON === null) return { applied: true, cleared: true }
     return { applied: await drawTTSHighlight(), cleared: false }
+}
+
+const applyReadAlongLocator = async (locatorJSON, color) => {
+    readAlongLocatorJSON = locatorJSON
+    readAlongColor = color
+    removeNarrationHighlight(readAlongAnnotationKey)
+    if (locatorJSON === null) return { applied: true, cleared: true }
+    return { applied: await drawReadAlongHighlight(), cleared: false }
+}
+
+const applyReadAlongWordLocator = async (locatorJSON, color) => {
+    readAlongWordLocatorJSON = locatorJSON
+    readAlongWordColor = color
+    removeNarrationHighlight(readAlongWordAnnotationKey)
+    if (locatorJSON === null) return { applied: true, cleared: true }
+    return { applied: await drawReadAlongWordHighlight(), cleared: false }
 }
 
 const textPointAtOffset = (element, target) => {
@@ -1618,16 +1698,16 @@ const ttsPositionAtPoint = (x, y) => {
     return null
 }
 
-const followTTSLocator = async locatorJSON => {
+const followTTSLocator = async (locatorJSON, strictQuote = false) => {
     if (lastSelection) return
     const locator = parseLocator(locatorJSON)
     locator.cfi = null
     locator.domRange = null
-    let resolved = await semanticRangeForLocator(locator, true)
+    let resolved = await semanticRangeForLocator(locator, true, strictQuote)
     if (!resolved || lastSelection) return
     if (resolved.content.index !== view.renderer?.primaryIndex) {
         await view.goTo(locator.href)
-        resolved = await semanticRangeForLocator(locator, false)
+        resolved = await semanticRangeForLocator(locator, false, strictQuote)
         if (!resolved) return
     }
     const { content, range } = resolved
@@ -1801,16 +1881,6 @@ const command = async envelope => {
         }
         await withNavigationAnimation(payload.animated, () => view.prev())
         return { moved: true }
-    case 'pageDrag':
-        if (!hasExactKeys(payload, ['deltaX', 'deltaY'])) {
-            throw new TypeError('Page-drag payload is invalid')
-        }
-        if (preferences.scroll || lastSelection) return { applied: false }
-        view.renderer.scrollBy(
-            boundedNumber(payload.deltaX, -2000, 2000),
-            boundedNumber(payload.deltaY, -2000, 2000)
-        )
-        return { applied: true }
     case 'pageDragEnd':
         if (!hasExactKeys(payload, ['velocityX', 'velocityY'])) {
             throw new TypeError('Page-drag-end payload is invalid')
@@ -1862,21 +1932,18 @@ const command = async envelope => {
         if (!hasExactKeys(payload, [])) throw new TypeError('Clear-selection payload is invalid')
         clearSelection()
         return { cleared: true }
-    case 'annotationAt':
+    case 'tapAt':
         if (!hasExactKeys(payload, ['x', 'y']) || !Number.isFinite(payload.x) || !Number.isFinite(payload.y)) {
-            throw new TypeError('Annotation-at payload is invalid')
+            throw new TypeError('Tap payload is invalid')
         }
-        return { id: annotationIdAt(payload.x, payload.y) }
-    case 'activateLinkAt':
-        if (!hasExactKeys(payload, ['x', 'y']) || !Number.isFinite(payload.x) || !Number.isFinite(payload.y)) {
-            throw new TypeError('Activate-link payload is invalid')
+        if (activateLinkAt(payload.x, payload.y)) {
+            return { linkHandled: true, annotationId: null, illustration: null }
         }
-        return { handled: activateLinkAt(payload.x, payload.y) }
-    case 'illustrationAt':
-        if (!hasExactKeys(payload, ['x', 'y']) || !Number.isFinite(payload.x) || !Number.isFinite(payload.y)) {
-            throw new TypeError('Illustration-at payload is invalid')
+        {
+            const annotationId = annotationIdAt(payload.x, payload.y)
+            if (annotationId !== null) return { linkHandled: false, annotationId, illustration: null }
         }
-        return { illustration: illustrationAt(payload.x, payload.y) }
+        return { linkHandled: false, annotationId: null, illustration: illustrationAt(payload.x, payload.y) }
     case 'refreshSelection':
         if (!hasExactKeys(payload, [])) throw new TypeError('Refresh-selection payload is invalid')
         emitSelection()
@@ -1929,6 +1996,28 @@ const command = async envelope => {
         }
         await followTTSLocator(payload.locatorJSON)
         return { applied: true }
+    case 'readAlong':
+        if (!hasExactKeys(payload, ['locatorJSON', 'color'])
+            || typeof payload.color !== 'string'
+            || !/^#[0-9a-f]{6}$/iu.test(payload.color)) {
+            throw new TypeError('Read-along payload is invalid')
+        }
+        optionalString(payload.locatorJSON)
+        return await applyReadAlongLocator(payload.locatorJSON, payload.color)
+    case 'readAlongWord':
+        if (!hasExactKeys(payload, ['locatorJSON', 'color'])
+            || typeof payload.color !== 'string'
+            || !/^#[0-9a-f]{6}$/iu.test(payload.color)) {
+            throw new TypeError('Read-along word payload is invalid')
+        }
+        optionalString(payload.locatorJSON)
+        return await applyReadAlongWordLocator(payload.locatorJSON, payload.color)
+    case 'readAlongFollow':
+        if (!hasExactKeys(payload, ['locatorJSON']) || typeof payload.locatorJSON !== 'string') {
+            throw new TypeError('Read-along follow payload is invalid')
+        }
+        await followTTSLocator(payload.locatorJSON, true)
+        return { applied: true }
     case 'teardown':
         if (!hasExactKeys(payload, [])) throw new TypeError('Teardown payload is invalid')
         setAutoScroll(0)
@@ -1944,11 +2033,17 @@ const command = async envelope => {
     }
 }
 
+// Drag steps arrive fire-and-forget from the native pan gesture, outside the sequenced command envelope.
+const pageDrag = (suppliedCapability, deltaX, deltaY) => {
+    if (suppliedCapability !== capability || !initialized || preferences.scroll || lastSelection) return
+    view.renderer.scrollBy(boundedNumber(deltaX, -2000, 2000), boundedNumber(deltaY, -2000, 2000))
+}
+
 Object.defineProperty(globalThis, 'EnveFoliateRuntime', {
     configurable: false,
     enumerable: false,
     writable: false,
-    value: Object.freeze({ command }),
+    value: Object.freeze({ command, pageDrag }),
 })
 
 const loadSessionBook = async (streaming, fileExtension) => {
@@ -2028,6 +2123,7 @@ const boot = async () => {
         renderAnnotations().catch(postError)
         // The renderer publishes the new section's contents after this event returns.
         Promise.resolve().then(drawTTSHighlight).catch(postError)
+        Promise.resolve().then(drawReadAlongHighlight).then(drawReadAlongWordHighlight).catch(postError)
     })
     view.addEventListener('draw-annotation', event => {
         const { annotation, draw } = event.detail

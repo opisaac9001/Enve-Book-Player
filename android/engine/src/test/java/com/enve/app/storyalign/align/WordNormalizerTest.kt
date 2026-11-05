@@ -45,11 +45,4 @@ class WordNormalizerTest {
     @Test fun percentBecomesWord() {
         assertEquals("fifty percent", n.normalizedWord("50%").first)
     }
-
-    @Test fun handlesLeadingSpacePunctuationTokens() {
-        for (tok in listOf(" .", " ,", " ?", "  ", ".", " . ", "\u2014", " \u2014", " .,")) {
-            val out = n.normalizedWord(tok).first
-            assertTrue("normalized \"$tok\" should be non-null", out.length >= 0)
-        }
-    }
 }

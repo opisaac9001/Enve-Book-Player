@@ -50,8 +50,16 @@ final class DownloadsEngine {
         tasks.filter(\.isActive)
     }
 
+    var pausedTasks: [BookDownloadTask] {
+        tasks.filter { $0.status == .paused }
+    }
+
     var failedTasks: [BookDownloadTask] {
         tasks.filter { $0.status == .failed }
+    }
+
+    var cancelledTasks: [BookDownloadTask] {
+        tasks.filter { $0.status == .cancelled }
     }
 
     var completedTasks: [BookDownloadTask] {
@@ -129,12 +137,16 @@ final class DownloadsEngine {
         service.pause(taskId: taskId)
     }
 
-    func resume(taskId: String, book: Book) async {
-        await service.resume(taskId: taskId, book: book)
-    }
-
-    func retry(taskId: String, book: Book) async {
-        await service.retry(taskId: taskId, book: book)
+    /// False when the task's book (its `downloadKey` is the stable ID) is gone from the store and memory.
+    func restart(_ task: BookDownloadTask) async -> Bool {
+        let stored = await appState.bookStore.book(stableId: task.bookId)
+        guard let book = stored ?? appState.bookInMemory(stableId: task.bookId) else { return false }
+        if task.status == .paused {
+            await service.resume(taskId: task.id, book: book)
+        } else {
+            await service.retry(taskId: task.id, book: book)
+        }
+        return true
     }
 
     func remove(taskId: String) {

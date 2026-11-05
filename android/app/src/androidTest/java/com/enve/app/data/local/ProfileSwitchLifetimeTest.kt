@@ -1,6 +1,16 @@
 package com.enve.app.data.local
 
 import android.content.Context
+import androidx.activity.compose.setContent
+import androidx.compose.ui.test.*
+import androidx.compose.ui.test.junit4.createEmptyComposeRule
+import androidx.test.core.app.ActivityScenario
+import com.enve.app.MainActivity
+import com.enve.hearth.design.HearthTheme
+import com.enve.hearth.design.HearthEink
+import com.enve.hearth.profiles.HearthProfilesScreen
+import com.enve.engine.eink.EinkState
+import org.junit.Rule
 import android.content.ContextWrapper
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -11,6 +21,7 @@ import com.enve.app.profiles.ProfileDeviceAuthentication
 import com.enve.app.profiles.ProfileLifecycleRegistry
 import com.enve.app.profiles.ProfileRuntimeRegistry
 import com.enve.app.profiles.ProfileSwitchCoordinator
+import com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
 import com.enve.core.data.local.FamilyProfileStore
 import com.enve.core.data.local.BookExtras
 import com.enve.core.data.local.decodeChapters
@@ -44,6 +55,7 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class ProfileSwitchLifetimeTest {
+    @get:Rule val compose = createEmptyComposeRule()
     @Test
     fun audioImportPreservesPrivateChapterMetadataAcrossReopenAndRepeatImport() = runBlocking {
         val base = ApplicationProvider.getApplicationContext<Context>()
@@ -157,6 +169,134 @@ class ProfileSwitchLifetimeTest {
                 applicationJob.cancelAndJoin()
                 runtimes.close(outgoing.id)
                 runtimes.close(destination.id)
+            }
+            context.clear()
+        }
+    }
+
+    @Test
+    fun disablingProtectedOwnerSurvivesRestartAndRestoresProtectionWhenEnabled() = runBlocking {
+        val base = ApplicationProvider.getApplicationContext<Context>()
+        WorkManager.getInstance(base)
+        val context = SwitchTestContext(base)
+        val applicationJob = SupervisorJob()
+        val applicationScope = CoroutineScope(applicationJob + Dispatchers.Default)
+        val catalog = FamilyProfileStore(context)
+        catalog.setAdultPin("246810")
+        catalog.setPinRequired(DEFAULT_ADULT_PROFILE_ID, true)
+        context.getSharedPreferences("family_profile_runtime", Context.MODE_PRIVATE).edit()
+            .putBoolean("enabled", true).putString("selected", DEFAULT_ADULT_PROFILE_ID).commit()
+        val runtimes = ProfileRuntimeRegistry(context)
+        fun coordinator() = ProfileSwitchCoordinator(
+            context, catalog, runtimes, ProfileLifecycleRegistry(), ProfileDeviceAuthentication(context), applicationScope,
+        )
+        try {
+            val initial = coordinator()
+            initial.initialize()
+            assertTrue(initial.state.value.locked)
+            assertTrue(runCatching { initial.switchProfile(DEFAULT_ADULT_PROFILE_ID, "0000") }.isFailure)
+            initial.switchProfile(DEFAULT_ADULT_PROFILE_ID, "246810")
+            initial.disableProfiles()
+            assertFalse(initial.state.value.enabled)
+            assertTrue(catalog.profiles.value.single().requiresPin)
+            runtimes.close(DEFAULT_ADULT_PROFILE_ID)
+
+            val disabled = coordinator()
+            disabled.initialize()
+            assertEquals(DEFAULT_ADULT_PROFILE_ID, disabled.activeRuntime.value?.profileId)
+            assertFalse(disabled.state.value.locked)
+            disabled.onBackground()
+            assertFalse(disabled.state.value.locked)
+            disabled.setupOwner("Protected owner", null, null, null)
+            assertTrue(disabled.state.value.enabled)
+            assertTrue(catalog.profiles.value.single().requiresPin)
+            disabled.onBackground()
+            assertTrue(disabled.state.value.locked)
+            runtimes.close(DEFAULT_ADULT_PROFILE_ID)
+
+            val enabled = coordinator()
+            enabled.initialize()
+            assertTrue(enabled.state.value.locked)
+            assertNull(enabled.activeRuntime.value)
+            assertTrue(runCatching { enabled.switchProfile(DEFAULT_ADULT_PROFILE_ID, "0000") }.isFailure)
+            enabled.switchProfile(DEFAULT_ADULT_PROFILE_ID, "246810")
+            assertEquals(DEFAULT_ADULT_PROFILE_ID, enabled.activeRuntime.value?.profileId)
+            assertFalse(enabled.state.value.locked)
+        } finally {
+            withContext(NonCancellable) {
+                applicationJob.cancelAndJoin()
+                runtimes.close(DEFAULT_ADULT_PROFILE_ID)
+            }
+            context.clear()
+        }
+    }
+
+    @Test
+    fun optionalAdultPinProtectsOnlyTheSelectedProfileAndRelocks() = runBlocking {
+        val base = ApplicationProvider.getApplicationContext<Context>()
+        WorkManager.getInstance(base)
+        val context = SwitchTestContext(base)
+        val applicationJob = SupervisorJob()
+        val applicationScope = CoroutineScope(applicationJob + Dispatchers.Default)
+        val catalog = FamilyProfileStore(context)
+        val main = catalog.addAdult("Unlocked main")
+        val alternate = catalog.addAdult("Protected alternate")
+        catalog.setAdultPin("246810")
+        context.getSharedPreferences("family_profile_runtime", Context.MODE_PRIVATE).edit()
+            .putBoolean("enabled", true).putString("selected", main.id).commit()
+        val runtimes = ProfileRuntimeRegistry(context)
+        val coordinator = ProfileSwitchCoordinator(context, catalog, runtimes, ProfileLifecycleRegistry(), ProfileDeviceAuthentication(context), applicationScope)
+        try {
+            coordinator.initialize()
+            coordinator.setProfilePinRequired(alternate.id, true, "246810")
+            assertTrue(FamilyProfileStore(context).profiles.value.first { it.id == alternate.id }.requiresPin)
+            assertFalse(catalog.profiles.value.first { it.id == main.id }.requiresPin)
+            assertTrue(runCatching { coordinator.switchProfile(alternate.id, "0000") }.isFailure)
+            assertEquals(main.id, coordinator.activeRuntime.value?.profileId)
+            assertTrue(runCatching { coordinator.importCandidates(alternate.id) }.isFailure)
+            coordinator.switchProfile(alternate.id, "246810")
+            coordinator.onBackground()
+            assertTrue(coordinator.state.value.locked)
+            assertTrue(runCatching { coordinator.switchProfile(alternate.id) }.isFailure)
+            coordinator.switchProfile(main.id)
+            assertFalse(coordinator.state.value.locked)
+            assertEquals(main.id, coordinator.activeRuntime.value?.profileId)
+            assertTrue(runCatching { coordinator.setProfilePinRequired(alternate.id, false, "0000") }.isFailure)
+            coordinator.switchProfile(alternate.id, "246810")
+            val restarted = ProfileSwitchCoordinator(context, catalog, runtimes, ProfileLifecycleRegistry(), ProfileDeviceAuthentication(context), applicationScope)
+            restarted.initialize()
+            assertTrue(restarted.state.value.locked)
+            assertNull(restarted.activeRuntime.value)
+            coordinator.switchProfile(main.id)
+            coordinator.setProfilePinRequired(alternate.id, false, "246810")
+            coordinator.switchProfile(alternate.id)
+            assertEquals(alternate.id, coordinator.activeRuntime.value?.profileId)
+            ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                scenario.onActivity { activity ->
+                    activity.setContent {
+                        HearthTheme(eink = HearthEink(EinkState.Inactive.copy(active = true, monochrome = true))) {
+                            HearthProfilesScreen(coordinator, onBack = {})
+                        }
+                    }
+                }
+                compose.onNodeWithText("Back").assertIsDisplayed()
+                compose.onAllNodesWithText("Rename").assertCountEquals(3)
+                compose.onNodeWithText("Use Protected alternate").performScrollTo().assertIsDisplayed()
+                coordinator.switchProfile(main.id)
+                compose.onAllNodesWithText("Require PIN to open")[2].performScrollTo().performClick()
+                compose.onNodeWithTag("profile-pin-Adult PIN").performTextInput("246810")
+                compose.onNodeWithText("Save").performClick()
+                compose.waitUntil(10000) { catalog.profiles.value.first { it.id == alternate.id }.requiresPin }
+                compose.onNodeWithText("Use Protected alternate").performScrollTo().performClick()
+                compose.onNodeWithTag("profile-pin-Adult PIN").performTextInput("246810")
+                compose.onNodeWithText("Save").performClick()
+                compose.waitUntil(30000) { coordinator.activeRuntime.value?.profileId == alternate.id }
+            }
+        } finally {
+            withContext(NonCancellable) {
+                applicationJob.cancelAndJoin()
+                runtimes.close(main.id)
+                runtimes.close(alternate.id)
             }
             context.clear()
         }

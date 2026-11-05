@@ -7,6 +7,8 @@ import SwiftUI
 import UIKit
 
 struct ListeningPositionScanScreen: View {
+    var initialMessage: String?
+
     @Environment(\.profileSession) private var capturedSession
     @Environment(\.hearth) private var hearth
     @Environment(\.dismiss) private var dismiss
@@ -35,7 +37,9 @@ struct ListeningPositionScanScreen: View {
         }
         .task {
             if model == nil {
-                model = ListeningPositionScanModel(session: capturedSession ?? .owner)
+                let model = ListeningPositionScanModel(session: capturedSession ?? .owner)
+                self.model = model
+                if let initialMessage { await model.handleScanned(initialMessage) }
             }
         }
     }

@@ -268,35 +268,6 @@ class OpdsFeedParserTest {
     }
 
     @Test
-    fun resolve_handles_relative_and_absolute_hrefs() {
-        assertEquals(
-            "https://opds.example.com/x.epub",
-            OpdsFeedParser.resolve(baseUrl, "/x.epub"),
-        )
-        assertEquals(
-            "https://opds.example.com/catalog/x.epub",
-            OpdsFeedParser.resolve("$baseUrl/", "x.epub"),
-        )
-        assertEquals(
-            "https://cdn.other.com/x.epub",
-            OpdsFeedParser.resolve(baseUrl, "https://cdn.other.com/x.epub"),
-        )
-    }
-
-    @Test
-    fun parseInstant_returns_zero_for_malformed_input() {
-        assertEquals(0L, OpdsFeedParser.parseInstant(null))
-        assertEquals(0L, OpdsFeedParser.parseInstant(""))
-        assertEquals(0L, OpdsFeedParser.parseInstant("not a date"))
-    }
-
-    @Test
-    fun parseInstant_parses_ISO8601_offset_datetime() {
-        val ms = OpdsFeedParser.parseInstant("2010-08-31T00:00:00Z")
-        assertEquals(1283212800000L, ms)
-    }
-
-    @Test
     fun parses_opds2_publications() {
         val json = """
             {

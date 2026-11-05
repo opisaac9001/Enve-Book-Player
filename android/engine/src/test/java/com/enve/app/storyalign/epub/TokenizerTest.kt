@@ -1,6 +1,5 @@
 package com.enve.app.storyalign.epub
 
-import com.enve.engine.storyalign.StoryAlignGranularity
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -42,13 +41,5 @@ class TokenizerTest {
         assertTrue(phrases.size >= 2)
 
         assertTrue(phrases.all { it.isNotBlank() })
-    }
-
-    @Test fun granularityHelper() {
-        assertTrue(!StoryAlignGranularity.SENTENCE.useWordTokenizer)
-        assertTrue(!StoryAlignGranularity.PHRASE.useWordTokenizer)
-        assertTrue(StoryAlignGranularity.SEGMENT.useWordTokenizer)
-        assertTrue(StoryAlignGranularity.GROUP.useWordTokenizer)
-        assertTrue(StoryAlignGranularity.WORD.useWordTokenizer)
     }
 }

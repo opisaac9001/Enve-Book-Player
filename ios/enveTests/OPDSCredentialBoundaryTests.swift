@@ -7,8 +7,6 @@ import Testing
 struct OPDSCredentialBoundaryTests {
     private static let feed = URL(string: "https://catalog.example.invalid/opds/")!
 
-    // MARK: Where a credential may be posted
-
     @Test(arguments: [
         "https://login.example.invalid/token",
         "https://catalog.example.invalid/opds/token",
@@ -16,9 +14,6 @@ struct OPDSCredentialBoundaryTests {
     func anHTTPSTokenEndpointIsPostable(target: String) {
         #expect(OPDSCredentialTransport.isPostable(URL(string: target)!, feedURL: Self.feed))
     }
-
-    /// A catalog already reached over plain HTTP is one the reader configured that way, so its own token
-    /// endpoint is no weaker than the connection they already have.
     @Test func aPlaintextEndpointOnAPlaintextFeedsOwnOriginIsPostable() {
         let feed = URL(string: "http://catalog.example.invalid/opds/")!
 
@@ -45,22 +40,14 @@ struct OPDSCredentialBoundaryTests {
     func aTokenEndpointEnveWillNotTrustIsRefused(target: String) {
         #expect(!OPDSCredentialTransport.isPostable(URL(string: target)!, feedURL: Self.feed))
     }
-
-    /// A LAN catalog over plain HTTP is the case the app's arbitrary-loads exception exists for, and its
-    /// identity provider is reachable the same way.
     @Test func aPlaintextEndpointOnTheLocalNetworkIsStillPostable() {
         #expect(
             OPDSCredentialTransport.isPostable(
-                URL(string: "http://10.0.0.116:9000/application/o/token/")!,
-                feedURL: URL(string: "http://10.0.0.116:13378/opds/")!
+                URL(string: "http://192.168.1.10:9000/application/o/token/")!,
+                feedURL: URL(string: "http://192.168.1.10:13378/opds/")!
             )
         )
     }
-
-    // MARK: The credential session's redirects
-
-    /// The reader's password is the request body, so there is no header to strip: a redirect off the
-    /// endpoint's own origin is not followed at all.
     @Test(arguments: [
         "https://elsewhere.example.invalid/token",
         "https://login.example.invalid:8443/token",
@@ -78,8 +65,6 @@ struct OPDSCredentialBoundaryTests {
         #expect(forwarded?.httpBody != nil)
     }
 
-    // MARK: Which document may describe this connection's sign-in
-
     @Test func aDocumentOffTheFeedOriginIsNotFetched() async {
         let provider = OPDSProvider(
             connection: ServerConnection(name: "Fixture", url: Self.feed.absoluteString, type: .opds)
@@ -91,8 +76,6 @@ struct OPDSCredentialBoundaryTests {
 
         #expect(document == nil)
     }
-
-    // MARK: Feed-supplied URLs
 
     @Test(arguments: [
         "https://reader:secret@catalog.example.invalid/opds/page2",
@@ -111,9 +94,6 @@ struct OPDSCredentialBoundaryTests {
                 == "https://catalog.example.invalid/opds/page2"
         )
     }
-
-    /// Navigation, catalogs, facets, pagination, acquisitions and search all come out of the same feed, so
-    /// none of them may name a URL carrying its own credentials.
     @Test func everyKindOfFeedLinkIsHeldToTheSameRule() throws {
         let body = """
             {
@@ -157,8 +137,6 @@ struct OPDSCredentialBoundaryTests {
         #expect(parsed.page.allPublications.first?.acquisitions.isEmpty == true)
         #expect(parsed.page.search == nil)
     }
-
-    // MARK: Fixtures
 
     private static func credentialRedirect(to target: String) async -> URLRequest? {
         let endpoint = URL(string: "https://login.example.invalid/oauth/token")!

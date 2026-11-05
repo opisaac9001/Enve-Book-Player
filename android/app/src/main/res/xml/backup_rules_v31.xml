@@ -5,6 +5,8 @@
         <exclude domain="file" path="datastore/enve_prefs.preferences_pb" />
         <exclude domain="file" path="datastore/enve_prefs.preferences_pb.tmp" />
         <exclude domain="sharedpref" path="enve_credentials.xml" />
+        <exclude domain="sharedpref" path="family_profiles.secure.xml" />
+        <exclude domain="sharedpref" path="family_profile_runtime.xml" />
         <exclude domain="sharedpref" path="__androidx_security_crypto_encrypted_prefs_key_keyset__.xml" />
         <exclude domain="sharedpref" path="__androidx_security_crypto_encrypted_prefs_value_keyset__.xml" />
         <exclude domain="file" path="cache/" />
@@ -14,6 +16,8 @@
         <exclude domain="file" path="datastore/enve_prefs.preferences_pb" />
         <exclude domain="file" path="datastore/enve_prefs.preferences_pb.tmp" />
         <exclude domain="sharedpref" path="enve_credentials.xml" />
+        <exclude domain="sharedpref" path="family_profiles.secure.xml" />
+        <exclude domain="sharedpref" path="family_profile_runtime.xml" />
         <exclude domain="sharedpref" path="__androidx_security_crypto_encrypted_prefs_key_keyset__.xml" />
         <exclude domain="sharedpref" path="__androidx_security_crypto_encrypted_prefs_value_keyset__.xml" />
         <exclude domain="file" path="cache/" />

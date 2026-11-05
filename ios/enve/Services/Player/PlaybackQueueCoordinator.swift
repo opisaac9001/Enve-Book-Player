@@ -80,14 +80,16 @@ final class PlaybackQueueCoordinator {
         return true
     }
 
-    func playManually(_ book: Book, presentPlayer: Bool) {
+    /// `reconcilingLinkedPosition: false` starts from the book's own position even when its linked ebook was read
+    /// more recently; read along's Play resumes listening rather than moving it to the page.
+    func playManually(_ book: Book, presentPlayer: Bool, reconcilingLinkedPosition: Bool = true, startPosition: TimeInterval? = nil) {
         if book.mediaType != .ebook,
             currentBook?.uniqueId != book.uniqueId
         {
             store.clear()
             completedBookID = nil
         }
-        beginPlayback(book, presentPlayer: presentPlayer, resetIfFinished: false)
+        beginPlayback(book, presentPlayer: presentPlayer, resetIfFinished: false, reconcilingLinkedPosition: reconcilingLinkedPosition, startPosition: startPosition)
     }
 
     func prepareForManualReadAloud(_ book: Book) {
@@ -237,7 +239,9 @@ final class PlaybackQueueCoordinator {
     private func beginPlayback(
         _ book: Book,
         presentPlayer: Bool,
-        resetIfFinished: Bool
+        resetIfFinished: Bool,
+        reconcilingLinkedPosition: Bool = true,
+        startPosition: TimeInterval? = nil
     ) {
         handledTerminalBookIDs.remove(book.uniqueId)
         startPlaybackTask?.cancel()
@@ -245,7 +249,7 @@ final class PlaybackQueueCoordinator {
         startRequestID = requestID
         startPlaybackTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.linkedProgress.reconcilePair(for: book)
+            if reconcilingLinkedPosition { await self.linkedProgress.reconcilePair(for: book) }
             guard !Task.isCancelled, self.startRequestID == requestID else { return }
 
             var playable = self.appState.bookInMemory(uniqueId: book.uniqueId) ?? book
@@ -265,7 +269,7 @@ final class PlaybackQueueCoordinator {
                 playable.serverReadStatus = nil
                 playable.lastUpdate = observedAt
             }
-            self.playbackStarter.play(playable, presentPlayer: presentPlayer)
+            self.playbackStarter.play(playable, from: startPosition, presentPlayer: presentPlayer)
             self.startPlaybackTask = nil
             self.startRequestID = nil
         }

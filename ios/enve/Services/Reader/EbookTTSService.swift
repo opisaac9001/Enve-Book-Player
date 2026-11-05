@@ -144,8 +144,10 @@ final class EbookTTSService: NSObject, ObservableObject {
             .flatMap(EbookTTSEngineChoice.init(rawValue:))
             ?? .apple
         engineChoice = isModelReady(for: savedEngine) ? savedEngine : .apple
+        // A Kokoro choice blocked only by the system is kept for a system where it is safe again.
         if let storedEngine = userDefaults.string(forKey: Self.engineDefaultsKey),
-            storedEngine != engineChoice.rawValue
+            storedEngine != engineChoice.rawValue,
+            savedEngine != .kokoro || KokoroTTSRuntime.isSupportedOnCurrentOS
         {
             userDefaults.set(engineChoice.rawValue, forKey: Self.engineDefaultsKey)
         }
@@ -286,16 +288,28 @@ final class EbookTTSService: NSObject, ObservableObject {
     }
 
     func setEngineChoice(_ choice: EbookTTSEngineChoice) {
+        if choice == .kokoro, !KokoroTTSRuntime.isSupportedOnCurrentOS {
+            reportKokoroUnavailable()
+            return
+        }
         if choice != .apple, !isModelReady(for: choice) {
             downloadModel(for: choice)
             return
         }
-        guard choice != engineChoice else { return }
+        guard choice != engineChoice else {
+            // Choosing the engine already in use still replaces a stored choice kept from a blocked system.
+            userDefaults.set(choice.rawValue, forKey: Self.engineDefaultsKey)
+            return
+        }
         applyEngineChoice(choice)
     }
 
     func downloadModel(for choice: EbookTTSEngineChoice) {
         guard choice == .kokoro else { return }
+        guard KokoroTTSRuntime.isSupportedOnCurrentOS else {
+            reportKokoroUnavailable()
+            return
+        }
         switch kokoroDownloadState {
         case .notDownloaded, .failed:
             break
@@ -332,6 +346,15 @@ final class EbookTTSService: NSObject, ObservableObject {
                 guard service.modelDownloadGeneration == generation else { return }
                 service.kokoroDownloadState = .failed(error.localizedDescription)
             }
+        }
+    }
+
+    private func reportKokoroUnavailable() {
+        let message = NeuralTTSError.unsupportedOS.localizedDescription
+        if kokoroDownloadState == .ready {
+            speechError = message
+        } else {
+            kokoroDownloadState = .failed(message)
         }
     }
 

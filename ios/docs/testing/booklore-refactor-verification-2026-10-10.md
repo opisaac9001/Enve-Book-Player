@@ -74,8 +74,6 @@ The final shared tvOS incremental build succeeded with no output. Provenance, se
 
 ## Reproduction
 
-Use the required iPhone Air simulator and configured DerivedData location from `CLAUDE.md`.
-
 1. Start `python3 Tests/Fixtures/booklore-auth-server.py`; it prints a temporary localhost URL. Run the `AllTests` plan with test-runner environment `ENVE_BOOKLORE_AUTH_FIXTURE_URL` set to that URL. Stop the fixture afterward.
 2. Select `enveTests/BookloreRefactorLiveTests` in `AllTests`, set `ENVE_LAB_SERVICE=BookloreRefactor` and `ENVE_LAB_DOCUMENT` to the authorized ignored lab document. The suite reads credentials privately and restores its own shelf/notebook/rating fixtures. Set `ENVE_LAB_REFRESH_GATE=1` to verify real refresh-token activation, rotation, and passwordless reopening; this case waits for two server token activation windows.
 3. Select `enveTests/ProviderLiveSyncTests` with the authorized lab document and `ENVE_LAB_SERVICE=Grimmory`.
@@ -83,6 +81,6 @@ Use the required iPhone Air simulator and configured DerivedData location from `
 5. The replay test requires the 60-second synthetic Grimmory audiobook already downloaded and selected on Hearth. Select `BooklorePlaybackUITests/testDownloadedAudiobookReplaysAfterEnd` with `ENVE_LAB_PLAYBACK_UI=1`.
 6. Build `enve-tvOS` for `generic/platform=tvOS Simulator` using a separate DerivedData directory.
 
-Initial refactor unit result bundle: `test_sim_2026-10-10T23-28-07-973Z_pid36703_cb18a805.xcresult` in the local XcodeBuildMCP workspace. Initial live result bundle: `test_sim_2026-10-10T23-30-08-499Z_pid36703_4d934977.xcresult`. Replay UI proof is retained in `test_sim_2026-10-10T23-27-22-618Z_pid36703_93e55e20.xcresult` as `grimmory-downloaded-replay`. The affected reader/background test passed again after the replay fix in `test_sim_2026-10-10T23-28-34-371Z_pid36703_e62fa25a.xcresult`.
+Initial refactor unit result bundle: `test_sim_2026-10-10T23-28-07-973Z_pid36703_cb18a805.xcresult`. Initial live result bundle: `test_sim_2026-10-10T23-30-08-499Z_pid36703_4d934977.xcresult`. Replay UI proof is retained in `test_sim_2026-10-10T23-27-22-618Z_pid36703_93e55e20.xcresult` as `grimmory-downloaded-replay`. The affected reader/background test passed again after the replay fix in `test_sim_2026-10-10T23-28-34-371Z_pid36703_e62fa25a.xcresult`.
 
 No changes were committed or pushed by this verification.

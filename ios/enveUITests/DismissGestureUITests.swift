@@ -131,7 +131,12 @@ final class DismissGestureUITests: XCTestCase {
 
     @MainActor
     func testPushedDetailPullDownAtTopGoesBack() throws {
-        let app = launch(["-imagineSeed", "24", "-imagineScreen", "library"])
+        let app = launch([
+            "-imagineTeardownSynthetic", "YES", "-imagineSeed", "24", "-imagineScenario", "mixed", "-imagineScreen", "library",
+            "-imagine.library.source", "all", "-imagine.library.source.media.all", "all",
+            "-imagine.library.status", "all", "-imagine.library.media", "all",
+            "-imagine.library.facet", "books", "-imagine.library.layout", "list",
+        ])
         addTeardownBlock {
             let cleanup = XCUIApplication()
             cleanup.launchArguments = ["-imagineTeardownSynthetic", "YES", "-imagineScreen", "library"]
@@ -142,16 +147,25 @@ final class DismissGestureUITests: XCTestCase {
         }
         let library = app.scrollViews["library-screen"].firstMatch
         XCTAssertTrue(library.waitForExistence(timeout: 30))
-        let books = library.buttons.matching(NSPredicate(format:
-            "label CONTAINS ', ' AND NOT label BEGINSWITH 'SOURCE,' AND NOT label BEGINSWITH 'LIBRARY,' AND NOT label BEGINSWITH 'Everything,' AND NOT label BEGINSWITH 'In progress,' AND NOT label BEGINSWITH 'Reading,' AND NOT label BEGINSWITH 'Downloaded,'"
-        ))
+        let search = app.buttons["Search the library"].firstMatch
+        XCTAssertTrue(search.waitForExistence(timeout: 10))
+        search.tap()
+        let input = app.textFields.firstMatch
+        XCTAssertTrue(input.waitForExistence(timeout: 5))
+        input.tap()
+        input.typeText("Synthetic Book\n")
+        let books = library.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Synthetic Book "))
         XCTAssertTrue(books.firstMatch.waitForExistence(timeout: 20))
         let contentFrame = app.windows.firstMatch.frame.insetBy(dx: 0, dy: 180)
-        guard let book = books.allElementsBoundByIndex.first(where: {
-            contentFrame.contains(CGPoint(x: $0.frame.midX, y: $0.frame.midY)) && $0.isHittable
-        }) else {
-            throw XCTSkip("A visible library book is required to push book details")
+        var visibleBook: XCUIElement?
+        for _ in 0..<6 {
+            visibleBook = books.allElementsBoundByIndex.first {
+                contentFrame.contains(CGPoint(x: $0.frame.midX, y: $0.frame.midY)) && $0.isHittable
+            }
+            if visibleBook != nil { break }
+            library.swipeUp()
         }
+        let book = try XCTUnwrap(visibleBook, "The seeded fixture must expose a book to push its details")
         book.tap()
         let back = app.buttons["Back"].firstMatch
         XCTAssertTrue(back.waitForExistence(timeout: 10))

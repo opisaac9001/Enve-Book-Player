@@ -231,7 +231,10 @@ final class BookloreEbookSyncStrategy: ProviderSyncStrategy {
                         continue
                     }
 
-                    if serverResult.readState.isFinished || serverResult.readState == .notReading {
+                    let localAhead = serverResult.readState == .notReading && localProgress > 0.001
+                        && localDate > (serverResult.updatedAt ?? .distantPast)
+
+                    if serverResult.readState.isFinished || (serverResult.readState == .notReading && !localAhead) {
                         var statusBook = book
                         statusBook.serverReadStatus = serverResult.readState.persistedStatus
                         statusBook.isFinished = serverResult.readState.isFinished
@@ -298,6 +301,12 @@ final class BookloreEbookSyncStrategy: ProviderSyncStrategy {
                         )
                         pullCount += 1
                     case .push:
+                        if localAhead, let mutated = libraryCache.mutateBook(stableId: book.stableId, {
+                            $0.serverReadStatus = "READING"
+                            $0.hideFromContinue = false
+                        }) {
+                            updatedInMemoryBooks.append(mutated)
+                        }
                         try await provider.updateEbookProgress(for: book, progress: localProgress, epubLocator: book.epubLocator)
                         AppLogger.sync.debug(
                             "Pushed Booklore ebook progress bookDiagnosticID=\(diagnosticID) progress=\(Int(localProgress * 100))%"

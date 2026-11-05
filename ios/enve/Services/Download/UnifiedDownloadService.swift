@@ -68,9 +68,16 @@ protocol DownloadLibraryCaching: AnyObject {
 
     @discardableResult
     func mutateBook(uniqueId: String, _ transform: (inout Book) -> Void) -> Book?
+
+    /// Mirrors fields already written to the store; nothing is persisted from the cache.
+    func applyStored(uniqueId: String, _ transform: (inout Book) -> Void)
 }
 
-extension AppState: DownloadLibraryCaching {}
+extension AppState: DownloadLibraryCaching {
+    func applyStored(uniqueId: String, _ transform: (inout Book) -> Void) {
+        libraryCache.applyStored(uniqueId: uniqueId, transform)
+    }
+}
 
 @MainActor
 final class UnifiedDownloadService: NSObject, ObservableObject {
@@ -92,10 +99,12 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
     }
 
     func handleBackgroundSession(identifier: String) {
-        guard !isRetired,
-            identifier == Self.backgroundSessionIdentifier(for: storageLocations.profileID)
-        else { return }
-        _ = urlSession
+        guard !isRetired else { return }
+        if identifier == Self.backgroundSessionIdentifier(for: storageLocations.profileID) {
+            _ = urlSession
+        } else {
+            downloadManager.handleBackgroundSession(identifier: identifier)
+        }
     }
 
     func recordCompletedImport(_ book: Book) {
@@ -116,6 +125,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
             downloadManager.activity.unifiedBookIDs = Set(activeTasks.map { $0.bookId })
             activeTaskBookIdsMirror = Set(activeTasks.map { $0.bookId })
             activeTaskIdsMirror = Dictionary(uniqueKeysWithValues: activeTasks.map { ($0.id, $0.bookId) })
+            activeAttemptMirror = activeAttemptMirror.filter { activeTaskBookIdsMirror.contains($0.key) }
             activeTaskBookIdsMirrorLock.unlock()
         }
     }
@@ -126,6 +136,47 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
     private let activeTaskBookIdsMirrorLock = NSLock()
     nonisolated(unsafe) private var activeTaskBookIdsMirror: Set<String> = []
     nonisolated(unsafe) private var activeTaskIdsMirror: [String: String] = [:]
+    /// The URLSession attempt that currently owns each active book key, guarded by the same lock.
+    nonisolated(unsafe) private var activeAttemptMirror: [String: String] = [:]
+    nonisolated(unsafe) private var restoredTransfersReconciled = false
+
+    private struct CallbackOwner: Sendable {
+        let taskId: String
+        let bookId: String
+        let attempt: String
+    }
+
+    /// A resumed transfer keeps its queue id, so each URLSession attempt carries its own token in the task
+    /// description. Descriptions written by older builds are identified by their session and task identifier.
+    nonisolated private static func callbackOwner(of task: URLSessionTask, in session: URLSession) -> CallbackOwner? {
+        guard let parts = task.taskDescription?.split(separator: "|", omittingEmptySubsequences: false),
+            parts.count == 2 || parts.count == 3
+        else { return nil }
+        let attempt = parts.count == 3 ? String(parts[2]) : "\(session.configuration.identifier ?? "foreground")#\(task.taskIdentifier)"
+        return CallbackOwner(taskId: String(parts[0]), bookId: String(parts[1]), attempt: attempt)
+    }
+
+    /// Only the current attempt of an active queue entry may report progress, publish files or end the entry.
+    /// Until restored transfers are re-attached after launch, an active entry without a recorded attempt is accepted.
+    nonisolated private func ownsCallback(_ owner: CallbackOwner) -> Bool {
+        activeTaskBookIdsMirrorLock.lock()
+        defer { activeTaskBookIdsMirrorLock.unlock() }
+        guard activeTaskIdsMirror[owner.taskId] == owner.bookId else { return false }
+        if let attempt = activeAttemptMirror[owner.bookId] { return attempt == owner.attempt }
+        return !restoredTransfersReconciled
+    }
+
+    private func registerAttempt(_ attempt: String, for bookId: String) {
+        activeTaskBookIdsMirrorLock.lock()
+        activeAttemptMirror[bookId] = attempt
+        activeTaskBookIdsMirrorLock.unlock()
+    }
+
+    private func markRestoredTransfersReconciled() {
+        activeTaskBookIdsMirrorLock.lock()
+        restoredTransfersReconciled = true
+        activeTaskBookIdsMirrorLock.unlock()
+    }
 
     nonisolated func hasActiveTaskForBookId(_ bookId: String) -> Bool {
         activeTaskBookIdsMirrorLock.lock()
@@ -218,6 +269,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
     private var storytellerReadaloudCacheTasks: [String: (id: UUID, task: Task<URL, Error>)] = [:]
     private var expectedBytesByTaskId: [String: Int64] = [:]
     private var resumeData: [String: Data] = [:]
+    private var pendingPauses: [String: Task<Data?, Never>] = [:]
     private var lastProgressEmissionByTaskId: [String: (time: Date, progress: Double)] = [:]
     private let networkMonitor = NWPathMonitor()
     private let monitorQueue = DispatchQueue(label: "com.narrator.download.network")
@@ -320,6 +372,9 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         foregroundConfig.timeoutIntervalForRequest = 600
         foregroundConfig.timeoutIntervalForResource = 7200
         foregroundURLSession = URLSession(configuration: foregroundConfig, delegate: self, delegateQueue: nil)
+        downloadManager.onBackgroundEventsFinished = { @MainActor [weak self] in
+            await self?.finishBackgroundAudioResults()
+        }
 
         AppLogger.network.info("UnifiedDownloadService initialized")
     }
@@ -397,22 +452,50 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         AppLogger.network.info("Network monitor started, waiting for first update...")
     }
 
-    // Staging directories only live inside an in-process attempt, so any found before one starts were left by a killed process.
     private func removeAbandonedStagingDirectories() {
         guard runningDownloads.isEmpty, downloadManager.activeBookIds.isEmpty else { return }
         let root = storageManager.audiobooksDirectory
         let entries = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
-        for entry in entries where entry.lastPathComponent.hasPrefix(".enve-download-") {
+        let retained = downloadManager.persistedStagingDirectoryNames
+        for entry in entries where entry.lastPathComponent.hasPrefix(".enve-download-") && !retained.contains(entry.lastPathComponent) {
             try? FileManager.default.removeItem(at: entry)
         }
     }
 
     // Only background URLSession transfers outlive the process; every other restored active task lost its in-memory progress.
+    /// Test seam for the background session's task list.
+    var transferInventoryOverride: (@MainActor () async -> [URLSessionTask])?
+
+    /// Re-attaches transfers the background session kept running across a relaunch to their queue entries, matching
+    /// this profile's session and queue ids, so they count as live and their callbacks are accepted.
+    func reconcileRestoredTransfers() async {
+        guard !isRetired else { return }
+        await downloadManager.restoreTransfers()
+        guard !isRetired, !Task.isCancelled else { return }
+        await finishBackgroundAudioResults()
+        guard let session = backgroundURLSession ?? (tasks.contains(where: \.isActive) ? urlSession : nil) else {
+            markRestoredTransfersReconciled()
+            return
+        }
+        let inventory = if let transferInventoryOverride { await transferInventoryOverride() } else { await session.allTasks }
+        guard !isRetired, !Task.isCancelled else { return }
+        for urlTask in inventory {
+            guard let downloadTask = urlTask as? URLSessionDownloadTask,
+                downloadTask.state == .running || downloadTask.state == .suspended,
+                let owner = Self.callbackOwner(of: downloadTask, in: session),
+                activeURLTasks[owner.bookId] == nil,
+                tasks.contains(where: { $0.id == owner.taskId && $0.bookId == owner.bookId && $0.isActive })
+            else { continue }
+            activeURLTasks[owner.bookId] = downloadTask
+            registerAttempt(owner.attempt, for: owner.bookId)
+        }
+        markRestoredTransfersReconciled()
+    }
+
     private func failInterruptedDownloads(_ restoredIds: Set<String>) async {
-        guard !restoredIds.isEmpty, let session = backgroundURLSession else { return }
-        let liveTaskIds = Set(await session.allTasks.compactMap { $0.taskDescription?.split(separator: "|").first.map(String.init) })
-        for task in tasks where restoredIds.contains(task.id) && task.isActive && !liveTaskIds.contains(task.id)
-            && runningDownloads[task.id] == nil {
+        await reconcileRestoredTransfers()
+        guard !isRetired, !restoredIds.isEmpty else { return }
+        for task in tasks where restoredIds.contains(task.id) && task.isActive && !hasLiveTransfer(forBookKey: task.bookId) {
             updateTask(task.id) {
                 $0.status = .failed
                 $0.progress = 0
@@ -469,30 +552,39 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
 
         let isSMBBook = book.source == .smb
 
-        let hasCompleteAudio = book.source == .plex
-            ? storageManager.localAudiobookFilesIfExists(for: book)?.isEmpty == false
-            : storageManager.isAudiobookDownloaded(bookId)
-        if !isSMBBook && book.mediaType != .ebook && hasCompleteAudio {
+        if !isSMBBook && book.mediaType != .ebook && storedCompleteAudio(for: book) {
             AppLogger.network.debug("Book already downloaded diagnosticID=\(diagnosticID(book.stableId))")
             return
         }
 
         tasks.removeAll { $0.bookId == bookId && ($0.status == .completed || $0.status == .failed || $0.status == .cancelled) }
 
+        if tasks.contains(where: { $0.bookId == bookId && $0.isActive }), !hasLiveTransfer(forBookKey: bookId) {
+            // A transfer restored after relaunch may not be attached yet; it is joined, not replaced.
+            await reconcileRestoredTransfers()
+            guard !isRetired, !Task.isCancelled else { return }
+        }
         let hasActiveTaskEntry = tasks.contains(where: { $0.bookId == bookId && $0.isActive })
-        if hasActiveTaskEntry {
-            let hasLiveURLTask = activeURLTasks[bookId] != nil
-            let hasLiveExternalTask = downloadManager.activeBookIds.contains(bookId)
-
-            if !hasLiveURLTask && !hasLiveExternalTask {
-                tasks.removeAll { $0.bookId == bookId && $0.isActive }
-                AppLogger.network.debug("Removed stale active download task diagnosticID=\(diagnosticID(book.stableId))")
+        if hasActiveTaskEntry, !hasLiveTransfer(forBookKey: bookId) {
+            tasks.removeAll { $0.bookId == bookId && $0.isActive }
+            AppLogger.network.debug("Removed stale active download task diagnosticID=\(diagnosticID(book.stableId))")
+            // The stale entry counted as an active download, which hid finished files from the check above.
+            if !isSMBBook && book.mediaType != .ebook && storedCompleteAudio(for: book) {
+                saveQueue()
+                return
             }
         }
 
         if tasks.contains(where: { $0.bookId == bookId && $0.isActive }) {
             AppLogger.network.debug("Book already in download queue diagnosticID=\(diagnosticID(book.stableId))")
             saveQueue()
+            return
+        }
+
+        // A paused transfer of the same book resumes, keeping its bytes, instead of starting a duplicate at zero.
+        if let paused = tasks.last(where: { $0.bookId == bookId && $0.status == .paused }) {
+            saveQueue()
+            await resume(taskId: paused.id, book: book)
             return
         }
 
@@ -528,6 +620,24 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         AppLogger.network.debug("Added to download queue diagnosticID=\(diagnosticID(book.stableId))")
 
         await startDownload(task: &task, book: book)
+    }
+
+    /// Whether this profile holds `book`'s complete audio and no download of it is still running.
+    func hasCompleteAudio(for book: Book) -> Bool {
+        !tasks.contains { $0.bookId == book.downloadKey && $0.isActive } && storedCompleteAudio(for: book)
+    }
+
+    /// A transfer is actually running or still being set up for the key, not merely listed as active. Restored
+    /// background transfers count once `reconcileRestoredTransfers` re-attached them.
+    func hasLiveTransfer(forBookKey bookId: String) -> Bool {
+        activeURLTasks[bookId] != nil || downloadManager.activeBookIds.contains(bookId)
+            || tasks.contains { $0.bookId == bookId && runningDownloads[$0.id] != nil }
+    }
+
+    /// Files under this book's own keys (canonical, provider-scoped, or a legacy key whose saved metadata names this
+    /// book; never another connection's), with every track present for a multi-track book.
+    private func storedCompleteAudio(for book: Book) -> Bool {
+        (try? storageManager.completedAudiobookFiles(for: book)) != nil
     }
 
     func existingReaderAsset(for book: Book) -> URL? {
@@ -631,6 +741,10 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
             )
         }
 
+        try await bookWriting.registerDownloadIfMissing(book)
+        try Task.checkCancellation()
+        guard !isRetired else { throw CancellationError() }
+
         let existingReadaloudURL = ebookImporter.resolveEbookForOverlay(book: book)
         #if os(tvOS)
             let hasExistingReadaloud = existingReadaloudURL.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
@@ -643,7 +757,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
             }
         #endif
         if let existingURL = existingReadaloudURL, hasExistingReadaloud {
-            await persistStorytellerReadaloudBook(
+            try await persistStorytellerReadaloudBook(
                 book,
                 offlineURL: existingURL,
                 prepareAudio: prepareForOfflinePlayback
@@ -685,7 +799,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
             }
             throw error
         }
-        await persistStorytellerReadaloudBook(
+        try await persistStorytellerReadaloudBook(
             book,
             offlineURL: offlineURL,
             prepareAudio: prepareForOfflinePlayback
@@ -703,15 +817,21 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         runningDownloads[taskId]?.cancel()
         downloadManager.cancelDownload(bookId: bookId)
         if let urlTask = activeURLTasks[bookId] {
-            urlTask.cancel { [weak self] resumeDataResult in
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    let remainsPaused = self.tasks.contains { $0.id == taskId && $0.status == .paused }
-                    guard remainsPaused, self.activeURLTasks[bookId]?.taskIdentifier == urlTask.taskIdentifier else { return }
-                    if let data = resumeDataResult { self.resumeData[bookId] = data }
-                    self.activeURLTasks.removeValue(forKey: bookId)
-                    AppLogger.network.debug("Paused download diagnosticID=\(self.diagnosticID(bookId))")
+            let produced = Task<Data?, Never> {
+                await withCheckedContinuation { continuation in
+                    urlTask.cancel { continuation.resume(returning: $0) }
                 }
+            }
+            pendingPauses[bookId] = produced
+            Task { @MainActor [weak self] in
+                let data = await produced.value
+                guard let self else { return }
+                if self.pendingPauses[bookId] == produced { self.pendingPauses[bookId] = nil }
+                // A transfer started since then owns the key; this callback must not touch it.
+                guard self.activeURLTasks[bookId] === urlTask else { return }
+                self.activeURLTasks.removeValue(forKey: bookId)
+                if let data, self.tasks.contains(where: { $0.id == taskId && $0.status == .paused }) { self.resumeData[bookId] = data }
+                AppLogger.network.debug("Paused download diagnosticID=\(self.diagnosticID(bookId))")
             }
         } else {
             updateTask(taskId) { $0.status = .paused }
@@ -729,7 +849,12 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
             return
         }
 
-        resumeData.removeValue(forKey: task.bookId)
+        // A pause still producing its resume data finishes first, so a quick resume continues from those bytes.
+        if let pending = pendingPauses.removeValue(forKey: task.bookId) {
+            let data = await pending.value
+            guard !isRetired, tasks.contains(where: { $0.id == taskId && $0.status == .paused }) else { return }
+            if let data { resumeData[task.bookId] = data }
+        }
         updateTask(taskId) { $0.status = .queued }
 
         var mutableTask = task
@@ -823,12 +948,8 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
                     try ebookImporter.deleteRemoteEbookArtifacts(forBookId: book.id)
                     ebookImporter.removeReadaloudCache(forBookId: book.id, stableId: book.stableId)
                 } else { return }
-                var updated = book
-                updated.ebookFileURL = nil
-                await bookWriting.upsertBooks([updated])
-                libraryCache.mutateBook(uniqueId: book.uniqueId) {
-                    $0.ebookFileURL = nil
-                }
+                await bookWriting.updateEbookFileURL(uniqueId: book.uniqueId, url: nil)
+                libraryCache.applyStored(uniqueId: book.uniqueId) { $0.ebookFileURL = nil }
             } catch {
                 lastError = error.localizedDescription
                 return
@@ -1111,164 +1232,29 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
     }
 
     func downloadFromAudiobookshelf(task: BookDownloadTask, book: Book) async throws {
-        let backend = await resolveAudiobookshelfBackend(for: book)
+        guard let backend = await resolveAudiobookshelfBackend(for: book),
+            let token = backend.token, !token.isEmpty
+        else { throw DownloadError.missingCredentials("Audiobookshelf is not configured.") }
 
-        guard let backend = backend, let token = backend.token, !token.isEmpty else {
-            AppLogger.network.error("[ABS Download] Failed to find backend for book:")
-            AppLogger.network.info("bookDiagnosticID=\(diagnosticID(book.stableId)) hasBackendId=\(book.backendId != nil)")
-            AppLogger.network.info("book.source: \(book.source)")
-            throw DownloadError.missingCredentials("Audiobookshelf not configured. Please ensure your server is connected.")
+        var inos = book.audioFileInos ?? []
+        if inos.isEmpty, book.isPodcastEpisode, let ino = book.audioFileIno { inos = [ino] }
+        if inos.isEmpty {
+            let item = try await audiobookshelfService.getLibraryItem(id: book.partKey ?? book.id, backend: backend, expanded: true)
+            guard let files = item.media?.audioFiles, !files.isEmpty else { throw DownloadError.fileNotFound }
+            inos = files.compactMap(\.ino)
+            guard inos.count == files.count else { throw DownloadError.fileNotFound }
         }
-
-        AppLogger.network.debug("[ABS Download] Resolved backend")
-
-        let baseUrl = backend.url.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let itemId = book.partKey ?? book.id
-
-        let audioFileInos = book.audioFileInos ?? (book.audioFileIno.map { [$0] } ?? [])
-
-        if audioFileInos.isEmpty {
-            AppLogger.network.info("[ABS Download] No audioFileIno stored, fetching library item details...")
-            try await downloadFromAudiobookshelfWithFetch(task: task, book: book, backend: backend)
-            return
-        }
-
-        if audioFileInos.count == 1, let ino = audioFileInos.first {
-            guard let url = URL(string: "\(baseUrl)/api/items/\(itemId)/file/\(ino)/download?token=\(token)") else {
+        let base = backend.url.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let itemID = book.partKey ?? book.id
+        let requests: [(request: URLRequest, mimeType: String?)] = try inos.map { ino in
+            guard let url = URL(string: "\(base)/api/items/\(itemID)/file/\(ino)/download?token=\(token)") else {
                 throw DownloadError.invalidURL
             }
-
-            AppLogger.network.info("[ABS Download] Single file URL: \(url.redacted)")
-
             var request = URLRequest(url: url)
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-
-            await startURLSessionDownload(taskId: task.id, bookId: task.bookId, request: request)
-        } else {
-            AppLogger.network.info("[ABS Download] Multi-file book with \(audioFileInos.count) files")
-            try await downloadMultipleAudiobookshelfFiles(task: task, book: book, backend: backend, audioFileInos: audioFileInos)
+            return (request, nil)
         }
-    }
-
-    private func downloadFromAudiobookshelfWithFetch(task: BookDownloadTask, book: Book, backend: BackendConfig) async throws {
-        let itemId = book.partKey ?? book.id
-
-        do {
-            let item = try await audiobookshelfService.getLibraryItem(id: itemId, backend: backend, expanded: true)
-
-            guard let audioFiles = item.media?.audioFiles, !audioFiles.isEmpty else {
-                throw DownloadError.fileNotFound
-            }
-
-            let audioFileInos = audioFiles.compactMap { $0.ino }
-            guard audioFileInos.count == audioFiles.count else {
-                throw DownloadError.fileNotFound
-            }
-
-            if audioFileInos.count == 1, let ino = audioFileInos.first {
-                let baseUrl = backend.url.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-                guard let token = backend.token,
-                    let url = URL(string: "\(baseUrl)/api/items/\(itemId)/file/\(ino)/download?token=\(token)")
-                else {
-                    throw DownloadError.invalidURL
-                }
-
-                var request = URLRequest(url: url)
-                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-
-                await startURLSessionDownload(taskId: task.id, bookId: task.bookId, request: request)
-            } else {
-                try await downloadMultipleAudiobookshelfFiles(
-                    task: task,
-                    book: book,
-                    backend: backend,
-                    audioFileInos: audioFileInos,
-                    audioFiles: audioFiles
-                )
-            }
-        } catch {
-            AppLogger.network.error("[ABS Download] Failed to fetch library item: \(error)")
-            throw error
-        }
-    }
-
-    private func downloadMultipleAudiobookshelfFiles(
-        task: BookDownloadTask,
-        book: Book,
-        backend: BackendConfig,
-        audioFileInos: [String],
-        audioFiles: [ABSAudioFile]? = nil
-    ) async throws {
-        let baseUrl = backend.url.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let itemId = book.partKey ?? book.id
-        guard let token = backend.token else {
-            throw DownloadError.missingCredentials("No token available")
-        }
-
-        let totalFiles = audioFileInos.count
-        var completedFiles = 0
-
-        let attempt = try AtomicDownloadDirectory(destination: destinations.bookDirectory(for: task.bookId))
-        defer { attempt.discard() }
-
-        for (index, ino) in audioFileInos.enumerated() {
-            guard let url = URL(string: "\(baseUrl)/api/items/\(itemId)/file/\(ino)/download?token=\(token)") else {
-                throw DownloadError.invalidURL
-            }
-
-            AppLogger.network.info("[ABS Download] Downloading file \(index + 1)/\(totalFiles)")
-
-            var request = URLRequest(url: url)
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-
-            let (tempURL, response) = try await foregroundURLSession.download(for: request)
-
-            guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
-                throw DownloadError.missingCredentials("Server returned error")
-            }
-            try BookDownloadManager.validateDownloadedFileLength(at: tempURL, response: response)
-
-            let fileExtension: String
-            if let files = audioFiles, index < files.count, let ext = files[index].metadata?.ext, !ext.isEmpty {
-                fileExtension = ext.hasPrefix(".") ? String(ext.dropFirst()) : ext
-            } else if let contentType = httpResponse.value(forHTTPHeaderField: "Content-Type") {
-                switch contentType.lowercased() {
-                case let ct where ct.contains("mpeg"): fileExtension = "mp3"
-                case let ct where ct.contains("mp4"), let ct where ct.contains("m4a"), let ct where ct.contains("m4b"):
-                    fileExtension = "m4b"
-                case let ct where ct.contains("flac"): fileExtension = "flac"
-                case let ct where ct.contains("ogg"): fileExtension = "ogg"
-                default: fileExtension = "m4b"
-                }
-            } else {
-                fileExtension = "m4b"
-            }
-
-            let destURL = DownloadDestinationFileSystem.chapterFile(
-                in: attempt.staging,
-                index: index,
-                fileExtension: fileExtension
-            )
-            try DownloadDestinationFileSystem.replaceItem(at: destURL, with: tempURL)
-
-            completedFiles += 1
-            let progress = Double(completedFiles) / Double(totalFiles)
-
-            updateTask(task.id) {
-                $0.progress = progress
-                $0.bytesDownloaded = Int64(Double(completedFiles))
-                $0.totalBytes = Int64(totalFiles)
-            }
-        }
-
-        try attempt.publish()
-        updateTask(task.id) {
-            $0.status = .completed
-            $0.progress = 1.0
-        }
-        downloadManager.markAsCompleted(bookId: task.bookId)
-        NotificationCenter.default.post(name: Self.downloadCompletedNotification, object: task.bookId)
-        AppLogger.network.info("[ABS Download] Multi-file download completed: \(totalFiles) files")
+        try await startManagedAudioDownload(task: task, requests: requests)
     }
 
     private func resolveAudiobookshelfBackend(for book: Book) async -> BackendConfig? {
@@ -1602,52 +1588,15 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
     }
 
     func downloadMultipleRemoteFiles(task: BookDownloadTask, tracks: [AudioTrack], headers: [String: String]) async throws {
-        let totalFiles = tracks.count
-        var completedFiles = 0
-
-        let attempt = try AtomicDownloadDirectory(destination: destinations.bookDirectory(for: task.bookId))
-        defer { attempt.discard() }
-
-        for (index, track) in tracks.enumerated() {
-            guard let contentUrl = track.contentUrl, let url = URL(string: contentUrl) else { throw DownloadError.invalidURL }
-
+        let requests: [(request: URLRequest, mimeType: String?)] = try tracks.map { track in
+            guard let contentURL = track.contentUrl, let url = URL(string: contentURL) else { throw DownloadError.invalidURL }
             var request = URLRequest(url: url)
             headers.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
             request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
             request.setValue("Enve/1.0", forHTTPHeaderField: "User-Agent")
-
-            guard let session = foregroundURLSession else {
-                throw DownloadError.missingCredentials("Download session not available")
-            }
-            let (tempURL, response) = try await session.download(for: request)
-
-            guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
-                throw DownloadError.missingCredentials("Server returned error")
-            }
-            try BookDownloadManager.validateDownloadedFileLength(at: tempURL, response: response)
-
-            let ext = url.pathExtension.isEmpty ? "m4b" : url.pathExtension
-            let destURL = DownloadDestinationFileSystem.chapterFile(in: attempt.staging, index: index, fileExtension: ext)
-            try DownloadDestinationFileSystem.replaceItem(at: destURL, with: tempURL)
-
-            completedFiles += 1
-            let progress = Double(completedFiles) / Double(totalFiles)
-
-            updateTask(task.id) {
-                $0.progress = progress
-                $0.bytesDownloaded = Int64(Double(completedFiles))
-                $0.totalBytes = Int64(totalFiles)
-            }
+            return (request, nil)
         }
-
-        try attempt.publish()
-        updateTask(task.id) {
-            $0.status = .completed
-            $0.progress = 1.0
-        }
-        downloadManager.markAsCompleted(bookId: task.bookId)
-        NotificationCenter.default.post(name: Self.downloadCompletedNotification, object: task.bookId)
-        AppLogger.network.info("[WebDAV Download] Multi-file download completed: \(totalFiles) files")
+        try await startManagedAudioDownload(task: task, requests: requests)
     }
 
     func downloadFromSMB(task: BookDownloadTask, book: Book) async throws {
@@ -1751,6 +1700,10 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         guard let provider = providerConnections.capability(EbookDownloadProvider.self, for: book) else {
             throw DownloadError.missingCredentials("No active connection found for this server")
         }
+        // Completion only updates a stored row, so a book first seen here is stored before the transfer.
+        try await bookWriting.registerDownloadIfMissing(book)
+        try Task.checkCancellation()
+        guard !isRetired else { throw CancellationError() }
 
         let taskId = task.id
         let downloadedURL = try await provider.downloadEbook(
@@ -1781,18 +1734,16 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         #endif
         try Task.checkCancellation()
         guard !isRetired else { throw CancellationError() }
-        var updated = await bookQuerying.book(uniqueId: book.uniqueId) ?? book
-        try Task.checkCancellation()
+        // The downloaded file is kept when the book was removed meanwhile or the write fails.
+        guard try await bookWriting.updateDownloadedEbook(uniqueId: book.uniqueId, fileURL: offlineURL, epub3Features: features) else {
+            throw DownloadError.bookRemoved
+        }
         guard !isRetired else { throw CancellationError() }
-        updated = libraryCache.mutateBook(uniqueId: book.uniqueId) {
+        libraryCache.applyStored(uniqueId: book.uniqueId) {
             $0.ebookFileURL = offlineURL
             if let features { $0.epub3Features = features }
-        } ?? updated
-        updated.ebookFileURL = offlineURL
-        if let features { updated.epub3Features = features }
-        await bookWriting.upsertBooks([updated])
+        }
         try Task.checkCancellation()
-        guard !isRetired else { throw CancellationError() }
 
         updateTask(task.id) {
             $0.status = .completed
@@ -1846,31 +1797,37 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         #endif
     }
 
+    /// Stores only the file; prepared chapters are not a stored column and reach the cache and player only.
     private func persistStorytellerReadaloudBook(
         _ book: Book,
         offlineURL: URL,
         prepareAudio: Bool
-    ) async {
-        libraryCache.mutateBook(uniqueId: book.uniqueId) { $0.ebookFileURL = offlineURL }
-        var updatedBook = libraryCache.bookInMemory(uniqueId: book.uniqueId) ?? book
-        updatedBook.ebookFileURL = offlineURL
+    ) async throws {
+        guard try await bookWriting.updateDownloadedEbook(uniqueId: book.uniqueId, fileURL: offlineURL, epub3Features: nil) else {
+            throw DownloadError.bookRemoved
+        }
+        guard !isRetired else { throw CancellationError() }
+        libraryCache.applyStored(uniqueId: book.uniqueId) { $0.ebookFileURL = offlineURL }
+        try Task.checkCancellation()
 
         #if !os(tvOS)
-        let needsPrep = storytellerReadaloudNeedsPrep(book: updatedBook)
-        if prepareAudio && needsPrep {
-            let prep = await StorytellerReadaloudOfflinePrep.prepare(epubURL: offlineURL, book: updatedBook)
-            if !prep.chapters.isEmpty {
-                updatedBook.chapters = prep.chapters
-                libraryCache.mutateBook(uniqueId: book.uniqueId) { $0.chapters = prep.chapters }
+        var preparing = libraryCache.bookInMemory(uniqueId: book.uniqueId) ?? book
+        preparing.ebookFileURL = offlineURL
+        guard prepareAudio, storytellerReadaloudNeedsPrep(book: preparing) else { return }
+        let prep = await StorytellerReadaloudOfflinePrep.prepare(epubURL: offlineURL, book: preparing)
+        try Task.checkCancellation()
+        guard !isRetired else { throw CancellationError() }
+        if !prep.chapters.isEmpty {
+            libraryCache.applyStored(uniqueId: book.uniqueId) { $0.chapters = prep.chapters }
+            // The shared composition is the owner's player; another profile's player is left until it reloads the book.
+            if storageLocations.profileID == FamilyProfile.ownerID {
                 ActivePlayback.composition.bookMetadataUpdater.updateChapters(prep.chapters, for: book)
             }
-            AppLogger.network.info(
-                "Prepared read-aloud EPUB diagnosticID=\(diagnosticID(book.stableId)) audioFiles=\(prep.extractedAudioCount) chapters=\(prep.chapters.count)"
-            )
         }
+        AppLogger.network.info(
+            "Prepared read-aloud EPUB diagnosticID=\(diagnosticID(book.stableId)) audioFiles=\(prep.extractedAudioCount) chapters=\(prep.chapters.count)"
+        )
         #endif
-
-        await bookWriting.upsertBooks([updatedBook])
     }
 
     #if !os(tvOS)
@@ -1907,42 +1864,88 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
             throw DownloadError.missingCredentials("No active connection found")
         }
 
-        let downloadKey = book.downloadKey
-
         let requests = book.source == .plex
             ? try await PlexDownloadPlanProvider.requests(for: book, provider: provider)
             : try await Self.sessionTrackRequests(for: book, provider: provider)
         guard !requests.isEmpty else { throw DownloadError.invalidURL }
         try requireActiveDownload(task.id)
 
-        if requests.count > 1 {
-            await downloadManager.startMultiTrackHTTPDownload(bookId: downloadKey, requests: requests)
+        try await startManagedAudioDownload(task: task, requests: requests)
+    }
+
+    private func startManagedAudioDownload(
+        task: BookDownloadTask,
+        requests: [(request: URLRequest, mimeType: String?)]
+    ) async throws {
+        try requireActiveDownload(task.id)
+        guard !requests.isEmpty else { throw DownloadError.fileNotFound }
+        if requests.count == 1 {
+            await downloadManager.startDownload(bookId: task.bookId, request: requests[0].request)
         } else {
-            await downloadManager.startDownload(bookId: downloadKey, request: requests[0].request)
+            await downloadManager.startMultiTrackHTTPDownload(bookId: task.bookId, requests: requests)
         }
-
         while true {
-            try requireActiveDownload(task.id)
-            try await Task.sleep(nanoseconds: 500_000_000)
-            try requireActiveDownload(task.id)
-
-            let isComplete = downloadManager.completedBookIds.contains(downloadKey)
-            if isComplete {
-                updateTask(task.id) {
-                    $0.status = .completed
-                    $0.progress = 1.0
+            try Task.checkCancellation()
+            guard !isRetired, let current = tasks.first(where: { $0.id == task.id }),
+                current.status == .downloading || current.status == .completed
+            else { throw CancellationError() }
+            if downloadManager.completedBookIds.contains(task.bookId) {
+                if current.status != .completed {
+                    updateTask(task.id) { $0.status = .completed; $0.progress = 1 }
+                    NotificationCenter.default.post(name: Self.downloadCompletedNotification, object: task.bookId)
                 }
-                NotificationCenter.default.post(name: Self.downloadCompletedNotification, object: task.bookId)
-                AppLogger.network.debug("Audiobook downloaded source=\(book.source.rawValue) diagnosticID=\(diagnosticID(book.stableId))")
                 return
             }
+            if let message = downloadManager.lastErrorByBookId[task.bookId] {
+                throw NSError(domain: "UnifiedDownloadService", code: -1, userInfo: [NSLocalizedDescriptionKey: message])
+            }
+            if shouldEmitProgressUpdate(taskId: task.id, progress: downloadManager.progressByBookId[task.bookId] ?? 0) {
+                updateTask(task.id, persist: false) { $0.progress = downloadManager.progressByBookId[task.bookId] ?? 0 }
+            }
+            try await Task.sleep(for: .milliseconds(250))
+        }
+    }
 
-            if let errorMsg = await MainActor.run(body: { downloadManager.lastErrorByBookId[downloadKey] }) {
-                throw NSError(
-                    domain: "UnifiedDownloadService",
-                    code: -1,
-                    userInfo: [NSLocalizedDescriptionKey: "Audiobook download failed: \(errorMsg)"]
-                )
+    func acknowledgeOfflineAudioMetadata(bookId: String) {
+        downloadManager.acknowledgeTransferResult(bookId: bookId)
+    }
+
+    private func finishBackgroundAudioResults() async {
+        guard !isRetired else { return }
+        for transfer in downloadManager.pendingTransferResults {
+            let bookID = transfer.bookID
+            guard downloadManager.ownsTransferResult(transfer) else { continue }
+            guard let task = tasks.last(where: { $0.bookId == bookID }),
+                task.status != .cancelled
+            else {
+                acknowledgeOfflineAudioMetadata(bookId: bookID)
+                continue
+            }
+            if transfer.outcome == .completed {
+                var hasMetadata = false
+                let book = await bookQuerying.book(stableId: bookID)
+                guard !isRetired else { return }
+                guard downloadManager.ownsTransferResult(transfer),
+                    let current = tasks.first(where: { $0.id == task.id }),
+                    current.status == task.status
+                else { continue }
+                if let book {
+                    do {
+                        try persistOfflineMetadata(for: book)
+                        hasMetadata = true
+                    } catch {
+                        AppLogger.network.error("Could not persist background download metadata")
+                    }
+                }
+                if current.status != .completed {
+                    updateTask(task.id) { $0.status = .completed; $0.progress = 1; $0.errorMessage = nil }
+                    NotificationCenter.default.post(name: Self.downloadCompletedNotification, object: bookID)
+                }
+                if hasMetadata { acknowledgeOfflineAudioMetadata(bookId: bookID) }
+            } else if let message = downloadManager.lastErrorByBookId[bookID], runningDownloads[task.id] == nil {
+                updateTask(task.id) { $0.status = .failed; $0.errorMessage = message }
+                acknowledgeOfflineAudioMetadata(bookId: bookID)
+                NotificationCenter.default.post(name: Self.downloadFailedNotification, object: bookID)
             }
         }
     }
@@ -2147,8 +2150,10 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
             expectedBytesByTaskId[taskId] = expectedBytes
         }
 
+        let attempt = UUID().uuidString
         activeURLTasks[bookId] = downloadTask
-        downloadTask.taskDescription = "\(taskId)|\(bookId)"
+        registerAttempt(attempt, for: bookId)
+        downloadTask.taskDescription = "\(taskId)|\(bookId)|\(attempt)"
 
         downloadTask.resume()
 
@@ -2245,6 +2250,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         case fileNotFound
         case networkUnavailable
         case cancelled
+        case bookRemoved
 
         var errorDescription: String? {
             switch self {
@@ -2253,6 +2259,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
             case .fileNotFound: return "Audio file not found"
             case .networkUnavailable: return "Network not available"
             case .cancelled: return "Download cancelled"
+            case .bookRemoved: return "This book was removed from the library before its download finished"
             }
         }
     }
@@ -2269,8 +2276,7 @@ extension UnifiedDownloadService: URLSessionDownloadDelegate {
         guard let identifier = session.configuration.identifier else { return }
         Task { @MainActor in
             #if os(iOS)
-            guard let delegate = UIApplication.shared.delegate as? CarPlayAppDelegate else { return }
-            delegate.consumeBackgroundCompletionHandler(forIdentifier: identifier)?()
+            CarPlayAppDelegate.consumeBackgroundCompletionHandler(forIdentifier: identifier)?()
             #endif
         }
     }
@@ -2334,13 +2340,12 @@ extension UnifiedDownloadService: URLSessionDownloadDelegate {
     }
 
     nonisolated func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        guard let description = downloadTask.taskDescription else { return }
-        let parts = description.split(separator: "|")
-        guard parts.count == 2 else { return }
-        let taskId = String(parts[0])
-        let bookId = String(parts[1])
+        guard let owner = Self.callbackOwner(of: downloadTask, in: session) else { return }
+        let taskId = owner.taskId
+        let bookId = owner.bookId
 
-        guard isActiveDownloadTask(taskId: taskId, bookId: bookId) else {
+        // Checked before anything touches the book's files: a superseded attempt never deletes or replaces them.
+        guard ownsCallback(owner) else {
             AppLogger.network.debug("Ignoring removed download completion diagnosticID=\(diagnosticID(bookId))")
             return
         }
@@ -2371,7 +2376,7 @@ extension UnifiedDownloadService: URLSessionDownloadDelegate {
 
             let finalErrorMsg = errorMsg
             Task { @MainActor [weak self] in
-                guard let self, self.isActiveDownloadTask(taskId: taskId, bookId: bookId) else { return }
+                guard let self, self.ownsCallback(owner) else { return }
                 self.updateTask(taskId) {
                     $0.status = .failed
                     $0.errorMessage = finalErrorMsg
@@ -2397,7 +2402,7 @@ extension UnifiedDownloadService: URLSessionDownloadDelegate {
                 AppLogger.network.error("Non-audio content: \(errorMsg)")
                 try? FileManager.default.removeItem(at: location)
                 Task { @MainActor [weak self] in
-                    guard let self, self.isActiveDownloadTask(taskId: taskId, bookId: bookId) else { return }
+                    guard let self, self.ownsCallback(owner) else { return }
                     self.updateTask(taskId) {
                         $0.status = .failed
                         $0.errorMessage = errorMsg
@@ -2420,7 +2425,7 @@ extension UnifiedDownloadService: URLSessionDownloadDelegate {
                 AppLogger.network.warning("HTML content detected diagnosticID=\(diagnosticID(bookId))")
                 try? FileManager.default.removeItem(at: location)
                 Task { @MainActor [weak self] in
-                    guard let self, self.isActiveDownloadTask(taskId: taskId, bookId: bookId) else { return }
+                    guard let self, self.ownsCallback(owner) else { return }
                     self.updateTask(taskId) {
                         $0.status = .failed
                         $0.errorMessage = errorMsg
@@ -2445,7 +2450,7 @@ extension UnifiedDownloadService: URLSessionDownloadDelegate {
             fileExtension: destinationExt
         )
 
-        guard isActiveDownloadTask(taskId: taskId, bookId: bookId) else {
+        guard ownsCallback(owner) else {
             AppLogger.network.debug("Ignoring removed download completion diagnosticID=\(diagnosticID(bookId))")
             return
         }
@@ -2462,7 +2467,9 @@ extension UnifiedDownloadService: URLSessionDownloadDelegate {
                 try DownloadDestinationFileSystem.replaceItem(at: destinationURL, with: location)
             }
 
-            guard isActiveDownloadTask(taskId: taskId, bookId: bookId) else {
+            // Removed or cancelled while publishing: its files go too. A newer attempt of the same entry keeps them.
+            guard ownsCallback(owner) else {
+                guard !isActiveDownloadTask(taskId: taskId, bookId: bookId) else { return }
                 do {
                     if try destinations.removeBookDirectory(for: bookId) {
                         AppLogger.network.debug("Removed files after download deletion diagnosticID=\(diagnosticID(bookId))")
@@ -2476,7 +2483,7 @@ extension UnifiedDownloadService: URLSessionDownloadDelegate {
             }
 
             Task { @MainActor [weak self] in
-                guard let self, self.isActiveDownloadTask(taskId: taskId, bookId: bookId) else { return }
+                guard let self, self.ownsCallback(owner) else { return }
                 self.updateTask(taskId) {
                     $0.status = .completed
                     $0.progress = 1.0
@@ -2503,7 +2510,7 @@ extension UnifiedDownloadService: URLSessionDownloadDelegate {
             }
 
             Task { @MainActor [weak self] in
-                guard let self, self.isActiveDownloadTask(taskId: taskId, bookId: bookId) else { return }
+                guard let self, self.ownsCallback(owner) else { return }
                 self.updateTask(taskId) {
                     $0.status = .failed
                     $0.errorMessage = errorMessage
@@ -2522,13 +2529,11 @@ extension UnifiedDownloadService: URLSessionDownloadDelegate {
         totalBytesWritten: Int64,
         totalBytesExpectedToWrite: Int64
     ) {
-        guard let description = downloadTask.taskDescription else { return }
-        let parts = description.split(separator: "|")
-        guard parts.count == 2 else { return }
-        let taskId = String(parts[0])
+        guard let owner = Self.callbackOwner(of: downloadTask, in: session) else { return }
+        let taskId = owner.taskId
 
         Task { @MainActor [weak self] in
-            guard let self else { return }
+            guard let self, self.ownsCallback(owner) else { return }
             let taskExpected =
                 totalBytesExpectedToWrite > 0
                 ? totalBytesExpectedToWrite
@@ -2549,21 +2554,17 @@ extension UnifiedDownloadService: URLSessionDownloadDelegate {
     }
 
     nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        guard let downloadTask = task as? URLSessionDownloadTask,
-            let description = downloadTask.taskDescription,
-            let error = error
+        guard let downloadTask = task as? URLSessionDownloadTask, let error = error,
+            let owner = Self.callbackOwner(of: downloadTask, in: session)
         else { return }
-
-        let parts = description.split(separator: "|")
-        guard parts.count == 2 else { return }
-        let taskId = String(parts[0])
-        let bookId = String(parts[1])
+        let taskId = owner.taskId
+        let bookId = owner.bookId
 
         let nsError = error as NSError
         if nsError.code == NSURLErrorCancelled {
             if let resumeData = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data {
                 Task { @MainActor [weak self] in
-                    guard let self, self.isActiveDownloadTask(taskId: taskId, bookId: bookId) else { return }
+                    guard let self, self.ownsCallback(owner) else { return }
                     self.resumeData[bookId] = resumeData
                     self.expectedBytesByTaskId.removeValue(forKey: taskId)
                 }
@@ -2573,7 +2574,7 @@ extension UnifiedDownloadService: URLSessionDownloadDelegate {
 
         let errorMessage = error.localizedDescription
         Task { @MainActor [weak self] in
-            guard let self, self.isActiveDownloadTask(taskId: taskId, bookId: bookId) else { return }
+            guard let self, self.ownsCallback(owner) else { return }
             self.updateTask(taskId) {
                 $0.status = .failed
                 $0.errorMessage = errorMessage

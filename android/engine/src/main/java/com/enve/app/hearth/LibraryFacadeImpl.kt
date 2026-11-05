@@ -307,21 +307,20 @@ class LibraryFacadeImpl @Inject constructor(
         val bookId = book.id.toIntOrNull() ?: return emptyList()
         return withContext(ConnectionScope.asContextElement(connectionId)) {
             val editable = bookOrbit.isCurrentUserAdmin().getOrDefault(false)
-            if (!editable) return@withContext emptyList()
-            bookOrbit.getCollections(listOf(bookId)).getOrDefault(emptyList()).map { collection ->
+            bookOrbit.getCollections(listOf(bookId)).getOrDefault(emptyList()).filter { it.isOwner || editable }.map { collection ->
                 BookOrbitCollectionMembership(collection.toBrowseGroup(connectionId, editable), collection.memberCount == 1)
             }
         }
     }
 
-    override suspend fun bookOrbitAdminConnections(): List<LibraryConnectionOption> {
+    override suspend fun bookOrbitCollectionConnections(): List<LibraryConnectionOption> {
         val result = mutableListOf<LibraryConnectionOption>()
         for (connection in connectionRegistry.getConnectionsSync()) {
             if (!connection.enabled || connection.source != BookSource.BOOKORBIT) continue
-            val isAdmin = withContext(ConnectionScope.asContextElement(connection.id)) {
-                bookOrbit.isCurrentUserAdmin().getOrDefault(false)
+            val connected = withContext(ConnectionScope.asContextElement(connection.id)) {
+                bookOrbit.validateConnection().getOrDefault(false)
             }
-            if (isAdmin) {
+            if (connected) {
                 result += LibraryConnectionOption(connection.id, connection.name.ifBlank { connection.serverUrl })
             }
         }
@@ -436,6 +435,8 @@ class LibraryFacadeImpl @Inject constructor(
 
     override suspend fun unlinkAudiobookshelfHistory(book: Book): Boolean =
         crossProviderHistory.unlink(book)
+
+    override suspend fun dismissImportIssues(issues: List<com.enve.core.data.provider.CatalogImportIssue>) = cache.dismissImportIssues(issues)
 
     override suspend fun refresh() {
         cache.refreshNow()
@@ -692,7 +693,7 @@ private fun BookOrbitCollectionDto.toBrowseGroup(connectionId: String, editable:
     source = BookSource.BOOKORBIT,
     description = description,
     icon = icon,
-    isEditable = editable,
+    isEditable = editable || isOwner,
     syncToKobo = syncToKobo,
     displayOrder = displayOrder,
 )

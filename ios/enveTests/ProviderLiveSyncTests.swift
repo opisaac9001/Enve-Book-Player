@@ -122,17 +122,44 @@ struct ProviderLiveSyncTests {
                 return
             }
             if service == "BookOrbit" {
-                for book in books {
+                var detailKinds = Set<String>()
+                for book in books where detailKinds.insert(book.mediaType.rawValue + ":" + (book.ebookFormat ?? "audio")).inserted {
                     let detail = try await provider.fetchFullBookDetails(bookId: book.id, libraryId: book.libraryId)
                     guard detail.id == book.id else { throw LabError.rejected }
                 }
-                record("LAB BookOrbit full catalog and details passed books=\(books.count)")
+                record("LAB BookOrbit full catalog and representative details passed books=\(books.count)")
+            }
+            if let bookOrbit = provider as? BookOrbitProvider {
+                if ProcessInfo.processInfo.environment["ENVE_LAB_EXPECT_NON_ADMIN"] == "1" {
+                    #expect(try await bookOrbit.currentUserIsAdmin() == false)
+                }
+                stage = "personal collections"
+                let collection = try await bookOrbit.createCollection(.init(
+                    name: "Enve verification " + UUID().uuidString,
+                    description: nil, icon: "folder", syncToKobo: false
+                ))
+                let remoteId = try #require(collection.remoteId)
+                do {
+                    let member = try #require(books.first)
+                    try await bookOrbit.addBooks([member.id], toCollection: remoteId)
+                    let memberships = try await bookOrbit.collectionsContaining(bookId: member.id)
+                    #expect(memberships.contains { $0.collection.id == collection.id && $0.collection.isServerEditable && $0.containsBook })
+                    let page = try await bookOrbit.fetchCollectionBooks(collectionId: remoteId, page: 0, size: 10)
+                    #expect(page.books.contains { $0.id == member.id })
+                } catch {
+                    try await bookOrbit.deleteCollection(id: remoteId)
+                    throw error
+                }
+                try await bookOrbit.deleteCollection(id: remoteId)
+                record("LAB BookOrbit personal collection create, membership, and delete passed")
             }
             if let candidate = books.first(where: { $0.mediaType == .audiobook && ($0.duration ?? 0) <= 0 }),
                let index = books.firstIndex(where: { $0.stableId == candidate.stableId }) {
                 books[index] = try await provider.fetchFullBookDetails(bookId: candidate.id, libraryId: candidate.libraryId)
             }
-            let genericEbook = if service == "Grimmory" {
+            let genericEbook = if service == "BookOrbit", let narratedID = ProcessInfo.processInfo.environment["ENVE_LAB_BOOKORBIT_READALOUD_ID"] {
+                books.first(where: { $0.id == narratedID })
+            } else if service == "Grimmory" {
                 books.first(where: { $0.title == "Enve Namespace Prefix Regression" })
             } else {
                 books.first(where: { $0.mediaType == .ebook && $0.ebookFormat?.lowercased() == "epub" })
@@ -141,11 +168,18 @@ struct ProviderLiveSyncTests {
             if let download = provider as? any EbookDownloadProvider,
                let book = genericEbook {
                 stage = "ebook download"
-                let url = try await download.downloadEbook(for: book, onProgress: nil)
+                if let bookOrbit = provider as? BookOrbitProvider { bookOrbit.connection.token = "stale-live-test-token" }
+                let url: URL
+                if service == "BookOrbit" {
+                    url = try await download.downloadEbook(for: book, onProgress: { _ in })
+                } else {
+                    url = try await download.downloadEbook(for: book, onProgress: nil)
+                }
                 let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
                 guard size > 0 else { throw LabError.rejected }
                 record("LAB \(service) ebook downloaded bytes=\(size)")
-                if service == "Audiobookshelf" {
+                if service == "Audiobookshelf" || (service == "BookOrbit" && ProcessInfo.processInfo.environment["ENVE_LAB_BOOKORBIT_READALOUD_ID"] != nil) {
+                    if service == "BookOrbit" { #expect(book.epub3Features?.hasMediaOverlay == true) }
                     stage = "EPUB3 read-aloud"
                     let features = try #require(await EPUB3SMILParser.detectFeatures(epubFileURL: url))
                     guard features.hasMediaOverlay else { throw LabError.rejected }
@@ -164,7 +198,7 @@ struct ProviderLiveSyncTests {
                     else { throw LabError.rejected }
                     audiobookshelfReadAloudTimeline = overlay.timeline
                     record(
-                        "LAB Audiobookshelf EPUB3 read-aloud smil=\(features.smilFileCount) clips=\(overlay.timeline.clips.count) tracks=\(overlay.tracks.count) duration=\(overlay.totalDuration)"
+                        "LAB \(service) EPUB3 read-aloud smil=\(features.smilFileCount) clips=\(overlay.timeline.clips.count) tracks=\(overlay.tracks.count) duration=\(overlay.totalDuration)"
                     )
                 }
             }

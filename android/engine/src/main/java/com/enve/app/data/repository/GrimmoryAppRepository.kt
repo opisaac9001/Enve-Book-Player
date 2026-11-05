@@ -32,12 +32,10 @@ import com.enve.app.data.remote.dto.grimmoryapp.AppAuthorSummaryDto
 import com.enve.app.data.remote.dto.grimmoryapp.AppBookDetailDto
 import com.enve.app.data.remote.dto.grimmoryapp.AppBookSummaryDto
 import com.enve.app.data.remote.dto.grimmoryapp.AppFilterOptionsDto
-import com.enve.app.data.remote.dto.grimmoryapp.AppLibrarySummaryDto
 import com.enve.app.data.remote.dto.grimmoryapp.AppMagicShelfSummaryDto
 import com.enve.app.data.remote.dto.grimmoryapp.AppPageDto
 import com.enve.app.data.remote.dto.grimmoryapp.AppSeriesSummaryDto
 import com.enve.app.data.remote.dto.grimmoryapp.AppShelfSummaryDto
-import com.enve.app.data.remote.dto.grimmoryapp.AppUserInfoDto
 import com.enve.app.data.remote.dto.grimmoryapp.AudiobookInfoDto
 import com.enve.app.data.remote.dto.grimmoryapp.UpdateRatingRequest
 import com.enve.app.data.remote.dto.grimmoryapp.UpdateStatusRequest
@@ -106,57 +104,11 @@ class GrimmoryAppRepository @Inject constructor(
                 return Result.success(cached)
             }
         }
-        return withConnection(connectionId) {
-            val libs: List<GrimmoryLibrary>? = if (tierFor(connectionId) == ApiTier.APP) {
-                val resp = runSuspendCatching { api.getLibraries() }.getOrNull()
-                when {
-                    resp == null -> {
-                        android.util.Log.w("GrimmoryAppRepo", "getLibraries APP threw for $connectionId; trying legacy")
-                        null
-                    }
-                    resp.isSuccessful -> {
-                        val mapped = resp.body().orEmpty().map { it.toModel() }
-                        if (shouldUseLegacyGrimmoryCatalog(resp.code(), mapped.size)) {
-                            android.util.Log.i("GrimmoryAppRepo", "getLibraries APP returned no libraries for $connectionId; trying legacy")
-                            null
-                        } else {
-                            mapped
-                        }
-                    }
-                    else -> {
-                        android.util.Log.i("GrimmoryAppRepo", "getLibraries APP returned HTTP ${resp.code()} for $connectionId; trying legacy")
-                        null
-                    }
-                }
-            } else null
-
-            val resolved = libs ?: run {
-                val legacyResp = legacyApi.getLibrariesLegacy()
-                if (!legacyResp.isSuccessful) {
-                    android.util.Log.w("GrimmoryAppRepo", "getLibrariesLegacy HTTP ${legacyResp.code()} for $connectionId")
-                    return@withConnection Result.failure(Exception("Grimmory catalog unavailable (legacy HTTP ${legacyResp.code()})"))
-                }
-                connectionTier[connectionId] = ApiTier.LEGACY
-                val raw = legacyResp.body().orEmpty()
-                val mapped = raw.mapNotNull { dto ->
-                    val numericId = dto.id.toLongOrNull() ?: run {
-                        android.util.Log.w("GrimmoryAppRepo", "Skipping legacy library with non-numeric id=${dto.id} on $connectionId")
-                        return@mapNotNull null
-                    }
-                    GrimmoryLibrary(
-                        id = numericId,
-                        name = dto.name,
-                        bookCount = dto.bookCount ?: 0,
-                        allowedFormats = dto.allowedFormats.orEmpty(),
-                        paths = emptyList(),
-                    )
-                }
-                android.util.Log.i("GrimmoryAppRepo", "Legacy libraries on $connectionId: ${mapped.size} of ${raw.size} (kept those with numeric ids)")
-                mapped
-            }
-            cache.write(key, json.encodeToString(ListSerializer(GrimmoryLibrary.serializer()), resolved))
-            Result.success(resolved)
+        val result = getLibrariesUncached(connectionId)
+        result.getOrNull()?.let { libraries ->
+            cache.write(key, json.encodeToString(ListSerializer(GrimmoryLibrary.serializer()), libraries))
         }
+        return result
     }
 
     suspend fun getBooksPage(
@@ -290,7 +242,7 @@ class GrimmoryAppRepository @Inject constructor(
     }
 
     private suspend fun getLibrariesUncached(connectionId: String): Result<List<GrimmoryLibrary>> = withConnection(connectionId) {
-        val resp = legacyApi.getLibrariesLegacy()
+        val resp = legacyApi.getLibraries()
         if (!resp.isSuccessful) return@withConnection Result.failure(Exception("HTTP ${resp.code()}"))
         Result.success(resp.body().orEmpty().mapNotNull { dto ->
             val numericId = dto.id.toLongOrNull() ?: return@mapNotNull null
@@ -641,11 +593,6 @@ class GrimmoryAppRepository @Inject constructor(
             runSuspendCatching { block() }.getOrElse { Result.failure(it) }
         }
     }
-
-    private fun AppLibrarySummaryDto.toModel() = GrimmoryLibrary(
-        id = id, name = name, bookCount = bookCount,
-        allowedFormats = allowedFormats, paths = paths,
-    )
 
     private fun AppShelfSummaryDto.toModel() = GrimmoryShelf(
         id = id, name = name, icon = icon, bookCount = bookCount, publicShelf = publicShelf,

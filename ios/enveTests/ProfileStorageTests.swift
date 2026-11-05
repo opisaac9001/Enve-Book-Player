@@ -26,7 +26,8 @@ struct ProfileStorageTests {
         #expect(first.cachesDirectory != owner.cachesDirectory)
     }
 
-    @Test func profileDatabasesKeepIdenticalBooksAndPositionsIndependent() async throws {
+    @Test(.enabled(if: ProfileSwitchCoordinator.supportsMultipleProfileStorage))
+    func profileDatabasesKeepIdenticalBooksAndPositionsIndependent() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let ownerDefaultsName = "com.enve.tests.profiles.owner.\(UUID().uuidString)"
         let childDefaultsName = "com.enve.tests.profiles.child.\(UUID().uuidString)"

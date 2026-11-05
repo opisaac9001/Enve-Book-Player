@@ -56,7 +56,12 @@ final class PlaybackEngine {
         profileSession.playback.player.currentChapter
     }
 
-    func play(_ book: Book, presentPlayer: Bool = true) {
+    func play(_ book: Book, from startPosition: TimeInterval? = nil, presentPlayer: Bool = true) {
+        if let startPosition {
+            guard book.mediaType != .ebook, !book.hasEPUB3MediaOverlay else { return }
+            queue.playManually(book, presentPlayer: presentPlayer, reconcilingLinkedPosition: false, startPosition: startPosition)
+            return
+        }
         if book.hasEPUB3MediaOverlay {
             playAlignedReadAloud(book, presentPlayer: presentPlayer)
             return
@@ -66,6 +71,12 @@ final class PlaybackEngine {
             return
         }
         queue.playManually(book, presentPlayer: presentPlayer)
+    }
+
+    /// Starts an audiobook from its own saved position, without first moving it to a more recently read linked ebook.
+    func resumeListening(_ audiobook: Book, presentPlayer: Bool) {
+        guard audiobook.mediaType == .audiobook, !audiobook.hasEPUB3MediaOverlay else { return }
+        queue.playManually(audiobook, presentPlayer: presentPlayer, reconcilingLinkedPosition: false)
     }
 
     func playAlignedReadAloud(_ book: Book, presentPlayer: Bool = true) {
@@ -166,10 +177,16 @@ final class PlaybackEngine {
 
     func playChapter(_ chapter: Chapter, in book: Book) {
         if playbackController.snapshot.currentBook?.stableId == book.stableId,
-            playbackController.snapshot.isLoaded
+            playbackController.snapshot.isLoaded,
+            !playbackController.snapshot.isLoading
         {
             playbackController.seek(to: chapter.start)
             appState.presentation.isPlayerPresented = true
+            return
+        }
+
+        guard book.hasEPUB3MediaOverlay else {
+            play(book, from: chapter.start)
             return
         }
 

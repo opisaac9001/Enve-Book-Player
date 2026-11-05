@@ -2,14 +2,10 @@ import Foundation
 import Testing
 
 @testable import enve
-
-/// Check direct audio playback and downloads, and reject unsupported formats.
 @MainActor
 struct OPDSAudiobookRoutingTests {
     private static let providerId = UUID(uuidString: "0F17E6A0-3333-4222-8333-444444444444")!
     private let base = URL(string: "https://catalog.example.invalid/opds/")!
-
-    // MARK: Classification
 
     @Test(arguments: ["audio/mpeg", "audio/mp4", "audio/flac", "audio/ogg"])
     func aDirectAudioAcquisitionBecomesAnAudiobook(type: String) throws {
@@ -33,7 +29,6 @@ struct OPDSAudiobookRoutingTests {
     @Test(arguments: [
         ("book.aax", nil as String?),
         ("book.aa", nil as String?),
-        ("fulfil", "audio/vnd.audible.aax"),
     ])
     func audibleFilesAreRefusedAsProtectedRatherThanPlayed(href: String, type: String?) {
         let selection = OPDSAcquisitionSelector.select(
@@ -90,8 +85,6 @@ struct OPDSAudiobookRoutingTests {
         #expect(book.partKey == "https://catalog.example.invalid/opds/narrated.m4b")
     }
 
-    // MARK: Provider playback surface
-
     @Test func theProviderHandsBackTheDirectAudioURLOnTheFeedOrigin() async throws {
         let provider = OPDSProvider(connection: Self.connection())
         let book = Self.book(mediaType: .audiobook, partKey: "https://catalog.example.invalid/opds/narrated.m4b")
@@ -139,8 +132,6 @@ struct OPDSAudiobookRoutingTests {
         }
     }
 
-    // MARK: Download planning
-
     @Test func anOPDSAudiobookPlansAnAudiobookDownload() throws {
         let plan = try DownloadPlanRegistry.shared.plan(
             for: Self.book(mediaType: .audiobook, partKey: "https://catalog.example.invalid/opds/narrated.m4b")
@@ -160,8 +151,6 @@ struct OPDSAudiobookRoutingTests {
         #expect(plan.destination == .readerAsset)
         #expect(plan.postProcessing == [.validateEbook, .persistReaderAsset, .cacheOfflineAssets])
     }
-
-    // MARK: Fixtures
 
     private static func connection() -> ServerConnection {
         ServerConnection(

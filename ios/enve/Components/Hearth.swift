@@ -432,6 +432,42 @@ struct Overline: View {
     }
 }
 
+struct TabHeader<Subtitle: View, Trailing: View>: View {
+    let overline: String
+    let title: String
+    @ViewBuilder var subtitle: Subtitle
+    @ViewBuilder var trailing: Trailing
+    @Environment(\.hearth) private var hearth
+
+    init(
+        overline: String,
+        title: String,
+        @ViewBuilder subtitle: () -> Subtitle = { EmptyView() },
+        @ViewBuilder trailing: () -> Trailing
+    ) {
+        self.overline = overline
+        self.title = title
+        self.subtitle = subtitle()
+        self.trailing = trailing()
+    }
+
+    var body: some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 6) {
+                Overline(overline)
+                Text(title)
+                    .font(.hearthScreenTitle)
+                    .foregroundStyle(hearth.text)
+                    .accessibilityAddTraits(.isHeader)
+                subtitle
+            }
+            Spacer(minLength: 8)
+            trailing
+        }
+        .padding(.horizontal, 24)
+    }
+}
+
 extension Color {
     init(hexValue: Int) {
         self.init(

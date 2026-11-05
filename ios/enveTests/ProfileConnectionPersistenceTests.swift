@@ -113,13 +113,12 @@ struct ProfileConnectionPersistenceTests {
                 username: nil, password: nil, userId: nil, selectedLibraryIds: nil
             )
         ])
-        let owner = ProviderConnectionStore(
+        let ownerFallback = ProviderConnectionStore(
             profileID: FamilyProfile.ownerID, defaults: fixtureDefaults, keychain: ownerKeychain,
-            serverConfig: config, providerFactory: { _ in nil }
+            serverConfig: config, initialConnections: [], providerFactory: { _ in nil }
         )
-        #expect(owner.connections.map(\.id) == [backendID])
-        #expect(owner.backend(id: backendID.uuidString)?.name == "Legacy fixture")
-        #expect(owner.allBackends().map(\.id) == [backendID.uuidString])
+        #expect(ownerFallback.backend(id: backendID.uuidString)?.name == "Legacy fixture")
+        #expect(ownerFallback.allBackends().map(\.id) == [backendID.uuidString])
         let child = ProviderConnectionStore(
             profileID: childID, defaults: childDefaults, keychain: childKeychain,
             serverConfig: config, providerFactory: { _ in nil }
@@ -128,12 +127,22 @@ struct ProfileConnectionPersistenceTests {
         #expect(child.backend(id: backendID.uuidString) == nil)
         #expect(child.allBackends().isEmpty)
 
-        let ownerFallback = ProviderConnectionStore(
+        let owner = ProviderConnectionStore(
             profileID: FamilyProfile.ownerID, defaults: fixtureDefaults, keychain: ownerKeychain,
-            serverConfig: config, initialConnections: [], providerFactory: { _ in nil }
+            serverConfig: config, providerFactory: { _ in nil }
         )
-        #expect(ownerFallback.backend(id: backendID.uuidString)?.name == "Legacy fixture")
-        #expect(ownerFallback.allBackends().map(\.id) == [backendID.uuidString])
+        #expect(owner.connections.map(\.id) == [backendID])
+        #expect(owner.backend(id: backendID.uuidString)?.name == "Legacy fixture")
+        #expect(owner.allBackends().map(\.id) == [backendID.uuidString])
+        #expect(config.loadBackends().isEmpty)
+
+        owner.connections.removeAll()
+        let reopened = ProviderConnectionStore(
+            profileID: FamilyProfile.ownerID, defaults: fixtureDefaults, keychain: ownerKeychain,
+            serverConfig: config, providerFactory: { _ in nil }
+        )
+        #expect(reopened.connections.isEmpty)
+        #expect(reopened.allBackends().isEmpty)
     }
 
     @Test func directCodableKeepsExistingOwnerCredentialRouting() throws {

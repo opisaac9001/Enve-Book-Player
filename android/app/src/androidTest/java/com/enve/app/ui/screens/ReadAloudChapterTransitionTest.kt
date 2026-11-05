@@ -5,8 +5,8 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.enve.app.MainActivity
+import com.enve.app.profiles.ProfileActivityBinding
 import com.enve.app.readium.MediaOverlayEngine
-import com.enve.app.readium.ReadAloudPlaybackCoordinator
 import com.enve.app.readium.ReadAloudPlaybackSession
 import com.enve.app.readium.ReadiumManager
 import com.enve.app.storyalign.align.AlignedChapter
@@ -16,6 +16,7 @@ import com.enve.app.storyalign.align.SentenceRange
 import com.enve.app.storyalign.epub.EpubParser
 import com.enve.app.storyalign.epub.EpubZip
 import com.enve.app.storyalign.export.ReadAloudEpubBuilder
+import dagger.hilt.android.EntryPointAccessors
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -54,7 +55,13 @@ class ReadAloudChapterTransitionTest {
 
     private fun verifyPlayback(mixed: Boolean, pauseAtBoundary: Boolean = false, generated: Boolean = false) = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        ActivityScenario.launch(MainActivity::class.java).close()
+        val profiles = EntryPointAccessors.fromApplication(context, ProfileActivityBinding.DeviceEntryPoint::class.java).profiles()
+        ActivityScenario.launch(MainActivity::class.java).use {
+            withTimeout(30_000) {
+                while (profiles.activeRuntime.value == null || profiles.state.value.locked || profiles.state.value.switching) delay(50)
+            }
+        }
+        val playback = checkNotNull(profiles.activeRuntime.value).component.readAloud()
         val directory = File(context.cacheDir, "chapter-transition-${UUID.randomUUID()}").apply { mkdirs() }
         val file = File(directory, "narrated.epub")
         writeBook(file, mixed, generated)
@@ -63,7 +70,6 @@ class ReadAloudChapterTransitionTest {
         val publication = manager.publicationOpener.open(asset, allowUserInteraction = false)
             .getOrElse { error("Fixture publication could not open") }
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-        val playback = ReadAloudPlaybackCoordinator(context, scope)
         val session = ReadAloudPlaybackSession(UUID.randomUUID().toString(), "chapter-fixture", "Chapter fixture", null)
         val engine = MediaOverlayEngine(context, publication, scope, file, playback, session)
         val visited = CopyOnWriteArrayList<String>()

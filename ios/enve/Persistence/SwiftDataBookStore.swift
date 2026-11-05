@@ -1857,6 +1857,14 @@ final class SwiftDataBookStore: BookStoreRepository, @unchecked Sendable {
             record.currentTime = currentTime
             record.isFinished = isFinished
             record.lastUpdate = lastUpdate
+            if let source = Book.BookSource(rawValue: record.source) {
+                record.serverReadStatus = Book.readStatusAfterLocalProgress(
+                    record.serverReadStatus,
+                    source: source,
+                    hasProgress: currentTime > 0,
+                    isFinished: isFinished
+                )
+            }
             record.refreshSortKeys()
             try modelContext.save()
         }
@@ -1939,6 +1947,14 @@ final class SwiftDataBookStore: BookStoreRepository, @unchecked Sendable {
             record.epubLocator = epubLocator
             record.isFinished = isFinished
             record.lastUpdate = lastUpdate
+            if let source = Book.BookSource(rawValue: record.source) {
+                record.serverReadStatus = Book.readStatusAfterLocalProgress(
+                    record.serverReadStatus,
+                    source: source,
+                    hasProgress: (ebookProgress ?? 0) > 0,
+                    isFinished: isFinished
+                )
+            }
             record.refreshSortKeys()
 
             try mirrorEbookProgressIfNeeded(
@@ -1953,6 +1969,55 @@ final class SwiftDataBookStore: BookStoreRepository, @unchecked Sendable {
                 hideFromContinue: record.hideFromContinue
             )
             try modelContext.save()
+        }
+
+        func registerDownloadIfMissing(_ book: Book) throws {
+            let uid = book.uniqueId
+            var descriptor = FetchDescriptor<BookRecord>(predicate: #Predicate { $0.uniqueId == uid })
+            descriptor.fetchLimit = 1
+            guard try modelContext.fetch(descriptor).isEmpty else { return }
+            modelContext.insert(BookRecord(from: book))
+            try mirrorEbookProgressIfNeeded(
+                bookUniqueId: book.uniqueId,
+                stableId: book.stableId,
+                currentTime: book.currentTime,
+                duration: book.duration ?? 0,
+                ebookProgress: book.ebookProgress,
+                epubLocator: book.epubLocator,
+                isFinished: book.isFinished,
+                lastUpdate: book.lastUpdate,
+                hideFromContinue: book.hideFromContinue
+            )
+            try modelContext.save()
+        }
+
+        func fetchReferencedAudiobookStableIds(among candidates: Set<String>) throws -> Set<String> {
+            guard !candidates.isEmpty else { return [] }
+            var books = FetchDescriptor<BookRecord>(
+                predicate: #Predicate { !$0.isDeleted && ($0.linkedAudiobookStableId != nil || $0.readAloudSourceStableId != nil) }
+            )
+            books.propertiesToFetch = [\BookRecord.linkedAudiobookStableId, \BookRecord.readAloudSourceStableId]
+            var referenced = Set<String>()
+            for record in try modelContext.fetch(books) {
+                if let linked = record.linkedAudiobookStableId { referenced.insert(linked) }
+                if let source = record.readAloudSourceStableId { referenced.insert(source) }
+            }
+            var links = FetchDescriptor<LinkedBookPairRecord>()
+            links.propertiesToFetch = [\LinkedBookPairRecord.audiobookStableId]
+            referenced.formUnion(try modelContext.fetch(links).map(\.audiobookStableId))
+            return referenced.intersection(candidates)
+        }
+
+        func updateDownloadedEbook(uniqueId uid: String, path: String, hasMediaOverlay: Bool?) throws -> Bool {
+            var descriptor = FetchDescriptor<BookRecord>(
+                predicate: #Predicate { $0.uniqueId == uid && !$0.isDeleted }
+            )
+            descriptor.fetchLimit = 1
+            guard let record = try modelContext.fetch(descriptor).first else { return false }
+            record.ebookFileURLPath = path
+            if let hasMediaOverlay { record.epub3HasMediaOverlay = hasMediaOverlay }
+            try modelContext.save()
+            return true
         }
 
         func updateEbookFileURL(uniqueId uid: String, path: String?) throws {
@@ -3785,6 +3850,31 @@ final class SwiftDataBookStore: BookStoreRepository, @unchecked Sendable {
         } catch {
             AppLogger.general.error("BookStore.updateEbookProgress failed: \(error)")
         }
+    }
+
+    func registerDownloadIfMissing(_ book: Book) async throws {
+        guard !book.uniqueId.isEmpty, !book.stableId.isEmpty else { return }
+        try await makeWorker().registerDownloadIfMissing(book)
+        BookStoreChangeNotifier.notify()
+    }
+
+    func referencedAudiobookStableIds(among candidates: Set<String>) async -> Set<String> {
+        do {
+            return try await makeWorker().fetchReferencedAudiobookStableIds(among: candidates)
+        } catch {
+            AppLogger.general.error("BookStore.referencedAudiobookStableIds failed: \(error)")
+            // Unknown links count as in use, so nothing linked is removed.
+            return candidates
+        }
+    }
+
+    func updateDownloadedEbook(uniqueId: String, fileURL: URL, epub3Features: EPUB3Features?) async throws -> Bool {
+        guard !uniqueId.isEmpty else { return false }
+        let stored = try await makeWorker().updateDownloadedEbook(
+            uniqueId: uniqueId, path: fileURL.path, hasMediaOverlay: epub3Features?.hasMediaOverlay
+        )
+        if stored { BookStoreChangeNotifier.notify() }
+        return stored
     }
 
     func updateEbookFileURL(uniqueId: String, url: URL?) async {

@@ -42,6 +42,7 @@ data class PlaybackQueueItem(
 interface PlaybackFacade {
     val transport: StateFlow<PlaybackTransport>
     val nowPlaying: StateFlow<NowPlaying?>
+    val starting: StateFlow<Book?>
     val queue: StateFlow<List<PlaybackQueueItem>>
 
     val errors: SharedFlow<String>

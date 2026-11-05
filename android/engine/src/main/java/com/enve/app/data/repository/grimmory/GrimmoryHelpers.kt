@@ -74,6 +74,33 @@ internal fun BookSummaryDto.withFormatInventory(inventory: LegacyBookloreBookDto
                 .firstOrNull { it.isNotBlank() } ?: title
         },
         libraryId = libraryId?.takeIf { it.isNotBlank() } ?: inventory.libraryId?.takeIf { it.isNotBlank() },
+        fileSizeKb = fileSizeKb ?: inventory.primaryFile?.fileSizeKb,
+        authors = authors ?: inventory.metadata?.authors,
+        thumbnailUrl = thumbnailUrl ?: inventory.metadata?.thumbnailUrl,
+        libraryName = libraryName ?: inventory.libraryName,
+        addedOn = addedOn ?: inventory.addedOn,
+        lastReadTime = lastReadTime ?: inventory.lastReadTime,
+        readProgress = readProgress ?: inventory.readProgress,
+        readStatus = readStatus ?: inventory.readStatus,
+        personalRating = personalRating ?: inventory.personalRating,
+        dateFinished = dateFinished ?: inventory.dateFinished,
+        isPhysical = isPhysical ?: inventory.isPhysical,
+        metadataMatchScore = metadataMatchScore ?: inventory.metadataMatchScore,
+        seriesName = seriesName ?: inventory.metadata?.seriesName,
+        seriesNumber = seriesNumber ?: inventory.metadata?.seriesNumber,
+        coverUpdatedOn = coverUpdatedOn ?: inventory.metadata?.coverUpdatedOn,
+        audiobookCoverUpdatedOn = audiobookCoverUpdatedOn ?: inventory.metadata?.audiobookCoverUpdatedOn,
+        publishedDate = publishedDate ?: inventory.metadata?.publishedDate,
+        pageCount = pageCount ?: inventory.metadata?.pageCount,
+        publisher = publisher ?: inventory.metadata?.publisher,
+        categories = categories ?: inventory.metadata?.categories,
+        language = language ?: inventory.metadata?.language,
+        narrator = narrator ?: inventory.metadata?.narrator,
+        isbn13 = isbn13 ?: inventory.metadata?.isbn13,
+        isbn10 = isbn10 ?: inventory.metadata?.isbn10,
+        ageRating = ageRating ?: inventory.metadata?.ageRating,
+        contentRating = contentRating ?: inventory.metadata?.contentRating,
+        goodreadsRating = goodreadsRating ?: inventory.metadata?.goodreadsRating,
     )
     val files = listOfNotNull(inventory.primaryFile) + inventory.alternativeFormats.orEmpty()
     val ebook = files.firstOrNull { isGrimmoryEbookType(it.resolvedType()) }
@@ -88,6 +115,8 @@ internal fun BookSummaryDto.withFormatInventory(inventory: LegacyBookloreBookDto
     } else {
         identified.copy(
             primaryFile = inventory.primaryFile ?: primaryFile,
+            primaryFileType = primaryFileType ?: inventory.primaryFile?.resolvedType(),
+            primaryFileName = primaryFileName ?: inventory.primaryFile?.fileName,
             alternativeFormats = inventory.alternativeFormats ?: alternativeFormats,
         )
     }

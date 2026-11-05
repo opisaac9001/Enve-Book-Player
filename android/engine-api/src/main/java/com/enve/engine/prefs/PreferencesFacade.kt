@@ -2,6 +2,7 @@ package com.enve.engine.prefs
 
 import com.enve.engine.theme.HearthPaletteStyle
 import com.enve.engine.theme.HearthThemeMode
+import com.enve.core.data.model.BookCardStyle
 import com.enve.core.data.model.ComicPageLoadingMode
 import kotlinx.coroutines.flow.Flow
 
@@ -53,6 +54,7 @@ interface PreferencesFacade {
     val restReminderIntroShown: Flow<Boolean>
 
     val libraryColumns: Flow<Int>
+    val bookCardStyle: Flow<BookCardStyle>
 
     val librarySortStack: Flow<String>
 
@@ -61,6 +63,7 @@ interface PreferencesFacade {
     val comicPageLoadingMode: Flow<ComicPageLoadingMode>
     val preferredStartTab: Flow<HearthStartTab>
     val homeSectionOrder: Flow<List<HearthHomeSection>>
+    val hiddenHomeSections: Flow<Set<HearthHomeSection>>
     val showDockBookShortcut: Flow<Boolean>
     val showTodayStack: Flow<Boolean>
     val ebookSyncInterval: Flow<EbookSyncInterval>
@@ -85,6 +88,7 @@ interface PreferencesFacade {
     suspend fun setComicPageLoadingMode(mode: ComicPageLoadingMode)
     suspend fun setPreferredStartTab(tab: HearthStartTab)
     suspend fun setHomeSectionOrder(order: List<HearthHomeSection>)
+    suspend fun setHomeSectionHidden(section: HearthHomeSection, hidden: Boolean)
     suspend fun setShowDockBookShortcut(show: Boolean)
     suspend fun setShowTodayStack(show: Boolean)
     suspend fun setEbookSyncInterval(interval: EbookSyncInterval)

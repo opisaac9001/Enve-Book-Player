@@ -33,6 +33,8 @@ final class PlaybackManagerController: PlaybackControlling, PlaybackEventPublish
         )
     }
 
+    var livePosition: TimeInterval? { manager.livePosition }
+
     var snapshots: AnyPublisher<PlaybackSnapshot, Never> {
         changeSignal
             .map { [weak self] in self?.snapshot ?? .idle }

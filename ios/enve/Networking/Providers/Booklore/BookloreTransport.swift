@@ -4,6 +4,7 @@ import Security
 
 final class BookloreTransport: @unchecked Sendable {
     private let session: URLSession
+    private let requests: ProviderURLSession
     private let authDelegate: BookloreAuthDelegate
 
     var credential: URLCredential { authDelegate.credential }
@@ -26,9 +27,10 @@ final class BookloreTransport: @unchecked Sendable {
             certificateTransport: profileSession?.transport ?? .delegateInstance
         )
         session = URLSession(configuration: configuration, delegate: authDelegate, delegateQueue: nil)
+        requests = ProviderURLSession(session)
     }
 
-    func invalidate() { session.invalidateAndCancel() }
+    func invalidate() { requests.invalidateAndCancel() }
 
     func setCustomHeadersProvider(_ provider: @escaping () -> [String: String]?) {
         authDelegate.customHeadersProvider = provider
@@ -96,7 +98,7 @@ final class BookloreTransport: @unchecked Sendable {
     }
 
     func data(for request: URLRequest) async throws -> (Data, URLResponse) {
-        try await session.data(for: request)
+        try await requests.data(for: request)
     }
 
     private static func normalize(_ value: String) -> String {

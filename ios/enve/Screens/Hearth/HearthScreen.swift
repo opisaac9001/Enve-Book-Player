@@ -8,7 +8,7 @@ struct HearthScreen: View {
     init(isActive: Bool = true, profileSession: ProfileSession) {
         self.isActive = isActive
         self.profileSession = profileSession
-        _sectionOrder = State(initialValue: profileSession.preferences.loadPreferences().normalizedHomeSectionOrder)
+        _sectionOrder = State(initialValue: profileSession.preferences.loadPreferences().visibleHomeSections)
     }
 
     @Environment(EnveEngine.self) private var engine
@@ -112,7 +112,7 @@ struct HearthScreen: View {
                 sectionOrder =
                     profileSession.preferences
                     .loadPreferences()
-                    .normalizedHomeSectionOrder
+                    .visibleHomeSections
                 await load()
             }
         }
@@ -182,25 +182,19 @@ struct HearthScreen: View {
     }
 
     private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 6) {
-                Overline(HearthFormat.greeting())
-                Text("Hearth")
-                    .font(.hearthScreenTitle)
-                    .foregroundStyle(hearth.text)
-                if let synced = engine.sync.lastSyncDate {
-                    Text("Progress synced \(synced.formatted(.relative(presentation: .named)))")
-                        .font(.hearthUI(11))
-                        .foregroundStyle(hearth.textTertiary)
-                }
-                if engine.sources.recentCatalogRefreshFailed {
-                    Text("Couldn't check for new books. Pull to retry.")
-                        .font(.hearthUI(11))
-                        .foregroundStyle(hearth.textSecondary)
-                        .accessibilityIdentifier("hearth-catalog-refresh-failure")
-                }
+        TabHeader(overline: HearthFormat.greeting(), title: "Hearth") {
+            if let synced = engine.sync.lastSyncDate {
+                Text("Progress synced \(synced.formatted(.relative(presentation: .named)))")
+                    .font(.hearthUI(11))
+                    .foregroundStyle(hearth.textTertiary)
             }
-            Spacer()
+            if engine.sources.recentCatalogRefreshFailed {
+                Text("Couldn't check for new books. Pull to retry.")
+                    .font(.hearthUI(11))
+                    .foregroundStyle(hearth.textSecondary)
+                    .accessibilityIdentifier("hearth-catalog-refresh-failure")
+            }
+        } trailing: {
             if profiles.isEnabled {
                 NavigationLink {
                     ProfilesScreen()
@@ -228,7 +222,6 @@ struct HearthScreen: View {
             }
             .accessibilityLabel("Settings")
         }
-        .padding(.horizontal, 24)
     }
 
     private var hero: Book? {

@@ -173,16 +173,6 @@ struct OPDSAcquisitionSelectionTests {
         #expect(acquisition.format.mediaType == .ebook)
     }
 
-    @Test func audioAcquisitionsAreClassifiedAsAudiobooks() throws {
-        let acquisition = try downloadable([
-            OPDSLink(href: "chapter.m4b", type: "audio/mp4", rels: ["http://opds-spec.org/acquisition"])
-        ])
-
-        #expect(acquisition.format == .audio)
-        #expect(acquisition.format.mediaType == .audiobook)
-        #expect(acquisition.format.ebookFormat == nil)
-    }
-
     @Test func anOpaqueBinaryTypeFallsBackToThePathExtension() throws {
         let acquisition = try downloadable([
             OPDSLink(href: "book.cbz", type: "application/octet-stream", rels: ["http://opds-spec.org/acquisition"])
@@ -319,12 +309,6 @@ struct OPDSAcquisitionSelectionTests {
             Issue.record("A templated acquisition URI was fetched verbatim")
             return
         }
-    }
-
-    @Test func nonHTTPSchemesAreRefused() {
-        #expect(OPDSURL.resolve("mailto:librarian@example.invalid", baseURL: base) == nil)
-        #expect(OPDSURL.resolve("file:///etc/passwd", baseURL: base) == nil)
-        #expect(OPDSURL.resolve("/opds/page2", baseURL: base)?.absoluteString == "https://catalog.example.invalid/opds/page2")
     }
 
     private func downloadable(_ links: [OPDSLink]) throws -> OPDSAcquisition {

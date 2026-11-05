@@ -460,7 +460,7 @@ public class PlayerViewModel {
     }
 
     func play(book: Book) {
-        bookStarter.play(book, presentPlayer: true)
+        bookStarter.play(book, from: nil, presentPlayer: true)
     }
 
     func pause() {

@@ -51,7 +51,7 @@ Each cached profile is 522,240 bytes. The three additional profiles add 1,566,72
 
 Final verification ran `AllTests` on iPhone Air Simulator: 1,636 passed, 35 skipped, and three failed (two `ABSCredentialsRecoveryTests` wait timeouts and a killed `MediaOverlayPlayerPositionTests` test process). A focused run of `KokoroVoiceTests`, `ABSCredentialsRecoveryTests`, and `MediaOverlayPlayerPositionTests` then passed all 10 tests with zero failures or skips. The full suite did not finish green in that combined run. No new compiler warnings were introduced; the existing CloudKit conformance warning remains.
 
-The full-suite result is `test_sim_2026-10-23T02-13-38-179Z_pid33262_019fff56.xcresult`; the focused retry is `test_sim_2026-10-23T02-17-04-052Z_pid33262_1e8fec5a.xcresult`, both under the local XcodeBuildMCP workspace's `result-bundles/` directory. The physical generation and picker tests each passed one test with zero failures.
+The full-suite result is `test_sim_2026-10-23T02-13-38-179Z_pid33262_019fff56.xcresult`; the focused retry is `test_sim_2026-10-23T02-17-04-052Z_pid33262_1e8fec5a.xcresult`. The physical generation and picker tests each passed one test with zero failures.
 
 Implementation files are `KokoroTTSVoice.swift` (catalog and profile assets), `KokoroTTSEngine.swift` (voice-specific synthesis and cache identity), `EbookTTSService.swift` (profile preference and prefetch), `ReaderTTSSheet.swift` (picker), and the Kokoro download-detail string in `EbookTTSEngineChoice.swift`.
 

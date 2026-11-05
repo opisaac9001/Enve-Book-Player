@@ -55,6 +55,25 @@ class GrimmoryCatalogFetcher(
 
     internal suspend fun fetch(libraryId: String?, page: Int, size: Int, sort: String, dir: String): GrimmoryCatalogBatch = coroutineScope {
         val stage = CatalogImportStage.BOOKS
+        if (page == 0) {
+            val response = try {
+                api.getCatalogBookIds(libraryId).catalogResponse()
+            } catch (e: Exception) {
+                return@coroutineScope failed(e, stage)
+            }
+            if (response.code() !in listOf(404, 405)) {
+                if (!response.isSuccessful) return@coroutineScope failed(response, stage)
+                val ids = response.body() as? JsonArray
+                    ?: return@coroutineScope GrimmoryCatalogBatch(report = problem(CatalogFailureKind.INVALID_PAGE, stage))
+                val records = JsonArray(ids.map { JsonObject(mapOf("id" to it)) })
+                val decoded = decode(records, BookSummaryDto.serializer(), libraryId) { it.libraryId }
+                val unique = decoded.first.distinctBy { it.id }
+                val report = if (unique.size != decoded.first.size) {
+                    decoded.second.merge(problem(CatalogFailureKind.INVALID_PAGINATION, stage))
+                } else decoded.second
+                return@coroutineScope formats(GrimmoryCatalogBatch(unique, report), libraryId)
+            }
+        }
         val effectiveSize = size.coerceIn(1, 500)
         val first = try {
             api.getCatalogBooks(libraryId, page, effectiveSize, sort, dir).catalogResponse()
@@ -106,54 +125,68 @@ class GrimmoryCatalogFetcher(
         formats(GrimmoryCatalogBatch(unique, report), libraryId)
     }
 
-    private suspend fun formats(batch: GrimmoryCatalogBatch, libraryId: String?): GrimmoryCatalogBatch {
-        val resolved = mutableListOf<BookSummaryDto>()
-        var report = batch.report
-        for (group in batch.books.chunked(100)) {
-            val response = try {
-                api.getCatalogInventory(group.joinToString(",") { it.id }).catalogResponse()
-            } catch (e: Exception) {
-                report = report.merge(failed(e, CatalogImportStage.FORMATS).report)
-                break
-            }
-            if (resolved.isEmpty() && response.code() in listOf(404, 405)) {
-                val fallback = legacy(libraryId)
-                val consistent = try {
-                    consistentGrimmoryCatalogFallback(batch.books, fallback.books)
-                    true
-                } catch (_: IllegalStateException) { false }
-                return if (consistent) fallback.copy(report = report.merge(fallback.report)) else GrimmoryCatalogBatch(
-                    batch.books.filter { it.hasAudioFormat() || it.hasEbookFormat() },
-                    report.merge(fallback.report).merge(problem(CatalogFailureKind.CONFLICTING_CATALOG, CatalogImportStage.LEGACY)),
-                )
-            }
-            if (!response.isSuccessful) {
-                report = report.merge(failed(response, CatalogImportStage.FORMATS).report)
-                break
-            }
-            val decoded = try {
-                decode(response.body() as? JsonArray ?: throw SerializationException(), LegacyBookloreBookDto.serializer(), libraryId) { it.libraryId }
-            } catch (e: SerializationException) {
-                report = report.merge(failed(e, CatalogImportStage.FORMATS).report)
-                break
-            }
-            val byId = decoded.first.associateBy { it.id }
-            report = report.merge(decoded.second)
-            val missing = group.count { it.id !in byId }
-            report = report.rejecting(CatalogRejectionReason.MISSING_INVENTORY, (missing - decoded.second.rejectedCount).coerceAtLeast(0))
-            group.forEach { summary ->
-                byId[summary.id]?.let { inventory ->
-                    val enriched = summary.withFormatInventory(inventory)
-                    resolved += if (enriched.libraryId == null) enriched.copy(libraryId = libraryId) else enriched
+    private suspend fun formats(batch: GrimmoryCatalogBatch, libraryId: String?): GrimmoryCatalogBatch = coroutineScope {
+        val groups = batch.books.chunked(100)
+        val firstGroup = groups.firstOrNull() ?: return@coroutineScope batch
+        val first = try {
+            api.getCatalogInventory(firstGroup.joinToString(",") { it.id }).catalogResponse()
+        } catch (e: Exception) {
+            return@coroutineScope GrimmoryCatalogBatch(report = batch.report.merge(failed(e, CatalogImportStage.FORMATS).report))
+        }
+        if (first.code() in listOf(404, 405)) {
+            val fallback = legacy(libraryId)
+            val consistent = try {
+                consistentGrimmoryCatalogFallback(batch.books, fallback.books)
+                true
+            } catch (_: IllegalStateException) { false }
+            return@coroutineScope if (consistent) fallback.copy(report = batch.report.merge(fallback.report)) else GrimmoryCatalogBatch(
+                batch.books.filter { it.hasAudioFormat() || it.hasEbookFormat() },
+                batch.report.merge(fallback.report).merge(problem(CatalogFailureKind.CONFLICTING_CATALOG, CatalogImportStage.LEGACY)),
+            )
+        }
+        val initial = inventory(firstGroup, first, libraryId)
+        if (initial.report.failures.isNotEmpty()) {
+            return@coroutineScope initial.copy(report = batch.report.merge(initial.report))
+        }
+        val semaphore = Semaphore(4)
+        val rest = groups.drop(1).map { group ->
+            async {
+                semaphore.withPermit {
+                    try {
+                        inventory(group, api.getCatalogInventory(group.joinToString(",") { it.id }).catalogResponse(), libraryId)
+                    } catch (e: Exception) {
+                        failed(e, CatalogImportStage.FORMATS)
+                    }
                 }
             }
+        }.awaitAll()
+        val resolved = (initial.books + rest.flatMap { it.books }).distinctBy { it.id }
+        val report = rest.fold(batch.report.merge(initial.report)) { accumulated, result -> accumulated.merge(result.report) }
+        GrimmoryCatalogBatch(resolved, report.copy(acceptedCount = resolved.size))
+    }
+
+    private fun inventory(group: List<BookSummaryDto>, response: Response<JsonElement>, libraryId: String?): GrimmoryCatalogBatch {
+        if (!response.isSuccessful) return failed(response, CatalogImportStage.FORMATS)
+        val decoded = try {
+            decode(response.body() as? JsonArray ?: throw SerializationException(), LegacyBookloreBookDto.serializer(), libraryId) { it.libraryId }
+        } catch (e: SerializationException) {
+            return failed(e, CatalogImportStage.FORMATS)
         }
-        return GrimmoryCatalogBatch(resolved.distinctBy { it.id }, report.copy(acceptedCount = resolved.distinctBy { it.id }.size))
+        val byId = decoded.first.associateBy { it.id }
+        val missing = group.count { it.id !in byId }
+        val report = decoded.second.rejecting(CatalogRejectionReason.MISSING_INVENTORY, (missing - decoded.second.rejectedCount).coerceAtLeast(0))
+        val resolved = group.mapNotNull { summary ->
+            byId[summary.id]?.let { inventory ->
+                val enriched = summary.withFormatInventory(inventory)
+                if (enriched.libraryId == null) enriched.copy(libraryId = libraryId) else enriched
+            }
+        }
+        return GrimmoryCatalogBatch(resolved, report)
     }
 
     private suspend fun legacy(libraryId: String?): GrimmoryCatalogBatch {
         val ids = if (libraryId != null) listOf(libraryId) else {
-            val libraries = try { api.getCatalogLibrariesLegacy().catalogResponse() } catch (e: Exception) { return failed(e, CatalogImportStage.LEGACY) }
+            val libraries = try { api.getCatalogLibraries().catalogResponse() } catch (e: Exception) { return failed(e, CatalogImportStage.LEGACY) }
             if (!libraries.isSuccessful) return failed(libraries, CatalogImportStage.LEGACY)
             libraries.body()?.map { it.id } ?: return GrimmoryCatalogBatch(report = problem(CatalogFailureKind.INVALID_PAGE, CatalogImportStage.LEGACY))
         }

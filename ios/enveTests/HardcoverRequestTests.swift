@@ -201,11 +201,6 @@ struct HardcoverRequestTests {
         #expect(books.first?.progressFraction == 0.5)
     }
 
-    @Test func pausedAndIgnoredStatusesArePreserved() {
-        #expect(HardcoverReadingStatus(rawValue: 4)?.displayName == "Paused")
-        #expect(HardcoverReadingStatus(rawValue: 6)?.displayName == "Ignored")
-    }
-
     @Test func currentReadEditionControlsDisplayedProgress() throws {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase

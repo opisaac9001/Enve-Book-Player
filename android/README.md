@@ -44,6 +44,10 @@ ENVE_RELEASE_KEY_PASSWORD=... \
 
 Never commit a keystore, signing password, server credential, private URL, downloaded book, or diagnostic export. The manual `Signed APK` GitHub Actions workflow builds an existing version tag, verifies the signed APK, and attaches it and its SHA-256 checksum to a draft GitHub release. Publish that draft only after completing `docs/release/production-checklist.md` and closing the binary-distribution gates in `docs/legal/THIRD_PARTY_AUDIT.md`.
 
+## Android Auto with a GitHub APK
+
+Android Auto hides apps that weren't installed from Google Play until unknown sources are allowed. Media controls still work, but opening Enve from the car shows it on the phone instead. In Android Auto's settings, tap **Version** about 10 times, then open **⋮ → Developer settings** and turn on **Unknown sources**. Settings → Playback & audio in Enve links to Android Auto's settings when the app wasn't installed from Play.
+
 ## Repository layout
 
 - `app/` contains the Android application shell and reader activities.

@@ -134,9 +134,9 @@ xcodebuild -project enve.xcodeproj -scheme enve-tvOS \
   COMPILER_INDEX_STORE_ENABLE=NO build
 ```
 
-The final build reported zero errors and no new warnings; the existing CloudKit Sendable and App Intents metadata-extraction warnings remain. The clean baseline also reported existing dependency warnings. Build output moved to the internal drive after the games volume ran out of space; only the failed task-created build directory was removed.
+The final build reported zero errors and no new warnings; the existing CloudKit Sendable and App Intents metadata-extraction warnings remain. The clean baseline also reported existing dependency warnings.
 
-Installed and launched the tvOS app and inspected Home, Settings, plain EPUB rendering and the read-along screen with local synthetic content. The centered landscape icon is visible in the simulator launcher; generated standard/wide Top Shelf images were inspected separately. Interactive remote/focus verification and physical Apple TV parallax verification remain pending: the Mac was locked during this task.
+Installed and launched the tvOS app and inspected Home, Settings, plain EPUB rendering and the read-along screen with local synthetic content. The centered landscape icon is visible in the simulator launcher; generated standard/wide Top Shelf images were inspected separately. Interactive remote/focus verification and physical Apple TV parallax verification remain pending.
 
 ## Feature audit — 2026-10-26
 

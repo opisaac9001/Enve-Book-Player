@@ -205,7 +205,11 @@ final class BookloreAudiobookSyncStrategy: ProviderSyncStrategy {
                         continue
                     }
 
-                    if serverResult.readState.isFinished || serverResult.readState == .notReading {
+                    let localAhead = serverResult.readState == .notReading && localTime > 1
+                        && localDate > (serverResult.updatedAt ?? .distantPast)
+                    let activeStatus = localAhead ? "READING" : (serverResult.readState.persistedStatus ?? "READING")
+
+                    if serverResult.readState.isFinished || (serverResult.readState == .notReading && !localAhead) {
                         persistedBook.serverReadStatus = serverResult.readState.persistedStatus
                         persistedBook.isFinished = serverResult.readState.isFinished
                         persistedBook.hideFromContinue = true
@@ -234,7 +238,7 @@ final class BookloreAudiobookSyncStrategy: ProviderSyncStrategy {
                     }
 
                     persistedBook.hideFromContinue = false
-                    persistedBook.serverReadStatus = serverResult.readState.persistedStatus ?? "READING"
+                    persistedBook.serverReadStatus = activeStatus
 
                     let serverTime = serverResult.positionSeconds
                     let serverDate = serverResult.updatedAt ?? .distantPast
@@ -261,7 +265,7 @@ final class BookloreAudiobookSyncStrategy: ProviderSyncStrategy {
                         let isPercentFinished = serverResult.percentage >= Book.finishedProgressThreshold
                         let mutated = libraryCache.mutateBook(stableId: book.stableId) {
                             $0.hideFromContinue = false
-                            $0.serverReadStatus = serverResult.readState.persistedStatus ?? "READING"
+                            $0.serverReadStatus = activeStatus
                             $0.currentTime = serverTime
                             $0.lastUpdate = serverDate
                             if duration > 0 { $0.isFinished = isPercentFinished }
@@ -277,7 +281,7 @@ final class BookloreAudiobookSyncStrategy: ProviderSyncStrategy {
                     case .push:
                         let mutated = libraryCache.mutateBook(stableId: book.stableId) {
                             $0.hideFromContinue = false
-                            $0.serverReadStatus = serverResult.readState.persistedStatus ?? "READING"
+                            $0.serverReadStatus = activeStatus
                         }
                         if mutated == nil {
                             await bookWriter.upsertBooks([persistedBook])
@@ -297,7 +301,7 @@ final class BookloreAudiobookSyncStrategy: ProviderSyncStrategy {
                     case .conflict, .none:
                         let mutated = libraryCache.mutateBook(stableId: book.stableId) {
                             $0.hideFromContinue = false
-                            $0.serverReadStatus = serverResult.readState.persistedStatus ?? "READING"
+                            $0.serverReadStatus = activeStatus
                         }
                         if mutated == nil {
                             await bookWriter.upsertBooks([persistedBook])

@@ -31,7 +31,7 @@ final class ProviderConnectionStore: ProviderConnectionAccessing, ProviderConnec
 
     var connections: [ServerConnection] = [] {
         didSet {
-            persist()
+            persist(previous: oldValue)
             syncProviders()
             refreshAuthenticationFailures()
             if activeSignature(oldValue) != activeSignature(connections) {
@@ -406,7 +406,7 @@ final class ProviderConnectionStore: ProviderConnectionAccessing, ProviderConnec
         )
     }
 
-    private func persist() {
+    private func persist(previous: [ServerConnection]) {
         guard persistsConnections else { return }
         let snapshot = connections
         do {
@@ -417,7 +417,11 @@ final class ProviderConnectionStore: ProviderConnectionAccessing, ProviderConnec
         }
 
         guard isOwnerProfile, PlatformRuntime.cloudKitEnabled else { return }
+        let removedIDs = Set(previous.map(\.id)).subtracting(snapshot.map(\.id))
         Task { @MainActor [snapshot] in
+            for id in removedIDs {
+                await ServerConnectionCloudKitSync.shared.deleteConnection(id: id)
+            }
             for connection in snapshot {
                 await ServerConnectionCloudKitSync.shared.pushChange(connection)
             }
@@ -477,6 +481,11 @@ final class ProviderConnectionStore: ProviderConnectionAccessing, ProviderConnec
 
         if loaded.contains(where: { !$0.url.lowercased().contains("example.com") }) {
             loaded.removeAll { $0.url.lowercased().contains("example.com") }
+        }
+        // Migrate legacy backends once; leaving them behind revived deleted connections on every launch.
+        if !legacyBackends.isEmpty, persistsConnections, let data = try? encode(loaded) {
+            defaults.set(data, forKey: Self.storageKey)
+            serverConfig.saveBackends([])
         }
         return loaded
     }

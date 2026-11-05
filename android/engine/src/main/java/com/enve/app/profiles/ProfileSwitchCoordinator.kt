@@ -84,7 +84,7 @@ class ProfileSwitchCoordinator @Inject constructor(
         val selected = if (state.value.enabled) state.value.activeProfileId ?: DEFAULT_ADULT_PROFILE_ID
             else DEFAULT_ADULT_PROFILE_ID
         val profile = profile(selected)
-        if (state.value.enabled && childrenExist() && profile.role == FamilyProfileRole.ADULT) {
+        if (state.value.enabled && (profile.requiresPin || (childrenExist() && profile.role == FamilyProfileRole.ADULT))) {
             mutableState.update { it.copy(activeProfileId = selected, locked = true) }
         } else {
             activate(profile)
@@ -192,7 +192,7 @@ class ProfileSwitchCoordinator @Inject constructor(
         catalog.verifyAdultPin(pin).also { result ->
             if (result == AdultPinResult.Accepted) {
                 grantAuthorization()
-                if (state.value.locked) activate(profile(state.value.activeProfileId ?: DEFAULT_ADULT_PROFILE_ID))
+                if (state.value.locked) activate(profile(state.value.activeProfileId ?: DEFAULT_ADULT_PROFILE_ID), profileUnlocked = true)
                 grantAuthorization()
             }
         }
@@ -202,12 +202,19 @@ class ProfileSwitchCoordinator @Inject constructor(
         check(state.value.enabled)
         val destination = profile(profileId)
         if (destination.role == FamilyProfileRole.ADULT && childrenExist()) requireParent(pin)
-        activate(destination)
+        if (destination.requiresPin) check(catalog.verifyAdultPin(pin.orEmpty()) == AdultPinResult.Accepted) { "Enter the parent PIN." }
+        activate(destination, profileUnlocked = true)
+    }
+
+    override suspend fun setProfilePinRequired(profileId: String, required: Boolean, pin: String) = operation {
+        requireParent(null)
+        check(catalog.verifyAdultPin(pin) == AdultPinResult.Accepted) { "Enter the parent PIN." }
+        catalog.setPinRequired(profileId, required)
     }
 
     override suspend fun importCandidates(sourceProfileId: String, pin: String?): List<ProfileDownloadCandidate> = operation {
         requireParent(pin)
-        profile(sourceProfileId)
+        check(!profile(sourceProfileId).requiresPin || mutableRuntime.value?.profileId == sourceProfileId) { "Open this profile before importing its books." }
         val source = runtimes.open(sourceProfileId)
         pauseDownloads(source)
         try {
@@ -226,7 +233,7 @@ class ProfileSwitchCoordinator @Inject constructor(
     ): Book = operation {
         requireParent(pin)
         require(sourceProfileId != targetProfileId)
-        profile(sourceProfileId)
+        check(!profile(sourceProfileId).requiresPin || mutableRuntime.value?.profileId == sourceProfileId) { "Open this profile before importing its books." }
         profile(targetProfileId)
         val source = runtimes.open(sourceProfileId)
         val target = runtimes.open(targetProfileId)
@@ -354,7 +361,7 @@ class ProfileSwitchCoordinator @Inject constructor(
 
     override fun onBackground() {
         revokeAuthorization()
-        if (state.value.enabled && childrenExist() && profile(state.value.activeProfileId ?: DEFAULT_ADULT_PROFILE_ID).role == FamilyProfileRole.ADULT) {
+        if (state.value.enabled && (profile(state.value.activeProfileId ?: DEFAULT_ADULT_PROFILE_ID).requiresPin || (childrenExist() && profile(state.value.activeProfileId ?: DEFAULT_ADULT_PROFILE_ID).role == FamilyProfileRole.ADULT))) {
             mutableState.update { it.copy(locked = true) }
         }
     }
@@ -363,7 +370,8 @@ class ProfileSwitchCoordinator @Inject constructor(
         mutableState.update { it.copy(error = null) }
     }
 
-    private suspend fun activate(destination: FamilyProfile) {
+    private suspend fun activate(destination: FamilyProfile, profileUnlocked: Boolean = false) {
+        check(!state.value.enabled || !destination.requiresPin || profileUnlocked) { "Enter the parent PIN." }
         if (mutableRuntime.value?.profileId == destination.id && !state.value.locked) return
         mutableState.update { it.copy(switching = true, error = null) }
         val outgoing = mutableRuntime.value
@@ -458,7 +466,7 @@ class ProfileSwitchCoordinator @Inject constructor(
     private fun childrenExist(): Boolean = catalog.profiles.value.any { it.role == FamilyProfileRole.CHILD }
 
     private fun requireParent(pin: String?) {
-        if (!childrenExist() && profile(state.value.activeProfileId ?: DEFAULT_ADULT_PROFILE_ID).role == FamilyProfileRole.ADULT) return
+        if (!state.value.locked && !childrenExist() && profile(state.value.activeProfileId ?: DEFAULT_ADULT_PROFILE_ID).role == FamilyProfileRole.ADULT) return
         if (authorizedUntil > SystemClock.elapsedRealtime()) return
         val result = pin?.let { catalog.verifyAdultPin(it) }
         check(result == AdultPinResult.Accepted) {

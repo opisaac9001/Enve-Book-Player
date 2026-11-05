@@ -56,6 +56,8 @@ private sealed interface ProfileDialog {
     data object Add : ProfileDialog
     data object Unlock : ProfileDialog
     data object Pin : ProfileDialog
+    data class Open(val profile: FamilyProfile) : ProfileDialog
+    data class Protection(val profile: FamilyProfile) : ProfileDialog
     data class Rename(val profile: FamilyProfile) : ProfileDialog
     data class Remove(val profile: FamilyProfile) : ProfileDialog
 }
@@ -101,7 +103,8 @@ fun HearthProfilesScreen(facade: ProfilesFacade, onBack: () -> Unit) {
                         color = Hearth.palette.textSecondary,
                     )
                     QuietButton("Use ${profile.name}", {
-                        if (profile.role == FamilyProfileRole.ADULT && requiresUnlock) dialog = ProfileDialog.Unlock
+                        if (profile.requiresPin) dialog = ProfileDialog.Open(profile)
+                        else if (profile.role == FamilyProfileRole.ADULT && requiresUnlock) dialog = ProfileDialog.Unlock
                         else run { facade.switchProfile(profile.id) }
                     }, Modifier.testTag("profile-switch-${profile.id}"))
                     if (!requiresUnlock) {
@@ -112,10 +115,13 @@ fun HearthProfilesScreen(facade: ProfilesFacade, onBack: () -> Unit) {
                             testTag = "profile-server-sync-${profile.id}",
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            TextButton(onClick = { dialog = ProfileDialog.Rename(profile) }) { Text("Rename") }
+                            QuietButton("Rename", { dialog = ProfileDialog.Rename(profile) })
                             if (profile.id != DEFAULT_ADULT_PROFILE_ID && profile.id != state.activeProfileId) {
-                                TextButton(onClick = { dialog = ProfileDialog.Remove(profile) }) { Text("Remove") }
+                                QuietButton("Remove", { dialog = ProfileDialog.Remove(profile) })
                             }
+                        }
+                        if (profile.role == FamilyProfileRole.ADULT) {
+                            QuietButton(if (profile.requiresPin) "Remove profile PIN requirement" else "Require PIN to open", { dialog = ProfileDialog.Protection(profile) })
                         }
                         QuietButton("Import downloaded books", { importTarget = profile })
                     }
@@ -150,6 +156,8 @@ fun HearthProfilesScreen(facade: ProfilesFacade, onBack: () -> Unit) {
                         is AdultPinResult.Locked -> error("PIN locked")
                     }
                     ProfileDialog.Pin -> facade.changeAdultPin(oldPin.ifBlank { null }, pin, confirmation)
+                    is ProfileDialog.Open -> facade.switchProfile(current.profile.id, pin)
+                    is ProfileDialog.Protection -> facade.setProfilePinRequired(current.profile.id, !current.profile.requiresPin, pin)
                     is ProfileDialog.Rename -> facade.renameProfile(current.profile.id, name)
                     is ProfileDialog.Remove -> facade.removeProfile(current.profile.id)
                 }
@@ -190,7 +198,7 @@ fun HearthProfilePickerScreen(facade: ProfilesFacade, onSelected: () -> Unit) {
     ProfilePage("Who's reading?", "Choose a profile to continue.") {
         state.profiles.forEach { profile ->
             QuietButton(profile.name, {
-                if (profile.role == FamilyProfileRole.ADULT && state.profiles.any { it.role == FamilyProfileRole.CHILD } && !state.parentAuthorized) adult = profile
+                if (profile.requiresPin || profile.role == FamilyProfileRole.ADULT && state.profiles.any { it.role == FamilyProfileRole.CHILD } && !state.parentAuthorized) adult = profile
                 else choose(profile, null)
             }, Modifier.fillMaxWidth().testTag("profile-picker-${profile.id}"))
         }
@@ -257,6 +265,8 @@ private fun ProfileEditorDialog(
         ProfileDialog.Add -> "Add profile"
         ProfileDialog.Unlock -> "Adult controls"
         ProfileDialog.Pin -> "Adult PIN"
+        is ProfileDialog.Open -> "Open ${dialog.profile.name}"
+        is ProfileDialog.Protection -> "PIN for ${dialog.profile.name}"
         is ProfileDialog.Rename -> "Rename profile"
         is ProfileDialog.Remove -> "Remove ${dialog.profile.name}?"
     }
@@ -271,7 +281,7 @@ private fun ProfileEditorDialog(
                 error?.let { Text(it, color = Hearth.palette.statusError) }
                 if (dialog is ProfileDialog.Remove) {
                     Text("This removes this person's library and positions from this device. Books used by other profiles stay available.")
-                } else if (dialog != ProfileDialog.Unlock && dialog != ProfileDialog.Pin) {
+                } else if (dialog != ProfileDialog.Unlock && dialog != ProfileDialog.Pin && dialog !is ProfileDialog.Open && dialog !is ProfileDialog.Protection) {
                     OutlinedTextField(name, { name = it }, label = { Text("Name") }, singleLine = true, modifier = Modifier.testTag("profile-name"))
                 }
                 if (dialog == ProfileDialog.Add || dialog == ProfileDialog.Enable) {
@@ -283,6 +293,10 @@ private fun ProfileEditorDialog(
                         TextButton(onClick = { role = FamilyProfileRole.CHILD }) { Text(if (role == FamilyProfileRole.CHILD) "✓ Child" else "Child") }
                     }
                     if (role == FamilyProfileRole.CHILD) Text("Child profiles need an adult PIN. Set one below if you haven't already.")
+                }
+                if (dialog is ProfileDialog.Open || dialog is ProfileDialog.Protection) {
+                    Text("Enter the adult PIN set in Profiles. This requirement applies only to this profile; other adult profiles can stay unlocked.")
+                    ProfilePinField("Adult PIN", pin) { pin = it }
                 }
                 if (dialog == ProfileDialog.Pin && !recoveryAuthenticated) ProfilePinField("Current PIN, if set", oldPin) { oldPin = it }
                 if (dialog == ProfileDialog.Enable || dialog == ProfileDialog.Unlock || dialog == ProfileDialog.Pin || (dialog == ProfileDialog.Add && role == FamilyProfileRole.CHILD)) {
@@ -336,7 +350,7 @@ internal fun ProfilePage(title: String, subtitle: String, onBack: (() -> Unit)? 
             .padding(top = 12.dp, bottom = LocalMantelInset.current + 24.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
-        onBack?.let { TextButton(onClick = it) { Text("Back") } }
+        onBack?.let { QuietButton("Back", it) }
         Overline("On this device")
         Text(title, style = HearthText.ScreenTitle, color = Hearth.palette.text)
         Text(subtitle, style = HearthText.Body, color = Hearth.palette.textSecondary)

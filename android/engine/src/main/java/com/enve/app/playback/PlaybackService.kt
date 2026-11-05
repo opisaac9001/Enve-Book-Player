@@ -80,7 +80,6 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.Credentials
-import okhttp3.OkHttpClient
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
@@ -126,7 +125,7 @@ class PlaybackService : MediaLibraryService() {
     private var mediaSession: MediaLibrarySession? = null
     private var bootstrapPlayer: ExoPlayer? = null
     @Volatile private var artworkDataSourceFactory: DataSource.Factory? = null
-    private val browserHelperReady = CompletableDeferred<AutoMediaBrowserHelper?>()
+    private var browserHelperReady = CompletableDeferred<AutoMediaBrowserHelper?>()
     private val playbackRequests = PlaybackRequestGate()
     private var audioEffectsManager: AudioEffectsManager? = null
     private var localPlayer: ExoPlayer? = null
@@ -140,7 +139,7 @@ class PlaybackService : MediaLibraryService() {
     private var castStreamResolver: CastStreamResolver? = null
     private var localCastServer: LocalCastServer? = null
     private var progressService: PlayerProgressService? = null
-    private val checkpointBuffer = PlaybackCheckpointBuffer()
+    private var checkpointBuffer = PlaybackCheckpointBuffer()
     private var preferences: PreferencesManager? = null
     private var playerSessionService: PlayerSessionService? = null
     private var playerSessionFacade: PlayerSessionFacade? = null
@@ -225,10 +224,11 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
-    private fun createSession() {
+    private fun createSession(id: String = "") {
         val player = ExoPlayer.Builder(this).build().also { bootstrapPlayer = it }
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main).also { serviceScope = it }
         val sessionBuilder = MediaLibrarySession.Builder(this, NoSkipTrackPlayer(player), LibraryCallback(scope))
+            .setId(id)
             .setMediaButtonPreferences(autoMediaButtonPreferences())
         packageManager.getLaunchIntentForPackage(packageName)?.let { launchIntent ->
             launchIntent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
@@ -418,14 +418,14 @@ class PlaybackService : MediaLibraryService() {
 
     private fun abandonBootstrapSession() {
         browserHelperReady.complete(null)
-        mediaSession?.release()
-        mediaSession = null
+        releaseMediaSession()
         bootstrapPlayer?.release()
         bootstrapPlayer = null
         stopSelf()
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? {
+        reconcileActiveProfile()
         val awaitingProfile = capturedRuntime == null && !closedForProfileSwitch &&
             profileCoordinator?.state?.value?.locked == false
         if (!ownsActiveProfile() && !awaitingProfile) return null
@@ -436,11 +436,30 @@ class PlaybackService : MediaLibraryService() {
         return mediaSession
     }
 
+    private fun reconcileActiveProfile() {
+        val coordinator = profileCoordinator ?: return
+        if (coordinator.state.value.locked || coordinator.state.value.switching) return
+        val runtime = coordinator.activeRuntime.value ?: return
+        val captured = capturedRuntime
+        if (captured != null) {
+            if (ownsActiveProfile() || !closedForProfileSwitch) return
+        } else if (mediaSession != null) return
+        releaseSessionResources()
+        checkpointBuffer = PlaybackCheckpointBuffer()
+        browserHelperReady = CompletableDeferred()
+        closedForProfileSwitch = false
+        createSession("profile-${runtime.generation}")
+        initializeSession(runtime, EntryPointAccessors.fromApplication(applicationContext, PlaybackServiceEntryPoint::class.java))
+    }
+
     private fun ownsActiveProfile(): Boolean {
         val coordinator = profileCoordinator ?: return false
-        val runtime = capturedRuntime ?: return false
-        return !closedForProfileSwitch && !coordinator.state.value.switching && !coordinator.state.value.locked &&
-            coordinator.activeRuntime.value?.generation == runtime.generation
+        if (closedForProfileSwitch || coordinator.state.value.switching || coordinator.state.value.locked) return false
+        val captured = capturedRuntime ?: return false
+        val runtime = coordinator.activeRuntime.value ?: return false
+        if (captured.component !== runtime.component) return false
+        if (captured.generation != runtime.generation) capturedRuntime = runtime
+        return capturedRuntime?.generation == runtime.generation
     }
 
     private suspend fun checkpointForProfileSwitch() = withContext(Dispatchers.Main.immediate) {
@@ -460,13 +479,13 @@ class PlaybackService : MediaLibraryService() {
         }
         flushCheckpointBuffer()
         closedForProfileSwitch = true
-        mediaSession?.release()
-        mediaSession = null
+        releaseMediaSession()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
+        playbackQueueCoordinator?.cancelPendingStart()
         activePlaybackTarget()?.let(::checkpointPlayback)
         super.onTaskRemoved(rootIntent)
     }
@@ -497,20 +516,42 @@ class PlaybackService : MediaLibraryService() {
                 }
             }
         }
+        releaseSessionResources()
+        super.onDestroy()
+    }
+
+    private fun releaseSessionResources() {
+        playbackRequests.begin()
+        browserHelperReady.complete(null)
         profileLifecycleRegistration?.close()
         profileLifecycleRegistration = null
         serviceScope?.cancel()
         serviceScope = null
+        progressWatchJob?.cancel()
+        progressWatchJob = null
+        chapterWatchJob?.cancel()
+        chapterWatchJob = null
+        castHandoffJob?.cancel()
+        castHandoffJob = null
         audioEffectsManager?.release()
+        audioEffectsManager = null
         castPlayer?.setSessionAvailabilityListener(null)
         localCastServer?.stop()
         localCastServer = null
         castStreamResolver = null
         progressService = null
         playerSessionService = null
+        playerSessionFacade = null
         playbackQueueCoordinator = null
-        mediaSession?.release()
-        mediaSession = null
+        chapterStore = null
+        audioPlaybackManager = null
+        autoBrowserHelper = null
+        preferences = null
+        lastOpenedBookStore = null
+        readAloudPlayback = null
+        readAloudCheckpoints = null
+        artworkDataSourceFactory = null
+        releaseMediaSession()
         bootstrapPlayer?.release()
         bootstrapPlayer = null
         localPlayer?.release()
@@ -519,7 +560,18 @@ class PlaybackService : MediaLibraryService() {
         castPlayer = null
         castContext = null
         pendingCastHandoff = null
-        super.onDestroy()
+        capturedRuntime = null
+        wasServicePlaying = false
+        lastHandledEndedMediaId = null
+        seekBackMs = 30_000L
+        seekForwardMs = 30_000L
+    }
+
+    private fun releaseMediaSession() {
+        val session = mediaSession ?: return
+        mediaSession = null
+        if (isSessionAdded(session)) removeSession(session)
+        session.release()
     }
 
     private fun restorePendingHandoffForShutdown() {
@@ -1827,7 +1879,7 @@ class PlaybackService : MediaLibraryService() {
                 withContext(Dispatchers.Main.immediate) { persistServiceProgress(force = true, handleCompletion = false) }
                 val resolved = resolveQueue(helper, mediaItems)
                 resolved.primary?.let { adoptResolvedPlayback(request, it) }
-                val callerSpecifiedPosition = startPositionMs != C.TIME_UNSET && startPositionMs > 0L
+                val callerSpecifiedPosition = resolved.primary == null || (startPositionMs != C.TIME_UNSET && startPositionMs > 0L)
                 val effectiveIndex = if (callerSpecifiedPosition) {
                     if (resolved.items.isEmpty()) 0 else startIndex.coerceIn(0, resolved.items.lastIndex)
                 } else {

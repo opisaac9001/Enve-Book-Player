@@ -22,6 +22,7 @@ import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.visibleLibraryBooks
 import com.enve.core.data.model.Library
 import com.enve.core.data.model.LibraryLayout
+import com.enve.engine.prefs.PreferencesFacade
 import com.enve.core.data.model.MergeAggressiveness
 import com.enve.core.data.model.ReadStatus
 import com.enve.core.data.model.SortDirection
@@ -123,6 +124,7 @@ class LibraryViewModel @Inject constructor(
     private val connectionRegistry: ConnectionRegistry,
     private val offlineDownloadManager: com.enve.app.data.offline.OfflineDownloadManager,
     private val comicOfflineService: com.enve.app.data.offline.ComicOfflineService,
+    private val hearthPreferences: PreferencesFacade,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(LibraryState())
@@ -150,8 +152,8 @@ class LibraryViewModel @Inject constructor(
                 val persistedLibrary = prefs.librarySelectedId.first()
                 val selectedLibrary = persistedLibrary?.takeUnless { it in excludedLibraryIds }
                 if (persistedLibrary != selectedLibrary) prefs.setLibrarySelectedId(null)
-                val layout = prefs.libraryLayout.first().let { raw -> runCatching { LibraryLayout.valueOf(raw) } }
-                    .getOrDefault(LibraryLayout.TWO_COLUMN)
+                val columns = hearthPreferences.libraryColumns.first()
+                val layout = LibraryLayout.entries.firstOrNull { it.columns == columns } ?: LibraryLayout.THREE_COLUMN
                 val mediaTypeRaw = prefs.mediaType.first()
                 val mediaType = runCatching {
                     when (AppMediaType.valueOf(mediaTypeRaw)) {
@@ -671,7 +673,7 @@ class LibraryViewModel @Inject constructor(
     }
 
     fun setLayout(layout: LibraryLayout) {
-        viewModelScope.launch { prefs.setLibraryLayout(layout.name) }
+        viewModelScope.launch { hearthPreferences.setLibraryColumns(layout.columns) }
         _state.update { it.copy(layout = layout) }
     }
 
