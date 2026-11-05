@@ -1,5 +1,6 @@
 package com.enve.hearth.listeningposition
 
+import android.content.Intent
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -26,6 +27,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.AppMediaType
+import com.enve.core.listeningposition.ListeningPositionLink
 import com.enve.core.listeningposition.SharedReadingLocation
 import com.enve.core.listeningposition.ListeningPositionPayload
 import com.enve.engine.listeningposition.*
@@ -62,8 +64,15 @@ fun ListeningPositionShareSheet(book: Book, onClose: () -> Unit) {
                 bitmap?.let { image ->
                     Image(image.asImageBitmap(), "Book-position code for ${payload.title} at ${positionLabel(payload)}",
                         Modifier.widthIn(max = 320.dp).fillMaxWidth().aspectRatio(1f).background(Color.White).align(Alignment.CenterHorizontally).testTag("listening-position-qr"), filterQuality = FilterQuality.None)
-                    Text("They open Enve's Library, choose More, then Scan book position. This code contains only the book's details and position.", style = HearthText.Body, color = Hearth.palette.textSecondary)
-                    QuietButton("Share image", {
+                    Text("Send the link and they can tap it to open this position in Enve. In person, they can scan the code from Library → More → Scan book position. Both hold only the book's details and position.", style = HearthText.Body, color = Hearth.palette.textSecondary)
+                    EmberButton("Share link", {
+                        val send = Intent(Intent.ACTION_SEND).setType("text/plain")
+                            .putExtra(Intent.EXTRA_TEXT, ListeningPositionLink.shareUrl(payload))
+                            .putExtra(Intent.EXTRA_SUBJECT, "Pick up where I am in ${payload.title}")
+                            .putExtra(Intent.EXTRA_TITLE, payload.title)
+                        context.startActivity(Intent.createChooser(send, "Share book position"))
+                    }, Modifier.testTag("listening-position-share-link"))
+                    QuietButton("Share QR image", {
                         scope.launch {
                             try { ListeningPositionQRCode.share(context, image) }
                             catch (error: CancellationException) { throw error }
@@ -79,14 +88,17 @@ fun ListeningPositionShareSheet(book: Book, onClose: () -> Unit) {
 }
 
 @Composable
-fun ListeningPositionScanScreen(onClose: () -> Unit) {
-    val vm: ListeningPositionViewModel = profileViewModel()
+fun ListeningPositionScanScreen(initialMessage: String? = null, onClose: () -> Unit) {
+    val vm: ListeningPositionViewModel = if (initialMessage == null) profileViewModel() else viewModel(key = "listening-position-link", factory = LocalProfileViewModelFactory.current)
     val state by vm.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var readingImage by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf<ListeningPositionCandidate?>(null) }
-    LaunchedEffect(Unit) { vm.reset() }
+    LaunchedEffect(Unit) {
+        vm.reset()
+        initialMessage?.let(vm::scan)
+    }
     val choose = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) scope.launch {
             readingImage = true

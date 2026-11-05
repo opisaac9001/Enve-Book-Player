@@ -27,7 +27,6 @@ class ListeningPositionQRCodeTest {
         val file = File(context.cacheDir, "listening-position-share/android-interop.png").apply { parentFile!!.mkdirs(); writeBytes(data) }
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
         assertEquals(listOf(payload.encoded()), ListeningPositionQRCode.messages(context, uri))
-        savePositionEvidence("enve-position-interop-oct28.png", data)
     }
 
     @Test fun importsActualIosScreenCapture() {
@@ -79,7 +78,6 @@ class ListeningPositionQRCodeTest {
         val decoded = ListeningPositionQRCode.decode(data).single()
         assertEquals(boundary, decoded)
         assertEquals(payload, ListeningPositionPayload.decode(decoded))
-        savePositionEvidence("enve-rich-reading-position.png", data)
     }
 
 }

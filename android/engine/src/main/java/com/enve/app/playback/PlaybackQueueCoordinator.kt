@@ -14,17 +14,25 @@ import com.enve.engine.playback.PlaybackQueueItem
 import com.enve.engine.playback.PlaybackQueueOrigin
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.coroutines.coroutineContext
 
 internal object PlaybackQueuePolicy {
     fun manualCandidates(books: List<Book>): List<Book> = books
@@ -79,7 +87,11 @@ class PlaybackQueueCoordinator @Inject constructor(
 ) {
     private val scope = CoroutineScope(SupervisorJob(parentScope.coroutineContext[Job]) + Dispatchers.IO)
     private val mutex = Mutex()
+    private val startLock = Any()
     private var completedBookKey: String? = null
+    private var startJob: Job? = null
+    private val _starting = MutableStateFlow<Book?>(null)
+    val starting: StateFlow<Book?> = _starting.asStateFlow()
 
     val queue: StateFlow<List<PlaybackQueueItem>> = store.entries
         .map { entries ->
@@ -99,7 +111,44 @@ class PlaybackQueueCoordinator @Inject constructor(
         }
         .stateIn(scope, SharingStarted.Eagerly, emptyList())
 
+    fun launchStart(book: Book?, action: suspend () -> Unit) {
+        synchronized(startLock) {
+            val previous = startJob
+            cancelPendingStart()
+            val next = scope.launch(start = CoroutineStart.LAZY) {
+                try {
+                    previous?.join()
+                    action()
+                } finally {
+                    val request = coroutineContext[Job]
+                    synchronized(startLock) {
+                        if (startJob === request) _starting.value = null
+                    }
+                }
+            }
+            startJob = next
+            _starting.value = book
+            next.start()
+        }
+    }
+
+    fun cancelPendingStart() {
+        synchronized(startLock) {
+            startJob?.cancel()
+            audioManager.cancelPendingPlayback()
+            _starting.value = null
+        }
+    }
+
     suspend fun open(book: Book, positionMs: Long? = null): Boolean = mutex.withLock {
+        if (isCurrent(book)) {
+            withContext(Dispatchers.Main.immediate) {
+                coroutineContext.ensureActive()
+                positionMs?.let(audioManager::seekTo)
+                audioManager.resume()
+            }
+            return@withLock true
+        }
         finalizeCurrent()
         store.clear()
         startOrThrow(book, positionMs)
@@ -125,7 +174,7 @@ class PlaybackQueueCoordinator @Inject constructor(
             store.remove(book.uniqueKey)
             return@withLock start(book)
         }
-        if (currentBookKey() == book.uniqueKey) return@withLock true
+        if (queuedBookKey() == book.uniqueKey) return@withLock true
         store.addNext(book.uniqueKey)
         true
     }
@@ -136,7 +185,7 @@ class PlaybackQueueCoordinator @Inject constructor(
             store.remove(book.uniqueKey)
             return@withLock start(book)
         }
-        if (currentBookKey() == book.uniqueKey) return@withLock true
+        if (queuedBookKey() == book.uniqueKey) return@withLock true
         store.addLast(book.uniqueKey)
         true
     }
@@ -152,7 +201,7 @@ class PlaybackQueueCoordinator @Inject constructor(
             return@withLock true
         }
 
-        val currentKey = currentBookKey()
+        val currentKey = queuedBookKey()
         store.addLast(candidates.map(Book::uniqueKey).filterNot { it == currentKey })
         true
     }
@@ -232,9 +281,8 @@ class PlaybackQueueCoordinator @Inject constructor(
     }
 
     private suspend fun startOrThrow(book: Book, positionMs: Long?): Boolean {
-        val started = starter.start(book, resolveOpenProgress = positionMs == null)
+        val started = starter.start(book, startPositionMs = positionMs?.coerceAtLeast(0L))
         if (started) completedBookKey = null
-        if (started && positionMs != null) audioManager.seekTo(positionMs.coerceAtLeast(0L))
         return started
     }
 
@@ -257,17 +305,26 @@ class PlaybackQueueCoordinator @Inject constructor(
         }
         val current = checkpoint?.key?.let { bookCache.getByCacheKey(it) }
             ?: audioManager.currentBookId?.let { bookCache.getById(it) }
-        sessionService.close(
-            positionSec = state.currentPositionMs.coerceAtLeast(0L) / 1000L,
-            durationSec = state.durationMs.coerceAtLeast(0L) / 1000L,
-        )
+        withTimeoutOrNull(SESSION_CLOSE_TIMEOUT_MS) {
+            sessionService.close(
+                positionSec = state.currentPositionMs.coerceAtLeast(0L) / 1000L,
+                durationSec = state.durationMs.coerceAtLeast(0L) / 1000L,
+            )
+        }
         return persisted?.book ?: current?.toBook()
     }
 
     private fun currentBookKey(): String? =
         audioManager.state.value.mediaId?.let(AutoMediaBrowserHelper::cacheKeyFrom)
 
+    private fun queuedBookKey(): String? =
+        audioManager.pendingMediaId?.let(AutoMediaBrowserHelper::cacheKeyFrom) ?: currentBookKey()
+
+    private fun isCurrent(book: Book): Boolean =
+        hasActivePlayback() && currentBookKey() == book.uniqueKey && audioManager.state.value.errorMessage == null
+
     private fun hasActivePlayback(): Boolean {
+        if (audioManager.hasPendingPlayback) return true
         if (audioManager.currentBookId == null) return false
         val currentKey = currentBookKey()
         return currentKey == null || currentKey != completedBookKey
@@ -278,5 +335,6 @@ class PlaybackQueueCoordinator @Inject constructor(
 
     private companion object {
         const val TAG = "PlaybackQueue"
+        const val SESSION_CLOSE_TIMEOUT_MS = 5_000L
     }
 }

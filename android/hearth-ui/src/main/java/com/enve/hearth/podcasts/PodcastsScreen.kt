@@ -54,6 +54,7 @@ import com.enve.hearth.design.HearthText
 import com.enve.hearth.design.LocalMantelInset
 import com.enve.hearth.design.Overline
 import com.enve.hearth.design.QuietButton
+import com.enve.hearth.design.ScreenHeader
 import com.enve.hearth.design.ShelfHeader
 import com.enve.hearth.design.hearthDisplay
 import com.enve.hearth.design.hearthUI
@@ -83,11 +84,13 @@ fun PodcastsScreen(
         contentPadding = PaddingValues(bottom = LocalMantelInset.current + Hearth.Spacing.L),
     ) {
         item {
-            Column(Modifier.padding(horizontal = Hearth.Spacing.XXL, vertical = Hearth.Spacing.L)) {
-                Overline("THE LISTENING ROOM")
-                Text("Podcasts", style = hearthDisplay(34.sp, FontWeight.SemiBold), color = palette.text)
+            Column(Modifier.padding(bottom = Hearth.Spacing.L)) {
+                ScreenHeader("Podcasts", overline = "The listening room")
                 Spacer(Modifier.height(Hearth.Spacing.M))
-                Row(horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S)) {
+                Row(
+                    Modifier.padding(horizontal = Hearth.Spacing.XL),
+                    horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
+                ) {
                     PodcastsPage.entries.forEach { choice ->
                         HearthChip(
                             label = choice.name.lowercase().replaceFirstChar(Char::uppercaseChar),

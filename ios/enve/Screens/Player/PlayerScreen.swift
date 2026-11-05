@@ -29,7 +29,6 @@ struct PlayerScreen: View {
     @State private var activeSheet: PlayerSheet?
     @State private var sleepChapterLabel: String?
     @State private var linkedEbook: Book?
-    @State private var showPassageUpdateRequired = false
     @AppStorage("player.showPercentRemaining") private var showPercentRemaining = false
     @AppStorage("player.scrubScope") private var scrubScopeRaw = PlayerScrubScope.book.rawValue
 
@@ -133,8 +132,8 @@ struct PlayerScreen: View {
                             .presentationDetents([.large])
                     }
                 case .passage:
-                    if #available(iOS 26.0, *), let ebook = linkedEbook, let audiobook = engine.playback.currentBook {
-                        PlayerPassageSheet(ebook: ebook, audiobook: audiobook, position: playerVM.progress)
+                    if let ebook = linkedEbook, let audiobook = engine.playback.currentBook {
+                        PlayerPassageSheet(ebook: ebook, audiobook: audiobook)
                             .presentationDetents([.medium, .large])
                     } else {
                         ContentUnavailableView("Link an ebook first", systemImage: "books.vertical", description: Text("Link this audiobook to its ebook from book details, then download both books to find matching passages on this device."))
@@ -145,11 +144,6 @@ struct PlayerScreen: View {
             .hearthPresentationBackground()
             .presentationDragIndicator(.visible)
             .enveEnvironment()
-        }
-        .alert("Update Required", isPresented: $showPassageUpdateRequired) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text("Finding passages in an ebook requires iOS 26.0 or newer.")
         }
         .alert("Two places in this book", isPresented: syncConflictPresented) {
             if let conflict = playerVM.playbackConflict {
@@ -370,7 +364,7 @@ struct PlayerScreen: View {
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 4) {
                 if let overline = chapterOverline {
-                    Overline(overline, color: ambient)
+                    Overline(overline, color: hearth.text)
                         .lineLimit(1)
                 }
                 Text(book.title)
@@ -525,15 +519,8 @@ struct PlayerScreen: View {
                 if linkedEbook != nil {
                     Button("Switch to reading", systemImage: "book", action: switchToReading)
                 }
-                if #available(iOS 26.0, *) {
-                    Button(playerVM.isPlaying ? "Pause to find this passage" : "Find this passage in ebook", systemImage: "text.magnifyingglass") {
-                        activeSheet = .passage
-                    }
-                    .disabled(playerVM.isPlaying)
-                } else {
-                    Button("Find this passage in ebook", systemImage: "text.magnifyingglass") {
-                        showPassageUpdateRequired = true
-                    }
+                Button("Find this passage in ebook", systemImage: "text.magnifyingglass") {
+                    activeSheet = .passage
                 }
             } label: {
                 Image(systemName: "book")
@@ -579,7 +566,7 @@ struct PlayerScreen: View {
     private func titleBlock(book: Book) -> some View {
         VStack(spacing: 7) {
             if let overline = chapterOverline {
-                Overline(overline, color: ambient)
+                Overline(overline, color: hearth.text)
                     .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
             }
             Text(book.title)

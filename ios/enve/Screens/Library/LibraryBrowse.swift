@@ -13,12 +13,14 @@ struct LibraryBookGrid: View {
     var isSelected: ((Book) -> Bool)? = nil
     var onToggleSelect: ((Book) -> Void)? = nil
 
+    @Environment(\.profileSession) private var profileSession
+
     var body: some View {
         let count = HearthAdaptive.bookGridCount(width: width, preferred: columns)
         let spacing: CGFloat = HearthAdaptive.isWide(width) ? 14 : 10
         let padding = HearthAdaptive.horizontalPadding(for: width)
         let cellWidth = max((width - padding * 2 - CGFloat(count - 1) * spacing) / CGFloat(count), 44)
-        let cardStyle = LibraryDisplayPreferencesStore.shared.loadBookCardStyle()
+        let cardStyle = (profileSession ?? .owner).preferences.bookCardStyle
         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: spacing, alignment: .top), count: count), spacing: 10) {
             ForEach(books, id: \.uniqueId) { book in
                 LibraryBookCell(

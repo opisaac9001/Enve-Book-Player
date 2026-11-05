@@ -2,7 +2,6 @@ package com.enve.app.data.repository.grimmory
 
 import com.enve.app.data.remote.dto.BookDetailDto
 import com.enve.app.data.remote.dto.GrimmoryAppBookProgressDto
-import com.enve.app.data.repository.grimmoryOidcUsername
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -57,13 +56,5 @@ class GrimmoryProgressUnitsTest {
         val snapshot = grimmoryEbookProgressSnapshot(body, null)!!
         assertEquals(1f, snapshot.percentage, 0.0001f)
         assertTrue(snapshot.finished)
-    }
-
-    @Test
-    fun oidcUsernameComesFromUsersMe() {
-        assertEquals(
-            "reader",
-            grimmoryOidcUsername("""{"id":1,"username":"reader","name":"Reader","locale":"en","provisioningMethod":"LOCAL","defaultPassword":false}"""),
-        )
     }
 }

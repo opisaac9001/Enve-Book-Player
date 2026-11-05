@@ -62,8 +62,7 @@ enum class LibraryLayout(val columns: Int, val displayName: String, val iconName
     LIST(1, "List", "list.bullet"),
     TWO_COLUMN(2, "2 Columns", "square.grid.2x2"),
     THREE_COLUMN(3, "3 Columns", "square.grid.3x3"),
-    FOUR_COLUMN(4, "4 Columns", "square.grid.4x3.fill"),
-    FIVE_COLUMN(5, "5 Columns", "square.grid.3x3.fill");
+    FOUR_COLUMN(4, "4 Columns", "square.grid.4x3.fill");
 }
 
 enum class BookCardStyle(val displayName: String, val description: String) {

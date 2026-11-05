@@ -44,28 +44,75 @@ final class BookDownloadManager: NSObject, ObservableObject {
     private let minProgressUpdateInterval: TimeInterval = 0.25
     private let minProgressDelta: Double = 0.005
 
-    private let stateQueue = DispatchQueue(label: "BookDownloadManager.state", attributes: .concurrent)
-    nonisolated(unsafe) private var taskIdToBookId: [Int: String] = [:]
-    nonisolated(unsafe) private var bookIdToTask: [String: URLSessionDownloadTask] = [:]
+    private let stateQueue = DispatchQueue(label: "BookDownloadManager.state")
+    nonisolated private let transferStore: BookHTTPTransferStore
+    nonisolated(unsafe) private var nativeTasks: [Int: URLSessionDownloadTask] = [:]
+    nonisolated(unsafe) private var retiredTransport = false
+    var onBackgroundEventsFinished: (@MainActor @Sendable () async -> Void)?
+    var transferInventoryOverride: (@MainActor @Sendable () async -> [URLSessionTask])?
 
-    nonisolated private final class MultiTrackDownloadState: @unchecked Sendable {
-        let bookId: String
-        let id = UUID()
-        let directory: AtomicDownloadDirectory
-        let total: Int
-        var published = false
-        var completedCount: Int = 0
-        var failed: Bool = false
-        var firstErrorMessage: String?
-        init(bookId: String, directory: AtomicDownloadDirectory, total: Int) {
-            self.bookId = bookId
-            self.directory = directory
-            self.total = total
+    nonisolated static func backgroundSessionIdentifier(for profileID: String) -> String {
+        "com.enve.book-http.\(profileID)"
+    }
+
+    nonisolated static func profileID(forBackgroundSessionIdentifier identifier: String) -> String? {
+        let prefix = "com.enve.book-http."
+        guard identifier.hasPrefix(prefix) else { return nil }
+        let id = String(identifier.dropFirst(prefix.count))
+        return FamilyProfile.validID(id) ? id : nil
+    }
+
+    var persistedStagingDirectoryNames: Set<String> {
+        stateQueue.sync { Set(transferStore.all.map(\.stagingName)) }
+    }
+
+    var pendingTransferResults: [BookHTTPTransferStore.Transfer] {
+        stateQueue.sync { transferStore.all.filter { $0.outcome != .active } }
+    }
+
+    func ownsTransferResult(_ transfer: BookHTTPTransferStore.Transfer) -> Bool {
+        stateQueue.sync {
+            let current = transferStore.transfer(for: transfer.bookID)
+            return current?.attemptID == transfer.attemptID && current?.outcome == transfer.outcome
         }
     }
-    nonisolated(unsafe) private var multiTrackStateByBookId: [String: MultiTrackDownloadState] = [:]
-    nonisolated(unsafe) private var multiTrackTaskIdToContext: [Int: (bookId: String, chapterIndex: Int, generation: UUID)] = [:]
-    nonisolated(unsafe) private var multiTrackTasksByBookId: [String: [URLSessionDownloadTask]] = [:]
+
+    func acknowledgeTransferResult(bookId: String) {
+        do { try stateQueue.sync { try transferStore.acknowledge(bookID: bookId) } }
+        catch { AppLogger.network.error("Could not acknowledge audiobook transfer result") }
+    }
+
+    func handleBackgroundSession(identifier: String) {
+        guard !isRetired, Self.profileID(forBackgroundSessionIdentifier: identifier) == storage.profileStorageLocations.profileID else { return }
+        _ = session
+    }
+
+    func restoreTransfers() async {
+        guard !isRetired else { return }
+        let attempts = stateQueue.sync { Set(transferStore.all.filter { $0.outcome == .active }.map(\.attemptID)) }
+        let inventory: [URLSessionTask]
+        if let transferInventoryOverride { inventory = await transferInventoryOverride() }
+        else if backgroundURLSession != nil || !attempts.isEmpty { inventory = await session.allTasks }
+        else { inventory = [] }
+        guard !isRetired else { return }
+        do {
+            let outcomes = try stateQueue.sync {
+                try transferStore.recover(liveTaskDescriptions: Set(inventory.filter {
+                    $0 is URLSessionDownloadTask && ($0.state == .running || $0.state == .suspended)
+                }.compactMap(\.taskDescription)), attemptIDs: attempts)
+                nativeTasks = nativeTasks.filter { transferStore.transfer(taskDescription: $0.value.taskDescription) != nil }
+                for task in inventory {
+                    guard let download = task as? URLSessionDownloadTask,
+                        task.state == .running || task.state == .suspended,
+                        transferStore.transfer(taskDescription: task.taskDescription) != nil else { task.cancel(); continue }
+                    nativeTasks[task.taskIdentifier] = download
+                    if download.state == .suspended { download.resume() }
+                }
+                return transferStore.all
+            }
+            for transfer in outcomes { publish(transfer) }
+        } catch { AppLogger.network.error("Could not restore audiobook transfer state") }
+    }
 
     private let storage: LocalStorageManager
     let activity: ProfileDownloadActivity
@@ -73,6 +120,7 @@ final class BookDownloadManager: NSObject, ObservableObject {
     private var isRetired = false
     private var runningJobs: [String: Task<Void, Never>] = [:]
     private var smbServices: [String: SMBService] = [:]
+    private var backgroundURLSession: URLSession?
     private var invalidationContinuation: CheckedContinuation<Void, Never>?
 
     init(
@@ -81,6 +129,7 @@ final class BookDownloadManager: NSObject, ObservableObject {
         clientCertificate: @escaping @Sendable (String) async -> URLCredential?
     ) {
         self.storage = storage
+        self.transferStore = BookHTTPTransferStore(storage: storage.profileStorageLocations, audioRoot: storage.audiobooksDirectory)
         self.activity = activity
         self.clientCertificate = clientCertificate
         super.init()
@@ -89,13 +138,19 @@ final class BookDownloadManager: NSObject, ObservableObject {
     func retire() async {
         guard !isRetired else { return }
         isRetired = true
+        stateQueue.sync { retiredTransport = true }
         let jobs = Array(runningJobs.values)
         jobs.forEach { $0.cancel() }
         for service in Array(smbServices.values) { await service.disconnect() }
-        for bookID in activeBookIds { cancelDownload(bookId: bookID) }
-        await withCheckedContinuation { continuation in
-            invalidationContinuation = continuation
-            session.invalidateAndCancel()
+        let persistedActive = stateQueue.sync { Set(transferStore.all.filter { $0.outcome == .active }.map(\.bookID)) }
+        let sessionToInvalidate = backgroundURLSession ?? (persistedActive.isEmpty ? nil : session)
+        for bookID in activeBookIds.union(persistedActive) { cancelDownload(bookId: bookID) }
+        if let session = sessionToInvalidate {
+            await withCheckedContinuation { continuation in
+                invalidationContinuation = continuation
+                session.invalidateAndCancel()
+            }
+            backgroundURLSession = nil
         }
         for job in jobs { await job.value }
         runningJobs.removeAll()
@@ -129,17 +184,25 @@ final class BookDownloadManager: NSObject, ObservableObject {
         completedBookIds.remove(bookId)
     }
 
-    private lazy var session: URLSession = {
-        let config = NetworkPolicyService.shared.makeSessionConfiguration(
+    private var session: URLSession {
+        if let backgroundURLSession { return backgroundURLSession }
+        let config = NetworkPolicyService.shared.makeBackgroundSessionConfiguration(
+            identifier: Self.backgroundSessionIdentifier(for: storage.profileStorageLocations.profileID),
             allowCellular: true, isolatesCredentials: storage.profileStorageLocations.profileID != FamilyProfile.ownerID
         )
+        config.sessionSendsLaunchEvents = true
+        config.isDiscretionary = false
         config.waitsForConnectivity = true
         config.allowsConstrainedNetworkAccess = true
         config.allowsExpensiveNetworkAccess = true
         config.timeoutIntervalForRequest = 300
         config.timeoutIntervalForResource = 3600
-        return URLSession(configuration: config, delegate: self, delegateQueue: nil)
-    }()
+        let queue = OperationQueue()
+        queue.maxConcurrentOperationCount = 1
+        let session = URLSession(configuration: config, delegate: self, delegateQueue: queue)
+        backgroundURLSession = session
+        return session
+    }
 
     @MainActor
     func progress(for bookId: String) -> Double { progressByBookId[bookId] ?? 0 }
@@ -157,38 +220,32 @@ final class BookDownloadManager: NSObject, ObservableObject {
 
     func startDownload(bookId: String, request: URLRequest) async {
         guard !isRetired, !Task.isCancelled else { return }
-        if storage.isAudiobookDownloaded(bookId) {
-            await MainActor.run {
-                completedBookIds.insert(bookId)
-                lastErrorByBookId.removeValue(forKey: bookId)
+        startHTTPTransfer(bookId: bookId, requests: [request], mode: .single)
+    }
+
+    private func startHTTPTransfer(bookId: String, requests: [URLRequest], mode: BookHTTPTransferStore.Mode) {
+        guard !isRetired, !activeBookIds.contains(bookId) else { return }
+        do {
+            let transfer = try stateQueue.sync {
+                try transferStore.begin(bookID: bookId, destination: storage.bookAudioDirectory(for: bookId), mode: mode, count: requests.count)
             }
-            return
-        }
-
-        let alreadyActive = await MainActor.run { activeBookIds.contains(bookId) }
-        if alreadyActive { return }
-
-        await MainActor.run {
+            let tasks = requests.enumerated().map { index, request in
+                var normalized = request
+                if normalized.timeoutInterval <= 0 { normalized.timeoutInterval = 300 }
+                let task = session.downloadTask(with: normalized)
+                task.taskDescription = transfer.taskDescription(for: index)
+                return task
+            }
+            stateQueue.sync { for task in tasks { nativeTasks[task.taskIdentifier] = task } }
             activeBookIds.insert(bookId)
             progressByBookId[bookId] = 0
             lastErrorByBookId.removeValue(forKey: bookId)
             completedBookIds.remove(bookId)
+            tasks.forEach { $0.resume() }
+        } catch {
+            activeBookIds.remove(bookId)
+            lastErrorByBookId[bookId] = "Could not prepare the audiobook download."
         }
-
-        var normalized = request
-        if normalized.timeoutInterval <= 0 {
-            normalized.timeoutInterval = 300
-        }
-
-        let task = session.downloadTask(with: normalized)
-
-        stateQueue.async(flags: .barrier) { [weak self] in
-            guard let self else { return }
-            self.taskIdToBookId[task.taskIdentifier] = bookId
-            self.bookIdToTask[bookId] = task
-        }
-
-        task.resume()
     }
 
     func startFileCopyDownload(bookId: String, sourceURL: URL, securityScopedRootURL: URL? = nil) async {
@@ -300,20 +357,14 @@ final class BookDownloadManager: NSObject, ObservableObject {
 
     func cancelDownload(bookId: String) {
         runningJobs[bookId]?.cancel()
-        var tasksToCancel: [URLSessionDownloadTask] = []
-        stateQueue.sync(flags: .barrier) {
-            tasksToCancel = multiTrackTasksByBookId.removeValue(forKey: bookId) ?? []
-            if let task = bookIdToTask.removeValue(forKey: bookId), tasksToCancel.isEmpty { tasksToCancel = [task] }
-            if let state = multiTrackStateByBookId.removeValue(forKey: bookId) {
-                state.failed = true
-                state.directory.discard()
-            }
-            for task in tasksToCancel {
-                taskIdToBookId.removeValue(forKey: task.taskIdentifier)
-                multiTrackTaskIdToContext.removeValue(forKey: task.taskIdentifier)
-            }
+        let tasks: [URLSessionDownloadTask] = stateQueue.sync {
+            let matches = nativeTasks.values.filter { transferStore.transfer(taskDescription: $0.taskDescription)?.0.bookID == bookId }
+            do { try transferStore.cancel(bookID: bookId) }
+            catch { AppLogger.network.error("Could not persist audiobook transfer cancellation") }
+            for task in matches { nativeTasks.removeValue(forKey: task.taskIdentifier) }
+            return matches
         }
-        tasksToCancel.forEach { $0.cancel() }
+        tasks.forEach { $0.cancel() }
         activeBookIds.remove(bookId)
         progressByBookId.removeValue(forKey: bookId)
     }
@@ -443,66 +494,34 @@ final class BookDownloadManager: NSObject, ObservableObject {
 
     func startMultiTrackHTTPDownload(bookId: String, requests: [(request: URLRequest, mimeType: String?)]) async {
         guard !isRetired, !Task.isCancelled else { return }
-        let alreadyActive = await MainActor.run { activeBookIds.contains(bookId) }
-        if alreadyActive { return }
-
-        await MainActor.run {
-            activeBookIds.insert(bookId)
-            progressByBookId[bookId] = 0
-            lastErrorByBookId.removeValue(forKey: bookId)
-            completedBookIds.remove(bookId)
-        }
-
-        guard !requests.isEmpty else {
-            await failMultiTrackDownload(bookId: bookId, errorMessage: "No tracks to download")
-            return
-        }
-        let state: MultiTrackDownloadState
-        do {
-            let directory = try AtomicDownloadDirectory(destination: storage.bookAudioDirectory(for: bookId))
-            state = MultiTrackDownloadState(bookId: bookId, directory: directory, total: requests.count)
-        } catch {
-            await failMultiTrackDownload(bookId: bookId, errorMessage: error.localizedDescription)
-            return
-        }
-
-        let scheduledTasks: [URLSessionDownloadTask] = requests.map { entry in
-            var req = entry.request
-            if req.timeoutInterval <= 0 { req.timeoutInterval = 300 }
-            return session.downloadTask(with: req)
-        }
-        let contextEntries: [(taskId: Int, chapterIndex: Int)] = scheduledTasks.enumerated().map { index, task in
-            (task.taskIdentifier, index)
-        }
-
-        stateQueue.sync(flags: .barrier) {
-            self.multiTrackStateByBookId[bookId] = state
-            self.multiTrackTasksByBookId[bookId] = scheduledTasks
-            for entry in contextEntries {
-                self.multiTrackTaskIdToContext[entry.taskId] = (bookId, entry.chapterIndex, state.id)
-                self.taskIdToBookId[entry.taskId] = bookId
-            }
-
-            if let last = scheduledTasks.last {
-                self.bookIdToTask[bookId] = last
-            }
-        }
-
-        AppLogger.network.info("[MultiTrack] Scheduled \(scheduledTasks.count) tracks for \(bookId) on background session")
-
-        for task in scheduledTasks {
-            task.resume()
-        }
+        startHTTPTransfer(bookId: bookId, requests: requests.map(\.request), mode: .multiTrack)
     }
 
-    private func failMultiTrackDownload(bookId: String, errorMessage: String) async {
-        await MainActor.run {
-            activeBookIds.remove(bookId)
-            progressByBookId.removeValue(forKey: bookId)
-            lastErrorByBookId[bookId] = errorMessage
-            lastProgressEmissionByBookId.removeValue(forKey: bookId)
+    private func publish(_ transfer: BookHTTPTransferStore.Transfer) {
+        guard !isRetired, stateQueue.sync(execute: {
+            let current = transferStore.transfer(for: transfer.bookID)
+            return current?.attemptID == transfer.attemptID && current?.outcome == transfer.outcome
+        }) else { return }
+        let bookID = transfer.bookID
+        switch transfer.outcome {
+        case .active:
+            activeBookIds.insert(bookID)
+            progressByBookId[bookID] = Double(transfer.parts.filter { !$0.fileNames.isEmpty }.count) / Double(transfer.parts.count)
+        case .completed:
+            activeBookIds.remove(bookID)
+            progressByBookId[bookID] = 1
+            let newlyCompleted = completedBookIds.insert(bookID).inserted
+            lastErrorByBookId.removeValue(forKey: bookID)
+            lastProgressEmissionByBookId.removeValue(forKey: bookID)
+            if newlyCompleted {
+                NotificationCenter.default.post(name: Self.downloadDidCompleteNotification, object: nil, userInfo: ["bookId": bookID])
+            }
+        case .failed:
+            activeBookIds.remove(bookID)
+            progressByBookId.removeValue(forKey: bookID)
+            lastErrorByBookId[bookID] = transfer.failureMessage
+            lastProgressEmissionByBookId.removeValue(forKey: bookID)
         }
-        AppLogger.network.error("[MultiTrack] Failed for \(bookId): \(errorMessage)")
     }
 
     func cancelDownload(book: Book) {
@@ -532,68 +551,11 @@ final class BookDownloadManager: NSObject, ObservableObject {
 
     nonisolated private func persistDownloadedTempFile(tempURL: URL, destinationURL: URL) throws {
         let fm = FileManager.default
-        let destPath = destinationURL.path
-
-        if fm.fileExists(atPath: destPath) {
-            var lastError: Error?
-            for attempt in 0..<3 {
-                do {
-                    try fm.removeItem(at: destinationURL)
-                    lastError = nil
-                    break
-                } catch {
-                    lastError = error
-                    if attempt < 2 {
-                        usleep(useconds_t(50_000 * (attempt + 1)))
-                    }
-                }
-            }
-            if let lastError { throw lastError }
-        }
-
-        do {
-            try fm.moveItem(at: tempURL, to: destinationURL)
-            return
-        } catch let nsError as NSError {
-
-            let isFileExists =
-                (nsError.domain == NSCocoaErrorDomain && nsError.code == 516)
-                || (nsError.domain == NSPOSIXErrorDomain && nsError.code == 17)
-            if isFileExists {
-                if fm.fileExists(atPath: destPath) {
-                    try? fm.removeItem(at: destinationURL)
-                }
-                do {
-                    try fm.moveItem(at: tempURL, to: destinationURL)
-                    return
-                } catch {
-                    AppLogger.general.debug("Move retry failed; will check if destination exists: \(error.localizedDescription)")
-                }
-            }
-
-            if fm.fileExists(atPath: destPath) {
-                return
-            }
-        }
-
-        guard fm.fileExists(atPath: tempURL.path) else {
-
-            if fm.fileExists(atPath: destPath) { return }
-            throw NSError(
-                domain: NSCocoaErrorDomain,
-                code: CocoaError.fileNoSuchFile.rawValue,
-                userInfo: [NSLocalizedDescriptionKey: "Source file disappeared during persist to \(destinationURL.path())"]
-            )
-        }
-        try fm.copyItem(at: tempURL, to: destinationURL)
-        try? fm.removeItem(at: tempURL)
-
-        if !fm.fileExists(atPath: destPath) {
-            throw NSError(
-                domain: NSCocoaErrorDomain,
-                code: CocoaError.fileNoSuchFile.rawValue,
-                userInfo: [NSLocalizedDescriptionKey: "Failed to persist download to \(destinationURL.path())"]
-            )
+        if fm.fileExists(atPath: destinationURL.path) { try fm.removeItem(at: destinationURL) }
+        do { try fm.moveItem(at: tempURL, to: destinationURL) }
+        catch {
+            try fm.copyItem(at: tempURL, to: destinationURL)
+            try? fm.removeItem(at: tempURL)
         }
     }
 
@@ -673,10 +635,14 @@ extension BookDownloadManager: URLSessionDownloadDelegate {
     nonisolated func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
         guard let identifier = session.configuration.identifier else { return }
         Task { @MainActor in
-            #if os(iOS)
-            guard let delegate = UIApplication.shared.delegate as? CarPlayAppDelegate else { return }
-            delegate.consumeBackgroundCompletionHandler(forIdentifier: identifier)?()
-            #endif
+            defer {
+                #if os(iOS)
+                CarPlayAppDelegate.consumeBackgroundCompletionHandler(forIdentifier: identifier)?()
+                #endif
+            }
+            guard !isRetired, Self.profileID(forBackgroundSessionIdentifier: identifier) == storage.profileStorageLocations.profileID else { return }
+            await restoreTransfers()
+            await onBackgroundEventsFinished?()
         }
     }
 
@@ -740,309 +706,95 @@ extension BookDownloadManager: URLSessionDownloadDelegate {
     }
 
     nonisolated func urlSession(
-        _ session: URLSession,
-        downloadTask: URLSessionDownloadTask,
-        didWriteData bytesWritten: Int64,
-        totalBytesWritten: Int64,
-        totalBytesExpectedToWrite: Int64
+        _ session: URLSession, downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64
     ) {
-        var bookId: String?
-        stateQueue.sync {
-            bookId = taskIdToBookId[downloadTask.taskIdentifier]
-        }
-        guard let bookId else { return }
-
-        let progress: Double
-        if totalBytesExpectedToWrite > 0 {
-            progress = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
-        } else {
-            progress = 0
-        }
+        let context = stateQueue.sync { transferStore.transfer(taskDescription: downloadTask.taskDescription) }
+        guard let (transfer, _) = context else { return }
+        let fraction = totalBytesExpectedToWrite > 0 ? Double(totalBytesWritten) / Double(totalBytesExpectedToWrite) : 0
+        let completed = transfer.parts.filter { !$0.fileNames.isEmpty }.count
+        let progress = (Double(completed) + fraction) / Double(transfer.parts.count)
         Task { @MainActor in
-            let clamped = max(0, min(progress, 1))
-            if self.shouldEmitProgressUpdate(bookId: bookId, progress: clamped) {
-                self.progressByBookId[bookId] = clamped
-            }
-            if totalBytesExpectedToWrite > 0 {
-                self.totalBytesByBookId[bookId] = totalBytesExpectedToWrite
-            }
+            guard !isRetired, stateQueue.sync(execute: { transferStore.transfer(for: transfer.bookID)?.attemptID == transfer.attemptID && transferStore.transfer(for: transfer.bookID)?.outcome == .active }) else { return }
+            if shouldEmitProgressUpdate(bookId: transfer.bookID, progress: progress) { progressByBookId[transfer.bookID] = max(0, min(progress, 1)) }
+            if totalBytesExpectedToWrite > 0 { totalBytesByBookId[transfer.bookID] = totalBytesExpectedToWrite * Int64(transfer.parts.count) }
         }
     }
 
     nonisolated func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        let taskId = downloadTask.taskIdentifier
-
-        var bookId: String?
-        var multiTrackContext: (bookId: String, chapterIndex: Int, generation: UUID)?
-        stateQueue.sync {
-            bookId = taskIdToBookId[taskId]
-            multiTrackContext = multiTrackTaskIdToContext[taskId]
-        }
-        guard let bookId else { return }
-
-        if let ctx = multiTrackContext {
-            handleMultiTrackChapterFinished(taskId: taskId, downloadTask: downloadTask, location: location, context: ctx)
-            return
-        }
-
-        do {
-            if let http = downloadTask.response as? HTTPURLResponse,
-                !(200...299).contains(http.statusCode)
-            {
-                try? FileManager.default.removeItem(at: location)
-                throw NSError(
-                    domain: NSURLErrorDomain,
-                    code: http.statusCode,
-                    userInfo: [NSLocalizedDescriptionKey: "Download failed with HTTP status: \(http.statusCode)"]
-                )
-            }
-
-            if let http = downloadTask.response as? HTTPURLResponse,
-                let ct = http.value(forHTTPHeaderField: "Content-Type")?.lowercased()
-            {
-                if ct.contains("text/html") || ct.contains("text/plain") || ct.contains("application/json") {
-                    let snippet: String
-                    if let data = try? Data(contentsOf: location, options: .mappedIfSafe) {
-                        snippet = String(data: data.prefix(200), encoding: .utf8) ?? "<binary>"
-                    } else {
-                        snippet = "<unreadable>"
+        // URLSession removes this location when the delegate returns; publication stays inside the serial boundary.
+        let outcome: BookHTTPTransferStore.Transfer? = stateQueue.sync {
+            guard !retiredTransport, let (transfer, index) = transferStore.transfer(taskDescription: downloadTask.taskDescription),
+                transfer.parts[index].fileNames.isEmpty else { try? FileManager.default.removeItem(at: location); return nil }
+            defer { nativeTasks.removeValue(forKey: downloadTask.taskIdentifier) }
+            do {
+                if let http = downloadTask.response as? HTTPURLResponse {
+                    guard (200...299).contains(http.statusCode) else { throw CocoaError(.fileReadCorruptFile) }
+                    let type = http.value(forHTTPHeaderField: "Content-Type")?.lowercased() ?? ""
+                    guard !type.contains("text/html"), !type.contains("text/plain"), !type.contains("application/json") else { throw CocoaError(.fileReadCorruptFile) }
+                }
+                try Self.validateDownloadedFileLength(at: location, response: downloadTask.response)
+                let size = ((try FileManager.default.attributesOfItem(atPath: location.path))[.size] as? NSNumber)?.int64Value ?? 0
+                guard size > 1024 else { throw CocoaError(.fileReadCorruptFile) }
+                let ext = UnifiedDownloadService.detectAudioExtension(urlPathExtension: downloadTask.originalRequest?.url?.pathExtension.lowercased(), response: downloadTask.response, fileURL: location)
+                let directory = try transferStore.directory(for: transfer)
+                let files: [URL]
+                if transfer.mode == .single && (ext == "zip" || isZipFile(at: location)) {
+                    files = try extractAudioFilesFromZip(at: location, into: directory.staging)
+                } else {
+                    if UnifiedDownloadService.detectExtensionFromMagicBytes(at: location) == nil {
+                        let data = try Data(contentsOf: location, options: .mappedIfSafe)
+                        if let text = String(data: data.prefix(512), encoding: .utf8)?.lowercased(), text.contains("<!doctype") || text.contains("<html") {
+                            throw CocoaError(.fileReadCorruptFile)
+                        }
                     }
-                    try? FileManager.default.removeItem(at: location)
-                    throw NSError(
-                        domain: "BookDownloadManager",
-                        code: -2,
-                        userInfo: [
-                            NSLocalizedDescriptionKey:
-                                "Server returned \(ct) instead of audio. The file may require re-authentication. (\(snippet.prefix(80)))"
-                        ]
-                    )
+                    guard !ext.isEmpty, ext.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }) else { throw CocoaError(.fileWriteInvalidFileName) }
+                    let destination = directory.staging.appendingPathComponent("chapter_\(index).\(ext)")
+                    try persistDownloadedTempFile(tempURL: location, destinationURL: destination)
+                    files = [destination]
                 }
+                for file in files { try AtomicDownloadDirectory.makeBackgroundReadable(file) }
+                return try transferStore.completePart(bookID: transfer.bookID, attemptID: transfer.attemptID, index: index, fileNames: files.map(\.lastPathComponent))
+            } catch {
+                try? FileManager.default.removeItem(at: location)
+                let failed = failTransfer(bookID: transfer.bookID, attemptID: transfer.attemptID, category: .invalidResponse,
+                    httpStatusCode: (downloadTask.response as? HTTPURLResponse).flatMap { (200...299).contains($0.statusCode) ? nil : $0.statusCode })
+                cancelNativeTasks(for: transfer.attemptID)
+                return failed
             }
+        }
+        if let outcome { Task { @MainActor in publish(outcome) } }
+    }
 
-            if UnifiedDownloadService.detectExtensionFromMagicBytes(at: location) == nil {
-                if let data = try? Data(contentsOf: location, options: .mappedIfSafe),
-                    data.count < 50_000,
-                    let text = String(data: data.prefix(512), encoding: .utf8),
-                    text.lowercased().contains("<!doctype") || text.lowercased().contains("<html")
-                {
-                    try? FileManager.default.removeItem(at: location)
-                    throw NSError(
-                        domain: "BookDownloadManager",
-                        code: -3,
-                        userInfo: [
-                            NSLocalizedDescriptionKey:
-                                "Downloaded file is an HTML page, not audio. This usually means the server requires re-authentication."
-                        ]
-                    )
-                }
-            }
-
-            let fm = FileManager.default
-            if !fm.fileExists(atPath: location.path) {
-                throw NSError(
-                    domain: NSCocoaErrorDomain,
-                    code: CocoaError.fileNoSuchFile.rawValue,
-                    userInfo: [NSLocalizedDescriptionKey: "Temp download file missing at \(location.path)"]
-                )
-            }
-
-            try Self.validateDownloadedFileLength(at: location, response: downloadTask.response)
-
-            let bookDir = storage.bookAudioDirectory(for: bookId)
-            try fm.createDirectory(at: bookDir, withIntermediateDirectories: true, attributes: nil)
-
-            let ext = UnifiedDownloadService.detectAudioExtension(
-                urlPathExtension: downloadTask.originalRequest?.url?.pathExtension.lowercased(),
-                response: downloadTask.response,
-                fileURL: location
-            )
-
-            let extractedFiles: [URL]
-            if ext == "zip" || isZipFile(at: location) {
-                extractedFiles = try extractAudioFilesFromZip(at: location, into: bookDir)
-            } else {
-                let destination = bookDir.appendingPathComponent("chapter_0.\(ext)", isDirectory: false)
-                try persistDownloadedTempFile(tempURL: location, destinationURL: destination)
-                extractedFiles = [destination]
-            }
-
-            let didPersistOnDisk = extractedFiles.contains(where: { url in
-                var isDir: ObjCBool = false
-                return fm.fileExists(atPath: url.path, isDirectory: &isDir) && !isDir.boolValue
-            })
-            if !didPersistOnDisk {
-                throw NSError(
-                    domain: NSCocoaErrorDomain,
-                    code: CocoaError.fileNoSuchFile.rawValue,
-                    userInfo: [NSLocalizedDescriptionKey: "Downloaded file missing after persist/extract for \(bookId)"]
-                )
-            }
-
-            stateQueue.async(flags: .barrier) { [weak self] in
-                guard let self else { return }
-                self.taskIdToBookId.removeValue(forKey: taskId)
-                self.bookIdToTask.removeValue(forKey: bookId)
-            }
-
-            Task { @MainActor in
-                self.activeBookIds.remove(bookId)
-                self.progressByBookId[bookId] = 1.0
-                self.completedBookIds.insert(bookId)
-                self.lastErrorByBookId.removeValue(forKey: bookId)
-                self.lastProgressEmissionByBookId.removeValue(forKey: bookId)
-                NotificationCenter.default.post(
-                    name: BookDownloadManager.downloadDidCompleteNotification,
-                    object: nil,
-                    userInfo: ["bookId": bookId]
-                )
-            }
+    nonisolated private func failTransfer(
+        bookID: String, attemptID: UUID, category: BookHTTPTransferStore.Failure, httpStatusCode: Int? = nil
+    ) -> BookHTTPTransferStore.Transfer? {
+        do {
+            return try transferStore.fail(bookID: bookID, attemptID: attemptID, category: category, httpStatusCode: httpStatusCode)
         } catch {
-            stateQueue.async(flags: .barrier) { [weak self] in
-                guard let self else { return }
-                self.taskIdToBookId.removeValue(forKey: taskId)
-                self.bookIdToTask.removeValue(forKey: bookId)
-            }
+            AppLogger.network.error("Could not persist the audiobook transfer failure")
+            return transferStore.transfer(for: bookID).flatMap { $0.outcome == .active ? nil : $0 }
+        }
+    }
 
-            Task { @MainActor in
-                self.activeBookIds.remove(bookId)
-                self.progressByBookId.removeValue(forKey: bookId)
-                self.lastErrorByBookId[bookId] = error.localizedDescription
-                self.lastProgressEmissionByBookId.removeValue(forKey: bookId)
-            }
+    nonisolated private func cancelNativeTasks(for attemptID: UUID) {
+        let matches = nativeTasks.filter { $0.value.taskDescription?.hasPrefix("enve-http.\(attemptID.uuidString).") == true }
+        for (identifier, task) in matches {
+            nativeTasks.removeValue(forKey: identifier)
+            task.cancel()
         }
     }
 
     nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        guard let error else { return }
-        let nsError = error as NSError
-        if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorCancelled {
-            return
+        guard error != nil else { return }
+        let outcome: BookHTTPTransferStore.Transfer? = stateQueue.sync {
+            guard !retiredTransport, let (transfer, _) = transferStore.transfer(taskDescription: task.taskDescription) else { return nil }
+            nativeTasks.removeValue(forKey: task.taskIdentifier)
+            let result = failTransfer(bookID: transfer.bookID, attemptID: transfer.attemptID, category: .transport,
+                httpStatusCode: (task.response as? HTTPURLResponse).flatMap { (200...299).contains($0.statusCode) ? nil : $0.statusCode })
+            cancelNativeTasks(for: transfer.attemptID)
+            return result
         }
-
-        let taskId = task.taskIdentifier
-        var bookId: String?
-        var multiTrackContext: (bookId: String, chapterIndex: Int, generation: UUID)?
-        stateQueue.sync {
-            bookId = taskIdToBookId[taskId]
-            multiTrackContext = multiTrackTaskIdToContext[taskId]
-        }
-        guard let bookId else { return }
-
-        if let context = multiTrackContext {
-            handleMultiTrackChapterFailure(bookId: bookId, taskId: taskId, generation: context.generation, error: error)
-            return
-        }
-
-        stateQueue.async(flags: .barrier) { [weak self] in
-            guard let self else { return }
-            self.taskIdToBookId.removeValue(forKey: taskId)
-            self.bookIdToTask.removeValue(forKey: bookId)
-        }
-
-        Task { @MainActor in
-            self.activeBookIds.remove(bookId)
-            self.progressByBookId.removeValue(forKey: bookId)
-            self.lastErrorByBookId[bookId] = error.localizedDescription
-            self.lastProgressEmissionByBookId.removeValue(forKey: bookId)
-        }
-
-        let storageCopy = storage
-        Task { @MainActor in
-            _ = storageCopy.deleteAudiobook(bookId)
-        }
-    }
-
-    nonisolated private func handleMultiTrackChapterFinished(
-        taskId: Int, downloadTask: URLSessionDownloadTask, location: URL,
-        context: (bookId: String, chapterIndex: Int, generation: UUID)
-    ) {
-        let bookId = context.bookId
-        do {
-            let update: (completed: Int, total: Int, finalized: Bool)? = try stateQueue.sync(flags: .barrier) {
-                guard let state = multiTrackStateByBookId[bookId], state.id == context.generation,
-                    !state.failed, !state.published else { return nil }
-                if let http = downloadTask.response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-                    throw NSError(domain: NSURLErrorDomain, code: http.statusCode,
-                        userInfo: [NSLocalizedDescriptionKey: "Track \(context.chapterIndex) HTTP \(http.statusCode)"])
-                }
-                let ext = UnifiedDownloadService.detectAudioExtension(
-                    urlPathExtension: downloadTask.originalRequest?.url?.pathExtension.lowercased(),
-                    response: downloadTask.response, fileURL: location)
-                let destination = state.directory.staging.appendingPathComponent("chapter_\(context.chapterIndex).\(ext)")
-                try persistDownloadedTempFile(tempURL: location, destinationURL: destination)
-                guard let attrs = try? FileManager.default.attributesOfItem(atPath: destination.path),
-                    let size = attrs[.size] as? Int64, size > 1024 else {
-                    throw NSError(domain: "BookDownloadManager", code: -1,
-                        userInfo: [NSLocalizedDescriptionKey: "Downloaded track is too small"])
-                }
-                try Self.validateDownloadedFileLength(at: destination, response: downloadTask.response)
-                state.completedCount += 1
-                multiTrackTaskIdToContext.removeValue(forKey: taskId)
-                taskIdToBookId.removeValue(forKey: taskId)
-                let finalized = state.completedCount == state.total
-                if finalized {
-                    try state.directory.publish()
-                    state.published = true
-                }
-                return (state.completedCount, state.total, finalized)
-            }
-            guard let update else { try? FileManager.default.removeItem(at: location); return }
-            Task { @MainActor in
-                guard self.isCurrentMultiTrackAttempt(bookId, generation: context.generation) else { return }
-                let progress = Double(update.completed) / Double(update.total)
-                if self.shouldEmitProgressUpdate(bookId: bookId, progress: progress) { self.progressByBookId[bookId] = progress }
-                if update.finalized {
-                    self.activeBookIds.remove(bookId)
-                    self.progressByBookId[bookId] = 1
-                    self.completedBookIds.insert(bookId)
-                    self.lastErrorByBookId.removeValue(forKey: bookId)
-                    self.lastProgressEmissionByBookId.removeValue(forKey: bookId)
-                    self.finishMultiTrackAttempt(bookId, generation: context.generation)
-                    NotificationCenter.default.post(name: Self.downloadDidCompleteNotification,
-                        object: nil, userInfo: ["bookId": bookId])
-                }
-            }
-        } catch {
-            try? FileManager.default.removeItem(at: location)
-            handleMultiTrackChapterFailure(bookId: bookId, taskId: taskId, generation: context.generation, error: error)
-        }
-    }
-
-    nonisolated private func isCurrentMultiTrackAttempt(_ bookId: String, generation: UUID) -> Bool {
-        stateQueue.sync { multiTrackStateByBookId[bookId]?.id == generation }
-    }
-
-    nonisolated private func finishMultiTrackAttempt(_ bookId: String, generation: UUID) {
-        stateQueue.sync(flags: .barrier) {
-            guard multiTrackStateByBookId[bookId]?.id == generation else { return }
-            multiTrackStateByBookId.removeValue(forKey: bookId)?.directory.discard()
-            let tasks = multiTrackTasksByBookId.removeValue(forKey: bookId) ?? []
-            bookIdToTask.removeValue(forKey: bookId)
-            for task in tasks {
-                taskIdToBookId.removeValue(forKey: task.taskIdentifier)
-                multiTrackTaskIdToContext.removeValue(forKey: task.taskIdentifier)
-            }
-        }
-    }
-
-    nonisolated private func handleMultiTrackChapterFailure(bookId: String, taskId: Int, generation: UUID, error: Error) {
-        let siblings: [URLSessionDownloadTask]? = stateQueue.sync(flags: .barrier) {
-            guard let state = multiTrackStateByBookId[bookId], state.id == generation,
-                !state.failed, !state.published else { return nil }
-            state.failed = true
-            state.directory.discard()
-            return multiTrackTasksByBookId[bookId] ?? []
-        }
-        guard let siblings else { return }
-        siblings.forEach { $0.cancel() }
-        let message = error.localizedDescription
-        Task { @MainActor in
-            guard self.isCurrentMultiTrackAttempt(bookId, generation: generation) else { return }
-            self.activeBookIds.remove(bookId)
-            self.progressByBookId.removeValue(forKey: bookId)
-            self.lastErrorByBookId[bookId] = message
-            self.lastProgressEmissionByBookId.removeValue(forKey: bookId)
-            self.finishMultiTrackAttempt(bookId, generation: generation)
-        }
+        if let outcome { Task { @MainActor in publish(outcome) } }
     }
 }

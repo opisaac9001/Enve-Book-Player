@@ -13,6 +13,7 @@ struct StoryAlignScreen: View {
                         .font(.hearthBody)
                         .foregroundStyle(hearth.textSecondary)
                 }
+                if let profileSession { PassagePreparationCard(passages: profileSession.passageAlignment) }
             }
         } else if StoryAlignMethod.allCases.contains(where: \.isAvailable) {
             StoryAlignHub()
@@ -23,14 +24,125 @@ struct StoryAlignScreen: View {
                         .font(.hearthBody)
                         .foregroundStyle(hearth.textSecondary)
                 }
+                if let profileSession { PassagePreparationCard(passages: profileSession.passageAlignment) }
             }
         }
+    }
+}
+
+/// Incremental passage preparation for Listen Along and linked sync. Cached passages stay usable when
+/// generation is off or no engine is available on this system.
+struct PassagePreparationCard: View {
+    let passages: PassageAlignmentService
+
+    @Environment(\.hearth) private var hearth
+    @State private var storage: (mappings: Int64, acoustic: Int64)?
+    @State private var confirmRemoval = false
+    @State private var modelInstalled = StoryAlignModelStore.shared.installedModelDirectory != nil
+    @State private var modelDownload: Task<Void, Never>?
+    @State private var modelError: String?
+
+    var body: some View {
+        SourcesCard {
+            Overline("Listen Along passages")
+            Toggle("Prepare passages while reading", isOn: Binding(get: { passages.generationEnabled }, set: { passages.generationEnabled = $0 }))
+                .font(.hearthBody)
+                .tint(Hearth.accent)
+            Toggle("Use prepared passages", isOn: Binding(get: { passages.cachedMappingsEnabled }, set: { passages.cachedMappingsEnabled = $0 }))
+                .font(.hearthBody)
+                .tint(Hearth.accent)
+            if PassageAlignmentService.appleSpeechSystemAvailable {
+                Picker("Listen Along engine", selection: Binding(get: { passages.liveEngine }, set: { passages.liveEngine = $0 })) {
+                    Text("Automatic").tag(PassageEngineKind?.none)
+                    Text(PassageEngineKind.appleSpeech.title).tag(PassageEngineKind?.some(.appleSpeech))
+                    if StoryAlignMethod.quartzNet.isAvailable {
+                        Text(PassageEngineKind.quartzNet.title).tag(PassageEngineKind?.some(.quartzNet))
+                    }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("storyalign.passageEngine")
+            }
+            Text(engineNote)
+                .font(.hearthCaption)
+                .foregroundStyle(hearth.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if !modelInstalled, StoryAlignMethod.quartzNet.isAvailable, usesQuartzNetForEnglish {
+                if modelDownload != nil {
+                    ProgressView("Downloading alignment model…")
+                        .font(.hearthCaption)
+                } else {
+                    QuietButton(title: "Download English model (77 MB)", systemImage: "arrow.down.circle") {
+                        modelError = nil
+                        modelDownload = Task {
+                            do { _ = try await StoryAlignModelStore.shared.prepare() } catch { modelError = error.localizedDescription }
+                            modelInstalled = StoryAlignModelStore.shared.installedModelDirectory != nil
+                            modelDownload = nil
+                        }
+                    }
+                }
+                if let modelError {
+                    Text(modelError)
+                        .font(.hearthCaption)
+                        .foregroundStyle(hearth.statusWarn)
+                }
+            }
+            if let storage {
+                Text("Prepared passages \(ByteCountFormatter.string(fromByteCount: storage.mappings, countStyle: .file)) · Analysis data \(ByteCountFormatter.string(fromByteCount: storage.acoustic, countStyle: .file))")
+                    .font(.hearthCaption)
+                    .foregroundStyle(hearth.textSecondary)
+                HStack(spacing: 10) {
+                    QuietButton(title: "Clear analysis data", systemImage: nil) {
+                        Task {
+                            await passages.clearAnalysisData()
+                            await refresh()
+                        }
+                    }
+                    .accessibilityHint("Prepared passages, positions and read-aloud books are kept")
+                    QuietButton(title: "Remove prepared passages", systemImage: nil) { confirmRemoval = true }
+                }
+            }
+        }
+        .task(id: passages.store.changeCount) { await refresh() }
+        .confirmationDialog("Remove all prepared passages?", isPresented: $confirmRemoval, titleVisibility: .visible) {
+            Button("Remove", role: .destructive) {
+                Task {
+                    await passages.removePreparedPassages()
+                    await refresh()
+                }
+            }
+        } message: {
+            Text("Reading and listening positions, pairings, read-aloud books and analysis data are kept. Passages are prepared again as you listen or switch between reading and listening.")
+        }
+    }
+
+    /// The 77 MB model only matters when English passages would actually use QuartzNet.
+    private var usesQuartzNetForEnglish: Bool {
+        switch passages.selectedEngine(language: "en") {
+        case .success(let engine): engine == .quartzNet
+        case .failure(let reason): reason == .modelDownloadRequired
+        }
+    }
+
+    private var engineNote: String {
+        guard PassageAlignmentService.appleSpeechSystemAvailable else {
+            return "English passages are prepared on this device with QuartzNet and highlight whole sentences. Apple Speech preparation requires iOS 26 or later; prepared passages work on every system."
+        }
+        if passages.liveEngine == .quartzNet {
+            return "QuartzNet prepares English passages with a 77 MB model and highlights whole sentences. Other languages use Apple Speech."
+        }
+        return "Apple Speech prepares passages on this device and needs no QuartzNet download. iOS may fetch its own speech assets the first time it is used. Each word Apple Speech times is highlighted on its own; other words show the sentence highlight."
+    }
+
+    private func refresh() async {
+        storage = await passages.store.storageBytes()
     }
 }
 
 private struct StoryAlignHub: View {
     @Environment(EnveEngine.self) private var engine
     @Environment(\.hearth) private var hearth
+    @Environment(\.profileSession) private var capturedSession
+    private var profileSession: ProfileSession { capturedSession ?? .owner }
 
     @State private var actionError: String?
     @State private var selectedEbook: Book?
@@ -79,6 +191,7 @@ private struct StoryAlignHub: View {
             subtitle: "Make read-aloud EPUBs: synced text, audio, and live highlighting."
         ) {
             methodCard
+            PassagePreparationCard(passages: profileSession.passageAlignment)
             temperatureCard
             pairCard
             if selectedEbook != nil || selectedAudiobook != nil { statusCard }
@@ -344,6 +457,11 @@ private struct StoryAlignHub: View {
                     Text(paused.reason + " Completed sections are saved.")
                         .font(.hearthCaption)
                         .foregroundStyle(hearth.textSecondary)
+                    if !paused.method.isAvailable {
+                        Text(AlignError.appleSpeechUnavailable.localizedDescription)
+                            .font(.hearthCaption)
+                            .foregroundStyle(hearth.statusWarn)
+                    }
                 }
                 Spacer()
             }

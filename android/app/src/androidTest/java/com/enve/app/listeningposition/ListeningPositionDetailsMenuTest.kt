@@ -57,7 +57,8 @@ class ListeningPositionDetailsMenuTest {
             compose.onNodeWithText("Share book location").performClick()
             compose.waitUntil(10000) { compose.onAllNodesWithTag("listening-position-qr").fetchSemanticsNodes().isNotEmpty() }
             expectedPosition?.let { compose.onNodeWithText(it).assertExists() }
-            compose.onNodeWithText("Share image").performScrollTo().assertIsDisplayed()
+            compose.onNodeWithTag("listening-position-share-link").performScrollTo().assertIsDisplayed()
+            compose.onNodeWithText("Share QR image").performScrollTo().assertIsDisplayed()
             compose.onNodeWithText("Close").performScrollTo().performClick()
             compose.onNodeWithContentDescription("More").assertExists()
         } finally {

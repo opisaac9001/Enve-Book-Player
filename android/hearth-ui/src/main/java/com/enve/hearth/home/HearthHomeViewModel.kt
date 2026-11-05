@@ -79,6 +79,8 @@ class HearthHomeViewModel @Inject constructor(
             SharingStarted.WhileSubscribed(5000),
             HearthHomeSection.entries,
         )
+    val hiddenHomeSections: StateFlow<Set<HearthHomeSection>> =
+        preferences.hiddenHomeSections.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
     val showTodayStack: StateFlow<Boolean> =
         preferences.showTodayStack.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
 

@@ -13,8 +13,12 @@ actor KokoroTTSRuntime {
     static let shared = KokoroTTSRuntime()
 
     nonisolated static var isSupportedOnCurrentOS: Bool {
-        let version = ProcessInfo.processInfo.operatingSystemVersion
-        return !(version.majorVersion == 26 && (4...5).contains(version.minorVersion))
+        isSupported(on: ProcessInfo.processInfo.operatingSystemVersion)
+    }
+
+    // FluidAudio #889: both Kokoro CoreML routes can crash on affected iOS versions.
+    nonisolated static func isSupported(on version: OperatingSystemVersion) -> Bool {
+        version.majorVersion < 26 || (version.majorVersion == 26 && version.minorVersion < 4)
     }
 
     nonisolated static var hasDownloadedVoices: Bool { KokoroTTSVoiceAssets.areDownloaded }
@@ -49,12 +53,7 @@ actor KokoroTTSRuntime {
                 try await KokoroTTSVoiceAssets.ensureDownloaded(in: directory)
                 NeuralTTSStorage.excludeModelsFromBackup()
                 try Task.checkCancellation()
-                // FluidAudio #849 keeps Noise and Tail off Metal on OS 27.
-                let computeUnits: KokoroAneComputeUnits =
-                    ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
-                    ? KokoroAneComputeUnits(noise: .cpuOnly, tail: .cpuOnly)
-                    : .default
-                let manager = KokoroAneManager(variant: .english, computeUnits: computeUnits)
+                let manager = KokoroAneManager(variant: .english, computeUnits: .default)
                 try await manager.initialize(preloadVoices: Set(KokoroTTSVoice.allCases.map(\.rawValue)))
                 return manager
             }

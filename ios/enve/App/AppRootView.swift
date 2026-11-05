@@ -48,6 +48,11 @@ struct AppRootView: View {
     @State private var tourPresented = false
     @State private var reauthConnection: ServerConnection?
     @State private var showOrphanedMatcher = false
+    private struct SharedPositionLink: Identifiable {
+        let id = UUID()
+        let message: String
+    }
+    @State private var sharedPositionLink: SharedPositionLink?
 
     init(profileSession: ProfileSession = .owner) {
         self.profileSession = profileSession
@@ -140,6 +145,11 @@ struct AppRootView: View {
             NavigationStack { OrphanedBookMatcherScreen() }
                 .enveEnvironment(session: profileSession)
         }
+        .sheet(item: $sharedPositionLink) { link in
+            ListeningPositionScanScreen(initialMessage: link.message)
+                .enveEnvironment(session: profileSession)
+                .hearthPresentationBackground()
+        }
         .alert(item: $presentation.userFacingError) { error in
             Alert(title: Text(error.title), message: Text(error.message), dismissButton: .default(Text("OK")))
         }
@@ -210,7 +220,10 @@ struct AppRootView: View {
             profileSession.opdsLogin.handleCallback(url)
             return
         }
-        if let request = EnveBookLink.readerRequest(from: url),
+        if let message = ListeningPositionLink.message(from: url) {
+            appState.presentation.isPlayerPresented = false
+            sharedPositionLink = SharedPositionLink(message: message)
+        } else if let request = EnveBookLink.readerRequest(from: url),
             let book = appState.bookInMemory(stableId: request.bookID)
         {
             engine.playback.openEbook(book, at: request.locator)
@@ -312,11 +325,17 @@ struct AppRootView: View {
             debugAddSourcePresented = true
         case "player":
             if openBook?.isEmpty ?? true {
-                var book = await engine.library.continueListeningBooks(limit: 1).first
-                if book == nil {
-                    book = await engine.library.firstBooks(mediaType: "audiobook", limit: 1).first
+                var book: Book?
+                if !Self.launchArgumentBool("imagineUnlinkedPlayerFixture") {
+                    book = await engine.library.continueListeningBooks(limit: 1).first
+                    if book == nil {
+                        book = await engine.library.firstBooks(mediaType: "audiobook", limit: 1).first
+                    }
                 }
                 let playerBook = book ?? Self.makePlayerSmokeBook()
+                if Self.launchArgumentBool("imagineUnlinkedPlayerFixture") {
+                    profileSession.playback.manager.currentBook = playerBook
+                }
                 appState.currentBook = playerBook
                 appState.presentation.isPlayerPresented = true
             }
@@ -347,8 +366,9 @@ struct AppRootView: View {
             } else if route == "reader", let smokeBook = Self.makeReaderSmokeBook() {
                 engine.playback.presentReader(for: smokeBook)
             }
-        case "footnotefixture", "pdffixture":
+        case "footnotefixture", "pdffixture", "comicfixture":
             let isPDF = route == "pdffixture"
+            let isComic = route == "comicfixture"
             if let fixtureFilename,
                 let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
             {
@@ -366,12 +386,12 @@ struct AppRootView: View {
                 if FileManager.default.fileExists(atPath: fileURL.path) {
                     let book = Book(
                         id: "debug-\(fixtureFilename)",
-                        title: isPDF ? "Enve PDF Fixture" : "Enve Footnote Fixture",
+                        title: isPDF ? "Enve PDF Fixture" : (isComic ? "Enve Comic Fixture" : "Enve Footnote Fixture"),
                         author: "Test Fixture",
                         source: .local,
                         filePath: fileURL.path,
                         mediaType: .ebook,
-                        ebookFormat: (isPDF ? EbookFormat.pdf : EbookFormat.epub).rawValue,
+                        ebookFormat: (isPDF ? EbookFormat.pdf : (isComic ? EbookFormat.cbz : EbookFormat.epub)).rawValue,
                         ebookFileURL: fileURL,
                         libraryId: "debug"
                     )
@@ -547,6 +567,22 @@ struct AppRootView: View {
             await StoryAlignCTCProbe.probeLocalFiles(profile: profileSession, fullAlignment: true)
         case "storyalignctcbenchmark":
             await StoryAlignCTCProbe.benchmark(profile: profileSession)
+        case "passagefixture":
+            await PassageAlignmentFixtureProbe.run(profile: profileSession)
+        case "passagecompatibility":
+            await PassageAlignmentFixtureProbe.runCompatibility(profile: profileSession, engine: engine)
+        case "readalongfixture":
+            await PassageAlignmentFixtureProbe.runReadAlong(profile: profileSession, engine: engine)
+        case "readalonglinkedprobe":
+            // Returns before the generic book opener below, which could open or play the audiobook.
+            await ReadAlongLinkedPairProbe.run(
+                titleQuery: openBook, engineOverride: Self.launchArgumentValue("imagineReadAlongEngine"),
+                downloadCheckOnly: Self.launchArgumentBool("imagineReadAlongDownloadCheck"),
+                expectedHost: Self.launchArgumentValue("imagineExpectedHost"),
+                quickSyncBudget: Self.launchArgumentValue("imagineReadAlongQuickSyncSeconds").flatMap(Double.init).map { .seconds($0) },
+                profile: profileSession, engine: engine
+            )
+            return
         case "storytellere2e":
             await runStorytellerE2ETest()
         case "storytellersmiltest":
@@ -1881,6 +1917,9 @@ struct AppRootView: View {
             "imagineSourcePassword",
             "imagineSeekFraction",
             "imagineCTCStart",
+            "imagineReadAlongEngine",
+            "imagineReadAlongDownloadCheck",
+            "imagineExpectedHost",
         ]
         keys.forEach { UserDefaults.standard.removeObject(forKey: $0) }
         if let bundleID = Bundle.main.bundleIdentifier,

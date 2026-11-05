@@ -11,6 +11,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
 {
     var connection: ServerConnection
     private let session: URLSession?
+    private let certificateTransport: InsecureURLSession
     private var cachedContinueProgress: [UserMediaProgress] = []
     private var cachedContinueProgressAt: Date = .distantPast
     private var cachedAdminStatus: Bool?
@@ -120,6 +121,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
     init(connection: ServerConnection, session: URLSession? = nil, profileSession: ProfileSession? = nil) {
         self.connection = connection
         self.session = session ?? profileSession?.networkSession ?? InsecureURLSession.shared
+        certificateTransport = profileSession?.transport ?? (session?.delegate as? InsecureURLSession) ?? .delegateInstance
         keychain = profileSession?.legacyKeychain ?? .shared
         appState = profileSession?.appState ?? .shared
         rejectedContent = profileSession?.rejectedContent ?? .shared
@@ -219,8 +221,11 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
 
         var request = URLRequest(url: apiBase.appendingPathComponent("auth/refresh"))
         request.httpMethod = "POST"
-        request.setValue("refresh_token=\(refresh)", forHTTPHeaderField: "Cookie")
         applyCustomHeaders(&request)
+        let cookies = (request.value(forHTTPHeaderField: "Cookie")?.components(separatedBy: ";") ?? [])
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.lowercased().hasPrefix("refresh_token=") }
+        request.setValue((cookies + ["refresh_token=\(refresh)"]).joined(separator: "; "), forHTTPHeaderField: "Cookie")
 
         let (data, response) = try await (session ?? InsecureURLSession.shared).data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200,
@@ -360,7 +365,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
             let location = response.value(forHTTPHeaderField: "Location"),
             location.lowercased().contains("cloudflareaccess.com") || location.contains("/cdn-cgi/access/")
         {
-            AppLogger.network.info("[BookOrbit] Cloudflare Access rejected /\(endpoint). Redirect to: \(location)")
+            AppLogger.network.info("[BookOrbit] Cloudflare Access rejected /\(endpoint)")
             throw ProviderError.serverError(cloudflareAccessErrorMessage(from: location, endpoint: endpoint))
         }
 
@@ -402,9 +407,6 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         if let authStatus = details.authStatus, !authStatus.isEmpty, authStatus != "NONE" {
             message += " auth_status=\(authStatus)."
         }
-        if let redirectURL = details.redirectURL, !redirectURL.isEmpty {
-            message += " redirect_url=\(redirectURL)."
-        }
         message += " Check the Zero Trust Access policy for this app and ensure it includes a Service Auth rule for your service token."
         return message
     }
@@ -433,11 +435,9 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
     }
 
     private struct CloudflareAccessRedirectDetails: Decodable {
-        let redirectURL: String?
         let authStatus: String?
         let serviceTokenStatus: Bool?
         private enum CodingKeys: String, CodingKey {
-            case redirectURL = "redirect_url"
             case authStatus = "auth_status"
             case serviceTokenStatus = "service_token_status"
         }
@@ -483,6 +483,18 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         let role: String?
         let durationSeconds: Double?
         let filename: String?
+        let mediaOverlay: MediaOverlayDTO?
+
+        var isAudio: Bool { ["m4b", "mp3", "m4a", "opus", "ogg", "flac"].contains(format?.lowercased() ?? "") }
+        var isReadable: Bool {
+            ["epub", "kepub", "pdf", "cbz", "cbr", "cb7", "mobi", "azw3", "azw", "fb2", "djvu"].contains(format?.lowercased() ?? "")
+        }
+        var isContent: Bool { ["primary", "content"].contains(role ?? "") && (isAudio || isReadable) }
+    }
+
+    private struct MediaOverlayDTO: Decodable, Sendable {
+        let available: Bool
+        let durationSeconds: Double?
     }
 
     private struct BooksPageDTO: Decodable {
@@ -629,6 +641,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         let displayOrder: Int
         let bookCount: Int
         let memberCount: Int?
+        let isOwner: Bool?
     }
 
     private struct CurrentlyReadingBookDTO: Decodable {
@@ -737,7 +750,8 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         }
         let pageSize = 200
         let body = try JSONSerialization.data(withJSONObject: [
-            "pagination": ["page": page, "size": pageSize]
+            "pagination": ["page": page, "size": pageSize],
+            "sort": [["field": "addedAt", "dir": "asc"]]
         ])
         let (data, http) = try await perform("libraries/\(libraryId)/books", method: "POST", body: body)
         guard (200...299).contains(http.statusCode) else {
@@ -757,27 +771,17 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         guard let libIdInt = Int(libraryId) else { throw ProviderError.invalidURL }
         let cappedLimit = max(1, min(limit, 200))
 
-        let probeBody = try JSONSerialization.data(withJSONObject: [
-            "pagination": ["page": 0, "size": 1]
-        ])
-        let (probeData, probeHTTP) = try await perform("libraries/\(libIdInt)/books", method: "POST", body: probeBody)
-        guard (200...299).contains(probeHTTP.statusCode) else {
-            throw ProviderError.serverError("BookOrbit returned HTTP \(probeHTTP.statusCode) for /api/v1/libraries/\(libIdInt)/books")
-        }
-        let probe = try Self.decoder.decode(BooksPageDTO.self, from: probeData)
-        guard probe.total > 0 else { return [] }
-        let lastPage = max(0, (probe.total - 1) / cappedLimit)
         let body = try JSONSerialization.data(withJSONObject: [
-            "pagination": ["page": lastPage, "size": cappedLimit]
+            "pagination": ["page": 0, "size": cappedLimit],
+            "sort": [["field": "addedAt", "dir": "desc"]]
         ])
         let (data, http) = try await perform("libraries/\(libIdInt)/books", method: "POST", body: body)
         guard (200...299).contains(http.statusCode) else {
-            throw ProviderError.serverError("BookOrbit returned HTTP \(http.statusCode) for /api/v1/libraries/\(libIdInt)/books")
+            throw ProviderError.serverError("BookOrbit returned HTTP \(http.statusCode) for recent books")
         }
         let pageDTO = try Self.decoder.decode(BooksPageDTO.self, from: data)
-        updateRejectedContent(pageDTO, libraryId: libraryId, fallbackScope: "recent-page-\(lastPage)")
-
-        return pageDTO.items.reversed().map { card($0, libraryId: libraryId) }
+        updateRejectedContent(pageDTO, libraryId: libraryId, fallbackScope: "recent-page-0")
+        return pageDTO.items.map { card($0, libraryId: libraryId) }
     }
 
     private func updateRejectedContent(
@@ -860,7 +864,6 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
     }
 
     func createCollection(_ edit: CollectionEdit) async throws -> Collection {
-        try await requireAdmin()
         let body = try collectionBody(edit)
         let (data, http) = try await perform("collections", method: "POST", body: body)
         guard http.statusCode == 200 || http.statusCode == 201 else {
@@ -870,7 +873,6 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
     }
 
     func updateCollection(id: String, edit: CollectionEdit) async throws -> Collection {
-        try await requireAdmin()
         guard let remoteId = Int(id) else { throw ProviderError.invalidURL }
         let (data, http) = try await perform("collections/\(remoteId)", method: "PATCH", body: try collectionBody(edit))
         guard http.statusCode == 200 else {
@@ -880,7 +882,6 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
     }
 
     func deleteCollection(id: String) async throws {
-        try await requireAdmin()
         guard let remoteId = Int(id) else { throw ProviderError.invalidURL }
         let (_, http) = try await perform("collections/\(remoteId)", method: "DELETE")
         guard (200...299).contains(http.statusCode) else {
@@ -897,11 +898,19 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
     }
 
     func canSyncSavedBooks() async throws -> Bool {
-        try await currentUserIsAdmin()
+        try await validateConnection()
+    }
+
+    private func ownedCollections() async throws -> [Collection] {
+        let (data, http) = try await perform("collections")
+        guard http.statusCode == 200 else { throw ProviderError.invalidResponse }
+        return try Self.decoder.decode([CollectionDTO].self, from: data)
+            .filter { $0.isOwner == true }
+            .map { collection($0, editable: true) }
     }
 
     func fetchSavedBookIDs(libraryIds: Set<String>) async throws -> [SavedBookList: Set<String>] {
-        let collections = try await fetchCollections(libraryId: nil)
+        let collections = try await ownedCollections()
         var snapshot: [SavedBookList: Set<String>] = [:]
         for list in SavedBookList.allCases {
             let name = list == .favorites ? "Enve Favorites" : "Enve For Later"
@@ -933,9 +942,8 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
     }
 
     func setSavedBook(_ book: Book, list: SavedBookList, saved: Bool) async throws {
-        try await requireAdmin()
         let name = list == .favorites ? "Enve Favorites" : "Enve For Later"
-        let collection = try await fetchCollections(libraryId: nil).first {
+        let collection = try await ownedCollections().first {
             $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame
         }
         let target: Collection
@@ -965,7 +973,6 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
     }
 
     func reorderCollections(_ ids: [String]) async throws {
-        try await requireAdmin()
         let order = ids.enumerated().compactMap { index, id -> [String: Int]? in
             guard let remoteId = Int(id) else { return nil }
             return ["id": remoteId, "displayOrder": index]
@@ -991,7 +998,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
             serverIcon: dto.icon,
             syncToKobo: dto.syncToKobo,
             displayOrder: dto.displayOrder,
-            isServerEditable: editable
+            isServerEditable: editable || dto.isOwner == true
         )
     }
 
@@ -1008,7 +1015,6 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
     }
 
     private func mutateCollectionBooks(_ bookIds: [String], collectionId: String, method: String) async throws {
-        try await requireAdmin()
         guard let remoteId = Int(collectionId) else { throw ProviderError.invalidURL }
         let ids = bookIds.compactMap(Int.init)
         guard !ids.isEmpty else { return }
@@ -1019,11 +1025,6 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         }
     }
 
-    private func requireAdmin() async throws {
-        guard try await currentUserIsAdmin(force: true) else {
-            throw ProviderError.serverError("BookOrbit collection changes require an administrator account")
-        }
-    }
     func fetchSeries(libraryId: String) async throws -> [Series] { [] }
     func fetchUserMediaProgress(libraryId: String) async throws -> [UserMediaProgress] {
         let now = Date()
@@ -1296,13 +1297,15 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
     }
 
     private func card(_ dto: BookCardDTO, libraryId: String) -> Book {
-        let files = dto.files ?? []
-        let audioFiles = files.filter { isAudio($0.format) }
+        let files = (dto.files ?? []).filter(\.isContent)
+        let audioFiles = files.filter(\.isAudio)
+        let ebookFiles = files.filter(\.isReadable)
+        let ebookFile = ebookFiles.first(where: { $0.role == "primary" }) ?? ebookFiles.first
         let isAudiobook = !audioFiles.isEmpty
         let primaryFile =
             isAudiobook
             ? (audioFiles.first(where: { $0.role?.lowercased() == "content" }) ?? audioFiles.first)
-            : (files.first(where: { $0.role?.lowercased() == "primary" }) ?? files.first)
+            : ebookFile
         let coverURL = (dto.hasCover == true) ? coverURLString(bookId: dto.id).flatMap { URL(string: $0) } : nil
 
         let tracks: [AudioTrack]? = isAudiobook ? buildTracks(from: audioFiles, durations: false) : nil
@@ -1332,7 +1335,11 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
             language: dto.language
         )
         book.mediaType = isAudiobook ? .audiobook : .ebook
-        book.ebookFormat = isAudiobook ? nil : primaryFile?.format?.lowercased()
+        book.ebookFormat = ebookFile?.format?.lowercased()
+        book.hasAlternateFormat = isAudiobook && ebookFile != nil
+        if !isAudiobook, let overlay = ebookFile?.mediaOverlay, overlay.available {
+            book.epub3Features = EPUB3Features(hasMediaOverlay: true, estimatedAudioDuration: overlay.durationSeconds)
+        }
         if let rawStatus = dto.readStatus?.status,
             let status = BookOrbitReadStatus(rawValue: rawStatus)
         {
@@ -1351,13 +1358,15 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
     }
 
     private func detailBook(_ dto: BookDetailDTO, fallbackLibraryId: String) -> Book {
-        let files = dto.files ?? []
-        let audioFiles = files.filter { isAudio($0.format) }
+        let files = (dto.files ?? []).filter(\.isContent)
+        let audioFiles = files.filter(\.isAudio)
+        let ebookFiles = files.filter(\.isReadable)
+        let ebookFile = ebookFiles.first(where: { $0.role == "primary" }) ?? ebookFiles.first
         let isAudiobook = !audioFiles.isEmpty
         let primaryFile =
             isAudiobook
             ? (audioFiles.first(where: { $0.role?.lowercased() == "content" }) ?? audioFiles.first)
-            : (files.first(where: { $0.role?.lowercased() == "primary" }) ?? files.first)
+            : ebookFile
         let coverURL = (dto.hasCover == true || dto.coverSource != nil) ? coverURLString(bookId: dto.id).flatMap { URL(string: $0) } : nil
 
         let tracks = isAudiobook ? buildTracks(from: audioFiles, durations: true) : nil
@@ -1393,7 +1402,11 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
             language: dto.language
         )
         book.mediaType = isAudiobook ? .audiobook : .ebook
-        book.ebookFormat = isAudiobook ? nil : primaryFile?.format?.lowercased()
+        book.ebookFormat = ebookFile?.format?.lowercased()
+        book.hasAlternateFormat = isAudiobook && ebookFile != nil
+        if !isAudiobook, let overlay = ebookFile?.mediaOverlay, overlay.available {
+            book.epub3Features = EPUB3Features(hasMediaOverlay: true, estimatedAudioDuration: overlay.durationSeconds)
+        }
         if let rawStatus = dto.readStatus?.status,
             let status = BookOrbitReadStatus(rawValue: rawStatus)
         {
@@ -1581,7 +1594,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
     func uploadHistorySession(_ session: HistorySession, for book: Book) async throws {
         guard session.source == .local, session.durationSeconds >= 10 else { return }
         let fetched = try? await fetchFullBookDetails(bookId: book.id, libraryId: book.libraryId)
-        guard let fileId = historySessionFileId(for: session, book: fetched ?? book) else {
+        guard let fileId = try await historySessionFileId(for: session, book: fetched ?? book) else {
             throw fetched == nil ? ProviderError.invalidResponse : HistorySessionUploadError.noMatchingFile
         }
 
@@ -1748,7 +1761,8 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         }
     }
 
-    private func historySessionFileId(for session: HistorySession, book: Book) -> Int? {
+    private func historySessionFileId(for session: HistorySession, book: Book) async throws -> Int? {
+        if session.mediaType == AppMediaType.ebook.rawValue { return try await ebookFileId(for: book) }
         guard book.mediaType == .audiobook,
             let endProgress = session.endProgress,
             let duration = book.duration,
@@ -1863,8 +1877,8 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
             return cached
         }
         try await ensureValidToken()
-        guard let ino = book.audioFileIno, let fileId = Int(ino),
-            let url = apiBase?.appendingPathComponent("books/files/\(fileId)/download"),
+        let fileId = try await ebookFileId(for: book)
+        guard let url = apiBase?.appendingPathComponent("books/files/\(fileId)/download"),
             let token = connection.token
         else {
             throw ProviderError.unauthorized
@@ -1875,27 +1889,12 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         applyCustomHeaders(&request)
 
         onProgress?(0)
-        let tempURL: URL
-        let http: HTTPURLResponse
-        if let onProgress {
-
-            let config = URLSessionConfiguration.default
-            config.timeoutIntervalForRequest = 60
-            config.timeoutIntervalForResource = 300
-            let delegate = URLSessionDownloadProgressDelegate(progressHandler: onProgress)
-            let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
-            defer { session.finishTasksAndInvalidate() }
-            (tempURL, http) = try await delegate.awaitResult {
-                session.downloadTask(with: request)
-            }
-        } else {
-            let (downloadURL, response) = try await (session ?? InsecureURLSession.shared).download(for: request)
-            guard let httpResponse = response as? HTTPURLResponse else {
-                try? FileManager.default.removeItem(at: downloadURL)
-                throw ProviderError.invalidResponse
-            }
-            tempURL = downloadURL
-            http = httpResponse
+        var (tempURL, http) = try await download(request, onProgress: onProgress)
+        if http.statusCode == 401 {
+            try? FileManager.default.removeItem(at: tempURL)
+            try await refreshAccessToken()
+            request.setValue(connection.token.map { "Bearer " + $0 }, forHTTPHeaderField: "Authorization")
+            (tempURL, http) = try await download(request, onProgress: onProgress)
         }
         guard http.statusCode == 200 else {
             try? FileManager.default.removeItem(at: tempURL)
@@ -1916,6 +1915,42 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         return try ebookImporter.cacheRemoteEbook(tempURL: tempURL, preferredFilename: filename, bookIdentifier: book.id)
     }
 
+    private func download(_ request: URLRequest, onProgress: (@Sendable (Double) -> Void)?) async throws -> (URL, HTTPURLResponse) {
+        if let onProgress {
+            let config = (session ?? InsecureURLSession.shared).configuration
+            config.timeoutIntervalForRequest = 60
+            config.timeoutIntervalForResource = 300
+            let delegate = URLSessionDownloadProgressDelegate(
+                progressHandler: onProgress,
+                allowedOrigin: request.url,
+                sensitiveHeaderNames: Set(connection.customHeaders?.keys.map { $0 } ?? []),
+                certificateTransport: certificateTransport
+            )
+            let downloads = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+            defer { downloads.finishTasksAndInvalidate() }
+            return try await delegate.awaitResult { downloads.downloadTask(with: request) }
+        }
+        let (url, response) = try await (session ?? InsecureURLSession.shared).download(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            try? FileManager.default.removeItem(at: url)
+            throw ProviderError.invalidResponse
+        }
+        return (url, http)
+    }
+
+    private func ebookFileId(for book: Book) async throws -> Int {
+        if book.mediaType == .ebook, let fileId = book.audioFileIno.flatMap(Int.init) { return fileId }
+        guard let bookId = Int(book.id) else { throw ProviderError.invalidURL }
+        let (data, http) = try await perform("books/\(bookId)")
+        guard http.statusCode == 200 else { throw ProviderError.invalidResponse }
+        let detail = try Self.decoder.decode(BookDetailDTO.self, from: data)
+        let files = (detail.files ?? []).filter { $0.isContent && $0.isReadable }
+        guard let file = files.first(where: { $0.role == "primary" }) ?? files.first else {
+            throw ProviderError.serverError("BookOrbit ebook file unavailable")
+        }
+        return file.id
+    }
+
     private static func isPDF(_ url: URL) throws -> Bool {
         guard try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else { return false }
         let file = try FileHandle(forReadingFrom: url)
@@ -1924,7 +1959,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
     }
 
     func updateEbookProgress(for book: Book, progress: Double, epubLocator: String?) async throws {
-        guard let ino = book.audioFileIno, let fileId = Int(ino) else { throw ProviderError.unauthorized }
+        let fileId = try await ebookFileId(for: book)
         var payload: [String: Any] = ["percentage": min(max(progress * 100, 0), 100)]
         if let cfi = Self.extractCFI(from: epubLocator) {
             guard cfi.unicodeScalars.count <= 2_000 else {
@@ -1943,7 +1978,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
     }
 
     func fetchEbookProgress(for book: Book) async throws -> (progress: Double, locator: String?, updatedAt: Date?, isFinished: Bool)? {
-        guard let ino = book.audioFileIno, let fileId = Int(ino) else { throw ProviderError.invalidResponse }
+        let fileId = try await ebookFileId(for: book)
         let (data, http) = try await perform("books/files/\(fileId)/progress")
         if http.statusCode == 404 || http.statusCode == 204 { return nil }
         guard http.statusCode == 200 else { throw ProviderError.invalidResponse }

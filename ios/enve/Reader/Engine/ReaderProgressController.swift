@@ -10,6 +10,8 @@ protocol ReaderProgressHosting: AnyObject {
     var progressEngineAdapter: (any ReaderEngineAdapter)? { get }
     var progressPublication: Publication? { get }
     var progressPublicationFileURL: URL? { get }
+    /// While Listen Along has the linked audiobook loaded, reading saves never move its listening position.
+    var progressPreservesListeningPosition: Bool { get }
     var progressBridgeSession: EpubBridgeSession? { get }
     var progressCurrentProgress: Double? { get set }
     var progressObservedProgression: Double? { get }
@@ -719,7 +721,7 @@ final class ReaderProgressController {
     private func scheduleProgressSave() {
         progressSaveTask?.cancel()
         progressSaveTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(450))
+            try? await Task.sleep(for: .seconds(3))
             guard !Task.isCancelled, let self, self.hasResolvedInitialHydration else { return }
             if case .readyEPUB(let navigator) = self.state {
                 _ = await self.readAloud.captureVisibleOverlayPosition(in: navigator)
@@ -819,7 +821,7 @@ final class ReaderProgressController {
             ?? (effectiveDuration > 0 ? progression * effectiveDuration : 0)
         let now = storytellerPositionActivityAt ?? Date()
         storytellerPositionActivityAt = nil
-        let didMutate = libraryCache.mutateBook(uniqueId: book.uniqueId) { updated in
+        libraryCache.mutateBook(uniqueId: book.uniqueId) { updated in
             updated.epubLocator = locatorJSON
             updated.ebookProgress = progression
             if effectiveDuration > 0 {
@@ -828,9 +830,6 @@ final class ReaderProgressController {
             }
             updated.ebookFileURL = fileURL
             updated.lastUpdate = now
-        }
-        if didMutate != nil {
-            profileSession.ebookLinks.saveLinks()
         }
         mirrorToReadAloudSourceBook(
             progression: progression,
@@ -866,12 +865,15 @@ final class ReaderProgressController {
         let capturedLocator = locatorJSON
         let capturedBook = book
         let capturedSourceEngine = sourceEngine
-        Task {
-            await profileSession.linkedProgress.recordEbookProgress(
-                book: capturedBook,
-                progression: capturedProgression,
-                observedAt: now
-            )
+        if host?.progressPreservesListeningPosition != true {
+            Task {
+                await profileSession.linkedProgress.recordEbookProgress(
+                    book: capturedBook,
+                    progression: capturedProgression,
+                    locatorJSON: capturedLocator,
+                    observedAt: now
+                )
+            }
         }
         serverSyncTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 1_500_000_000)
@@ -985,6 +987,7 @@ final class ReaderProgressController {
             readAloud.totalAudioDuration
             ?? readAloud.player?.totalDuration
         let capturedAt = audioPosition?.observedAt ?? Date()
+        let preservesListening = host?.progressPreservesListeningPosition == true
 
         var bgTaskId: UIBackgroundTaskIdentifier = .invalid
         bgTaskId = UIApplication.shared.beginBackgroundTask {
@@ -998,14 +1001,17 @@ final class ReaderProgressController {
                     UIApplication.shared.endBackgroundTask(bgTaskId)
                 }
             }
-            await profileSession.linkedProgress.recordEbookProgress(
-                book: capturedBook,
-                progression: progression,
-                exactAudioTime: capturedOverlayAudioTime,
-                exactAudioDuration: capturedOverlayAudioDuration,
-                observedAt: capturedAt,
-                authoritative: true
-            )
+            if !preservesListening {
+                await profileSession.linkedProgress.recordEbookProgress(
+                    book: capturedBook,
+                    progression: progression,
+                    exactAudioTime: capturedOverlayAudioTime,
+                    exactAudioDuration: capturedOverlayAudioDuration,
+                    locatorJSON: locator,
+                    observedAt: capturedAt,
+                    authoritative: true
+                )
+            }
             let syncBook = self.syncSourceBook(for: capturedBook)
             await bookStore.updateEbookProgress(
                 uniqueId: syncBook.uniqueId,

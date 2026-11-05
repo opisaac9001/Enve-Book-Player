@@ -12,6 +12,8 @@ final class NowPlayingCoordinator {
     init() {}
 
     private weak var activeTarget: (any RemoteCommandTarget)?
+    private let commandRegistrations = NSMapTable<MPRemoteCommandCenter, NSUUID>(keyOptions: .weakMemory, valueOptions: .strongMemory)
+    private(set) var commandRegistrationID: UUID?
     #if os(iOS)
     private var nowPlayingSession: MPNowPlayingSession?
     private weak var nowPlayingSessionOwner: (any RemoteCommandTarget)?
@@ -40,6 +42,7 @@ final class NowPlayingCoordinator {
 
     #if os(iOS)
     func setNowPlayingSession(_ session: MPNowPlayingSession, for target: any RemoteCommandTarget) {
+        guard nowPlayingSession !== session || nowPlayingSessionOwner !== target else { return }
         // Retire sessions intact; explicit removePlayer calls trigger an iOS 27 KVO exception.
         nowPlayingSession = session
         nowPlayingSessionOwner = target
@@ -211,48 +214,48 @@ final class NowPlayingCoordinator {
 
     private func armCommands() {
         let center = commandCenter
-
-        center.playCommand.removeTarget(nil)
-        center.pauseCommand.removeTarget(nil)
-        center.togglePlayPauseCommand.removeTarget(nil)
-        center.nextTrackCommand.removeTarget(nil)
-        center.previousTrackCommand.removeTarget(nil)
-        center.skipForwardCommand.removeTarget(nil)
-        center.skipBackwardCommand.removeTarget(nil)
-        center.changePlaybackPositionCommand.removeTarget(nil)
+        center.changePlaybackPositionCommand.isEnabled = lastInfo?.showsProgress ?? true
+        if let registration = commandRegistrations.object(forKey: center) {
+            commandRegistrationID = registration as UUID
+            return
+        }
+        // Keep handlers stable while MediaPlayer may still be describing a dispatched command.
+        let registrationID = UUID()
+        commandRegistrations.setObject(registrationID as NSUUID, forKey: center)
+        commandRegistrationID = registrationID
 
         center.playCommand.isEnabled = true
         center.playCommand.addTarget { @Sendable [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.activeTarget?.remotePlay()
+                self?.remoteTarget(for: registrationID)?.remotePlay()
             }
             return .success
         }
         center.pauseCommand.isEnabled = true
         center.pauseCommand.addTarget { @Sendable [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.activeTarget?.remotePause()
+                self?.remoteTarget(for: registrationID)?.remotePause()
             }
             return .success
         }
         center.togglePlayPauseCommand.isEnabled = true
         center.togglePlayPauseCommand.addTarget { @Sendable [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.activeTarget?.remoteToggle()
+                self?.remoteTarget(for: registrationID)?.remoteToggle()
             }
             return .success
         }
         center.nextTrackCommand.isEnabled = true
         center.nextTrackCommand.addTarget { @Sendable [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.activeTarget?.remoteNext()
+                self?.remoteTarget(for: registrationID)?.remoteNext()
             }
             return .success
         }
         center.previousTrackCommand.isEnabled = true
         center.previousTrackCommand.addTarget { @Sendable [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.activeTarget?.remotePrevious()
+                self?.remoteTarget(for: registrationID)?.remotePrevious()
             }
             return .success
         }
@@ -260,7 +263,7 @@ final class NowPlayingCoordinator {
         center.skipForwardCommand.addTarget { @Sendable [weak self] event in
             let interval = (event as? MPSkipIntervalCommandEvent)?.interval
             Task { @MainActor [weak self] in
-                self?.activeTarget?.remoteSkipForward(by: interval)
+                self?.remoteTarget(for: registrationID)?.remoteSkipForward(by: interval)
             }
             return .success
         }
@@ -268,7 +271,7 @@ final class NowPlayingCoordinator {
         center.skipBackwardCommand.addTarget { @Sendable [weak self] event in
             let interval = (event as? MPSkipIntervalCommandEvent)?.interval
             Task { @MainActor [weak self] in
-                self?.activeTarget?.remoteSkipBackward(by: interval)
+                self?.remoteTarget(for: registrationID)?.remoteSkipBackward(by: interval)
             }
             return .success
         }
@@ -279,10 +282,14 @@ final class NowPlayingCoordinator {
             }
             let positionTime = positionEvent.positionTime
             Task { @MainActor [weak self] in
-                self?.activeTarget?.remoteSeek(to: positionTime)
+                self?.remoteTarget(for: registrationID)?.remoteSeek(to: positionTime)
             }
             return .success
         }
+    }
+
+    func remoteTarget(for registrationID: UUID) -> (any RemoteCommandTarget)? {
+        commandRegistrationID == registrationID ? activeTarget : nil
     }
 }
 

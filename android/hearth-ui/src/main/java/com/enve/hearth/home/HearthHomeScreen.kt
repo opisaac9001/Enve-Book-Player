@@ -88,6 +88,7 @@ import com.enve.hearth.design.HearthFormat
 import com.enve.hearth.design.HearthText
 import com.enve.hearth.design.LocalMantelInset
 import com.enve.hearth.design.Overline
+import com.enve.hearth.design.ScreenHeader
 import com.enve.hearth.design.ShelfLedge
 import com.enve.hearth.design.ShelfHeader
 import com.enve.hearth.design.hearthDisplay
@@ -123,6 +124,7 @@ fun HearthHomeScreen(
     val refreshing by vm.isRefreshing.collectAsStateWithLifecycle()
     val lastSyncMillis by vm.lastSyncMillis.collectAsStateWithLifecycle()
     val homeSectionOrder by vm.homeSectionOrder.collectAsStateWithLifecycle()
+    val hiddenHomeSections by vm.hiddenHomeSections.collectAsStateWithLifecycle()
     val showTodayStack by vm.showTodayStack.collectAsStateWithLifecycle()
     val networkAvailable by vm.networkAvailable.collectAsStateWithLifecycle()
     val dismissedKeys by vm.dismissedShelfKeys.collectAsStateWithLifecycle()
@@ -249,7 +251,7 @@ fun HearthHomeScreen(
                         )
                     }
                 }
-                homeSectionOrder.forEach { section ->
+                homeSectionOrder.filterNot { it in hiddenHomeSections }.forEach { section ->
                     when (section) {
                         HearthHomeSection.DOORWAYS -> if (hero != null) item {
                             Doorways(
@@ -310,21 +312,13 @@ fun HearthHomeScreen(
 @Composable
 private fun HomeHeader(lastSyncMillis: Long, onOpenSettings: () -> Unit, onOpenProfiles: (() -> Unit)?, profileName: String?) {
     val palette = Hearth.palette
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = Hearth.Spacing.XL)
-            .padding(top = Hearth.Spacing.L),
-        verticalAlignment = Alignment.Top,
-        horizontalArrangement = Arrangement.SpaceBetween,
+    ScreenHeader(
+        title = "Hearth",
+        overline = HearthFormat.greeting(),
+        subtitle = HearthFormat.relativeAgo(lastSyncMillis)?.let { synced ->
+            { Text("Synced $synced", style = hearthUI(11.sp), color = palette.textTertiary) }
+        },
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Overline(HearthFormat.greeting())
-            Text("Hearth", style = HearthText.ScreenTitle, color = palette.text)
-            HearthFormat.relativeAgo(lastSyncMillis)?.let {
-                Text("Synced $it", style = hearthUI(11.sp), color = palette.textTertiary)
-            }
-        }
         if (onOpenProfiles != null) {
             Box(
                 Modifier.size(48.dp).clip(CircleShape).clickable(onClick = onOpenProfiles),

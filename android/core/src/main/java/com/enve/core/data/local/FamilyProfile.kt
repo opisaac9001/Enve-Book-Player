@@ -10,6 +10,7 @@ data class FamilyProfile(
     val id: String,
     val name: String,
     val role: FamilyProfileRole,
+    val requiresPin: Boolean = false,
 ) {
     companion object {
         fun validId(id: String): Boolean = id.length in 1..128 && id.all {

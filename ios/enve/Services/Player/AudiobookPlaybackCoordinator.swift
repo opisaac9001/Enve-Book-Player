@@ -23,7 +23,7 @@ enum AudiobookPlaybackPolicy {
 
 @MainActor
 protocol BookPlaybackStarting: AnyObject {
-    func play(_ book: Book, presentPlayer: Bool)
+    func play(_ book: Book, from startPosition: TimeInterval?, presentPlayer: Bool)
 }
 
 @MainActor
@@ -50,7 +50,7 @@ final class AudiobookPlaybackCoordinator: BookPlaybackStarting {
         self.detailsTimeout = detailsTimeout
     }
 
-    func play(_ book: Book, presentPlayer: Bool = true) {
+    func play(_ book: Book, from startPosition: TimeInterval? = nil, presentPlayer: Bool = true) {
         guard !isRetired else { return }
         playTask?.cancel()
         AppLogger.player.debug(
@@ -77,7 +77,7 @@ final class AudiobookPlaybackCoordinator: BookPlaybackStarting {
             profileSession.lastOpened.record(book)
             appState.currentBook = book
             appState.presentation.isPlayerPresented = presentPlayer
-            playback.playDirectURL(book, url: directURL)
+            playback.playDirectURL(book, url: directURL, startPosition: startPosition)
             return
         }
 
@@ -98,7 +98,7 @@ final class AudiobookPlaybackCoordinator: BookPlaybackStarting {
             || (book.source == .local && !(book.isPodcastEpisode && !isDownloaded))
 
         if isLocalPlayable {
-            playLocal(book, presentPlayer: presentPlayer)
+            playLocal(book, presentPlayer: presentPlayer, startPosition: startPosition)
             return
         }
 
@@ -120,7 +120,7 @@ final class AudiobookPlaybackCoordinator: BookPlaybackStarting {
         profileSession.lastOpened.record(book)
         appState.currentBook = book
         appState.presentation.isPlayerPresented = presentPlayer
-        playRemote(book, catalogProvider: provider, playbackProvider: playbackProvider)
+        playRemote(book, catalogProvider: provider, playbackProvider: playbackProvider, startPosition: startPosition)
     }
 
     func retire() async {
@@ -129,7 +129,7 @@ final class AudiobookPlaybackCoordinator: BookPlaybackStarting {
         await playTask?.value
     }
 
-    private func playLocal(_ book: Book, presentPlayer: Bool) {
+    private func playLocal(_ book: Book, presentPlayer: Bool, startPosition: TimeInterval?) {
         profileSession.lastOpened.record(book)
         appState.currentBook = book
         appState.presentation.isPlayerPresented = presentPlayer
@@ -137,11 +137,12 @@ final class AudiobookPlaybackCoordinator: BookPlaybackStarting {
         playTask = Task { @MainActor in
             guard !Task.isCancelled, !isRetired else { return }
             var enrichedBook = await profileSession.metadataManager.enrichBookWithStoredMetadata(book)
+            guard !Task.isCancelled, !isRetired else { return }
             restoreCachedChaptersIfNeeded(to: &enrichedBook)
             appState.currentBook = enrichedBook
             _ = appState.libraryCache.replaceExisting(enrichedBook)
             guard !Task.isCancelled, !isRetired else { return }
-            playback.playLocalBook(enrichedBook)
+            playback.playLocalBook(enrichedBook, startPosition: startPosition)
 
             guard AudiobookPlaybackPolicy.chaptersNeedRefresh(for: enrichedBook) else { return }
             let chapterService = profileSession.playback.chapterService
@@ -157,7 +158,8 @@ final class AudiobookPlaybackCoordinator: BookPlaybackStarting {
     private func playRemote(
         _ book: Book,
         catalogProvider: any LibraryProvider,
-        playbackProvider: any PlaybackSessionProvider
+        playbackProvider: any PlaybackSessionProvider,
+        startPosition: TimeInterval?
     ) {
         playTask = Task { @MainActor in
             guard !Task.isCancelled, !isRetired else { return }
@@ -228,9 +230,10 @@ final class AudiobookPlaybackCoordinator: BookPlaybackStarting {
 
             if let chapters = bookToPlay.chapters, !chapters.isEmpty {
                 await appState.bookStore.upsertBooks([bookToPlay])
+                guard !Task.isCancelled, !isRetired else { return }
                 profileSession.playback.composition.bookMetadataUpdater.updateChapters(chapters, for: bookToPlay)
             }
-            playback.playBook(bookToPlay, provider: playbackProvider)
+            playback.playBook(bookToPlay, provider: playbackProvider, startPosition: startPosition)
 
             if AudiobookPlaybackPolicy.chaptersNeedRefresh(for: bookToPlay) {
                 await profileSession.playback.chapterService.refreshChaptersFromServer(for: bookToPlay)

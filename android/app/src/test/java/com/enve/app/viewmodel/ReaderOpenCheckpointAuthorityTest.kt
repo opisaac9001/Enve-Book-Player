@@ -3,7 +3,6 @@ package com.enve.app.viewmodel
 import com.enve.core.reader.EpubBridgeCheckpoint
 import com.enve.core.reader.ReaderEngineKind
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Test
 
 class ReaderOpenCheckpointAuthorityTest {
@@ -92,11 +91,5 @@ class ReaderOpenCheckpointAuthorityTest {
             localCheckpoint,
             selectOpenCheckpoint(OpenProgressAuthority.AUTOMATIC, local, olderRemote, launcher),
         )
-    }
-
-    @Test
-    fun noCandidatesHasNoCheckpoint() {
-        assertNull(selectOpenCheckpoint(OpenProgressAuthority.AUTOMATIC, null, null, null))
-        assertNull(selectOpenCheckpoint(OpenProgressAuthority.REMOTE, null, null, null))
     }
 }

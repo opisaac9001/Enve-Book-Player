@@ -328,6 +328,17 @@ struct LinkedBookCalibrationVersions: Equatable, Sendable {
         return decision
     }
 
+    /// Installs an improvement found during a run while `rollback`, the calibration before the run, stays the previous
+    /// version; repeated improvements never replace it with one of their own.
+    @discardableResult
+    mutating func install(_ candidate: [LinkedBookCalibrationAnchor], keepingRollback rollback: LinkedBookCalibrationVersions) -> LinkedBookAlignmentDecision {
+        let decision = install(candidate)
+        guard decision.isAccepted else { return decision }
+        previous = rollback.accepted
+        previousQuality = rollback.acceptedQuality
+        return decision
+    }
+
     @discardableResult
     mutating func restorePrevious() -> Bool {
         guard let previous, !previous.isEmpty else { return false }

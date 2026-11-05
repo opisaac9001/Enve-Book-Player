@@ -9,8 +9,6 @@
 
 ## Verification
 
-Result bundles are under `~/Library/Developer/XcodeBuildMCP/workspaces/enveworkspace-15340b2fb5b6/result-bundles/`.
-
 | Check | Result | Bundle |
 | --- | --- | --- |
 | iOS 17.0 startup without obsolete storage warning, Settings navigation, back, reopen | 1 passed | `test_sim_2026-10-11T03-15-11-494Z_pid36703_43c13e79.xcresult` |
@@ -134,7 +132,7 @@ The opt-in real-coordinator resource check failed on iOS 27 as well: 40 switches
 | Library flow with a center-page reveal gesture | Failed opening Contents after restart during the startup toolbar transition | `test_sim_2026-10-11T08-11-54-281Z_pid36703_18186231.xcresult` |
 | Library flow after waiting for the startup toolbar transition | 1 passed, 0 failed; full restart, restoration, navigation, reopen and deletion | `test_sim_2026-10-11T08-33-05-715Z_pid36703_b5d8ef2c.xcresult` |
 
-The initial UI run passed book-detail back gestures, repeated Settings back gestures, profile switching/background return/full restarts, bottom-selection toolbar separation, both-edge EPUB selection and intentional page taps, expanded read-aloud controls and restart, and narration after highlighting/background return. The MCP request timed out after 300 seconds, but Xcode finished the run; its complete result bundle records the seven passes and two failures.
+The initial UI run passed book-detail back gestures, repeated Settings back gestures, profile switching/background return/full restarts, bottom-selection toolbar separation, both-edge EPUB selection and intentional page taps, expanded read-aloud controls and restart, and narration after highlighting/background return. The complete result bundle records the seven passes and two failures.
 
 The note check assumed that the multiline SwiftUI input appeared as a text view. Selecting the text field by its prompt, with the existing text-view form supported on older runtimes, made saving a note and opening Contents pass. The library test's unrestricted queries matched hidden Hearth controls, producing invalid hit points. The test now launches the Library route, scopes the book lookup to that screen, selects a visible Read button and waits for book text. Manual simulator interaction also opened the actual imported book through the visible Library and Read controls. These corrections are limited to UI tests; no application source was changed for this iOS 27 verification.
 

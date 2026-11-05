@@ -5,7 +5,6 @@ import com.enve.app.data.remote.dto.KavitaMangaFileDto
 import com.enve.app.data.remote.dto.KavitaMangaFormat
 import com.enve.app.data.remote.dto.KavitaSeriesDto
 import com.enve.app.data.remote.dto.KavitaVolumeDto
-import com.enve.app.data.repository.kavitaPageNum
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -198,8 +197,6 @@ class KavitaIssueCatalogTest {
         assertEquals(28, issue.seriesId)
         assertEquals(34, issue.volume.id)
         assertEquals(55, issue.chapter.id)
-        assertEquals(2, kavitaPageNum(0.5f, issue.chapter.pages))
-        assertEquals(4, kavitaPageNum(1f, issue.chapter.pages))
     }
 
     @Test

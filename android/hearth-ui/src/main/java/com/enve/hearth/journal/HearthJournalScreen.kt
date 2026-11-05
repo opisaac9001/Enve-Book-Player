@@ -51,6 +51,7 @@ import com.enve.hearth.design.HearthPalette
 import com.enve.hearth.design.HearthText
 import com.enve.hearth.design.LocalMantelInset
 import com.enve.hearth.design.Overline
+import com.enve.hearth.design.ScreenHeader
 import com.enve.hearth.design.ShelfHeader
 import com.enve.hearth.design.hearthDisplay
 
@@ -76,30 +77,26 @@ fun HearthJournalScreen(
         verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.XXL),
     ) {
         item {
-            Row(
-                Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = Hearth.Spacing.XL).padding(top = Hearth.Spacing.L),
-                verticalAlignment = Alignment.Top,
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Column {
-                    Overline("Your reading life")
-                    Text("Journal", style = HearthText.ScreenTitle, color = palette.text)
-                }
+            ScreenHeader("Journal", Modifier.statusBarsPadding(), overline = "Your reading life") {
                 Box(
-                    Modifier
-                        .size(40.dp)
-                        .clip(CircleShape)
-                        .background(palette.bgElevated)
-                        .border(1.dp, palette.hairline, CircleShape)
-                        .clickable(onClick = onOpenSettings),
+                    Modifier.size(48.dp).clip(CircleShape).clickable(onClick = onOpenSettings),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Icon(
-                        Icons.Outlined.Settings,
-                        contentDescription = "Settings",
-                        tint = palette.textSecondary,
-                        modifier = Modifier.size(18.dp),
-                    )
+                    Box(
+                        Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .background(palette.bgElevated)
+                            .border(1.dp, palette.hairline, CircleShape),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.Outlined.Settings,
+                            contentDescription = "Settings",
+                            tint = palette.textSecondary,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
                 }
             }
         }

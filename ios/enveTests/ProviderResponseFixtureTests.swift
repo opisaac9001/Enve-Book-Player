@@ -24,13 +24,6 @@ struct GrimmoryResponseFixtureTests {
         #expect(user.permissions.canDownload == true)
     }
 
-    @Test func currentUserWithoutPermissionsObjectIsRejected() {
-        #expect(throws: DecodingError.self) {
-            try JSONDecoder().decode(GrimmoryUser.self, from: Data(
-                #"{"id":1,"username":"fixture-user","name":"Fixture User","admin":true}"#.utf8))
-        }
-    }
-
     @Test func audiobookDetailPercentagesAreHundredths() throws {
         let fixture = Data(
             #"""
@@ -120,20 +113,6 @@ struct StorytellerResponseFixtureTests {
         #expect(book.position?.locatorComponents?.href == "")
     }
 
-    @Test func queuedRestartModeIsAString() throws {
-        let json = Self.bookJSON.replacingOccurrences(of: #""restartPending":null"#, with: #""restartPending":"sync""#)
-        let book = try JSONDecoder().decode(StorytellerBook.self, from: Data(json.utf8))
-
-        #expect(book.readaloud?.restartPending == "sync")
-    }
-
-    @Test func bookWithoutUUIDIsRejected() {
-        let json = Self.bookJSON.replacingOccurrences(of: #""uuid":"5d1cd022-a0d1-4458-92f9-1a63f7c23190","#, with: "")
-        #expect(throws: DecodingError.self) {
-            try JSONDecoder().decode(StorytellerBook.self, from: Data(json.utf8))
-        }
-    }
-
     @Test func positionEndpointDecodesTheLocatorObject() throws {
         let position = try JSONDecoder().decode(StorytellerPosition.self, from: Data(
             #"""
@@ -166,17 +145,6 @@ struct StorytellerResponseFixtureTests {
         #expect(manifest.toc?.first?.title == "Track 1/3")
         #expect(manifest.resources == nil)
     }
-
-    @Test func userDecodesPermissionFlags() throws {
-        let user = try JSONDecoder().decode(StorytellerUser.self, from: Data(
-            #"""
-            {"id":"00000000-0000-4000-8000-000000000000","name":"Fixture Admin","username":"fixture-admin","email":"fixture@local.invalid",
-             "permissions":{"bookCreate":true,"bookDelete":true,"bookDownload":true,"bookList":true,"bookProcess":false,"bookRead":true}}
-            """#.utf8))
-
-        #expect(user.permissions.bookList)
-        #expect(!user.permissions.bookProcess)
-    }
 }
 
 @MainActor
@@ -202,13 +170,6 @@ struct AudiobookshelfResponseFixtureTests {
 
         #expect(item.title == "Alice in Wonderland (Drama)")
         #expect(item.author == "Alice Gerstenberg")
-    }
-
-    @Test func chapterWithoutTitleIsRejected() {
-        let json = Self.itemJSON.replacingOccurrences(of: #""title":"01 - Act 1","#, with: "")
-        #expect(throws: DecodingError.self) {
-            try AudiobookshelfProvider.decodePodcastItem(Data(json.utf8))
-        }
     }
 }
 

@@ -61,6 +61,7 @@ public struct UserPreferences: Codable, Equatable {
     public var shellNavigationStyle: ShellNavigationStyle = .classic
     public var preferredStartTab: PreferredStartTab = .hearth
     public var homeSectionOrder: [HomeSection] = HomeSection.allCases
+    public var hiddenHomeSections: Set<HomeSection> = []
     var primaryColorRed: CGFloat = ThemeManager.defaultAccentRed
     var primaryColorGreen: CGFloat = ThemeManager.defaultAccentGreen
     var primaryColorBlue: CGFloat = ThemeManager.defaultAccentBlue
@@ -285,6 +286,10 @@ public struct UserPreferences: Codable, Equatable {
     var normalizedHomeSectionOrder: [HomeSection] {
         var seen = Set<HomeSection>()
         return (homeSectionOrder + HomeSection.allCases).filter { seen.insert($0).inserted }
+    }
+
+    var visibleHomeSections: [HomeSection] {
+        normalizedHomeSectionOrder.filter { !hiddenHomeSections.contains($0) }
     }
 
     public enum SortOption: String, Codable, CaseIterable, Identifiable {
@@ -539,7 +544,7 @@ public struct UserPreferences: Codable, Equatable {
         case sleepTimerRestartScope
         case eqEnabled, eqBands, independentPitchSemitones
         case monoMixEnabled, stereoBalance, noiseReductionLevel, binauralEnabled
-        case theme, playerBackgroundStyle, shellNavigationStyle, preferredStartTab, homeSectionOrder
+        case theme, playerBackgroundStyle, shellNavigationStyle, preferredStartTab, homeSectionOrder, hiddenHomeSections
         case primaryColorRed, primaryColorGreen, primaryColorBlue
         case showChapters, showBookmarks, visionImpairedModeEnabled, dynamicBackgroundEnabled
         case autoSyncProgress, syncInterval, deviceIdentifier
@@ -622,6 +627,7 @@ public struct UserPreferences: Codable, Equatable {
         if let v = decode(ShellNavigationStyle.self, .shellNavigationStyle) { shellNavigationStyle = v }
         if let v = decode(PreferredStartTab.self, .preferredStartTab) { preferredStartTab = v }
         if let v = decode([HomeSection].self, .homeSectionOrder) { homeSectionOrder = v }
+        if let v = decode(Set<HomeSection>.self, .hiddenHomeSections) { hiddenHomeSections = v }
         if let v = decode(CGFloat.self, .primaryColorRed) { primaryColorRed = v }
         if let v = decode(CGFloat.self, .primaryColorGreen) { primaryColorGreen = v }
         if let v = decode(CGFloat.self, .primaryColorBlue) { primaryColorBlue = v }

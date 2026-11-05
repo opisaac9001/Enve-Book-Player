@@ -28,12 +28,14 @@ private final class StartupProviderStub: PlexProvider, @unchecked Sendable {
     let gate: StartupGate?
     let failsAfterRelease: Bool
     let audioURL: String
+    let serverResume: TimeInterval?
     var progressRequests = 0
 
-    init(gate: StartupGate? = nil, failsAfterRelease: Bool = false, audioURL: String = "file:///nonexistent-fixture.wav") {
+    init(gate: StartupGate? = nil, failsAfterRelease: Bool = false, audioURL: String = "file:///nonexistent-fixture.wav", serverResume: TimeInterval? = nil) {
         self.gate = gate
         self.failsAfterRelease = failsAfterRelease
         self.audioURL = audioURL
+        self.serverResume = serverResume
         super.init(connection: ServerConnection(name: "Fixture", url: "https://fixture.invalid", type: .plex))
     }
 
@@ -44,7 +46,8 @@ private final class StartupProviderStub: PlexProvider, @unchecked Sendable {
             sessionId: "session-\(book.id)",
             audioTracks: gate == nil ? [] : [AudioTrackInfo(index: 0, startOffset: 0, duration: 90,
                 contentUrl: audioURL, mimeType: "audio/wav")],
-            chapters: []
+            chapters: [],
+            serverCurrentTime: serverResume
         )
     }
 
@@ -62,6 +65,67 @@ private final class StartupProviderStub: PlexProvider, @unchecked Sendable {
 @MainActor
 @Suite(.serialized)
 struct PlaybackStartupTests {
+    @Test(arguments: [0.0, 3.0])
+    func explicitStartNearTheBeginningWinsOverTheServerSession(_ position: TimeInterval) async throws {
+        let fixture = try StartupFixture(startupTimeout: 10)
+        fixture.session.defaults.set(true, forKey: "profileServerSyncEnabled")
+        let file = fixture.root.appendingPathComponent("explicit-start.wav")
+        try PlaybackTestAudioFixture.wave(seconds: 90).write(to: file)
+        let gate = StartupGate()
+        let provider = StartupProviderStub(gate: gate, audioURL: file.absoluteString, serverResume: 35)
+        let book = makeBook("explicit-start")
+        fixture.manager.playBook(book, provider: provider, startPosition: position)
+        try await waitUntil { gate.entered }
+        gate.release()
+        try await waitUntil { fixture.manager.isPlaying && !fixture.manager.isLoading }
+        #expect(fixture.manager.currentTime >= position)
+        #expect(fixture.manager.currentTime < position + 2)
+        #expect(provider.progressRequests == 0)
+        await fixture.close()
+    }
+
+    @Test(arguments: [0.0, 3.0], [false, true])
+    func explicitStartsReachDirectAndLocalPlayback(_ position: TimeInterval, local: Bool) async throws {
+        let fixture = try StartupFixture(startupTimeout: 10)
+        let file = fixture.root.appendingPathComponent("explicit-local.wav")
+        try PlaybackTestAudioFixture.wave(seconds: 90).write(to: file)
+        let book = Book(id: "explicit-local", title: "Explicit local", duration: 90, source: .local, filePath: file.path)
+        fixture.session.bookProgress.saveProgress(for: book, progress: 35, duration: 90)
+
+        if local {
+            fixture.manager.playLocalBook(book, startPosition: position)
+        } else {
+            fixture.manager.playDirectURL(book, url: file, startPosition: position)
+        }
+        try await waitUntil { fixture.manager.isPlaying && !fixture.manager.isLoading }
+        #expect(fixture.manager.currentTime >= position)
+        #expect(fixture.manager.currentTime < position + 2)
+        await fixture.close()
+    }
+
+    @Test func aRefusedStartNeverLeavesAPositionForTheNextRequest() async throws {
+        let fixture = try StartupFixture(startupTimeout: 10)
+        let book = makeBook("refused-explicit")
+        let starter = AudiobookPlaybackCoordinator(
+            appState: fixture.session.appState, playback: fixture.manager, profileSession: fixture.session
+        )
+        starter.play(book, from: 70, presentPlayer: false)
+        #expect(fixture.manager.currentBook == nil)
+
+        fixture.session.bookProgress.saveProgress(for: book, progress: 20, duration: 90)
+        let file = fixture.root.appendingPathComponent("after-refusal.wav")
+        try PlaybackTestAudioFixture.wave(seconds: 90).write(to: file)
+        let gate = StartupGate()
+        let provider = StartupProviderStub(gate: gate, audioURL: file.absoluteString)
+        fixture.manager.playBook(book, provider: provider)
+        try await waitUntil { gate.entered }
+        gate.release()
+        try await waitUntil { fixture.manager.isPlaying && !fixture.manager.isLoading }
+        #expect(fixture.manager.currentTime >= 20 && fixture.manager.currentTime < 22)
+        await starter.retire()
+        await fixture.close()
+    }
+
     @Test func downloadedBookAdoptsNewerServerProgressWhileOnline() async throws {
         let fixture = try StartupFixture(startupTimeout: 10)
         fixture.session.defaults.set(true, forKey: "profileServerSyncEnabled")

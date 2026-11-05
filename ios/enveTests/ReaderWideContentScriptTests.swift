@@ -5,8 +5,6 @@ import Testing
 
 @MainActor
 struct ReaderWideContentScriptTests {
-    private let script = ReaderWideContentScript.source
-
     @Test func answersAreParsed() {
         #expect(ReaderWideContentScript.parse("changed") == .changed)
         #expect(ReaderWideContentScript.parse(" stable ") == .stable)

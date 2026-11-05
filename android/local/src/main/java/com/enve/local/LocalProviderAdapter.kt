@@ -69,10 +69,8 @@ class LocalProviderAdapter @Inject constructor(
         if (book.mediaType != AppMediaType.AUDIOBOOK) return@runSuspendCatching emptyList()
         val uriString = scopedUri() ?: error("No local library URI found")
         val sourceId = ConnectionScope.getConnectionId() ?: book.connectionId ?: LOCAL_LIBRARY_ID
-        localRepository.scanDirectory(uriString, sourceId)
-            .firstOrNull { it.id == book.id }
-            ?.audioTracks
-            ?.takeIf { it.isNotEmpty() }
+        localRepository.getAudioTracks(uriString, sourceId, book)
+            .takeIf { it.isNotEmpty() }
             ?: listOf(
                 AudioTrack(
                     index = 0,

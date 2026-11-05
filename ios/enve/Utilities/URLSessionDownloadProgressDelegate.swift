@@ -62,14 +62,23 @@ final class URLSessionDownloadProgressDelegate: NSObject, URLSessionDownloadDele
         super.init()
     }
 
-    func awaitResult(_ makeTask: () -> URLSessionDownloadTask) async throws -> (URL, HTTPURLResponse) {
+    func awaitResult(_ makeTask: () throws -> URLSessionDownloadTask) async throws -> (URL, HTTPURLResponse) {
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 lock.lock()
                 self.continuation = continuation
                 lock.unlock()
 
-                let task = makeTask()
+                let task: URLSessionDownloadTask
+                do {
+                    task = try makeTask()
+                } catch {
+                    lock.lock()
+                    capturedError = error
+                    lock.unlock()
+                    fulfillIfReady()
+                    return
+                }
                 lock.lock()
                 activeTask = task
                 lock.unlock()

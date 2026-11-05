@@ -45,6 +45,23 @@ class CatalogImportStoreTest {
         assertTrue(store.hasIssue("account-b", "1"))
     }
 
+    @Test fun dismissSurvivesReloadWithoutClearingFailureAndNewAttemptsResurface() {
+        val store = CatalogImportStore(locations())
+        store.record("a", "1", report())
+        store.record("b", "2", report())
+        val dismissed = store.issues.value.first { it.connectionKey == com.enve.core.data.provider.catalogImportConnectionKey("a") }
+        store.dismiss(listOf(dismissed))
+        val reloaded = CatalogImportStore(locations())
+        assertTrue(reloaded.hasIssue("a", "1"))
+        assertEquals(1, reloaded.visibleIssues.value.size)
+        reloaded.record("a", "1", report())
+        assertEquals(2, reloaded.visibleIssues.value.size)
+        reloaded.dismiss(reloaded.visibleIssues.value)
+        reloaded.record("a", "1", null)
+        assertFalse(reloaded.hasIssue("a", "1"))
+        assertTrue(reloaded.visibleIssues.value.isEmpty())
+    }
+
     @Test fun compositeAndRawLibraryScopesMatch() {
         val store = CatalogImportStore(locations())
         store.record("account-a", "account-a::1", report())

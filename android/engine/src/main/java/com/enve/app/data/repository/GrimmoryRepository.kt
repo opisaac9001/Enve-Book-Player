@@ -26,7 +26,6 @@ import com.enve.core.data.provider.*
 import com.enve.core.data.util.*
 import com.enve.core.data.remote.dto.AuthResponse
 import com.enve.core.data.remote.dto.AuthorSummaryDto
-import com.enve.core.data.remote.dto.LoginRequest
 import com.enve.core.data.remote.dto.RefreshRequest
 import com.enve.core.data.remote.dto.SeriesSummaryDto
 import com.enve.core.data.local.PreferencesManager
@@ -35,7 +34,6 @@ import com.enve.core.auth.CredentialVault
 import com.enve.core.data.provider.ProviderEbookResource
 import com.enve.core.reader.EpubBridgeCheckpointCodec
 import com.enve.core.reader.ReaderEngineKind
-import com.enve.core.data.sync.CfiLocatorConverter
 import com.enve.core.data.sync.SyncSnapshot
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
@@ -70,10 +68,8 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.security.MessageDigest
 import java.net.URLDecoder
 import java.time.Instant
-import java.time.LocalDate
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
-import java.net.URI
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.round
@@ -729,22 +725,10 @@ class GrimmoryRepository @Inject constructor(
             val libs = when (source) {
                 BookSource.GRIMMORY -> {
                     val response = api.getCatalogLibraries().catalogResponse()
-                    val appLibraries = response.body()
-                    val dto: List<LibraryDto> = if (
-                        shouldUseLegacyGrimmoryCatalog(response.code(), appLibraries?.size)
-                    ) {
-                        android.util.Log.i(
-                            "GrimmoryRepository",
-                            "/app/libraries HTTP ${response.code()} with ${appLibraries?.size ?: 0} libraries; falling back to legacy /api/v1/libraries",
-                        )
-                        val legacy = api.getCatalogLibrariesLegacy().catalogResponse()
-                        if (!legacy.isSuccessful) {
-                            return Result.failure(Exception("Failed to fetch libraries (legacy HTTP ${legacy.code()})"))
-                        }
-                        legacy.body().orEmpty()
-                    } else {
-                        appLibraries.orEmpty()
+                    if (!response.isSuccessful) {
+                        return Result.failure(Exception("Failed to fetch libraries (HTTP ${response.code()})"))
                     }
+                    val dto = response.body().orEmpty()
                     saveLibrariesToDisk(source, serverUrl, dto)
                     dto.map { it.toLibrary() }
                 }

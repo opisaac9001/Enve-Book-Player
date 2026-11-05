@@ -33,15 +33,6 @@ data class AppPageDto<T>(
 )
 
 @Serializable
-data class AppLibrarySummaryDto(
-    val id: Long,
-    val name: String,
-    val bookCount: Int = 0,
-    val allowedFormats: List<String> = emptyList(),
-    val paths: List<String> = emptyList(),
-)
-
-@Serializable
 data class AppBookSummaryDto(
     @Serializable(with = FlexibleIdSerializer::class) val id: String,
     val title: String = "",

@@ -16,10 +16,11 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
     private let streamingServer: StorytellerStreamingServer
     private let isolatesCredentials: Bool
     private let metadataLayering: MetadataLayeringManager
-    private var isRetired = false
+    private var retired = false
     private let downloadSessionsLock = NSLock()
-    private var downloadSessions: [ObjectIdentifier: URLSession] = [:]
-    private let session: URLSession
+    private var downloadSessions: [ObjectIdentifier: ProviderURLSession] = [:]
+    private let requests: ProviderURLSession
+    private var isRetired: Bool { downloadSessionsLock.withLock { retired } }
     private let audioManifestCacheLock = NSLock()
     private var audioManifestCache: [String: (manifest: StorytellerAudioManifest, cachedAt: Date)] = [:]
     private static let audioManifestCacheTTL: TimeInterval = 300
@@ -73,11 +74,13 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
         if let customHeaders = connection.customHeaders {
             config.httpAdditionalHeaders = customHeaders
         }
+        let session: URLSession
         if connection.mtlsEnabled {
-            self.session = (profileSession?.mtls ?? MTLSManager.shared).makeSession(for: connection.id, configuration: config)
+            session = (profileSession?.mtls ?? MTLSManager.shared).makeSession(for: connection.id, configuration: config)
         } else {
-            self.session = URLSession(configuration: config)
+            session = URLSession(configuration: config)
         }
+        requests = ProviderURLSession(session)
         syncAuthCookie()
     }
 
@@ -99,32 +102,37 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
         Date(timeIntervalSince1970: Double(ms) / 1000.0)
     }
 
-    private func trackDownloadSession(_ session: URLSession) {
-        downloadSessionsLock.lock()
-        downloadSessions[ObjectIdentifier(session)] = session
-        downloadSessionsLock.unlock()
+    private func trackDownloadSession(_ session: ProviderURLSession) throws {
+        let tracked = downloadSessionsLock.withLock {
+            guard !retired else { return false }
+            downloadSessions[ObjectIdentifier(session)] = session
+            return true
+        }
+        guard tracked else {
+            session.invalidateAndCancel()
+            throw CancellationError()
+        }
     }
 
-    private func untrackDownloadSession(_ session: URLSession) {
+    private func untrackDownloadSession(_ session: ProviderURLSession) {
         downloadSessionsLock.lock()
         downloadSessions.removeValue(forKey: ObjectIdentifier(session))
         downloadSessionsLock.unlock()
     }
 
-    private func pendingDownloadSessions() -> [URLSession] {
-        downloadSessionsLock.lock()
-        defer { downloadSessionsLock.unlock() }
-        return Array(downloadSessions.values)
+    private func retireDownloadSessions() -> [ProviderURLSession] {
+        downloadSessionsLock.withLock {
+            retired = true
+            let sessions = Array(downloadSessions.values)
+            downloadSessions.removeAll()
+            return sessions
+        }
     }
 
     func retire() async {
-        isRetired = true
-        let sessions = pendingDownloadSessions() + [session]
+        let sessions = retireDownloadSessions()
+        requests.invalidateAndCancel()
         for session in sessions { session.invalidateAndCancel() }
-        for session in sessions {
-            let tasks = await session.allTasks
-            for task in tasks { task.cancel() }
-        }
         await streamingServer.retire()
     }
 
@@ -193,7 +201,7 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
     }
 
     private func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await requests.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw ProviderError.invalidResponse
         }
@@ -1051,21 +1059,7 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
         let serverId = serverBookId(for: book)
         let request = try makeRequest(path: "/api/v2/books/\(serverId)/files?format=ebook")
 
-        let response: URLResponse
-        let tempURL: URL
-        if let onProgress {
-            let delegate = URLSessionDownloadProgressDelegate(progressHandler: onProgress)
-            let session = URLSession(configuration: isolatesCredentials ? .ephemeral : .default, delegate: delegate, delegateQueue: nil)
-            trackDownloadSession(session)
-            defer { untrackDownloadSession(session); session.finishTasksAndInvalidate() }
-            let (url, http) = try await delegate.awaitResult {
-                session.downloadTask(with: request)
-            }
-            tempURL = url
-            response = http
-        } else {
-            (tempURL, response) = try await session.download(for: request)
-        }
+        let (tempURL, response) = try await download(request, onProgress: onProgress)
 
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             try? FileManager.default.removeItem(at: tempURL)
@@ -1084,21 +1078,7 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
         let serverId = serverBookId(for: book)
         let request = try makeRequest(path: "/api/v2/books/\(serverId)/files?format=readaloud")
 
-        let response: URLResponse
-        let tempURL: URL
-        if let onProgress {
-            let delegate = URLSessionDownloadProgressDelegate(progressHandler: onProgress)
-            let session = URLSession(configuration: isolatesCredentials ? .ephemeral : .default, delegate: delegate, delegateQueue: nil)
-            trackDownloadSession(session)
-            defer { untrackDownloadSession(session); session.finishTasksAndInvalidate() }
-            let (url, http) = try await delegate.awaitResult {
-                session.downloadTask(with: request)
-            }
-            tempURL = url
-            response = http
-        } else {
-            (tempURL, response) = try await session.download(for: request)
-        }
+        let (tempURL, response) = try await download(request, onProgress: onProgress)
 
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             try? FileManager.default.removeItem(at: tempURL)
@@ -1119,6 +1099,16 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
             bookId: book.id
         )
         return cachedURL
+    }
+
+    private func download(_ request: URLRequest, onProgress: (@Sendable (Double) -> Void)?) async throws -> (URL, URLResponse) {
+        guard let onProgress else { return try await requests.download(for: request) }
+        let delegate = URLSessionDownloadProgressDelegate(progressHandler: onProgress)
+        let session = URLSession(configuration: isolatesCredentials ? .ephemeral : .default, delegate: delegate, delegateQueue: nil)
+        let downloads = ProviderURLSession(session)
+        try trackDownloadSession(downloads)
+        defer { untrackDownloadSession(downloads); session.finishTasksAndInvalidate() }
+        return try await delegate.awaitResult { try downloads.downloadTask(with: request) }
     }
 
     func updateEbookProgress(for book: Book, progress: Double, epubLocator: String?) async throws {

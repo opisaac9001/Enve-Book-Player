@@ -5,6 +5,7 @@ import com.enve.bookorbit.dto.BookOrbitLoginRequest
 import com.enve.bookorbit.dto.BookOrbitLoginResponse
 import com.enve.core.auth.CredentialVault
 import com.enve.core.data.local.PreferencesManager
+import com.enve.core.data.model.ConnectionAuthMode
 import com.enve.core.data.remote.TokenRefreshContext
 import com.enve.core.data.remote.TokenRefreshStrategy
 import com.enve.core.data.remote.auth.applyConnectionAuthHeaders
@@ -32,6 +33,7 @@ class BookOrbitTokenRefreshStrategy @Inject constructor(
             refreshWithCookie(context, refreshToken)?.let { return it }
         }
 
+        if (context.connection?.authMode == ConnectionAuthMode.SSO) return null
         val username = context.username
         val password = context.password
         if (!username.isNullOrBlank() && !password.isNullOrBlank()) {
@@ -45,15 +47,21 @@ class BookOrbitTokenRefreshStrategy @Inject constructor(
             .url("${context.serverUrl.trimEnd('/')}/api/v1/auth/refresh")
             .post("".toRequestBody(null))
             .header("Accept", "application/json")
-            .header("Cookie", "refresh_token=$refreshToken")
             .applyConnectionAuthHeaders(context.connection)
+            .header("Cookie", (context.connection?.customHeaders?.entries
+                ?.firstOrNull { it.key.equals("Cookie", ignoreCase = true) }?.value
+                ?.split(';').orEmpty()
+                .map { it.trim() }
+                .filter { it.isNotEmpty() && !it.substringBefore('=').equals("refresh_token", ignoreCase = true) }
+                + "refresh_token=$refreshToken").joinToString("; "))
             .build()
         refreshClient.newCall(request).execute().use { response ->
             if (!response.isSuccessful) return null
             val auth = json.decodeFromString<BookOrbitLoginResponse>(response.body?.string() ?: return null)
             val nextRefresh = BookOrbitAuthCookies.refreshToken(response.headers) ?: refreshToken
-            storeTokens(context.connectionId, auth.accessToken, nextRefresh)
-            auth.accessToken
+            val accessToken = auth.accessToken.takeIf { it.isNotBlank() } ?: return null
+            storeTokens(context.connectionId, accessToken, nextRefresh)
+            accessToken
         }
     } catch (_: Exception) {
         null
@@ -71,8 +79,9 @@ class BookOrbitTokenRefreshStrategy @Inject constructor(
         refreshClient.newCall(request).execute().use { response ->
             if (!response.isSuccessful) return null
             val auth = json.decodeFromString<BookOrbitLoginResponse>(response.body?.string() ?: return null)
-            storeTokens(context.connectionId, auth.accessToken, BookOrbitAuthCookies.refreshToken(response.headers))
-            auth.accessToken
+            val accessToken = auth.accessToken.takeIf { it.isNotBlank() } ?: return null
+            storeTokens(context.connectionId, accessToken, BookOrbitAuthCookies.refreshToken(response.headers))
+            accessToken
         }
     } catch (_: Exception) {
         null
@@ -80,7 +89,9 @@ class BookOrbitTokenRefreshStrategy @Inject constructor(
 
     private fun storeTokens(connectionId: String?, accessToken: String, refreshToken: String?) {
         runBlocking {
-            prefs.saveAuth(accessToken, refreshToken)
+            if (connectionId == null) {
+                prefs.saveAuth(accessToken, refreshToken)
+            }
             connectionId?.let { id ->
                 vault.put(CredentialVault.accessTokenKey(id), accessToken)
                 if (!refreshToken.isNullOrBlank()) {

@@ -533,10 +533,14 @@ final class LibraryEngine {
     }
 
     func unlinkAudiobook(from ebook: Book) -> Book {
-        if (profileSession?.ebookLinker ?? EbookAudiobookLinker.shared).linkedAudiobook(for: ebook) != nil {
+        if let audiobook = (profileSession?.ebookLinker ?? EbookAudiobookLinker.shared).linkedAudiobook(for: ebook) {
             if profileSession?.isOwner ?? true {
                 (profileSession?.storyAlignService ?? StoryAlignService.shared).deleteConversions(involving: ebook)
             }
+            #if os(iOS)
+            let passages = (profileSession ?? .owner).passageAlignment
+            Task { await passages.removePair(ebookStableId: ebook.stableId, audiobookStableId: audiobook.stableId) }
+            #endif
         }
         appState.mutateBook(uniqueId: ebook.uniqueId) {
             $0.linkedAudiobookStableId = nil
@@ -814,7 +818,7 @@ final class LibraryEngine {
 
     private func statusAllowsContinue(_ book: Book) -> Bool {
         guard book.source == .booklore, let status = book.serverReadStatus else { return true }
-        return status == "READING" || status == "RE_READING"
+        return status == "READING" || status == "RE_READING" || status == "IN_PROGRESS"
     }
 
     func filterStatus(_ books: [Book], status: LibraryStatusFilter, downloadedIds: Set<String>) -> [Book] {
@@ -1356,11 +1360,11 @@ final class LibraryEngine {
         return try await provider.fetchCollectionBooks(collectionId: remoteId, page: page, size: size, query: query)
     }
 
-    func bookOrbitAdminConnections() async -> [ServerConnection] {
+    func bookOrbitCollectionConnections() async -> [ServerConnection] {
         var result: [ServerConnection] = []
         for connection in appState.providerConnections.connections where connection.type == .bookOrbit && connection.isConnected && !connection.isArchived {
             if let provider = appState.getProvider(connection.id) as? BookOrbitProvider,
-                (try? await provider.currentUserIsAdmin()) == true
+                (try? await provider.validateConnection()) == true
             {
                 result.append(connection)
             }
@@ -1400,15 +1404,14 @@ final class LibraryEngine {
 
     func bookOrbitMemberships(for book: Book) async throws -> [BookOrbitCollectionMembership] {
         guard let provider = appState.getProvider(book.providerId) as? BookOrbitProvider else { return [] }
-        guard try await provider.currentUserIsAdmin() else { return [] }
-        return try await provider.collectionsContaining(bookId: book.id).map {
+        return try await provider.collectionsContaining(bookId: book.id).filter { $0.collection.isServerEditable }.map {
             BookOrbitCollectionMembership(collection: $0.collection, containsBook: $0.containsBook)
         }
     }
 
     func canManageBookOrbitCollections(for book: Book) async -> Bool {
         guard let provider = appState.getProvider(book.providerId) as? BookOrbitProvider else { return false }
-        return (try? await provider.currentUserIsAdmin()) == true
+        return (try? await provider.validateConnection()) == true
     }
 
     func setBookOrbitMembership(_ containsBook: Bool, book: Book, collection: Collection) async throws {

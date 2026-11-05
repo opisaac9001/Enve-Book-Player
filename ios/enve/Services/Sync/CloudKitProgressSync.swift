@@ -8,7 +8,7 @@ import UIKit
 #endif
 
 @Observable
-final class CloudKitProgressSync {
+final class CloudKitProgressSync: SyncSink {
     static var shared: CloudKitProgressSync { ProfileSession.owner.cloudKit }
 
     @ObservationIgnored private let container: CKContainer

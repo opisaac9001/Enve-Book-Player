@@ -1,16 +1,17 @@
 import SwiftUI
 
-@available(iOS 26.0, *)
 struct PlayerPassageSheet: View {
     let ebook: Book
     let audiobook: Book
-    let position: TimeInterval
 
     @Environment(EnveEngine.self) private var engine
+    @Environment(\.profileSession) private var capturedSession
     @Environment(\.hearth) private var hearth
     @Environment(\.dismiss) private var dismiss
-    @State private var match: LinkedBookSparseMatcher.Match?
+    @State private var match: PassageMapping?
     @State private var failure: String?
+
+    private var profileSession: ProfileSession { capturedSession ?? .owner }
 
     var body: some View {
         ScrollView {
@@ -21,33 +22,34 @@ struct PlayerPassageSheet: View {
                     Spacer()
                     Button("Close") { dismiss() }
                 }
-                Text("Apple on-device transcription · No audio is uploaded")
+                Text("On-device alignment · No audio is uploaded")
                     .font(.hearthUI(13))
                     .foregroundStyle(hearth.textSecondary)
                 if let match {
                     Text(ebook.title).font(.hearthUI(16, weight: .semibold))
-                    Text(match.quote).font(.hearthDisplay(20))
+                    Text(match.text).font(.hearthDisplay(20))
                         .textSelection(.enabled)
-                    Text("A matching passage near your paused position. Open it only if this looks right.")
+                    Text("The sentence being narrated now. Open it only if this looks right.")
                         .font(.hearthUI(14))
                         .foregroundStyle(hearth.textSecondary)
                     Button("Open passage in ebook") {
-                        do {
-                            let locator = try LinkedBookPassageService.locatorForOpening(match)
-                            dismiss()
-                            engine.playback.presentReaderAfterDismissingPlayer(for: ebook, at: locator)
-                        } catch {
-                            failure = error.localizedDescription
-                        }
+                        dismiss()
+                        engine.playback.presentReaderAfterDismissingPlayer(for: ebook, at: match.locatorJSON)
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(Hearth.accent)
                     .disabled(engine.playback.currentBook?.stableId != audiobook.stableId)
                 } else if let failure {
                     Text(failure).font(.hearthUI(16))
+                    Button("Open approximate position") {
+                        dismiss()
+                        engine.playback.presentReaderAfterDismissingPlayer(for: ebook)
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityHint("Opens the ebook at its estimated position, which may not be the exact sentence.")
                 } else {
-                    ProgressView("Finding a matching passage…")
-                    Text("Reading a short audio sample using the same Apple speech system as Quick Sync.")
+                    ProgressView("Finding the narrated sentence…")
+                    Text("Prepared passages open immediately. Otherwise Enve analyzes a short stretch around the narration for up to 30 seconds.")
                         .font(.hearthUI(14))
                         .foregroundStyle(hearth.textSecondary)
                 }
@@ -56,11 +58,15 @@ struct PlayerPassageSheet: View {
             .padding(24)
         }
         .task {
+            let controller = profileSession.playback.composition.controller
             do {
-                let result = try await LinkedBookPassageService.find(ebook: ebook, audiobook: audiobook, at: position)
+                let result = try await LinkedBookPassageService.find(
+                    ebook: ebook, audiobook: audiobook, profileSession: profileSession, playhead: { controller.progress }
+                )
                 try Task.checkCancellation()
                 match = result
             } catch is CancellationError {
+                profileSession.passageAlignment.cancelExplicitRequests()
             } catch {
                 guard !Task.isCancelled else { return }
                 failure = error.localizedDescription

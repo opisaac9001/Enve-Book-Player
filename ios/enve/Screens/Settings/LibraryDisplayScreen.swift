@@ -11,7 +11,7 @@ struct LibraryDisplayScreen: View {
 
     init(profileSession: ProfileSession = .owner) {
         _prefs = State(initialValue: profileSession.preferences.loadPreferences())
-        _cardStyle = State(initialValue: profileSession.preferences.loadBookCardStyle())
+        _cardStyle = State(initialValue: profileSession.preferences.bookCardStyle)
     }
 
     private var session: ProfileSession { profileSession ?? .owner }

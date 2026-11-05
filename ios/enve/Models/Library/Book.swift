@@ -73,6 +73,19 @@ nonisolated public struct Book: Identifiable, Codable, Equatable, Sendable {
         return min(max(rawProgress, 0.0), 1.0)
     }
 
+    /// Grimmory's cached "not reading" status would otherwise hide a book the user is actively reading until the next server sync.
+    nonisolated static func readStatusAfterLocalProgress(
+        _ status: String?,
+        source: BookSource,
+        hasProgress: Bool,
+        isFinished: Bool
+    ) -> String? {
+        guard source == .booklore, hasProgress, !isFinished,
+            status == "NOT_READING" || status == "UNREAD"
+        else { return status }
+        return "READING"
+    }
+
     nonisolated static func audioProgressFraction(currentTime: TimeInterval, duration: TimeInterval?) -> Double {
         guard let duration, duration > 0 else { return 0 }
         return min(max(currentTime / duration, 0), 1)

@@ -139,7 +139,7 @@ interface LibraryFacade {
     suspend fun removeBookFromBookOrbitCollection(collection: BrowseGroup, book: Book): Boolean
     suspend fun reorderBookOrbitCollections(connectionId: String, orderedKeys: List<String>): Boolean
     suspend fun bookOrbitCollectionsForBook(book: Book): List<BookOrbitCollectionMembership>
-    suspend fun bookOrbitAdminConnections(): List<LibraryConnectionOption>
+    suspend fun bookOrbitCollectionConnections(): List<LibraryConnectionOption>
 
     suspend fun book(bookId: String): Book?
 
@@ -174,6 +174,7 @@ interface LibraryFacade {
 
     val refreshError: StateFlow<String?>
 
+    suspend fun dismissImportIssues(issues: List<com.enve.core.data.provider.CatalogImportIssue>)
     suspend fun refresh()
 
     val hiddenBookIds: Flow<Set<String>>

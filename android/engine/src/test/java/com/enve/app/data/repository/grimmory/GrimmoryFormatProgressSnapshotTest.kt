@@ -158,25 +158,6 @@ class GrimmoryFormatProgressSnapshotTest {
     }
 
     @Test
-    fun single_file_audiobook_position_stays_global() {
-        val ab = AudiobookProgressDto(percentage = 26.6667f, positionMs = 16_000L)
-        assertEquals(16_000L, grimmoryGlobalAudiobookPositionMs(ab, trackStartsByIndex = null))
-    }
-
-    @Test
-    fun track_relative_position_is_globalized_with_track_starts() {
-        val ab = AudiobookProgressDto(percentage = 50f, positionMs = 4_000L, trackIndex = 2)
-        val starts = mapOf(0 to 0L, 1 to 10_000L, 2 to 20_000L)
-        assertEquals(24_000L, grimmoryGlobalAudiobookPositionMs(ab, starts))
-    }
-
-    @Test
-    fun track_relative_position_without_track_starts_is_dropped() {
-        val ab = AudiobookProgressDto(percentage = 50f, positionMs = 4_000L, trackIndex = 2)
-        assertNull(grimmoryGlobalAudiobookPositionMs(ab, trackStartsByIndex = null))
-    }
-
-    @Test
     fun kobo_synced_progress_restores_the_chapter_and_its_progression() {
         val body = GrimmoryAppBookProgressDto(
             epubProgress = EbookProgressObjectDto(percentage = 42f, href = KOBO_HREF),

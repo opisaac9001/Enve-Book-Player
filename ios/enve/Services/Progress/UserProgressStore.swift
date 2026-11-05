@@ -188,6 +188,15 @@ final class UserProgressStore {
             }
         }
 
+        let applyReadStatus: (inout Book) -> Void = { book in
+            book.serverReadStatus = Book.readStatusAfterLocalProgress(
+                book.serverReadStatus,
+                source: book.source,
+                hasProgress: book.currentTime > 0 || (book.ebookProgress ?? 0) > 0,
+                isFinished: book.isFinished
+            )
+        }
+
         var updatedSnapshot: Book?
         if let bookIndex = library.uniqueIdIndex[progress.uniqueId], bookIndex < library.books.count {
             var updated = library.books[bookIndex]
@@ -195,6 +204,7 @@ final class UserProgressStore {
             updated.isFinished = progress.isFinished
             updated.lastUpdate = progress.lastUpdate
             applyEbookPosition(&updated)
+            applyReadStatus(&updated)
             library.replaceExisting(updated)
             updatedSnapshot = updated
         } else if var updated = library.hot.book(uniqueId: progress.uniqueId) {
@@ -202,6 +212,7 @@ final class UserProgressStore {
             updated.isFinished = progress.isFinished
             updated.lastUpdate = progress.lastUpdate
             applyEbookPosition(&updated)
+            applyReadStatus(&updated)
             updatedSnapshot = updated
         }
         if let updatedSnapshot {
@@ -214,6 +225,7 @@ final class UserProgressStore {
             updated.isFinished = progress.isFinished
             updated.lastUpdate = progress.lastUpdate
             applyEbookPosition(&updated)
+            applyReadStatus(&updated)
             session.currentBook = updated
             library.hot.insert(updated)
         }

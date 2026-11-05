@@ -332,8 +332,10 @@ extension AnnotationResponderBridge: UIGestureRecognizerDelegate {
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
         if gestureRecognizer === doubleTapGesture || other === doubleTapGesture {
-            return gestureRecognizer is UIPanGestureRecognizer
-                || other is UIPanGestureRecognizer
+            let peer = gestureRecognizer === doubleTapGesture ? other : gestureRecognizer
+            // From iOS 27, Foliate's WebKit tap recognizers end before this one and would otherwise fail it.
+            return peer is UIPanGestureRecognizer
+                || (adapter.kind == .foliate && peer is UITapGestureRecognizer && peer.view !== view)
         }
         if gestureRecognizer === selectionDismissTapGesture || other === selectionDismissTapGesture {
             // WebKit also handles taps that collapse its native selection. Keep the

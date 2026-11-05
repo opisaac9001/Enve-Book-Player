@@ -119,6 +119,9 @@ final class ReaderTTSControlsUITests: XCTestCase {
             "-imagineFixture", "reader-tts-controls-\(UUID().uuidString).epub",
             "--exercise-tts-play", "-ebookTTS.engine", "apple", "-ebookTTS.rate", "1",
         ]
+        if let renderer = ProcessInfo.processInfo.environment["ENVE_READER_ENGINE"] {
+            app.launchArguments.append("--reader-engine=\(renderer)")
+        }
         app.launch()
         XCTAssertTrue(app.descendants(matching: .any)["reader-screen"].waitForExistence(timeout: 30))
         let pause = app.buttons["Pause reading aloud"].firstMatch

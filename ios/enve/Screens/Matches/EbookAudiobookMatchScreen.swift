@@ -6,6 +6,7 @@ struct EbookAudiobookMatchScreen: View {
     @Environment(EnveEngine.self) private var engine
     @Environment(\.hearth) private var hearth
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.profileSession) private var capturedSession
 
     @State private var query = ""
     @State private var candidates: [Book] = []
@@ -17,12 +18,12 @@ struct EbookAudiobookMatchScreen: View {
     @State private var resolvedLinkedEbook: Book?
 
     private var isAudioSource: Bool { book.mediaType == .audiobook }
-    private var sourceEbook: Book? {
-        isAudioSource ? (resolvedLinkedEbook ?? EbookAudiobookLinker.shared.linkedEbook(for: book)) : book
+    private var profile: ProfileSession { capturedSession ?? .owner }
+    private var pair: (ebook: Book?, audiobook: Book?) {
+        Self.pair(of: book, resolvedEbook: resolvedLinkedEbook, linker: profile.ebookLinker)
     }
-    private var linkedAudiobook: Book? {
-        isAudioSource ? book : EbookAudiobookLinker.shared.linkedAudiobook(for: book)
-    }
+    private var sourceEbook: Book? { pair.ebook }
+    private var linkedAudiobook: Book? { pair.audiobook }
     private var linked: Book? { isAudioSource ? sourceEbook : linkedAudiobook }
     private var counterpartMediaType: AppMediaType { isAudioSource ? .ebook : .audiobook }
 
@@ -45,7 +46,9 @@ struct EbookAudiobookMatchScreen: View {
         }
         .task {
             if isAudioSource {
-                resolvedLinkedEbook = await EbookAudiobookLinker.shared.linkedEbookAsync(for: book)
+                let profile = profile
+                let resolved = await profile.ebookLinker.linkedEbookAsync(for: book)
+                if !profile.isRetired { resolvedLinkedEbook = resolved }
             }
             for await fetched in engine.library.observedBooks(mediaType: counterpartMediaType.rawValue) {
                 if Task.isCancelled { break }
@@ -110,7 +113,10 @@ struct EbookAudiobookMatchScreen: View {
             .background(dedupCardBackground(hearth))
 
             if let ebook = sourceEbook, let audiobook = linkedAudiobook {
-                LinkedBookQuickSyncPanel(ebook: ebook, audiobook: audiobook)
+                if LinkedBookQuickSyncService.isAvailable(for: profile) {
+                    LinkedBookQuickSyncPanel(ebook: ebook, audiobook: audiobook, profile: profile)
+                }
+                PassagePreparationPanel(ebook: ebook, audiobook: audiobook)
             }
         }
     }
@@ -228,21 +234,28 @@ struct EbookAudiobookMatchScreen: View {
     }
 
     private func updateChapterSyncStatus() async {
+        // Captured before any await; another profile never sees the owner's Quick Sync calibration.
+        let profile = profile
+        let calibrations = profile.isOwner ? LinkedBookProgressCoordinator.shared : profile.linkedProgress
         if isAudioSource {
-            resolvedLinkedEbook = await EbookAudiobookLinker.shared.linkedEbookAsync(for: book)
+            let resolved = await profile.ebookLinker.linkedEbookAsync(for: book)
+            guard !profile.isRetired else { return }
+            resolvedLinkedEbook = resolved
         }
         guard let ebook = sourceEbook, let audiobook = linkedAudiobook else {
             chapterSyncStatus = nil
             return
         }
-        if let calibration = LinkedBookProgressCoordinator.shared.calibrationSummary(
+        if let calibration = calibrations.calibrationSummary(
             ebookStableId: ebook.stableId,
             audiobookStableId: audiobook.stableId
         ) {
             chapterSyncStatus = "Quick Sync calibrated · \(calibration.anchorCount) audio landmarks"
             return
         }
-        guard let ebookChapters = await EbookChapterSyncService.shared.extractEbookChapters(for: ebook),
+        let extracted = await EbookChapterSyncService.shared.extractEbookChapters(for: ebook)
+        guard !profile.isRetired else { return }
+        guard let ebookChapters = extracted,
             let audiobookChapters = audiobook.chapters,
             !audiobookChapters.isEmpty
         else {
@@ -296,6 +309,13 @@ struct EbookAudiobookMatchScreen: View {
         }
     }
 
+    /// The other half of `book`'s pair, from the presenting profile's own library only.
+    static func pair(of book: Book, resolvedEbook: Book?, linker: EbookAudiobookLinker) -> (ebook: Book?, audiobook: Book?) {
+        book.mediaType == .audiobook
+            ? (resolvedEbook ?? linker.linkedEbook(for: book), book)
+            : (book, linker.linkedAudiobook(for: book))
+    }
+
     private func unlink() {
         guard let ebook = sourceEbook else { return }
         _ = engine.library.unlinkAudiobook(from: ebook)
@@ -303,9 +323,118 @@ struct EbookAudiobookMatchScreen: View {
     }
 }
 
+struct LinkedBookQuickSyncSheet: View {
+    @Environment(\.hearth) private var hearth
+    @Environment(\.dismiss) private var dismiss
+
+    let ebook: Book
+    let audiobook: Book
+    let profile: ProfileSession
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Overline("One story, two forms")
+                        Text("Quick Sync")
+                            .font(.hearthDisplay(24, weight: .semibold))
+                            .foregroundStyle(hearth.text)
+                    }
+                    Spacer()
+                    QuietButton(title: "Done") { dismiss() }
+                }
+                .padding(.top, 24)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Label(ebook.title, systemImage: "book")
+                    Label(audiobook.title, systemImage: "headphones")
+                }
+                .font(.hearthUI(14, weight: .medium))
+                .foregroundStyle(hearth.text)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+                .background(dedupCardBackground(hearth))
+
+                if LinkedBookQuickSyncService.isAvailable(for: profile) {
+                    LinkedBookQuickSyncPanel(ebook: ebook, audiobook: audiobook, profile: profile)
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 24)
+        }
+        .hearthPresentationBackground()
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+}
+
+/// Sentence-level preparation for read along and precise switching, kept separate from approximate Quick Sync.
+private struct PassagePreparationPanel: View {
+    let ebook: Book
+    let audiobook: Book
+
+    @Environment(\.hearth) private var hearth
+    @Environment(\.profileSession) private var capturedSession
+
+    private var passages: PassageAlignmentService { (capturedSession ?? .owner).passageAlignment }
+    private var status: PassagePairStatus { passages.status(ebook: ebook, audiobook: audiobook) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Read along", systemImage: "text.line.first.and.arrowtriangle.forward")
+                .font(.hearthUI(14, weight: .semibold))
+                .foregroundStyle(hearth.text)
+            if status.totalSeconds > 0 {
+                ProgressView(value: min(1, status.coveredSeconds / status.totalSeconds))
+                    .tint(hearth.ember)
+                    .accessibilityLabel("Prepared narration")
+                    .accessibilityValue("\(Int(min(1, status.coveredSeconds / status.totalSeconds) * 100)) percent")
+            }
+            Text(statusText)
+                .font(.hearthCaption)
+                .foregroundStyle(hearth.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if case .success = passages.capability(ebook: ebook, audiobook: audiobook), status.activity != .preparing {
+                QuietButton(title: "Prepare whole book", systemImage: "square.and.arrow.down.on.square") {
+                    passages.prepareWholeBook(ebook: ebook, audiobook: audiobook)
+                }
+                .accessibilityHint("Prepares every passage on this device. Keep Enve open; preparation pauses in the background unless the system allows it to continue.")
+            }
+        }
+        .padding(12)
+        .background(dedupCardBackground(hearth))
+    }
+
+    private var statusText: String {
+        switch status.activity {
+        case .preparing:
+            return "Preparing passages · \(Int(status.coveredSeconds / 60)) of \(Int(status.totalSeconds / 60)) minutes"
+        case .identifying:
+            return "Checking the downloaded files"
+        case .loadingEngine:
+            return "Loading the alignment engine and book text"
+        case .paused(let reason):
+            return reason.message
+        case .idle:
+            if status.coveredSeconds > 0 {
+                return "\(Int(status.coveredSeconds / 60)) of \(Int(status.totalSeconds / 60)) minutes prepared. Passages also prepare while you read along."
+            }
+            switch passages.capability(ebook: ebook, audiobook: audiobook) {
+            case .success(let engine):
+                return "Passages prepare as you read along or switch formats, using \(engine.title) on this device."
+            case .failure(let reason):
+                return reason.message
+            }
+        }
+    }
+}
+
 private struct LinkedBookQuickSyncPanel: View {
     let ebook: Book
     let audiobook: Book
+    let profile: ProfileSession
 
     @Environment(\.hearth) private var hearth
     @State private var showDownloadConfirmation = false
@@ -325,7 +454,7 @@ private struct LinkedBookQuickSyncPanel: View {
 
     private var calibration: LinkedBookProgressCoordinator.CalibrationSummary? {
         _ = calibrationRevision
-        return LinkedBookProgressCoordinator.shared.calibrationSummary(
+        return profile.linkedProgress.calibrationSummary(
             ebookStableId: ebook.stableId,
             audiobookStableId: audiobook.stableId
         )
@@ -336,7 +465,7 @@ private struct LinkedBookQuickSyncPanel: View {
             .alert("Download audiobook for Quick Sync?", isPresented: $showDownloadConfirmation) {
                 Button("Cancel", role: .cancel) {}
                 Button("Download & Sync") {
-                    quickSync.start(ebook: ebook, audiobook: audiobook)
+                    quickSync.start(ebook: ebook, audiobook: audiobook, profile: profile)
                 }
             } message: {
                 Text(
@@ -399,12 +528,16 @@ private struct LinkedBookQuickSyncPanel: View {
                 case .proportional:
                     return "Using approximate progress. You can still switch between formats."
                 case .chapterLandmarks:
-                    return "\(state.matchedSamples) chapter landmarks saved."
+                    return "\(state.acceptedAnchors) chapter landmarks saved."
                 default:
-                    return "\(state.matchedSamples) anchors saved · \(state.method?.displayName ?? "Quick Sync")"
+                    let checked = state.sampleCount > 0 ? " · \(state.matchedSamples) of \(state.checkedSamples) points matched" : ""
+                    return "\(state.acceptedAnchors) anchors saved\(checked) · \(state.method?.displayName ?? "Quick Sync")"
                 }
             }
-            return "\(state.stage) · \(state.matchedSamples) matches"
+            guard state.sampleCount > 0 else { return state.stage }
+            let remaining = state.sampleCount - state.checkedSamples
+            let counts = "\(state.matchedSamples) matched · \(state.unmatchedSamples) unmatched · \(remaining) left"
+            return state.isProvisional ? "\(state.stage)\n\(counts) · using what is matched so far" : "\(state.stage)\n\(counts)"
         }
         if let calibration {
             return "\(calibration.anchorCount) calibrated anchors · \(Int(calibration.averageConfidence * 100))% average confidence"
@@ -424,17 +557,17 @@ private struct LinkedBookQuickSyncPanel: View {
                 }
             } else {
                 QuietButton(title: calibration == nil ? "Set Up Quick Sync" : "Recalibrate") {
-                    if quickSync.needsAudiobookDownload(audiobook) {
+                    if quickSync.needsAudiobookDownload(audiobook, profile: profile) {
                         showDownloadConfirmation = true
                     } else {
-                        quickSync.start(ebook: ebook, audiobook: audiobook)
+                        quickSync.start(ebook: ebook, audiobook: audiobook, profile: profile)
                     }
                 }
             }
             if let calibration, !quickSync.isRunning(ebook: ebook, audiobook: audiobook) {
                 if calibration.hasPreviousVersion {
                     QuietButton(title: "Restore Previous") {
-                        LinkedBookProgressCoordinator.shared.restorePreviousCalibration(
+                        profile.linkedProgress.restorePreviousCalibration(
                             ebookStableId: ebook.stableId,
                             audiobookStableId: audiobook.stableId
                         )
@@ -443,7 +576,7 @@ private struct LinkedBookQuickSyncPanel: View {
                     }
                 }
                 Button("Remove") {
-                    LinkedBookProgressCoordinator.shared.removeCalibration(
+                    profile.linkedProgress.removeCalibration(
                         ebookStableId: ebook.stableId,
                         audiobookStableId: audiobook.stableId
                     )

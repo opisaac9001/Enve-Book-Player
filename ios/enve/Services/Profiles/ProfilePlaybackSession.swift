@@ -30,6 +30,10 @@ final class ProfilePlaybackSession {
         readers.append(ReaderReference(model))
     }
 
+    #if DEBUG
+    var openReaders: [ClassicReaderModel] { readers.compactMap(\.model) }
+    #endif
+
     #endif
     private var didCreateAutoSleep = false
     lazy var autoSleep: AutoSleepService = {

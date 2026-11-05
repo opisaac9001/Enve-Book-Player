@@ -912,7 +912,6 @@ class AudiobookshelfRepository @Inject constructor(
         itemMedia(book).chapters.orEmpty().toChapters()
     }
 
-    // Reads the item instead of POSTing /play: ABS closes the device's open session on every /play.
     private suspend fun itemMedia(book: Book): AbsMediaDto {
         val response = api.getItemDetail(book.absItemId)
         if (!response.isSuccessful) error("Audiobookshelf item lookup failed: HTTP ${response.code()}")

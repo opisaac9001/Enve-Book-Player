@@ -22,7 +22,6 @@ class SearchTextTest {
 
     @Test
     fun foldLeavesHangulSyllablesDistinct() {
-        assertEquals(SearchText.fold("한"), SearchText.fold("한"))
         assertTrue(SearchText.fold("한") != SearchText.fold("함"))
     }
 
