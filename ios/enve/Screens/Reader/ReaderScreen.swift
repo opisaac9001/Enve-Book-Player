@@ -26,6 +26,8 @@ struct ReaderScreen: View {
     @State private var sideColumn: SideColumn?
     @State private var chromeVisible = false
     @State private var tray: ReaderTray?
+    @State private var listenFromHereMessage: String?
+    @State private var listenFromHereTask: Task<Void, Never>?
     @State private var ambient: SwiftUI.Color = Hearth.accent
     @State private var inkColor = "#FFF59D"
     @State private var noteDraft: ReaderNoteDraft?
@@ -34,6 +36,9 @@ struct ReaderScreen: View {
     @State private var bookmarkToastTask: Task<Void, Never>?
     @State private var readAloudControlsVisible = false
     @State private var readAloudControlsHideTask: Task<Void, Never>?
+    @State private var listenAlongControlsVisible = true
+    @State private var listenAlongControlsHideTask: Task<Void, Never>?
+    @State private var isListenAlongNarrating = false
     @State private var ttsControlsVisible = false
     @State private var ttsControlsPresentedForSession = false
     @State private var initialChromeHideTask: Task<Void, Never>?
@@ -50,6 +55,7 @@ struct ReaderScreen: View {
     @State private var restReminder = ReaderRestReminder()
     @State private var restPromptShowsSettingsHint = false
     @State private var showingRestReminderSettings = false
+    @State private var showingListenAlongSettings = false
     #if DEBUG
     @State private var footnoteFixtureTriggered = false
     @State private var readAloudFixtureTriggered = false
@@ -94,7 +100,8 @@ struct ReaderScreen: View {
             .environment(\.colorScheme, model.preferredColorScheme ?? colorScheme)
     }
 
-    private var readerCanvas: some View {
+    // Fixed type boundaries keep reader metadata construction within the device’s main-thread stack.
+    private var readerStage: some View {
         let lectern = lecternHalves
         // The page keeps one place in the tree whatever the pose, so folding the phone resizes the engine's
         // view above the controls instead of rebuilding it and losing its position.
@@ -145,6 +152,10 @@ struct ReaderScreen: View {
             }
         }
         #endif
+    }
+
+    private var readerChrome: some View {
+        AnyView(readerStage)
         .overlay(alignment: .top) {
             if chromeVisible, model.state.isReady {
                 topVeil
@@ -186,6 +197,10 @@ struct ReaderScreen: View {
                 annotateLayer(selection, narrationBounds: narrationBounds)
             }
         }
+    }
+
+    private var readerCanvas: some View {
+        AnyView(readerChrome)
         .overlay {
             VolumeButtonNavigationCapture(
                 isEnabled: model.appearance.volumeButtonsTurnPages && model.presentedIllustration == nil,
@@ -279,7 +294,7 @@ struct ReaderScreen: View {
     }
 
     private var readerNavigation: some View {
-        readerCanvas
+        AnyView(readerCanvas)
         .sheet(
             item: Binding(
                 get: { model.annotationController.editingAnnotation },
@@ -303,6 +318,18 @@ struct ReaderScreen: View {
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
             .hearthPresentationBackground()
+            .enveEnvironment()
+        }
+        .sheet(isPresented: $showingListenAlongSettings) {
+            NavigationStack {
+                ScrollView {
+                    PassagePreparationCard(passages: profileSession.passageAlignment)
+                        .padding(16)
+                }
+                .navigationTitle("Listen Along")
+                .navigationBarTitleDisplayMode(.inline)
+            }
+            .presentationDragIndicator(.visible)
             .enveEnvironment()
         }
         .sheet(isPresented: $showingRestReminderSettings) {
@@ -369,6 +396,17 @@ struct ReaderScreen: View {
         } message: {
             Text(librarianMessage ?? "")
         }
+        .alert(
+            "Listen from here",
+            isPresented: Binding(
+                get: { listenFromHereMessage != nil },
+                set: { if !$0 { listenFromHereMessage = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { listenFromHereMessage = nil }
+        } message: {
+            Text(listenFromHereMessage ?? "")
+        }
     }
 
     private var readerEditors: some View {
@@ -432,7 +470,7 @@ struct ReaderScreen: View {
     }
 
     private var readerPlaybackObservers: some View {
-        readerEditors
+        AnyView(readerEditors)
         .onReceive(model.ttsService.$highlightLocator.removeDuplicates()) { locator in
             model.applyTTSDecoration(locator)
         }
@@ -480,7 +518,7 @@ struct ReaderScreen: View {
     }
 
     private var readerLifecycle: some View {
-        readerPlaybackObservers
+        AnyView(readerPlaybackObservers)
         .onAppear(perform: beginSession)
         .onChange(of: restReminderInterval) { _, minutes in
             restReminder.update(minutes: minutes)
@@ -506,6 +544,9 @@ struct ReaderScreen: View {
             if model.isReadAloudMode {
                 showReadAloudControls(autoHide: !active)
             }
+            if isListenAlongActive {
+                showListenAlongControls(autoHide: !active)
+            }
             if !active, ttsControlsVisible {
                 showTTSControls(autoHide: true)
             }
@@ -515,6 +556,11 @@ struct ReaderScreen: View {
                 showReadAloudControls(autoHide: model.pendingSelection == nil)
             } else {
                 readAloudControlsHideTask?.cancel()
+            }
+            if phase == .active, isListenAlongActive {
+                showListenAlongControls(autoHide: model.pendingSelection == nil)
+            } else if phase != .active {
+                listenAlongControlsHideTask?.cancel()
             }
             if phase == .active, ttsControlsVisible {
                 showTTSControls(autoHide: model.pendingSelection == nil)
@@ -568,11 +614,36 @@ struct ReaderScreen: View {
                 try? await Task.sleep(for: .seconds(3.5))
                 guard !Task.isCancelled else { return }
                 #if DEBUG
-                if UserDefaults.standard.string(forKey: "imagineScreen") == "readerchrome" { return }
+                if ["readerchrome", "comicfixture"].contains(UserDefaults.standard.string(forKey: "imagineScreen") ?? "") { return }
                 #endif
                 if tray == nil, model.pendingSelection == nil, !UIAccessibility.isVoiceOverRunning {
                     withAnimation(.smooth) { chromeVisible = false }
                 }
+            }
+        }
+        .onChange(of: model.linkedReadAlongStatus) {
+            guard isListenAlongActive else { return }
+            showListenAlongControls(autoHide: model.pendingSelection == nil)
+        }
+        .onReceive(profileSession.playback.composition.controller.snapshots) { snapshot in
+            // The subscription restarts on every render, so only a real change may reach the controls.
+            let narrating = snapshot.isPlaying && snapshot.currentBook?.stableId == linkedAudiobook?.stableId
+            if narrating != isListenAlongNarrating { isListenAlongNarrating = narrating }
+        }
+        .onChange(of: isListenAlongNarrating) {
+            guard isListenAlongActive else { return }
+            showListenAlongControls(autoHide: model.pendingSelection == nil)
+        }
+        .onChange(of: chromeVisible) { _, visible in
+            guard !visible, isListenAlongActive else { return }
+            showListenAlongControls(autoHide: model.pendingSelection == nil)
+        }
+        .onChange(of: isListenAlongActive) { _, active in
+            if active {
+                showListenAlongControls(autoHide: model.pendingSelection == nil)
+            } else {
+                listenAlongControlsHideTask?.cancel()
+                listenAlongControlsVisible = false
             }
         }
         .onChange(of: model.isReadAloudMode) { _, active in
@@ -710,6 +781,7 @@ struct ReaderScreen: View {
                                 model.doubleTapHandler?(point)
                             },
                             isDoubleTapEnabled: model.isReadAloudMode
+                                || model.isLinkedReadAlongRequested
                                 || model.ttsService.isPlaying
                                 || model.ttsService.isPaused,
                             isScrollMode: model.appearance.scrollEnabled,
@@ -938,18 +1010,15 @@ struct ReaderScreen: View {
                 ReaderTTSControls(tts: model.ttsService, onSpeechSettings: { tray = .tts })
             }
             if let linkedAudiobook {
-                HStack(spacing: 10) {
-                    HStack(spacing: 5) {
-                        Circle()
-                            .fill(hearth.statusOK)
-                            .frame(width: 6, height: 6)
-                        Text("Linked")
-                            .font(.hearthUI(11, weight: .semibold))
-                            .foregroundStyle(hearth.textSecondary)
+                ReaderListenAlongBar(
+                    audiobook: linkedAudiobook, playback: profileSession.playback.composition.controller,
+                    model: model, statusAction: listenAlongAction,
+                    onSettings: { showingListenAlongSettings = true },
+                    onListenFromPage: {
+                        listenFromHereTask?.cancel()
+                        listenFromHereTask = Task { await listenFromHere() }
                     }
-                    .accessibilityLabel("Audiobook linked")
-                    ReaderListenAlongBar(ebook: book, audiobook: linkedAudiobook, model: model)
-                }
+                )
             }
             if chromeColumn == nil {
                 toolButtons(spacing: 18)
@@ -1046,8 +1115,9 @@ struct ReaderScreen: View {
         return isTTSActive ? 228 : 172
     }
 
+    /// Paused TTS is kept while Listen Along is on, but only the selected source shows its transport.
     private var isTTSActive: Bool {
-        model.ttsService.isPlaying || model.ttsService.isPaused
+        (model.ttsService.isPlaying || model.ttsService.isPaused) && !model.isLinkedReadAlongRequested
     }
 
     @ViewBuilder
@@ -1143,6 +1213,19 @@ struct ReaderScreen: View {
                     tray = .readAloud
                 } label: {
                     Label("Read Aloud settings", systemImage: "slider.horizontal.3")
+                }
+            }
+            if model.isLinkedReadAlongAvailable {
+                Button {
+                    model.toggleLinkedReadAlong()
+                } label: {
+                    Label(model.isLinkedReadAlongRequested ? "Stop Listen Along" : "Listen Along", systemImage: "headphones")
+                }
+                Button {
+                    listenFromHereTask?.cancel()
+                    listenFromHereTask = Task { await listenFromHere() }
+                } label: {
+                    Label("Listen from here", systemImage: "text.line.first.and.arrowtriangle.forward")
                 }
             }
             if isEPUB {
@@ -1331,6 +1414,16 @@ struct ReaderScreen: View {
             if model.linkReturnLocatorJSON != nil {
                 linkReturnPill
             }
+            // With the chrome showing, the Listen Along panel carries these controls.
+            if !chromeVisible, listenAlongControlsVisible, isListenAlongActive, let linkedAudiobook {
+                ReaderListenAlongPill(
+                    playback: profileSession.playback.composition.controller, audiobook: linkedAudiobook, model: model,
+                    statusAction: listenAlongAction,
+                    onBookmark: { bookmarkDraft = makeBookmarkDraft(readAloud: false) },
+                    onShowControls: { showReaderControls() }
+                )
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
             if !chromeVisible, readAloudControlsVisible, model.isReadAloudMode, model.overlayPlayer != nil {
                 ReaderNarratePill(
                     model: model,
@@ -1351,6 +1444,41 @@ struct ReaderScreen: View {
         }
         .animation(.smooth(duration: 0.3), value: model.isReadAloudMode)
         .animation(.smooth(duration: 0.25), value: model.linkReturnLocatorJSON != nil)
+    }
+
+    private var listenAlongAction: ReaderListenAlongAction? {
+        typealias Action = ReaderListenAlongAction
+        switch model.linkedReadAlongRemedy {
+        case .resumeFollowing:
+            return Action(title: "Back to narration", systemImage: "text.line.first.and.arrowtriangle.forward") { model.resumeLinkedReadAlong() }
+        case .play:
+            return Action(title: "Play", systemImage: "play.fill") { model.resumeLinkedAudiobook() }
+        case .download:
+            return Action(title: "Download", systemImage: "arrow.down.circle") { model.downloadLinkedAudiobook() }
+        case .storyAlignSettings:
+            return Action(title: "Listen Along Settings", systemImage: "gearshape") { showingListenAlongSettings = true }
+        case .appSettings:
+            return Action(title: "Open Settings", systemImage: "gear") {
+                if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+            }
+        case .retry:
+            return Action(title: "Try again", systemImage: "arrow.clockwise") { model.retryLinkedReadAlong() }
+        case nil:
+            return nil
+        }
+    }
+
+    private func listenFromHere(at point: CGPoint? = nil) async {
+        switch await model.listenFromHere(at: point) {
+        case .started, .cancelled:
+            break
+        case .notSpoken:
+            listenFromHereMessage = "This text isn’t narrated. Choose a nearby sentence. Playback has not moved."
+        case .ambiguous:
+            listenFromHereMessage = "This passage appears more than once nearby, so Enve did not move playback."
+        case .noMatch(let reason):
+            listenFromHereMessage = reason
+        }
     }
 
     private var linkReturnPill: some View {
@@ -1668,6 +1796,30 @@ struct ReaderScreen: View {
         withAnimation(.smooth(duration: 0.25)) { readAloudControlsVisible = false }
     }
 
+    private var isListenAlongActive: Bool {
+        model.isLinkedReadAlongAvailable && model.isLinkedReadAlongRequested && linkedAudiobook != nil
+    }
+
+    private func showListenAlongControls(autoHide: Bool) {
+        listenAlongControlsHideTask?.cancel()
+        withAnimation(.smooth(duration: 0.25)) { listenAlongControlsVisible = true }
+        guard autoHide else { return }
+        listenAlongControlsHideTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(4))
+            // Any other status carries a message or remedy the reader needs to see.
+            guard !Task.isCancelled,
+                scenePhase == .active,
+                isListenAlongNarrating,
+                model.linkedReadAlongStatus == .following,
+                model.pendingSelection == nil,
+                tray == nil,
+                bookmarkDraft == nil,
+                !UIAccessibility.isVoiceOverRunning
+            else { return }
+            withAnimation(.smooth(duration: 0.25)) { listenAlongControlsVisible = false }
+        }
+    }
+
     private func showTTSControls(autoHide: Bool) {
         ttsControlsHideTask?.cancel()
         if !ttsControlsVisible {
@@ -1735,7 +1887,12 @@ struct ReaderScreen: View {
         model.doubleTapHandler = { [weak model] point in
             model?.handleReaderDoubleTap(at: point)
         }
+        model.linkedLineTapHandler = { point in
+            listenFromHereTask?.cancel()
+            listenFromHereTask = Task { await listenFromHere(at: point) }
+        }
         NotificationCenter.default.post(name: .ebookReaderPresented, object: nil)
+        BookStoreChangeNotifier.beginQuietPeriod()
         model.startIfNeeded()
         model.sessionStartDate = Date()
         model.sessionStartProgress = model.currentProgress ?? book.canonicalEbookProgress
@@ -1766,6 +1923,7 @@ struct ReaderScreen: View {
     }
 
     private func endSession() {
+        BookStoreChangeNotifier.endQuietPeriod()
         guard !profileSession.isRetired else { return }
         bookmarkToastTask?.cancel()
         restReminder.stop()
@@ -1774,8 +1932,11 @@ struct ReaderScreen: View {
         ttsControlsHideTask?.cancel()
         model.tapHandler = nil
         model.doubleTapHandler = nil
+        model.linkedLineTapHandler = nil
+        listenFromHereTask?.cancel()
+        let preservesListeningPosition = model.endLinkedReadAlong()
         NotificationCenter.default.post(name: .ebookReaderDismissed, object: nil)
-        readerSyncAudiobookOnDismissIfNeeded()
+        if !preservesListeningPosition { readerSyncAudiobookOnDismissIfNeeded() }
         let wasReadAloud = model.isReadAloudMode && model.overlayPlayer != nil
         if wasReadAloud {
             model.flushProgressToServer(reason: "close")
@@ -2301,6 +2462,84 @@ private struct ReaderReadAloudBar: View {
     let onSettings: () -> Void
     let onStop: () -> Void
 
+    var body: some View {
+        ReaderNarrationBar(
+            source: "Read Aloud",
+            identifier: "Reader.ReadAloud",
+            isPlaying: player.isPlaying,
+            rate: player.playbackRate,
+            timeline: {
+                ReaderNarrationTimeline(
+                    elapsed: player.currentTime,
+                    duration: player.totalDuration,
+                    fallbackProgress: model.overlayClipCount > 0
+                        ? Double(player.currentClipIndex) / Double(model.overlayClipCount) : 0
+                )
+            },
+            onTogglePlayback: { model.toggleReadAloudPlayback() },
+            onSkipBackward: { model.skipReadAloudBackward() },
+            onSkipForward: { model.skipReadAloudForward() },
+            onSeek: { model.seekReadAloud(toTime: $0) },
+            onRate: { model.setReadAloudSpeed($0) },
+            onPreviousSegment: { model.previousReadAloudSegment() },
+            onNextSegment: { model.nextReadAloudSegment() },
+            onSettings: onSettings,
+            onStop: onStop
+        ) {
+            ReaderNarrationIconButton(systemImage: "bookmark", label: "Bookmark current Read Aloud position", action: onBookmark)
+            ReaderNarrationIconButton(systemImage: "arrow.triangle.2.circlepath", label: "Sync audio to visible page") {
+                model.syncAudioToVisiblePage()
+            }
+            ReaderNarrationIconButton(
+                systemImage: model.appearance.readAloudHighlightEnabled ? "eye.slash" : "eye",
+                label: model.appearance.readAloudHighlightEnabled ? "Hide Read Aloud highlight" : "Show Read Aloud highlight"
+            ) {
+                model.toggleReadAloudHighlighting()
+            }
+        } speedOptions: {
+            Section {
+                Button {
+                    model.toggleReadAloudHighlighting()
+                } label: {
+                    ReaderCheckedMenuLabel(title: "Highlight Words", isChecked: model.appearance.readAloudHighlightEnabled)
+                }
+                Button {
+                    model.toggleReadAloudSkipSkippables()
+                } label: {
+                    ReaderCheckedMenuLabel(title: "Skip Footnotes & Sidebars", isChecked: player.skipSkippables)
+                }
+            }
+        }
+    }
+}
+
+struct ReaderNarrationTimeline {
+    var elapsed: TimeInterval
+    var duration: TimeInterval
+    /// Shown while the duration is unknown, such as Read Aloud's clip index.
+    var fallbackProgress: Double = 0
+}
+
+/// Expanded narration controls shared by Read Aloud and Listen Along; each source supplies its own commands.
+struct ReaderNarrationBar<PositionControls: View, SpeedOptions: View>: View {
+    let source: String
+    let identifier: String
+    let isPlaying: Bool
+    var isLoaded = true
+    let rate: Double
+    let timeline: () -> ReaderNarrationTimeline
+    let onTogglePlayback: () -> Void
+    let onSkipBackward: () -> Void
+    let onSkipForward: () -> Void
+    let onSeek: (TimeInterval) -> Void
+    let onRate: (Double) -> Void
+    var onPreviousSegment: (() -> Void)?
+    var onNextSegment: (() -> Void)?
+    let onSettings: () -> Void
+    let onStop: () -> Void
+    @ViewBuilder let positionControls: () -> PositionControls
+    @ViewBuilder let speedOptions: () -> SpeedOptions
+
     @Environment(\.hearth) private var hearth
     @State private var scrubTime: TimeInterval?
 
@@ -2309,9 +2548,14 @@ private struct ReaderReadAloudBar: View {
     var body: some View {
         VStack(spacing: 10) {
             TimelineView(.periodic(from: Date(), by: 0.5)) { _ in
+                let timeline = timeline()
+                let displayTime = scrubTime ?? timeline.elapsed
+                let remainingTime = max(0, timeline.duration - displayTime)
                 VStack(spacing: 6) {
                     GeometryReader { geo in
-                        let progress = readAloudProgress
+                        let progress = timeline.duration > 0
+                            ? min(max(displayTime / timeline.duration, 0), 1)
+                            : min(max(timeline.fallbackProgress, 0), 1)
                         ZStack(alignment: .leading) {
                             Capsule()
                                 .fill(hearth.text.opacity(0.12))
@@ -2326,34 +2570,36 @@ private struct ReaderReadAloudBar: View {
                         .gesture(
                             DragGesture(minimumDistance: 0)
                                 .onChanged { value in
-                                    guard player.totalDuration > 0 else { return }
+                                    guard isLoaded, timeline.duration > 0 else { return }
                                     scrubTime = ReaderScrubGeometry.time(
                                         at: value.location.x,
                                         width: geo.size.width,
-                                        duration: player.totalDuration
+                                        duration: timeline.duration
                                     )
                                 }
                                 .onEnded { value in
-                                    guard player.totalDuration > 0 else { return }
-                                    let target = ReaderScrubGeometry.time(
-                                        at: value.location.x,
-                                        width: geo.size.width,
-                                        duration: player.totalDuration
+                                    guard isLoaded, timeline.duration > 0 else { return }
+                                    onSeek(
+                                        ReaderScrubGeometry.time(
+                                            at: value.location.x,
+                                            width: geo.size.width,
+                                            duration: timeline.duration
+                                        )
                                     )
-                                    model.seekReadAloud(toTime: target)
                                     scrubTime = nil
                                 }
                         )
                     }
                     .frame(height: 44)
                     .accessibilityElement()
-                    .accessibilityLabel("Read Aloud position")
+                    .accessibilityLabel("\(source) position")
                     .accessibilityValue("\(timeText(displayTime)) elapsed, \(timeText(remainingTime)) remaining")
                     .accessibilityAdjustableAction { direction in
+                        guard isLoaded else { return }
                         let step: TimeInterval = 30
                         switch direction {
-                        case .increment: model.seekReadAloud(toTime: min(player.totalDuration, displayTime + step))
-                        case .decrement: model.seekReadAloud(toTime: max(0, displayTime - step))
+                        case .increment: onSeek(min(timeline.duration, displayTime + step))
+                        case .decrement: onSeek(max(0, displayTime - step))
                         @unknown default: break
                         }
                     }
@@ -2369,19 +2615,17 @@ private struct ReaderReadAloudBar: View {
             }
 
             HStack(spacing: 8) {
-                readAloudIconButton("backward.end.fill", label: "Previous Read Aloud segment") {
-                    model.previousReadAloudSegment()
-                }
-                .accessibilityIdentifier("Reader.ReadAloud.Previous")
-
-                readAloudIconButton("gobackward.15", label: "Rewind Read Aloud 15 seconds") {
-                    model.skipReadAloudBackward()
+                if let onPreviousSegment {
+                    ReaderNarrationIconButton(systemImage: "backward.end.fill", label: "Previous \(source) segment", action: onPreviousSegment)
+                        .accessibilityIdentifier("\(identifier).Previous")
                 }
 
-                Button {
-                    model.toggleReadAloudPlayback()
-                } label: {
-                    Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                ReaderNarrationIconButton(systemImage: "gobackward.15", label: "Rewind \(source) 15 seconds", action: onSkipBackward)
+                    .disabled(!isLoaded)
+                    .opacity(isLoaded ? 1 : 0.4)
+
+                Button(action: onTogglePlayback) {
+                    Image(systemName: isPlaying ? "pause.fill" : "play.fill")
                         .font(.hearthUI(17, weight: .bold))
                         .foregroundStyle(hearth.bg)
                         .frame(width: 42, height: 42)
@@ -2390,27 +2634,27 @@ private struct ReaderReadAloudBar: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(PressableStyle())
-                .accessibilityLabel(player.isPlaying ? "Pause Read Aloud" : "Play Read Aloud")
-                .accessibilityIdentifier("Reader.ReadAloud.PlayPause")
+                .accessibilityLabel(isPlaying ? "Pause \(source)" : "Play \(source)")
+                .accessibilityIdentifier("\(identifier).PlayPause")
 
-                readAloudIconButton("goforward.30", label: "Skip Read Aloud 30 seconds") {
-                    model.skipReadAloudForward()
-                }
+                ReaderNarrationIconButton(systemImage: "goforward.30", label: "Skip \(source) 30 seconds", action: onSkipForward)
+                    .disabled(!isLoaded)
+                    .opacity(isLoaded ? 1 : 0.4)
 
-                readAloudIconButton("forward.end.fill", label: "Next Read Aloud segment") {
-                    model.nextReadAloudSegment()
+                if let onNextSegment {
+                    ReaderNarrationIconButton(systemImage: "forward.end.fill", label: "Next \(source) segment", action: onNextSegment)
+                        .accessibilityIdentifier("\(identifier).Next")
                 }
-                .accessibilityIdentifier("Reader.ReadAloud.Next")
             }
 
             // Narrow widths such as compact Slide Over cannot fit six 44pt targets in one row.
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) {
-                    positionControls
+                    positionControls()
                     playbackOptionControls
                 }
                 VStack(spacing: 8) {
-                    HStack(spacing: 8) { positionControls }
+                    HStack(spacing: 8) { positionControls() }
                     HStack(spacing: 8) { playbackOptionControls }
                 }
             }
@@ -2426,38 +2670,17 @@ private struct ReaderReadAloudBar: View {
                 shadow: true
             )
         }
-        .accessibilityIdentifier("Reader.ReadAloud")
-    }
-
-    @ViewBuilder
-    private var positionControls: some View {
-        readAloudIconButton("bookmark", label: "Bookmark current Read Aloud position") {
-            onBookmark()
-        }
-
-        readAloudIconButton("arrow.triangle.2.circlepath", label: "Sync audio to visible page") {
-            model.syncAudioToVisiblePage()
-        }
-
-        readAloudIconButton(
-            model.appearance.readAloudHighlightEnabled ? "eye.slash" : "eye",
-            label: model.appearance.readAloudHighlightEnabled ? "Hide Read Aloud highlight" : "Show Read Aloud highlight"
-        ) {
-            model.toggleReadAloudHighlighting()
-        }
+        .accessibilityIdentifier(identifier)
     }
 
     @ViewBuilder
     private var playbackOptionControls: some View {
         speedMenu
 
-        readAloudIconButton("slider.horizontal.3", label: "Read Aloud settings") {
-            onSettings()
-        }
+        ReaderNarrationIconButton(systemImage: "slider.horizontal.3", label: "\(source) settings", action: onSettings)
 
-        readAloudIconButton("xmark", label: "Stop Read Aloud") {
-            onStop()
-        }
+        ReaderNarrationIconButton(systemImage: "xmark", label: "Stop \(source)", action: onStop)
+            .accessibilityIdentifier("\(identifier).Stop")
     }
 
     private var speedMenu: some View {
@@ -2465,26 +2688,15 @@ private struct ReaderReadAloudBar: View {
             Section("Speed") {
                 ForEach(speeds, id: \.self) { speed in
                     Button {
-                        model.setReadAloudSpeed(speed)
+                        onRate(speed)
                     } label: {
-                        checkedMenuLabel(speedLabel(speed), isChecked: abs(player.playbackRate - speed) < 0.01)
+                        ReaderCheckedMenuLabel(title: speedLabel(speed), isChecked: abs(rate - speed) < 0.01)
                     }
                 }
             }
-            Section {
-                Button {
-                    model.toggleReadAloudHighlighting()
-                } label: {
-                    checkedMenuLabel("Highlight Words", isChecked: model.appearance.readAloudHighlightEnabled)
-                }
-                Button {
-                    model.toggleReadAloudSkipSkippables()
-                } label: {
-                    checkedMenuLabel("Skip Footnotes & Sidebars", isChecked: player.skipSkippables)
-                }
-            }
+            speedOptions()
         } label: {
-            Text(speedLabel(player.playbackRate))
+            Text(speedLabel(rate))
                 .font(.hearthUI(12, weight: .bold).monospacedDigit())
                 .foregroundStyle(hearth.text)
                 .frame(minWidth: 50, minHeight: 34)
@@ -2496,49 +2708,9 @@ private struct ReaderReadAloudBar: View {
                 .frame(minHeight: 44)
                 .contentShape(Rectangle())
         }
-        .accessibilityLabel("Read Aloud speed")
-        .accessibilityIdentifier("Reader.ReadAloud.Speed")
-    }
-
-    @ViewBuilder
-    private func checkedMenuLabel(_ title: String, isChecked: Bool) -> some View {
-        if isChecked {
-            Label(title, systemImage: "checkmark")
-        } else {
-            Text(title)
-        }
-    }
-
-    private func readAloudIconButton(
-        _ systemImage: String,
-        label: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.hearthUI(14, weight: .semibold))
-                .foregroundStyle(hearth.text)
-                .frame(width: 44, height: 44)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(PressableStyle())
-        .accessibilityLabel(label)
-    }
-
-    private var readAloudProgress: Double {
-        if player.totalDuration > 0 {
-            return min(max(displayTime / player.totalDuration, 0), 1)
-        }
-        guard model.overlayClipCount > 0 else { return 0 }
-        return min(max(Double(player.currentClipIndex) / Double(model.overlayClipCount), 0), 1)
-    }
-
-    private var displayTime: TimeInterval {
-        scrubTime ?? player.currentTime
-    }
-
-    private var remainingTime: TimeInterval {
-        max(0, player.totalDuration - displayTime)
+        .disabled(!isLoaded)
+        .accessibilityLabel("\(source) speed")
+        .accessibilityIdentifier("\(identifier).Speed")
     }
 
     private func timeText(_ seconds: TimeInterval) -> String {
@@ -2555,6 +2727,39 @@ private struct ReaderReadAloudBar: View {
 
     private func speedLabel(_ speed: Double) -> String {
         String(format: "%gx", speed)
+    }
+}
+
+struct ReaderCheckedMenuLabel: View {
+    let title: String
+    let isChecked: Bool
+
+    var body: some View {
+        if isChecked {
+            Label(title, systemImage: "checkmark")
+        } else {
+            Text(title)
+        }
+    }
+}
+
+struct ReaderNarrationIconButton: View {
+    let systemImage: String
+    let label: String
+    let action: () -> Void
+
+    @Environment(\.hearth) private var hearth
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.hearthUI(14, weight: .semibold))
+                .foregroundStyle(hearth.text)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(PressableStyle())
+        .accessibilityLabel(label)
     }
 }
 
@@ -2608,59 +2813,71 @@ private struct ReaderNarratePill: View {
     let onPlaybackToggle: () -> Void
     let onMore: () -> Void
 
-    @Environment(\.hearth) private var hearth
-
     var body: some View {
-        HStack(spacing: 4) {
-            narrateButton("gobackward.15", label: "Rewind Read Aloud 15 seconds") {
+        ReaderNarrationCapsule(identifier: "reader-narration-controls") {
+            ReaderNarrationPillButton(systemImage: "gobackward.15", label: "Rewind Read Aloud 15 seconds") {
                 model.skipReadAloudBackward()
             }
-            narrateButton(
-                model.overlayPlayer?.isPlaying == true ? "pause.fill" : "play.fill",
+            ReaderNarrationPillButton(
+                systemImage: model.overlayPlayer?.isPlaying == true ? "pause.fill" : "play.fill",
                 label: model.overlayPlayer?.isPlaying == true ? "Pause Read Aloud" : "Play Read Aloud",
                 primary: true
             ) {
                 model.toggleReadAloudPlayback()
                 onPlaybackToggle()
             }
-            narrateButton("goforward.30", label: "Skip Read Aloud 30 seconds") {
+            ReaderNarrationPillButton(systemImage: "goforward.30", label: "Skip Read Aloud 30 seconds") {
                 model.skipReadAloudForward()
             }
-            narrateButton("bookmark", label: "Bookmark current Read Aloud position") {
-                onBookmark()
-            }
-            narrateButton("ellipsis", label: "Show Read Aloud controls") {
-                onMore()
-            }
-        }
-        .padding(.horizontal, 8)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("reader-narration-controls")
-        .background {
-            HearthChromeBackground(
-                shape: .capsule,
-                fill: hearth.bgElevated,
-                stroke: hearth.hairline,
-                tint: hearth.bgElevated,
-                shadow: true
-            )
+            ReaderNarrationPillButton(systemImage: "bookmark", label: "Bookmark current Read Aloud position", action: onBookmark)
+            ReaderNarrationPillButton(systemImage: "ellipsis", label: "Show Read Aloud controls", action: onMore)
         }
         .transition(.move(edge: .bottom).combined(with: .opacity))
     }
+}
 
-    private func narrateButton(
-        _ systemImage: String,
-        label: String,
-        primary: Bool = false,
-        action: @escaping () -> Void
-    ) -> some View {
+/// The floating capsule that carries a narration source's transport while the reader chrome is hidden.
+struct ReaderNarrationCapsule<Content: View>: View {
+    let identifier: String
+    var spacing: CGFloat = 4
+    @ViewBuilder let content: () -> Content
+
+    @Environment(\.hearth) private var hearth
+
+    var body: some View {
+        HStack(spacing: spacing) { content() }
+            .padding(.horizontal, 8)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier(identifier)
+            .background {
+                HearthChromeBackground(
+                    shape: .capsule,
+                    fill: hearth.bgElevated,
+                    stroke: hearth.hairline,
+                    tint: hearth.bgElevated,
+                    shadow: true
+                )
+            }
+    }
+}
+
+struct ReaderNarrationPillButton: View {
+    let systemImage: String
+    let label: String
+    var primary = false
+    let action: () -> Void
+
+    @Environment(\.hearth) private var hearth
+
+    var body: some View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.hearthUI(primary ? 15 : 13, weight: .semibold))
                 .foregroundStyle(primary ? hearth.text : hearth.textSecondary)
-                .frame(width: 44, height: 44)
+                .frame(minWidth: 44, minHeight: 44)
                 .contentShape(Rectangle())
         }
+        .buttonStyle(PressableStyle())
         .accessibilityLabel(label)
     }
 }
@@ -2682,20 +2899,20 @@ private struct ReaderTTSControls: View {
 
     var body: some View {
         if tts.isPlaying || tts.isPaused {
-            HStack(spacing: 2) {
-                control("backward.fill", label: "Previous paragraph") {
+            ReaderNarrationCapsule(identifier: "reader-tts-controls", spacing: 2) {
+                ReaderNarrationPillButton(systemImage: "backward.fill", label: "Previous paragraph") {
                     onInteraction()
                     tts.previousParagraph()
                 }
-                control(
-                    isSpeaking ? "pause.fill" : "play.fill",
+                ReaderNarrationPillButton(
+                    systemImage: isSpeaking ? "pause.fill" : "play.fill",
                     label: isSpeaking ? "Pause reading aloud" : "Resume reading aloud",
                     primary: true
                 ) {
                     onInteraction()
                     tts.togglePlayPause()
                 }
-                control("forward.fill", label: "Next paragraph") {
+                ReaderNarrationPillButton(systemImage: "forward.fill", label: "Next paragraph") {
                     onInteraction()
                     tts.nextParagraph()
                 }
@@ -2720,39 +2937,10 @@ private struct ReaderTTSControls: View {
                 .accessibilityLabel("Voice and speed")
                 .accessibilityValue(rateText)
                 if let onShowReaderControls {
-                    control("chevron.up", label: "Show reader controls", action: onShowReaderControls)
+                    ReaderNarrationPillButton(systemImage: "chevron.up", label: "Show reader controls", action: onShowReaderControls)
                 }
-            }
-            .padding(.horizontal, 8)
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("reader-tts-controls")
-            .background {
-                HearthChromeBackground(
-                    shape: .capsule,
-                    fill: hearth.bgElevated,
-                    stroke: hearth.hairline,
-                    tint: hearth.bgElevated,
-                    shadow: true
-                )
             }
             .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
         }
-    }
-
-    private func control(
-        _ systemImage: String,
-        label: String,
-        primary: Bool = false,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.hearthUI(primary ? 15 : 13, weight: .semibold))
-                .foregroundStyle(primary ? hearth.text : hearth.textSecondary)
-                .frame(minWidth: 44, minHeight: 44)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(PressableStyle())
-        .accessibilityLabel(label)
     }
 }

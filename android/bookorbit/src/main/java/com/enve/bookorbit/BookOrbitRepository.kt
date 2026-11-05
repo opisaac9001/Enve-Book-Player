@@ -22,6 +22,7 @@ import com.enve.bookorbit.dto.BookOrbitPaginationRequest
 import com.enve.bookorbit.dto.BookOrbitReadingSessionRequest
 import com.enve.bookorbit.dto.BookOrbitReadingSessionDto
 import com.enve.bookorbit.dto.BookOrbitRatingRequest
+import com.enve.bookorbit.dto.BookOrbitSort
 import com.enve.bookorbit.dto.BookOrbitStatusRequest
 import com.enve.bookorbit.dto.BookOrbitUpdateAnnotationRequest
 import com.enve.core.data.model.AppMediaType
@@ -105,57 +106,50 @@ class BookOrbitRepository @Inject constructor(
         )
     }
 
-    suspend fun createCollection(request: BookOrbitCollectionRequest): Result<BookOrbitCollectionDto> = adminMutation {
+    suspend fun createCollection(request: BookOrbitCollectionRequest): Result<BookOrbitCollectionDto> = collectionMutation {
         api.createCollection(request)
     }
 
-    suspend fun updateCollection(id: Int, request: BookOrbitCollectionRequest): Result<BookOrbitCollectionDto> = adminMutation {
+    suspend fun updateCollection(id: Int, request: BookOrbitCollectionRequest): Result<BookOrbitCollectionDto> = collectionMutation {
         api.updateCollection(id, request)
     }
 
-    suspend fun deleteCollection(id: Int): Result<Unit> = adminUnitMutation {
+    suspend fun deleteCollection(id: Int): Result<Unit> = collectionUnitMutation {
         api.deleteCollection(id)
     }
 
-    suspend fun addCollectionBooks(id: Int, bookIds: List<Int>): Result<Unit> = adminCollectionUnitMutation {
+    suspend fun addCollectionBooks(id: Int, bookIds: List<Int>): Result<Unit> = collectionMembershipMutation {
         api.addCollectionBooks(id, BookOrbitCollectionBooksRequest(bookIds.distinct()))
     }
 
-    suspend fun removeCollectionBooks(id: Int, bookIds: List<Int>): Result<Unit> = adminCollectionUnitMutation {
+    suspend fun removeCollectionBooks(id: Int, bookIds: List<Int>): Result<Unit> = collectionMembershipMutation {
         api.removeCollectionBooks(id, BookOrbitCollectionBooksRequest(bookIds.distinct()))
     }
 
-    suspend fun reorderCollections(ids: List<Int>): Result<Unit> = adminUnitMutation {
+    suspend fun reorderCollections(ids: List<Int>): Result<Unit> = collectionUnitMutation {
         api.reorderCollections(
             BookOrbitCollectionOrderRequest(ids.distinct().mapIndexed { index, id -> BookOrbitCollectionOrderItem(id, index) }),
         )
     }
 
-    private suspend fun adminMutation(
+    private suspend fun collectionMutation(
         request: suspend () -> Response<BookOrbitCollectionDto>,
     ): Result<BookOrbitCollectionDto> = runSuspendCatching {
-        requireAdmin()
         val response = request()
         if (!response.isSuccessful) error(bookOrbitHttpMessage("BookOrbit collection update failed", response))
         response.body() ?: error("BookOrbit returned an empty collection response")
     }
 
-    private suspend fun adminUnitMutation(request: suspend () -> Response<Unit>): Result<Unit> = runSuspendCatching {
-        requireAdmin()
+    private suspend fun collectionUnitMutation(request: suspend () -> Response<Unit>): Result<Unit> = runSuspendCatching {
         val response = request()
         if (!response.isSuccessful) error(bookOrbitHttpMessage("BookOrbit collection update failed", response))
     }
 
-    private suspend fun adminCollectionUnitMutation(
+    private suspend fun collectionMembershipMutation(
         request: suspend () -> Response<BookOrbitCollectionDto>,
     ): Result<Unit> = runSuspendCatching {
-        requireAdmin()
         val response = request()
         if (!response.isSuccessful) error(bookOrbitHttpMessage("BookOrbit collection update failed", response))
-    }
-
-    private suspend fun requireAdmin() {
-        check(isCurrentUserAdmin().getOrThrow()) { "BookOrbit collection changes require an administrator account" }
     }
 
     suspend fun getLibraries(): Result<List<Library>> = runSuspendCatching {
@@ -202,31 +196,15 @@ class BookOrbitRepository @Inject constructor(
     }
 
     suspend fun getRecentlyAdded(limit: Int = 20): Result<List<Book>> = runSuspendCatching {
-        val finalLimit = limit.coerceAtLeast(1)
-        val libraries = getLibraries().getOrThrow()
-        libraries.flatMap { library ->
-            val libId = library.id.toIntOrNull() ?: return@flatMap emptyList()
-            val requestedLimit = finalLimit
-            val total = fetchBooksPage(libId, page = 0, size = 1).total
-            if (total <= 0) return@flatMap emptyList()
-
-            val reachableTotal = total.coerceAtMost((SERVER_PAGE_CEILING + 1) * SERVER_PAGE_SIZE)
-            val firstIndex = (reachableTotal - requestedLimit).coerceAtLeast(0)
-            val firstPage = firstIndex / SERVER_PAGE_SIZE
-            val lastPage = (reachableTotal - 1) / SERVER_PAGE_SIZE
-            val cards = mutableListOf<BookOrbitBookCardDto>()
-
-            for (serverPage in firstPage..lastPage) {
-                val dto = fetchBooksPage(libId, serverPage, SERVER_PAGE_SIZE)
-                cards += dto.items
-                if (dto.items.size < SERVER_PAGE_SIZE || (serverPage + 1) * SERVER_PAGE_SIZE >= dto.total) break
-            }
-
-            val dropCount = firstIndex - firstPage * SERVER_PAGE_SIZE
-            cards.drop(dropCount)
-                .take(requestedLimit)
-                .asReversed()
-                .map { it.toBook(library.id) }
+        val finalLimit = limit.coerceIn(1, SERVER_PAGE_SIZE)
+        getLibraries().getOrThrow().flatMap { library ->
+            val id = library.id.toIntOrNull() ?: return@flatMap emptyList()
+            val response = api.books(id, BookOrbitBooksPageRequest(
+                pagination = BookOrbitPaginationRequest(page = 0, size = finalLimit),
+                sort = listOf(BookOrbitSort("addedAt", "desc")),
+            ))
+            if (!response.isSuccessful) error(bookOrbitHttpMessage("BookOrbit recent books failed", response))
+            response.body()?.items.orEmpty().map { it.toBook(library.id) }
         }.sortedByDescending { it.addedOn }.take(finalLimit)
     }
 
@@ -479,7 +457,7 @@ class BookOrbitRepository @Inject constructor(
         if (response.code() == 404 || response.code() == 204) return null
         if (!response.isSuccessful) error(bookOrbitHttpMessage("BookOrbit ebook progress pull failed", response))
         val dto = response.body() ?: return null
-        return bookOrbitEbookSnapshot(dto.cfi, dto.percentage, bookOrbitDateMillis(dto.updatedAt))
+        return bookOrbitEbookSnapshot(dto.cfi, dto.percentage, bookOrbitDateMillis(dto.textPositionUpdatedAt))
     }
 
     suspend fun updateBookStatus(bookId: String, status: String): Result<Unit> = runSuspendCatching {
@@ -697,6 +675,7 @@ class BookOrbitRepository @Inject constructor(
             libraryId = libraryId,
             request = BookOrbitBooksPageRequest(
                 pagination = BookOrbitPaginationRequest(page = page, size = size),
+                sort = listOf(BookOrbitSort("addedAt", "asc")),
             ),
         )
         if (!response.isSuccessful) error(bookOrbitHttpMessage("BookOrbit books failed", response))
@@ -704,13 +683,15 @@ class BookOrbitRepository @Inject constructor(
     }
 
     private fun BookOrbitBookCardDto.toBook(libraryId: String?): Book {
-        val audioFiles = files.filter { isAudio(it.format) }
-        val ebookFiles = files.filterNot { isAudio(it.format) }
+        val audioFiles = files.filter { it.isContent && it.isAudio }
+        val ebookFiles = files.filter { it.isContent && it.isReadable }
+        val ebookFile = ebookFiles.firstOrNull { it.role == "primary" } ?: ebookFiles.firstOrNull()
         val isAudiobook = audioFiles.isNotEmpty()
+        val hasNarration = ebookFile?.mediaOverlay?.available == true
         val primaryFile = if (isAudiobook) {
             audioFiles.firstOrNull { it.role.equals("content", ignoreCase = true) } ?: audioFiles.firstOrNull()
         } else {
-            ebookFiles.firstOrNull { it.role.equals("primary", ignoreCase = true) } ?: ebookFiles.firstOrNull()
+            ebookFile
         }
         val tracks = if (isAudiobook) buildTracks(audioFiles, includeDurations = false) else emptyList()
         val status = readStatus?.status.toReadStatus()
@@ -741,19 +722,22 @@ class BookOrbitRepository @Inject constructor(
             connectionId = currentConnection()?.id,
             addedOn = bookOrbitDateMillis(addedAt) ?: 0L,
             audioTracks = tracks,
-            hasAudio = audioFiles.isNotEmpty(),
+            hasAudio = isAudiobook || hasNarration,
             hasEbook = ebookFiles.isNotEmpty(),
+            readAlongAvailable = !isAudiobook && hasNarration,
         )
     }
 
     private fun BookOrbitBookDetailDto.toBook(fallbackLibraryId: String?): Book {
-        val audioFiles = files.filter { isAudio(it.format) }
-        val ebookFiles = files.filterNot { isAudio(it.format) }
+        val audioFiles = files.filter { it.isContent && it.isAudio }
+        val ebookFiles = files.filter { it.isContent && it.isReadable }
+        val ebookFile = ebookFiles.firstOrNull { it.role == "primary" } ?: ebookFiles.firstOrNull()
         val isAudiobook = audioFiles.isNotEmpty()
+        val hasNarration = ebookFile?.mediaOverlay?.available == true
         val primaryFile = if (isAudiobook) {
             audioFiles.firstOrNull { it.role.equals("content", ignoreCase = true) } ?: audioFiles.firstOrNull()
         } else {
-            ebookFiles.firstOrNull { it.role.equals("primary", ignoreCase = true) } ?: ebookFiles.firstOrNull()
+            ebookFile
         }
         val totalDuration = (audioMetadata?.durationSeconds ?: audioFiles.sumOf { it.durationSeconds ?: 0.0 })
             .roundToLong()
@@ -790,8 +774,9 @@ class BookOrbitRepository @Inject constructor(
             addedOn = bookOrbitDateMillis(addedAt) ?: 0L,
             chapters = makeChapters(audioMetadata?.chapters.orEmpty(), totalDuration),
             audioTracks = tracks,
-            hasAudio = audioFiles.isNotEmpty(),
+            hasAudio = isAudiobook || hasNarration,
             hasEbook = ebookFiles.isNotEmpty(),
+            readAlongAvailable = !isAudiobook && hasNarration,
         )
     }
 
@@ -897,9 +882,9 @@ class BookOrbitRepository @Inject constructor(
         if (!response.isSuccessful) return null
         val detail = response.body() ?: return null
         return detail.files
-            .filterNot { isAudio(it.format) }
+            .filter { it.isContent && it.isReadable }
             .firstOrNull { it.role.equals("primary", ignoreCase = true) }
-            ?: detail.files.firstOrNull { !isAudio(it.format) }
+            ?: detail.files.firstOrNull { it.isContent && it.isReadable }
     }
 
     private fun coverUrl(bookId: Int): String = endpoints.coverUrl(bookId)

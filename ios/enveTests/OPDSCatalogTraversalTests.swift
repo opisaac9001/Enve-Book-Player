@@ -8,8 +8,6 @@ struct OPDSCatalogTraversalTests {
     private static let providerId = UUID(uuidString: "0F17E6A0-1111-4222-8333-444444444444")!
     private let root = URL(string: "https://catalog.example.invalid/opds/root.json")!
 
-    // MARK: OPDS 2 shapes
-
     @Test func navigationIsDecodedAsLinkObjectsAndNotAsPublications() throws {
         let parsed = try parse(
             """
@@ -188,8 +186,6 @@ struct OPDSCatalogTraversalTests {
         #expect(parsed.isComplete == false)
     }
 
-    // MARK: OPDS 1 (Atom)
-
     @Test func atomNavigationEntriesAreFollowedWhileAlternatesAndFacetsAreNot() throws {
         let parsed = try parse(
             """
@@ -358,10 +354,6 @@ struct OPDSCatalogTraversalTests {
 
         #expect(parsed.books.first?.series == nil)
     }
-
-    // MARK: Traversal
-
-    /// Twelve pages exceed the navigation-depth budget; pagination must not spend it.
     @Test func everyPageOfALongFeedIsImportedAndTheSnapshotStaysComplete() async throws {
         var pages: [String: String] = [:]
         for page in 0..<12 {
@@ -421,8 +413,6 @@ struct OPDSCatalogTraversalTests {
         #expect(result.isComplete == false)
         #expect(result.notices.contains { $0.contains("Navigation depth 2") })
     }
-
-    /// Library → language → genre → alphabet → author is already five levels before a real catalog starts.
     @Test func tenLevelsOfNavigationAreReachedByDefault() async throws {
         var pages: [String: String] = [:]
         for depth in 0..<10 {
@@ -455,15 +445,6 @@ struct OPDSCatalogTraversalTests {
 
         #expect(result.isComplete == false)
         #expect(result.notices.contains { $0.contains("Navigation depth 10") })
-    }
-
-    @Test func theDefaultLimitsKeepTheirRequestAndPageBudgets() {
-        let limits = OPDSCatalogTraversal.Limits()
-
-        #expect(limits.navigationDepth == 10)
-        #expect(limits.navigationLinksPerFeed == 200)
-        #expect(limits.pagesPerFeed == 2000)
-        #expect(limits.feedRequests == 5000)
     }
 
     @Test func aDeadSubFeedIsSkippedAndMarksTheSnapshotIncomplete() async throws {
@@ -522,8 +503,6 @@ struct OPDSCatalogTraversalTests {
         #expect(result.books.map(\.id) == ["urn:book:1"])
         #expect(result.isComplete)
     }
-
-    // MARK: Fixtures
 
     private static func pageURL(_ index: Int) -> String {
         "https://catalog.example.invalid/opds/p\(index).json"

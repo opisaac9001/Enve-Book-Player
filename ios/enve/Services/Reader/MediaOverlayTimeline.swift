@@ -269,15 +269,34 @@ struct MediaOverlayTimeline: Sendable {
             || href?.lowercased().hasPrefix("audiobook://") == true
 
         if isAudioLocator {
-            let progression = Self.doubleValue(locations["totalProgression"]) ?? 0
-            guard let clipIndex = clipIndex(atSpokenProgression: progression),
-                let audioTime = audioTime(forClipIndex: clipIndex)
-            else { return nil }
-            return ResolvedPosition(
-                clipIndex: clipIndex,
-                audioTime: audioTime,
-                source: .progression
-            )
+            if let href {
+                let normalized = Self.normalizedHref(href)
+                let exact = audioFiles.first { Self.normalizedHref($0.source) == normalized }
+                let matches = exact.map { [$0] } ?? audioFiles.filter {
+                    (Self.normalizedHref($0.source) as NSString).lastPathComponent
+                        == (normalized as NSString).lastPathComponent
+                }
+                if matches.count == 1, let file = matches.first {
+                    let fragmentTime = fragments.compactMap(Self.audioTimeFragment).first
+                    let progressionTime = Self.doubleValue(locations["progression"]).flatMap {
+                        $0.isFinite ? min(max($0, 0), 1) * file.duration : nil
+                    }
+                    if let localTime = fragmentTime ?? progressionTime {
+                        let audioTime = file.start + min(max(localTime, 0), file.duration)
+                        if let clipIndex = clipIndex(atAudioTime: audioTime) {
+                            return ResolvedPosition(
+                                clipIndex: clipIndex,
+                                audioTime: audioTime,
+                                source: fragmentTime == nil ? .progression : .fragment
+                            )
+                        }
+                    }
+                }
+            }
+            guard let progression = Self.doubleValue(locations["totalProgression"]), progression.isFinite else { return nil }
+            let audioTime = min(max(progression, 0), 1) * totalAudioDuration
+            guard let clipIndex = clipIndex(atAudioTime: audioTime) else { return nil }
+            return ResolvedPosition(clipIndex: clipIndex, audioTime: audioTime, source: .progression)
         }
 
         if let fragment = fragments.first(where: {
@@ -388,7 +407,10 @@ struct MediaOverlayTimeline: Sendable {
 
     private static func audioTimeFragment(_ fragment: String) -> TimeInterval? {
         guard fragment.hasPrefix("t=") else { return nil }
-        return TimeInterval(fragment.dropFirst(2))
+        guard let value = TimeInterval(fragment.dropFirst(2).split(separator: ",").first.map(String.init) ?? ""),
+            value.isFinite, value >= 0
+        else { return nil }
+        return value
     }
 
     nonisolated static func hrefMatches(_ lhs: String, _ rhs: String) -> Bool {

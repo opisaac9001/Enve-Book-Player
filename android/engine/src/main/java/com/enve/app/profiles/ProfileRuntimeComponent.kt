@@ -44,6 +44,7 @@ interface ProfileRuntimeComponent {
     fun discover(): com.enve.engine.discover.DiscoverFacade
     fun opdsCatalog(): com.enve.engine.opds.OpdsCatalogFacade
     fun podcasts(): com.enve.engine.podcasts.PodcastsFacade
+    fun passageAlignment(): com.enve.app.storyalign.PassageAlignmentService
     fun storyAlign(): com.enve.engine.storyalign.StoryAlignFacade
     fun bookOrbit(): com.enve.engine.bookorbit.BookOrbitFacade
     fun serverTools(): com.enve.engine.servertools.ServerToolsFacade

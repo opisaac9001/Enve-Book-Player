@@ -18,7 +18,6 @@ import androidx.test.platform.app.InstrumentationRegistry
 import java.util.concurrent.atomic.AtomicBoolean
 import org.junit.Assume.assumeTrue
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.lifecycle.ViewModel
@@ -34,7 +33,6 @@ import com.enve.engine.theme.HearthThemeMode
 import com.enve.hearth.design.HearthTheme
 import com.enve.hearth.listeningposition.*
 import com.enve.hearth.shell.LocalProfileViewModelFactory
-import java.io.ByteArrayOutputStream
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -76,16 +74,13 @@ class ListeningPositionUiTest {
         compose.runOnIdle { model.scan(payload.encoded()) }
         compose.waitUntil(5000) { compose.onAllNodesWithTag("listening-position-candidate-one:fixture").fetchSemanticsNodes().isNotEmpty() }
         assertTrue(applied.isEmpty())
-        evidence("enve-position-matches.png")
         compose.onNodeWithTag("listening-position-candidate-one:fixture").performScrollTo().performClick()
         assertTrue(applied.isEmpty())
         compose.onNodeWithTag("listening-position-apply").performScrollTo().assertIsDisplayed()
-        evidence("enve-position-confirmation.png")
         compose.onNodeWithTag("listening-position-apply").performClick()
         compose.onNodeWithTag("listening-position-done").performScrollTo().assertIsDisplayed()
         assertEquals(listOf(book.uniqueKey), applied)
         compose.onNodeWithText("This copy isn't connected to a progress server.", substring = true).assertExists()
-        evidence("enve-position-saved.png")
     }
 
     @Test fun readingPositionUsesPercentageAndRequiresConfirmation() {
@@ -115,7 +110,6 @@ class ListeningPositionUiTest {
         compose.onNodeWithTag("listening-position-candidate-one:manual").performScrollTo().performClick()
         compose.onNodeWithText("Different narrator.").assertExists()
         assertTrue(applied.isEmpty())
-        evidence("enve-position-dark.png")
         compose.onNodeWithTag("listening-position-apply").performScrollTo().performClick()
         assertEquals(listOf("one:manual"), applied)
         assertTrue(searches.contains("Other edition"))
@@ -124,8 +118,8 @@ class ListeningPositionUiTest {
     @Test fun sharedCodeIsAvailableAtLargeTextSizes() {
         compose.setContent { CompositionLocalProvider(LocalProfileViewModelFactory provides factory) { HearthTheme(uiTextScale = 1.7f) { ListeningPositionShareSheet(book) {} } } }
         compose.waitUntil(5000) { compose.onAllNodesWithTag("listening-position-qr").fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithText("Share image").performScrollTo().assertIsDisplayed()
-        evidence("enve-position-share-large-text.png")
+        compose.onNodeWithTag("listening-position-share-link").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Share QR image").performScrollTo().assertIsDisplayed()
     }
 
 
@@ -167,18 +161,9 @@ class ListeningPositionUiTest {
                 } catch (_: NoMatchingViewException) { }
                 frame != null
             }
-            val bytes = ByteArrayOutputStream().also { frame!!.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
-            savePositionEvidence("enve-position-camera-frame.png", bytes)
             frame!!.recycle()
-            evidence("enve-position-camera.png")
             compose.runOnIdle { visible.value = false }
             compose.waitUntil(10000) { released.get() }
         } finally { manager.unregisterAvailabilityCallback(callback) }
-    }
-
-    private fun evidence(name: String) {
-        val bitmap = compose.onNodeWithTag("listening-position-screen").captureToImage().asAndroidBitmap()
-        val bytes = ByteArrayOutputStream().also { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
-        savePositionEvidence(name, bytes)
     }
 }

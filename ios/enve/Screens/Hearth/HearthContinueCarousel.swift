@@ -77,6 +77,7 @@ struct HearthBookCard: View {
     @Environment(\.profileSession) private var capturedSession
     private var readingEnabled: Bool { (capturedSession ?? .owner).preferences.readingEnabled }
     @Environment(\.hearth) private var hearth
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var tint: Color = Hearth.accent
     @State private var counterpart: Book?
     @State private var pageTotal: Int?
@@ -225,7 +226,8 @@ struct HearthBookCard: View {
                 Text(byline)
                     .font(.hearthUI(prominent ? 14 : 12, weight: .medium))
                     .foregroundStyle(hearth.textSecondary)
-                    .lineLimit(1)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 4)
             Text(sourceLabel)

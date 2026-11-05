@@ -189,13 +189,17 @@ struct LibraryScreen: View {
         let stacked = dynamicTypeSize.isAccessibilitySize
         let layout = stacked
             ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
-            : AnyLayout(HStackLayout(spacing: 8))
+            : AnyLayout(HStackLayout(alignment: .top, spacing: 8))
         return layout {
-            Text("Library")
-                .font(.hearthScreenTitle)
-                .foregroundStyle(hearth.text)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
+            VStack(alignment: .leading, spacing: 6) {
+                Overline("The Reading Room")
+                Text("Library")
+                    .font(.hearthScreenTitle)
+                    .foregroundStyle(hearth.text)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .accessibilityAddTraits(.isHeader)
+            }
             if !stacked {
                 Spacer(minLength: 8)
             }
@@ -299,6 +303,7 @@ struct LibraryScreen: View {
         visibleScopeRefreshInProgress = true
         defer { visibleScopeRefreshInProgress = false }
         await engine.sources.refreshVisibleLibraryScope(model.sourceFilter)
+        await engine.sources.refreshLibrarySourceNamesIfNeeded(force: true)
         await model.reload()
     }
 
@@ -455,7 +460,7 @@ struct LibraryScreen: View {
         let stacked = dynamicTypeSize.isAccessibilitySize
         let layout = stacked
             ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
-            : AnyLayout(HStackLayout(spacing: 8))
+            : AnyLayout(HStackLayout(alignment: .top, spacing: 8))
         return layout {
             controlChips
             if !stacked {
@@ -519,14 +524,14 @@ struct LibraryScreen: View {
                         Button {
                             openOPDSCatalog(connection.id)
                         } label: {
-                            Label(connection.name, systemImage: "books.vertical")
+                            Label(connectionLabel(connection), systemImage: "books.vertical")
                         }
                         .accessibilityIdentifier("library-opds-catalog-\(connection.id.uuidString)")
                     } else {
                         Button {
                             selectSource(.connection(connection.id))
                         } label: {
-                            sourceMenuLabel(connection.name, isSelected: model.sourceFilter == .connection(connection.id))
+                            sourceMenuLabel(connectionLabel(connection), isSelected: model.sourceFilter == .connection(connection.id))
                         }
                     }
                 }
@@ -569,7 +574,7 @@ struct LibraryScreen: View {
             Button {
                 selectSource(.connection(providerId))
             } label: {
-                sourceMenuLabel("All in \(connection.name)", isSelected: model.sourceFilter == .connection(providerId))
+                sourceMenuLabel("All in \(connectionLabel(connection))", isSelected: model.sourceFilter == .connection(providerId))
             }
             ForEach(libraries(for: providerId), id: \.uniqueId) { library in
                 Button {
@@ -584,7 +589,7 @@ struct LibraryScreen: View {
             ForEach(activeConnections, id: \.id) { connection in
                 let libraries = libraries(for: connection.id)
                 if !libraries.isEmpty {
-                    Section(connection.name) {
+                    Section(connectionLabel(connection)) {
                         Button {
                             selectSource(.connection(connection.id))
                         } label: {
@@ -653,7 +658,14 @@ struct LibraryScreen: View {
     }
 
     private func sourceTitle(_ id: UUID) -> String {
-        activeConnections.first { $0.id == id }?.name ?? "Source"
+        activeConnections.first { $0.id == id }.map(connectionLabel) ?? "Source"
+    }
+
+    private func connectionLabel(_ connection: LibrarySourceConnectionSummary) -> String {
+        guard let username = connection.username?.trimmingCharacters(in: .whitespaces), !username.isEmpty,
+            activeConnections.contains(where: { $0.id != connection.id && $0.name == connection.name })
+        else { return connection.name }
+        return "\(connection.name) · \(username)"
     }
 
     private func libraries(for providerId: UUID) -> [LibrarySourceLibrarySummary] {

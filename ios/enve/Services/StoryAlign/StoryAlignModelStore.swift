@@ -17,6 +17,7 @@ final class StoryAlignModelStore {
         Artifact(name: $0.name, size: $0.size, sha256: $0.sha256)
     }
 
+    private static let directoryName = "quartznet15x5-en-3023100-3a4cf199"
     private let root: URL
     private var preparation: Task<URL, Error>?
     private var preparationID = UUID()
@@ -24,6 +25,16 @@ final class StoryAlignModelStore {
 
     init(root: URL = URL.applicationSupportDirectory.appendingPathComponent("Enve/AlignmentModels", isDirectory: true)) {
         self.root = root
+    }
+
+    /// The installed model directory when every artifact is present at its expected size; never downloads.
+    var installedModelDirectory: URL? {
+        let directory = root.appendingPathComponent(Self.directoryName, isDirectory: true)
+        let complete = Self.artifacts.allSatisfy { artifact in
+            let size = try? directory.appendingPathComponent(artifact.name).resourceValues(forKeys: [.fileSizeKey]).fileSize
+            return size.map(Int64.init) == artifact.size
+        }
+        return complete ? directory : nil
     }
 
     func prepare() async throws -> URL {
@@ -57,7 +68,7 @@ final class StoryAlignModelStore {
     private func makePreparation() -> Task<URL, Error> {
         let root = root
         return Task<URL, Error> {
-            let directory = root.appendingPathComponent("quartznet15x5-en-3023100-3a4cf199", isDirectory: true)
+            let directory = root.appendingPathComponent(Self.directoryName, isDirectory: true)
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             var excludedRoot = root
             var resources = URLResourceValues()

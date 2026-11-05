@@ -68,3 +68,18 @@ fun catalogImportScopeKey(connectionId: String?, libraryId: String?): String =
 
 private fun catalogImportKey(value: String): String = MessageDigest.getInstance("SHA-256")
     .digest(value.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+
+fun catalogFailureFor(error: Throwable): CatalogFailure {
+    val status = (error as? retrofit2.HttpException)?.code()
+        ?: Regex("HTTP\\s+(\\d{3})").find(error.message.orEmpty())?.groupValues?.get(1)?.toIntOrNull()
+        ?: if (error.message.orEmpty().startsWith("Unauthorized:")) 401 else null
+    return CatalogFailure(
+        kind = when (status) {
+            401, 403 -> CatalogFailureKind.ACCESS_DENIED
+            null -> CatalogFailureKind.NETWORK
+            else -> CatalogFailureKind.HTTP
+        },
+        stage = CatalogImportStage.BOOKS,
+        httpStatus = status,
+    )
+}

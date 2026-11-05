@@ -68,7 +68,7 @@ The repository provenance/sensitive-source/agent-lock marker check passed. White
 
 ## Additional reader run requiring follow-up
 
-The seven-case reader run `test_sim_2026-10-11T21-09-01-075Z_pid36703_8c3f3380.xcresult` exceeded the MCP tool's 300-second response limit. The owned test process was then cancelled. Its final result records one pass (bottom-selection controls), one page-turn assertion failure, one cancellation, and four skips. These are not seven successful checks.
+The seven-case reader run `test_sim_2026-10-11T21-09-01-075Z_pid36703_8c3f3380.xcresult` was cancelled after 300 seconds. Its final result records one pass (bottom-selection controls), one page-turn assertion failure, one cancellation, and four skips. These are not seven successful checks.
 
 The page-turn case reached its final intentional-edge-tap assertion; selection assertions had passed. The iPad renders the short fixture as one page, unlike the phone layout used by this case. A phone rerun is needed before deciding whether this is an app navigation failure. The controls hide/restore case repeatedly waited 60 seconds for XCTest's animation-idle notification; a screenshot still showed rendered text and narration controls. This does not prove the app froze, but the test is incomplete. The four imported-book cases lacked `ENVE_LIBRARY_READER_UI=1`; the corrected invocation is described below.
 

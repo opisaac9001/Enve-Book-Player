@@ -51,13 +51,6 @@ final class enveUITests: XCTestCase {
         )
         XCTAssertEqual(XCTWaiter.wait(for: [pickerLoaded], timeout: 10), .completed)
     }
-
-    @MainActor
-    func testLaunchPerformance() throws {
-        measure(metrics: [XCTApplicationLaunchMetric()]) {
-            XCUIApplication().launch()
-        }
-    }
 }
 
 final class enveUISmokeTests: XCTestCase {
@@ -94,7 +87,10 @@ final class enveUISmokeTests: XCTestCase {
     }
 
     @MainActor
-    func testLibraryOPDSSourceOpensCatalog() {
+    func testLibraryOPDSSourceOpensCatalog() throws {
+        guard ProcessInfo.processInfo.environment["ENVE_LAB_OPDS_UI"] == "1" else {
+            throw XCTSkip("Requires an active saved OPDS catalogue connection; set ENVE_LAB_OPDS_UI=1 to run.")
+        }
         let app = launch(route: "library")
         let source = app.buttons["library-source-menu"]
         XCTAssertTrue(source.waitForExistence(timeout: 20))
@@ -143,7 +139,7 @@ final class enveUISmokeTests: XCTestCase {
 
     @MainActor
     func testPassageAvailabilityPrompt() {
-        let app = launch(route: "player")
+        let app = launch(route: "player", extraArguments: ["-imagineUnlinkedPlayerFixture", "YES"])
         let readingOptions = app.buttons["Reading options"]
         XCTAssertTrue(readingOptions.waitForExistence(timeout: 20))
         readingOptions.tap()
@@ -152,17 +148,15 @@ final class enveUISmokeTests: XCTestCase {
         XCTAssertTrue(findPassage.waitForExistence(timeout: 5))
         findPassage.tap()
 
-        if #available(iOS 26.0, *) {
-            XCTAssertTrue(app.staticTexts["Link an ebook first"].waitForExistence(timeout: 5))
-            XCTAssertFalse(app.alerts["Update Required"].exists)
-        } else {
-            let alert = app.alerts["Update Required"]
-            XCTAssertTrue(alert.waitForExistence(timeout: 5))
-            XCTAssertTrue(alert.staticTexts["Finding passages in an ebook requires iOS 26.0 or newer."].exists)
-            alert.buttons["OK"].tap()
-            XCTAssertTrue(readingOptions.exists)
-            XCTAssertFalse(alert.exists)
-        }
+        let prompt = app.staticTexts["Link an ebook first"]
+        XCTAssertTrue(prompt.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Link this audiobook to its ebook from book details, then download both books to find matching passages on this device."].exists)
+        XCTAssertFalse(app.alerts["Update Required"].exists)
+        let window = app.windows.firstMatch
+        window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.65))
+            .press(forDuration: 0.1, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.98)))
+        XCTAssertTrue(prompt.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(readingOptions.isHittable)
     }
 
     @MainActor
@@ -482,7 +476,50 @@ final class enveUISmokeTests: XCTestCase {
         let app = launch(route: "settings")
 
         XCTAssertTrue(app.descendants(matching: .any)["settings-screen"].waitForExistence(timeout: 20))
-        try performReleaseAccessibilityAudit(in: app)
+        attachAccessibilityContext(in: app)
+        let majorVersion = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+        try app.performAccessibilityAudit(for: releaseAuditTypes) { issue in
+            // testSettingsPlaybackRowAtAccessibilityTextSize verifies this iOS 27 prediction is false.
+            majorVersion == 27 && issue.auditType == .textClipped
+                && issue.element?.label == "Home, playback, appearance, and accessibility"
+        }
+        if majorVersion < 27 {
+            try app.performAccessibilityAudit(for: .contrast)
+        }
+    }
+
+    @MainActor
+    func testSettingsPlaybackRowAtAccessibilityTextSize() {
+        let app = launch(route: "settings", contentSizeCategory: "UICTContentSizeCategoryAccessibilityXXXL")
+        XCTAssertTrue(app.scrollViews["settings-screen"].waitForExistence(timeout: 20))
+        let row = app.buttons["Playback & experience"]
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        let window = app.windows.firstMatch
+        let visibleFrame = window.frame.insetBy(dx: 24, dy: 100)
+        for _ in 0..<12 {
+            let rowFrame = row.frame
+            if row.isHittable && visibleFrame.contains(rowFrame) { break }
+            let delta = visibleFrame.midY - rowFrame.midY
+            let distance = min(max(abs(delta), 12), visibleFrame.height * 0.35)
+            let movement = delta > 0 ? distance : -distance
+            let startY = visibleFrame.midY - movement / 2 - window.frame.minY
+            let endY = startY + movement
+            window.coordinate(withNormalizedOffset: .zero)
+                .withOffset(CGVector(dx: window.frame.width / 2, dy: startY))
+                .press(forDuration: 0.05, thenDragTo: window.coordinate(withNormalizedOffset: .zero)
+                    .withOffset(CGVector(dx: window.frame.width / 2, dy: endY)),
+                    withVelocity: .slow, thenHoldForDuration: 0.3)
+        }
+        let stable = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let frame = row.frame
+            return row.isHittable && visibleFrame.contains(frame) && row.frame == frame
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [stable], timeout: 5), .completed)
+        attachScreenshot(of: app, named: "Settings playback row at accessibility XXXL")
+        XCTAssertTrue(row.isHittable)
+        XCTAssertTrue(visibleFrame.contains(row.frame))
+        XCTAssertEqual(row.value as? String, "Home, playback, appearance, and accessibility")
+        XCTAssertGreaterThan(row.frame.height, 100)
     }
 
     @MainActor

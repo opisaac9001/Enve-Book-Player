@@ -107,6 +107,32 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
     let ttsService = EbookTTSService()
 
     private let readAloud: ReaderReadAloudController
+    /// The player Listen Along drives; the profile's main player unless another is supplied.
+    private let linkedPlayback: any PlaybackControlling
+    private let reduceMotionEnabled: () -> Bool
+    private var preservesListeningPositionOnClose = false
+    private lazy var linkedReadAlong: ReaderLinkedReadAlongController = {
+        let controller = ReaderLinkedReadAlongController(
+            book: book, profileSession: profileSession, playback: linkedPlayback,
+            adapter: { [weak self] in self?.readerEngineAdapter },
+            openedFileURL: { [weak self] in self?.publicationSession.fileURL },
+            highlightColor: { [weak self] in self?.appearance.readAloudHighlightColor ?? .gold }
+        )
+        controller.onChange = { [weak self] in self?.objectWillChange.send() }
+        // One narration at a time: the linked audiobook replaces TTS or Read Aloud only once it actually starts.
+        controller.coordinate(with: ttsService)
+        controller.onNarrationWillStart = { [weak self] in
+            guard let self, isReadAloudMode else { return }
+            readAloud.toggle()
+        }
+        return controller
+    }()
+    var isLinkedReadAlongAvailable: Bool { linkedReadAlong.isAvailable }
+    var isLinkedReadAlongRequested: Bool { linkedReadAlong.isFollowRequested }
+    var linkedReadAlongStatus: ReaderLinkedReadAlongController.Status { linkedReadAlong.status }
+    #if DEBUG
+    var debugLinkedReadAlong: ReaderLinkedReadAlongController { linkedReadAlong }
+    #endif
     var overlayPlayer: MediaOverlayPlayer? { readAloud.player }
     var isReadAloudMode: Bool { readAloud.isActive }
     @Published var isFixedLayoutBook: Bool = false
@@ -116,12 +142,16 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
 
     var tapHandler: ((CGPoint, CGSize) -> Void)?
     var doubleTapHandler: ((CGPoint) -> Void)?
+    /// A double-tap while Listen Along runs picks narration up at the tapped line; the screen reports the outcome.
+    var linkedLineTapHandler: ((CGPoint) -> Void)?
     var longPressHandler: (() -> Void)?
     var pendingSingleTapTask: Task<Void, Never>?
 
     private var cachedCustomFontJS: (familyName: String, js: String)?
     private var lastAppliedScrollEnabled: Bool? = nil
     private var userNavigationGeneration = 0
+    /// Readium relocations carry no reason, so a touch or key press just before one marks it as the user's.
+    private var readiumInteractionAt: ContinuousClock.Instant?
     private var readerLayoutGeneration = 0
     @Published private(set) var readerLayoutInProgress = false
     private var readerLayoutTask: Task<Void, Never>?
@@ -371,6 +401,10 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
             handleReadAloudTap(at: point, in: navigator)
             return
         }
+        if linkedReadAlong.isFollowRequested, let linkedLineTapHandler {
+            linkedLineTapHandler(point)
+            return
+        }
 
         guard ttsService.isPlaying || ttsService.isPaused else { return }
         ttsRetargetTask?.cancel()
@@ -398,9 +432,13 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
         libraryCache: LibraryBookCache? = nil,
         presentation: AppPresentationState? = nil,
         bookStore: BookStoreRepository? = nil,
-        profileSession: ProfileSession = .owner
+        profileSession: ProfileSession = .owner,
+        linkedPlayback: (any PlaybackControlling)? = nil,
+        reduceMotionEnabled: @escaping () -> Bool = { UIAccessibility.isReduceMotionEnabled }
     ) {
         self.profileSession = profileSession
+        self.linkedPlayback = linkedPlayback ?? profileSession.playback.composition.controller
+        self.reduceMotionEnabled = reduceMotionEnabled
         let libraryCache = libraryCache ?? profileSession.appState.libraryCache
         let presentation = presentation ?? profileSession.appState.presentation
         let bookStore = bookStore ?? profileSession.bookStore
@@ -578,6 +616,7 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
         if let foregroundObserver { NotificationCenter.default.removeObserver(foregroundObserver) }
         await publicationSession.retire()
         await readAloud.retire()
+        linkedReadAlong.retire()
         await progress.retire()
         await companion.stop()
         endServerPageStreamingSession()
@@ -821,7 +860,7 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
     }
 
     private func openFoliateFile(at fileURL: URL, format: EbookFormat) async throws {
-        guard FoliateRuntimeSupport.isPackaged else {
+        guard FoliateRuntimeSupport.isAvailable else {
             throw FoliateReaderError.runtimeUnavailable
         }
         annotationController.loadBookmarks()
@@ -1100,6 +1139,7 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
                 publication: publication
             )
             adapter.onUserInteraction = { [weak self] in
+                self?.readiumInteractionAt = .now
                 self?.markUserEPUBNavigation()
             }
             readerEngineAdapter = adapter
@@ -1142,6 +1182,8 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
 
         if hasMediaOverlay, let navigator = readiumNavigator {
             readAloud.beginPreparation(publication: publication, navigator: navigator)
+        } else {
+            Task { await linkedReadAlong.prepare() }
         }
 
         if let loc = initialLocation {
@@ -1169,7 +1211,7 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
         readerEngineSelection = ReaderEnginePolicy.selection(
             for: context,
             override: readerEngineOverride,
-            foliateAvailable: FoliateRuntimeSupport.isPackaged
+            foliateAvailable: FoliateRuntimeSupport.isAvailable
         )
 
         epubBridgeSession?.close()
@@ -1358,7 +1400,7 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
         case .readyEPUB, .readyFoliate:
             guard await prepareUserEPUBNavigation() else { return }
             clearPendingSelectionForNavigation()
-            _ = await readerEngineAdapter?.pageForward(animated: false)
+            _ = await readerEngineAdapter?.pageForward(animated: !reduceMotionEnabled())
         case .readyPDF:
             clearPendingSelectionForNavigation()
             pagedContent.stepPDFPage(by: 1)
@@ -1375,7 +1417,7 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
         case .readyEPUB, .readyFoliate:
             guard await prepareUserEPUBNavigation() else { return }
             clearPendingSelectionForNavigation()
-            _ = await readerEngineAdapter?.pageBackward(animated: false)
+            _ = await readerEngineAdapter?.pageBackward(animated: !reduceMotionEnabled())
         case .readyPDF:
             clearPendingSelectionForNavigation()
             pagedContent.stepPDFPage(by: -1)
@@ -1414,6 +1456,7 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
     private func prepareUserEPUBNavigation() async -> Bool {
         let pendingLayout = readerLayoutTask
         markUserEPUBNavigation()
+        linkedReadAlong.userDidNavigate()
         let generation = userNavigationGeneration
         await pendingLayout?.value
         return !Task.isCancelled && !isRetired && userNavigationGeneration == generation
@@ -1941,7 +1984,78 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
     }
 
     func toggleReadAloud() {
+        if !isReadAloudMode { linkedReadAlong.yieldNarration() }
         readAloud.toggle()
+    }
+
+    /// Starting only turns following on; stopping pauses the linked audiobook too, like Stop in Read Aloud and TTS.
+    func toggleLinkedReadAlong() {
+        if linkedReadAlong.isFollowRequested {
+            stopListenAlong()
+        } else {
+            linkedReadAlong.startFollowing()
+        }
+    }
+
+    func resumeLinkedReadAlong() {
+        linkedReadAlong.resumeFollowing()
+    }
+
+    var linkedReadAlongRemedy: ReaderLinkedReadAlongController.Remedy? { linkedReadAlong.remedy }
+
+    func resumeLinkedAudiobook() {
+        Task { await linkedReadAlong.resumeLinkedAudiobook() }
+    }
+
+    func stopListenAlong() {
+        Task { await linkedReadAlong.stopListenAlong() }
+    }
+
+    func toggleLinkedNarrationPlayback() {
+        Task { await linkedReadAlong.toggleNarrationPlayback() }
+    }
+
+    func skipLinkedNarration(by seconds: TimeInterval) {
+        Task { await linkedReadAlong.skipNarration(by: seconds) }
+    }
+
+    func seekLinkedNarration(to time: TimeInterval) {
+        Task { await linkedReadAlong.seekNarration(to: time) }
+    }
+
+    func setLinkedNarrationRate(_ rate: Double) {
+        Task { await linkedReadAlong.setNarrationRate(rate) }
+    }
+
+    /// Pauses or resumes the linked audiobook in place, or starts it at the reading position.
+    func toggleLinkedListening(audiobook: Book) {
+        let playback = profileSession.playback.composition.controller
+        if playback.currentBook?.stableId != audiobook.stableId || !playback.snapshot.isLoaded { saveProgress() }
+        let locatorJSON = lastKnownLocatorJSON
+        let chapterIndex = currentChapterIndex
+        Task { await linkedReadAlong.toggleListening(audiobook: audiobook, readingLocatorJSON: locatorJSON, chapterIndex: chapterIndex) }
+    }
+
+    func retryLinkedReadAlong() {
+        linkedReadAlong.retryPreparation()
+    }
+
+    var linkedReadAlongNeedsAudiobookDownload: Bool { linkedReadAlong.needsAudiobookDownload }
+
+    func downloadLinkedAudiobook() {
+        linkedReadAlong.downloadLinkedAudiobook()
+    }
+
+    func listenFromHere(at point: CGPoint? = nil) async -> ReaderLinkedReadAlongController.ListenResult {
+        await linkedReadAlong.listenFromHere(at: point)
+    }
+
+    /// Reader dismissal: a Listen from here still in flight must never seek or start playback afterwards.
+    @discardableResult
+    func endLinkedReadAlong() -> Bool {
+        preservesListeningPositionOnClose = progressPreservesListeningPosition
+        linkedReadAlong.retire()
+        return preservesListeningPositionOnClose
     }
 
     func syncAudioToVisiblePage() {
@@ -1953,6 +2067,7 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
     }
 
     func toggleReadAloudPlayback() {
+        if overlayPlayer?.isPlaying == false { linkedReadAlong.yieldNarration() }
         readAloud.togglePlayback()
     }
 
@@ -2157,16 +2272,20 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
             guard let self, !isTapSuppressed else { return }
             pendingSingleTapTask?.cancel()
             pendingSingleTapTask = Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .milliseconds(300))
-                guard !Task.isCancelled, let self, !isTapSuppressed else { return }
-                if await adapter?.activateLink(at: point) == true { return }
-                if let id = await adapter?.annotationID(at: point) {
-                    self.annotationController.activateAnnotation(id: id)
+                guard let self, !isTapSuppressed, let adapter else { return }
+                switch await adapter.tapTarget(at: point) {
+                case .link:
                     return
+                case .annotation(let id):
+                    annotationController.activateAnnotation(id: id)
+                    return
+                case .illustration(let reference):
+                    if await presentIllustration(reference) { return }
+                case .none:
+                    break
                 }
-                if await presentIllustrationIfTapped(at: point) { return }
                 guard !Task.isCancelled else { return }
-                self.tapHandler?(point, size)
+                tapHandler?(point, size)
             }
         }
         adapter.onExternalLink = { url in
@@ -2179,6 +2298,7 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
 
     private func noteLinkJump(from locatorJSON: String?) {
         markUserEPUBNavigation()
+        linkedReadAlong.userDidNavigate()
         if linkReturnLocatorJSON == nil {
             linkReturnLocatorJSON = locatorJSON
         }
@@ -2203,22 +2323,21 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
         presentedIllustration = nil
     }
 
-    private func presentIllustrationIfTapped(at point: CGPoint?) async -> Bool {
+    private func presentIllustrationIfTapped(at point: CGPoint) async -> Bool {
+        guard presentedIllustration == nil, pendingSelection == nil, !isFixedLayoutBook,
+            let adapter = readerEngineAdapter as? ReadiumReaderEngineAdapter
+        else { return false }
+        let generation = userNavigationGeneration
+        guard let reference = await adapter.illustration(at: point),
+            userNavigationGeneration == generation, !isRetired
+        else { return false }
+        return await presentIllustration(reference)
+    }
+
+    private func presentIllustration(_ reference: ReaderIllustrationReference) async -> Bool {
         guard presentedIllustration == nil, pendingSelection == nil, !isFixedLayoutBook else { return false }
         let generation = userNavigationGeneration
-        let reference: ReaderIllustrationReference?
-        switch readerEngineAdapter {
-        case let adapter as FoliateReaderEngineAdapter:
-            guard let point else { return false }
-            reference = await adapter.illustration(at: point)
-        case let adapter as ReadiumReaderEngineAdapter:
-            guard let point else { return false }
-            reference = await adapter.illustration(at: point)
-        default:
-            reference = nil
-        }
-        guard let reference, userNavigationGeneration == generation, !isRetired,
-            let illustration = await loadIllustration(reference), !Task.isCancelled,
+        guard let illustration = await loadIllustration(reference), !Task.isCancelled,
             userNavigationGeneration == generation, !isRetired else { return false }
         await speedTracker.pause()
         presentedIllustration = illustration
@@ -2320,6 +2439,12 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
         updateEPUBPageState(using: locator)
         if relocation.isUserInitiated {
             markUserEPUBNavigation(afterRenderedMove: true)
+            linkedReadAlong.userDidNavigate()
+        } else if readiumNavigator != nil, let interaction = readiumInteractionAt,
+            ContinuousClock.now - interaction < .seconds(1), !linkedReadAlong.isMovingPage
+        {
+            readiumInteractionAt = nil
+            linkedReadAlong.userDidNavigate()
         }
         progress.armBridgeWriteIfUserInteractionPending()
         let enginePageRange: ClosedRange<Int>? = {
@@ -2515,8 +2640,7 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
         let size = (navigator as? UIViewController)?.view.bounds.size ?? .zero
         pendingSingleTapTask?.cancel()
         pendingSingleTapTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            guard !Task.isCancelled, let self, !isTapSuppressed else { return }
+            guard let self, !isTapSuppressed else { return }
             if await presentIllustrationIfTapped(at: point) { return }
             guard !Task.isCancelled else { return }
             tapHandler?(point, size)
@@ -2709,6 +2833,8 @@ extension ClassicReaderModel: ReaderProgressHosting {
     var progressPublication: Publication? { publicationSession.publication }
 
     var progressPublicationFileURL: URL? { publicationSession.fileURL }
+
+    var progressPreservesListeningPosition: Bool { preservesListeningPositionOnClose || linkedReadAlong.ownsListeningPosition }
 
     var progressBridgeSession: EpubBridgeSession? { epubBridgeSession }
 

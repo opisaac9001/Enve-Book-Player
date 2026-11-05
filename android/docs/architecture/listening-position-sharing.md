@@ -144,11 +144,15 @@ Rejected:
 
 ## Sending
 
-The book details' More menu offers **Share book location** for supported reading entries and audio with a known duration. The sheet captures the latest saved reading position or the live position of a loaded audio book. **Update position** recaptures it. **Share image** exports the code as an image so it can be sent and later imported by the recipient.
+The book details' More menu offers **Share book location** for supported reading entries and audio with a known duration. The sheet captures the latest saved reading position or the live position of a loaded audio book. **Update position** recaptures it. **Share link** sends a tappable link (see Links below); **Share QR image** exports the code as an image so it can be sent and later imported by the recipient.
 
 ## Receiving
 
 Library ▸ More ▸ **Scan book position** opens the scanner. It uses the live camera (VisionKit) when the device supports it and camera access is granted, and always offers **Choose an image**, which reads QR codes from a photo or screenshot on-device. Image import is the path on the Simulator and when camera access is denied. Imports use a temporary file, reject files above 20 MiB before reading their data, inspect dimensions without caching the full image, and reject dimensions above 16,384 pixels or 100 million total pixels. The first frame is downsampled with orientation applied to a maximum dimension of 2,048 pixels before QR detection. Temporary files are removed after import. These bounds reduce memory exposure; they do not establish trust in a code or eliminate image-framework vulnerabilities. A rejected code is reported once and scanning continues.
+
+### Links
+
+**Share link** sends `https://envemedia.com/position/?d=<data>`, where `<data>` is the canonical payload encoded as unpadded base64url (RFC 4648 §5). The data is in the query, not the fragment, because a fragment link shared on iOS reached Safari without its fragment; the page stores and logs nothing, and still accepts the older `#<data>` form. That static page shows the title and position and opens `enve-book://position?d=<data>`; custom-scheme links are not tappable in most chat apps, so the web page is the hop. Both apps register `enve-book://position`; the https link is not a verified App Link or Universal Link, so it always goes through the page. The decoded text goes through the same `decode` and confirmation path as a scanned code, so a link is equally untrusted. Encoded data longer than 4/3 of the payload size limit is rejected before decoding.
 
 ### Matching
 
@@ -173,9 +177,9 @@ Applying always requires an explicit confirmation that shows the copy's current 
 
 ## Android workflow
 
-The book details three-dot menu offers **Share book location** for supported reading entries and audio with a known duration. The sheet captures a snapshot when opened. **Update position** captures another snapshot; **Share image** exports only the QR bitmap through a narrowly scoped FileProvider cache directory.
+The book details three-dot menu offers **Share book location** for supported reading entries and audio with a known duration. The sheet captures a snapshot when opened. **Update position** captures another snapshot. **Share link** sends the text link through the system chooser; **Share QR image** exports only the QR bitmap through a narrowly scoped FileProvider cache directory. `MainActivity` hands an incoming `enve-book://position` intent to `HearthRoot`, which opens the scan flow with the decoded code.
 
-Library's More menu opens **Scan book position**. Live scanning requests camera permission when the user enables it. Camera and autofocus hardware are explicitly optional, so the new permission does not filter out camera-less readers or devices with only a front camera. Image import accepts a selected `content:` URI, streams at most 20 MiB to a private temporary file, checks dimensions before decoding, and downsamples to at most 2,048 pixels per dimension. Images above 16,384 pixels in either dimension or 100 million total pixels are rejected. Temporary imports are removed on completion or cancellation. The camera closes when the view leaves composition or the activity pauses. Camera frames and imported images are processed on-device.
+Library's More menu opens **Scan book position**. Live scanning requests camera permission when the user enables it. Camera and autofocus hardware are explicitly optional, so the new permission does not filter out camera-less readers or devices with only a front camera. Image import accepts a selected `content:` URI, streams at most 20 MiB to a private temporary file, checks dimensions before decoding, and downsamples to at most 2,048 pixels per dimension. Images above 16,384 pixels in either dimension or 100 million total pixels are rejected. Temporary imports are removed on completion or cancellation. Live scanning uses CameraX (`PreviewView` in compatible mode for rotation and center-crop, `ImageAnalysis` keeping only the latest frame for ZXing); it is bound to the lifecycle, so it stops when the activity pauses and unbinds when the view leaves composition. Camera frames and imported images are processed on-device.
 
 `ListeningPositionMatcher` reuses the metadata matcher's title, author and duration scoring. Identity requires a matching ISBN or a title score of at least 0.85 with an author score of at least 0.8 when both authors are known. Duration, narrator and series position order candidates and produce recording warnings. Account/source labels distinguish copies. Scores are ordering weights, never confidence percentages. Manual search keeps results outside the suggestion threshold. A time beyond the selected copy's known end cannot be applied.
 

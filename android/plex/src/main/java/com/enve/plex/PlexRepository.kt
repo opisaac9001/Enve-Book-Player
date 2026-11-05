@@ -156,7 +156,6 @@ class PlexRepository @Inject constructor(
 
     private val trackSpans = java.util.concurrent.ConcurrentHashMap<String, List<PlexTrackSpan>>()
 
-    // Plex keeps resume points per track (as iOS writes them), so multi-file books report against the track playing.
     private suspend fun trackSpans(book: Book): List<PlexTrackSpan> {
         trackSpans[book.uniqueKey]?.let { return it }
         val playable = api.playableTracks(book.id)?.takeIf { it.isAlbum } ?: return emptyList()

@@ -760,7 +760,7 @@ class MediaOverlayEngine(
             if (nextIdx <= clips.lastIndex) {
                 startPlayback(ch, nextIdx, playWhenReady = isPlaying, notifyClipChanged = true, command)
             } else {
-                val next = nextNarratedStart(ch, skipSkippable = false)
+                val next = nextNarratedStart(ch.readingOrderIndex, skipSkippable = false)
                 if (next == null) {
                     completeNarration()
                     return@launchPlaybackCommand
@@ -1067,9 +1067,14 @@ class MediaOverlayEngine(
         resourceProgression: Double?,
     ): Triple<ChapterMO, Int, Boolean>? {
 
-        val chapter = chapterForHref(normalizedHref) ?: return null
-        val clips = parseChapter(chapter) ?: return null
-        if (clips.isEmpty()) return null
+        val chapter = chapterForHref(normalizedHref)
+        val clips = chapter?.let { parseChapter(it) }.orEmpty()
+        if (chapter == null || clips.isEmpty()) {
+            val readingIndex = readingOrderHrefs.indexOf(normalizedHref).takeIf { it >= 0 }
+                ?: uniqueHrefMatch(readingOrderHrefs, normalizedHref)
+                ?: return null
+            return nextNarratedStart(readingIndex)?.let { Triple(it.first, it.second, false) }
+        }
 
         if (fragmentId != null) {
             chapter.fragmentIndex?.get(fragmentId)?.let { idx ->
@@ -1092,9 +1097,9 @@ class MediaOverlayEngine(
         chapterByHref[normalizedHref]
             ?: uniqueHrefMatch(chaptersInReadingOrder.map { it.spineHref }, normalizedHref)?.let(chaptersInReadingOrder::get)
 
-    private suspend fun nextNarratedStart(after: ChapterMO, skipSkippable: Boolean = true): Pair<ChapterMO, Int>? =
+    private suspend fun nextNarratedStart(afterReadingOrderIndex: Int, skipSkippable: Boolean = true): Pair<ChapterMO, Int>? =
         firstNarratedStart(
-            candidates = chaptersInReadingOrder.filter { it.readingOrderIndex > after.readingOrderIndex },
+            candidates = chaptersInReadingOrder.filter { it.readingOrderIndex > afterReadingOrderIndex },
             clipsOf = { parseChapter(it).orEmpty() },
             startIndexIn = { clips -> if (skipSkippable) nextAutoAdvanceIndex(clips, 0) else clips.indices.firstOrNull() },
         )
@@ -1263,7 +1268,7 @@ class MediaOverlayEngine(
                             startPlayback(ch, nextIdx, playWhenReady = true, notifyClipChanged = true)
                             return@launch
                         }
-                        val next = nextNarratedStart(ch)
+                        val next = nextNarratedStart(ch.readingOrderIndex)
                         if (next == null) {
                             completeNarration()
                             return@launch
@@ -1305,7 +1310,7 @@ class MediaOverlayEngine(
             return
         }
 
-        val next = nextNarratedStart(ch)
+        val next = nextNarratedStart(ch.readingOrderIndex)
         if (next == null) {
             completeNarration()
             return

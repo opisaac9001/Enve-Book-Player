@@ -109,7 +109,7 @@ fun LibraryDisplaySettingsScreen(
             SettingsCard(modifier = Modifier.padding(horizontal = DS.Spacing.LG.scaled(metrics))) {
                 SettingsSectionHeader(
                     title = "Layout",
-                    subtitle = "Pick the default grid density. You can always tweak this from the filter button on the Library tab.",
+                    subtitle = "Pick the grid density. You can also change it from the ⋮ menu on the Library tab.",
                 )
                 LibraryLayout.entries.forEachIndexed { index, layout ->
                     LayoutOptionRow(

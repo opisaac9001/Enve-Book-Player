@@ -26,6 +26,8 @@ import java.io.FileInputStream
 import java.net.ServerSocket
 import java.util.Collections
 import kotlin.concurrent.thread
+import kotlin.coroutines.Continuation
+import kotlin.coroutines.intrinsics.suspendCoroutineUninterceptedOrReturn
 import com.enve.core.data.model.ProviderConnection
 import com.enve.core.data.model.UrlScheme
 import java.util.UUID
@@ -49,7 +51,7 @@ class Azw3SupportTest {
     private val context = ApplicationProvider.getApplicationContext<Context>()
 
     @Test
-    fun localScanIncludesAzw3InNestedFoldersAndPreservesFormat() {
+    fun localScanIncludesAzw3InNestedFoldersAndPreservesFormat() = runBlocking {
         val root = File(context.cacheDir, "azw3-scan-${UUID.randomUUID()}").apply { mkdirs() }
         try {
             File(root, "First.azw3").writeText("Kindle fixture")
@@ -61,9 +63,12 @@ class Azw3SupportTest {
                 ProfileStorageLocations.forProfile(context, DEFAULT_ADULT_PROFILE_ID),
             )
             val books = mutableListOf<Book>()
-            LocalLibraryRepository::class.java.getDeclaredMethod(
-                "scanRecursive", DocumentFile::class.java, List::class.java, Set::class.java,
-            ).apply { isAccessible = true }.invoke(repository, DocumentFile.fromFile(root), books, emptySet<String>())
+            val scan = LocalLibraryRepository::class.java.getDeclaredMethod(
+                "scanRecursive", DocumentFile::class.java, List::class.java, Set::class.java, Continuation::class.java,
+            ).apply { isAccessible = true }
+            suspendCoroutineUninterceptedOrReturn<Unit> { continuation ->
+                scan.invoke(repository, DocumentFile.fromFile(root), books, emptySet<String>(), continuation)
+            }
             assertEquals(setOf("First", "Second"), books.map { it.title }.toSet())
             assertTrue(books.all { it.mediaType == AppMediaType.EBOOK && it.source == BookSource.LOCAL })
             assertTrue(books.all { it.primaryFileType == "AZW3" })

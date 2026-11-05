@@ -3,6 +3,7 @@ import ReadiumShared
 import ReadiumZIPFoundation
 import Testing
 import UIKit
+import WebKit
 
 @testable import enve
 
@@ -11,6 +12,152 @@ import UIKit
 struct ReaderOfflineOpeningTests {
     enum ServerMode: String, CaseIterable, Sendable {
         case reachable, refused, nonresponsive, unavailable
+    }
+
+    @available(iOS 17.2, *)
+    @Test func foliateParsesRefinedEPUBMetadataOnSupportedWebKit() async throws {
+        let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let fixture = try Fixture(mode: .reachable)
+        let previousWindow = scene.keyWindow
+        let window = UIWindow(windowScene: scene)
+        var prepared: FoliateReaderEngineAdapter?
+        do {
+            let file = try await fixture.writeEPUB(metadata: """
+                <dc:identifier id="id">grouping-fixture</dc:identifier>
+                <dc:title>Alternate title</dc:title><dc:title id="main">The Harbor</dc:title>
+                <meta refines="#main" property="title-type">main</meta>
+                <dc:language>en</dc:language>
+                <dc:creator id="ada">Ada Harbor</dc:creator><dc:creator id="bram">Bram Stone</dc:creator>
+                <meta refines="#ada" property="file-as">Harbor, Ada</meta>
+                <meta refines="#bram" property="file-as">Stone, Bram</meta>
+                <meta property="belongs-to-collection" id="series">Coastal Library</meta>
+                <meta refines="#series" property="collection-type">set</meta>
+                <meta refines="#series" property="group-position">2</meta>
+                <meta property="dcterms:modified">2026-11-04T00:00:00Z</meta>
+                """)
+            let adapter = try await FoliateReaderEngineAdapter.make(
+                source: .file(file, fileExtension: "epub"), initialLocatorJSON: nil, initialProgression: 0,
+                appearance: ClassicReaderAppearance(), annotations: [], onPrepared: { adapter in
+                    prepared = adapter
+                    window.frame = scene.coordinateSpace.bounds
+                    window.rootViewController = adapter
+                    window.makeKeyAndVisible()
+                    window.layoutIfNeeded()
+                    adapter.view.layoutIfNeeded()
+                }
+            )
+            let webView = try #require(adapter.view.subviews.compactMap { $0 as? WKWebView }.first)
+            let values = try #require(try await webView.callAsyncJavaScript("""
+                const { groupObject, groupMap } = await import('./grouping.js');
+                const metadata = document.querySelector('foliate-view').book.metadata;
+                const groups = groupObject(['__proto__', 'constructor', '__proto__'], value => value);
+                const first = document.createElement('meta');
+                const second = document.createElement('meta');
+                const nodes = groupMap([first, second, first], value => value);
+                return {
+                    title: metadata.title,
+                    authors: metadata.author.map(value => value.name),
+                    sortedAuthors: metadata.author.map(value => value.sortAs),
+                    collection: metadata.belongsTo.collection.name,
+                    position: metadata.belongsTo.collection.position,
+                    safeKeys: Object.getPrototypeOf(groups) === null
+                        && groups.__proto__.length === 2 && groups.constructor[0] === 'constructor',
+                    nodeIdentity: nodes.size === 2 && nodes.get(first).length === 2
+                        && nodes.get(second)[0] === second,
+                };
+                """, arguments: [:], in: nil, contentWorld: .page) as? [String: Any])
+            #expect(values["title"] as? String == "The Harbor")
+            #expect(values["authors"] as? [String] == ["Ada Harbor", "Bram Stone"])
+            #expect(values["sortedAuthors"] as? [String] == ["Harbor, Ada", "Stone, Bram"])
+            #expect(values["collection"] as? String == "Coastal Library")
+            #expect(values["position"] as? String == "2")
+            #expect(values["safeKeys"] as? Bool == true)
+            #expect(values["nodeIdentity"] as? Bool == true)
+        } catch {
+            prepared?.tearDown()
+            window.isHidden = true
+            window.rootViewController = nil
+            previousWindow?.makeKey()
+            await fixture.close()
+            throw error
+        }
+        prepared?.tearDown()
+        window.isHidden = true
+        window.rootViewController = nil
+        previousWindow?.makeKey()
+        await fixture.close()
+    }
+
+    @available(iOS 17.2, *)
+    @Test func foliatePageTurnsHonorLiveReduceMotionChanges() async throws {
+        let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let fixture = try Fixture(mode: .reachable)
+        let previousWindow = scene.keyWindow
+        let window = UIWindow(windowScene: scene)
+        final class Motion { var reduced = true }
+        let motion = Motion()
+        let book = fixture.book(file: try await fixture.writeEPUB())
+        await fixture.session.bookStore.upsertBooks([book])
+        fixture.session.appState.hotCache.insert(book)
+        let model = ClassicReaderModel(book: book, readerEngineOverride: .foliate, providerResolver: fixture,
+            profileSession: fixture.session, reduceMotionEnabled: { motion.reduced })
+        do {
+            model.startIfNeeded()
+            window.frame = scene.coordinateSpace.bounds
+            try await waitUntil("Foliate ready for motion preferences", timeout: .seconds(25)) {
+                if let adapter = model.activeReaderEngineAdapter, window.rootViewController !== adapter.viewController {
+                    window.rootViewController = adapter.viewController
+                    window.makeKeyAndVisible()
+                    window.layoutIfNeeded()
+                    adapter.viewController.view.layoutIfNeeded()
+                }
+                switch model.state {
+                case .readyFoliate: return true
+                case .failed(let error): throw error
+                default: return false
+                }
+            }
+            let adapter = try #require(model.activeReaderEngineAdapter)
+            await model.seek(toProgress: 0.05)
+            try await waitUntil("first chapter rendered") {
+                await adapter.currentPageText()?.contains("FIRST_CHAPTER_MARKER") == true
+            }
+            let webView = try #require(adapter.viewController.view.subviews.compactMap { $0 as? WKWebView }.first)
+            _ = try await webView.evaluateJavaScript("""
+                (() => {
+                    const reader = document.querySelector('foliate-view');
+                    globalThis.pageTurnAnimations = [];
+                    for (const direction of ['next', 'prev']) {
+                        const navigate = reader[direction].bind(reader);
+                        reader[direction] = async (...args) => {
+                            globalThis.pageTurnAnimations.push(reader.renderer.hasAttribute('animated'));
+                            return navigate(...args);
+                        };
+                    }
+                })()
+                """)
+            let before = await adapter.currentPageText()
+            await model.pageForward()
+            try await waitUntil("forward page rendered") { await adapter.currentPageText() != before }
+            await model.pageBackward()
+            motion.reduced = false
+            await model.pageForward()
+            await model.pageBackward()
+            let animationFlags = try #require(try await webView.evaluateJavaScript("globalThis.pageTurnAnimations") as? [Bool])
+            #expect(animationFlags == [false, false, true, true])
+        } catch {
+            await model.retire()
+            window.isHidden = true
+            window.rootViewController = nil
+            previousWindow?.makeKey()
+            await fixture.close()
+            throw error
+        }
+        await model.retire()
+        window.isHidden = true
+        window.rootViewController = nil
+        previousWindow?.makeKey()
+        await fixture.close()
     }
 
     @Test(arguments: ServerMode.allCases, [ReaderEngineKind.readium, .foliate])
@@ -47,13 +194,20 @@ struct ReaderOfflineOpeningTests {
                     }
                 }
                 let adapter = try #require(model.activeReaderEngineAdapter)
-                #expect(adapter.kind == engine)
+                if #available(iOS 17.2, *) {
+                    #expect(adapter.kind == engine)
+                } else {
+                    #expect(adapter.kind == .readium)
+                    if engine == .foliate {
+                        #expect(model.readerEngineSelection == ReaderEngineSelection(
+                            preferred: .foliate, active: .readium, fallbackReason: .foliateUnavailable))
+                    }
+                }
                 let marker = opening == 0 ? "SECOND_CHAPTER_MARKER" : "FIRST_CHAPTER_MARKER"
                 try await waitUntil("restored chapter is rendered") {
                     await adapter.currentPageText()?.contains(marker) == true
                 }
                 let elapsed = started.duration(to: .now)
-                print("ReaderOfflineOpening mode=\(mode.rawValue) engine=\(engine) opening=\(opening) elapsed=\(elapsed)")
                 #expect(elapsed < (opening == 0 ? .seconds(20) : .seconds(8)))
                 #expect(adapter.viewController.view.window === window)
                 #expect(adapter.viewController.view.bounds.width > 0)
@@ -125,7 +279,7 @@ struct ReaderOfflineOpeningTests {
 
     private enum OpeningError: Error { case deadline(String) }
 
-    private final class Fixture: LibraryProviderResolving {
+    final class Fixture: LibraryProviderResolving {
         let root: URL
         let defaults: UserDefaults
         let domain = "ReaderOfflineOpeningTests.\(UUID().uuidString)"
@@ -156,13 +310,14 @@ struct ReaderOfflineOpeningTests {
                 providerId: provider.connection.id, source: .kavita)
         }
 
-        func writeEPUB() async throws -> URL {
+        func writeEPUB(metadata: String? = nil) async throws -> URL {
             let contents = root.appendingPathComponent("contents")
             try FileManager.default.createDirectory(at: contents.appendingPathComponent("META-INF"), withIntermediateDirectories: true)
+            let packageMetadata = metadata ?? #"<dc:identifier id="id">offline-fixture</dc:identifier><dc:title>Offline fixture</dc:title><dc:language>en</dc:language><meta property="dcterms:modified">2026-10-29T00:00:00Z</meta>"#
             let files = [
                 "mimetype": "application/epub+zip",
                 "META-INF/container.xml": #"<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0"><rootfiles><rootfile full-path="package.opf" media-type="application/oebps-package+xml"/></rootfiles></container>"#,
-                "package.opf": #"<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">offline-fixture</dc:identifier><dc:title>Offline fixture</dc:title><dc:language>en</dc:language><meta property="dcterms:modified">2026-10-29T00:00:00Z</meta></metadata><manifest><item id="one" href="chapter-1.xhtml" media-type="application/xhtml+xml"/><item id="two" href="chapter-2.xhtml" media-type="application/xhtml+xml"/><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/></manifest><spine><itemref idref="one"/><itemref idref="two"/></spine></package>"#,
+                "package.opf": #"<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/">\#(packageMetadata)</metadata><manifest><item id="one" href="chapter-1.xhtml" media-type="application/xhtml+xml"/><item id="two" href="chapter-2.xhtml" media-type="application/xhtml+xml"/><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/></manifest><spine><itemref idref="one"/><itemref idref="two"/></spine></package>"#,
                 "nav.xhtml": #"<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Contents</title></head><body><nav epub:type="toc"><ol><li><a href="chapter-1.xhtml">One</a></li><li><a href="chapter-2.xhtml">Two</a></li></ol></nav></body></html>"#,
                 "chapter-1.xhtml": chapter("FIRST_CHAPTER_MARKER"),
                 "chapter-2.xhtml": chapter("SECOND_CHAPTER_MARKER"),
@@ -187,7 +342,7 @@ struct ReaderOfflineOpeningTests {
         }
     }
 
-    private final class Provider: LibraryProvider, EbookProgressPulling, EbookDownloadProvider {
+    final class Provider: LibraryProvider, EbookProgressPulling, EbookDownloadProvider {
         var connection = ServerConnection(name: "Synthetic offline fixture", url: "https://example.invalid", type: .kavita)
         var capabilities: ProviderCapabilities { [.downloads, .ebookProgressPull] }
         let mode: ServerMode

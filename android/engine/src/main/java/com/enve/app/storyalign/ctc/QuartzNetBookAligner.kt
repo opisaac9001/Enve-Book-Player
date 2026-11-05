@@ -191,7 +191,7 @@ class QuartzNetBookAligner(
     private data class Checkpoint(val algorithm: String, val matches: List<CtcSentenceMatch>)
 
     companion object {
-        private val INFERENCE_MUTEX = Mutex()
+        internal val INFERENCE_MUTEX = Mutex()
         private const val ALGORITHM = "ctc-sentences-v4"
         private const val SAMPLE_RATE = 16_000
         private const val WINDOW_SAMPLES = 38 * SAMPLE_RATE

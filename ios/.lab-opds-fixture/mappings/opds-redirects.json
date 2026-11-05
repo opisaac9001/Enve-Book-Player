@@ -8,14 +8,14 @@
         "urlPath": "/opds/redirect/cross-origin/epub",
         "headers": {
           "Host": {
-            "matches": "10\\.0\\.0\\.116(:\\d+)?"
+            "matches": "192\\.0\\.2\\.10(:\\d+)?"
           }
         }
       },
       "response": {
         "status": 302,
         "headers": {
-          "Location": "http://100.114.100.51:9091/opds/echo/headers",
+          "Location": "http://198.51.100.10:9091/opds/echo/headers",
           "Cache-Control": "no-store"
         }
       }
@@ -28,14 +28,14 @@
         "urlPath": "/opds/redirect/cross-origin/epub",
         "headers": {
           "Host": {
-            "matches": "100\\.114\\.100\\.51(:\\d+)?"
+            "matches": "198\\.51\\.100\\.10(:\\d+)?"
           }
         }
       },
       "response": {
         "status": 302,
         "headers": {
-          "Location": "http://10.0.0.116:9091/opds/echo/headers",
+          "Location": "http://192.0.2.10:9091/opds/echo/headers",
           "Cache-Control": "no-store"
         }
       }

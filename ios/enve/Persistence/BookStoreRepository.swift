@@ -283,6 +283,8 @@ protocol BookQuerying: Sendable {
     func booksByStableIds(_ ids: Set<String>) async -> [String: Book]
     func ebookLinkedAudiobookIds(source: String) async -> [(ebookStableId: String, audiobookStableId: String)]
     func existingAudiobookStableIds(from candidates: Set<String>) async -> Set<String>
+    /// Which of `candidates` a stored link field, read-aloud source or link-table row names; all of them if unreadable.
+    func referencedAudiobookStableIds(among candidates: Set<String>) async -> Set<String>
     func booksMatching(_ collection: SmartCollection, limit: Int?) async -> [Book]
     func bookCountMatching(_ collection: SmartCollection) async -> Int
 
@@ -432,6 +434,10 @@ protocol BookWriting: Sendable {
         restrictedLibraryIds: [String: Set<String>]
     ) async -> Int
     func updateEbookFileURL(uniqueId: String, url: URL?) async
+    /// Writes only a finished ebook download's file and narration flag; false when the book is no longer stored.
+    func updateDownloadedEbook(uniqueId: String, fileURL: URL, epub3Features: EPUB3Features?) async throws -> Bool
+    /// Inserts a book a download starts for; an existing or deleted row is left exactly as it is.
+    func registerDownloadIfMissing(_ book: Book) async throws
     func setHidden(_ hidden: Bool, stableId: String) async
     func setDeleted(_ deleted: Bool, stableId: String) async
     func deleteBooks(uniqueIds: Set<String>) async

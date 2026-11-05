@@ -85,14 +85,17 @@ class PdfReadingLayoutVerificationTest {
         try {
             bookCache.upsert(fixtures.map { it.book.toCachedBook() })
             assertEquals(PdfReadingLayout(), store.layout(first.key))
+            val initial = checkNotNull(bookCache.progress(first))
 
             ActivityScenario.launch<PdfReaderActivity>(first.intent(context)).use { scenario ->
                 awaitText("Page 1 of 6")
                 awaitContentDescription("PDF page 1 of 6")
                 compose.onNodeWithContentDescription("Previous page").assertIsNotEnabled()
                 compose.onNodeWithContentDescription("Next page").assertIsEnabled()
-                val initial = bookCache.awaitProgress(first) { it.epubLocator?.contains("\"page\":1") == true }
-                assertEquals(1f / 6f, initial.readProgress, 0.001f)
+                val opened = checkNotNull(bookCache.progress(first))
+                assertEquals(initial.lastReadTime, opened.lastReadTime)
+                assertEquals(initial.epubLocator, opened.epubLocator)
+                assertEquals(initial.readProgress, opened.readProgress, 0f)
 
                 compose.onNodeWithContentDescription("Appearance").performClick()
                 awaitText("Two-page view")

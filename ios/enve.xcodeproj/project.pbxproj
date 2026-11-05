@@ -954,6 +954,7 @@
 				"$(SRCROOT)/BuildSupport/FoliateRuntime/index.html",
 				"$(SRCROOT)/BuildSupport/FoliateRuntime/reader.css",
 				"$(SRCROOT)/BuildSupport/FoliateRuntime/adapter.js",
+				"$(SRCROOT)/BuildSupport/FoliateRuntime/grouping.js",
 				"$(SRCROOT)/BuildSupport/FoliateRuntime/zip.js-LICENSE.txt",
 				"$(SRCROOT)/BuildSupport/FoliateRuntime/fflate-LICENSE.txt",
 				"$(SRCROOT)/BuildSupport/FoliateRuntime/UPSTREAM.txt",

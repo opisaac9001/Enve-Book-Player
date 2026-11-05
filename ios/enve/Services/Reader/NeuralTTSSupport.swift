@@ -19,7 +19,7 @@ enum NeuralTTSError: LocalizedError {
         case .emptyAudio: "The on-device voice produced no audio."
         case .invalidAudio: "The on-device voice produced invalid audio."
         case .notReady: "The on-device voice is not ready."
-        case .unsupportedOS: "Kokoro requires iOS 26.6 or later on iOS 26."
+        case .unsupportedOS: "Kokoro is unavailable on iOS 26.4 and later because it can crash there. Apple voices are used instead."
         }
     }
 }

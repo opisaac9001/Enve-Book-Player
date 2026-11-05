@@ -16,7 +16,7 @@ final class ListeningPositionUITests: XCTestCase {
             let share = app.buttons["Share book location"].firstMatch
             XCTAssertTrue(share.waitForExistence(timeout: 5), format)
             share.tap()
-            XCTAssertTrue(app.buttons["Share image"].waitForExistence(timeout: 5), format)
+            XCTAssertTrue(app.buttons["Share link"].waitForExistence(timeout: 5) && app.buttons["Share QR image"].exists, format)
             let position = format == "pdf" || format == "cbz" ? "Page 8 of 32" : "25.0%"
             XCTAssertTrue(app.images.matching(NSPredicate(format: "label CONTAINS %@", position)).firstMatch.exists, format)
             XCTAssertTrue(app.buttons["Update position"].exists)
@@ -38,7 +38,7 @@ final class ListeningPositionUITests: XCTestCase {
         let share = app.buttons["Share book location"].firstMatch
         XCTAssertTrue(share.waitForExistence(timeout: 5))
         share.tap()
-        XCTAssertTrue(app.buttons["Share image"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Share link"].waitForExistence(timeout: 5) && app.buttons["Share QR image"].exists)
         let code = app.images.matching(NSPredicate(format: "label BEGINSWITH %@", "Book-position code")).firstMatch
         XCTAssertTrue(code.exists)
         let attachment = XCTAttachment(screenshot: app.screenshot())

@@ -45,6 +45,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
+import com.enve.core.data.model.BookCardStyle
 import com.enve.core.data.model.BookSource
 import com.enve.hearth.design.CoverTile
 import com.enve.hearth.design.Hearth
@@ -64,6 +65,7 @@ internal fun BookGrid(
     selection: Set<String>,
     onOpen: (Book) -> Unit,
     onPlay: (Book) -> Unit,
+    cardStyle: BookCardStyle,
     onRemove: ((Book) -> Unit)? = null,
     hasLibraryBooks: Boolean = true,
     onAddSource: (() -> Unit)? = null,
@@ -96,7 +98,7 @@ internal fun BookGrid(
                     onRemove = onRemove,
                 )
             } else {
-                GridCoverCell(book, vm, selectionMode, selected = book.uniqueKey in selection, onOpen, onPlay, onRemove)
+                GridCoverCell(book, vm, selectionMode, selected = book.uniqueKey in selection, onOpen, onPlay, onRemove, cardStyle)
             }
         }
     }
@@ -140,7 +142,8 @@ private fun GridCoverCell(
     selected: Boolean,
     onOpen: (Book) -> Unit,
     onPlay: (Book) -> Unit,
-    onRemove: ((Book) -> Unit)? = null,
+    onRemove: ((Book) -> Unit)?,
+    cardStyle: BookCardStyle,
 ) {
     val palette = Hearth.palette
     var menu by remember { mutableStateOf(false) }
@@ -189,10 +192,20 @@ private fun GridCoverCell(
                 }
             }
         }
-        Spacer(Modifier.size(6.dp))
-        Text(book.title, style = hearthDisplay(14.sp, FontWeight.SemiBold), color = palette.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        book.author?.takeIf { it.isNotBlank() }?.let {
-            Text(it, style = HearthText.Caption, color = palette.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        if (cardStyle != BookCardStyle.COVER_ONLY) {
+            Spacer(Modifier.size(6.dp))
+            Text(
+                book.title,
+                style = hearthDisplay(if (cardStyle == BookCardStyle.COMPACT) 12.sp else 14.sp, FontWeight.SemiBold),
+                color = palette.text,
+                maxLines = if (cardStyle == BookCardStyle.COMPACT) 1 else 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (cardStyle == BookCardStyle.STANDARD) {
+                book.author?.takeIf { it.isNotBlank() }?.let {
+                    Text(it, style = HearthText.Caption, color = palette.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
         }
         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
             val listen = isAudioPlayable(book)

@@ -30,9 +30,13 @@ struct PlaybackSnapshot {
 @MainActor
 protocol PlaybackStateProvider: AnyObject {
     var snapshot: PlaybackSnapshot { get }
+    /// The player's position read now; `snapshot.position` is published about once a second.
+    var livePosition: TimeInterval? { get }
 }
 
 extension PlaybackStateProvider {
+    var livePosition: TimeInterval? { nil }
+
     var currentBook: Book? { snapshot.currentBook }
     var isPlaying: Bool { snapshot.isPlaying }
     var progress: TimeInterval { snapshot.position }

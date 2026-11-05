@@ -31,7 +31,9 @@ import com.enve.app.viewmodel.ThemeViewModel
 import com.enve.app.viewmodel.ProgressConflictPrompt
 import com.enve.app.playback.PlaybackOpenProgressResolver
 import com.enve.app.playback.PlaybackProgressConflictChoice
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
+import com.enve.core.listeningposition.ListeningPositionLink
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -55,6 +57,7 @@ class MainActivity : ComponentActivity() {
         val auth: AuthViewModel get() = androidx.lifecycle.ViewModelProvider(viewModelStore, factory)[AuthViewModel::class.java]
     }
     private val openPlayerFromWidget = kotlinx.coroutines.flow.MutableStateFlow(false)
+    private val positionLinkMessage = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
 
     @Inject
     lateinit var profiles: com.enve.app.profiles.ProfileSwitchCoordinator
@@ -70,6 +73,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         readWidgetIntent(intent)
+        if (savedInstanceState == null) readPositionLinkIntent(intent)
 
         lifecycleScope.launch {
             profiles.initialize()
@@ -150,7 +154,7 @@ class MainActivity : ComponentActivity() {
             val epdRefreshManager = runtime.component.epdRefreshManager()
             val themeViewModel: ThemeViewModel = profileViewModel()
             val themeState by themeViewModel.themeState.collectAsState()
-            val playbackConflict by playbackOpenProgress.pendingConflict.collectAsState()
+            val playbackConflict by playbackOpenProgress.pendingConflict.collectAsStateWithLifecycle()
             val hearthDark = when (hearthMode) {
                 HearthThemeMode.SYSTEM -> isSystemInDarkTheme()
                 HearthThemeMode.INK -> true
@@ -178,6 +182,7 @@ class MainActivity : ComponentActivity() {
             val hearthState = rememberSaveableStateHolder()
             if (classicInitialRoute == null) {
                 val widgetPlayerRequest by openPlayerFromWidget.collectAsState()
+                val positionLinkRequest by positionLinkMessage.collectAsState()
                 hearthState.SaveableStateProvider("hearth") {
                     HearthRoot(
                         imageLoader = runtime.component.imageLoader(),
@@ -186,6 +191,8 @@ class MainActivity : ComponentActivity() {
                         initialShowSettings = resumeHearthInSettings,
                         showPlayerRequest = widgetPlayerRequest,
                         onPlayerRequestConsumed = { openPlayerFromWidget.value = false },
+                        positionLinkRequest = positionLinkRequest,
+                        onPositionLinkConsumed = { positionLinkMessage.value = null },
                         openBookRequest = downloadedBookRequest,
                         onBookRequestConsumed = { downloadedBookRequest = null },
                         playerTopAction = { CastButton(Modifier.size(48.dp)) },
@@ -384,10 +391,15 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         handleAuthCallbackIntent(intent)
         readWidgetIntent(intent)
+        readPositionLinkIntent(intent)
     }
 
     private fun readWidgetIntent(intent: Intent?) {
         if (intent?.getBooleanExtra(EXTRA_OPEN_PLAYER, false) == true) openPlayerFromWidget.value = true
+    }
+
+    private fun readPositionLinkIntent(intent: Intent?) {
+        intent?.dataString?.let(ListeningPositionLink::message)?.let { positionLinkMessage.value = it }
     }
 
     companion object {

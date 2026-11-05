@@ -145,6 +145,25 @@ final class LibraryBookCache {
         return updated
     }
 
+    /// For fields the caller already stored; persisting this cached row could undo newer links or positions.
+    @discardableResult
+    func applyStored(uniqueId: String, _ transform: (inout Book) -> Void) -> Book? {
+        let updated: Book
+        if let index = uniqueIdIndex[uniqueId], books.indices.contains(index) {
+            var snapshot = books[index]
+            transform(&snapshot)
+            replaceBook(at: index, with: snapshot)
+            updated = snapshot
+        } else if var cached = hot.book(uniqueId: uniqueId) {
+            transform(&cached)
+            updated = cached
+        } else {
+            return nil
+        }
+        commit([updated], matchingSession: { $0.uniqueId == updated.uniqueId }, persists: false)
+        return updated
+    }
+
     @discardableResult
     func mutateBook(stableId: String, _ transform: (inout Book) -> Void) -> Book? {
         let updated: Book
@@ -257,12 +276,12 @@ final class LibraryBookCache {
         books[index] = book
     }
 
-    private func commit(_ snapshots: [Book], matchingSession: ((Book) -> Bool)?) {
+    private func commit(_ snapshots: [Book], matchingSession: ((Book) -> Bool)?, persists: Bool = true) {
         guard !snapshots.isEmpty else { return }
         hot.insertMany(snapshots)
         if let matchingSession, let selected = session?.currentBook, matchingSession(selected) {
             session?.currentBook = snapshots[0]
         }
-        persist(snapshots)
+        if persists { persist(snapshots) }
     }
 }

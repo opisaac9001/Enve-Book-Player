@@ -2,14 +2,19 @@ package com.enve.bookorbit
 
 import com.enve.bookorbit.dto.BookOrbitAnnotationDto
 import com.enve.bookorbit.dto.BookOrbitBookmarkDto
+import com.enve.bookorbit.dto.BookOrbitBookmarkRequest
 import com.enve.core.data.model.AnnotationKind
 import com.enve.core.data.model.AnnotationMedia
 import com.enve.core.data.model.ReaderAnnotation
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Test
 import retrofit2.Response
@@ -157,4 +162,14 @@ class BookOrbitReaderArtifactsTest {
 
     private fun errorResponse(code: Int): Response<List<Int>> =
         Response.error(code, "".toResponseBody("application/json".toMediaType()))
+
+    @Test
+    fun bookmarkRequestUsesExactlyOneLocationKind() {
+        val payload = Json.parseToJsonElement(
+            Json.encodeToString(BookOrbitBookmarkRequest(cfi = "epubcfi(/6/2!)", title = "Chapter")),
+        ).jsonObject
+
+        assertEquals("epubcfi(/6/2!)", payload.getValue("cfi").jsonPrimitive.content)
+        assertFalse(payload.containsKey("positionSeconds"))
+    }
 }

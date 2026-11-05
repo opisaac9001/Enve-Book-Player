@@ -59,7 +59,6 @@ class BookOrbitSyncStrategy @Inject constructor(
                         adapter.getContinueReading().getOrDefault(emptyList())
                 }
 
-                // Paging the whole catalog is slow on big libraries, so the full pass runs at most daily.
                 val fullPassDue = !launchOptimized &&
                     now - (lastFullPassAtMs[connection.id] ?: 0L) >= FULL_PASS_INTERVAL_MS
                 if (fullPassDue) {

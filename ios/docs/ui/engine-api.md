@@ -233,7 +233,7 @@ func deleteDownload(bookId: String) async                              // bookId
 func checkStorageLimit() async
 ```
 
-**`Services/BookDownloadManager.swift`** — `final class BookDownloadManager: NSObject, ObservableObject`, `.shared`. Lower-level; useful read API: `progress(for bookId:) -> Double`, `isDownloading(_ book:) -> Bool`, `isDownloaded(bookId:) -> Bool`, `@Published progressByBookId: [String: Double]`, `completedBookIds: Set<String>`, `lastErrorByBookId`, and `static let downloadDidCompleteNotification`. Downloaded-state check used by playback routing: `LocalStorageManager.shared.isAudiobookDownloaded(_ book:)` (`Services/LocalStorageManager.swift`); files live under `LocalStorageManager.bookAudioDirectory(for: downloadKey)`. Ebook download progress: `Services/EbookDownloadProgressStore.swift`.
+**`Services/Download/BookDownloadManager.swift`** — `final class BookDownloadManager: NSObject, ObservableObject`, `.shared`. Lower-level; useful read API: `progress(for bookId:) -> Double`, `isDownloading(_ book:) -> Bool`, `isDownloaded(bookId:) -> Bool`, `@Published progressByBookId: [String: Double]`, `completedBookIds: Set<String>`, `lastErrorByBookId`, and `static let downloadDidCompleteNotification`. Downloaded-state check used by playback routing: `LocalStorageManager.shared.isAudiobookDownloaded(_ book:)` (`Services/Local/LocalStorageManager.swift`); files live under `LocalStorageManager.bookAudioDirectory(for: downloadKey)`. Active download task progress comes from `Services/Download/UnifiedDownloadService.swift`.
 
 ---
 

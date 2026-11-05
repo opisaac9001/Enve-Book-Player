@@ -26,13 +26,19 @@ struct DownloadsScreen: View {
                     ForEach(engine.downloads.activeTasks) { task in
                         SettingsDownloadRow(task: task)
                     }
+                    ForEach(engine.downloads.pausedTasks) { task in
+                        SettingsDownloadRow(task: task)
+                    }
                     ForEach(engine.downloads.failedTasks) { task in
+                        SettingsDownloadRow(task: task)
+                    }
+                    ForEach(engine.downloads.cancelledTasks) { task in
                         SettingsDownloadRow(task: task)
                     }
                     ForEach(engine.downloads.completedTasks) { task in
                         SettingsDownloadRow(task: task)
                     }
-                    if !engine.downloads.completedTasks.isEmpty {
+                    if !engine.downloads.completedTasks.isEmpty || !engine.downloads.cancelledTasks.isEmpty {
                         Divider().overlay(hearth.hairline)
                         QuietButton(title: "Clear finished", systemImage: "checkmark.circle") {
                             engine.downloads.clearCompleted()
@@ -49,6 +55,7 @@ private struct SettingsDownloadRow: View {
 
     @Environment(EnveEngine.self) private var engine
     @Environment(\.hearth) private var hearth
+    @State private var bookMissing = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -72,6 +79,7 @@ private struct SettingsDownloadRow: View {
     }
 
     private var statusText: String {
+        if bookMissing { return "This book is no longer in your library" }
         switch task.status {
         case .queued: return "Waiting"
         case .downloading: return task.progressText
@@ -94,22 +102,14 @@ private struct SettingsDownloadRow: View {
             }
         case .paused:
             GlyphButton(systemImage: "play", glyphSize: 14, label: "Resume download") {
-                Task {
-                    if let book = await engine.library.book(stableId: task.bookId) {
-                        await engine.downloads.resume(taskId: task.id, book: book)
-                    }
-                }
+                Task { bookMissing = !(await engine.downloads.restart(task)) }
             }
             GlyphButton(systemImage: "xmark", glyphSize: 14, label: "Cancel download") {
                 engine.downloads.cancel(taskId: task.id)
             }
         case .failed:
             GlyphButton(systemImage: "arrow.clockwise", glyphSize: 14, label: "Retry download") {
-                Task {
-                    if let book = await engine.library.book(stableId: task.bookId) {
-                        await engine.downloads.retry(taskId: task.id, book: book)
-                    }
-                }
+                Task { bookMissing = !(await engine.downloads.restart(task)) }
             }
             GlyphButton(systemImage: "xmark", glyphSize: 14, label: "Remove from list") {
                 engine.downloads.remove(taskId: task.id)

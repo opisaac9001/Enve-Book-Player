@@ -52,7 +52,7 @@ enum CloudBookContentIdentity {
     }
 }
 
-extension CloudKitProgressSync: SyncSink {
+extension CloudKitProgressSync {
     static func shouldPushAudiobookPosition(
         _ position: TimeInterval,
         storedLocalPosition: TimeInterval?

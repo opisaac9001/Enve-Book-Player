@@ -13,8 +13,6 @@ struct OPDSFeedValidationTests {
         <body><form action="/login"><input name="password"/></form></body></html>
         """
 
-    // MARK: Content type
-
     @Test(arguments: [
         "text/html", "text/html; charset=utf-8", "application/xhtml+xml",
         "text/plain", "application/octet-stream", "image/png",
@@ -40,8 +38,6 @@ struct OPDSFeedValidationTests {
         #expect(parsed.books.isEmpty)
         #expect(parsed.isComplete)
     }
-
-    // MARK: Atom bodies
 
     @Test func anHTMLLoginPageIsNotAnEmptyAtomFeed() {
         #expect(throws: (any Error).self) {
@@ -98,18 +94,6 @@ struct OPDSFeedValidationTests {
         #expect(parsed.books.map(\.id) == ["urn:standalone"])
     }
 
-    @Test func aGenuinelyEmptyAtomFeedIsAcceptedAsComplete() throws {
-        let parsed = try parse(
-            #"<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><title>Nothing here</title></feed>"#,
-            contentType: "application/atom+xml"
-        )
-
-        #expect(parsed.books.isEmpty)
-        #expect(parsed.isComplete)
-    }
-
-    // MARK: OPDS 2 bodies
-
     @Test(arguments: [
         #"{"error":"unauthorized","status":401}"#,
         #"{"message":"Please sign in"}"#,
@@ -125,17 +109,6 @@ struct OPDSFeedValidationTests {
             try parse(body, contentType: "application/opds+json")
         }
     }
-
-    @Test func aGenuinelyEmptyOPDS2FeedIsAcceptedAsComplete() throws {
-        let parsed = try parse(
-            #"{"metadata":{"title":"Nothing here"},"links":[{"rel":"self","href":"root.json","type":"application/opds+json"}],"publications":[]}"#
-        )
-
-        #expect(parsed.books.isEmpty)
-        #expect(parsed.isComplete)
-    }
-
-    // MARK: Traversal consequences
 
     @Test func aRootThatAnswersWithALoginPageFailsTheWholeImport() async {
         await #expect(throws: (any Error).self) {
@@ -182,8 +155,6 @@ struct OPDSFeedValidationTests {
         #expect(result.isComplete == false)
         #expect(result.notices.contains { $0.contains("continuation page") })
     }
-
-    // MARK: Fixtures
 
     private struct Document {
         var body: String

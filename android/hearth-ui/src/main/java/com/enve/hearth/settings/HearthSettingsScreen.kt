@@ -1,5 +1,10 @@
 package com.enve.hearth.settings
 
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -33,6 +38,7 @@ import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.Book
 import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.CloudSync
+import androidx.compose.material.icons.outlined.DirectionsCar
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.Download
@@ -50,6 +56,8 @@ import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material.icons.outlined.Translate
 import androidx.compose.material.icons.outlined.ViewModule
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -296,6 +304,7 @@ private fun AppearancePage(
     val eink by vm.einkState.collectAsStateWithLifecycle()
     val preferredStartTab by vm.preferredStartTab.collectAsStateWithLifecycle()
     val homeSectionOrder by vm.homeSectionOrder.collectAsStateWithLifecycle()
+    val hiddenHomeSections by vm.hiddenHomeSections.collectAsStateWithLifecycle()
     val showTodayStack by vm.showTodayStack.collectAsStateWithLifecycle()
     val showDockBookShortcut by vm.showDockBookShortcut.collectAsStateWithLifecycle()
 
@@ -325,14 +334,16 @@ private fun AppearancePage(
                 homeSectionOrder.forEachIndexed { index, section ->
                     HomeSectionOrderRow(
                         section = section,
+                        hidden = section in hiddenHomeSections,
                         canMoveUp = index > 0,
                         canMoveDown = index < homeSectionOrder.lastIndex,
+                        onToggleHidden = { vm.setHomeSectionHidden(section, section !in hiddenHomeSections) },
                         onMoveUp = { vm.moveHomeSection(section, -1) },
                         onMoveDown = { vm.moveHomeSection(section, 1) },
                     )
                 }
                 Text(
-                    "Only shelves with books appear. Your current book and optional library overview stay at the top.",
+                    "Hidden shelves stay off the Hearth. Only shelves with books appear. Your current book and optional library overview stay at the top.",
                     style = HearthText.Caption,
                     color = palette.textSecondary,
                 )
@@ -435,8 +446,10 @@ private fun AppearancePage(
 @Composable
 private fun HomeSectionOrderRow(
     section: HearthHomeSection,
+    hidden: Boolean,
     canMoveUp: Boolean,
     canMoveDown: Boolean,
+    onToggleHidden: () -> Unit,
     onMoveUp: () -> Unit,
     onMoveDown: () -> Unit,
 ) {
@@ -446,8 +459,18 @@ private fun HomeSectionOrderRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
     ) {
-        Icon(Icons.Outlined.Home, contentDescription = null, tint = palette.ember, modifier = Modifier.size(19.dp))
-        Text(section.label, style = HearthText.Body, color = palette.text, modifier = Modifier.weight(1f))
+        Icon(Icons.Outlined.Home, contentDescription = null, tint = if (hidden) palette.textTertiary else palette.ember, modifier = Modifier.size(19.dp))
+        Text(section.label, style = HearthText.Body, color = if (hidden) palette.textTertiary else palette.text, modifier = Modifier.weight(1f))
+        Icon(
+            if (hidden) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
+            contentDescription = if (hidden) "Show ${section.label}" else "Hide ${section.label}",
+            tint = palette.textSecondary,
+            modifier = Modifier
+                .size(36.dp)
+                .clip(CircleShape)
+                .clickable(onClick = onToggleHidden)
+                .padding(7.dp),
+        )
         Icon(
             Icons.Outlined.KeyboardArrowUp,
             contentDescription = "Move ${section.label} up",
@@ -587,8 +610,41 @@ private fun PlaybackPage(
                 }
             }
         }
+        item { SideloadedAndroidAutoGroup() }
     }
 }
+
+@Composable
+private fun SideloadedAndroidAutoGroup() {
+    val context = LocalContext.current
+    val visible = remember(context) {
+        val pm = context.packageManager
+        val autoInstalled = runCatching { pm.getPackageInfo(ANDROID_AUTO_PACKAGE, 0) }.isSuccess
+        val installer = runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) pm.getInstallSourceInfo(context.packageName).installingPackageName
+            else @Suppress("DEPRECATION") pm.getInstallerPackageName(context.packageName)
+        }.getOrNull()
+        autoInstalled && installer != "com.android.vending"
+    }
+    if (!visible) return
+    Group("Android Auto") {
+        Text(
+            "Enve wasn't installed from Google Play, so Android Auto hides its car screen until you allow unknown sources: " +
+                "in Android Auto's settings, tap Version about 10 times, then open ⋮ → Developer settings and turn on Unknown sources. Reconnect to your car afterwards.",
+            style = HearthText.Body,
+            color = Hearth.palette.textSecondary,
+        )
+        ToolRow(Icons.Outlined.DirectionsCar, "Open Android Auto settings", "Turn on Unknown sources in Developer settings") {
+            try {
+                context.startActivity(Intent(Intent.ACTION_APPLICATION_PREFERENCES).setPackage(ANDROID_AUTO_PACKAGE).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            } catch (_: ActivityNotFoundException) {
+                context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", ANDROID_AUTO_PACKAGE, null)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }
+        }
+    }
+}
+
+private const val ANDROID_AUTO_PACKAGE = "com.google.android.projection.gearhead"
 
 @Composable
 private fun DownloadsPage(

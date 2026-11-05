@@ -1,6 +1,6 @@
 # Book collection UI verification
 
-Verified 2026-10-25 on Pixel 7a (34181JEHN24801).
+Verified 2026-10-25 on Pixel 7a.
 
 The Android Hearth palette now matches the iOS book collection: warm brown/cream, layered bindings, outlined controls and wood shelf ledges. The original launcher icon is unchanged. The empty-screen mark is a transparent rendering of the existing SVG, with its background path omitted in `BuildSupport/AppIcon/enve-book-player-mark.svg`.
 

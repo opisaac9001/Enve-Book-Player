@@ -100,7 +100,7 @@ struct CollectionsScreen: View {
     @State private var newManualShown = false
     @State private var bookOrbitEditorShown = false
     @State private var bookOrbitCollectionToEdit: Collection?
-    @State private var bookOrbitAdminConnections: [ServerConnection] = []
+    @State private var bookOrbitCollectionConnections: [ServerConnection] = []
     @State private var collectionError: String?
     @State private var loaded = false
     @State private var previewLoadGeneration = 0
@@ -145,7 +145,7 @@ struct CollectionsScreen: View {
                     if loaded {
                         mySection(width: contentWidth)
                     }
-                    if !server.isEmpty || !bookOrbitAdminConnections.isEmpty {
+                    if !server.isEmpty || !bookOrbitCollectionConnections.isEmpty {
                         serverSection(width: contentWidth)
                     }
                 }
@@ -194,7 +194,7 @@ struct CollectionsScreen: View {
         .sheet(isPresented: $bookOrbitEditorShown) {
             BookOrbitCollectionEditor(
                 collection: bookOrbitCollectionToEdit,
-                connections: bookOrbitAdminConnections,
+                connections: bookOrbitCollectionConnections,
                 onSaved: { Task { await collectionsLoadPreviews() } }
             )
             .enveEnvironment()
@@ -290,7 +290,7 @@ struct CollectionsScreen: View {
 
     private func serverSection(width: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            if bookOrbitAdminConnections.isEmpty {
+            if bookOrbitCollectionConnections.isEmpty {
                 ShelfHeader(title: "From your servers")
             } else {
                 ShelfHeader(title: "From your servers", actionTitle: "New BookOrbit") {
@@ -414,8 +414,8 @@ struct CollectionsScreen: View {
         previewLoadGeneration += 1
         let generation = previewLoadGeneration
         async let overview = engine.library.collectionsOverview()
-        async let adminConnections = engine.library.bookOrbitAdminConnections()
-        let (resolvedOverview, resolvedAdminConnections) = await (overview, adminConnections)
+        async let collectionConnections = engine.library.bookOrbitCollectionConnections()
+        let (resolvedOverview, resolvedCollectionConnections) = await (overview, collectionConnections)
         guard generation == previewLoadGeneration else { return }
 
         smart = resolvedOverview.smart
@@ -423,7 +423,7 @@ struct CollectionsScreen: View {
         server = resolvedOverview.server
         smartPreviews = resolvedOverview.smartPreviews
         memberPreviews = resolvedOverview.memberPreviews
-        bookOrbitAdminConnections = resolvedAdminConnections
+        bookOrbitCollectionConnections = resolvedCollectionConnections
         loaded = true
     }
 

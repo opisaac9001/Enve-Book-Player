@@ -151,7 +151,7 @@ struct BookOrbitMembershipSheet: View {
                     ContentUnavailableView(
                         "No editable collections",
                         systemImage: "books.vertical",
-                        description: Text("BookOrbit collection changes require an administrator account.")
+                        description: Text("Create a collection on BookOrbit to organize your books here.")
                     )
                 } else {
                     ForEach(memberships) { membership in

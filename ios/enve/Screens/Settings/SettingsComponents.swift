@@ -76,9 +76,12 @@ struct SettingsLinkRow: View {
                     Text(subtitle)
                         .font(.hearthCaption.weight(.medium))
                         .foregroundStyle(hearth.text)
+                        .fixedSize(horizontal: false, vertical: true)
                         .accessibilityHidden(true)
                 }
             }
+            .fixedSize(horizontal: false, vertical: true)
+            .layoutPriority(1)
             .multilineTextAlignment(.leading)
             Spacer(minLength: 8)
             if let detail {

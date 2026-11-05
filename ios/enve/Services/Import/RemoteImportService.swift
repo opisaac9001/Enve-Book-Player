@@ -1077,8 +1077,7 @@ extension RemoteImportService: URLSessionDownloadDelegate {
         guard let identifier = session.configuration.identifier else { return }
         Task { @MainActor in
             #if os(iOS)
-            guard let delegate = UIApplication.shared.delegate as? CarPlayAppDelegate else { return }
-            delegate.consumeBackgroundCompletionHandler(forIdentifier: identifier)?()
+            CarPlayAppDelegate.consumeBackgroundCompletionHandler(forIdentifier: identifier)?()
             #endif
         }
     }

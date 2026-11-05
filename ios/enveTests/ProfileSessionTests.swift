@@ -125,7 +125,8 @@ struct ProfileSessionTests {
         await reopened.retire()
     }
 
-    @Test func capturedGraphKeepsLibraryProgressAndArtworkIndependentAfterReopen() async throws {
+    @Test(.enabled(if: ProfileSwitchCoordinator.supportsMultipleProfileStorage))
+    func capturedGraphKeepsLibraryProgressAndArtworkIndependentAfterReopen() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
         let firstProfile = FamilyProfile(id: UUID().uuidString, name: "First", role: .adult)
@@ -189,7 +190,8 @@ struct ProfileSessionTests {
         await child.retire()
     }
 
-    @Test func coordinatorRequiresParentPINAndJoinsRetirementBeforePublishingDestination() async throws {
+    @Test(.enabled(if: ProfileSwitchCoordinator.supportsMultipleProfileStorage))
+    func coordinatorRequiresParentPINAndJoinsRetirementBeforePublishingDestination() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
         let catalog = try FamilyProfileStore(fileURL: fixture.root.appendingPathComponent("catalog.json"), pinStore: fixture.pin)
@@ -240,7 +242,8 @@ struct ProfileSessionTests {
         await coordinator.activeSession.retire()
     }
 
-    @Test func coordinatorReusesDatabasesAndReleasesRemovedProfiles() async throws {
+    @Test(.enabled(if: ProfileSwitchCoordinator.supportsMultipleProfileStorage))
+    func coordinatorReusesDatabasesAndReleasesRemovedProfiles() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
         let catalog = try FamilyProfileStore(fileURL: fixture.root.appendingPathComponent("catalog.json"), pinStore: fixture.pin)
@@ -269,6 +272,97 @@ struct ProfileSessionTests {
         #expect(!coordinator.profiles.contains { $0.id == other.id })
         #expect(coordinator.activeSession.libraryDatabase === initial.libraryDatabase)
         await coordinator.activeSession.retire()
+    }
+
+    @Test func unsupportedSystemRejectsSetupBeforeChangingOwnerDataOrPIN() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let catalogURL = fixture.root.appendingPathComponent("catalog.json")
+        let catalog = try FamilyProfileStore(fileURL: catalogURL, pinStore: fixture.pin)
+        try catalog.rename(profileID: FamilyProfile.ownerID, name: "Owner")
+        let savedCatalog = try Data(contentsOf: catalogURL)
+        let owner = try fixture.session(catalog.profiles[0])
+        let defaults = try fixture.defaults("coordinator")
+        defaults.set(FamilyProfile.ownerID, forKey: "familyProfiles.selected")
+        var createdSessions = 0
+        let coordinator = try ProfileSwitchCoordinator(catalog: catalog, pinStore: fixture.pin,
+            defaults: defaults, initialSession: owner, supportsMultipleProfiles: false,
+            sessionFactory: { profile, database in
+                createdSessions += 1
+                return try fixture.session(profile, libraryDatabase: database)
+            })
+        do {
+            try coordinator.enable(ownerName: "Changed", pin: "291746")
+            Issue.record("Profiles were enabled on an unsupported system")
+        } catch ProfileAccessError.systemUpdateRequired { }
+        do {
+            _ = try coordinator.addProfile(name: "Other", role: .adult)
+            Issue.record("A profile was added on an unsupported system")
+        } catch ProfileAccessError.systemUpdateRequired { }
+        #expect(!coordinator.isEnabled)
+        #expect(!coordinator.isLocked)
+        #expect(!coordinator.hasPIN)
+        #expect(try !fixture.pin.isConfigured())
+        #expect(defaults.string(forKey: "familyProfiles.selected") == FamilyProfile.ownerID)
+        #expect(!defaults.bool(forKey: "familyProfiles.enabled"))
+        #expect(try Data(contentsOf: catalogURL) == savedCatalog)
+        #expect(createdSessions == 0)
+        let book = Book(id: "owner", title: "Owner remains available", backendId: "local", source: .local)
+        await owner.bookStore.upsertBooks([book])
+        #expect(await owner.bookStore.book(stableId: book.stableId)?.title == book.title)
+        await owner.retire()
+    }
+
+    @Test func unsupportedSystemKeepsSavedChildSelectionAndRequiresPINForOwner() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let catalogURL = fixture.root.appendingPathComponent("catalog.json")
+        let catalog = try FamilyProfileStore(fileURL: catalogURL, pinStore: fixture.pin)
+        try fixture.pin.configure("291746")
+        let child = try catalog.addChild(name: "Child")
+        let savedCatalog = try Data(contentsOf: catalogURL)
+        let owner = try fixture.session(catalog.profiles[0])
+        let defaults = try fixture.defaults("coordinator")
+        defaults.set(true, forKey: "familyProfiles.enabled")
+        defaults.set(child.id, forKey: "familyProfiles.selected")
+        var createdSessions = 0
+        let coordinator = try ProfileSwitchCoordinator(catalog: catalog, pinStore: fixture.pin,
+            defaults: defaults, initialSession: owner, supportsMultipleProfiles: false,
+            sessionFactory: { profile, database in
+                createdSessions += 1
+                return try fixture.session(profile, libraryDatabase: database)
+            })
+        #expect(coordinator.isLocked)
+        #expect(coordinator.hasPIN)
+        do {
+            try await coordinator.switchProfile(id: FamilyProfile.ownerID)
+            Issue.record("Owner opened without the saved child profile's PIN gate")
+        } catch ProfileAccessError.parentAuthorizationRequired { }
+        #expect(coordinator.isLocked)
+        try coordinator.authorizeParent(pin: "291746")
+        try await coordinator.switchProfile(id: FamilyProfile.ownerID)
+        #expect(!coordinator.isLocked)
+        #expect(coordinator.activeSession === owner)
+        do {
+            try await coordinator.switchProfile(id: child.id)
+            Issue.record("Child storage opened on an unsupported system")
+        } catch ProfileAccessError.systemUpdateRequired { }
+        do {
+            _ = try await coordinator.importCandidates(from: child.id)
+            Issue.record("Inactive profile storage opened for import")
+        } catch ProfileAccessError.systemUpdateRequired { }
+        do {
+            try await coordinator.removeProfile(id: child.id)
+            Issue.record("Saved profile data was removed on an unsupported system")
+        } catch ProfileAccessError.systemUpdateRequired { }
+        #expect(createdSessions == 0)
+        #expect(!owner.isRetired)
+        #expect(coordinator.activeSession === owner)
+        #expect(defaults.string(forKey: "familyProfiles.selected") == child.id)
+        #expect(defaults.bool(forKey: "familyProfiles.enabled"))
+        #expect(try Data(contentsOf: catalogURL) == savedCatalog)
+        try fixture.pin.verify("291746")
+        await owner.retire()
     }
 
     @Test func retirementReleasesStartedGraphAndDrainsCapturedLibraryWrites() async throws {
@@ -333,7 +427,7 @@ struct ProfileSessionTests {
         await session.retire()
     }
 
-    @Test(.enabled(if: ProcessInfo.processInfo.environment["ENVE_PROFILE_SOAK"] == "1"))
+    @Test(.enabled(if: ProfileSwitchCoordinator.supportsMultipleProfileStorage && ProcessInfo.processInfo.environment["ENVE_PROFILE_SOAK"] == "1"))
     func repeatedSwitchesPreserveProfileBooksWithoutGrowingOpenFiles() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -368,7 +462,6 @@ struct ProfileSessionTests {
         #expect(afterSwitching <= baseline + 8)
         try await coordinator.switchProfile(id: other.id)
         #expect(await coordinator.activeSession.bookStore.book(uniqueId: book.uniqueId)?.currentTime == 100)
-        print("Profile resource soak: 200 switches, open files \(baseline) -> \(afterSwitching)")
         await coordinator.activeSession.retire()
     }
 
