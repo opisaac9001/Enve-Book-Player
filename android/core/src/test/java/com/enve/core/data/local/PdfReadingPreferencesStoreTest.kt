@@ -21,14 +21,14 @@ class PdfReadingPreferencesStoreTest {
         try {
             var store = PdfReadingPreferencesStore(dataStore(job, file))
             assertEquals(PdfReadingLayout(), store.layout("LOCAL:book-1"))
-            store.save("LOCAL:book-1", PdfReadingLayout(twoPageView = true, showCoverSeparately = true))
-            store.save("LOCAL:book-2", PdfReadingLayout(twoPageView = true))
+            store.save("LOCAL:book-1", PdfReadingLayout(twoPageView = true, showCoverSeparately = true, pageAdjust = "Fill Height"))
+            store.save("LOCAL:book-2", PdfReadingLayout(twoPageView = true, pageAdjust = "Fill Width"))
             job.cancelAndJoin()
 
             job = SupervisorJob()
             store = PdfReadingPreferencesStore(dataStore(job, file))
-            assertEquals(PdfReadingLayout(twoPageView = true, showCoverSeparately = true), store.layout("LOCAL:book-1"))
-            assertEquals(PdfReadingLayout(twoPageView = true), store.layout("LOCAL:book-2"))
+            assertEquals(PdfReadingLayout(twoPageView = true, showCoverSeparately = true, pageAdjust = "Fill Height"), store.layout("LOCAL:book-1"))
+            assertEquals(PdfReadingLayout(twoPageView = true, pageAdjust = "Fill Width"), store.layout("LOCAL:book-2"))
             assertEquals(PdfReadingLayout(), store.layout("LOCAL:book-3"))
         } finally {
             job.cancelAndJoin()
@@ -48,9 +48,9 @@ class PdfReadingPreferencesStoreTest {
             assertEquals(PdfReadingLayout(), store.layout("KOMGA:book"))
             assertEquals(PdfReadingLayout(), store.layout("connection-a:book-2"))
 
-            store.save("connection-a:book", PdfReadingLayout(twoPageView = true, showCoverSeparately = true))
-            store.save("connection-a:book", PdfReadingLayout(twoPageView = false, showCoverSeparately = true))
-            assertEquals(PdfReadingLayout(twoPageView = false, showCoverSeparately = true), store.layout("connection-a:book"))
+            store.save("connection-a:book", PdfReadingLayout(twoPageView = true, showCoverSeparately = true, pageAdjust = "Fill Height"))
+            store.save("connection-a:book", PdfReadingLayout(twoPageView = false, showCoverSeparately = true, pageAdjust = "Fill Height"))
+            assertEquals(PdfReadingLayout(twoPageView = false, showCoverSeparately = true, pageAdjust = "Fill Height"), store.layout("connection-a:book"))
 
             store.clear("connection-a:book")
             assertEquals(PdfReadingLayout(), store.layout("connection-a:book"))
@@ -67,12 +67,12 @@ class PdfReadingPreferencesStoreTest {
         try {
             val adult = PdfReadingPreferencesStore(dataStore(job, directory.resolve("adult.preferences_pb")))
             val child = PdfReadingPreferencesStore(dataStore(job, directory.resolve("child.preferences_pb")))
-            adult.save("LOCAL:shared-book", PdfReadingLayout(twoPageView = true, showCoverSeparately = true))
-            assertEquals(PdfReadingLayout(twoPageView = true, showCoverSeparately = true), adult.layout("LOCAL:shared-book"))
+            adult.save("LOCAL:shared-book", PdfReadingLayout(twoPageView = true, showCoverSeparately = true, pageAdjust = "Fill Height"))
+            assertEquals(PdfReadingLayout(twoPageView = true, showCoverSeparately = true, pageAdjust = "Fill Height"), adult.layout("LOCAL:shared-book"))
             assertEquals(PdfReadingLayout(), child.layout("LOCAL:shared-book"))
-            child.save("LOCAL:shared-book", PdfReadingLayout(twoPageView = true))
-            assertEquals(PdfReadingLayout(twoPageView = true, showCoverSeparately = true), adult.layout("LOCAL:shared-book"))
-            assertEquals(PdfReadingLayout(twoPageView = true), child.layout("LOCAL:shared-book"))
+            child.save("LOCAL:shared-book", PdfReadingLayout(twoPageView = true, pageAdjust = "Fill Width"))
+            assertEquals(PdfReadingLayout(twoPageView = true, showCoverSeparately = true, pageAdjust = "Fill Height"), adult.layout("LOCAL:shared-book"))
+            assertEquals(PdfReadingLayout(twoPageView = true, pageAdjust = "Fill Width"), child.layout("LOCAL:shared-book"))
         } finally {
             job.cancelAndJoin()
             directory.deleteRecursively()

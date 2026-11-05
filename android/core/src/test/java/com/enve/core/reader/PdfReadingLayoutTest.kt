@@ -19,6 +19,11 @@ class PdfReadingLayoutTest {
     }
 
     @Test
+    fun pageAdjustDefaultFit() {
+        assertEquals("Fit", single.pageAdjust)
+    }
+
+    @Test
     fun coverSeparatelyOnlyTakesEffectWithTwoPageView() {
         val layout = PdfReadingLayout(showCoverSeparately = true)
         assertFalse(layout.coverStandsAlone)
