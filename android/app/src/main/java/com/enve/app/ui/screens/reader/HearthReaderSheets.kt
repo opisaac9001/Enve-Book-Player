@@ -36,6 +36,7 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -45,10 +46,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -69,17 +73,21 @@ import com.enve.app.data.reader.READER_FONT_SCALE_STEP
 import com.enve.app.data.reader.ReaderFont
 import com.enve.app.data.reader.ReaderProgressDisplay
 import com.enve.app.data.reader.ReaderTheme
+import com.enve.app.readium.narrator.NarratorPack
+import com.enve.app.viewmodel.ReaderNarratorPackState
 import com.enve.app.viewmodel.ReaderUiState
 import com.enve.app.viewmodel.ReaderViewModel
 import com.enve.core.data.model.AnnotationKind
 import com.enve.core.data.model.AnnotationStyle
 import com.enve.core.data.model.ReaderAnnotation
 import com.enve.hearth.design.EmberAccent
+import com.enve.hearth.design.EmberButton
 import com.enve.hearth.design.Hearth
 import com.enve.hearth.design.HearthChip
 import com.enve.hearth.design.HearthText
 import com.enve.hearth.design.HearthToggleRow
 import com.enve.hearth.design.Overline
+import com.enve.hearth.design.QuietButton
 import com.enve.hearth.design.hearthDisplay
 import com.enve.hearth.design.parseHexColor
 import kotlin.math.roundToInt
@@ -185,25 +193,152 @@ private fun ReaderTTSSheet(vm: ReaderViewModel, state: ReaderUiState) {
                 )
             }
         }
+        Overline("Narrator")
+        Text(
+            "On-device narrators download once, then read offline.",
+            style = HearthText.Caption,
+            color = palette.textSecondary,
+        )
+        Column {
+            SpeechChoiceRow("System voice", "Android text-to-speech", selected = state.ttsNarratorPack == null) {
+                vm.selectNarrator(null)
+            }
+            NarratorPack.entries.forEach { pack ->
+                NarratorPackRow(
+                    vm = vm,
+                    pack = pack,
+                    status = state.ttsNarratorPacks[pack] ?: ReaderNarratorPackState.NotInstalled,
+                    selected = state.ttsNarratorPack == pack,
+                )
+            }
+        }
         Overline("Voice")
-        if (state.ttsVoices.isEmpty()) {
+        val narrator = state.ttsNarratorPack
+        if (narrator != null) {
+            Column {
+                narrator.voices.forEach { voice ->
+                    val label = when (narrator) {
+                        NarratorPack.KOKORO -> voice.substringAfter('_').replaceFirstChar(Char::uppercase)
+                        NarratorPack.SUPERTONIC -> "Voice $voice"
+                        NarratorPack.POCKET -> voice.replaceFirstChar(Char::uppercase)
+                    }
+                    SpeechChoiceRow(label, null, selected = state.ttsNarratorVoice == voice) { vm.selectNarratorVoice(voice) }
+                }
+            }
+        } else if (state.ttsVoices.isEmpty()) {
             Text("Install a text-to-speech voice in Android settings.", style = HearthText.Body, color = palette.textSecondary)
         } else {
             LazyColumn(Modifier.heightIn(max = 360.dp)) {
                 items(state.ttsVoices, key = { it.name }) { voice ->
-                    Row(
-                        Modifier.fillMaxWidth().heightIn(min = 48.dp)
-                            .selectable(selected = state.ttsVoice == voice.name, role = Role.RadioButton, onClick = { vm.selectTtsVoice(voice.name) })
-                            .padding(vertical = Hearth.Spacing.S),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(voice.label, style = HearthText.Body, color = palette.text, modifier = Modifier.weight(1f))
-                        if (state.ttsVoice == voice.name) Icon(Icons.Outlined.Check, "Selected", tint = palette.ember)
-                    }
+                    SpeechChoiceRow(voice.label, null, selected = state.ttsVoice == voice.name) { vm.selectTtsVoice(voice.name) }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun SpeechChoiceRow(label: String, detail: String?, selected: Boolean, onSelect: () -> Unit) {
+    val palette = Hearth.palette
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 48.dp)
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onSelect)
+            .padding(vertical = Hearth.Spacing.S),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(label, style = HearthText.Body, color = palette.text)
+            if (detail != null) Text(detail, style = HearthText.Caption, color = palette.textSecondary)
+        }
+        if (selected) Icon(Icons.Outlined.Check, "Selected", tint = palette.ember)
+    }
+}
+
+@Composable
+private fun NarratorPackRow(vm: ReaderViewModel, pack: NarratorPack, status: ReaderNarratorPackState, selected: Boolean) {
+    val palette = Hearth.palette
+    val size = android.text.format.Formatter.formatShortFileSize(LocalContext.current, pack.downloadBytes)
+    val uriHandler = LocalUriHandler.current
+    var confirmingDownload by rememberSaveable { mutableStateOf(false) }
+    SpeechChoiceRow(pack.title, size, selected) { vm.selectNarrator(pack) }
+    androidx.compose.material3.TextButton(onClick = { uriHandler.openUri(pack.termsUrl) }) {
+        Text("${pack.license} · Model terms", color = palette.textSecondary)
+    }
+    if (pack == NarratorPack.POCKET) {
+        Text("Alba MacKenna’s voice, published by Kyutai.", style = HearthText.Caption, color = palette.textSecondary)
+    }
+    when (status) {
+        ReaderNarratorPackState.NotInstalled -> androidx.compose.material3.TextButton(onClick = { confirmingDownload = true }) {
+            Text("Download ${pack.title} · $size", color = palette.ember)
+        }
+        is ReaderNarratorPackState.Downloading -> Column(
+            Modifier.fillMaxWidth().padding(vertical = Hearth.Spacing.S),
+            verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.XS),
+        ) {
+            Row(Modifier.fillMaxWidth()) {
+                Text("Downloading ${pack.title}", style = HearthText.Caption, color = palette.text, modifier = Modifier.weight(1f))
+                Text("${(status.progress * 100).roundToInt()}%", style = HearthText.Caption, color = palette.textSecondary)
+            }
+            LinearProgressIndicator(
+                progress = { status.progress },
+                color = palette.ember,
+                trackColor = palette.hairline,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        ReaderNarratorPackState.Removing -> Text(
+            "Removing ${pack.title}…",
+            style = HearthText.Caption,
+            color = palette.textSecondary,
+            modifier = Modifier.padding(vertical = Hearth.Spacing.S),
+        )
+        is ReaderNarratorPackState.Failed -> Column {
+            Text(status.message, style = HearthText.Caption, color = palette.statusError)
+            androidx.compose.material3.TextButton(onClick = { confirmingDownload = true }) {
+                Text("Try ${pack.title} again", color = palette.ember)
+            }
+        }
+        ReaderNarratorPackState.Installed -> androidx.compose.material3.TextButton(onClick = { vm.removeNarrator(pack) }) {
+            Text("Remove ${pack.title} download", color = palette.textSecondary)
+        }
+    }
+    if (confirmingDownload) {
+        NarratorTermsDialog(
+            pack = pack,
+            size = size,
+            onAgree = {
+                confirmingDownload = false
+                vm.downloadNarrator(pack)
+            },
+            onDismiss = { confirmingDownload = false },
+        )
+    }
+}
+
+@Composable
+private fun NarratorTermsDialog(pack: NarratorPack, size: String, onAgree: () -> Unit, onDismiss: () -> Unit) {
+    val palette = Hearth.palette
+    val uriHandler = LocalUriHandler.current
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = { EmberButton("Agree and download", onClick = onAgree) },
+        dismissButton = { QuietButton("Cancel", onClick = onDismiss) },
+        title = { Text("${pack.title} terms", style = HearthText.BookTitle, color = palette.text) },
+        text = {
+            Column(
+                Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
+            ) {
+                Text(pack.terms, style = HearthText.Body, color = palette.text)
+                Text("Agreeing starts a $size download.", style = HearthText.Caption, color = palette.textSecondary)
+                androidx.compose.material3.TextButton(onClick = { uriHandler.openUri(pack.termsUrl) }) {
+                    Text("Read the ${pack.license} license", color = palette.ember)
+                }
+            }
+        },
+        shape = if (Hearth.eink.sharpCorners) androidx.compose.ui.graphics.RectangleShape else RoundedCornerShape(Hearth.Radius.Card),
+        containerColor = palette.bgElevated,
+    )
 }
 
 @Composable

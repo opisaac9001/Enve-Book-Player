@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.6 — Next build (2026-11-06)
+
+- Fix a PIN-protected profile-switch crash and cancel outgoing catalog work before waiting for profile shutdown.
+- Show Home loading progress while the local library opens, including large Grimmory libraries.
+- Add per-book PDF Crop, Fit, Fill Height and Fill Width controls.
+- Add configurable keyboard, Bluetooth page-turner and game-controller navigation.
+
+- Add Pocket TTS as an optional offline English narrator with Alba’s voice.
+- Add optional Supertonic 3 offline narration with ten voices and support for 31 languages.
+- Use CPU-based Kokoro speech generation on iOS 26.4 and later to avoid the affected Core ML speech pipeline. Download the updated voice package before selecting Kokoro.
+
 ## 1.2.7 — 2026-10-29
 
 - Preserve the confirmed reading position across navigation, reflow, closing, and offline reopening.

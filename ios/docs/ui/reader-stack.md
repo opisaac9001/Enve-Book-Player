@@ -76,6 +76,8 @@ Primarily on `ClassicReaderModel` (`Reader/Engine/ClassicReaderModel.swift`):
 - `func pageForward() async` / `pageBackward() async` — `nav.goForward()/goBackward()` for EPUB, page index for PDF/comic (RTL + landscape 2-page spread aware)
 - `func navigateTo(locator: Locator)`, `func navigateTo(link: ReadiumShared.Link) async`, `func navigateToTOCEntry(_ entry: ClassicTOCEntry) async`, `func seekToBookmark(_ bookmark: Bookmark) async`, `func setComicPage(_ index: Int, shouldRecordStats: Bool = true)`
 - Tap zones (13 % edges), volume-button page turns (`VolumeButtonNavigationCapture`), `tapHandler/doubleTapHandler/longPressHandler` closures
+- Hardware page turns use `ReaderHardwareNavigationCapture` for keyboard commands and raw key presses, plus extended-gamepad shoulders, triggers and D-pad input. `ReaderHardwarePageTurnPolicy` holds the bindings. Keyboard and gamepad settings are separate. Input is suspended during text editing, overlaid presentations and background activity. The focused reader receives controller events across windows.
+- Per-book `PDFPageAdjust` offers Crop, Fit, Fill Height and Fill Width for the selected spread. Apply the scale after navigating because PDFKit resets zoom on page moves. PDFKit controls the pinch floor. Paged turns and viewport changes refit the page, while scrolled flow preserves zoom. Horizontal swipes pan pages wider than the screen.
 
 **Locator / position model**
 - Canonical position = Readium **Locator JSON** persisted on `Book.epubLocator` + fraction on `Book.ebookProgress`. PDF locator `{"page":N}`, comic locator `cbz-page:N` (`ReaderLocatorProgress.swift` — snapshot/restore/parse helpers; mid-page text-anchor enrichment lives on `ReaderProgressController`)

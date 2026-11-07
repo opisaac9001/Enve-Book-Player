@@ -3,6 +3,7 @@ package com.enve.app.hearth
 import com.enve.app.sleep.HealthConnectSleepDataFacade
 import com.enve.engine.eink.EinkFacade
 import com.enve.engine.discover.DiscoverFacade
+import com.enve.engine.downloads.DownloadActivityFacade
 import com.enve.engine.collections.CollectionsFacade
 import com.enve.engine.annotations.AnnotationsFacade
 import com.enve.engine.bookorbit.BookOrbitFacade
@@ -45,6 +46,9 @@ abstract class FacadeModule {
 
     @Binds
     abstract fun bindDiscoverFacade(impl: DiscoverFacadeImpl): DiscoverFacade
+
+    @Binds
+    abstract fun bindDownloadActivityFacade(impl: DownloadActivityFacadeImpl): DownloadActivityFacade
 
     @Binds
     abstract fun bindSavedBooksFacade(impl: SavedBooksFacadeImpl): SavedBooksFacade

@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import Testing
 
@@ -48,6 +49,32 @@ struct PDFReadingLayoutTests {
         #expect(step(from: 3, by: -1, pageCount: 6, layout: twoPage) == 0)
     }
 
+    @Test func pageAdjustScalesMatchTheAndroidViewport() {
+        let page = CGSize(width: 300, height: 400)
+        let portrait = CGSize(width: 400, height: 900)
+        let landscape = CGSize(width: 900, height: 400)
+        let expected: [(PDFPageAdjust, CGFloat, CGFloat)] = [
+            (.crop, 2.25, 3),
+            (.fit, 400.0 / 300, 1),
+            (.fillHeight, 2.25, 1),
+            (.fillWidth, 400.0 / 300, 3),
+        ]
+        for (adjust, inPortrait, inLandscape) in expected {
+            #expect(abs(adjust.scale(fitting: page, in: portrait)! - inPortrait) < 0.0001, "\(adjust)")
+            #expect(abs(adjust.scale(fitting: page, in: landscape)! - inLandscape) < 0.0001, "\(adjust)")
+        }
+        #expect(PDFPageAdjust.allCases.map(\.label) == ["Crop", "Fit", "Fill Height", "Fill Width"])
+        #expect(PDFPageAdjust.fit.scale(fitting: .zero, in: portrait) == nil)
+        #expect(PDFPageAdjust.crop.scale(fitting: page, in: .zero) == nil)
+    }
+
+    @Test func aSpreadIsAsWideAsItsPagesAndAsTallAsTheTallest() {
+        let spread = ReaderPagedPagePolicy.pdfSpreadSize(pageSizes: [CGSize(width: 300, height: 400), CGSize(width: 280, height: 420)])
+        #expect(spread == CGSize(width: 580, height: 420))
+        #expect(ReaderPagedPagePolicy.pdfSpreadSize(pageSizes: [CGSize(width: 300, height: 400)]) == CGSize(width: 300, height: 400))
+        #expect(PDFPageAdjust.fit.scale(fitting: spread, in: CGSize(width: 1160, height: 1000)) == 2)
+    }
+
     @MainActor
     @Test func layoutIsStoredPerBookAndPerProfileAndDefaultsToSinglePages() throws {
         let ownerSuite = "PDFReadingPreferencesStoreTests.owner.\(UUID().uuidString)"
@@ -62,13 +89,23 @@ struct PDFReadingLayoutTests {
         let child = PDFReadingPreferencesStore(defaults: childDefaults)
 
         #expect(owner.layout(forBookID: "local:a:manual") == PDFReadingLayout())
-        #expect(PDFReadingLayout() == PDFReadingLayout(twoPageEnabled: false, showsCoverSeparately: false))
+        #expect(PDFReadingLayout() == PDFReadingLayout(twoPageEnabled: false, showsCoverSeparately: false, pageAdjust: .fit))
 
         owner.setLayout(coverSeparately, forBookID: "local:a:manual")
         #expect(owner.layout(forBookID: "local:a:manual") == coverSeparately)
         #expect(owner.layout(forBookID: "local:a:other") == PDFReadingLayout())
         #expect(child.layout(forBookID: "local:a:manual") == PDFReadingLayout())
         #expect(PDFReadingPreferencesStore(defaults: ownerDefaults).layout(forBookID: "local:a:manual") == coverSeparately)
+
+        for adjust in PDFPageAdjust.allCases {
+            let adjusted = PDFReadingLayout(twoPageEnabled: true, pageAdjust: adjust)
+            owner.setLayout(adjusted, forBookID: "local:a:manual")
+            #expect(PDFReadingPreferencesStore(defaults: ownerDefaults).layout(forBookID: "local:a:manual") == adjusted)
+            #expect(owner.layout(forBookID: "local:a:other").pageAdjust == .fit)
+            #expect(child.layout(forBookID: "local:a:manual").pageAdjust == .fit)
+        }
+        ownerDefaults.set("stretch", forKey: "reader.pdf.pageAdjust.local:a:manual")
+        #expect(owner.layout(forBookID: "local:a:manual").pageAdjust == .fit)
 
         owner.setLayout(twoPage, forBookID: "local:a:manual")
         #expect(owner.layout(forBookID: "local:a:manual") == twoPage)

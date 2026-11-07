@@ -16,6 +16,7 @@ Reference material for the Android app. Start with the root files for anything t
 - [architecture/profiles-plan.md](architecture/profiles-plan.md) — proposed adult and child profiles, storage isolation, migration, switching, and verification
 - [architecture/module-boundaries.md](architecture/module-boundaries.md) — Gradle module layout, the UI/backend dependency wall, and the boot contract
 - [architecture/engine-api.md](architecture/engine-api.md) — the facade contract the Compose UI is allowed to call
+- [architecture/linked-read-along.md](architecture/linked-read-along.md) — live passage alignment, preparation and retry states, reading-to-listening handoff, and CTC word timings
 - [architecture/eink.md](architecture/eink.md) — e-ink detection, refresh policy, and how the design system degrades on EPD panels
 - [architecture/opds-catalog.md](architecture/opds-catalog.md) — OPDS 1.2 and 2.0 catalog structure, crawl, search, acquisition, and OPDS Authentication 1.0
 - [architecture/koreader-sync.md](architecture/koreader-sync.md) — KOSync transport rules, document matching across KOReader and CrossPoint, and XPointer conversion

@@ -126,6 +126,9 @@ val generateLegalAssets = tasks.register<Sync>("generateLegalAssets") {
     from(rootProject.file("BuildSupport/Jcifs/LICENSE.txt")) { rename { "jcifs-ng-LGPL-2.1.txt" } }
     from(rootProject.file("BuildSupport/Jcifs/UPSTREAM.txt")) { rename { "jcifs-ng-UPSTREAM.txt" } }
     from(rootProject.file("BuildSupport/Licenses/Apache-2.0.txt")) { rename { "Qwen3-0.6B-LICENSE.txt" } }
+    from(rootProject.file("BuildSupport/Licenses/Supertonic-3-OpenRAIL-M.txt"))
+    from(rootProject.file("BuildSupport/Licenses/CC-BY-4.0.txt"))
+    from(rootProject.file("BuildSupport/SherpaONNX/NOTICES.txt")) { rename { "sherpa-onnx-NOTICES.txt" } }
     from(rootProject.file("BuildSupport/Models/UPSTREAM.md")) { rename { "downloadable-models-UPSTREAM.txt" } }
     from(rootProject.file("BuildSupport/ProviderLogos/PROVENANCE.md")) { rename { "provider-logos-PROVENANCE.txt" } }
     from(rootProject.file("BuildSupport/ReaderFonts/UPSTREAM.md")) { rename { "reader-fonts-UPSTREAM.txt" } }
@@ -331,7 +334,9 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 
     testImplementation("junit:junit:4.13.2")
-    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+    val mockWebServer = "com.squareup.okhttp3:mockwebserver:4.12.0"
+    testImplementation(mockWebServer)
+    androidTestImplementation(mockWebServer)
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
@@ -351,8 +356,14 @@ tasks.configureEach {
 }
 
 val releaseDependencyInventory = layout.buildDirectory.file("reports/release/dependencies.tsv")
+val narratorRuntimeCoordinate = "com.k2fsa.sherpa.onnx:sherpa-onnx-static-link-onnxruntime:2.0.1"
+val narratorRuntimeFiles = files(
+    project(":engine").layout.buildDirectory.file("generated/sherpaOnnx/classes.jar"),
+    project(":engine").layout.buildDirectory.file("generated/sherpaOnnx/jni/arm64-v8a/libsherpa-onnx-jni.so"),
+).builtBy(":engine:extractSherpaOnnx")
 
 tasks.register("generateReleaseDependencyInventory") {
+    inputs.files(narratorRuntimeFiles)
     outputs.file(releaseDependencyInventory)
     doLast {
         val releaseRuntimeClasspath = configurations.getByName("releaseRuntimeClasspath")
@@ -360,13 +371,13 @@ tasks.register("generateReleaseDependencyInventory") {
             componentFilter { identifier ->
                 identifier is org.gradle.api.artifacts.component.ModuleComponentIdentifier
             }
-        }.artifacts.artifacts
-            .sortedBy { "${it.id.componentIdentifier}:${it.file.name}" }
+        }.artifacts.artifacts.map { "${it.id.componentIdentifier}" to it.file } +
+            narratorRuntimeFiles.files.map { narratorRuntimeCoordinate to it }
         val lines = buildList {
             add("component\tartifact\tsha256")
-            for (artifact in artifacts) {
+            for ((component, artifact) in artifacts.sortedBy { "${it.first}:${it.second.name}" }) {
                 val digest = MessageDigest.getInstance("SHA-256")
-                artifact.file.inputStream().buffered().use { input ->
+                artifact.inputStream().buffered().use { input ->
                     val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
                     while (true) {
                         val count = input.read(buffer)
@@ -375,7 +386,7 @@ tasks.register("generateReleaseDependencyInventory") {
                     }
                 }
                 val sha256 = digest.digest().joinToString("") { byte: Byte -> "%02x".format(byte) }
-                add("${artifact.id.componentIdentifier}\t${artifact.file.name}\t$sha256")
+                add("$component\t${artifact.name}\t$sha256")
             }
         }
         releaseDependencyInventory.get().asFile.apply {
@@ -394,7 +405,7 @@ tasks.register("verifyAcknowledgementsInventory") {
                 val id = component.id as? org.gradle.api.artifacts.component.ModuleComponentIdentifier
                 id?.let { "${it.group}:${it.module}" }
             }
-            .toSet()
+            .toSet() + narratorRuntimeCoordinate.substringBeforeLast(':')
         val inventoryText = file("src/main/res/raw/aboutlibraries.json").readText()
         val missing = resolved.filterNot { coordinate ->
             listOf(coordinate, "$coordinate-android", "$coordinate-jvm")

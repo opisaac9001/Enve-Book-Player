@@ -1,5 +1,6 @@
 package com.enve.komga.dto
 
+import com.enve.core.data.model.ComicMetadata
 import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
@@ -67,6 +68,18 @@ internal fun KomgaBookDto.displayMetadata(): KomgaBookDisplayMetadata {
         bookTitle
     }
     return KomgaBookDisplayMetadata(title, seriesName, seriesNumber)
+}
+
+private val komgaComicFileTypes = setOf("CBZ", "CBR", "CBX", "PDF")
+
+internal fun KomgaBookDto.comicMetadata(): ComicMetadata? {
+    if (media?.mediaType?.lowercase(Locale.US)?.contains("audio") == true) return null
+    if (seriesId.isBlank() || readerFileType() !in komgaComicFileTypes) return null
+    return ComicMetadata(
+        seriesId = seriesId,
+        issueLabel = displayMetadata().seriesNumber?.let { "Issue $it" },
+        issueOrder = metadata?.numberSort?.toDouble(),
+    )
 }
 
 private fun String.isIssueNumberOnly(issueNumber: String): Boolean =

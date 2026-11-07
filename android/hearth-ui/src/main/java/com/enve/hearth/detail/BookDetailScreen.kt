@@ -35,6 +35,8 @@ import com.enve.hearth.design.HearthText
 import com.enve.hearth.design.LocalMantelInset
 import com.enve.hearth.design.hearthDismissGesture
 import com.enve.hearth.design.rememberHearthDismissState
+import com.enve.hearth.includesLibraryBook
+import com.enve.hearth.opensInPlayer
 import com.enve.engine.library.SavedBookList
 import kotlin.math.roundToInt
 
@@ -81,6 +83,10 @@ fun BookDetailScreen(
     val saved by vm.saved.collectAsStateWithLifecycle()
     val savedSyncErrors by vm.savedSyncErrors.collectAsStateWithLifecycle()
     val relatedBooks by vm.relatedBooks.collectAsStateWithLifecycle()
+    val readingEnabled by vm.readingEnabled.collectAsStateWithLifecycle()
+    val seriesShelf = remember(inSeries, readingEnabled) { inSeries.filter { includesLibraryBook(it, readingEnabled) } }
+    val relatedShelf = remember(relatedBooks, readingEnabled) { relatedBooks.filter { includesLibraryBook(it, readingEnabled) } }
+    val canJumpTo: (ReaderAnnotation) -> Boolean = { readingEnabled || it.opensInPlayer }
     val palette = Hearth.palette
     val b = book ?: initial
     val favorite = remember(saved, b) { vm.isSaved(b, SavedBookList.FAVORITES) }
@@ -107,7 +113,7 @@ fun BookDetailScreen(
             contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = LocalMantelInset.current + Hearth.Spacing.L),
         ) {
             item { DetailHeader(b, ambientColor, onBack) }
-            item { DetailActions(b, chapters, linkedAudiobook, linkedEbook, onListen, onRead) }
+            item { DetailActions(b, chapters, linkedAudiobook, linkedEbook, readingEnabled, onListen, onRead) }
             item {
                 DetailSecondaryActions(
                     b = b,
@@ -189,15 +195,16 @@ fun BookDetailScreen(
                     tagsFor = vm::tagsFor,
                     onFilterChange = { annotationFilter = it },
                     onQueryChange = { annotationQuery = it },
+                    canJump = canJumpTo,
                     onJump = { onOpenAnnotation(b, it) },
                     onEdit = { editingAnnotation = it },
                 )
             }
-            if (inSeries.isNotEmpty()) {
-                item { BookShelfRow("In this series", inSeries, onOpenBook) }
+            if (seriesShelf.isNotEmpty()) {
+                item { BookShelfRow("In this series", seriesShelf, onOpenBook) }
             }
-            if (relatedBooks.isNotEmpty()) {
-                item { BookShelfRow(relatedShelfTitle(b.source), relatedBooks, onOpenBook) }
+            if (relatedShelf.isNotEmpty()) {
+                item { BookShelfRow(relatedShelfTitle(b.source), relatedShelf, onOpenBook) }
             }
             bookOrbitRelated?.let { related ->
                 val openFromBookOrbit: (Int) -> Unit = { id -> vm.openBookOrbitBook(id, onOpenBook) }
@@ -347,7 +354,7 @@ fun BookDetailScreen(
                 onJump = {
                     editingAnnotation = null
                     onOpenAnnotation(b, annotation)
-                },
+                }.takeIf { canJumpTo(annotation) },
                 onSave = { style, colorHex, note, tags ->
                     editingAnnotation = null
                     vm.saveAnnotation(annotation, style, colorHex, note, tags)

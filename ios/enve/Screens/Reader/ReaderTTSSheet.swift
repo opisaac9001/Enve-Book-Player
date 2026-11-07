@@ -16,7 +16,7 @@ struct ReaderTTSSheet: View {
         self.onStartFromCurrentPosition = onStartFromCurrentPosition
         _showingVoices = State(
             initialValue: [
-                "ttsvoices", "kokorodownload", "kokoroplayback",
+                "ttsvoices", "ttsdownload", "ttsplayback", "kokorodownload", "kokoroplayback",
             ].contains(Self.debugRoute)
         )
     }
@@ -38,6 +38,8 @@ struct ReaderTTSSheet: View {
         .hearthPresentationBackground()
         .task {
             switch Self.debugRoute {
+            case "ttsdownload", "ttsplayback":
+                tts.setEngineChoice(.supertonic3)
             case "kokorodownload", "kokoroplayback":
                 tts.setEngineChoice(.kokoro)
             default:
@@ -239,7 +241,9 @@ private struct ReaderVoicePicker: View {
                 .listRowBackground(Color.clear)
                 .listRowSeparatorTint(hearth.hairline)
 
-                modelDownloadSection(for: .kokoro)
+                ForEach(EbookTTSEngineChoice.allCases.filter { $0 != .apple }) { engine in
+                    modelDownloadSection(for: engine)
+                }
 
                 Section {
                     voiceRow(
@@ -294,6 +298,19 @@ private struct ReaderVoicePicker: View {
                             }
                             .accessibilityIdentifier("kokoro-voice-\(voice.rawValue)")
                         }
+                    case .pocket:
+                        Text("Alba MacKenna")
+                    case .supertonic3:
+                        ForEach(EnhancedTTSVoice.allCases) { voice in
+                            voiceRow(
+                                title: voice.displayName,
+                                subtitle: voice.detail,
+                                isSelected: tts.enhancedVoice == voice
+                            ) {
+                                tts.setEnhancedVoice(voice)
+                            }
+                            .accessibilityIdentifier("supertonic-voice-\(voice.rawValue)")
+                        }
                     }
                 } header: {
                     Overline("Voice")
@@ -313,7 +330,12 @@ private struct ReaderVoicePicker: View {
             Section {
                 downloadRow(for: engine, title: engine.downloadTitle)
             } footer: {
-                Text("Download once; narration stays private and works offline afterward.")
+                if engine == .supertonic3 {
+                    Link("Supertonic model license and use terms", destination: URL(string: "https://huggingface.co/Supertone/supertonic-3/blob/main/LICENSE")!)
+                } else if engine == .pocket {
+                    Link("Kyutai and Alba MacKenna · CC BY 4.0", destination: URL(string: "https://creativecommons.org/licenses/by/4.0/")!)
+                }
+                Text("Download once to narrate offline.")
                     .font(.hearthCaption)
                     .foregroundStyle(hearth.textTertiary)
             }

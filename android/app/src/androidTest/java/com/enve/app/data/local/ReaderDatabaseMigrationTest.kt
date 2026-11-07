@@ -323,6 +323,25 @@ class ReaderDatabaseMigrationTest {
         }
     }
 
+    @Test
+    fun migration_28_to_29_adds_comic_metadata_without_touching_progress() {
+        val db = helper.writableDatabase
+        insert(db, "conn-1:28:34:55", "28:34:55", "KAVITA", 0.4f)
+        insert(db, "conn-2:issue", "issue", "KOMGA", 0.9f)
+
+        MIGRATION_28_29.migrate(db)
+        MIGRATION_28_29.migrate(db)
+
+        assertNullableText(db, "comicMetadataJson")
+        assertNullableText(db, "comicSeriesId")
+        assertTrue(indexNames(db, "book_cache").contains("index_book_cache_comicSeriesId"))
+        assertEquals(2, count(db))
+        assertEquals(0.4f, readProgress(db, "conn-1:28:34:55"), 0.0001f)
+        assertEquals(0.9f, readProgress(db, "conn-2:issue"), 0.0001f)
+        assertNull(textColumn(db, "comicMetadataJson", "conn-1:28:34:55"))
+        assertNull(textColumn(db, "comicSeriesId", "conn-1:28:34:55"))
+    }
+
     private fun indexNames(db: SupportSQLiteDatabase, table: String): Set<String> =
         db.query("PRAGMA index_list(`$table`)").use { cursor ->
             val nameIndex = cursor.getColumnIndexOrThrow("name")

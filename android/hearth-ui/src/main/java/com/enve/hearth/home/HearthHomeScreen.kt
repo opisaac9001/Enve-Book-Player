@@ -128,6 +128,7 @@ fun HearthHomeScreen(
     val showTodayStack by vm.showTodayStack.collectAsStateWithLifecycle()
     val networkAvailable by vm.networkAvailable.collectAsStateWithLifecycle()
     val dismissedKeys by vm.dismissedShelfKeys.collectAsStateWithLifecycle()
+    val readingEnabled by vm.readingEnabled.collectAsStateWithLifecycle()
     var showingDiscover by rememberSaveable { mutableStateOf(false) }
     var seeAllSection by rememberSaveable { mutableStateOf<HearthHomeSection?>(null) }
     var contextBook by remember { mutableStateOf<Book?>(null) }
@@ -141,7 +142,7 @@ fun HearthHomeScreen(
     }
 
     val visibleContinue = continueBooks.filterNot { it.uniqueKey in dismissedKeys }
-    val (allListening, allReading) = splitContinueShelves(visibleContinue, editionLinks)
+    val (allListening, allReading) = splitContinueShelves(visibleContinue, editionLinks, readingEnabled)
     val selectedSection = seeAllSection
     if (selectedSection != null) {
         val books = when (selectedSection) {
@@ -169,7 +170,9 @@ fun HearthHomeScreen(
                         if (book.needsUnreadConfirmation()) confirmUnreadBook = book else vm.markUnread(book)
                         contextBook = null
                     }) { Text("Mark as unread") }
-                    TextButton(onClick = { onPlayBook(book); contextBook = null }) { Text(if (book.mediaType == AppMediaType.EBOOK) "Read" else "Listen") }
+                    TextButton(onClick = { onPlayBook(book); contextBook = null }) {
+                        Text(if (readingEnabled && book.mediaType == AppMediaType.EBOOK) "Read" else "Listen")
+                    }
                 }
             },
             confirmButton = { TextButton(onClick = { contextBook = null }) { Text("Done") } },
@@ -235,8 +238,13 @@ fun HearthHomeScreen(
                             modifier = Modifier.padding(horizontal = Hearth.Spacing.XL),
                             prominent = true,
                             isPlaying = isPlaying,
+                            readingEnabled = readingEnabled,
                             listenTarget = detailListenTarget(book, heroLinks.first),
-                            readTarget = if (book.mediaType == AppMediaType.EBOOK || book.hasEbook) book else heroLinks.second,
+                            readTarget = when {
+                                !readingEnabled -> null
+                                book.mediaType == AppMediaType.EBOOK || book.hasEbook -> book
+                                else -> heroLinks.second
+                            },
                             onListen = onListenBook,
                             onRead = onReadBook,
                             onLongClick = { contextBook = book; contextDismissable = true },
@@ -264,6 +272,7 @@ fun HearthHomeScreen(
                             item {
                                 ContinueCarousel(
                                     "Continue reading", reading,
+                                    readingEnabled = readingEnabled,
                                     onOpen = onSelectBook,
                                     onPlay = onPlayBook,
                                     onSeeAll = { seeAllSection = section },
@@ -275,6 +284,7 @@ fun HearthHomeScreen(
                             item {
                                 ContinueCarousel(
                                     "Continue listening", listening,
+                                    readingEnabled = readingEnabled,
                                     onOpen = onSelectBook,
                                     onPlay = onPlayBook,
                                     onSeeAll = { seeAllSection = section },
@@ -481,9 +491,14 @@ private fun ShelfCard(book: Book, coverHeight: Dp, onOpen: (Book) -> Unit, onLon
 internal fun splitContinueShelves(
     books: List<Book>,
     links: List<com.enve.engine.library.LibraryEditionLink>,
+    readingEnabled: Boolean = true,
 ): Pair<List<Book>, List<Book>> {
-    val linkedAudioToEbook = links.associate { it.audiobookKey to it.ebookKey }
     val presentKeys = books.mapTo(HashSet()) { it.uniqueKey }
+    if (!readingEnabled) {
+        val linkedEbookToAudio = links.associate { it.ebookKey to it.audiobookKey }
+        return books.filterNot { linkedEbookToAudio[it.uniqueKey] in presentKeys } to emptyList()
+    }
+    val linkedAudioToEbook = links.associate { it.audiobookKey to it.ebookKey }
     val listening = ArrayList<Book>()
     val reading = ArrayList<Book>()
     for (b in books) {
@@ -491,7 +506,6 @@ internal fun splitContinueShelves(
         if (b.mediaType == AppMediaType.AUDIOBOOK && !forcedReading) {
             listening.add(b)
         } else {
-
             val pairedEbook = linkedAudioToEbook[b.uniqueKey]
             if (pairedEbook != null && pairedEbook in presentKeys) continue
             reading.add(b)

@@ -45,6 +45,9 @@ struct HearthScreen: View {
                     if loaded {
                         quote
                             .padding(.horizontal, 24)
+                    } else {
+                        loadingLibrary
+                            .padding(.horizontal, 24)
                     }
 
                     if let hero {
@@ -88,11 +91,14 @@ struct HearthScreen: View {
         .background(HearthBackground())
         .task(id: "\(isActive):\(lastOpened.openedAt?.timeIntervalSince1970 ?? 0)") {
             guard isActive else { return }
+            // Subscribe before the first load so imports finishing during it still trigger a reload.
+            let changes = engine.library.libraryChanges()
             await load()
+            guard !Task.isCancelled else { return }
             loaded = true
             var pendingReload: Task<Void, Never>?
             defer { pendingReload?.cancel() }
-            for await _ in engine.library.libraryChanges() {
+            for await _ in changes {
                 pendingReload?.cancel()
                 pendingReload = Task {
                     try? await Task.sleep(nanoseconds: 150_000_000)
@@ -394,6 +400,21 @@ struct HearthScreen: View {
                 .fixedSize(horizontal: false, vertical: true)
             Overline(q.author, color: hearth.textTertiary)
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("hearth-quote")
+    }
+
+    private var loadingLibrary: some View {
+        HStack(spacing: 10) {
+            ProgressView()
+                .tint(hearth.ember)
+            Text("Loading your library…")
+                .font(.hearthUI(13, weight: .medium))
+                .foregroundStyle(hearth.textSecondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("hearth-loading")
     }
 
     private var offlineBanner: some View {
@@ -505,8 +526,11 @@ struct HearthScreen: View {
 
     private func load() async {
         if let stableId = lastOpened.stableId {
-            lastOpenedBook = await engine.library.book(stableId: stableId)
-            if lastOpenedBook == nil {
+            let book = await engine.library.book(stableId: stableId)
+            // A retired profile's task must not clear the persisted last-opened book.
+            guard !Task.isCancelled else { return }
+            lastOpenedBook = book
+            if book == nil {
                 lastOpened.clear()
                 if appState.currentBook?.stableId == stableId {
                     appState.currentBook = nil
@@ -519,6 +543,7 @@ struct HearthScreen: View {
             dismissedStableIds: profileSession.dismissedShelves.stableIds,
             currentStableId: hero?.stableId
         )
+        guard !Task.isCancelled else { return }
         listening = feed.listening
         reading = profileSession.preferences.readingEnabled ? feed.reading : []
         fresh = feed.fresh.filter(profileSession.preferences.includesLibraryBook)

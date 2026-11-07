@@ -556,6 +556,8 @@ fun EnveApp(
                     onOpenBook = onOpenDownloadedBook,
                     onRemoveItem = { bookId -> downloadsHubViewModel.removeItem(bookId) },
                     onCancelDownload = { bookId -> downloadsHubViewModel.cancelActiveDownload(bookId) },
+                    onCancelComicDownload = { bookId -> downloadsHubViewModel.cancelComicDownload(bookId) },
+                    onRetryDownload = { bookId -> downloadsHubViewModel.retryDownload(bookId) },
                     autoDeleteFinishedBooks = downloadsHubState.autoDeleteFinishedBooks,
                     autoDeleteFailedDownloads = downloadsHubState.autoDeleteFailedDownloads,
                     seriesPreDownloadCount = downloadsHubState.seriesPreDownloadCount,

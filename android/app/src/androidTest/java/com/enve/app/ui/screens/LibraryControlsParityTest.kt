@@ -97,6 +97,7 @@ class LibraryControlsParityTest {
         val prefs = component.preferencesFacade()
         val originalSort = prefs.librarySortStack.first()
         val originalFilters = prefs.libraryAdvancedFilters.first()
+        val originalSelection = prefs.librarySelection.first()
         val store = ViewModelStore()
         try {
             withContext(Dispatchers.Main) {
@@ -119,6 +120,7 @@ class LibraryControlsParityTest {
             withContext(Dispatchers.Main) { store.clear() }
             prefs.setLibrarySortStack(originalSort)
             prefs.setLibraryAdvancedFilters(originalFilters)
+            prefs.setLibrarySelection(originalSelection)
         }
     }
 

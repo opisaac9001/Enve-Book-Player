@@ -276,6 +276,7 @@ class ProfileViewModelFactory(private val component: com.enve.app.profiles.Profi
             component.einkFacade(),
             component.library(),
             component.lastOpenedBookStore(),
+            component.downloadActivity(),
         )
         com.enve.hearth.library.HearthLibraryViewModel::class.java -> com.enve.hearth.library.HearthLibraryViewModel(
             component.library(),
@@ -302,6 +303,7 @@ class ProfileViewModelFactory(private val component: com.enve.app.profiles.Profi
             component.bookOrbit(),
             component.serverTools(),
             markUnreadAction(),
+            component.preferencesFacade(),
         )
         com.enve.hearth.bookorbit.BookOrbitHighlightsViewModel::class.java -> com.enve.hearth.bookorbit.BookOrbitHighlightsViewModel(
             component.bookOrbit(),

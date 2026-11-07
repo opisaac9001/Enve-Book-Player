@@ -13,13 +13,15 @@ enum NeuralTTSError: LocalizedError {
     case invalidAudio
     case notReady
     case unsupportedOS
+    case invalidModel
 
     var errorDescription: String? {
         switch self {
         case .emptyAudio: "The on-device voice produced no audio."
         case .invalidAudio: "The on-device voice produced invalid audio."
         case .notReady: "The on-device voice is not ready."
-        case .unsupportedOS: "Kokoro is unavailable on iOS 26.4 and later because it can crash there. Apple voices are used instead."
+        case .unsupportedOS: "Kokoro is unavailable on this platform. Apple voices are used instead."
+        case .invalidModel: "The voice model download is incomplete or damaged. Download it again."
         }
     }
 }
@@ -384,21 +386,32 @@ final class NeuralTTSAudioPlayer {
     private var playbackContinuation: CheckedContinuation<Result<Void, ReadiumNavigator.TTSError>, Never>?
     private var progressTask: Task<Void, Never>?
 
-    init(sampleRate: Double) {
+    private let timePitch: AVAudioUnitTimePitch?
+
+    init(sampleRate: Double, adjustsRate: Bool = false) {
+        timePitch = adjustsRate ? AVAudioUnitTimePitch() : nil
         format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
         audioEngine.attach(playerNode)
-        audioEngine.connect(playerNode, to: audioEngine.mainMixerNode, format: format)
+        if let timePitch {
+            audioEngine.attach(timePitch)
+            audioEngine.connect(playerNode, to: timePitch, format: format)
+            audioEngine.connect(timePitch, to: audioEngine.mainMixerNode, format: format)
+        } else {
+            audioEngine.connect(playerNode, to: audioEngine.mainMixerNode, format: format)
+        }
     }
 
     func play(
         _ samples: [Float],
         text: String,
+        rate: Float = 1,
         onSpeakRange: @escaping (Range<String.Index>) -> Void
     ) async -> Result<Void, ReadiumNavigator.TTSError> {
         guard !samples.isEmpty else {
             return .failure(.other(NeuralTTSError.emptyAudio))
         }
 
+        timePitch?.rate = rate
         let buffer = AVAudioPCMBuffer(
             pcmFormat: format,
             frameCapacity: AVAudioFrameCount(samples.count)
@@ -434,7 +447,7 @@ final class NeuralTTSAudioPlayer {
             startProgress(
                 id: id,
                 text: text,
-                duration: Double(samples.count) / format.sampleRate,
+                duration: Double(samples.count) / format.sampleRate / Double(rate),
                 onSpeakRange: onSpeakRange
             )
         }

@@ -43,10 +43,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookCardStyle
 import com.enve.core.data.model.BookSource
+import com.enve.hearth.hasPlayableAudio
 import com.enve.hearth.design.CoverTile
 import com.enve.hearth.design.Hearth
 import com.enve.hearth.design.HearthText
@@ -208,7 +208,7 @@ private fun GridCoverCell(
             }
         }
         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-            val listen = isAudioPlayable(book)
+            val listen = book.hasPlayableAudio
             DropdownMenuItem(text = { Text(if (listen) "Play" else "Read") }, onClick = { menu = false; onPlay(book) })
             if (listen) {
                 DropdownMenuItem(text = { Text("Play next") }, onClick = { menu = false; vm.addNext(book) })
@@ -253,9 +253,6 @@ private fun GridCoverCell(
         }
     }
 }
-
-internal fun isAudioPlayable(book: Book): Boolean =
-    book.mediaType == AppMediaType.AUDIOBOOK || book.mediaType == AppMediaType.PODCAST || book.hasAudio
 
 private enum class BookCardDestructiveAction(val title: String, val confirmLabel: String) {
     REMOVE_DOWNLOAD("Remove download?", "Remove"),
@@ -321,7 +318,7 @@ private fun DenseBookRow(
                     modifier = Modifier.clip(CircleShape).clickable { menu = true }.padding(Hearth.Spacing.S).size(20.dp),
                 )
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                    val listen = isAudioPlayable(book)
+                    val listen = book.hasPlayableAudio
                     DropdownMenuItem(text = { Text(if (listen) "Play" else "Read") }, onClick = { menu = false; onPlay(book) })
                     if (listen) {
                         DropdownMenuItem(text = { Text("Play next") }, onClick = { menu = false; vm.addNext(book) })

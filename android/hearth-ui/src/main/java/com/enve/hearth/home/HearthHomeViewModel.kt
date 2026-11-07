@@ -14,13 +14,16 @@ import com.enve.engine.library.LibraryFacade
 import com.enve.engine.prefs.HearthHomeSection
 import com.enve.engine.prefs.PreferencesFacade
 import com.enve.hearth.MarkUnreadAction
+import com.enve.hearth.includesLibraryBook
 import com.enve.hearth.observeLastOpenedBook
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -31,7 +34,7 @@ class HearthHomeViewModel @Inject constructor(
     private val library: LibraryFacade,
     lastOpenedBookStore: LastOpenedBookStore,
     prefs: PreferencesManager,
-    preferences: PreferencesFacade,
+    private val preferences: PreferencesFacade,
     private val dismissedShelfStore: HearthDismissedShelfStore,
     private val markUnreadAction: MarkUnreadAction,
     @ApplicationContext context: Context,
@@ -58,19 +61,26 @@ class HearthHomeViewModel @Inject constructor(
     val lastSyncMillis: StateFlow<Long> =
         prefs.lastSyncTime.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0L)
 
+    val readingEnabled: StateFlow<Boolean> =
+        preferences.readingEnabled.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
+    private fun Flow<List<Book>>.forReadingMode(): Flow<List<Book>> =
+        combine(this, preferences.readingEnabled) { books, reading -> books.filter { includesLibraryBook(it, reading) } }
+
     val continueBooks: StateFlow<List<Book>> =
-        library.continueBooks.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        library.continueBooks.forReadingMode().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val lastOpenedBook: StateFlow<Book?> =
-        library.observeLastOpenedBook(lastOpenedBookStore)
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+        combine(library.observeLastOpenedBook(lastOpenedBookStore), preferences.readingEnabled) { book, reading ->
+            book?.takeIf { includesLibraryBook(it, reading) }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
     val editionLinks: StateFlow<List<com.enve.engine.library.LibraryEditionLink>> =
         library.editionLinks.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val recentlyAdded: StateFlow<List<Book>> =
-        library.recentlyAdded.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        library.recentlyAdded.forReadingMode().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val allBooks: StateFlow<List<Book>> =
-        library.allBooks.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        library.allBooks.forReadingMode().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val downloaded: StateFlow<List<Book>> =
-        library.downloaded.map { it.take(16) }
+        library.downloaded.forReadingMode().map { it.take(16) }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val isRefreshing: StateFlow<Boolean> = library.isRefreshing
     val homeSectionOrder: StateFlow<List<HearthHomeSection>> =

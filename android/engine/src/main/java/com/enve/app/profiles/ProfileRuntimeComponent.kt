@@ -33,6 +33,7 @@ interface ProfileRuntimeComponent {
     fun listeningPosition(): com.enve.engine.listeningposition.ListeningPositionFacade
     fun library(): com.enve.engine.library.LibraryFacade
     fun savedBooks(): com.enve.engine.library.SavedBooksFacade
+    fun downloadActivity(): com.enve.engine.downloads.DownloadActivityFacade
     fun playback(): com.enve.engine.playback.PlaybackFacade
     fun playerSession(): com.enve.engine.playback.PlayerSessionFacade
     fun preferencesFacade(): com.enve.engine.prefs.PreferencesFacade

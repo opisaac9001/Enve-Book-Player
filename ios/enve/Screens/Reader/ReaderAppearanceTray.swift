@@ -18,6 +18,7 @@ struct ReaderAppearanceTray: View {
                 switch model.state {
                 case .readyComic:
                     comicControls
+                    gestureToggles
                 case .readyPDF:
                     HStack {
                         Overline("PDF appearance")
@@ -29,6 +30,7 @@ struct ReaderAppearanceTray: View {
                     }
                     flowControls
                     pdfLayoutControls
+                    gestureToggles
                 default:
                     epubControls
                 }
@@ -272,6 +274,26 @@ struct ReaderAppearanceTray: View {
                     set: { model.appearance.volumeButtonsTurnPages = $0 }
                 )
             )
+            readerToggle(
+                "Keyboards and page turners",
+                isOn: Binding(
+                    get: { model.appearance.keyboardTurnsPages },
+                    set: { model.appearance.keyboardTurnsPages = $0 }
+                )
+            )
+            .accessibilityIdentifier("reader-keyboard-page-turns")
+            readerToggle(
+                "Game controllers",
+                isOn: Binding(
+                    get: { model.appearance.gameControllersTurnPages },
+                    set: { model.appearance.gameControllersTurnPages = $0 }
+                )
+            )
+            .accessibilityIdentifier("reader-game-controller-page-turns")
+            Text("Arrows, Page Up and Down, Space, Return, F1 and F2, or a controller’s shoulder buttons, triggers and D-pad.")
+                .font(.hearthCaption)
+                .foregroundStyle(hearth.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -388,6 +410,22 @@ struct ReaderAppearanceTray: View {
                             .strokeBorder(hearth.hairline, lineWidth: 1)
                     }
             }
+            Overline("Page adjust")
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(PDFPageAdjust.allCases) { adjust in
+                        HearthChip(title: adjust.label, isSelected: layout.pageAdjust == adjust) {
+                            PlatformHaptics.selection()
+                            var next = model.pdfLayout
+                            next.pageAdjust = adjust
+                            model.setPDFLayout(next)
+                        }
+                        .accessibilityIdentifier("reader-pdf-page-adjust-\(adjust.rawValue)")
+                    }
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Page adjust")
         }
     }
 

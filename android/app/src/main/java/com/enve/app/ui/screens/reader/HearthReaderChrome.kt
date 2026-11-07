@@ -45,6 +45,7 @@ import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.FormatStrikethrough
 import androidx.compose.material.icons.outlined.FormatUnderlined
 import androidx.compose.material.icons.outlined.Gesture
+import androidx.compose.material.icons.outlined.Headphones
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.RecordVoiceOver
@@ -59,7 +60,6 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
@@ -292,24 +292,18 @@ fun HearthReaderChrome(
             val bottomVeil: @Composable () -> Unit = {
                 Column {
                     if (state.liveReadAlongActive) {
-                        Column(Modifier.padding(horizontal = Hearth.Spacing.M).fillMaxWidth()
-                            .background(palette.bgElevated, RoundedCornerShape(if (einkActive) 0.dp else Hearth.Radius.Card))
-                            .padding(Hearth.Spacing.S)) {
-                            Text(state.liveReadAlongStatus, color = palette.textSecondary)
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S)) {
-                                IconButton(onClick = vm::toggleReadAlongPlayback) {
-                                    Icon(if (state.liveReadAlongPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                                        contentDescription = if (state.liveReadAlongPlaying) "Pause audiobook" else "Play audiobook", tint = palette.text)
-                                }
-                                TextButton(onClick = vm::resumeLiveReadAlongFollowing) {
-                                    Text(if (state.liveReadAlongFollowing) "Following audiobook" else "Return to audiobook", color = palette.text)
-                                }
-                                Spacer(Modifier.weight(1f))
-                                IconButton(onClick = vm::toggleReadAlongMode) {
-                                    Icon(Icons.Outlined.Close, contentDescription = "Stop following audiobook", tint = palette.text)
-                                }
-                            }
-                        }
+                        HearthLinkedReadAlongPanel(
+                            status = state.liveReadAlongStatus,
+                            playing = state.liveReadAlongPlaying,
+                            following = state.liveReadAlongFollowing,
+                            finding = state.liveReadAlongFinding,
+                            retryable = state.liveReadAlongRetryable,
+                            onTogglePlayback = vm::toggleReadAlongPlayback,
+                            onFollow = vm::resumeLiveReadAlongFollowing,
+                            onListenHere = { vm.listenFromHere() },
+                            onRetry = vm::retryLiveReadAlong,
+                            onClose = vm::toggleReadAlongMode,
+                        )
                     }
                     BottomVeil(
                         progress = state.progressPct / 100f,
@@ -418,6 +412,13 @@ fun HearthReaderChrome(
                         vm.hideSelectionPopup()
                         vm.clearSelection()
                     },
+                    onListen = if (state.liveReadAlongAvailable && !state.readAlongSupported) {
+                        {
+                            vm.listenFromSelection()
+                            vm.hideSelectionPopup()
+                            vm.clearSelection()
+                        }
+                    } else null,
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .navigationBarsPadding()
@@ -743,6 +744,7 @@ private fun SelectionPalette(
     onDictionary: () -> Unit,
     onShare: () -> Unit,
     onSpeak: () -> Unit,
+    onListen: (() -> Unit)?,
     modifier: Modifier,
 ) {
     val palette = Hearth.palette
@@ -807,6 +809,15 @@ private fun SelectionPalette(
                         },
                         onClick = { moreMenu = false; onSpeak() },
                     )
+                    onListen?.let { listen ->
+                        DropdownMenuItem(
+                            text = { Text("Listen from here", color = palette.text) },
+                            leadingIcon = {
+                                Icon(Icons.Outlined.Headphones, contentDescription = null, tint = palette.textSecondary)
+                            },
+                            onClick = { moreMenu = false; listen() },
+                        )
+                    }
                 }
             }
         }

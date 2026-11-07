@@ -377,13 +377,14 @@ internal fun DetailActions(
     chapters: List<Chapter>,
     linkedAudiobook: Book?,
     linkedEbook: Book?,
+    readingEnabled: Boolean,
     onListen: (Book) -> Unit,
     onRead: (Book) -> Unit,
 ) {
     val palette = Hearth.palette
     val progress = HearthFormat.progress(b)
     val listenTarget = detailListenTarget(b, linkedAudiobook)
-    val readTarget = detailReadTarget(b, linkedEbook)
+    val readTarget = detailReadTarget(b, linkedEbook)?.takeIf { readingEnabled }
     val canListen = listenTarget != null
     val canRead = readTarget != null
     Column(Modifier.fillMaxWidth().padding(horizontal = Hearth.Spacing.XL).padding(top = Hearth.Spacing.L)) {
@@ -419,10 +420,10 @@ internal fun DetailActions(
                     leadingIcon = Icons.Filled.PlayArrow,
                 )
             }
-            else -> Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            canRead -> Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                 EmberButton(
                     text = "Read",
-                    onClick = { readTarget?.let(onRead) },
+                    onClick = { onRead(readTarget) },
                     leadingIcon = Icons.AutoMirrored.Outlined.MenuBook,
                 )
             }

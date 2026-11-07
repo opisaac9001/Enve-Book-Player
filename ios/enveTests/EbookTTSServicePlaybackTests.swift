@@ -38,6 +38,51 @@ struct EbookTTSServicePlaybackTests {
         #expect(service.currentVoiceDisplayName == "Kokoro · Michael")
     }
 
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["ENVE_LOCAL_NARRATORS_VERIFY"] == "1"),
+          arguments: [EbookTTSEngineChoice.supertonic3, .pocket])
+    func localNarratorReadsAParagraph(engine: EbookTTSEngineChoice) async throws {
+        let (service, defaults, suiteName) = try makeService()
+        defer {
+            service.tearDown()
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+        service.setEngineChoice(engine)
+        let deadline = ContinuousClock.now + .seconds(420)
+        while service.engineChoice != engine && ContinuousClock.now < deadline {
+            if case let .failed(message) = service.downloadState(for: engine) {
+                Issue.record("Model installation failed: \(message)")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(200))
+        }
+        try #require(service.engineChoice == engine)
+        #expect(EbookTTSService(userDefaults: defaults).engineChoice == engine)
+        let passage = "The lantern burned steadily as the wind moved through the trees."
+        let start = Date()
+        let samples: [Float]
+        switch engine {
+        case .pocket: samples = try await PocketTTSRuntime.shared.synthesize(text: passage)
+        case .supertonic3:
+            samples = try await SupertonicTTSRuntime.shared.synthesize(text: passage, language: "en", voice: .f1, speed: 1)
+        default: return
+        }
+        print("Narration timing \(engine.rawValue): \(samples.count) samples in \(Date().timeIntervalSince(start)) seconds")
+        try #require(samples.count > 24_000 && samples.allSatisfy(\.isFinite) && samples.contains { abs($0) > 0.001 })
+        if engine == .supertonic3 {
+            let spanish = try await SupertonicTTSRuntime.shared.synthesize(
+                text: "El barco regresó al puerto antes del anochecer.", language: "es", voice: .m5, speed: 1
+            )
+            #expect(spanish.count > 44_100 && spanish.allSatisfy(\.isFinite) && spanish.contains { abs($0) > 0.001 })
+        }
+        var spoken = Set<String>()
+        let subscription = service.$highlightLocator.compactMap { $0?.text.highlight }.sink { spoken.insert($0) }
+        defer { subscription.cancel() }
+        service.configure(with: makePublication())
+        service.startSpeaking()
+        try await waitUntil(timeout: .seconds(120)) { spoken.contains("The rest of the paragraph keeps playing while the reader follows the words.") }
+        #expect(spoken.count >= 2)
+    }
+
     @Test func changingLanguageWhilePausedKeepsNarrationPaused() async throws {
         let (service, defaults, suiteName) = try makeService()
         defer {

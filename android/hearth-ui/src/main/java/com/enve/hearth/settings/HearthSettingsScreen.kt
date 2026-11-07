@@ -507,9 +507,16 @@ private fun LibraryPage(
     val restReminderEnabled by vm.restReminderEnabled.collectAsStateWithLifecycle()
     val restReminderMinutes by vm.restReminderMinutes.collectAsStateWithLifecycle()
     val ebookSyncInterval by vm.ebookSyncInterval.collectAsStateWithLifecycle()
+    val readingEnabled by vm.readingEnabled.collectAsStateWithLifecycle()
     SettingsPage("Settings", SettingsCategory.Library.pageTitle, onBack) {
         item {
             Group("Library") {
+                HearthToggleRow("Audiobooks only", !readingEnabled, vm::setAudiobooksOnly)
+                Text(
+                    "Browse audiobooks and podcasts with reading controls hidden. Your books and reading positions stay saved.",
+                    style = HearthText.Caption,
+                    color = palette.textSecondary,
+                )
                 ToolRow(Icons.AutoMirrored.Outlined.LibraryBooks, "Library management", "Connections, scans, and bulk actions") {
                     onOpenDestination(HearthSettingsDestination.LibraryHub)
                 }

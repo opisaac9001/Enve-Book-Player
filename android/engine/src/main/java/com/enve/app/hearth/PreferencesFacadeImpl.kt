@@ -44,6 +44,12 @@ class PreferencesFacadeImpl @Inject constructor(
     override val bookCardStyle: Flow<BookCardStyle> = prefs.bookCardStyle
     override val librarySortStack: Flow<String> = hearthPrefs.librarySortStack
     override val libraryAdvancedFilters: Flow<String> = hearthPrefs.libraryAdvancedFilters
+    override val libraryMedia: Flow<String> = hearthPrefs.libraryMedia
+    override val libraryStatus: Flow<String> = hearthPrefs.libraryStatus
+    override val readingEnabled: Flow<Boolean> = hearthPrefs.readingEnabled
+    override val librarySelection: Flow<String> = hearthPrefs.librarySelection
+    override fun scopedLibraryMedia(scope: String): Flow<String> = hearthPrefs.scopedLibraryMedia(scope)
+    override fun comicBrowseState(scope: String): Flow<String> = hearthPrefs.comicBrowseState(scope)
     override val excludedLibraryIds: Flow<Set<String>> = prefs.excludedLibraryIds
     override val comicPageLoadingMode: Flow<ComicPageLoadingMode> = prefs.comicPageLoadingMode
     override val preferredStartTab: Flow<HearthStartTab> = hearthPrefs.preferredStartTab
@@ -80,6 +86,14 @@ class PreferencesFacadeImpl @Inject constructor(
     override suspend fun setLibrarySortStack(encoded: String) = hearthPrefs.setLibrarySortStack(encoded)
     override suspend fun setLibraryAdvancedFilters(encoded: String) =
         hearthPrefs.setLibraryAdvancedFilters(encoded)
+    override suspend fun setLibraryMedia(encoded: String) = hearthPrefs.setLibraryMedia(encoded)
+    override suspend fun setLibraryStatus(encoded: String) = hearthPrefs.setLibraryStatus(encoded)
+    override suspend fun setReadingEnabled(enabled: Boolean) = hearthPrefs.setReadingEnabled(enabled)
+    override suspend fun setLibrarySelection(encoded: String) = hearthPrefs.setLibrarySelection(encoded)
+    override suspend fun setScopedLibraryMedia(scope: String, encoded: String) =
+        hearthPrefs.setScopedLibraryMedia(scope, encoded)
+    override suspend fun setComicBrowseState(scope: String, encoded: String) =
+        hearthPrefs.setComicBrowseState(scope, encoded)
     override suspend fun setComicPageLoadingMode(mode: ComicPageLoadingMode) =
         prefs.saveComicReaderPreferences(pageLoadingMode = mode)
     override suspend fun setPreferredStartTab(tab: HearthStartTab) =

@@ -152,6 +152,119 @@ final class PDFReaderControllerTests {
         #expect(callbacks.isEmpty)
     }
 
+    @Test func pageAdjustSetsPDFKitsRestingScaleAndPinchRangeAndRefitsOnRotation() throws {
+        let document = try #require(PDFDocument(url: pdfURL))
+        var callbacks: [Int] = []
+        let controller = PDFReaderController(document: document, initialPageIndex: 2, scrollEnabled: false,
+            layout: PDFReadingLayout(pageAdjust: .fillWidth), onPageChange: { callbacks.append($0) }, onTap: { _, _ in })
+        layOut(controller, width: 400, height: 900)
+        let pdfView = try embeddedPDFView(in: controller)
+        #expect(!pdfView.autoScales)
+        expectScale(pdfView, 400.0 / 300)
+
+        layOut(controller, width: 900, height: 400)
+        expectScale(pdfView, 3)
+        #expect(controller.currentPageIndex() == 2)
+
+        let landscapeScales: [(PDFPageAdjust, CGFloat)] = [(.crop, 3), (.fit, 1), (.fillHeight, 1), (.fillWidth, 3)]
+        for (adjust, scale) in landscapeScales {
+            controller.configure(scrollEnabled: false, layout: PDFReadingLayout(pageAdjust: adjust))
+            #expect(try embeddedPDFView(in: controller) === pdfView, "Changing the page adjust must not rebuild the view")
+            expectScale(pdfView, scale)
+            #expect(controller.currentPageIndex() == 2)
+        }
+        #expect(callbacks.isEmpty)
+    }
+
+    @Test func pagedTurnsRefitEachSpreadWhileScrolledFlowKeepsThePinchZoom() throws {
+        let document = try #require(PDFDocument(url: pdfURL))
+        let paged = PDFReaderController(document: document, initialPageIndex: 0, scrollEnabled: false,
+            layout: PDFReadingLayout(twoPageEnabled: true, showsCoverSeparately: true), onPageChange: { _ in }, onTap: { _, _ in })
+        layOut(paged, width: 900, height: 700)
+        let pagedView = try embeddedPDFView(in: paged)
+        // The cover alone fits by height; the 600-point pair fits by width.
+        expectScale(pagedView, 1.75)
+        paged.goToPage(1)
+        expectScale(pagedView, 1.5)
+        #expect(paged.currentPageIndex() == 1)
+        pagedView.scaleFactor = 4
+        paged.goToPage(3)
+        expectScale(pagedView, 1.5)
+        #expect(paged.currentPageIndex() == 3)
+        paged.goToPage(0)
+        expectScale(pagedView, 1.75)
+        #expect(paged.currentPageIndex() == 0)
+
+        // Raising and lowering the base on a pair, without leaving it.
+        paged.goToPage(2)
+        expectScale(pagedView, 1.5)
+        paged.configure(scrollEnabled: false, layout: PDFReadingLayout(twoPageEnabled: true, showsCoverSeparately: true, pageAdjust: .fillHeight))
+        expectScale(pagedView, 1.75)
+        paged.configure(scrollEnabled: false, layout: PDFReadingLayout(twoPageEnabled: true, showsCoverSeparately: true, pageAdjust: .crop))
+        expectScale(pagedView, 1.75)
+        paged.configure(scrollEnabled: false, layout: PDFReadingLayout(twoPageEnabled: true, showsCoverSeparately: true, pageAdjust: .fit))
+        expectScale(pagedView, 1.5)
+        #expect(paged.currentPageIndex() == 2)
+        #expect(try embeddedPDFView(in: paged) === pagedView)
+
+        let scrolled = PDFReaderController(document: document, initialPageIndex: 0, scrollEnabled: true,
+            layout: PDFReadingLayout(), onPageChange: { _ in }, onTap: { _, _ in })
+        layOut(scrolled, width: 900, height: 700)
+        let scrolledView = try embeddedPDFView(in: scrolled)
+        expectScale(scrolledView, 1.75)
+        scrolledView.scaleFactor = 2.5
+        scrolled.goToPage(4)
+        expectScale(scrolledView, 2.5, resting: 1.75)
+        #expect(scrolled.currentPageIndex() == 4)
+    }
+
+    @Test func pageAdjustIsRememberedPerBookWithoutMovingTheSelection() async throws {
+        let bookID = UUID().uuidString
+        let (reader, host) = try await open(bookID: bookID)
+        reader.requestPDFPage(3)
+        let navigationsBefore = host.userNavigations
+        let pdfView = try embeddedPDFView(reader)
+
+        reader.setPDFLayout(PDFReadingLayout(pageAdjust: .crop))
+        #expect(try embeddedPDFView(reader) === pdfView)
+        #expect(host.pagedVisiblePageRange == 4...4)
+        #expect(host.userNavigations == navigationsBefore)
+        #expect(reader.pdfController?.currentPageIndex() == 3)
+
+        let (reopened, _) = try await open(bookID: bookID)
+        #expect(reopened.pdfLayout == PDFReadingLayout(pageAdjust: .crop))
+        let (other, _) = try await open(bookID: UUID().uuidString)
+        #expect(other.pdfLayout.pageAdjust == .fit)
+    }
+
+    private func layOut(_ controller: PDFReaderController, width: CGFloat, height: CGFloat) {
+        controller.loadViewIfNeeded()
+        controller.view.frame = CGRect(x: 0, y: 0, width: width, height: height)
+        controller.view.layoutIfNeeded()
+    }
+
+    // PDFKit page gaps slightly change the rendered scale and may lower the pinch floor.
+    private func expectScale(
+        _ pdfView: PDFView,
+        _ scale: CGFloat,
+        resting: CGFloat? = nil,
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) {
+        let base = resting ?? scale
+        let shownPage = pdfView.currentPage.flatMap { pdfView.document?.index(for: $0) }
+        let state =
+            "PDFKit scale \(pdfView.scaleFactor) in \(pdfView.minScaleFactor)...\(pdfView.maxScaleFactor), "
+            + "size-to-fit \(pdfView.scaleFactorForSizeToFit), page \(shownPage.map(String.init) ?? "none"), "
+            + "bounds \(pdfView.bounds.size), mode \(pdfView.displayMode.rawValue)"
+        #expect(abs(pdfView.scaleFactor - scale) <= scale * 0.005, "expected scale \(scale); \(state)", sourceLocation: sourceLocation)
+        #expect(pdfView.minScaleFactor <= pdfView.scaleFactor + 0.001, "pinch floor above the shown scale; \(state)", sourceLocation: sourceLocation)
+        #expect(
+            abs(pdfView.maxScaleFactor - base * PDFPageAdjust.maximumZoom) < 0.001,
+            "expected pinch ceiling \(base * PDFPageAdjust.maximumZoom); \(state)",
+            sourceLocation: sourceLocation
+        )
+    }
+
     private func open(
         bookID: String,
         appearance: ClassicReaderAppearance = ClassicReaderAppearance()
@@ -170,7 +283,10 @@ final class PDFReaderControllerTests {
     }
 
     private func embeddedPDFView(_ reader: ReaderPagedContentController) throws -> PDFView {
-        let controller = try #require(reader.pdfController)
+        try embeddedPDFView(in: try #require(reader.pdfController))
+    }
+
+    private func embeddedPDFView(in controller: PDFReaderController) throws -> PDFView {
         controller.loadViewIfNeeded()
         return try #require(controller.view.subviews.compactMap { $0 as? PDFView }.first)
     }

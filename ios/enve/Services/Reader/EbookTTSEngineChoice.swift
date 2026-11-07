@@ -1,6 +1,8 @@
 enum EbookTTSEngineChoice: String, CaseIterable, Identifiable {
     case apple
     case kokoro
+    case supertonic3
+    case pocket
 
     var id: String { rawValue }
 
@@ -8,7 +10,7 @@ enum EbookTTSEngineChoice: String, CaseIterable, Identifiable {
         #if targetEnvironment(macCatalyst)
         [.apple]
         #else
-        [.apple, .kokoro]
+        [.apple, .kokoro, .supertonic3, .pocket]
         #endif
     }
 
@@ -16,6 +18,8 @@ enum EbookTTSEngineChoice: String, CaseIterable, Identifiable {
         switch self {
         case .apple: "Apple voices"
         case .kokoro: "Kokoro"
+        case .supertonic3: "Supertonic 3"
+        case .pocket: "Pocket TTS"
         }
     }
 
@@ -23,6 +27,8 @@ enum EbookTTSEngineChoice: String, CaseIterable, Identifiable {
         switch self {
         case .apple: "Built into your iPhone"
         case .kokoro: "Natural English · private and offline"
+        case .supertonic3: "Multilingual · private and offline"
+        case .pocket: "Alba · English · private and offline"
         }
     }
 
@@ -30,6 +36,8 @@ enum EbookTTSEngineChoice: String, CaseIterable, Identifiable {
         switch self {
         case .apple: ""
         case .kokoro: "Download Kokoro"
+        case .supertonic3: "Download Supertonic 3"
+        case .pocket: "Download Pocket TTS"
         }
     }
 
@@ -37,13 +45,17 @@ enum EbookTTSEngineChoice: String, CaseIterable, Identifiable {
         switch self {
         case .apple: ""
         case .kokoro: "Kokoro"
+        case .supertonic3: "Supertonic 3"
+        case .pocket: "Pocket TTS"
         }
     }
 
     var downloadDetail: String {
         switch self {
         case .apple: ""
-        case .kokoro: "About 130 MB · English · 4 voices"
+        case .kokoro: "About 140 MB · English · 4 voices · Apache 2.0"
+        case .supertonic3: "About 172 MB · 31 languages · 10 voices"
+        case .pocket: "About 370 MB · English · Alba MacKenna"
         }
     }
 }

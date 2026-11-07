@@ -59,6 +59,12 @@ interface PreferencesFacade {
     val librarySortStack: Flow<String>
 
     val libraryAdvancedFilters: Flow<String>
+    val libraryMedia: Flow<String>
+    val libraryStatus: Flow<String>
+    val readingEnabled: Flow<Boolean>
+    val librarySelection: Flow<String>
+    fun scopedLibraryMedia(scope: String): Flow<String>
+    fun comicBrowseState(scope: String): Flow<String>
     val excludedLibraryIds: Flow<Set<String>>
     val comicPageLoadingMode: Flow<ComicPageLoadingMode>
     val preferredStartTab: Flow<HearthStartTab>
@@ -85,6 +91,12 @@ interface PreferencesFacade {
     suspend fun setLibraryColumns(columns: Int)
     suspend fun setLibrarySortStack(encoded: String)
     suspend fun setLibraryAdvancedFilters(encoded: String)
+    suspend fun setLibraryMedia(encoded: String)
+    suspend fun setLibraryStatus(encoded: String)
+    suspend fun setReadingEnabled(enabled: Boolean)
+    suspend fun setLibrarySelection(encoded: String)
+    suspend fun setScopedLibraryMedia(scope: String, encoded: String)
+    suspend fun setComicBrowseState(scope: String, encoded: String)
     suspend fun setComicPageLoadingMode(mode: ComicPageLoadingMode)
     suspend fun setPreferredStartTab(tab: HearthStartTab)
     suspend fun setHomeSectionOrder(order: List<HearthHomeSection>)

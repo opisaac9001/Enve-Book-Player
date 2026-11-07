@@ -17,6 +17,7 @@ import com.enve.app.data.kavita.KavitaLegacyAliasStore
 import com.enve.app.data.kavita.expandKavitaSeries
 import com.enve.app.data.kavita.kavitaBookRef
 import com.enve.app.data.kavita.kavitaLegacyChapterCandidate
+import com.enve.app.data.kavita.kavitaSeriesComicMetadata
 import com.enve.app.data.kavita.resolveKavitaIssue
 import com.enve.app.data.repository.grimmory.*
 import com.enve.app.data.remote.dto.*
@@ -2295,16 +2296,18 @@ class GrimmoryRepository @Inject constructor(
             ctx.kavitaAliasKey,
             volumesBySeries.mapValues { (_, volumes) -> kavitaLegacyChapterCandidate(volumes) },
         )
+        val libraryTypes = api.kavitaLibraries().takeIf { it.isSuccessful }?.body().orEmpty().associate { it.id to it.type }
         val base = ctx.serverUrl.trimEnd('/')
         return series.flatMap { item ->
+            val libraryType = (item.libraryId ?: libraryId?.toIntOrNull())?.let(libraryTypes::get)
             volumesBySeries[item.id]
-                ?.let { expandKavitaSeries(item, it, pins[item.id], ctx.serverUrl, libraryId) }
+                ?.let { expandKavitaSeries(item, it, pins[item.id], ctx.serverUrl, libraryId, libraryType) }
                 ?.takeIf { it.isNotEmpty() }
-                ?: listOf(kavitaSeriesBook(item, base, libraryId))
+                ?: listOf(kavitaSeriesBook(item, base, libraryId, libraryType))
         }
     }
 
-    private fun kavitaSeriesBook(item: KavitaSeriesDto, base: String, libraryId: String?): Book = Book(
+    private fun kavitaSeriesBook(item: KavitaSeriesDto, base: String, libraryId: String?, libraryType: Int?): Book = Book(
         id = item.id.toString(),
         title = item.name.orEmpty(),
         coverUrl = "$base/api/image/series-cover?seriesId=${item.id}",
@@ -2316,6 +2319,7 @@ class GrimmoryRepository @Inject constructor(
         readProgress = if (item.pages > 0) (item.pagesRead.toFloat() / item.pages).coerceIn(0f, 1f) else 0f,
         addedOn = parseIsoToEpochMs(item.created) ?: 0L,
         lastReadTime = parseIsoToEpochMs(item.latestReadDate)?.takeIf { item.pagesRead > 0 } ?: 0L,
+        comic = kavitaSeriesComicMetadata(item, libraryType),
     )
 
     private val ScopedContext.kavitaAliasKey: String

@@ -12,5 +12,8 @@ fun List<Book>.visibleLibraryBooks(
 ): List<Book> =
     asSequence()
         .filter { book -> book.isVisibleLibraryBook(excludedLibraryIds, disabledConnectionIds) }
-        .distinctBy { book -> "${book.source.name}:${book.id.ifBlank { book.title }}" }
+        .distinctBy { book ->
+            val identity = "${book.source.name}:${book.id.ifBlank { book.title }}"
+            book.connectionId.takeIf { book.isComic } to identity
+        }
         .toList()

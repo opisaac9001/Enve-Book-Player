@@ -1,0 +1,185 @@
+{
+  "revision": "2b5b939dfa1bca362c5212dcafeb8aadde90b1bc",
+  "files": [
+    {
+      "path": "DurationPredictor_v2.mlmodelc/analytics/coremldata.bin",
+      "size": 243,
+      "sha256": "d8bfa7996e1b4c0e26c9c1edc3861f28726bbd30f74d4a7519e69ef78c1b2d1c"
+    },
+    {
+      "path": "DurationPredictor_v2.mlmodelc/coremldata.bin",
+      "size": 426,
+      "sha256": "f4f1630670632dd149787fb6ea4f934ab915c390a88d87a4e825ca58f041b4b2"
+    },
+    {
+      "path": "DurationPredictor_v2.mlmodelc/model.mil",
+      "size": 105229,
+      "sha256": "0c9c67236d575b2b8f0077815e0b57a30cc7d770dead3ad068fc060c68e33920"
+    },
+    {
+      "path": "DurationPredictor_v2.mlmodelc/weights/weight.bin",
+      "size": 1797952,
+      "sha256": "7f709c544087966d6b2538ac50b7a4014d6e1049e21d713cf3bc71c4c5b9307c"
+    },
+    {
+      "path": "TextEncoder_v2.mlmodelc/analytics/coremldata.bin",
+      "size": 243,
+      "sha256": "973b90afda5d837c037cef2dcbbda275f005eeeb55f2712ca6fbcfa68220f5b5"
+    },
+    {
+      "path": "TextEncoder_v2.mlmodelc/coremldata.bin",
+      "size": 432,
+      "sha256": "c1177e3e03cc4130e5dca18eb007f20573bf95d3938abf62ab2d3470b04cbe7f"
+    },
+    {
+      "path": "TextEncoder_v2.mlmodelc/model.mil",
+      "size": 158547,
+      "sha256": "b0fd5d9a34a301221194a90aa2ba9133b34ed981209f5e6c7b89733c1491074b"
+    },
+    {
+      "path": "TextEncoder_v2.mlmodelc/weights/weight.bin",
+      "size": 18022016,
+      "sha256": "7c7afa5d02426a8a363c9cef0e27ce64a5c57a67d1a59f60aac0ac58ffb9877f"
+    },
+    {
+      "path": "VectorEstimatorVariants/VectorEstimator_v2_L128_int4.mlmodelc/analytics/coremldata.bin",
+      "size": 243,
+      "sha256": "d86b6a6763b342d1e4921ea055e6dfbad082f76643d1a403cce66d2aa2974a2c"
+    },
+    {
+      "path": "VectorEstimatorVariants/VectorEstimator_v2_L128_int4.mlmodelc/coremldata.bin",
+      "size": 553,
+      "sha256": "2e3b78de95e365609e870fe6af76c5f5e87c1a6787871cf3954d445af085f85f"
+    },
+    {
+      "path": "VectorEstimatorVariants/VectorEstimator_v2_L128_int4.mlmodelc/model.mil",
+      "size": 373376,
+      "sha256": "889e69177fea30c276cbff98e752275fddb2a80085a5b30db128b20cad8773a7"
+    },
+    {
+      "path": "VectorEstimatorVariants/VectorEstimator_v2_L128_int4.mlmodelc/weights/weight.bin",
+      "size": 32166112,
+      "sha256": "c6173731642fd2eb40f759a970d4cdea459c0368cc37a29d0b4c1d19fd1ca90a"
+    },
+    {
+      "path": "VectorEstimatorVariants/VectorEstimator_v2_L256_int4.mlmodelc/analytics/coremldata.bin",
+      "size": 243,
+      "sha256": "80775fe9f4b06a17dd7ac9454daf62181ac260df24f4e197bd1a9914d0ba24db"
+    },
+    {
+      "path": "VectorEstimatorVariants/VectorEstimator_v2_L256_int4.mlmodelc/coremldata.bin",
+      "size": 553,
+      "sha256": "7cb6db0a28a0efa6e50248f9ecdb07b4ae8a7e078873eadb2a87f476a310d758"
+    },
+    {
+      "path": "VectorEstimatorVariants/VectorEstimator_v2_L256_int4.mlmodelc/model.mil",
+      "size": 373595,
+      "sha256": "750a25ff6939e27506348a62b8ef14e34495356fb73ba4925f1f7be8d6b953fe"
+    },
+    {
+      "path": "VectorEstimatorVariants/VectorEstimator_v2_L256_int4.mlmodelc/weights/weight.bin",
+      "size": 32167200,
+      "sha256": "e9574dcce25fd7d3f4a68b2257f74fea5227ccd9e6843d53f0e9f5476aa8dc87"
+    },
+    {
+      "path": "VectorEstimatorVariants/VectorEstimator_v2_L512_int4.mlmodelc/analytics/coremldata.bin",
+      "size": 243,
+      "sha256": "439f6850aff99365baae7651e0859e65fde08280fbb6ddb18a7d6fc5cc905d31"
+    },
+    {
+      "path": "VectorEstimatorVariants/VectorEstimator_v2_L512_int4.mlmodelc/coremldata.bin",
+      "size": 553,
+      "sha256": "d8f370e473dafa80fdb00ba827eb87b46b123e5fab8c7c41f7e014140c4d9fce"
+    },
+    {
+      "path": "VectorEstimatorVariants/VectorEstimator_v2_L512_int4.mlmodelc/model.mil",
+      "size": 373595,
+      "sha256": "9173a49f4489ac5317e750cc565a4919786052375031284c4216a55fc523c621"
+    },
+    {
+      "path": "VectorEstimatorVariants/VectorEstimator_v2_L512_int4.mlmodelc/weights/weight.bin",
+      "size": 32168224,
+      "sha256": "75621d8dcab2fb486fcf7424bf44f472c84f55fdabe5b9b9a5fa781447c7a860"
+    },
+    {
+      "path": "Vocoder.mlmodelc/analytics/coremldata.bin",
+      "size": 243,
+      "sha256": "4fe1b825137629a96dc58a1339bc4ece32041b755f99d638f21a153f2e7faed6"
+    },
+    {
+      "path": "Vocoder.mlmodelc/coremldata.bin",
+      "size": 388,
+      "sha256": "dbf54fc98879ee1c9a213452e16d09367f3c34ad489b175bcae7ef5f74f8d121"
+    },
+    {
+      "path": "Vocoder.mlmodelc/model.mil",
+      "size": 75626,
+      "sha256": "5f57d6b16a4ee7237e046a423c265aa2c487857eb0003bba1c89fa66e577353f"
+    },
+    {
+      "path": "Vocoder.mlmodelc/weights/weight.bin",
+      "size": 50672512,
+      "sha256": "b45e4c17a45cc4de30dcedae9f662548aa35f8f9763632c342b8bbef3089fcee"
+    },
+    {
+      "path": "tts.json",
+      "size": 8253,
+      "sha256": "42078d3aef1cd43ab43021f3c54f47d2d75ceb4e75f627f118890128b06a0d09"
+    },
+    {
+      "path": "unicode_indexer.json",
+      "size": 277676,
+      "sha256": "9bf7346e43883a81f8645c81224f786d43c5b57f3641f6e7671a7d6c493cb24f"
+    },
+    {
+      "path": "voice_styles/F1.json",
+      "size": 292046,
+      "sha256": "bbdec6ee00231c2c742ad05483df5334cab3b52fda3ba38e6a07059c4563dbc2"
+    },
+    {
+      "path": "voice_styles/F2.json",
+      "size": 292423,
+      "sha256": "7c722c6a72707b1a77f035d67f0d1351ba187738e06f7683e8c72b1df3477fc6"
+    },
+    {
+      "path": "voice_styles/F3.json",
+      "size": 290794,
+      "sha256": "12f6ef2573baa2defa1128069cb59f203e3ab67c92af77b42df8a0e3a2f7c6ab"
+    },
+    {
+      "path": "voice_styles/F4.json",
+      "size": 291808,
+      "sha256": "c2fa764c1225a76dfc3e2c73e8aa4f70d9ee48793860eb34c295fff01c2e032b"
+    },
+    {
+      "path": "voice_styles/F5.json",
+      "size": 291479,
+      "sha256": "45966e73316415626cf41a7d1c6f3b4c70dbc1ba2bee5c1978ef0ce33244fc8d"
+    },
+    {
+      "path": "voice_styles/M1.json",
+      "size": 291748,
+      "sha256": "e35604687f5d23694b8e91593a93eec0e4eca6c0b02bb8ed69139ab2ea6b0a5b"
+    },
+    {
+      "path": "voice_styles/M2.json",
+      "size": 292055,
+      "sha256": "b76cbf62bac707c710cf0ae5aba5e31eea1a6339a9734bfae33ab98499534a50"
+    },
+    {
+      "path": "voice_styles/M3.json",
+      "size": 290198,
+      "sha256": "ea1ac35ccb91b0d7ecad533a2fbd0eec10c91513d8951e3b25fbba99954e159b"
+    },
+    {
+      "path": "voice_styles/M4.json",
+      "size": 291522,
+      "sha256": "ca8eefad4fcd989c9379032ff3e50738adc547eeb5e221b82593a6d7b3bac303"
+    },
+    {
+      "path": "voice_styles/M5.json",
+      "size": 291469,
+      "sha256": "dd22b92740314321f8ae11c5e87f8dd60d060f15dd3a632b5adf77f471f77af2"
+    }
+  ]
+}

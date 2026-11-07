@@ -212,8 +212,10 @@ struct ReaderScreen: View {
         }
         .overlay {
             if model.presentedIllustration == nil {
-                ReaderKeyboardNavigationCapture(
+                ReaderHardwareNavigationCapture(
                     isRightToLeft: model.isRightToLeftPageProgression,
+                    keyboardEnabled: model.appearance.keyboardTurnsPages,
+                    gameControllersEnabled: model.appearance.gameControllersTurnPages,
                     onForward: { Task { await model.pageForward() } },
                     onBackward: { Task { await model.pageBackward() } }
                 )
@@ -1717,7 +1719,9 @@ struct ReaderScreen: View {
     private var pdfPageTurnGesture: some Gesture {
         DragGesture(minimumDistance: 28, coordinateSpace: .local)
             .onEnded { value in
-                guard case .readyPDF = model.state, !model.appearance.pdfScrollEnabled else { return }
+                guard case .readyPDF = model.state, !model.appearance.pdfScrollEnabled,
+                    model.pdfController?.allowsSwipePageTurns != false
+                else { return }
                 let dx = value.translation.width
                 let dy = value.translation.height
                 guard abs(dx) > 48, abs(dx) > abs(dy) * 1.2 else { return }

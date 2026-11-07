@@ -446,12 +446,13 @@ final class ProfileSession {
         #endif
         await readingCache.trim()
         await providerConnections.retire()
+        // AppState operations await catalog-owned tasks, so cancel those before joining AppState.
+        if didCreateCatalog { await catalog.retire() }
         await appState.retire()
         if didCreatePlayback { await playback.retire() }
         if didCreateSync { await sync.retire() }
         if didCreateProgress { await progress.retire() }
         if didCreateRecovery { await recovery.retire() }
-        if didCreateCatalog { await catalog.retire() }
         for task in Array(artworkOperations.values) { await task.value }
         await listeningStats.flush()
         await readingStats.flush()

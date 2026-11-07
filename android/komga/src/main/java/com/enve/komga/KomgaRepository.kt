@@ -17,6 +17,7 @@ import com.enve.komga.api.KomgaApi
 import com.enve.komga.dto.KomgaBookDto
 import com.enve.komga.dto.KomgaReadProgressUpdateDto
 import com.enve.komga.dto.KomgaUserDto
+import com.enve.komga.dto.comicMetadata
 import com.enve.komga.dto.displayMetadata
 import com.enve.komga.dto.readerFileType
 import com.enve.core.di.RefreshClient
@@ -578,6 +579,7 @@ class KomgaRepository @Inject constructor(
             readProgress = progress,
             isFinished = dto.readProgress?.completed == true || progress >= FINISHED_PROGRESS_THRESHOLD,
             epubLocator = savedPage?.let { "{\"page\":$it}" },
+            comic = dto.comicMetadata(),
         )
     }
 

@@ -66,6 +66,8 @@ data class Book(
 
     val opdsAcquisitionUrl: String? = null,
     val opdsProgressionUrl: String? = null,
+
+    val comic: ComicMetadata? = null,
 ) {
 
     val uniqueKey: String

@@ -73,6 +73,7 @@ private const val MAX_PAGE_DOTS = 10
 internal fun ContinueCarousel(
     title: String,
     books: List<Book>,
+    readingEnabled: Boolean,
     onOpen: (Book) -> Unit,
     onPlay: (Book) -> Unit,
     onSeeAll: () -> Unit,
@@ -92,7 +93,13 @@ internal fun ContinueCarousel(
                 key = { books[it].uniqueKey },
             ) { page ->
                 val book = books[page]
-                BookCard(book, onOpen = { onOpen(book) }, onPlay = { onPlay(book) }, onLongClick = { onContextBook(book) })
+                BookCard(
+                    book,
+                    onOpen = { onOpen(book) },
+                    onPlay = { onPlay(book) },
+                    readingEnabled = readingEnabled,
+                    onLongClick = { onContextBook(book) },
+                )
             }
             ShelfLedge(Modifier.padding(horizontal = Hearth.Spacing.XL))
         }
@@ -136,6 +143,7 @@ internal fun BookCard(
     modifier: Modifier = Modifier,
     prominent: Boolean = false,
     isPlaying: Boolean = false,
+    readingEnabled: Boolean,
     listenTarget: Book? = null,
     readTarget: Book? = null,
     onListen: (Book) -> Unit = {},
@@ -147,6 +155,7 @@ internal fun BookCard(
     val tint = rememberAmbientTint(book)
     val shape = RoundedCornerShape(if (eink.sharpCorners) 0.dp else Hearth.Radius.Card)
     val isEbook = book.mediaType == AppMediaType.EBOOK
+    val opensReader = isEbook && readingEnabled
     val progress = HearthFormat.progress(book)
     val percent = (progress * 100).roundToInt()
     val coverHeight = if (prominent) 140.dp else 92.dp
@@ -207,7 +216,7 @@ internal fun BookCard(
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.M)) {
                 PositionBar(positionReading(book, progress), tint, prominent, Modifier.weight(1f))
                 if (!prominent) {
-                    PlayButton(isEbook, book.title, tint, onPlay)
+                    PlayButton(opensReader, book.title, tint, onPlay)
                 }
             }
             if (prominent) {
@@ -231,11 +240,11 @@ internal fun BookCard(
                     EmberButton(
                         text = when {
                             progress > 0.001f -> "Continue"
-                            isEbook -> "Start reading"
+                            opensReader -> "Start reading"
                             else -> "Start listening"
                         },
                         onClick = onPlay,
-                        leadingIcon = if (isEbook) Icons.AutoMirrored.Filled.MenuBook else Icons.Filled.PlayArrow,
+                        leadingIcon = if (opensReader) Icons.AutoMirrored.Filled.MenuBook else Icons.Filled.PlayArrow,
                         tint = tint,
                     )
                 }
@@ -347,7 +356,7 @@ private fun CardActionButton(
 }
 
 @Composable
-private fun PlayButton(isEbook: Boolean, title: String, tint: Color, onPlay: () -> Unit) {
+private fun PlayButton(opensReader: Boolean, title: String, tint: Color, onPlay: () -> Unit) {
     val palette = Hearth.palette
     val eink = Hearth.eink
     val foreground = when {
@@ -360,7 +369,7 @@ private fun PlayButton(isEbook: Boolean, title: String, tint: Color, onPlay: () 
             .size(48.dp)
             .clip(CircleShape)
             .clickable(role = Role.Button, onClick = onPlay)
-            .semantics { contentDescription = if (isEbook) "Read $title" else "Listen to $title" },
+            .semantics { contentDescription = if (opensReader) "Read $title" else "Listen to $title" },
         contentAlignment = Alignment.Center,
     ) {
         Box(
@@ -372,7 +381,7 @@ private fun PlayButton(isEbook: Boolean, title: String, tint: Color, onPlay: () 
             contentAlignment = Alignment.Center,
         ) {
             Icon(
-                if (isEbook) Icons.AutoMirrored.Filled.MenuBook else Icons.Filled.PlayArrow,
+                if (opensReader) Icons.AutoMirrored.Filled.MenuBook else Icons.Filled.PlayArrow,
                 contentDescription = null,
                 tint = foreground,
                 modifier = Modifier.size(22.dp),

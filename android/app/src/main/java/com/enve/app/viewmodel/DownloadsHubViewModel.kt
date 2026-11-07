@@ -9,6 +9,8 @@ import com.enve.core.data.util.NaturalSort
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
+import com.enve.app.data.offline.ComicDownloadProgress
+import com.enve.app.data.offline.ComicDownloadStatus
 import com.enve.app.data.offline.ComicOfflineService
 import com.enve.app.data.offline.OfflineDownloadManager
 import com.enve.app.data.offline.OfflineDownloadProgress
@@ -26,6 +28,7 @@ import javax.inject.Inject
 data class DownloadsHubState(
     val downloadedBooks: List<Book> = emptyList(),
     val activeDownloads: List<OfflineDownloadProgress> = emptyList(),
+    val activeComicDownloads: List<ComicDownloadProgress> = emptyList(),
     val terminalDownloads: List<OfflineDownloadProgress> = emptyList(),
     val isLoading: Boolean = false,
     val error: String? = null,
@@ -62,6 +65,14 @@ class DownloadsHubViewModel @Inject constructor(
                     it.status == OfflineDownloadStatus.FAILED || it.status == OfflineDownloadStatus.CANCELLED
                 }
                 _state.update { it.copy(activeDownloads = active, terminalDownloads = terminal) }
+            }
+        }
+        viewModelScope.launch {
+            comicOfflineService.progressByBookId.collect { progressById ->
+                val active = progressById.values
+                    .filter { it.status == ComicDownloadStatus.DOWNLOADING || it.status == ComicDownloadStatus.QUEUED }
+                    .sortedWith(Comparator { a, b -> NaturalSort.compare(a.title, b.title) })
+                _state.update { it.copy(activeComicDownloads = active) }
             }
         }
 
@@ -225,6 +236,10 @@ class DownloadsHubViewModel @Inject constructor(
 
     fun cancelActiveDownload(bookId: String) {
         offlineDownloadManager.cancelDownload(bookId)
+    }
+
+    fun cancelComicDownload(bookId: String) {
+        comicOfflineService.cancelDownload(bookId)
     }
 
     fun retryDownload(bookId: String) {

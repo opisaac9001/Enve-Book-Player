@@ -1,10 +1,17 @@
 package com.enve.app.ui.screens
 
 import android.content.Context
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.hasAnyDescendant
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performClick
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ActivityScenario
@@ -13,6 +20,8 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.enve.app.MainActivity
 import com.enve.app.profiles.ProfileActivityBinding
+import com.enve.app.readium.narrator.NarratorPack
+import com.enve.app.viewmodel.ReaderNarratorPackState
 import com.enve.app.viewmodel.ReaderViewModel
 import com.enve.core.data.model.BookSource
 import com.enve.core.reader.ReaderEngineKind
@@ -46,10 +55,17 @@ class ReaderTtsPlaybackTest {
     @Test
     fun foliateSpeechKeepsNormalControlsAccessible() = verify(ReaderEngineKind.FOLIATE)
 
+    @Test
+    fun downloadedNarratorReadsLocally() {
+        val requested = InstrumentationRegistry.getArguments().getString("readerNarrator")
+        org.junit.Assume.assumeTrue("Pass -e readerNarrator PACK to test the optional download", requested != null)
+        verify(ReaderEngineKind.READIUM, NarratorPack.valueOf(checkNotNull(requested)))
+    }
+
     private fun click(description: String) =
         compose.onNode(hasContentDescription(description) and hasClickAction()).performClick()
 
-    private fun verify(engine: ReaderEngineKind) = runBlocking {
+    private fun verify(engine: ReaderEngineKind, narrator: NarratorPack? = null) = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val coordinator = EntryPointAccessors.fromApplication(context, ProfileActivityBinding.DeviceEntryPoint::class.java).profiles()
         ActivityScenario.launch(MainActivity::class.java).use { await { coordinator.activeRuntime.value != null } }
@@ -69,12 +85,42 @@ class ReaderTtsPlaybackTest {
                     vm.state.value.isReady && vm.state.value.ttsReady && vm.state.value.totalPages > 0
                 }
                 val original = vm.state.value.prefs
+                val priorNarrator = vm.state.value.ttsNarratorPack
                 try {
                     withContext(Dispatchers.Main) { if (!vm.state.value.showChrome) vm.toggleChrome() }
                     click("Read back")
                     await { vm.state.value.ttsPlayback.playing && !vm.state.value.ttsPlayback.preparing }
                     click("Pause read back")
                     await { vm.state.value.ttsPlayback.active && !vm.state.value.ttsPlayback.playing }
+                    if (narrator != null) {
+                        click("Voice and speed")
+                        compose.onNodeWithText(narrator.title).performScrollTo().performClick()
+                        await { vm.state.value.ttsNarratorPack == narrator }
+                        if (vm.state.value.ttsNarratorPacks[narrator] != ReaderNarratorPackState.Installed) {
+                            compose.onNodeWithText("Download ${narrator.title} ·", substring = true).performScrollTo().performClick()
+                            compose.onNodeWithText(narrator.terms).assertExists()
+                            assertFalse(vm.state.value.ttsNarratorPacks[narrator] is ReaderNarratorPackState.Downloading)
+                            compose.onNodeWithText("Agree and download").performClick()
+                            withTimeout(300_000) {
+                                while (vm.state.value.ttsNarratorPacks[narrator] != ReaderNarratorPackState.Installed) {
+                                    check(vm.state.value.ttsNarratorPacks[narrator] !is ReaderNarratorPackState.Failed) {
+                                        "Could not install ${narrator.title}"
+                                    }
+                                    delay(100)
+                                }
+                            }
+                        }
+                        compose.onNodeWithText("Done").performScrollTo().performClick()
+                        click("Resume read back")
+                        withTimeout(180_000) {
+                            while (vm.state.value.ttsPlayback.preparing) delay(100)
+                        }
+                        assertTrue(vm.state.value.ttsPlayback.playing)
+                        val audio = context.getSystemService(android.media.AudioManager::class.java)
+                        await { audio.activePlaybackConfigurations.any { it.audioAttributes.contentType == android.media.AudioAttributes.CONTENT_TYPE_SPEECH } }
+                        click("Pause read back")
+                        await { vm.state.value.ttsPlayback.active && !vm.state.value.ttsPlayback.playing }
+                    }
                     val paragraph = vm.state.value.ttsPlayback.paragraph
                     click("Next paragraph")
                     await { vm.state.value.ttsPlayback.paragraph == paragraph + 1 }
@@ -95,7 +141,23 @@ class ReaderTtsPlaybackTest {
                     delay(5_200)
                     assertTrue(vm.state.value.showChrome)
                     assertTrue(vm.state.value.showTtsSheet)
-                    compose.onNodeWithText("Done").performClick()
+                    if (narrator != null) {
+                        compose.onAllNodes(SemanticsMatcher.keyIsDefined(SemanticsActions.Expand))
+                            .onFirst().performSemanticsAction(SemanticsActions.Expand) { it() }
+                        compose.onNode(
+                            SemanticsMatcher.keyIsDefined(SemanticsActions.ScrollBy) and
+                                hasAnyDescendant(hasText("System voice")),
+                        ).performSemanticsAction(SemanticsActions.ScrollBy) { it(0f, 800f) }
+                        compose.waitForIdle()
+                        val directory = File(context.getExternalFilesDir(null), "parity-verification").apply { mkdirs() }
+                        InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot().let { bitmap ->
+                            File(directory, "narrator-${narrator.name}.png").outputStream().use {
+                                bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)
+                            }
+                            bitmap.recycle()
+                        }
+                    }
+                    compose.onNodeWithText("Done").performScrollTo().performClick()
                     click("Resume read back")
                     await { vm.state.value.ttsPlayback.playing && !vm.state.value.ttsPlayback.preparing }
                     click("Contents")
@@ -108,7 +170,7 @@ class ReaderTtsPlaybackTest {
                         bitmap.recycle()
                     }
                 } finally {
-                    withContext(Dispatchers.Main) { vm.stopTts(); vm.updatePreferences(original); vm.flushPreferences() }
+                    withContext(Dispatchers.Main) { vm.stopTts(); if (narrator != null) vm.selectNarrator(priorNarrator); vm.updatePreferences(original); vm.flushPreferences() }
                     withTimeout(5_000) { runtime.component.preferences().readerTtsSpeed.first { it == original.ttsSpeed } }
                 }
             }

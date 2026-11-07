@@ -9,9 +9,14 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.enve.app.readium.MediaOverlayEngine
+import com.enve.app.readium.AudioTrackNarratorOutput
 import com.enve.app.readium.EbookTTSParagraph
 import com.enve.app.readium.EbookTTSService
 import com.enve.app.readium.EbookTTSState
+import com.enve.app.readium.LocalNarratorSpeaker
+import com.enve.app.readium.narrator.LocalNarratorRuntime
+import com.enve.app.readium.narrator.NarratorAudio
+import com.enve.app.readium.narrator.NarratorPack
 import com.enve.app.readium.ReadiumManager
 import com.enve.app.hearth.HearthPreferencesStore
 import com.enve.app.readium.ReadAloudCheckpoint
@@ -72,6 +77,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -84,6 +90,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.readium.r2.navigator.DecorableNavigator
@@ -133,6 +140,14 @@ private data class EpubPageMarker(
 )
 
 data class ReaderTTSVoice(val name: String, val label: String)
+
+sealed interface ReaderNarratorPackState {
+    data object NotInstalled : ReaderNarratorPackState
+    data class Downloading(val progress: Float) : ReaderNarratorPackState
+    data object Removing : ReaderNarratorPackState
+    data object Installed : ReaderNarratorPackState
+    data class Failed(val message: String) : ReaderNarratorPackState
+}
 
 private data class ViewportAnchor(val locator: Locator, val page: String?)
 
@@ -234,6 +249,9 @@ data class ReaderUiState(
     val ttsReady: Boolean = false,
     val ttsVoices: List<ReaderTTSVoice> = emptyList(),
     val ttsVoice: String? = null,
+    val ttsNarratorPack: NarratorPack? = null,
+    val ttsNarratorVoice: String? = null,
+    val ttsNarratorPacks: Map<NarratorPack, ReaderNarratorPackState> = emptyMap(),
     val showTtsSheet: Boolean = false,
     val sliderDragging:     Boolean   = false,
     val sliderPreviewPage:  Int       = 0,
@@ -253,6 +271,8 @@ data class ReaderUiState(
     val liveReadAlongPreparing: Boolean = false,
     val liveReadAlongFollowing: Boolean = true,
     val liveReadAlongStatus: String = "",
+    val liveReadAlongRetryable: Boolean = false,
+    val liveReadAlongFinding: Boolean = false,
     val linkReturnLocator: Locator? = null,
 )
 
@@ -383,11 +403,15 @@ class ReaderViewModel @Inject constructor(
         private const val TAG = "ReaderViewModel"
         private const val READ_ALONG_DECORATION_GROUP = "readAlong"
         private const val READ_ALONG_DECORATION_ID = "readAlong-active"
+        private const val READ_ALONG_WORD_DECORATION_GROUP = "readAlongWord"
+        private const val READ_ALONG_WORD_DECORATION_ID = "readAlong-word"
         private const val MAX_SEARCH_RESULTS = 100
         private const val PROGRESS_PUSH_DEBOUNCE_MS = 5_000L
         private const val PROGRESS_PUSH_MAX_WAIT_MS = 15_000L
         private const val RESTORED_SENTENCE_WINDOW_MS = 120_000L
         private const val VIEWPORT_SETTLE_MS = 350L
+        private const val SYSTEM_SPEECH_INPUT_LENGTH = 4_000
+        private const val NARRATOR_INPUT_LENGTH = 200
     }
 
     private val _state = MutableStateFlow(ReaderUiState())
@@ -485,21 +509,47 @@ class ReaderViewModel @Inject constructor(
                 viewModelScope.launch { ttsPlayback.pause() }
             }
         }.build()
+    private val narratorRuntimeHandle = lazy { LocalNarratorRuntime(appContext) }
+    private val narratorRuntime by narratorRuntimeHandle
+    private val narratorRuntimeLock = Mutex()
+    private var narratorSelectionJob: Job? = null
+    private val narratorSpeaker = LocalNarratorSpeaker(
+        scope = viewModelScope,
+        synthesize = ::synthesizeNarration,
+        output = AudioTrackNarratorOutput(),
+        onStart = { ttsPlayback.onStart(it) },
+        onRangeStart = { id, start -> ttsPlayback.onRangeStart(id, start) },
+        onDone = { ttsPlayback.onDone(it) },
+        onError = { ttsPlayback.onError(it) },
+    )
     private val ttsPlayback: EbookTTSService = EbookTTSService(
         scope = viewModelScope,
         speak = { text, id ->
             ttsAudioManager.requestAudioFocus(ttsAudioFocus) == android.media.AudioManager.AUDIOFOCUS_REQUEST_GRANTED &&
-                ttsEngine?.speak(text, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, id) ==
-                android.speech.tts.TextToSpeech.SUCCESS
+                if (_state.value.ttsNarratorPack != null) {
+                    narratorSpeaker.speak(text, id)
+                } else {
+                    ttsEngine?.speak(text, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, id) ==
+                        android.speech.tts.TextToSpeech.SUCCESS
+                }
         },
         stopSpeech = {
             ttsEngine?.stop()
+            narratorSpeaker.stop()
             ttsAudioManager.abandonAudioFocusRequest(ttsAudioFocus)
         },
         onNavigate = { locator ->
             engineNavigator?.goToLocator(locator) ?: viewModelScope.launch { navigator?.go(locator, animated = false) }
         },
         onFailure = ::postTransientMessage,
+        prepareSpeech = { text -> if (_state.value.ttsNarratorPack != null) narratorSpeaker.prepare(text) },
+        pauseSpeech = {
+            narratorSpeaker.pause().also { held -> if (held) ttsAudioManager.abandonAudioFocusRequest(ttsAudioFocus) }
+        },
+        resumeSpeech = {
+            ttsAudioManager.requestAudioFocus(ttsAudioFocus) == android.media.AudioManager.AUDIOFOCUS_REQUEST_GRANTED &&
+                narratorSpeaker.resume()
+        },
     )
     private var audioIsNavigating: Boolean = false
     private var readAlongSyncJob: Job? = null
@@ -507,6 +557,9 @@ class ReaderViewModel @Inject constructor(
     private var liveReadAlongJob: Job? = null
     private var liveReadAlongBooks: Pair<Book, Book>? = null
     private var liveReadAlongSentence: Int? = null
+    private var liveReadAlongLocator: Locator? = null
+    private var liveReadAlongWord: com.enve.app.storyalign.PassageWordTiming? = null
+    private var liveReadAlongHandoffJob: Job? = null
     @Volatile private var liveReadAlongForeground = true
     private var liveReadAlongGeneration = 0
     private var searchJob: Job? = null
@@ -1028,6 +1081,7 @@ class ReaderViewModel @Inject constructor(
         preferencesLoaded = true
         val voice = hearthPreferences.readerTtsVoice.first()
         if (voice != null) selectTtsVoice(voice, persist = false)
+        loadNarrator()
         ttsEngine?.setSpeechRate(_state.value.prefs.ttsSpeed)
         mediaOverlayEngine?.let { applyReadAloudSettings(it, _state.value.prefs) }
     }
@@ -1960,6 +2014,7 @@ class ReaderViewModel @Inject constructor(
 
         if (newPrefs.ttsSpeed != oldPrefs.ttsSpeed) {
             ttsEngine?.setSpeechRate(newPrefs.ttsSpeed)
+            narratorSpeaker.invalidate()
             ttsPlayback.restart()
         }
         if (newPrefs.bionicReading != oldPrefs.bionicReading) {
@@ -2114,9 +2169,9 @@ class ReaderViewModel @Inject constructor(
     }
 
     fun setTtsEngine(engine: android.speech.tts.TextToSpeech?) {
-        ttsPlayback.pause()
+        if (_state.value.ttsNarratorPack == null) ttsPlayback.pause()
         ttsEngine = engine
-        ttsPlayback.setReady(engine != null)
+        ttsPlayback.setReady(speechReady())
         if (engine == null) {
             _state.update { it.copy(ttsReady = false) }
             return
@@ -2165,9 +2220,11 @@ class ReaderViewModel @Inject constructor(
 
     fun setTtsUnavailable(message: String) {
         ttsUnavailableReason = message
-        ttsPlayback.pause()
         _state.update { it.copy(ttsReady = false) }
-        postTransientMessage(message)
+        if (_state.value.ttsNarratorPack == null) {
+            ttsPlayback.pause()
+            postTransientMessage(message)
+        }
     }
 
     fun setTtsBookFile(file: java.io.File) {
@@ -2187,8 +2244,144 @@ class ReaderViewModel @Inject constructor(
             return
         }
         _state.update { it.copy(ttsVoice = name) }
-        if (persist) viewModelScope.launch { hearthPreferences.setReaderTtsVoice(name) }
+        if (persist) {
+            viewModelScope.launch { hearthPreferences.setReaderTtsVoice(name) }
+            if (_state.value.ttsNarratorPack != null) {
+                selectNarrator(null)
+                return
+            }
+        }
+        if (_state.value.ttsNarratorPack == null) ttsPlayback.restart()
+    }
+
+    fun selectNarrator(pack: NarratorPack?) {
+        narratorSelectionJob?.cancel()
+        if (pack == _state.value.ttsNarratorPack) return
+        narratorSelectionJob = viewModelScope.launch {
+            applyNarrator(pack, pack?.let { hearthPreferences.readerNarratorVoice(it).first() ?: it.voices.first() })
+            hearthPreferences.setReaderNarratorPack(pack)
+        }
+    }
+
+    fun selectNarratorVoice(voice: String) {
+        val pack = _state.value.ttsNarratorPack ?: return
+        if (voice !in pack.voices || voice == _state.value.ttsNarratorVoice) return
+        _state.update { it.copy(ttsNarratorVoice = voice) }
+        viewModelScope.launch { hearthPreferences.setReaderNarratorVoice(pack, voice) }
+        narratorSpeaker.invalidate()
         ttsPlayback.restart()
+    }
+
+    fun downloadNarrator(pack: NarratorPack) {
+        when (_state.value.ttsNarratorPacks[pack]) {
+            is ReaderNarratorPackState.Downloading, ReaderNarratorPackState.Removing, ReaderNarratorPackState.Installed -> return
+            else -> setNarratorPackState(pack, ReaderNarratorPackState.Downloading(0f))
+        }
+        viewModelScope.launch {
+            val installed = try {
+                withContext(Dispatchers.IO) {
+                    narratorRuntime.install(pack) { progress ->
+                        _state.update { s ->
+                            if (s.ttsNarratorPacks[pack] !is ReaderNarratorPackState.Downloading) s
+                            else s.copy(ttsNarratorPacks = s.ttsNarratorPacks + (pack to ReaderNarratorPackState.Downloading(progress.coerceIn(0f, 1f))))
+                        }
+                    }
+                }
+                true
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                false
+            }
+            setNarratorPackState(
+                pack,
+                if (installed) ReaderNarratorPackState.Installed
+                else ReaderNarratorPackState.Failed("Couldn't download ${pack.title}. Check your connection and storage, then try again."),
+            )
+            ttsPlayback.setReady(speechReady())
+        }
+    }
+
+    fun removeNarrator(pack: NarratorPack) {
+        if (_state.value.ttsNarratorPacks[pack] != ReaderNarratorPackState.Installed) return
+        if (pack == _state.value.ttsNarratorPack) {
+            ttsPlayback.stop()
+            narratorSpeaker.invalidate()
+        }
+        setNarratorPackState(pack, ReaderNarratorPackState.Removing)
+        ttsPlayback.setReady(speechReady())
+        viewModelScope.launch {
+            val removed = try {
+                narratorRuntimeLock.withLock { withContext(Dispatchers.IO) { narratorRuntime.remove(pack) } }
+                true
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                false
+            }
+            val installed = !removed && withContext(Dispatchers.IO) { narratorRuntime.isInstalled(pack) }
+            setNarratorPackState(pack, if (installed) ReaderNarratorPackState.Installed else ReaderNarratorPackState.NotInstalled)
+            if (!removed) postTransientMessage("Couldn't remove ${pack.title}. Try again.")
+            ttsPlayback.setReady(speechReady())
+        }
+    }
+
+    private suspend fun loadNarrator() {
+        val packs = withContext(Dispatchers.IO) {
+            NarratorPack.entries.associateWith {
+                if (narratorRuntime.isInstalled(it)) ReaderNarratorPackState.Installed else ReaderNarratorPackState.NotInstalled
+            }
+        }
+        _state.update { it.copy(ttsNarratorPacks = packs + it.ttsNarratorPacks) }
+        val pack = hearthPreferences.readerNarratorPack.first()
+        if (narratorSelectionJob?.isActive != true) {
+            applyNarrator(pack, pack?.let { hearthPreferences.readerNarratorVoice(it).first() ?: it.voices.first() })
+        }
+    }
+
+    private fun applyNarrator(pack: NarratorPack?, voice: String?) {
+        _state.update { it.copy(ttsNarratorPack = pack, ttsNarratorVoice = voice) }
+        ttsPlayback.maxInputLength = if (pack == null) SYSTEM_SPEECH_INPUT_LENGTH else NARRATOR_INPUT_LENGTH
+        narratorSpeaker.invalidate()
+        val ready = speechReady()
+        if (!ready) ttsPlayback.pause()
+        ttsPlayback.setReady(ready)
+        ttsPlayback.restart()
+    }
+
+    private fun setNarratorPackState(pack: NarratorPack, packState: ReaderNarratorPackState) {
+        _state.update { it.copy(ttsNarratorPacks = it.ttsNarratorPacks + (pack to packState)) }
+    }
+
+    private fun speechReady(): Boolean {
+        val pack = _state.value.ttsNarratorPack ?: return ttsEngine != null
+        return _state.value.ttsNarratorPacks[pack] == ReaderNarratorPackState.Installed
+    }
+
+    private fun canStartSpeech(): Boolean {
+        val pack = _state.value.ttsNarratorPack
+        if (pack == null) {
+            if (!_state.value.ttsReady) {
+                postTransientMessage(ttsUnavailableReason)
+                showTtsSheet(true)
+            }
+            return _state.value.ttsReady
+        }
+        if (_state.value.ttsNarratorPacks[pack] == ReaderNarratorPackState.Installed) return true
+        postTransientMessage("Download ${pack.title} in Read back settings to use this narrator.")
+        showTtsSheet(true)
+        return false
+    }
+
+    private suspend fun synthesizeNarration(text: String): NarratorAudio {
+        val pack = checkNotNull(_state.value.ttsNarratorPack)
+        val voice = _state.value.ttsNarratorVoice ?: pack.voices.first()
+        val speed = _state.value.prefs.ttsSpeed
+        val language = (publication ?: ttsPublication)?.metadata?.languages?.firstOrNull()
+            ?: java.util.Locale.getDefault().toLanguageTag()
+        return narratorRuntimeLock.withLock {
+            withContext(Dispatchers.Default) { narratorRuntime.synthesize(pack, voice, text, language, speed) }
+        }
     }
 
     fun toggleTtsPlayback() {
@@ -2207,10 +2400,7 @@ class ReaderViewModel @Inject constructor(
     @OptIn(ExperimentalReadiumApi::class)
     fun startTts() {
         if (_state.value.liveReadAlongActive) stopLiveReadAlong()
-        if (!_state.value.ttsReady) {
-            postTransientMessage(ttsUnavailableReason)
-            return
-        }
+        if (!canStartSpeech()) return
         if (_state.value.readAlongActive) stopReadAlongMode()
         if (audioPlaybackManager.state.value.isPlaying) audioPlaybackManager.togglePlayPause()
         var iterator: Content.Iterator? = null
@@ -2243,10 +2433,7 @@ class ReaderViewModel @Inject constructor(
 
     fun speakSelection(text: String) {
         if (text.isBlank()) return
-        if (!_state.value.ttsReady) {
-            postTransientMessage(ttsUnavailableReason)
-            return
-        }
+        if (!canStartSpeech()) return
         if (_state.value.liveReadAlongActive) stopLiveReadAlong()
         if (_state.value.readAlongActive) stopReadAlongMode()
         if (audioPlaybackManager.state.value.isPlaying) audioPlaybackManager.togglePlayPause()
@@ -2269,10 +2456,100 @@ class ReaderViewModel @Inject constructor(
         _state.update { it.copy(liveReadAlongFollowing = true) }
     }
 
+    fun retryLiveReadAlong() {
+        keepChromeAlive()
+        passageAlignment.retryPreparation()
+    }
+
+    fun listenFromSelection() {
+        listenFromHere(_state.value.pendingSelection ?: return)
+    }
+
+    fun listenFromHere(selection: Locator? = null) {
+        val books = liveReadAlongBooks ?: return
+        val audiobook = books.second
+        val nav = navigator ?: return
+        if (searchEpubFile == null) return
+        keepChromeAlive()
+        liveReadAlongHandoffJob?.cancel()
+        liveReadAlongHandoffJob = viewModelScope.launch {
+            val anchor = selection ?: firstVisibleTextLocator(nav)
+            if (liveReadAlongBooks != books || navigator !== nav) return@launch
+            val quote = anchor?.text?.highlight?.takeIf(String::isNotBlank)
+            if (anchor == null || quote == null) {
+                postTransientMessage("Enve couldn't read the text on this page.")
+                return@launch
+            }
+            val starting = !_state.value.liveReadAlongActive
+            _state.update { it.copy(liveReadAlongFinding = true, liveReadAlongStatus = "Finding this passage in the audiobook…", showChrome = true) }
+            try {
+                if (starting) startLiveReadAlong(holdPlayback = true)
+                val generation = liveReadAlongGeneration
+                val search = async {
+                    passageAlignment.findListeningPosition(books.first, audiobook, anchor.href.toString(), quote,
+                        anchor.text.before, anchor.text.after, anchor.locations.progression)
+                }
+                val ended = async { _state.first { !it.liveReadAlongActive } }
+                val resolution = select<com.enve.app.storyalign.PassageTextResolution?> {
+                    search.onAwait { it }
+                    ended.onAwait { null }
+                }
+                search.cancel()
+                ended.cancel()
+                if (liveReadAlongGeneration != generation || liveReadAlongBooks != books || navigator !== nav) return@launch
+                when (resolution) {
+                    null -> return@launch
+                    is com.enve.app.storyalign.PassageTextResolution.Matched -> {
+                        val target = (resolution.seekSeconds * 1000).toLong()
+                        playbackFacade.seekTo(target)
+                        if (!audioPlaybackManager.state.value.isPlaying) playbackFacade.togglePlayPause()
+                        kotlinx.coroutines.withTimeoutOrNull(2_000) {
+                            audioPlaybackManager.state.first { kotlin.math.abs(it.currentPositionMs - target) < 1_500 }
+                        }
+                        liveReadAlongSentence = null
+                        _state.update { it.copy(liveReadAlongFollowing = true) }
+                        return@launch
+                    }
+                    is com.enve.app.storyalign.PassageTextResolution.NotSpoken ->
+                        postTransientMessage("This text has no corresponding narration.")
+                    com.enve.app.storyalign.PassageTextResolution.Ambiguous ->
+                        postTransientMessage("This text appears more than once nearby. Select a few more words to start there.")
+                    is com.enve.app.storyalign.PassageTextResolution.Unprepared -> postTransientMessage(
+                        if (resolution.sentence == null) "Enve couldn't find this text in the linked book."
+                        else "Enve couldn't find a reliable audio match for this passage.",
+                    )
+                }
+                if (starting) stopLiveReadAlong()
+            } finally {
+                if (liveReadAlongHandoffJob === coroutineContext[Job]) _state.update { it.copy(liveReadAlongFinding = false) }
+            }
+        }
+    }
+
+    private fun applyLiveReadAlongWord(mapping: com.enve.app.storyalign.PassageMapping, word: com.enve.app.storyalign.PassageWordTiming?) {
+        if (word == liveReadAlongWord) return
+        liveReadAlongWord = word
+        val nav = navigator as? DecorableNavigator ?: return
+        val p = _state.value.prefs
+        val base = liveReadAlongLocator
+        val decoration = if (word != null && base != null && p.readAloudHighlight) {
+            val quote = mapping.quote(word)
+            Decoration(
+                id = READ_ALONG_WORD_DECORATION_ID,
+                locator = base.copy(text = Locator.Text(highlight = quote.highlight,
+                    before = quote.before.takeIf(String::isNotEmpty), after = quote.after.takeIf(String::isNotEmpty))),
+                style = Decoration.Style.Highlight(tint = parseHexColor(p.readAloudHighlightHex)?.toArgb() ?: 0xFFFFF59D.toInt(), isActive = true),
+            )
+        } else null
+        viewModelScope.launch {
+            nav.applyDecorations(listOfNotNull(decoration), READ_ALONG_WORD_DECORATION_GROUP)
+        }
+    }
+
     fun skipLiveReadAlongBackward() = playbackFacade.skipBackward()
     fun skipLiveReadAlongForward() = playbackFacade.skipForward()
 
-    private fun startLiveReadAlong() {
+    private fun startLiveReadAlong(holdPlayback: Boolean = false) {
         val pair = liveReadAlongBooks ?: return
         val epub = searchEpubFile ?: return
         val nav = navigator ?: return
@@ -2287,7 +2564,8 @@ class ReaderViewModel @Inject constructor(
         liveReadAlongJob = viewModelScope.launch {
             try {
                 var lastLinkProbe = 0L
-                if (playbackFacade.nowPlaying.value?.bookKey != audiobook.uniqueKey) {
+                val opening = playbackFacade.nowPlaying.value?.bookKey != audiobook.uniqueKey
+                if (opening) {
                     playbackFacade.open(audiobook)
                     kotlinx.coroutines.withTimeout(15_000) {
                         playbackFacade.nowPlaying.first { it?.bookKey == audiobook.uniqueKey }
@@ -2297,6 +2575,10 @@ class ReaderViewModel @Inject constructor(
                     audioPlaybackManager.state.first {
                         it.isReady && it.mediaId == audioPlaybackManager.nowPlayingMetadata.value?.mediaId
                     }
+                }
+                if (holdPlayback && opening) {
+                    kotlinx.coroutines.withTimeoutOrNull(1_500) { audioPlaybackManager.state.first { it.isPlaying } }
+                        ?.let { playbackFacade.togglePlayPause() }
                 }
                 passageAlignment.follow(ebook, audiobook, epub, audioPlaybackManager.currentAudioTracks(),
                     playback = { audioPlaybackManager.state.value },
@@ -2315,21 +2597,28 @@ class ReaderViewModel @Inject constructor(
                         }
                         _state.update { it.copy(
                             liveReadAlongPlaying = audioPlaybackManager.state.value.isPlaying,
-                            liveReadAlongPreparing = prepared.preparing,
+                            liveReadAlongPreparing = prepared.preparing || it.liveReadAlongFinding,
+                            liveReadAlongRetryable = prepared.retryable && !it.liveReadAlongFinding && it.liveReadAlongFollowing,
                             liveReadAlongStatus = when {
+                                it.liveReadAlongFinding -> "Finding this passage in the audiobook…"
                                 !it.liveReadAlongFollowing -> "Browsing independently"
                                 prepared.cannotKeepUp -> "Preparing more slowly than playback. Lower the speed for fewer gaps."
                                 else -> prepared.message
                             },
                         ) }
-                        if (!liveReadAlongForeground) return@update
+                        if (!liveReadAlongForeground || _state.value.liveReadAlongFinding) return@update
                         val mapping = prepared.mapping
                         if (mapping == null) {
                             liveReadAlongSentence = null
                             clearReadAlongHighlight()
                             return@update
                         }
-                        if (isTextSelectionActive() || !_state.value.liveReadAlongFollowing || mapping.sentence == liveReadAlongSentence) return@update
+                        if (isTextSelectionActive() || !_state.value.liveReadAlongFollowing) return@update
+                        if (mapping.sentence == liveReadAlongSentence) {
+                            applyLiveReadAlongWord(mapping, prepared.word)
+                            return@update
+                        }
+                        applyLiveReadAlongWord(mapping, null)
                         val href = parsePublicationHref(mapping.href) ?: return@update
                         val link = publication?.linkWithHref(href) ?: return@update
                         val base = publication?.locatorFromLink(link) ?: return@update
@@ -2354,6 +2643,8 @@ class ReaderViewModel @Inject constructor(
                                 if (!reached || generation != liveReadAlongGeneration || navigator !== nav || !_state.value.liveReadAlongFollowing) return@update
                                 applyReadAlongHighlight(locator)
                                 liveReadAlongSentence = mapping.sentence
+                                liveReadAlongLocator = locator
+                                applyLiveReadAlongWord(mapping, prepared.word)
                                 if (epubCheckpointLease == null) scheduleSync(locator) else {
                                     readiumCheckpointDirty = true
                                     scheduleReadiumCheckpointSync(nav)
@@ -2372,7 +2663,7 @@ class ReaderViewModel @Inject constructor(
                 postTransientMessage("Couldn't prepare read along. Check the linked audiobook, connection and free storage, then try again.")
             } finally {
                 if (generation == liveReadAlongGeneration) {
-                    _state.update { it.copy(liveReadAlongActive = false, liveReadAlongPlaying = false, liveReadAlongPreparing = false) }
+                    _state.update { it.copy(liveReadAlongActive = false, liveReadAlongPlaying = false, liveReadAlongPreparing = false, liveReadAlongRetryable = false) }
                     clearReadAlongHighlight()
                 }
             }
@@ -2384,8 +2675,9 @@ class ReaderViewModel @Inject constructor(
         liveReadAlongJob?.cancel()
         liveReadAlongJob = null
         liveReadAlongSentence = null
+        liveReadAlongLocator = null
         audioIsNavigating = false
-        _state.update { it.copy(liveReadAlongActive = false, liveReadAlongPlaying = false, liveReadAlongPreparing = false) }
+        _state.update { it.copy(liveReadAlongActive = false, liveReadAlongPlaying = false, liveReadAlongPreparing = false, liveReadAlongRetryable = false) }
         clearReadAlongHighlight()
     }
 
@@ -2864,9 +3156,11 @@ class ReaderViewModel @Inject constructor(
     }
 
     private fun clearReadAlongHighlight() {
+        liveReadAlongWord = null
         val nav = navigator as? DecorableNavigator ?: return
         viewModelScope.launch {
             nav.applyDecorations(emptyList(), READ_ALONG_DECORATION_GROUP)
+            nav.applyDecorations(emptyList(), READ_ALONG_WORD_DECORATION_GROUP)
         }
     }
 
@@ -4031,6 +4325,10 @@ class ReaderViewModel @Inject constructor(
         engineNavigator = null
         mediaOverlayEngine?.release()
         ttsPlayback.stop()
+        narratorSpeaker.release()
+        if (narratorRuntimeHandle.isInitialized()) {
+            applicationScope.launch { narratorRuntimeLock.withLock { narratorRuntime.close() } }
+        }
 
         val pubToClose = publication
         publication = null

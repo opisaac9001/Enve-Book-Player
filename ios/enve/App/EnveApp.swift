@@ -93,7 +93,7 @@ struct EnveApp: App {
             }
             .task(id: ObjectIdentifier(profiles.activeSession)) {
                 HardcoverSyncService.shared.configurationChanged()
-                guard !profiles.isLocked else { return }
+                guard !profiles.isLocked, !profiles.activeSession.isRetired else { return }
                 let session = profiles.activeSession
                 session.start()
                 if session.isOwner { session.storyAlignService.loadPausedConversion() }
@@ -111,16 +111,17 @@ struct EnveApp: App {
             }
             .onChange(of: profiles.isLocked) { _, locked in
                 HardcoverSyncService.shared.configurationChanged()
-                if !locked {
-                    profiles.activeSession.start()
-                    profiles.activeSession.activateSystemAccess()
-                }
+                let session = profiles.activeSession
+                // A queued unlock can arrive while the outgoing session retires; the destination starts itself.
+                guard !locked, !session.isRetired else { return }
+                session.start()
+                session.activateSystemAccess()
             }
             .onChange(of: scenePhase) { _, phase in
                 let session = profiles.activeSession
                 if phase == .active {
                     HardcoverSyncService.shared.resume()
-                    guard !profiles.isLocked else { return }
+                    guard !profiles.isLocked, !session.isRetired else { return }
                     #if os(iOS)
                     session.createdPassageAlignment?.sceneDidBecomeActive()
                     session.fileSharing.startWatching()

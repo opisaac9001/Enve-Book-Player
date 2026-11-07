@@ -49,6 +49,21 @@ class BookVisibilityTest {
         )
     }
 
+    @Test
+    fun comicIssuesWithSameRemoteIdStaySeparatePerConnection() {
+        val metadata = ComicMetadata(seriesId = "series")
+        val pdfIssue = book("issue-1", "connection-a", "connection-a::comics")
+            .copy(mediaType = AppMediaType.EBOOK, primaryFileType = "PDF", comic = metadata)
+        val cbzIssue = book("issue-1", "connection-b", "connection-b::comics")
+            .copy(mediaType = AppMediaType.EBOOK, primaryFileType = "CBZ")
+        val repeatedPdfIssue = pdfIssue.copy(title = "repeat")
+
+        assertEquals(
+            listOf(pdfIssue, cbzIssue),
+            listOf(pdfIssue, cbzIssue, repeatedPdfIssue).visibleLibraryBooks(emptySet()),
+        )
+    }
+
     private fun book(id: String, connectionId: String, libraryId: String?) = Book(
         id = id,
         title = id,

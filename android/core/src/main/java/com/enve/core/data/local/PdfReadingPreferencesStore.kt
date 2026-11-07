@@ -4,15 +4,19 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
+import com.enve.core.reader.PdfPageAdjust
 import com.enve.core.reader.PdfReadingLayout
 import kotlinx.coroutines.flow.first
 
 class PdfReadingPreferencesStore(private val dataStore: DataStore<Preferences>) {
     suspend fun layout(bookKey: String): PdfReadingLayout {
         val preferences = dataStore.data.first()
+        val pageAdjust = preferences[pageAdjustKey(bookKey)]
         return PdfReadingLayout(
             twoPageView = preferences[twoPageViewKey(bookKey)] ?: false,
             showCoverSeparately = preferences[showCoverSeparatelyKey(bookKey)] ?: false,
+            pageAdjust = PdfPageAdjust.entries.firstOrNull { it.label == pageAdjust } ?: PdfPageAdjust.FIT,
         )
     }
 
@@ -20,6 +24,7 @@ class PdfReadingPreferencesStore(private val dataStore: DataStore<Preferences>) 
         dataStore.edit { preferences ->
             preferences[twoPageViewKey(bookKey)] = layout.twoPageView
             preferences[showCoverSeparatelyKey(bookKey)] = layout.showCoverSeparately
+            preferences[pageAdjustKey(bookKey)] = layout.pageAdjust.label
         }
     }
 
@@ -27,6 +32,7 @@ class PdfReadingPreferencesStore(private val dataStore: DataStore<Preferences>) 
         dataStore.edit { preferences ->
             preferences.remove(twoPageViewKey(bookKey))
             preferences.remove(showCoverSeparatelyKey(bookKey))
+            preferences.remove(pageAdjustKey(bookKey))
         }
     }
 
@@ -35,4 +41,7 @@ class PdfReadingPreferencesStore(private val dataStore: DataStore<Preferences>) 
 
     private fun showCoverSeparatelyKey(bookKey: String) =
         booleanPreferencesKey("reader.pdf.showCoverSeparately.$bookKey")
+
+    private fun pageAdjustKey(bookKey: String) =
+        stringPreferencesKey("reader.pdf.pageAdjust.$bookKey")
 }

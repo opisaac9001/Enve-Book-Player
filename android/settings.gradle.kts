@@ -20,6 +20,16 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        exclusiveContent {
+            forRepository {
+                ivy("https://github.com/k2-fsa/sherpa-onnx/releases/download") {
+                    name = "sherpa-onnx releases"
+                    patternLayout { artifact("v[revision]/[module]-[revision].[ext]") }
+                    metadataSources { artifact() }
+                }
+            }
+            filter { includeModule("com.k2fsa.sherpa.onnx", "sherpa-onnx-static-link-onnxruntime") }
+        }
     }
 }
 

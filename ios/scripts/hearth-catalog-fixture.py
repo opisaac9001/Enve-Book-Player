@@ -6,7 +6,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Event
 from urllib.parse import parse_qs, urlparse
 
-state = {"mode": "initial", "requests": [], "libraryMode": "ready", "blockedLibraryRequests": 0}
+state = {"mode": "initial", "requests": [], "libraryMode": "ready", "blockedLibraryRequests": 0, "initialBookCount": 1}
 library_release = Event()
 library_release.set()
 
@@ -67,7 +67,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply({})
 
         state["requests"].append({"path": url.path, "query": query, "method": self.command})
-        ids = list(range(131, 0, -1)) if state["mode"] != "initial" else [1]
+        count = state["initialBookCount"] + (130 if state["mode"] != "initial" else 0)
+        ids = list(range(count, 0, -1))
         if url.path.endswith(("/auth/login", "/auth/refresh")):
             return self.reply({"accessToken": "fixture-token"})
         if url.path.endswith("/users/me"):
@@ -124,7 +125,11 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Local Grimmory fixture for Hearth refresh UI verification")
     parser.add_argument("--port", type=int, default=0)
+    parser.add_argument("--initial-count", type=int, default=1)
     args = parser.parse_args()
+    if args.initial_count < 1:
+        parser.error("--initial-count must be positive")
+    state["initialBookCount"] = args.initial_count
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     print(f"Hearth fixture: http://127.0.0.1:{server.server_port}", flush=True)
     try:

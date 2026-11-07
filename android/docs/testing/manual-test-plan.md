@@ -114,13 +114,21 @@ Use a synthetic local fixture for destructive catalog scenarios, never a custome
 - [ ] Pause/resume, previous/next paragraph, voice and speed changes work; changing voice or speed while paused leaves speech paused
 - [ ] During speech or recorded narration, the compact player's up arrow reopens the normal controls without stopping playback
 - [ ] Open Contents, Appearance and voice/speed settings while speaking; dismissing a sheet retains the current speech session
+- [ ] Download and retry for each optional narrator show its terms and size; Cancel does not download, and Agree and download starts progress
 - [ ] Backgrounding pauses native TTS; returning permits explicit resume at the last spoken word
 - [ ] Progress persists across close and reopen; pull-on-open resolves cross-device position
 - [ ] PDF and comic readers open and page correctly
+- [ ] PDF Appearance: Crop, Fit, Fill Height and Fill Width preserve page shape and persist per book after reopening
+- [ ] Pan cropped PDF pages to every printed edge; pinch and double-tap zoom, then double-tap again to reset without turning pages
+- [ ] PDF zoom resets after changing page, spread, sizing mode or orientation; two-page view still preserves the selected page and progress
+- [ ] At 320dp width and 200% text, all PDF sizing choices remain reachable by scrolling and Done stays visible
+- [ ] In e-ink mode, PDF pan and pinch settle when the fingers lift
 
-`NativeTtsSynthesisTest` verifies installed-engine discovery and non-silent synthesized PCM. `ReaderTtsPlaybackTest` exercises the real reader and native speech with Readium and Foliate. `LibraryControlsParityTest` checks sort persistence, scope-preserving reset, touch targets and adaptive layouts. Run these on the Pixel 7a; they use generated text fixtures rather than customer books. Android uses installed system TTS voices; Kokoro and Supertonic are not Android engines.
+`PdfPageAdjustVerificationTest` checks printed-edge recovery, zoom resets and sizing persistence. `PdfPageViewportVerificationTest` checks pinch input and deferred e-ink drawing. Run the sizing-choice test at 320dp width and 200% text as well as normal display settings. `PdfReadingLayoutVerificationTest` covers spread navigation and progress.
 
-Read-aloud transport references refreshed on 2026-10-24: Silveran Reader `669a56903316fa51bf9c2850bdc89d9bbcac37dc` and Storyteller `b821e0f4eb6c7c960386c90fa5cc1c7c84bfcd2d`. Both clean reference checkouts were fetched and already matched upstream `main`.
+`NativeTtsSynthesisTest` verifies installed-engine discovery and non-silent synthesized PCM. `ReaderTtsPlaybackTest` exercises the real reader and native speech with Readium and Foliate. `LibraryControlsParityTest` checks sort persistence, scope-preserving reset, touch targets and adaptive layouts. Run these on the Pixel 7a; they use generated text fixtures rather than customer books. The reader also offers local Kokoro, Supertonic 3 and Pocket TTS packs. Pass the instrument argument `readerNarrator` with `KOKORO`, `SUPERTONIC` or `POCKET` to exercise a download, local playback and pause/resume in `ReaderTtsPlaybackTest.downloadedNarratorReadsLocally`. After installing Kokoro, run `KokoroEnglishFrontendTest` to check that names, numbers and punctuation are spoken.
+
+Read-aloud transport references refreshed on 2026-11-06: Silveran Reader `669a56903316fa51bf9c2850bdc89d9bbcac37dc` and Storyteller `b7a91e9d22e6792587db27b0dc33c44a0ac3a6cd`. Both clean reference checkouts were fetched; Storyteller was fast-forwarded to upstream `main`.
 
 ## Settings
 

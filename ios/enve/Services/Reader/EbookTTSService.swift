@@ -24,6 +24,8 @@ final class EbookTTSService: NSObject, ObservableObject {
     private static let engineDefaultsKey = "ebookTTS.engine"
     private static let kokoroVoiceDefaultsKey = "ebookTTS.kokoroVoice"
     private static let kokoroModelReadyDefaultsKey = "ebookTTS.kokoroModelReady"
+    private static let enhancedVoiceDefaultsKey = "ebookTTS.enhancedVoice"
+    private static let enhancedModelReadyDefaultsKey = "ebookTTS.enhancedModelReady"
 
     @Published var isPlaying = false
     @Published var isPaused = false
@@ -44,19 +46,25 @@ final class EbookTTSService: NSObject, ObservableObject {
     @Published private(set) var speechError: String?
     @Published private(set) var kokoroVoice: KokoroTTSVoice = .heart
     @Published private(set) var kokoroDownloadState: TTSModelDownloadState = .notDownloaded
+    @Published private(set) var enhancedVoice: EnhancedTTSVoice = .m1
+    @Published private(set) var supertonicDownloadState: TTSModelDownloadState = .notDownloaded
 
     private(set) var synthesizer: PublicationSpeechSynthesizer?
     private var publication: Publication?
     private var appleEngine: AnchoredAVTTSEngine?
-    private var modelDownloadGeneration = 0
+    private var modelDownloadGenerations: [EbookTTSEngineChoice: Int] = [:]
     private static var modelPreparationTask: Task<Void, Never>?
     private var enginePreparationTask: Task<Void, Never>?
     private var kokoroEngine: KokoroTTSEngine?
+    @Published private(set) var pocketDownloadState: TTSModelDownloadState = .notDownloaded
+    private var requestedEngine: EbookTTSEngineChoice?
+    private var pocketEngine: PocketTTSEngine?
+    private var supertonicEngine: SupertonicTTSEngine?
     private let startAnchor = EbookTTSStartAnchor()
     private var playbackGeneration = 0
     private var needsInitialStart = false
     private var pendingStartLocator: Locator?
-    private var modelDownloadTask: Task<Void, Never>?
+    private var modelDownloadTasks: [EbookTTSEngineChoice: Task<Void, Never>] = [:]
     private var paragraphPrewarmTask: Task<Void, Never>?
     private var prewarmedUtterance: PublicationSpeechSynthesizer.Utterance?
     private var nowPlayingTitle: String?
@@ -83,8 +91,12 @@ final class EbookTTSService: NSObject, ObservableObject {
         switch engineChoice {
         case .apple:
             languages = availableVoices.map { $0.language.removingRegion() }
-        case .kokoro:
+        case .kokoro, .pocket:
             languages = [Language(code: .bcp47("en"))]
+        case .supertonic3:
+            languages = EnhancedTTSVoice.supportedLanguageCodes.map {
+                Language(code: .bcp47($0))
+            }
         }
         return Array(Set(languages))
             .sorted { $0.localizedDescription() < $1.localizedDescription() }
@@ -94,6 +106,10 @@ final class EbookTTSService: NSObject, ObservableObject {
         switch engineChoice {
         case .kokoro:
             return "Kokoro · \(kokoroVoice.displayName)"
+        case .pocket:
+            return "Pocket TTS · Alba"
+        case .supertonic3:
+            return "Supertonic 3 · \(enhancedVoice.rawValue)"
         case .apple:
             break
         }
@@ -134,20 +150,22 @@ final class EbookTTSService: NSObject, ObservableObject {
             userDefaults.string(forKey: Self.kokoroVoiceDefaultsKey)
             .flatMap(KokoroTTSVoice.init(rawValue:))
             ?? .heart
-        kokoroDownloadState =
-            userDefaults.bool(forKey: Self.kokoroModelReadyDefaultsKey)
-                && KokoroTTSRuntime.hasDownloadedVoices
-            ? .ready
-            : .notDownloaded
+        kokoroDownloadState = installedModelState(for: .kokoro)
+        enhancedVoice =
+            userDefaults.string(forKey: Self.enhancedVoiceDefaultsKey)
+            .flatMap(EnhancedTTSVoice.init(rawValue:))
+            ?? .m1
+        pocketDownloadState = installedModelState(for: .pocket)
+        supertonicDownloadState = installedModelState(for: .supertonic3)
         let savedEngine =
             userDefaults.string(forKey: Self.engineDefaultsKey)
             .flatMap(EbookTTSEngineChoice.init(rawValue:))
             ?? .apple
         engineChoice = isModelReady(for: savedEngine) ? savedEngine : .apple
-        // A Kokoro choice blocked only by the system is kept for a system where it is safe again.
+        // Retain the choice while the updated model package still needs downloading.
         if let storedEngine = userDefaults.string(forKey: Self.engineDefaultsKey),
             storedEngine != engineChoice.rawValue,
-            savedEngine != .kokoro || KokoroTTSRuntime.isSupportedOnCurrentOS
+            savedEngine != .kokoro
         {
             userDefaults.set(engineChoice.rawValue, forKey: Self.engineDefaultsKey)
         }
@@ -273,6 +291,8 @@ final class EbookTTSService: NSObject, ObservableObject {
         rateCommitTask = nil
         appleEngine?.currentRate = rate
         kokoroEngine?.currentRate = rate
+        supertonicEngine?.currentRate = rate
+        pocketEngine?.currentRate = rate
         guard userDefaults.object(forKey: Self.rateDefaultsKey) as? Double != Double(rate) else { return }
         userDefaults.set(Double(rate), forKey: Self.rateDefaultsKey)
         updateNowPlayingInfo()
@@ -288,6 +308,7 @@ final class EbookTTSService: NSObject, ObservableObject {
     }
 
     func setEngineChoice(_ choice: EbookTTSEngineChoice) {
+        requestedEngine = choice
         if choice == .kokoro, !KokoroTTSRuntime.isSupportedOnCurrentOS {
             reportKokoroUnavailable()
             return
@@ -305,46 +326,60 @@ final class EbookTTSService: NSObject, ObservableObject {
     }
 
     func downloadModel(for choice: EbookTTSEngineChoice) {
-        guard choice == .kokoro else { return }
-        guard KokoroTTSRuntime.isSupportedOnCurrentOS else {
-            reportKokoroUnavailable()
+        requestedEngine = choice
+        switch choice {
+        case .apple:
             return
+        case .kokoro:
+            guard KokoroTTSRuntime.isSupportedOnCurrentOS else {
+                reportKokoroUnavailable()
+                return
+            }
+        case .supertonic3, .pocket:
+            break
         }
-        switch kokoroDownloadState {
+        switch downloadState(for: choice) {
         case .notDownloaded, .failed:
             break
         case .downloading, .removing, .ready:
             return
         }
 
-        modelDownloadGeneration &+= 1
-        let generation = modelDownloadGeneration
-        kokoroDownloadState = .downloading(0)
-        modelDownloadTask?.cancel()
-        modelDownloadTask = Task { [weak self] in
+        let generation = beginModelTransfer(.downloading(0), for: choice)
+        modelDownloadTasks[choice] = Task { [weak self] in
             guard let service = self else { return }
             do {
                 await Self.modelPreparationTask?.value
                 try Task.checkCancellation()
-                try await KokoroTTSRuntime.shared.prepare { progress in
+                let progress: @Sendable (Double) -> Void = { progress in
                     Task { @MainActor in
-                        guard service.modelDownloadGeneration == generation,
-                            case .downloading = service.kokoroDownloadState
+                        guard service.modelDownloadGenerations[choice] == generation,
+                            case .downloading = service.downloadState(for: choice)
                         else { return }
-                        service.kokoroDownloadState = .downloading(progress)
+                        service.setDownloadState(.downloading(progress), for: choice)
                     }
                 }
-                guard !Task.isCancelled, service.modelDownloadGeneration == generation else { return }
-                service.kokoroDownloadState = .ready
-                service.userDefaults.set(true, forKey: Self.kokoroModelReadyDefaultsKey)
-                service.applyEngineChoice(.kokoro)
+                switch choice {
+                case .apple:
+                    return
+                case .kokoro:
+                    try await KokoroTTSRuntime.shared.prepare(progress: progress)
+                case .pocket:
+                    try await PocketTTSRuntime.shared.prepare(progress: progress)
+                case .supertonic3:
+                    try await SupertonicTTSRuntime.shared.prepareVoicePack(progress: progress)
+                }
+                guard !Task.isCancelled, service.modelDownloadGenerations[choice] == generation else { return }
+                service.setDownloadState(.ready, for: choice)
+                service.userDefaults.set(true, forKey: Self.modelReadyDefaultsKey(for: choice))
+                if service.requestedEngine == choice { service.applyEngineChoice(choice) }
+                else { service.prepareEngine(service.engineChoice) }
             } catch is CancellationError {
-                guard service.modelDownloadGeneration == generation else { return }
-                service.kokoroDownloadState = service.userDefaults.bool(forKey: Self.kokoroModelReadyDefaultsKey)
-                    && KokoroTTSRuntime.hasDownloadedVoices ? .ready : .notDownloaded
+                guard service.modelDownloadGenerations[choice] == generation else { return }
+                service.setDownloadState(service.installedModelState(for: choice), for: choice)
             } catch {
-                guard service.modelDownloadGeneration == generation else { return }
-                service.kokoroDownloadState = .failed(error.localizedDescription)
+                guard service.modelDownloadGenerations[choice] == generation else { return }
+                service.setDownloadState(.failed(error.localizedDescription), for: choice)
             }
         }
     }
@@ -359,25 +394,31 @@ final class EbookTTSService: NSObject, ObservableObject {
     }
 
     func removeModel(for choice: EbookTTSEngineChoice) {
-        guard choice == .kokoro, kokoroDownloadState == .ready else { return }
-        if engineChoice == .kokoro {
+        guard choice != .apple, downloadState(for: choice) == .ready else { return }
+        if engineChoice == choice {
             applyEngineChoice(.apple)
         }
-        modelDownloadGeneration &+= 1
-        let generation = modelDownloadGeneration
-        kokoroDownloadState = .removing
-        modelDownloadTask?.cancel()
-        modelDownloadTask = Task { [weak self] in
+        let generation = beginModelTransfer(.removing, for: choice)
+        modelDownloadTasks[choice] = Task { [weak self] in
             guard let service = self else { return }
             do {
                 await Self.modelPreparationTask?.value
-                try await KokoroTTSRuntime.shared.removeModels()
-                guard service.modelDownloadGeneration == generation else { return }
-                service.userDefaults.set(false, forKey: Self.kokoroModelReadyDefaultsKey)
-                service.kokoroDownloadState = .notDownloaded
+                switch choice {
+                case .apple:
+                    return
+                case .kokoro:
+                    try await KokoroTTSRuntime.shared.removeModels()
+                case .pocket:
+                    try await PocketTTSRuntime.shared.removeModels()
+                case .supertonic3:
+                    try await SupertonicTTSRuntime.shared.removeModels()
+                }
+                guard service.modelDownloadGenerations[choice] == generation else { return }
+                service.userDefaults.set(false, forKey: Self.modelReadyDefaultsKey(for: choice))
+                service.setDownloadState(.notDownloaded, for: choice)
             } catch {
-                guard service.modelDownloadGeneration == generation else { return }
-                service.kokoroDownloadState = .failed(error.localizedDescription)
+                guard service.modelDownloadGenerations[choice] == generation else { return }
+                service.setDownloadState(.failed(error.localizedDescription), for: choice)
             }
         }
     }
@@ -386,7 +427,18 @@ final class EbookTTSService: NSObject, ObservableObject {
         switch choice {
         case .apple: .ready
         case .kokoro: kokoroDownloadState
+        case .supertonic3: supertonicDownloadState
+        case .pocket: pocketDownloadState
         }
+    }
+
+    func setEnhancedVoice(_ voice: EnhancedTTSVoice) {
+        guard voice != enhancedVoice else { return }
+        enhancedVoice = voice
+        userDefaults.set(voice.rawValue, forKey: Self.enhancedVoiceDefaultsKey)
+
+        guard engineChoice == .supertonic3 else { return }
+        rebuildPreservingPlayback()
     }
 
     func setKokoroVoice(_ voice: KokoroTTSVoice) {
@@ -474,6 +526,8 @@ final class EbookTTSService: NSObject, ObservableObject {
         synthesizer = nil
         appleEngine = nil
         kokoroEngine = nil
+        pocketEngine = nil
+        supertonicEngine = nil
         publication = nil
         nowPlayingTitle = nil
         nowPlayingAuthor = nil
@@ -626,9 +680,16 @@ final class EbookTTSService: NSObject, ObservableObject {
         previous?.cancel()
         let task = Task { [weak self] in
             await previous?.value
-            guard !Task.isCancelled, self?.engineChoice == choice else { return }
-            if choice == .apple {
+            guard !Task.isCancelled, let service = self, service.engineChoice == choice else { return }
+            // An in-flight download or removal owns its runtime; unloading would cancel it.
+            let unloadKokoro = choice != .kokoro && !service.isTransferringModel(for: .kokoro)
+            let unloadSupertonic = choice != .supertonic3 && !service.isTransferringModel(for: .supertonic3)
+            if choice != .pocket && !service.isTransferringModel(for: .pocket) { await PocketTTSRuntime.shared.unload() }
+            if unloadKokoro {
                 await KokoroTTSRuntime.shared.unload()
+            }
+            if unloadSupertonic {
+                await SupertonicTTSRuntime.shared.unload()
             }
         }
         Self.modelPreparationTask = task
@@ -641,6 +702,56 @@ final class EbookTTSService: NSObject, ObservableObject {
             true
         case .kokoro:
             kokoroDownloadState == .ready && KokoroTTSRuntime.isSupportedOnCurrentOS
+        case .supertonic3:
+            supertonicDownloadState == .ready
+        case .pocket:
+            pocketDownloadState == .ready
+        }
+    }
+
+    private func isTransferringModel(for choice: EbookTTSEngineChoice) -> Bool {
+        switch downloadState(for: choice) {
+        case .downloading, .removing: true
+        case .notDownloaded, .ready, .failed: false
+        }
+    }
+
+    private func installedModelState(for choice: EbookTTSEngineChoice) -> TTSModelDownloadState {
+        let hasDownloadedVoices: Bool
+        switch choice {
+        case .apple: return .ready
+        case .kokoro: hasDownloadedVoices = KokoroTTSRuntime.hasDownloadedVoices
+        case .supertonic3: hasDownloadedVoices = SupertonicTTSRuntime.hasDownloadedVoices
+        case .pocket: hasDownloadedVoices = PocketTTSRuntime.hasDownloadedVoices
+        }
+        return userDefaults.bool(forKey: Self.modelReadyDefaultsKey(for: choice)) && hasDownloadedVoices
+            ? .ready
+            : .notDownloaded
+    }
+
+    private func setDownloadState(_ state: TTSModelDownloadState, for choice: EbookTTSEngineChoice) {
+        switch choice {
+        case .apple: break
+        case .kokoro: kokoroDownloadState = state
+        case .supertonic3: supertonicDownloadState = state
+        case .pocket: pocketDownloadState = state
+        }
+    }
+
+    private func beginModelTransfer(_ state: TTSModelDownloadState, for choice: EbookTTSEngineChoice) -> Int {
+        let generation = (modelDownloadGenerations[choice] ?? 0) &+ 1
+        modelDownloadGenerations[choice] = generation
+        setDownloadState(state, for: choice)
+        modelDownloadTasks[choice]?.cancel()
+        return generation
+    }
+
+    private static func modelReadyDefaultsKey(for choice: EbookTTSEngineChoice) -> String {
+        switch choice {
+        case .apple: ""
+        case .kokoro: kokoroModelReadyDefaultsKey
+        case .supertonic3: enhancedModelReadyDefaultsKey
+        case .pocket: "ebookTTS.pocketModelReady"
         }
     }
 
@@ -687,32 +798,34 @@ final class EbookTTSService: NSObject, ObservableObject {
         prewarmedUtterance = nil
         let config = makeConfiguration()
         speechError = nil
+        appleEngine = nil
+        kokoroEngine = nil
+        supertonicEngine = nil
+        pocketEngine = nil
+        let prepared: any TTSEngine & Sendable
         switch engineChoice {
         case .apple:
-            kokoroEngine = nil
             let engine = AnchoredAVTTSEngine(rate: rate, anchor: startAnchor)
             appleEngine = engine
-            let prepared = PreparedTTSEngine(engine: engine, preparation: enginePreparationTask)
-            synthesizer = PublicationSpeechSynthesizer(
-                publication: publication,
-                config: config,
-                engineFactory: { @Sendable in prepared },
-                tokenizerFactory: Self.paragraphTokenizerFactory,
-                delegate: self
-            )
+            prepared = PreparedTTSEngine(engine: engine, preparation: enginePreparationTask)
         case .kokoro:
-            appleEngine = nil
             let engine = KokoroTTSEngine(voice: kokoroVoice, rate: rate, startAnchor: startAnchor)
             kokoroEngine = engine
-            let prepared = PreparedTTSEngine(engine: engine, preparation: enginePreparationTask)
-            synthesizer = PublicationSpeechSynthesizer(
-                publication: publication,
-                config: config,
-                engineFactory: { @Sendable in prepared },
-                tokenizerFactory: Self.paragraphTokenizerFactory,
-                delegate: self
-            )
+            prepared = PreparedTTSEngine(engine: engine, preparation: enginePreparationTask)
+        case .supertonic3:
+            let engine = SupertonicTTSEngine(voice: enhancedVoice, rate: rate, startAnchor: startAnchor)
+            supertonicEngine = engine
+            prepared = PreparedTTSEngine(engine: engine, preparation: enginePreparationTask)
+        case .pocket:
+            let engine = PocketTTSEngine(rate: rate, startAnchor: startAnchor)
+            pocketEngine = engine
+            prepared = PreparedTTSEngine(engine: engine, preparation: enginePreparationTask)
         }
+        synthesizer = PublicationSpeechSynthesizer(
+            publication: publication, config: config,
+            engineFactory: { @Sendable in prepared },
+            tokenizerFactory: Self.paragraphTokenizerFactory, delegate: self
+        )
 
         guard shouldResume else { return }
         if shouldPauseAfterResume {
@@ -738,9 +851,11 @@ final class EbookTTSService: NSObject, ObservableObject {
 
     private func prewarmParagraphs(after locator: Locator) {
         paragraphPrewarmTask?.cancel()
-        guard engineChoice == .kokoro, let publication else { return }
+        guard engineChoice != .apple, let publication else { return }
 
+        let choice = engineChoice
         let kokoroVoice = self.kokoroVoice
+        let enhancedVoice = self.enhancedVoice
         let speed = rate
         let preferredLanguage = self.preferredLanguage
         paragraphPrewarmTask = Task {
@@ -790,12 +905,28 @@ final class EbookTTSService: NSObject, ObservableObject {
                             .map(String.init)
                             ?? "en"
                         do {
-                            guard code == "en" else { continue }
-                            _ = try await KokoroTTSRuntime.shared.synthesize(
-                                text: text,
-                                voice: kokoroVoice,
-                                speed: speed
-                            )
+                            switch choice {
+                            case .apple:
+                                return
+                            case .kokoro:
+                                guard code == "en" else { continue }
+                                _ = try await KokoroTTSRuntime.shared.synthesize(
+                                    text: text,
+                                    voice: kokoroVoice,
+                                    speed: speed
+                                )
+                            case .pocket:
+                                guard code == "en" else { continue }
+                                _ = try await PocketTTSRuntime.shared.synthesize(text: text)
+                            case .supertonic3:
+                                guard EnhancedTTSVoice.supportedLanguageCodes.contains(code) else { continue }
+                                _ = try await SupertonicTTSRuntime.shared.synthesize(
+                                    text: text,
+                                    language: code,
+                                    voice: enhancedVoice,
+                                    speed: speed
+                                )
+                            }
                         } catch {
                             return
                         }

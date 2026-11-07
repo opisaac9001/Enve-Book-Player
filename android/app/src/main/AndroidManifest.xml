@@ -125,6 +125,19 @@
             android:windowSoftInputMode="adjustResize" />
 
         <activity
+            android:name=".cloud.CloudImportActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|uiMode|keyboard|keyboardHidden"
+            android:theme="@style/Theme.Enve" />
+
+        <activity
+            android:name=".cloud.WebStoryImportActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|uiMode|keyboard|keyboardHidden"
+            android:theme="@style/Theme.Enve"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
             android:name=".sleep.SleepPermissionsRationaleActivity"
             android:exported="true"
             android:theme="@style/Theme.Enve">

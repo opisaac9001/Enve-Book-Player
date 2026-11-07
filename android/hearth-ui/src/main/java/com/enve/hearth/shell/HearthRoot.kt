@@ -41,7 +41,6 @@ import androidx.compose.ui.unit.dp
 import com.enve.hearth.shell.profileViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.ImageLoader
-import com.enve.core.data.model.AnnotationMedia
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.ReaderAnnotation
@@ -58,6 +57,8 @@ import com.enve.hearth.bookorbit.BookOrbitHighlightsScreen
 import com.enve.hearth.bookorbit.BookOrbitInsightsScreen
 import com.enve.hearth.design.parseHexColor
 import com.enve.hearth.detail.BookDetailScreen
+import com.enve.hearth.hasPlayableAudio
+import com.enve.hearth.opensInPlayer
 import com.enve.hearth.home.HearthHomeScreen
 import com.enve.hearth.journal.HearthCompletionCenterScreen
 import com.enve.hearth.journal.HearthInsightsScreen
@@ -110,6 +111,8 @@ fun HearthRoot(
     val currentChapter by vm.currentChapter.collectAsStateWithLifecycle()
     val preferredStartTab by vm.preferredStartTab.collectAsStateWithLifecycle()
     val showDockBookShortcut by vm.showDockBookShortcut.collectAsStateWithLifecycle()
+    val activeDownloads by vm.activeDownloads.collectAsStateWithLifecycle()
+    val readingEnabled by vm.readingEnabled.collectAsStateWithLifecycle()
 
     HearthTheme(
         mode = mode,
@@ -235,12 +238,10 @@ fun HearthRoot(
                 showPlayer = true
             }
             val playBook: (Book) -> Unit = { book ->
-                if (book.mediaType == AppMediaType.EBOOK) {
-                    onOpenEbook(book)
-                } else if (book.isPodcastShow) {
-                    detailBook = book
-                } else {
-                    listenBook(book)
+                when {
+                    book.mediaType == AppMediaType.EBOOK && readingEnabled -> onOpenEbook(book)
+                    !book.hasPlayableAudio || book.isPodcastShow -> detailBook = book
+                    else -> listenBook(book)
                 }
             }
             val mantelBook = lastOpenedBook
@@ -250,27 +251,29 @@ fun HearthRoot(
             val openMantelItem: () -> Unit = {
                 when {
                     lastOpenedIsActiveAudio -> showPlayer = true
-                    mantelBook?.mediaType == AppMediaType.EBOOK -> onOpenEbook(mantelBook)
-                    mantelBook != null && !lastOpenedIsActiveAudio -> playBook(mantelBook)
+                    mantelBook != null -> playBook(mantelBook)
                     nowPlaying != null -> showPlayer = true
                 }
             }
             val activateMantelItem: () -> Unit = {
                 when {
                     lastOpenedIsActiveAudio || (mantelBook == null && nowPlaying != null) -> vm.togglePlayPause()
-                    mantelBook?.mediaType == AppMediaType.EBOOK -> onOpenEbook(mantelBook)
                     mantelBook != null -> playBook(mantelBook)
                 }
+            }
+            val mantelDisplayBook = if (!readingEnabled && mantelBook?.mediaType == AppMediaType.EBOOK) {
+                mantelBook.copy(mediaType = AppMediaType.AUDIOBOOK)
+            } else {
+                mantelBook
             }
             val selectBook: (Book) -> Unit = {
                 if (it.mediaType == AppMediaType.PODCAST && it.episodeId != null) episodeBook = it
                 else detailBook = it
             }
             val jumpToAnnotation: (Book, ReaderAnnotation) -> Unit = { book, annotation ->
-                val positionMs = annotation.audioPositionMs
-                if (AnnotationMedia.parse(annotation.media) == AnnotationMedia.AUDIOBOOK || positionMs != null) {
+                if (annotation.opensInPlayer) {
                     pendingPlayerBookId = book.id
-                    vm.openAudioAt(book, positionMs ?: 0L)
+                    vm.openAudioAt(book, annotation.audioPositionMs ?: 0L)
                     showPlayer = true
                 } else {
                     onOpenAnnotation(book, annotation)
@@ -316,6 +319,7 @@ fun HearthRoot(
                         covered = overlayVisible,
                         onSelectBook = selectBook,
                         onPlayBook = playBook,
+                        onListenBook = listenBook,
                         onPlaybackStarted = { showPlayer = true },
                         onAddSource = onManageSources,
                         onOpenSettings = { showSettings = true },
@@ -334,20 +338,29 @@ fun HearthRoot(
                         onOpenSettings = { showSettings = true },
                     )
                 }
-                MantelBar(
-                    selected = tab,
-                    onSelect = { tab = it },
-                    lastOpenedBook = lastOpenedBook,
-                    nowPlaying = nowPlaying,
-                    transport = transport,
-                    subtitle = currentChapter,
-                    onOpenItem = openMantelItem,
-                    onItemAction = activateMantelItem,
-                    showItemShortcut = showDockBookShortcut,
-                    modifier = Modifier
+                Column(
+                    Modifier
                         .align(Alignment.BottomCenter)
                         .onSizeChanged { mantelBarHeightPx = it.height },
-                )
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    DownloadProgressPill(
+                        transfers = activeDownloads,
+                        onOpen = { onOpenSettingsDestination(HearthSettingsDestination.Downloads) },
+                        modifier = Modifier.padding(horizontal = Hearth.Spacing.L),
+                    )
+                    MantelBar(
+                        selected = tab,
+                        onSelect = { tab = it },
+                        lastOpenedBook = mantelDisplayBook,
+                        nowPlaying = nowPlaying,
+                        transport = transport,
+                        subtitle = currentChapter,
+                        onOpenItem = openMantelItem,
+                        onItemAction = activateMantelItem,
+                        showItemShortcut = showDockBookShortcut,
+                    )
+                }
 
                 AnimatedVisibility(
                     visible = showInsights,

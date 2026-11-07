@@ -48,6 +48,7 @@ struct AppRootView: View {
     @State private var tourPresented = false
     @State private var reauthConnection: ServerConnection?
     @State private var showOrphanedMatcher = false
+    @State private var downloadsPresented = false
     private struct SharedPositionLink: Identifiable {
         let id = UUID()
         let message: String
@@ -143,6 +144,10 @@ struct AppRootView: View {
         }
         .sheet(isPresented: $showOrphanedMatcher) {
             NavigationStack { OrphanedBookMatcherScreen() }
+                .enveEnvironment(session: profileSession)
+        }
+        .sheet(isPresented: $downloadsPresented) {
+            NavigationStack { DownloadsScreen() }
                 .enveEnvironment(session: profileSession)
         }
         .sheet(item: $sharedPositionLink) { link in
@@ -1787,10 +1792,14 @@ struct AppRootView: View {
                 .environment(\.sharesShellBackdrop, spreadFold != nil)
 
                 if layout == .standard {
-                    MantelBar(tab: $tab, style: prefs.shellNavigationStyle, bottomSafeArea: shellBottomSafeArea, onSelect: selectTab)
-                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { mantelBarHeight = $0 }
-                        .ignoresSafeArea(.keyboard, edges: .bottom)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                    VStack(spacing: 8) {
+                        DownloadProgressPill(tasks: engine.downloads.activeTasks) { downloadsPresented = true }
+                        MantelBar(tab: $tab, style: prefs.shellNavigationStyle, bottomSafeArea: shellBottomSafeArea, onSelect: selectTab)
+                    }
+                    .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: engine.downloads.activeTasks.isEmpty)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { mantelBarHeight = $0 }
+                    .ignoresSafeArea(.keyboard, edges: .bottom)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
             .overlay {
