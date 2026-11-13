@@ -171,7 +171,11 @@ final class BookloreAudiobookSyncStrategy: ProviderSyncStrategy {
                     let localTime = local?.progress ?? book.currentTime
                     let localDate = local.flatMap { Date(timeIntervalSince1970: $0.lastUpdated) } ?? book.lastUpdate
 
-                    guard let serverResult = try await provider.fetchAudiobookProgressState(for: book) else {
+                    let serverProgress = try await provider.fetchAudiobookProgressState(for: book)
+                    guard book.stableId != playbackState.currentBook?.stableId,
+                        pendingSync.entries[book.stableId] == nil
+                    else { continue }
+                    guard let serverResult = serverProgress else {
                         guard localTime > 1 else { continue }
                         try await provider.updatePlaybackProgress(
                             book: book,

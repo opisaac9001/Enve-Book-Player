@@ -21,31 +21,55 @@
         android:layout_height="match_parent"
         android:gravity="center"
         android:orientation="vertical"
-        android:padding="32dp">
+        android:padding="40dp">
+
+        <ImageView
+            android:id="@+id/loading_cover"
+            android:layout_width="132dp"
+            android:layout_height="198dp"
+            android:layout_marginBottom="24dp"
+            android:alpha="0"
+            android:contentDescription="@null"
+            android:scaleType="centerCrop"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/loading_title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="28dp"
+            android:ellipsize="end"
+            android:fontFamily="serif"
+            android:gravity="center"
+            android:maxLines="3"
+            android:textColor="#F2E6D6"
+            android:textSize="24sp"
+            android:textStyle="bold" />
 
         <ProgressBar
-            android:layout_width="48dp"
-            android:layout_height="48dp"
-            android:indeterminateTint="#BB86FC" />
+            android:id="@+id/loading_spinner"
+            android:layout_width="28dp"
+            android:layout_height="28dp"
+            android:indeterminateTint="@color/enve_ember" />
 
         <TextView
             android:id="@+id/loading_text"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="20dp"
+            android:layout_marginTop="16dp"
+            android:gravity="center"
             android:text="@string/reader_preparing_book"
-            android:textColor="#E0E0E0"
-            android:textSize="15sp"
-            android:fontFamily="sans-serif-medium" />
+            android:textColor="#B8A894"
+            android:textSize="14sp" />
 
         <ProgressBar
             android:id="@+id/loading_progress_bar"
             style="@android:style/Widget.ProgressBar.Horizontal"
-            android:layout_width="220dp"
+            android:layout_width="200dp"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:progressTint="#BB86FC"
-            android:progressBackgroundTint="#333333"
+            android:progressBackgroundTint="#40B8A894"
+            android:progressTint="@color/enve_ember"
             android:visibility="gone" />
 
         <TextView
@@ -53,18 +77,21 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:textColor="#9E9E9E"
+            android:textColor="#B8A894"
             android:textSize="12sp"
             android:visibility="gone" />
 
         <Button
             android:id="@+id/btn_cancel"
+            style="?android:attr/borderlessButtonStyle"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
+            android:layout_marginTop="28dp"
+            android:minHeight="48dp"
             android:text="@string/action_cancel"
-            android:textColor="#BB86FC"
-            android:backgroundTint="@android:color/transparent" />
+            android:textAllCaps="false"
+            android:textColor="@color/enve_ember"
+            android:textSize="15sp" />
 
     </LinearLayout>
 

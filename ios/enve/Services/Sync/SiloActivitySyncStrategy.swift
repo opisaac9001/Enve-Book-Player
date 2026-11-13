@@ -8,7 +8,6 @@ final class SiloActivitySyncStrategy: ProviderSyncStrategy {
 
     private let minimumServerSyncInterval: TimeInterval = 60
     private var lastSyncTime: Date?
-    private var cursorUnsupportedConnections: Set<UUID> = []
     private let playbackState: any PlaybackStateProvider
     private let providerConnections: any ProviderConnectionAccessing
     private let books: any BookQuerying
@@ -65,27 +64,7 @@ final class SiloActivitySyncStrategy: ProviderSyncStrategy {
                     libraryId: nil,
                     domain: .activity
                 )
-
-                if cursorUnsupportedConnections.contains(connection.id) {
-                    pulled += try await pullSnapshot(
-                        providerId: connection.id,
-                        through: provider
-                    )
-                } else {
-                    do {
-                        pulled += try await pullCursorDeltas(
-                            scope: scope,
-                            forceFullReplay: force,
-                            through: provider
-                        )
-                    } catch SiloProgressDeltaError.unsupported {
-                        cursorUnsupportedConnections.insert(connection.id)
-                        pulled += try await pullSnapshot(
-                            providerId: connection.id,
-                            through: provider
-                        )
-                    }
-                }
+                pulled += try await pullSnapshot(scope: scope, through: provider)
             } catch {
                 if error is CancellationError || (error as? URLError)?.code == .cancelled {
                     return ProviderSyncResult(pulled: pulled, pushed: pushed, failedBackends: failedBackends, wasCancelled: true)
@@ -106,73 +85,12 @@ final class SiloActivitySyncStrategy: ProviderSyncStrategy {
         return ProviderSyncResult(pulled: pulled, pushed: pushed, failedBackends: failedBackends)
     }
 
-    private func pullCursorDeltas(
-        scope: ServerMirrorScope,
-        forceFullReplay: Bool,
-        through provider: SiloProvider
-    ) async throws -> Int {
-        let checkpoint = mirrorCheckpoints.checkpoint(for: scope)
-        let isFullReplay = forceFullReplay || checkpoint?.cursor == nil
-        if isFullReplay {
-            return try await pullCompleteCursorState(
-                scope: scope,
-                through: provider
-            )
-        }
-
-        var cursor = checkpoint?.cursor ?? "0"
-        var pulled = 0
-        var pageCount = 0
-
-        while true {
-            try Task.checkCancellation()
-            let page = try await provider.fetchProgressDelta(since: cursor)
-            let result = await apply(
-                page.progress,
-                providerId: scope.connectionId,
-                reconcileMissing: false
-            )
-            guard result.didApplyPage else { return pulled }
-            pulled += result.appliedCount
-
-            mirrorCheckpoints.commit(
-                scope: scope,
-                syncLevel: .nativeCursorDelta,
-                cursor: page.nextCursor,
-                fingerprint: ServerMirrorFingerprint.cursor(page.nextCursor),
-                itemCount: page.progress.count
-            )
-
-            if page.nextCursor == cursor { return pulled }
-            cursor = page.nextCursor
-            pageCount += 1
-            if pageCount > 10_000 {
-                throw ProviderError.serverError("Silo progress cursor exceeded the safety limit")
-            }
-        }
-    }
-
-    private func pullCompleteCursorState(
+    // Silo v2 has no progress delta feed; the cursor-paged listing is a complete snapshot of the profile.
+    private func pullSnapshot(
         scope: ServerMirrorScope,
         through provider: SiloProvider
     ) async throws -> Int {
-        var cursor = "0"
-        var progress: [UserMediaProgress] = []
-        var pageCount = 0
-
-        while true {
-            try Task.checkCancellation()
-            let page = try await provider.fetchProgressDelta(since: cursor)
-            progress.append(contentsOf: page.progress)
-            let previousCursor = cursor
-            cursor = page.nextCursor
-            if cursor == previousCursor { break }
-            pageCount += 1
-            if pageCount > 10_000 {
-                throw ProviderError.serverError("Silo progress cursor exceeded the safety limit")
-            }
-        }
-
+        let progress = try await provider.fetchUserMediaProgress(libraryId: "")
         let result = await apply(
             progress,
             providerId: scope.connectionId,
@@ -182,25 +100,12 @@ final class SiloActivitySyncStrategy: ProviderSyncStrategy {
 
         mirrorCheckpoints.commit(
             scope: scope,
-            syncLevel: .nativeCursorDelta,
-            cursor: cursor,
-            fingerprint: ServerMirrorFingerprint.cursor(cursor),
+            syncLevel: .fullSnapshot,
+            fingerprint: ServerMirrorFingerprint.activity(
+                progress.map { "\($0.libraryItemId)|\($0.currentTime)|\($0.isFinished)|\($0.lastUpdate.timeIntervalSince1970)" }
+            ),
             itemCount: progress.count
         )
-        return result.appliedCount
-    }
-
-    private func pullSnapshot(
-        providerId: UUID,
-        through provider: SiloProvider
-    ) async throws -> Int {
-        let progress = try await provider.fetchUserMediaProgress(libraryId: "")
-        let result = await apply(
-            progress,
-            providerId: providerId,
-            reconcileMissing: false
-        )
-        guard result.didApplyPage else { return 0 }
         return result.appliedCount
     }
 

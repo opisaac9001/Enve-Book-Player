@@ -20,6 +20,8 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -209,11 +211,23 @@ fun ShelfHeader(
 @Composable
 fun HearthToggleRow(label: String, checked: Boolean, onCheck: (Boolean) -> Unit) {
     val palette = Hearth.palette
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(label, style = HearthText.Body, color = palette.text)
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 48.dp)
+            .toggleable(value = checked, role = androidx.compose.ui.semantics.Role.Switch, onValueChange = onCheck),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(label, style = HearthText.Body, color = palette.text, modifier = Modifier.weight(1f).padding(end = 12.dp))
         Switch(
-            checked = checked, onCheckedChange = onCheck,
-            colors = SwitchDefaults.colors(checkedTrackColor = palette.ember, checkedThumbColor = palette.readableOnEmber),
+            checked = checked, onCheckedChange = null,
+            colors = SwitchDefaults.colors(
+                checkedTrackColor = palette.ember,
+                checkedThumbColor = palette.readableOnEmber,
+                checkedBorderColor = palette.ember,
+                uncheckedTrackColor = palette.bgSunken,
+                uncheckedThumbColor = palette.textTertiary,
+                uncheckedBorderColor = palette.hairline,
+            ),
         )
     }
 }

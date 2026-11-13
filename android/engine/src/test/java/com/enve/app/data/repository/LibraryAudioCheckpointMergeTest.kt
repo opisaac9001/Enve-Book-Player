@@ -58,6 +58,20 @@ class LibraryAudioCheckpointMergeTest {
     }
 
     @Test
+    fun olderServerEbookProgressCannotReplaceNewerLocalReading() {
+        val local = Book(id = "1451", title = "Book", source = BookSource.GRIMMORY, connectionId = "one",
+            mediaType = AppMediaType.EBOOK, readProgress = 0.4f, epubProgress = 0.4f, lastReadTime = 4000L).toCachedBook(1L)
+
+        val stale = local.copy(readProgress = 0.1f, epubProgress = 0.1f, lastReadTime = 2000L).preservingLocalProgress(local)
+        assertEquals(0.4f, stale.readProgress)
+        assertEquals(0.4f, stale.epubProgress)
+
+        val newer = local.copy(readProgress = 0.6f, epubProgress = 0.6f, lastReadTime = 6000L).preservingLocalProgress(local)
+        assertEquals(0.6f, newer.readProgress)
+        assertEquals(0.6f, newer.epubProgress)
+    }
+
+    @Test
     fun localScanKeepsReaderCompletionAndVisibility() {
         val saved = Book(
             id = "local-ebook", title = "Old", source = BookSource.LOCAL,

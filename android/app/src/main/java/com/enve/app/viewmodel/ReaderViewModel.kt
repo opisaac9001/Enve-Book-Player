@@ -64,6 +64,7 @@ import com.enve.core.reader.ReaderEngineKind
 import com.enve.app.ui.screens.reader.ReadiumPortableAnchorScript
 import com.enve.app.ui.screens.reader.ReaderEngineLocation
 import com.enve.app.ui.screens.reader.ReaderEngineNavigator
+import com.enve.app.ui.screens.reader.ReaderSelectionBounds
 import com.enve.app.ui.screens.reader.ReaderEngineTocItem
 import com.enve.app.data.repository.AnnotationRepository
 import com.enve.app.data.repository.GrimmoryRepository
@@ -85,8 +86,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -121,6 +124,38 @@ data class TocEntry(val id: String, val title: String, val href: String, val dep
 
 data class TocPageCount(val pages: Int, val estimated: Boolean)
 
+data class ChapterMark(val start: Float, val title: String)
+
+data class PageMark(val start: Float, val label: String)
+
+internal fun readerChapterMarks(candidates: List<Pair<Int, ChapterMark>>): List<ChapterMark> {
+    val deepest = candidates.maxOfOrNull { it.first }?.coerceAtMost(MAX_CHAPTER_DEPTH) ?: return emptyList()
+    return (deepest downTo 0).asSequence()
+        .map { depth -> mergeNearbyChapterMarks(candidates.filter { it.first <= depth }.map { it.second }) }
+        .firstOrNull { it.size <= MAX_CHAPTER_MARKS }
+        .orEmpty()
+}
+
+private fun mergeNearbyChapterMarks(marks: List<ChapterMark>): List<ChapterMark> {
+    val merged = mutableListOf<ChapterMark>()
+    marks.sortedBy { it.start }.forEach { mark ->
+        val last = merged.lastOrNull()
+        if (last != null && mark.start - last.start < CHAPTER_MERGE_DISTANCE) merged[merged.lastIndex] = last.copy(title = mark.title)
+        else merged += mark
+    }
+    return merged
+}
+
+private const val MAX_CHAPTER_DEPTH = 2
+private const val MAX_CHAPTER_MARKS = 60
+private const val CHAPTER_MERGE_DISTANCE = 0.004f
+
+private data class ReadiumTocLayout(
+    val pageCounts: Map<String, TocPageCount>,
+    val chapterMarks: List<ChapterMark>,
+    val entryStarts: Map<String, Double>,
+)
+
 private data class TocPageBoundary(
     val position: Double,
     val containingPage: Int,
@@ -139,7 +174,14 @@ private data class EpubPageMarker(
     val progression: Double,
 )
 
-data class ReaderTTSVoice(val name: String, val label: String)
+data class ReaderTTSVoice(
+    val name: String,
+    val label: String,
+    val title: String,
+    val detail: String,
+    val language: String,
+    val languageName: String,
+)
 
 sealed interface ReaderNarratorPackState {
     data object NotInstalled : ReaderNarratorPackState
@@ -201,7 +243,7 @@ internal fun annotationRenderColorHex(
 
 data class ReaderUiState(
     val prefs:       ReaderPreferences = ReaderPreferences(),
-    val showChrome:  Boolean           = true,
+    val showChrome:  Boolean           = false,
     val annotations: List<ReaderAnnotation> = emptyList(),
     val tocEntries:  List<TocEntry>    = emptyList(),
     val bookmarks:   List<ReaderAnnotation> = emptyList(),
@@ -214,6 +256,8 @@ data class ReaderUiState(
     val currentSection: String         = "",
     val currentTocEntryId: String?     = null,
     val tocPageCounts: Map<String, TocPageCount> = emptyMap(),
+    val chapterMarks: List<ChapterMark> = emptyList(),
+    val pageMarks: List<PageMark> = emptyList(),
     val progressPct: Int               = 0,
     val minutesLeftInBook: Int? = null,
     val showAppearanceSheet: Boolean   = false,
@@ -239,7 +283,9 @@ data class ReaderUiState(
     val readAlongChapterClips: List<ReadAloudClipRow> = emptyList(),
     val pendingSelection:    Locator?  = null,
     val selectionText:       String    = "",
-    val isReady:            Boolean           = false,
+    val selectionBounds:     ReaderSelectionBounds? = null,
+    val definition:          ReaderDefinition? = null,
+    val isReady:           Boolean           = false,
 
     val showSelectionPopup: Boolean   = false,
     val showAutoScrollPanel: Boolean  = false,
@@ -253,6 +299,7 @@ data class ReaderUiState(
     val ttsNarratorVoice: String? = null,
     val ttsNarratorPacks: Map<NarratorPack, ReaderNarratorPackState> = emptyMap(),
     val showTtsSheet: Boolean = false,
+    val ttsControlsVisible: Boolean = false,
     val sliderDragging:     Boolean   = false,
     val sliderPreviewPage:  Int       = 0,
     val sliderPreviewPageLabel: String? = null,
@@ -274,6 +321,16 @@ data class ReaderUiState(
     val liveReadAlongRetryable: Boolean = false,
     val liveReadAlongFinding: Boolean = false,
     val linkReturnLocator: Locator? = null,
+)
+
+data class ReaderDefinition(
+    val id: Long,
+    val term: String,
+    val locator: Locator,
+    val chapterTitle: String?,
+    val text: String? = null,
+    val loading: Boolean = true,
+    val saved: Boolean = false,
 )
 
 data class ReadAloudClipRow(
@@ -404,6 +461,12 @@ class ReaderViewModel @Inject constructor(
         private const val READ_ALONG_DECORATION_GROUP = "readAlong"
         private const val READ_ALONG_DECORATION_ID = "readAlong-active"
         private const val READ_ALONG_WORD_DECORATION_GROUP = "readAlongWord"
+        private const val SPEECH_DECORATION_GROUP = "speech"
+        private const val SPEECH_DECORATION_ID = "speech-current"
+        private const val SPEECH_FOLLOW_INTERVAL_MS = 1_000L
+        private const val TTS_CONTROLS_HIDE_MS = 4_000L
+        private const val SEARCH_TYPING_DEBOUNCE_MS = 350L
+        private const val MIN_TYPED_SEARCH_LENGTH = 2
         private const val READ_ALONG_WORD_DECORATION_ID = "readAlong-word"
         private const val MAX_SEARCH_RESULTS = 100
         private const val PROGRESS_PUSH_DEBOUNCE_MS = 5_000L
@@ -432,6 +495,9 @@ class ReaderViewModel @Inject constructor(
     private var foliateRestoreConfirmed = false
     private val foliateCheckpointSync = FoliateCheckpointSync()
     private var readiumRestoreConfirmed = false
+    var readerMovedSinceOpen = false
+        private set
+    val openRestoreSettled: Boolean get() = foliateRestoreConfirmed || readiumRestoreConfirmed
     private var readiumCheckpointDirty = false
     private var readiumCheckpointFingerprint: String? = null
     internal var readiumUserNavigationGeneration = 0L
@@ -482,6 +548,7 @@ class ReaderViewModel @Inject constructor(
 
     private var positions: List<Locator> = emptyList()
     private var pageMarkers: List<EpubPageMarker> = emptyList()
+    private var readiumTocStarts: Map<String, Double> = emptyMap()
     private var tocPageCountsJob: Job? = null
     private var foliateTocProgressions: List<Double?> = emptyList()
 
@@ -562,6 +629,8 @@ class ReaderViewModel @Inject constructor(
     private var liveReadAlongHandoffJob: Job? = null
     @Volatile private var liveReadAlongForeground = true
     private var liveReadAlongGeneration = 0
+    private var definitionRequest = 0L
+    var lastHighlightInk: String = "#FFF59D"
     private var searchJob: Job? = null
     private var searchEpubFile: java.io.File? = null
     private var searchLimit = MAX_SEARCH_RESULTS
@@ -589,7 +658,15 @@ class ReaderViewModel @Inject constructor(
         _state.update {
             it.copy(searchQuery = query.take(200), searchError = null, searchResults = emptyList(), searchHasMore = false)
         }
+        searchTypingJob?.cancel()
+        if (query.trim().length < MIN_TYPED_SEARCH_LENGTH) return
+        searchTypingJob = viewModelScope.launch {
+            delay(SEARCH_TYPING_DEBOUNCE_MS)
+            runSearch()
+        }
     }
+
+    private var searchTypingJob: Job? = null
 
     fun updateSearchWholeWords(wholeWords: Boolean) {
         cancelSearch()
@@ -786,9 +863,22 @@ class ReaderViewModel @Inject constructor(
         this.bookSource = source
         this.bookConnectionId = connectionId
         viewModelScope.launch {
+            var wasActive = false
             ttsPlayback.state.collect { playback ->
                 _state.update { it.copy(ttsPlayback = playback) }
+                if (playback.active == wasActive) return@collect
+                wasActive = playback.active
+                if (playback.active) {
+                    _state.update { it.copy(showChrome = false) }
+                    showTtsControls()
+                } else {
+                    ttsControlsHideJob?.cancel()
+                    _state.update { it.copy(ttsControlsVisible = false) }
+                }
             }
+        }
+        viewModelScope.launch {
+            ttsPlayback.state.map { it.spoken }.distinctUntilChanged().collect(::applySpeechHighlight)
         }
         viewModelScope.launch {
             searchPreferences.wholeWords.collect { wholeWords ->
@@ -918,6 +1008,7 @@ class ReaderViewModel @Inject constructor(
             sourceEngine = engine,
         )
         epubCheckpointLease = lease
+        readerMovedSinceOpen = false
         latestEpubCheckpoint = selected
         restoredReadAloudFragment = selected?.let(::narratedFragmentId)
         restoredReadAloudFragmentAtMs = android.os.SystemClock.elapsedRealtime()
@@ -1056,6 +1147,8 @@ class ReaderViewModel @Inject constructor(
             scroll           = prefs.readerScroll.first(),
             publisherStyles  = publisherStyles,
             justified        = prefs.readerJustified.first(),
+            hyphenate        = prefs.readerHyphenate.first(),
+            animatedPageTurns = prefs.readerAnimatedPageTurns.first(),
             columns          = cols,
             volumeButtonNavigation = prefs.readerVolumeButtonNav.first(),
             autoScrollSpeed  = prefs.readerAutoScrollSpeed.first(),
@@ -1132,6 +1225,7 @@ class ReaderViewModel @Inject constructor(
         foliateCheckpointSync.reset()
         positions = emptyList()
         pageMarkers = emptyList()
+        readiumTocStarts = emptyMap()
         tocPageCountsJob?.cancel()
         foliateTocProgressions = emptyList()
         lastLocator = null
@@ -1147,10 +1241,11 @@ class ReaderViewModel @Inject constructor(
                 hasPageList = false,
                 currentPageLabel = null,
                 lastPageLabel = null,
+                pageMarks = emptyList(),
                 tocPageCounts = emptyMap(),
             )
         }
-        engine.applyPreferences(_state.value.prefs)
+        engine.applyPreferences(foliatePreferences())
         applyDecorations()
     }
 
@@ -1221,7 +1316,7 @@ class ReaderViewModel @Inject constructor(
         _state.update { it.copy(tocEntries = entries) }
         foliateTocProgressions = toc.map { it.progression }
         refreshFoliateTocPageCounts()
-        engineNavigator?.applyPreferences(_state.value.prefs)
+        engineNavigator?.applyPreferences(foliatePreferences())
         applyDecorations()
         return true
     }
@@ -1250,6 +1345,7 @@ class ReaderViewModel @Inject constructor(
                 hasPageList = false,
                 currentPageLabel = null,
                 lastPageLabel = null,
+                pageMarks = emptyList(),
                 currentSection = location.sectionTitle.ifBlank {
                     currentToc?.title.orEmpty()
                 },
@@ -1259,6 +1355,7 @@ class ReaderViewModel @Inject constructor(
         if (totalPagesChanged) refreshFoliateTocPageCounts()
         if (!foliateRestoreConfirmed) return
         if (!location.userInitiated) return
+        readerMovedSinceOpen = true
         if (sessionResumedAtMs != null && !_state.value.readAlongActive) {
             recordReadingPace(checkpoint.totalProgression ?: 0.0)
         }
@@ -1277,6 +1374,7 @@ class ReaderViewModel @Inject constructor(
             it.copy(
                 pendingSelection = selection,
                 selectionText = text,
+                selectionBounds = engineNavigator?.currentSelectionBounds,
                 showSelectionPopup = true,
                 showChrome = false,
             )
@@ -1304,6 +1402,7 @@ class ReaderViewModel @Inject constructor(
         navigator   = nav
         positions = emptyList()
         pageMarkers = emptyList()
+        readiumTocStarts = emptyMap()
         tocPageCountsJob?.cancel()
         _state.update {
             it.copy(
@@ -1312,6 +1411,7 @@ class ReaderViewModel @Inject constructor(
                 hasPageList = false,
                 currentPageLabel = null,
                 lastPageLabel = null,
+                pageMarks = emptyList(),
                 tocPageCounts = emptyMap(),
             )
         }
@@ -1391,6 +1491,7 @@ class ReaderViewModel @Inject constructor(
                         totalPages = totalPages,
                         hasPageList = pageMarkers.isNotEmpty(),
                         lastPageLabel = pageMarkers.lastOrNull()?.label,
+                        pageMarks = pageMarkers.map { marker -> PageMark(marker.progression.toFloat(), marker.label) },
                     )
                 }
                 refreshReadiumTocPageCounts(pub)
@@ -1520,8 +1621,8 @@ class ReaderViewModel @Inject constructor(
 
                 val tocEntry = findCurrentTocEntry(locator)
 
-                val section = locator.title?.takeIf { it.isNotBlank() }
-                    ?: tocEntry?.title.orEmpty()
+                val section = tocEntry?.title?.takeIf { it.isNotBlank() }
+                    ?: locator.title.orEmpty()
 
                 _state.update {
                     it.copy(
@@ -1735,8 +1836,11 @@ class ReaderViewModel @Inject constructor(
         if (candidates.isEmpty()) return null
 
         val locatorFragments = locator.locations.fragments.toSet()
+        val progression = locator.locations.totalProgression
         return candidates.firstOrNull { entry ->
             entry.href.substringAfter('#', missingDelimiterValue = "") in locatorFragments
+        } ?: progression?.let { current ->
+            candidates.lastOrNull { entry -> readiumTocStarts[entry.id]?.let { it <= current + 0.0005 } == true }
         } ?: candidates.firstOrNull { it.title == locator.title } ?: candidates.first()
     }
 
@@ -1771,20 +1875,29 @@ class ReaderViewModel @Inject constructor(
         val pageMarkers = pageMarkers
         if (entries.isEmpty() || positions.isEmpty()) return
         tocPageCountsJob = viewModelScope.launch {
-            val counts = withContext(Dispatchers.Default) { readiumTocPageCounts(pub, entries, positions, pageMarkers) }
+            val layout = withContext(Dispatchers.Default) { readiumTocLayout(pub, entries, positions, pageMarkers) }
             if (publication !== pub || engineNavigator != null ||
                 _state.value.tocEntries !== entries || this@ReaderViewModel.positions !== positions
             ) return@launch
-            _state.update { it.copy(tocPageCounts = counts) }
+            readiumTocStarts = layout.entryStarts
+            val current = lastLocator?.let(::findCurrentTocEntry)
+            _state.update { state ->
+                state.copy(
+                    tocPageCounts = layout.pageCounts,
+                    chapterMarks = layout.chapterMarks,
+                    currentTocEntryId = current?.id ?: state.currentTocEntryId,
+                    currentSection = current?.title?.takeIf(String::isNotBlank) ?: state.currentSection,
+                )
+            }
         }
     }
 
-    private suspend fun readiumTocPageCounts(
+    private suspend fun readiumTocLayout(
         pub: Publication,
         entries: List<TocEntry>,
         positions: List<Locator>,
         pageMarkers: List<EpubPageMarker>,
-    ): Map<String, TocPageCount> {
+    ): ReadiumTocLayout {
         val resourceIndex = pub.readingOrder.withIndex().mapNotNull { (index, link) ->
             normalizePublicationHref(link.url().toString())?.let { it to index }
         }.toMap()
@@ -1816,6 +1929,12 @@ class ReaderViewModel @Inject constructor(
             return first + fraction * positionCountOfResource.getValue(resource)
         }
         val totalPositions = positions.size.toDouble()
+        val entryStarts = entries.zip(targets).mapNotNull { (entry, target) ->
+            target?.let { (resource, fragment) -> positionOf(resource, fragment) }?.let { entry.id to it / totalPositions }
+        }.toMap()
+        val chapterMarks = readerChapterMarks(entries.mapNotNull { entry ->
+            entryStarts[entry.id]?.let { entry.depth to ChapterMark(it.toFloat(), entry.title) }
+        })
 
         val pageList = pub.pageList
         val pageResources = pageList.mapNotNull { resourceIndex[normalizePublicationHref(it.url().toString())] }
@@ -1824,11 +1943,12 @@ class ReaderViewModel @Inject constructor(
             pageMarkers.size == pageList.size &&
             pageResources.zipWithNext().all { (previous, next) -> next >= previous }
         if (!pageResourcesOrdered) {
-            return tocPageCounts(
+            val counts = tocPageCounts(
                 entries = entries,
                 starts = targets.map { target -> target?.let { (resource, fragment) -> positionOf(resource, fragment) } },
                 bookEnd = totalPositions,
             ) { start, end -> estimatedTocPageCount(start, end, totalPositions) }
+            return ReadiumTocLayout(counts, chapterMarks, entryStarts)
         }
 
         var page = 0
@@ -1865,7 +1985,7 @@ class ReaderViewModel @Inject constructor(
                 exactEnd = false,
             )
         }
-        return tocPageCounts(
+        val counts = tocPageCounts(
             entries = entries,
             starts = targets.map { target -> target?.let { (resource, fragment) -> boundaryOf(resource, fragment) } },
             bookEnd = TocPageBoundary(totalPositions, pageList.lastIndex, pageList.size, exactStart = true, exactEnd = true),
@@ -1874,6 +1994,7 @@ class ReaderViewModel @Inject constructor(
             TocPageCount(pages, estimated = !start.exactStart || !end.exactEnd)
                 .takeIf { end.position > start.position && pages > 0 }
         }
+        return ReadiumTocLayout(counts, chapterMarks, entryStarts)
     }
 
     private fun fragmentFraction(html: String, fragment: String): Double? {
@@ -1890,7 +2011,9 @@ class ReaderViewModel @Inject constructor(
             starts = foliateTocProgressions.map { it?.times(total) },
             bookEnd = total,
         ) { start, end -> estimatedTocPageCount(start, end, total) }
-        _state.update { it.copy(tocPageCounts = counts) }
+        val marks = readerChapterMarks(_state.value.tocEntries.zip(foliateTocProgressions)
+            .mapNotNull { (entry, start) -> start?.let { entry.depth to ChapterMark(it.toFloat(), entry.title) } })
+        _state.update { it.copy(tocPageCounts = counts, chapterMarks = marks) }
     }
 
     private fun estimatedTocPageCount(start: Double, end: Double, total: Double): TocPageCount? {
@@ -1949,7 +2072,7 @@ class ReaderViewModel @Inject constructor(
 
     fun applyPreferences() {
         engineNavigator?.let {
-            it.applyPreferences(_state.value.prefs)
+            it.applyPreferences(foliatePreferences())
             return
         }
         navigator?.submitPreferences(
@@ -2003,7 +2126,7 @@ class ReaderViewModel @Inject constructor(
                 Unit
             }
             if (_state.value.readAlongActive) apply() else preserveReadiumPositionAcross(apply)
-            engineNavigator?.applyPreferences(newPrefs)
+            engineNavigator?.applyPreferences(foliatePreferences(newPrefs))
         }
 
         savePrefsJob?.cancel()
@@ -2047,6 +2170,8 @@ class ReaderViewModel @Inject constructor(
             scroll = readerPrefs.scroll,
             publisherStyles = readerPrefs.publisherStyles,
             justified = readerPrefs.justified,
+            hyphenate = readerPrefs.hyphenate,
+            animatedPageTurns = readerPrefs.animatedPageTurns,
             columnCount = readerPrefs.columns.name,
             volumeButtonNav = readerPrefs.volumeButtonNavigation,
             autoScrollSpeed = readerPrefs.autoScrollSpeed,
@@ -2083,9 +2208,38 @@ class ReaderViewModel @Inject constructor(
 
     fun toggleChrome() {
         _state.update { it.copy(showChrome = !it.showChrome) }
-        if (_state.value.showChrome) keepChromeAlive()
+        if (_state.value.showChrome) keepChromeAlive() else if (_state.value.ttsPlayback.active) showTtsControls()
     }
-    fun hideChrome()   = _state.update { it.copy(showChrome = false) }
+    fun revealChrome() {
+        if (chromeRevealed) return
+        chromeRevealed = true
+        _state.update { it.copy(showChrome = true) }
+        keepChromeAlive()
+    }
+    private var chromeRevealed = false
+
+    fun hideChrome() {
+        _state.update { it.copy(showChrome = false) }
+        if (_state.value.ttsPlayback.active) showTtsControls()
+    }
+
+    private var ttsControlsHideJob: Job? = null
+
+    fun showTtsControls() {
+        ttsControlsHideJob?.cancel()
+        _state.update { it.copy(ttsControlsVisible = true) }
+        ttsControlsHideJob = viewModelScope.launch {
+            delay(TTS_CONTROLS_HIDE_MS)
+            val current = _state.value
+            if (current.ttsPlayback.playing && !current.showChrome && !current.showTtsSheet && current.pendingSelection == null) {
+                _state.update { it.copy(ttsControlsVisible = false) }
+            }
+        }
+    }
+
+    private fun noteTtsInteraction() {
+        if (_state.value.showChrome) keepChromeAlive() else showTtsControls()
+    }
 
     fun keepChromeAlive() { _chromeInteraction.value = System.currentTimeMillis() }
     fun showAppearance(show: Boolean) = _state.update { it.copy(showAppearanceSheet = show, showChrome = if (show) true else it.showChrome) }
@@ -2097,17 +2251,22 @@ class ReaderViewModel @Inject constructor(
     fun showSelectionPopup() {
         viewModelScope.launch {
             val engineSelection = engineNavigator?.currentSelection
-            val readiumSelection = navigator
+            val readium = navigator
                 ?.let { it as? org.readium.r2.navigator.SelectableNavigator }
                 ?.currentSelection()
-                ?.locator
+            val readiumSelection = readium?.locator
             val locator = engineSelection ?: readiumSelection?.let { enrichReadiumSelectionLocator(it) }
+            val bounds = engineNavigator?.currentSelectionBounds ?: readium?.rect?.let { rect ->
+                val origin = IntArray(2).also { navigator?.view?.getLocationInWindow(it) }[1]
+                ReaderSelectionBounds(top = origin + rect.top, bottom = origin + rect.bottom)
+            }
             if (locator != null) {
                 val text = locator.text.highlight ?: ""
                 _state.update {
                     it.copy(
                         pendingSelection = locator,
                         selectionText = text,
+                        selectionBounds = bounds,
                         showSelectionPopup = true,
                         showChrome = false,
                     )
@@ -2209,7 +2368,24 @@ class ReaderViewModel @Inject constructor(
                 variants.mapIndexed { index, voice ->
                     val variant = if (variants.size > 1) " · ${index + 1}" else ""
                     val network = if (voice.isNetworkConnectionRequired) " · Online" else ""
-                    ReaderTTSVoice(voice.name, "${locale.displayName}$variant$network")
+                    val quality = when {
+                        voice.quality >= android.speech.tts.Voice.QUALITY_VERY_HIGH -> "Best"
+                        voice.quality >= android.speech.tts.Voice.QUALITY_HIGH -> "High"
+                        voice.quality >= android.speech.tts.Voice.QUALITY_NORMAL -> "Standard"
+                        else -> "Basic"
+                    }
+                    ReaderTTSVoice(
+                        name = voice.name,
+                        label = "${locale.displayName}$variant$network",
+                        title = "Voice ${index + 1}",
+                        detail = listOfNotNull(
+                            locale.displayCountry.takeIf(String::isNotBlank),
+                            quality,
+                            "Online".takeIf { voice.isNetworkConnectionRequired },
+                        ).joinToString(" · "),
+                        language = locale.language,
+                        languageName = locale.getDisplayLanguage(locale).replaceFirstChar { it.titlecase(locale) },
+                    )
                 }
             }
         _state.update { it.copy(ttsReady = true, ttsVoices = voices, ttsVoice = engine.voice?.name) }
@@ -2328,12 +2504,12 @@ class ReaderViewModel @Inject constructor(
 
     private suspend fun loadNarrator() {
         val packs = withContext(Dispatchers.IO) {
-            NarratorPack.entries.associateWith {
+            NarratorPack.available.associateWith {
                 if (narratorRuntime.isInstalled(it)) ReaderNarratorPackState.Installed else ReaderNarratorPackState.NotInstalled
             }
         }
         _state.update { it.copy(ttsNarratorPacks = packs + it.ttsNarratorPacks) }
-        val pack = hearthPreferences.readerNarratorPack.first()
+        val pack = hearthPreferences.readerNarratorPack.first()?.takeIf { it in NarratorPack.available }
         if (narratorSelectionJob?.isActive != true) {
             applyNarrator(pack, pack?.let { hearthPreferences.readerNarratorVoice(it).first() ?: it.voices.first() })
         }
@@ -2390,12 +2566,12 @@ class ReaderViewModel @Inject constructor(
             ttsPlayback.state.value.active -> ttsPlayback.resume()
             else -> startTts()
         }
-        keepChromeAlive()
+        noteTtsInteraction()
     }
 
     fun pauseTts() = ttsPlayback.pause()
-    fun previousTtsParagraph() { ttsPlayback.previous(); keepChromeAlive() }
-    fun nextTtsParagraph() { ttsPlayback.next(); keepChromeAlive() }
+    fun previousTtsParagraph() { ttsPlayback.previous(); noteTtsInteraction() }
+    fun nextTtsParagraph() { ttsPlayback.next(); noteTtsInteraction() }
 
     @OptIn(ExperimentalReadiumApi::class)
     fun startTts() {
@@ -2543,6 +2719,31 @@ class ReaderViewModel @Inject constructor(
         } else null
         viewModelScope.launch {
             nav.applyDecorations(listOfNotNull(decoration), READ_ALONG_WORD_DECORATION_GROUP)
+        }
+    }
+
+    private var speechFollowedAtMs = 0L
+
+    private suspend fun applySpeechHighlight(spoken: Locator?) {
+        val prefs = _state.value.prefs
+        val target = spoken?.takeIf { prefs.readAloudHighlight }
+        engineNavigator?.let {
+            it.applySpeechHighlight(target, prefs.readAloudHighlightHex)
+            return
+        }
+        val nav = navigator ?: return
+        val decoration = target?.let {
+            Decoration(
+                id = SPEECH_DECORATION_ID,
+                locator = it,
+                style = Decoration.Style.Highlight(tint = parseHexColor(prefs.readAloudHighlightHex)?.toArgb() ?: 0xFFFFF59D.toInt(), isActive = true),
+            )
+        }
+        nav.applyDecorations(listOfNotNull(decoration), SPEECH_DECORATION_GROUP)
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (spoken != null && now - speechFollowedAtMs >= SPEECH_FOLLOW_INTERVAL_MS) {
+            speechFollowedAtMs = now
+            nav.go(spoken)
         }
     }
 
@@ -3555,8 +3756,45 @@ class ReaderViewModel @Inject constructor(
     }
 
     fun noteReadiumUserInteraction() {
-        if (navigator != null && engineNavigator == null) readiumUserInteractionPending = true
+        if (navigator != null && engineNavigator == null) {
+            readiumUserInteractionPending = true
+            readerMovedSinceOpen = true
+        }
     }
+
+    fun lateRemoteCheckpoint(snapshot: SyncSnapshot): EpubBridgeCheckpoint? {
+        val lease = epubCheckpointLease ?: return null
+        return checkpointFromProviderSnapshot(
+            locator = snapshot.locatorJson,
+            epubCfi = snapshot.epubCfi,
+            href = snapshot.href,
+            progression = snapshot.percentage,
+            publicationSha256 = lease.publicationSha256,
+            providerFileId = lease.providerFileId,
+            writerEpoch = lease.writerEpoch,
+            observedAt = snapshot.updatedAt ?: 0L,
+            engine = engineNavigator?.kind ?: ReaderEngineKind.READIUM,
+        )
+    }
+
+    fun goToLateFoliateCheckpoint(checkpoint: EpubBridgeCheckpoint): Boolean {
+        val nav = engineNavigator ?: return false
+        checkpoint.epubCfi?.let {
+            nav.goToCfi(it)
+            return true
+        }
+        EpubBridgeCheckpointCodec.toReadiumLocatorJson(checkpoint)
+            ?.let { runCatching { Locator.fromJSON(org.json.JSONObject(it)) }.getOrNull() }
+            ?.let {
+                nav.goToLocator(it)
+                return true
+            }
+        val progression = checkpoint.totalProgression ?: return false
+        nav.goToProgress(progression.toFloat())
+        return true
+    }
+
+    fun goToLateReadiumLocator(locator: Locator): Boolean = navigator?.go(locator) ?: false
 
     fun setReadiumScrollActive(active: Boolean) {
         if (!active) {
@@ -3608,6 +3846,12 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
+    fun foliatePreferences(prefs: ReaderPreferences = _state.value.prefs): ReaderPreferences =
+        prefs.copy(animatedPageTurns = prefs.animatedPageTurns && !einkSingleColumnActive)
+
+    private val readiumTurnsAnimated: Boolean
+        get() = _state.value.prefs.animatedPageTurns && !einkSingleColumnActive
+
     fun pageForward() {
         engineNavigator?.let {
             it.goForward()
@@ -3618,7 +3862,7 @@ class ReaderViewModel @Inject constructor(
                 beginReadiumUserNavigation()
                 if (_state.value.prefs.scroll) {
                     if (!scrollReadiumPage(it, forward = true)) readiumUserInteractionPending = false
-                } else if (!it.goForward()) {
+                } else if (!it.goForward(animated = readiumTurnsAnimated)) {
                     readiumUserInteractionPending = false
                 }
             }
@@ -3635,7 +3879,7 @@ class ReaderViewModel @Inject constructor(
                 beginReadiumUserNavigation()
                 if (_state.value.prefs.scroll) {
                     if (!scrollReadiumPage(it, forward = false)) readiumUserInteractionPending = false
-                } else if (!it.goBackward()) {
+                } else if (!it.goBackward(animated = readiumTurnsAnimated)) {
                     readiumUserInteractionPending = false
                 }
             }
@@ -3725,46 +3969,62 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
-    fun saveToVocab() {
+    fun define() {
         val locator = state.value.pendingSelection ?: return
-        val word = state.value.selectionText.trim()
-        if (word.isBlank()) return
+        val term = state.value.selectionText.trim()
+        if (term.isBlank()) return
+        val request = ReaderDefinition(
+            id = ++definitionRequest,
+            term = term,
+            locator = locator,
+            chapterTitle = state.value.currentSection.takeIf { it.isNotBlank() },
+        )
+        clearSelection()
+        _state.update { it.copy(definition = request) }
         viewModelScope.launch {
-            val before = locator.text.before.orEmpty()
-            val after = locator.text.after.orEmpty()
-            val sentence = com.enve.core.data.vocab.SentenceExtractor
-                .enclosingSentence(before, word, after)
-            val position = locator.locations.totalProgression
-                ?: locator.locations.progression
-                ?: 0.0
-            val entry = vocabRepo.create(
-                bookStableId = bookId,
-                word = word,
-                sentence = sentence,
-                sentenceBefore = before,
-                sentenceAfter = after,
-                locator = locator.toJSON().toString(),
-                position = position,
-                chapterTitle = state.value.currentSection.takeIf { it.isNotBlank() },
-                sourceLanguage = null,
-                definitionSnapshot = null,
-            )
-            clearSelection()
-
-            launch {
-                try {
-                    val definition = definitionLookup.definition(word)
-                    if (!definition.isNullOrBlank()) {
-                        vocabRepo.updateDefinition(entry.id, definition)
-                    }
-                } catch (e: kotlinx.coroutines.CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-
-                }
+            val entryId = if (prefs.vocabAutoLogLookups.first()) saveVocab(request) else null
+            val text = try {
+                definitionLookup.definition(term)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
             }
+            if (entryId != null && !text.isNullOrBlank()) vocabRepo.updateDefinition(entryId, text)
+            updateDefinitionState(request.id) { it.copy(text = text, loading = false) }
         }
     }
+
+    fun saveDefinedWord() {
+        val definition = state.value.definition?.takeUnless { it.saved } ?: return
+        viewModelScope.launch { saveVocab(definition) }
+    }
+
+    fun dismissDefinition() = _state.update { it.copy(definition = null) }
+
+    private suspend fun saveVocab(definition: ReaderDefinition): String {
+        updateDefinitionState(definition.id) { it.copy(saved = true) }
+        val locator = definition.locator
+        val before = locator.text.before.orEmpty()
+        val after = locator.text.after.orEmpty()
+        return vocabRepo.create(
+            bookStableId = bookId,
+            word = definition.term,
+            sentence = com.enve.core.data.vocab.SentenceExtractor.enclosingSentence(before, definition.term, after),
+            sentenceBefore = before,
+            sentenceAfter = after,
+            locator = locator.toJSON().toString(),
+            position = locator.locations.totalProgression ?: locator.locations.progression ?: 0.0,
+            chapterTitle = definition.chapterTitle,
+            sourceLanguage = null,
+            definitionSnapshot = definition.text,
+        ).id
+    }
+
+    private fun updateDefinitionState(id: Long, transform: (ReaderDefinition) -> ReaderDefinition) =
+        _state.update { current ->
+            current.definition?.takeIf { it.id == id }?.let { current.copy(definition = transform(it)) } ?: current
+        }
 
     fun updateAnnotation(a: ReaderAnnotation, style: AnnotationStyle, colorHex: String, note: String) {
         viewModelScope.launch {

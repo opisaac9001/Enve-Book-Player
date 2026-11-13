@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.security.GeneralSecurityException
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -30,7 +31,14 @@ class OpdsAuthStore @Inject constructor(
 ) {
     private val cached = ConcurrentHashMap<String, Cached>()
 
-    private val prefs: SharedPreferences = EncryptedSharedPreferences.create(
+    private val prefs: SharedPreferences = try {
+        open(context)
+    } catch (_: GeneralSecurityException) {
+        context.deleteSharedPreferences(FILE_NAME)
+        open(context)
+    }
+
+    private fun open(context: Context): SharedPreferences = EncryptedSharedPreferences.create(
         context,
         FILE_NAME,
         MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),

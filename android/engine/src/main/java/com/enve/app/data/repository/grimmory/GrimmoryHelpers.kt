@@ -65,6 +65,13 @@ internal fun BookDetailDto.selectedFile(): BookFileDto? = primaryFile
 
 internal fun BookFileDto.isPrimaryFile(): Boolean = isPrimary == true || primary == true
 
+internal fun LegacyBookloreBookDto.catalogReadProgress(): Float? = readProgress ?: when (primaryFile?.bookType?.uppercase()) {
+    "AUDIOBOOK" -> audiobookProgress?.percentage
+    "PDF" -> pdfProgress?.percentage
+    "CBX" -> cbxProgress?.percentage
+    else -> epubProgress?.percentage
+}
+
 internal fun BookFileDto.resolvedType(): String? = bookType ?: fileExtension
 
 internal fun BookSummaryDto.withFormatInventory(inventory: LegacyBookloreBookDto): BookSummaryDto {
@@ -80,7 +87,7 @@ internal fun BookSummaryDto.withFormatInventory(inventory: LegacyBookloreBookDto
         libraryName = libraryName ?: inventory.libraryName,
         addedOn = addedOn ?: inventory.addedOn,
         lastReadTime = lastReadTime ?: inventory.lastReadTime,
-        readProgress = readProgress ?: inventory.readProgress,
+        readProgress = readProgress ?: inventory.catalogReadProgress(),
         readStatus = readStatus ?: inventory.readStatus,
         personalRating = personalRating ?: inventory.personalRating,
         dateFinished = dateFinished ?: inventory.dateFinished,

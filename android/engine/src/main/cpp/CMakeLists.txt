@@ -73,3 +73,6 @@ target_include_directories(whisper PRIVATE
     ${WHISPER_DIR}/ggml/src/ggml-cpu
 )
 target_link_libraries(whisper ${log-lib} android ggml)
+
+add_library(enve_phonon SHARED enve_phonon.c)
+target_link_libraries(enve_phonon PRIVATE dl)

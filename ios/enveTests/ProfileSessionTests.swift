@@ -7,6 +7,26 @@ import Testing
 
 @MainActor
 struct ProfileSessionTests {
+    @Test func siloLoginsAtTheSameServerKeepSeparateConnectionIdentities() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let session = try fixture.session(FamilyProfile(id: UUID().uuidString, name: "Silo isolation", role: .adult))
+        let first = ServerConnection(name: "PIN profile", url: "https://silo.example", type: .silo, userId: "first", authMode: .usernamePassword)
+        let second = ServerConnection(name: "SSO profile", url: "https://silo.example/", type: .silo, userId: "second", authMode: .sso)
+        session.providerConnections.connections = [first]
+        let saved = SourcesFinalizer.upsert(second, into: session.appState, profileSession: session)
+        #expect(saved.id == second.id)
+        #expect(session.providerConnections.connections.map(\.id) == [first.id, second.id])
+        #expect(session.providerConnections.connections.first?.authMode == .usernamePassword)
+        #expect(session.providerConnections.connections.last?.authMode == .sso)
+        var refreshed = second
+        refreshed.name = "Reauthenticated"
+        _ = SourcesFinalizer.upsert(refreshed, into: session.appState, profileSession: session)
+        #expect(session.providerConnections.connections.count == 2)
+        #expect(session.providerConnections.connections.last?.id == second.id)
+        await session.retire()
+    }
+
     @Test func downloadDetectionRejectsOtherProfilesAndSiblingDirectories() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

@@ -84,7 +84,7 @@
             android:exported="false"
             android:configChanges="orientation|screenSize|screenLayout|uiMode|keyboard|keyboardHidden"
             android:windowSoftInputMode="adjustNothing"
-            android:theme="@style/Theme.Enve" />
+            android:theme="@style/Theme.Enve.Reader" />
 
         <activity
             android:name=".ui.screens.EbookLibrarianActivity"

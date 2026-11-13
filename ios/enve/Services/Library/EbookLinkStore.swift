@@ -47,13 +47,14 @@ final class EbookLinkStore {
         var applied = 0
         for link in cleaned {
             guard let index = library.stableIdIndex[link.ebookStableId], library.books.indices.contains(index) else { continue }
-            let book = library.books[index]
+            var book = library.books[index]
             let needsUpdate =
                 book.linkedAudiobookStableId != link.audiobookStableId
                 || book.linkedAudiobookChapterOffset != link.chapterOffset
             guard needsUpdate else { continue }
-            library.books[index].linkedAudiobookStableId = link.audiobookStableId
-            library.books[index].linkedAudiobookChapterOffset = link.chapterOffset
+            book.linkedAudiobookStableId = link.audiobookStableId
+            book.linkedAudiobookChapterOffset = link.chapterOffset
+            library.books[index] = book
             applied += 1
         }
         if applied > 0 {

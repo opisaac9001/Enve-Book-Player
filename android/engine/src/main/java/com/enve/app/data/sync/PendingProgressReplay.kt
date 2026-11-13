@@ -53,7 +53,11 @@ class PendingProgressReplay @Inject constructor(
             try {
                 val result = when (media) {
                     AppMediaType.AUDIOBOOK -> aggregator.syncAudiobookProgress(book, cached.currentTime, cached.readProgress, acknowledgePending = false)
-                    AppMediaType.EBOOK -> aggregator.syncEbookProgress(book.id, source, cached.epubProgress ?: cached.readProgress, cached.epubLocator, connectionId = connectionId)
+                    AppMediaType.EBOOK -> aggregator.syncEbookProgress(
+                        book.id, source, cached.epubProgress ?: cached.readProgress, cached.epubLocator,
+                        connectionId = connectionId,
+                        observedAt = cached.lastReadTime.takeIf { it > 0 } ?: entry.createdAt,
+                    )
                     else -> continue
                 }
                 result.exceptionOrNull()?.let { if (it is CancellationException) throw it }

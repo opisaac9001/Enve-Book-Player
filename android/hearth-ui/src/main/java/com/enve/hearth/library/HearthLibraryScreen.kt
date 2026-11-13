@@ -116,8 +116,7 @@ fun HearthLibraryScreen(
     val play: (Book) -> Unit = { book ->
         if (!readingEnabled && book.mediaType == AppMediaType.EBOOK) onListenBook(book) else onPlayBook(book)
     }
-    val sourceFilter by vm.sourceFilter.collectAsStateWithLifecycle()
-    val libraryFilter by vm.libraryFilter.collectAsStateWithLifecycle()
+    val librarySelection by vm.librarySelection.collectAsStateWithLifecycle()
     var showFilterSort by remember { mutableStateOf(false) }
     val books by vm.books.collectAsStateWithLifecycle()
     val savedBooks by vm.savedBooks.collectAsStateWithLifecycle()
@@ -272,8 +271,8 @@ fun HearthLibraryScreen(
             sources = sources,
             libraries = libraries,
             libraryConnectionLabels = libraryConnectionLabels,
-            sourceFilter = sourceFilter,
-            libraryFilter = libraryFilter,
+            sourceFilter = librarySelection.source,
+            libraryFilter = librarySelection.libraryId,
             onSource = vm::setSourceFilter,
             onLibrary = vm::setLibraryFilter,
             modifier = Modifier.padding(horizontal = Hearth.Spacing.L),

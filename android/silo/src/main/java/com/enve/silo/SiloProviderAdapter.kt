@@ -49,6 +49,9 @@ class SiloProviderAdapter @Inject constructor(
     override suspend fun startPlaybackSession(book: Book): Result<ProviderPlaybackSession> =
         repository.startPlaybackSession(book)
 
+    override suspend fun startPlaybackSession(book: Book, persistProgress: Boolean): Result<ProviderPlaybackSession> =
+        repository.startPlaybackSession(book, persistProgress)
+
     override suspend fun fetchChapters(book: Book): Result<List<Chapter>> = repository.fetchChapters(book)
 
     override suspend fun syncAudiobookProgress(
@@ -75,6 +78,15 @@ class SiloProviderAdapter @Inject constructor(
         page: Int?,
         pageCount: Int?,
     ): Result<Unit> = repository.syncEbookProgress(bookId, percentage, locator)
+
+    override suspend fun syncEbookProgressAt(
+        bookId: String,
+        percentage: Float,
+        locator: String?,
+        page: Int?,
+        pageCount: Int?,
+        observedAt: Long,
+    ): Result<Unit> = repository.syncEbookProgress(bookId, percentage, locator, observedAt)
 
     override suspend fun fetchAudiobookProgress(book: Book): Result<SyncSnapshot?> =
         repository.fetchAudiobookProgress(book)

@@ -69,7 +69,7 @@ struct AdminSiloScreen: View {
                     .foregroundStyle(hearth.text)
             }
             if let me = model.me {
-                Text("You are signed in as \(me.displayName)\(me.role.map { ", a \($0) account" } ?? "").")
+                Text("You are signed in as \(me.displayName), a \(me.role) account.")
                     .font(.hearthCaption)
                     .foregroundStyle(hearth.textSecondary)
             }
@@ -99,8 +99,7 @@ struct AdminSiloScreen: View {
                         .lineLimit(1)
                     HStack(spacing: 6) {
                         if me.isAdmin { AdminTag(text: "Admin", color: hearth.ember) }
-                        if let role = me.role, !me.isAdmin { AdminTag(text: role.capitalized) }
-                        if me.enabled == false { AdminTag(text: "Disabled", color: hearth.statusError) }
+                        if !me.isAdmin { AdminTag(text: me.role.capitalized) }
                     }
                 }
                 Spacer()
@@ -309,8 +308,8 @@ struct AdminSiloUsersScreen: View {
                         .font(.hearthUI(15, weight: .medium))
                         .foregroundStyle(hearth.text)
                         .lineLimit(1)
-                    if let email = user.email, email != user.username {
-                        Text(email)
+                    if !user.email.isEmpty, user.email != user.username {
+                        Text(user.email)
                             .font(.hearthCaption)
                             .foregroundStyle(hearth.textSecondary)
                             .lineLimit(1)
@@ -319,18 +318,19 @@ struct AdminSiloUsersScreen: View {
                 Spacer()
                 if user.isAdmin {
                     AdminTag(text: "Admin", color: hearth.ember)
-                } else if let role = user.role {
-                    AdminTag(text: role.capitalized)
+                } else {
+                    AdminTag(text: user.role.capitalized)
                 }
-                if user.enabled == false {
+                if !user.enabled {
                     AdminTag(text: "Disabled", color: hearth.statusError)
                 }
             }
             HStack(spacing: 6) {
-                if let streams = user.maxStreams { AdminTag(text: "\(streams) streams") }
-                if let quality = user.maxPlaybackQuality, !quality.isEmpty { AdminTag(text: quality) }
-                if user.downloadAllowed == true { AdminTag(text: "Downloads") }
-                if let libs = user.libraryIDs, !libs.isEmpty { AdminTag(text: "\(libs.count) libraries") }
+                let policy = user.effectivePolicy
+                if policy.maxStreams > 0 { AdminTag(text: "\(policy.maxStreams) streams") }
+                if !policy.maxPlaybackQuality.isEmpty { AdminTag(text: policy.maxPlaybackQuality) }
+                if policy.downloadAllowed { AdminTag(text: "Downloads") }
+                if let libs = policy.libraryIDs, !libs.isEmpty { AdminTag(text: "\(libs.count) libraries") }
             }
         }
         .padding(.vertical, 4)
@@ -370,9 +370,9 @@ struct AdminSiloLibrariesScreen: View {
         let counts = model.libraryCounts[library.id]
         let scanning = model.isLibraryScanning(library)
         return HStack(spacing: 12) {
-            Image(systemName: library.enabled == false ? "exclamationmark.triangle" : "books.vertical")
+            Image(systemName: library.enabled ? "books.vertical" : "exclamationmark.triangle")
                 .font(.hearthUI(15, weight: .medium))
-                .foregroundStyle(library.enabled == false ? hearth.statusWarn : hearth.ember)
+                .foregroundStyle(library.enabled ? hearth.ember : hearth.statusWarn)
                 .frame(width: 26)
             VStack(alignment: .leading, spacing: 2) {
                 Text(library.name)
@@ -501,7 +501,7 @@ struct AdminSiloStatsScreen: View {
                     .foregroundStyle(hearth.ember)
             }
             HStack(alignment: .firstTextBaseline) {
-                Text([entry.username, entry.profileName].compactMap { $0 }.first ?? "Someone")
+                Text([entry.username, entry.profileName].compactMap { $0 }.first { !$0.isEmpty } ?? "Someone")
                     .font(.hearthCaption)
                     .foregroundStyle(hearth.textSecondary)
                     .lineLimit(1)

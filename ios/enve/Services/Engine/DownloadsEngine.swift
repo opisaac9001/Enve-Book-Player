@@ -16,6 +16,18 @@ struct DownloadedStorageItem: Identifiable, Sendable {
     let sizeBytes: Int64
 }
 
+enum DownloadBulkAction: Sendable {
+    case resume
+    case retry
+}
+
+struct DownloadBulkOutcome: Equatable, Sendable {
+    let action: DownloadBulkAction
+    let started: Int
+    let missingTaskIds: [String]
+    let blockedReason: String?
+}
+
 @MainActor
 @Observable
 final class DownloadsEngine {
@@ -23,6 +35,10 @@ final class DownloadsEngine {
     private let appState: AppState
     private var cancellables: Set<AnyCancellable> = []
     private var revision = 0
+    private var restartingTaskIds: Set<String> = []
+    private var missingBookTaskIds: Set<String> = []
+    private(set) var bulkActionInProgress: DownloadBulkAction?
+    private(set) var lastBulkOutcome: DownloadBulkOutcome?
 
     private unowned let profileSession: ProfileSession?
     private var importer: LocalEbookImporter { profileSession?.ebooks ?? .shared }
@@ -64,6 +80,26 @@ final class DownloadsEngine {
 
     var completedTasks: [BookDownloadTask] {
         tasks.filter { $0.status == .completed }
+    }
+
+    var pausableTasks: [BookDownloadTask] {
+        activeTasks
+    }
+
+    var resumableTasks: [BookDownloadTask] {
+        pausedTasks.filter { !restartingTaskIds.contains($0.id) }
+    }
+
+    var retryableTasks: [BookDownloadTask] {
+        failedTasks.filter { !restartingTaskIds.contains($0.id) }
+    }
+
+    var tasksMissingBooks: [BookDownloadTask] {
+        tasks.filter { missingBookTaskIds.contains($0.id) }
+    }
+
+    func isBookMissing(for task: BookDownloadTask) -> Bool {
+        missingBookTaskIds.contains(task.id)
     }
 
     var lastError: String? {
@@ -139,14 +175,93 @@ final class DownloadsEngine {
 
     /// False when the task's book (its `downloadKey` is the stable ID) is gone from the store and memory.
     func restart(_ task: BookDownloadTask) async -> Bool {
-        let stored = await appState.bookStore.book(stableId: task.bookId)
-        guard let book = stored ?? appState.bookInMemory(stableId: task.bookId) else { return false }
-        if task.status == .paused {
-            await service.resume(taskId: task.id, book: book)
-        } else {
-            await service.retry(taskId: task.id, book: book)
+        guard let book = await libraryBook(for: task) else {
+            missingBookTaskIds.insert(task.id)
+            return false
         }
+        guard !service.isRetired,
+            service.tasks.contains(where: { $0.id == task.id && $0.status == task.status }),
+            !restartingTaskIds.contains(task.id)
+        else { return true }
+        lastBulkOutcome = nil
+        await launchRestart(task, book: book).value
         return true
+    }
+
+    @discardableResult
+    func pauseAll() -> Int {
+        let snapshot = pausableTasks
+        lastBulkOutcome = nil
+        for task in snapshot {
+            service.pause(taskId: task.id)
+        }
+        return snapshot.count
+    }
+
+    @discardableResult
+    func restartAll(_ action: DownloadBulkAction) async -> DownloadBulkOutcome? {
+        guard bulkActionInProgress == nil, !service.isRetired else { return nil }
+        let snapshot = action == .resume ? resumableTasks : retryableTasks
+        guard !snapshot.isEmpty else { return nil }
+        if let reason = service.downloadBlockedReason {
+            let outcome = DownloadBulkOutcome(action: action, started: 0, missingTaskIds: [], blockedReason: reason)
+            lastBulkOutcome = outcome
+            return outcome
+        }
+
+        bulkActionInProgress = action
+        defer { bulkActionInProgress = nil }
+        var started = 0
+        var missing: [String] = []
+        for task in snapshot {
+            let book = await libraryBook(for: task)
+            guard !service.isRetired else { return nil }
+            // Skip entries cancelled, removed, or restarted while the lookup was suspended.
+            guard service.tasks.contains(where: { $0.id == task.id && $0.status == task.status }),
+                !restartingTaskIds.contains(task.id)
+            else { continue }
+            guard let book else {
+                missing.append(task.id)
+                continue
+            }
+            launchRestart(task, book: book)
+            started += 1
+        }
+        missingBookTaskIds.formUnion(missing)
+        let outcome = DownloadBulkOutcome(action: action, started: started, missingTaskIds: missing, blockedReason: nil)
+        lastBulkOutcome = outcome
+        return outcome
+    }
+
+    @discardableResult
+    func removeTasksWithMissingBooks() -> Int {
+        let snapshot = tasksMissingBooks
+        for task in snapshot {
+            service.remove(taskId: task.id)
+        }
+        missingBookTaskIds.subtract(snapshot.map(\.id))
+        lastBulkOutcome = nil
+        return snapshot.count
+    }
+
+    private func libraryBook(for task: BookDownloadTask) async -> Book? {
+        let stored = await appState.bookStore.book(stableId: task.bookId)
+        return stored ?? appState.bookInMemory(stableId: task.bookId)
+    }
+
+    /// The service's resume and retry await the whole transfer, so each one runs in its own task.
+    @discardableResult
+    private func launchRestart(_ task: BookDownloadTask, book: Book) -> Task<Void, Never> {
+        restartingTaskIds.insert(task.id)
+        missingBookTaskIds.remove(task.id)
+        return Task { [weak self, service] in
+            if task.status == .paused {
+                await service.resume(taskId: task.id, book: book)
+            } else {
+                await service.retry(taskId: task.id, book: book)
+            }
+            self?.restartingTaskIds.remove(task.id)
+        }
     }
 
     func remove(taskId: String) {

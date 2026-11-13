@@ -46,6 +46,20 @@ val extractSherpaOnnx = tasks.register("extractSherpaOnnx") {
     }
 }
 
+val woofRuntime = rootProject.findProject(":woof-runtime")
+val phononLibrary = providers.gradleProperty("envePhononLibrary").map { path ->
+    file(path).also {
+        require(it.isFile && it.name == "libptts_ffi.so") {
+            "envePhononLibrary must point to the ARM64 libptts_ffi.so built by scripts/build-phonon-android"
+        }
+    }
+}
+val phononJni = layout.buildDirectory.dir("generated/phonon/jni")
+val stagePhonon = tasks.register<Sync>("stagePhonon") {
+    into(phononJni)
+    from(phononLibrary) { into("arm64-v8a") }
+}
+
 android {
     namespace = "com.enve.engine.impl"
     compileSdk { version = release(36) { minorApiLevel = 1 } }
@@ -53,6 +67,7 @@ android {
 
     defaultConfig {
         minSdk = 26
+        buildConfigField("boolean", "PHONON_AVAILABLE", phononLibrary.isPresent.toString())
 
         consumerProguardFiles("consumer-rules.pro")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -65,6 +80,12 @@ android {
     sourceSets.getByName("main").jniLibs.srcDir(
         files(sherpaOnnxDir.map { it.dir("jni") }).builtBy(extractSherpaOnnx)
     )
+
+    sourceSets.getByName("debug").java.srcDir(if (woofRuntime == null) "src/noWoof/java" else "src/woof/java")
+    sourceSets.getByName("release").java.srcDir("src/noWoof/java")
+    if (phononLibrary.isPresent) {
+        sourceSets.getByName("main").jniLibs.srcDir(files(phononJni).builtBy(stagePhonon))
+    }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -84,6 +105,12 @@ android {
     }
 }
 
+if (phononLibrary.isPresent) {
+    tasks.matching { it.name.startsWith("merge") && it.name.endsWith("JniLibFolders") }.configureEach {
+        dependsOn(stagePhonon)
+    }
+}
+
 kotlin {
     compilerOptions {
         jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
@@ -91,6 +118,7 @@ kotlin {
 }
 
 dependencies {
+    if (woofRuntime != null) debugImplementation(woofRuntime)
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
 
     api(project(":core"))

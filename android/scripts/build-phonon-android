@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -ne 1 || -z "${ANDROID_NDK_HOME:-}" ]]; then
+    echo "Usage: ANDROID_NDK_HOME=/path/to/ndk $0 /path/to/phonon-checkout" >&2
+    exit 2
+fi
+
+phonon_checkout=$1
+phonon_commit=32c1554a8ce442d672de90fc82700bbdcf08d918
+if [[ ! -e "$phonon_checkout" ]]; then
+    git clone --depth 1 --branch v0.7.0 https://github.com/gradium-ai/xn-ptts.git "$phonon_checkout"
+fi
+cd "$phonon_checkout"
+if [[ "$(git rev-parse HEAD)" != "$phonon_commit" || -n "$(git status --porcelain)" ]]; then
+    echo "Use a clean Phonon v0.7.0 checkout ($phonon_commit)." >&2
+    exit 1
+fi
+
+case "$(uname -s)" in
+    Darwin) ndk_host=darwin-x86_64 ;;
+    Linux) ndk_host=linux-x86_64 ;;
+    *) echo "Use the Android NDK on macOS or Linux." >&2; exit 2 ;;
+esac
+export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/$ndk_host/bin/aarch64-linux-android26-clang"
+export CC_aarch64_linux_android="$CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER"
+export CXX_aarch64_linux_android="${CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER}++"
+export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-C strip=symbols -C link-arg=-Wl,-z,max-page-size=16384 -C target-cpu=generic"
+unset RUSTFLAGS CARGO_ENCODED_RUSTFLAGS
+rustup target add aarch64-linux-android
+cargo build --locked --target aarch64-linux-android --release -p ptts-ffi
+printf '%s\n' "$PWD/target/aarch64-linux-android/release/libptts_ffi.so"

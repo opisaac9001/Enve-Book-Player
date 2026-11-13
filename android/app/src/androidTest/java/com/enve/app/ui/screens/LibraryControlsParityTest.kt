@@ -26,7 +26,10 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.enve.app.MainActivity
 import com.enve.app.profiles.ActiveProfileRuntime
 import com.enve.app.profiles.ProfileActivityBinding
+import com.enve.app.profiles.ProfileRuntimeRegistry
 import com.enve.core.data.model.BookSource
+import com.enve.core.data.model.ProviderConnection
+import com.enve.core.data.model.UrlScheme
 import com.enve.engine.eink.EinkMode
 import com.enve.engine.prefs.HearthStartTab
 import com.enve.engine.theme.HearthThemeMode
@@ -35,13 +38,16 @@ import com.enve.hearth.library.MediaFilter
 import com.enve.hearth.library.StatusFilter
 import dagger.hilt.android.EntryPointAccessors
 import java.io.File
+import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -81,6 +87,9 @@ class LibraryControlsParityTest {
                 filter().performClick()
                 assertDefaultOrder()
                 compose.onNodeWithText("+ Title").performClick()
+                compose.waitUntil(5_000) {
+                    compose.onAllNodes(hasContentDescription("Remove Title sort")).fetchSemanticsNodes().size == 1
+                }
                 compose.onNodeWithContentDescription("Remove Title sort").assertIsEnabled().performClick()
                 withTimeout(5_000) { prefs.librarySortStack.first { it == "[]" } }
                 assertDefaultOrder()
@@ -93,13 +102,17 @@ class LibraryControlsParityTest {
 
     @Test
     fun resettingContentFiltersPreservesSourceAndLibraryScope(): Unit = runBlocking {
-        val component = runtime().component
+        val profileId = UUID.randomUUID().toString()
+        val runtimes = ProfileRuntimeRegistry(context)
+        val component = runtimes.open(profileId)
+        val locations = component.storageLocations()
         val prefs = component.preferencesFacade()
-        val originalSort = prefs.librarySortStack.first()
-        val originalFilters = prefs.libraryAdvancedFilters.first()
-        val originalSelection = prefs.librarySelection.first()
         val store = ViewModelStore()
         try {
+            component.connections().upsert(ProviderConnection(
+                id = "fixture", source = BookSource.GRIMMORY, name = "Fixture library",
+                serverUrl = "http://127.0.0.1:1", username = "", urlScheme = UrlScheme.HTTP,
+            ))
             withContext(Dispatchers.Main) {
                 val vm = HearthLibraryViewModel(component.library(), component.savedBooks(), component.playback(), prefs, component.connections())
                 store.put("library", vm)
@@ -108,19 +121,26 @@ class LibraryControlsParityTest {
                 vm.setStatus(StatusFilter.CURRENTLY_READING)
                 vm.setMedia(MediaFilter.EBOOKS)
                 vm.toggleGenre("Fantasy")
+                val selected = withTimeoutOrNull(5_000) {
+                    vm.librarySelection.first { it.source == BookSource.GRIMMORY && it.libraryId == "fixture::library" }
+                }
+                assertNotNull("Selection was ${vm.librarySelection.value}", selected)
+                val media = withTimeoutOrNull(5_000) { vm.effectiveMedia.first { it == MediaFilter.EBOOKS } }
+                assertNotNull("Media was ${vm.effectiveMedia.value}", media)
                 vm.resetFiltersAndSorting()
-                assertEquals(BookSource.GRIMMORY, vm.sourceFilter.value)
-                assertEquals("fixture::library", vm.libraryFilter.value)
+                val resetMedia = withTimeoutOrNull(5_000) { vm.effectiveMedia.first { it == MediaFilter.ALL } }
+                assertNotNull("Reset media was ${vm.effectiveMedia.value}", resetMedia)
+                assertEquals(selected, vm.librarySelection.value)
                 assertEquals(StatusFilter.ALL, vm.status.value)
-                assertEquals(MediaFilter.ALL, vm.media.value)
                 assertTrue(!vm.advancedFilters.value.isActive)
             }
             withTimeout(5_000) { prefs.librarySortStack.first { it == "[]" } }
         } finally {
             withContext(Dispatchers.Main) { store.clear() }
-            prefs.setLibrarySortStack(originalSort)
-            prefs.setLibraryAdvancedFilters(originalFilters)
-            prefs.setLibrarySelection(originalSelection)
+            runtimes.close(profileId)
+            locations.filesDirectory.deleteRecursively()
+            locations.cacheDirectory.deleteRecursively()
+            locations.readerDatabaseFile.parentFile!!.deleteRecursively()
         }
     }
 

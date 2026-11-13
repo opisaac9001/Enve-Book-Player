@@ -3,7 +3,7 @@ package com.enve.app.hearth
 import com.enve.app.data.podcasts.PodcastFeedClient
 import com.enve.app.data.podcasts.PodcastDirectoryClient
 import com.enve.app.data.podcasts.PodcastSubscriptionStore
-import com.enve.app.data.podcasts.feedOnlyEpisodes
+import com.enve.app.data.podcasts.matchPodcastFeed
 import com.enve.app.data.podcasts.toFeedOnlyBook
 import com.enve.app.data.repository.AggregatorRepository
 import com.enve.core.data.local.PodcastFeedProgressStore
@@ -62,7 +62,12 @@ class PodcastsFacadeImpl @Inject constructor(
 
     override suspend fun withFeedEpisodes(showBook: Book, show: PodcastShow, feed: List<PodcastFeedEpisode>): PodcastShow {
         val progress = feedProgress.all()
-        val feedOnly = feedOnlyEpisodes(show.storedFeedKeys, feed).map { episode ->
+        val match = matchPodcastFeed(show.storedFeedKeys, feed)
+        val stored = show.episodes.map { episode ->
+            val shareUrl = match.linksByStoredId[episode.episodeId]
+            if (shareUrl == null) episode else episode.copy(podcastShareUrl = shareUrl)
+        }
+        val feedOnly = match.feedOnly.map { episode ->
             val book = episode.toFeedOnlyBook(show, showBook)
             progress[book.uniqueKey]?.let { saved ->
                 val duration = saved.durationSec.takeIf { it > 0L } ?: book.duration
@@ -75,7 +80,7 @@ class PodcastsFacadeImpl @Inject constructor(
                 )
             } ?: book
         }
-        return show.copy(episodes = show.episodes + feedOnly)
+        return show.copy(episodes = stored + feedOnly)
     }
 
     override suspend fun home(): PodcastHome {

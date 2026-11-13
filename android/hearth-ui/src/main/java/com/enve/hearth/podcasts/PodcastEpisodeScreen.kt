@@ -3,6 +3,7 @@ package com.enve.hearth.podcasts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -55,6 +56,7 @@ fun PodcastEpisodeScreen(
     LaunchedEffect(episode.uniqueKey) { vm.load(episode) }
     val download by vm.download.collectAsStateWithLifecycle()
     val palette = Hearth.palette
+    var sharing by rememberSaveable(episode.uniqueKey) { mutableStateOf(false) }
     var notesExpanded by rememberSaveable(episode.uniqueKey) { mutableStateOf(false) }
     val notes = episode.description?.let(PodcastsFormat::cleanHTML)?.takeIf(String::isNotBlank)
     Column(
@@ -102,7 +104,10 @@ fun PodcastEpisodeScreen(
                     }
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.M)) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.M),
+                verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
+            ) {
                 EmberButton(
                     if (PodcastsFormat.isInProgress(episode)) "Resume" else "Play",
                     onClick = { onPlay(episode) },
@@ -116,6 +121,7 @@ fun PodcastEpisodeScreen(
                     },
                     onClick = { vm.toggleDownload(episode) },
                 )
+                if (episode.podcastShareUrl != null) QuietButton("Share episode", onClick = { sharing = true })
             }
             download.errorMessage?.let {
                 Text(it, style = HearthText.Caption, color = palette.statusError)
@@ -153,5 +159,8 @@ fun PodcastEpisodeScreen(
             }
             Spacer(Modifier.height(LocalMantelInset.current + Hearth.Spacing.L))
         }
+    }
+    if (sharing) episode.podcastShareUrl?.let { url ->
+        PodcastEpisodeShareSheet(episode.title, url, onClose = { sharing = false })
     }
 }

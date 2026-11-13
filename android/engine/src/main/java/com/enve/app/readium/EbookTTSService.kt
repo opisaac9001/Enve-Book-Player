@@ -27,6 +27,8 @@ data class EbookTTSState(
     val playing: Boolean = false,
     val preparing: Boolean = false,
     val paragraph: Int = 0,
+    val spoken: Locator? = null,
+    val passage: String = "",
 )
 
 class EbookTTSService(
@@ -140,13 +142,19 @@ class EbookTTSService(
 
     fun onStart(id: String?) {
         if (id == null || id != utteranceId) return
-        _state.value = _state.value.copy(preparing = false)
-        history.getOrNull(index)?.locator?.let(onNavigate)
+        val paragraph = history.getOrNull(index)
+        _state.value = _state.value.copy(
+            preparing = false,
+            spoken = paragraph?.spokenWord(spokenOffset),
+            passage = paragraph?.text?.substring(spokenOffset, spokenOffset + spokenLength)?.trim().orEmpty(),
+        )
+        paragraph?.locator?.let(onNavigate)
     }
 
     fun onRangeStart(id: String?, start: Int) {
         if (id == null || id != utteranceId || start !in 0 until spokenLength) return
         offset = spokenOffset + start
+        history.getOrNull(index)?.spokenWord(offset)?.let { _state.value = _state.value.copy(spoken = it) }
     }
 
     fun onDone(id: String?) {
@@ -270,6 +278,24 @@ class EbookTTSService(
         pause()
         onFailure(message)
     }
+}
+
+private const val SPOKEN_CONTEXT = 80
+
+internal fun EbookTTSParagraph.spokenWord(from: Int): Locator? {
+    val base = locator ?: return null
+    var start = from.coerceIn(0, text.length)
+    while (start < text.length && text[start].isWhitespace()) start++
+    var end = start
+    while (end < text.length && !text[end].isWhitespace()) end++
+    if (end <= start) return null
+    return base.copy(
+        text = Locator.Text(
+            before = (base.text.before.orEmpty() + text.substring(0, start)).takeLast(SPOKEN_CONTEXT).ifEmpty { null },
+            highlight = text.substring(start, end),
+            after = (text.substring(end) + base.text.after.orEmpty()).take(SPOKEN_CONTEXT).ifEmpty { null },
+        ),
+    )
 }
 
 private const val SENTENCE_ENDS = ".!?;:…"

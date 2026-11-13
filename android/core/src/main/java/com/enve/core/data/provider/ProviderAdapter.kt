@@ -102,6 +102,12 @@ interface ProviderAdapter {
         )
     }
 
+    suspend fun startPlaybackSession(book: Book, persistProgress: Boolean): Result<ProviderPlaybackSession> =
+        if (persistProgress) startPlaybackSession(book)
+        else getAudioTracks(book).map { tracks ->
+            ProviderPlaybackSession(sessionId = "", audioTracks = tracks, chapters = book.chapters)
+        }
+
     suspend fun fetchChapters(book: Book): Result<List<Chapter>> = runSuspendCatching {
         if (book.chapters.isNotEmpty()) return@runSuspendCatching book.chapters
         val session = startPlaybackSession(book).getOrThrow()
@@ -128,6 +134,15 @@ interface ProviderAdapter {
         page: Int? = null,
         pageCount: Int? = null,
     ): Result<Unit> = Result.success(Unit)
+
+    suspend fun syncEbookProgressAt(
+        bookId: String,
+        percentage: Float,
+        locator: String?,
+        page: Int?,
+        pageCount: Int?,
+        observedAt: Long,
+    ): Result<Unit> = syncEbookProgress(bookId, percentage, locator, page, pageCount)
 
     suspend fun fetchAudiobookProgress(book: Book): Result<SyncSnapshot?> = Result.success(null)
 

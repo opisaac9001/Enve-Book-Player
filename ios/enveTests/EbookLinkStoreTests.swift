@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import SwiftData
 import Testing
@@ -46,6 +47,32 @@ struct EbookLinkStoreTests {
 
         #expect(library.books[1].linkedAudiobookStableId == audiobook.stableId)
         #expect(library.books[1].linkedAudiobookChapterOffset == 2)
+    }
+
+    @Test func restoringBothLinkFieldsSurvivesAnObserverReplacingTheLibrary() async throws {
+        let store = try makeStore()
+        let library = LibraryBookCache(writer: LinkNoopWriter())
+        let audiobook = makeBook(id: "audio", mediaType: .audiobook)
+        let ebook = makeBook(id: "text", mediaType: .ebook)
+        library.books = [audiobook, ebook]
+        await store.upsertBooks([audiobook, ebook])
+        await store.importLegacyLinks([
+            (ebookStableId: ebook.stableId, audiobookStableId: audiobook.stableId, chapterOffset: 3)
+        ])
+        var observed: Book?
+        let observation = library.changes.sink {
+            guard observed == nil else { return }
+            observed = library.books.first { $0.uniqueId == ebook.uniqueId }
+            library.books = []
+        }
+        defer { observation.cancel() }
+        let links = EbookLinkStore(library: library, repository: store, books: store)
+
+        await links.reapplyLinks()
+
+        #expect(observed?.linkedAudiobookStableId == audiobook.stableId)
+        #expect(observed?.linkedAudiobookChapterOffset == 3)
+        #expect(library.books.isEmpty)
     }
 
     @Test func linksPointingAtAMissingAudiobookAreNotApplied() async throws {

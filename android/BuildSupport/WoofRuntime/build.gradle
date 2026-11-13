@@ -1,0 +1,68 @@
+plugins {
+    id 'com.android.library'
+    id 'com.chaquo.python' version '17.2.0'
+}
+
+def upstream = file(providers.gradleProperty('enveWoofSource').get())
+def checksums = file('SHA256SUMS')
+def upstreamFiles = checksums.readLines().collect { it.split('  ', 2)[1] }
+def verifyWoof = tasks.register('verifyWoofSource') {
+    inputs.file(checksums)
+    inputs.files(upstreamFiles.collect { new File(upstream, it) })
+    doLast {
+        checksums.eachLine { line ->
+            def (expected, name) = line.split('  ', 2)
+            def source = new File(upstream, name)
+            def digest = source.isFile() ? java.security.MessageDigest.getInstance('SHA-256')
+                .digest(source.bytes).encodeHex().toString() : null
+            if (digest != expected) {
+                throw new GradleException("Underdog Woof source verification failed: ${name}")
+            }
+        }
+    }
+}
+def pythonSources = layout.buildDirectory.dir('generated/woofPython')
+def notices = layout.buildDirectory.dir('generated/woofNotices')
+def stageWoof = tasks.register('stageWoof', Sync) {
+    dependsOn(verifyWoof)
+    from(upstream) { include upstreamFiles.findAll { it.startsWith('underdog_woof/') } }
+    into pythonSources
+}
+def stageNotices = tasks.register('stageWoofNotices', Sync) {
+    dependsOn(verifyWoof)
+    from(upstream) {
+        include 'LICENSE', 'NOTICE'
+        into 'underdog-woof'
+    }
+    into notices
+}
+
+android {
+    namespace = 'com.enve.woof'
+    compileSdk { version = release(36) { minorApiLevel = 1 } }
+    defaultConfig {
+        minSdk = 26
+        ndk { abiFilters 'arm64-v8a' }
+    }
+    sourceSets {
+        main.assets.srcDir(files(notices).builtBy(stageNotices))
+    }
+}
+
+chaquopy {
+    defaultConfig {
+        version = '3.13'
+        extractPackages('underdog_woof')
+        pip { install 'numpy==1.26.2' }
+        pyc { src = false; pip = false; stdlib = false }
+    }
+    sourceSets {
+        main.srcDir(pythonSources)
+    }
+}
+
+tasks.named('preBuild').configure { dependsOn(stageWoof, stageNotices) }
+
+tasks.matching { it.name.startsWith('merge') && it.name.endsWith('PythonSources') }.configureEach {
+    dependsOn(stageWoof)
+}

@@ -1,4 +1,4 @@
-#if os(iOS) && !targetEnvironment(macCatalyst)
+#if os(iOS)
 import CryptoKit
 import Foundation
 

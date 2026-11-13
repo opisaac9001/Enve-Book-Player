@@ -43,7 +43,11 @@ class NarratorPackTest {
         assertEquals(listOf("F1", "F2", "F3", "F4", "F5", "M1", "M2", "M3", "M4", "M5"), NarratorPack.SUPERTONIC.voices)
         assertEquals((0..9).toList(), NarratorPack.SUPERTONIC.speakerIds)
         assertEquals(listOf("alba"), NarratorPack.POCKET.voices)
-        NarratorPack.entries.forEach { assertEquals(it.voices.size, it.speakerIds.size) }
+        assertEquals(listOf("spencer", "hugh"), NarratorPack.PHONON.voices)
+        assertEquals(listOf("juno", "mira"), NarratorPack.WOOF.voices)
+        NarratorPack.entries.filter { it.speakerIds.isNotEmpty() }.forEach {
+            assertEquals(it.voices.size, it.speakerIds.size)
+        }
     }
 
     @Test
@@ -80,7 +84,7 @@ class NarratorPackTest {
     @Test
     fun modelConfigReferencesOnlyPinnedFiles() {
         val directory = File("narrator")
-        NarratorPack.entries.forEach { pack ->
+        NarratorPack.entries.filter { it.speakerIds.isNotEmpty() }.forEach { pack ->
             val model = pack.modelConfig(directory, threads = 2)
             val paths = listOf(
                 model.kokoro.model, model.kokoro.voices, model.kokoro.tokens, model.kokoro.lexicon,
@@ -99,10 +103,12 @@ class NarratorPackTest {
     @Test
     fun pinnedAssetsAreWellFormed() {
         val digest = Regex("[0-9a-f]{64}")
-        val fileName = Regex("[A-Za-z0-9_.-]+")
+        val fileName = Regex("(?:voices/)?[A-Za-z0-9_.-]+")
         NarratorPack.entries.forEach { pack ->
             val assets = pack.assets
-            assertTrue(pack.name, assets.archive.sha256.matches(digest) && assets.archive.url.startsWith("https://"))
+            assets.archive?.let { assertTrue(pack.name, it.sha256.matches(digest) && it.url.startsWith("https://")) }
+            assertTrue(pack.name, assets.version.matches(digest))
+            assertTrue(pack.name, assets.archive != null || assets.extracted.isEmpty())
             assertTrue(pack.name, assets.files.all { it.sha256.matches(digest) && it.name.matches(fileName) && it.bytes > 0 })
             assertEquals(pack.name, assets.files.size, assets.files.map { it.name }.toSet().size)
             assertTrue(pack.name, assets.downloads.all { it.url!!.startsWith("https://") })

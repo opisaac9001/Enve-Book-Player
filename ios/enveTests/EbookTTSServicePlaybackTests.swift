@@ -83,6 +83,39 @@ struct EbookTTSServicePlaybackTests {
         #expect(spoken.count >= 2)
     }
 
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["ENVE_PHONON_VERIFY"] == "1"))
+    func phononDownloadsAndNarratesWithBothVoices() async throws {
+        try #require(PhononTTSRuntime.isSupportedOnCurrentOS)
+        let (service, defaults, suiteName) = try makeService()
+        defer {
+            service.tearDown()
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+        service.setEngineChoice(.phonon)
+        try await waitUntil(timeout: .seconds(180)) {
+            if case .failed = service.downloadState(for: .phonon) { return true }
+            return service.engineChoice == .phonon
+        }
+        if case let .failed(message) = service.downloadState(for: .phonon) {
+            Issue.record("Phonon model installation failed: \(message)")
+            return
+        }
+        try #require(service.engineChoice == .phonon)
+        let passage = "The lantern burned steadily as the wind moved through the trees."
+        let hugh = try await PhononTTSRuntime.shared.synthesize(text: passage, voice: .hugh)
+        let spencer = try await PhononTTSRuntime.shared.synthesize(text: passage, voice: .spencer)
+        #expect(hugh.count > 24_000)
+        #expect(spencer.count > 24_000)
+        #expect(hugh != spencer)
+
+        service.setPhononVoice(.spencer)
+        #expect(EbookTTSService(userDefaults: defaults).currentVoiceDisplayName == "Phonon · Spencer")
+        service.configure(with: makePublication())
+        service.startSpeaking()
+        try await waitUntil(timeout: .seconds(30)) { service.highlightLocator != nil }
+        #expect(service.isPlaying)
+    }
+
     @Test func changingLanguageWhilePausedKeepsNarrationPaused() async throws {
         let (service, defaults, suiteName) = try makeService()
         defer {

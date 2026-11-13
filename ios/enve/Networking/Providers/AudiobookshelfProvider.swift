@@ -38,11 +38,10 @@ enum ABSMediaTypeClassifier {
 }
 
 enum ABSPodcastEpisodeMerge {
-    /// Returns feed episodes not represented by a stored ABS episode, preserving feed order.
-    static func feedOnlyEpisodes(
+    static func matchFeed(
         stored: [AudiobookshelfProvider.PodcastItem.StoredEpisode],
         feed: [RSSPodcastParser.ParsedEpisode]
-    ) -> [RSSPodcastParser.ParsedEpisode] {
+    ) -> (feedOnly: [RSSPodcastParser.ParsedEpisode], matched: [String: RSSPodcastParser.ParsedEpisode]) {
         var episodes: [RSSPodcastParser.ParsedEpisode] = []
         var seenIDs = Set<String>()
         var indexByGUID: [String: Int] = [:]
@@ -61,17 +60,20 @@ enum ABSPodcastEpisodeMerge {
         }
 
         var claimed = Set<Int>()
+        var matched: [String: RSSPodcastParser.ParsedEpisode] = [:]
         for episode in stored {
             if let guid = episode.guid?.trimmingCharacters(in: .whitespacesAndNewlines), !guid.isEmpty,
                 let index = indexByGUID[guid], !claimed.contains(index)
             {
                 claimed.insert(index)
+                matched[episode.id] = episodes[index]
                 continue
             }
             if let enclosure = normalizedEnclosure(episode.enclosureURL),
                 let index = indexByEnclosure[enclosure], !claimed.contains(index)
             {
                 claimed.insert(index)
+                matched[episode.id] = episodes[index]
                 continue
             }
             guard let publishedAt = episode.publishedAt, let title = episode.title else { continue }
@@ -81,10 +83,13 @@ enum ABSPodcastEpisodeMerge {
                 guard !claimed.contains(index), let feedDate = episodes[index].publishedDate else { return false }
                 return abs(feedDate.timeIntervalSince(publishedAt)) <= 86_400
             }
-            if let twin { claimed.insert(twin) }
+            if let twin {
+                claimed.insert(twin)
+                matched[episode.id] = episodes[twin]
+            }
         }
 
-        return episodes.indices.filter { !claimed.contains($0) }.map { episodes[$0] }
+        return (episodes.indices.filter { !claimed.contains($0) }.map { episodes[$0] }, matched)
     }
 
     private static func normalizedEnclosure(_ raw: String?) -> String? {
@@ -1427,6 +1432,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
     ) -> PodcastShow {
         let coverURL = coverURL(for: item.id, baseURL: baseURL, token: token, hasCover: item.hasCover)
 
+        let feed = ABSPodcastEpisodeMerge.matchFeed(stored: storedEpisodes, feed: feedEpisodes)
         let stored: [Book] = storedEpisodes.compactMap { episode in
             guard let title = episode.title, !title.isEmpty else { return nil }
             var book = Book(
@@ -1441,6 +1447,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
                 episodeId: episode.id,
                 podcastLibraryItemId: item.id,
                 podcastName: item.title,
+                podcastShareURL: feed.matched[episode.id]?.shareURL ?? PodcastEpisodeShareLink.url(episode.enclosureURL),
                 dateAdded: episode.publishedAt ?? episode.addedAt,
                 description: episode.description,
                 genres: item.genres,
@@ -1457,27 +1464,27 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
             return book
         }
 
-        let feedOnly: [Book] = ABSPodcastEpisodeMerge.feedOnlyEpisodes(stored: storedEpisodes, feed: feedEpisodes)
-            .compactMap { episode in
-                guard !episode.title.isEmpty, let audioURL = episode.audioURL else { return nil }
-                return Book(
-                    id: "\(item.id)_rss_\(episode.id)",
-                    title: episode.title,
-                    author: item.author,
-                    thumb: (episode.coverURL ?? coverURL)?.absoluteString,
-                    partKey: audioURL.absoluteString,
-                    duration: episode.duration > 0 ? episode.duration : nil,
-                    isPodcastEpisode: true,
-                    episodeId: episode.id,
-                    podcastLibraryItemId: item.id,
-                    podcastName: item.title,
-                    description: episode.description,
-                    genres: item.genres.isEmpty ? nil : item.genres,
-                    addedAt: episode.publishedDate,
-                    providerId: Self.feedEpisodeProviderId,
-                    libraryId: libraryId
-                )
-            }
+        let feedOnly: [Book] = feed.feedOnly.compactMap { episode in
+            guard !episode.title.isEmpty, let audioURL = episode.audioURL else { return nil }
+            return Book(
+                id: "\(item.id)_rss_\(episode.id)",
+                title: episode.title,
+                author: item.author,
+                thumb: (episode.coverURL ?? coverURL)?.absoluteString,
+                partKey: audioURL.absoluteString,
+                duration: episode.duration > 0 ? episode.duration : nil,
+                isPodcastEpisode: true,
+                episodeId: episode.id,
+                podcastLibraryItemId: item.id,
+                podcastName: item.title,
+                podcastShareURL: episode.shareURL,
+                description: episode.description,
+                genres: item.genres.isEmpty ? nil : item.genres,
+                addedAt: episode.publishedDate,
+                providerId: Self.feedEpisodeProviderId,
+                libraryId: libraryId
+            )
+        }
 
         return PodcastShow(
             id: item.id,

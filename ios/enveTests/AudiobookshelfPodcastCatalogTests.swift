@@ -69,7 +69,7 @@ struct AudiobookshelfPodcastCatalogTests {
         let feed = try RSSPodcastParser.shared.parseFeed(from: Fixture.feed)
         #expect(feed.episodes.count == 7)
 
-        let feedOnly = ABSPodcastEpisodeMerge.feedOnlyEpisodes(stored: stored, feed: feed.episodes)
+        let feedOnly = ABSPodcastEpisodeMerge.matchFeed(stored: stored, feed: feed.episodes).feedOnly
 
         // Matching uses GUID, enclosure, or title plus nearby date without collapsing title-only duplicates.
         #expect(feedOnly.map(\.id) == ["guid-14", "https://cdn.example.test/signals/15.mp3", "guid-recap-2"])
@@ -78,8 +78,8 @@ struct AudiobookshelfPodcastCatalogTests {
     @Test func feedOnlyMergeIsDeterministicWithoutStoredEpisodes() throws {
         let feed = try RSSPodcastParser.shared.parseFeed(from: Fixture.feed)
 
-        let first = ABSPodcastEpisodeMerge.feedOnlyEpisodes(stored: [], feed: feed.episodes)
-        let second = ABSPodcastEpisodeMerge.feedOnlyEpisodes(stored: [], feed: feed.episodes)
+        let first = ABSPodcastEpisodeMerge.matchFeed(stored: [], feed: feed.episodes).feedOnly
+        let second = ABSPodcastEpisodeMerge.matchFeed(stored: [], feed: feed.episodes).feedOnly
 
         #expect(first.map(\.id) == second.map(\.id))
         #expect(first.count == 6)
@@ -134,6 +134,7 @@ struct AudiobookshelfPodcastCatalogTests {
         #expect(stored.source == .audiobookshelf)
         #expect(stored.providerId == connection.id)
         #expect(stored.partKey == "li_show")
+        #expect(stored.podcastShareURL?.absoluteString == "https://signals.example.test/episodes/12")
         #expect(stored.episodeId == "ep_stored")
         #expect(stored.audioFileIno == "9001")
         #expect(stored.currentTime == 600)
@@ -144,6 +145,7 @@ struct AudiobookshelfPodcastCatalogTests {
         #expect(feedOnly.source == .local)
         #expect(feedOnly.providerId != connection.id)
         #expect(feedOnly.partKey == "https://cdn.example.test/signals/14.mp3")
+        #expect(feedOnly.podcastShareURL?.absoluteString == "https://cdn.example.test/signals/14.mp3")
         #expect(feedOnly.episodeId == "guid-14")
         #expect(feedOnly.podcastName == "Signals")
         #expect(feedOnly.duration == 1500)
@@ -450,6 +452,7 @@ private enum Fixture {
             <item>
               <title>Episode 12</title>
               <guid isPermaLink="false">guid-12</guid>
+              <link>https://signals.example.test/episodes/12</link>
               <pubDate>Mon, 01 Jan 2024 10:00:00 +0000</pubDate>
               <enclosure url="https://cdn.example.test/signals/12-remastered.mp3" type="audio/mpeg" length="28311552"/>
               <itunes:duration>30:00</itunes:duration>
@@ -468,6 +471,7 @@ private enum Fixture {
             </item>
             <item>
               <title>Episode 14</title>
+              <link>https://user:secret@signals.example.test/episodes/14</link>
               <guid>guid-14</guid>
               <pubDate>Mon, 15 Jan 2024 10:00:00 +0000</pubDate>
               <enclosure url="https://cdn.example.test/signals/14.mp3" type="audio/mpeg" length="24000000"/>

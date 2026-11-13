@@ -48,3 +48,8 @@ include(":bookorbit")
 include(":silo")
 include(":wear-protocol")
 include(":wear")
+
+if (providers.gradleProperty("enveWoofSource").isPresent) {
+    include(":woof-runtime")
+    project(":woof-runtime").projectDir = file("BuildSupport/WoofRuntime")
+}

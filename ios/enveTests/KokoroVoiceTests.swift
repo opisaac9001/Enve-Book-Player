@@ -78,10 +78,10 @@ nonisolated struct KokoroVoiceTests {
         for attempt in [{ service.setEngineChoice(.kokoro) }, { service.downloadModel(for: .kokoro) }] {
             attempt()
             #expect(service.engineChoice == .apple)
-            if service.kokoroDownloadState == .ready {
+            if service.downloadState(for: .kokoro) == .ready {
                 #expect(service.speechError == unavailable)
             } else {
-                #expect(service.kokoroDownloadState == .failed(unavailable))
+                #expect(service.downloadState(for: .kokoro) == .failed(unavailable))
             }
         }
         #expect(defaults.string(forKey: "ebookTTS.engine") == "kokoro")

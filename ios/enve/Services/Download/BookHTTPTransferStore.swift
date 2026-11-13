@@ -5,11 +5,12 @@ nonisolated final class BookHTTPTransferStore: @unchecked Sendable {
     enum Mode: String, Codable, Sendable { case single, multiTrack }
     enum Outcome: String, Codable, Sendable { case active, completed, failed }
     enum Failure: String, Codable, Sendable {
-        case interrupted, transport, invalidResponse, fileSystem
+        case interrupted, transport, invalidResponse, fileSystem, stalled
         var message: String {
             switch self {
             case .interrupted: "Download interrupted. Retry to reconnect."
             case .transport: "Download failed. Retry to reconnect."
+            case .stalled: "Download stopped making progress. Retry to continue."
             case .invalidResponse: "Server returned an incomplete or unsupported audio file."
             case .fileSystem: "Could not save the downloaded audio."
             }

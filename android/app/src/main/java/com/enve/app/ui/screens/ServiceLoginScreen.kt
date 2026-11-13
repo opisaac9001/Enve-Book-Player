@@ -70,6 +70,8 @@ private val HearthBorder = Color.White.copy(alpha = 0.12f)
 fun ServiceLoginScreen(
     source: BookSource,
     authState: AuthState,
+    siloProfiles: List<com.enve.silo.dto.SiloProfileDto> = emptyList(),
+    onSiloProfileSelected: (com.enve.silo.auth.SiloProfileChoice?) -> Unit = {},
     dynamicBackgroundEnabled: Boolean = true,
     onBack: () -> Unit = {},
     onServerUrlChange: (String) -> Unit = {},
@@ -104,6 +106,39 @@ fun ServiceLoginScreen(
     onCloudRootToggle: (String, Boolean) -> Unit = { _, _ -> },
     onSaveCloudRoots: (List<String>) -> Unit = {},
 ) {
+    if (siloProfiles.isNotEmpty()) {
+        var selectedID by remember(siloProfiles) { mutableStateOf(siloProfiles.first().id) }
+        var pin by remember(selectedID) { mutableStateOf("") }
+        val selected = siloProfiles.first { it.id == selectedID }
+        AlertDialog(
+            onDismissRequest = { onSiloProfileSelected(null) },
+            title = { Text("Silo profile") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("This connection will use the selected profile for books and progress.")
+                    siloProfiles.forEach { profile ->
+                        Row(Modifier.fillMaxWidth().clickable { selectedID = profile.id }, verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(selected = selectedID == profile.id, onClick = { selectedID = profile.id })
+                            Text(profile.name)
+                        }
+                    }
+                    if (selected.hasPin) {
+                        OutlinedTextField(
+                            value = pin, onValueChange = { pin = it }, label = { Text("Silo profile PIN") },
+                            visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), singleLine = true,
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = !selected.hasPin || pin.isNotBlank(), onClick = {
+                    onSiloProfileSelected(com.enve.silo.auth.SiloProfileChoice(selectedID, pin))
+                }) { Text(if (selected.hasPin) "Unlock" else "Continue") }
+            },
+            dismissButton = { TextButton(onClick = { onSiloProfileSelected(null) }) { Text("Cancel") } },
+        )
+    }
     val metrics = rememberAdaptiveMetrics()
     val context = LocalContext.current
     val capability = remember(source) { ConnectionCapability.forSource(source) }

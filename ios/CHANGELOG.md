@@ -1,6 +1,11 @@
 # Changelog
 
-## 1.2.6 — Next build (2026-11-06)
+## 1.2.7 — 2026-11-13
+
+- Move native Silo connections to API v2, including profiles, downloads, progress and annotations.
+- Fix BookBridge/KOReader resume and keep saved library filters while sources load.
+- Support both stable and development Grimmory recommendations.
+- Add Phonon narration, voice previews and shared narrator model downloads.
 
 - Fix a PIN-protected profile-switch crash and cancel outgoing catalog work before waiting for profile shutdown.
 - Show Home loading progress while the local library opens, including large Grimmory libraries.
@@ -10,8 +15,6 @@
 - Add Pocket TTS as an optional offline English narrator with Alba’s voice.
 - Add optional Supertonic 3 offline narration with ten voices and support for 31 languages.
 - Use CPU-based Kokoro speech generation on iOS 26.4 and later to avoid the affected Core ML speech pipeline. Download the updated voice package before selecting Kokoro.
-
-## 1.2.7 — 2026-10-29
 
 - Preserve the confirmed reading position across navigation, reflow, closing, and offline reopening.
 - Fit overflowing tables and preformatted text while preserving publisher styling for content that already fits.

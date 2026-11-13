@@ -24,18 +24,29 @@ final class WorkProgressSync {
 
         let siblings = await profileSession.bookStore.books(editionKey: editionKey)
             .filter { $0.stableId != book.stableId }
+        let sourceIsDownloaded = book.mediaType == .audiobook && profileSession.localStorage.isAudiobookDownloaded(book)
         for sibling in siblings {
-            await applyAndPush(to: sibling, fraction: fraction, finished: isFinished)
+            guard profileSession.pendingSync.entries[book.stableId]?.downloadedBaseline == nil else { return }
+            await applyAndPush(to: sibling, fraction: fraction, finished: isFinished, protectAudiobook: sourceIsDownloaded)
         }
 
     }
 
-    private func applyAndPush(to target: Book, fraction: Double, finished: Bool) async {
+    private func applyAndPush(to target: Book, fraction: Double, finished: Bool, protectAudiobook: Bool) async {
         guard !target.hasEPUB3MediaOverlay else { return }
         let existing = WorkGrouping.progressFraction(target)
         guard finished || fraction > existing + 0.005 else { return }
 
         let duration = target.duration ?? 0
+        if protectAudiobook, target.mediaType == .audiobook {
+            let local = profileSession.bookProgress.loadProgress(for: target)
+            let position = local?.progress ?? target.currentTime
+            let updatedAt = local.map { Date(timeIntervalSince1970: $0.lastUpdated) }
+                ?? (position > 0 || target.isFinished ? target.lastUpdate : .distantPast)
+            profileSession.sync.protectDownloadedProgress(
+                for: target, position: position, updatedAt: updatedAt, duration: duration
+            )
+        }
         var updated = target
         if target.mediaType == .ebook {
             updated.ebookProgress = finished ? 1 : fraction

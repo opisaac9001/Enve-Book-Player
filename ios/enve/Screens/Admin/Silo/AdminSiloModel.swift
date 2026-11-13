@@ -14,7 +14,7 @@ final class AdminSiloModel {
     var stats: SiloAdminStats?
     var playbackHistory: [SiloPlaybackEntry] = []
     var scans: [SiloScan] = []
-    var libraryCounts: [Int: LibraryCounts] = [:]
+    var libraryCounts: [String: LibraryCounts] = [:]
     var personalProgress: [UserMediaProgress] = []
     var personalBooks: [String: Book] = [:]
 
@@ -24,7 +24,7 @@ final class AdminSiloModel {
     var error: String?
     var successMessage: String?
 
-    private(set) var inFlightScanLibraryID: Int?
+    private(set) var inFlightScanLibraryID: String?
 
     struct LibraryCounts {
         var audiobooks = 0
@@ -86,7 +86,7 @@ final class AdminSiloModel {
     }
 
     private func loadCatalogCounts() async {
-        var counts: [Int: LibraryCounts] = [:]
+        var counts: [String: LibraryCounts] = [:]
         for library in libraries where library.isReadingLibrary {
             var entry = LibraryCounts()
             if library.countsAudiobooks {
@@ -135,7 +135,7 @@ final class AdminSiloModel {
     }
 
     var historyListeners: Int {
-        Set(playbackHistory.compactMap { $0.username }).count
+        Set(playbackHistory.compactMap { $0.username }.filter { !$0.isEmpty }).count
     }
 
     var personalFinished: Int { personalProgress.filter(\.isFinished).count }

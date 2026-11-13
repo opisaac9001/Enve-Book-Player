@@ -46,6 +46,7 @@ final class ProfileSession {
     let rejectedContent: RejectedContentStore
     let authenticationFailures: AuthenticationFailureStore
     let pendingSync: PendingSyncQueueStore
+    private let providerProgressQueue = PerBookSerialQueue()
     let readerArtifacts: ReaderArtifactsStore
     let bookProgress: BookProgressStore
     let userCollections: UserCollectionStore
@@ -85,6 +86,7 @@ final class ProfileSession {
     let narratedPositions: NarratedAudioPositionStore
     let rewindTracker: RemoteRewindTracker
     let ebookConflicts: EbookConflictStore
+    let playbackHistory: PlaybackHistoryStore
     private var artworkOperations: [UUID: Task<Void, Never>] = [:]
     private var hasStarted = false
     private var retirementTask: Task<Void, Never>?
@@ -262,14 +264,16 @@ final class ProfileSession {
             store: pendingSync,
             transport: ProviderPendingSyncTransport(providerResolver: providerConnections,
                 bookLookup: { [bookStore] in await bookStore.book(stableId: $0) },
+                pendingSync: pendingSync, serialQueue: providerProgressQueue,
+                isDownloaded: { [localStorage] in localStorage.isAudiobookDownloaded($0) },
                 serverSyncEnabled: { [unowned self] in !isRetired && serverSyncEnabled })
         ),
         recentlyPlayedSync: RecentlyPlayedSyncService(
             playbackState: playback.composition.controller, providerConnections: providerConnections,
             bookQuerying: bookStore, bookWriting: bookStore, progressRepository: bookStore,
             progressAPI: AudiobookshelfRecentlyPlayedProgressAPI(service: absService),
-            progressCache: bookProgress, libraryCache: appState, ebookLinks: ebookLinks, strategyRegistry: registry
-        ), profileSession: self
+            progressCache: bookProgress, libraryCache: appState, ebookLinks: ebookLinks, strategyRegistry: registry, pendingSync: pendingSync
+        ), profileSession: self, serialQueue: providerProgressQueue
     )
     }()
 
@@ -362,6 +366,7 @@ final class ProfileSession {
         narratedPositions = NarratedAudioPositionStore(defaults: defaults)
         rewindTracker = RemoteRewindTracker()
         ebookConflicts = EbookConflictStore()
+        playbackHistory = PlaybackHistoryStore(storage: storage)
         historyStore = try HistorySessionStore(directory: storage.historyDirectory)
         listeningStore = ABSLocalListeningStore(defaults: defaults)
         crossProviderHistory = CrossProviderHistorySessionSync(defaults: defaults, bookQuerying: appState.bookStore, providerResolver: providerConnections, historyStore: historyStore, listeningStore: listeningStore, serverSyncEnabled: { ProfileServerSyncPreferences(defaults: defaults, isOwner: profile.id == FamilyProfile.ownerID).isEnabled }, historyUploadAllowed: { ProfileServerSyncPreferences(defaults: defaults, isOwner: profile.id == FamilyProfile.ownerID).allowsHistoryUpload(startedAt: $0.startTime) })
@@ -456,6 +461,7 @@ final class ProfileSession {
         for task in Array(artworkOperations.values) { await task.value }
         await listeningStats.flush()
         await readingStats.flush()
+        await playbackHistory.flush()
         await appState.libraryCache.retire()
         registry.retire()
     }

@@ -77,10 +77,19 @@ struct PlayerLayoutPolicyTests {
                     usesAccessibilityType: false,
                     showsError: false
                 )
-                #expect(width * ratio + PlayerLayoutPolicy.nightstandTitleAllowance <= halves.upperHeight + 0.001)
+                let allowance = PlayerLayoutPolicy.nightstandCoverAllowance(width: uprightCanvas.width)
+                #expect(width * ratio + allowance <= halves.upperHeight + 0.001)
                 #expect(width >= 96)
             }
         }
+    }
+
+    @Test func aNarrowNightstandKeepsRoomForTheClockAboveTheCover() {
+        #expect(PlayerLayoutPolicy.nightstandFaceIsWide(width: 669))
+        #expect(!PlayerLayoutPolicy.nightstandFaceIsWide(width: 420))
+        let wide = PlayerLayoutPolicy.nightstandCoverAllowance(width: 669)
+        let narrow = PlayerLayoutPolicy.nightstandCoverAllowance(width: 420)
+        #expect(narrow == wide + PlayerLayoutPolicy.nightstandClockAllowance)
     }
 
     @Test func aBookPoseKeepsTheSideBySideLayout() {
@@ -109,8 +118,7 @@ struct PlayerLayoutPolicyTests {
         }
     }
 
-    // A folding phone's facing page and outer display are shorter than any phone; the cover gives way
-    // before the transport does.
+    // Short displays shrink the cover before the transport.
     @Test(arguments: [
         CGSize(width: 391, height: 635),
         CGSize(width: 466, height: 644),

@@ -17,11 +17,15 @@ struct HearthScreen: View {
     @Environment(\.hearth) private var hearth
     @Environment(\.mantelInset) private var mantelInset
     @Environment(\.facingPageBookId) private var facingPageBookId
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var reading: [Book] = []
     @State private var listening: [Book] = []
     @State private var fresh: [Book] = []
     @State private var downloaded: [Book] = []
+    @State private var rediscover: [RediscoverPick] = []
+    @State private var rediscoverRefreshDate: Date?
+    @State private var rediscoverLibraryCount: Int?
     @State private var heroTint: Color = Hearth.accent
     @State private var loaded = false
     @State private var seeAll: HearthSeeAll?
@@ -81,6 +85,7 @@ struct HearthScreen: View {
             .refreshable {
                 await engine.sync.manualSync()
                 await engine.sources.refreshHearthCatalog()
+                rediscoverRefreshDate = nil
                 await load()
             }
         }
@@ -93,9 +98,9 @@ struct HearthScreen: View {
             guard isActive else { return }
             // Subscribe before the first load so imports finishing during it still trigger a reload.
             let changes = engine.library.libraryChanges()
+            rediscoverRefreshDate = nil
             await load()
             guard !Task.isCancelled else { return }
-            loaded = true
             var pendingReload: Task<Void, Never>?
             defer { pendingReload?.cancel() }
             for await _ in changes {
@@ -110,7 +115,7 @@ struct HearthScreen: View {
         .task(id: isActive) {
             guard isActive else { return }
             for await _ in AppRefreshEvents.stream(names: [.bookProgressDidChange], debounce: .milliseconds(500)) {
-                await load()
+                await load(rediscovering: false)
             }
         }
         .task {
@@ -119,6 +124,7 @@ struct HearthScreen: View {
                     profileSession.preferences
                     .loadPreferences()
                     .visibleHomeSections
+                rediscoverRefreshDate = nil
                 await load()
             }
         }
@@ -171,6 +177,12 @@ struct HearthScreen: View {
                         seeAll = HearthSeeAll(title: "Recently Added", kind: .fresh)
                     }
                     shelf(books: shelfFresh)
+                }
+            }
+        case .rediscover:
+            if !rediscover.isEmpty {
+                HearthRediscoverShelf(picks: rediscover) { book in
+                    shelfMenu(for: book, dismissable: true)
                 }
             }
         case .downloaded:
@@ -438,8 +450,11 @@ struct HearthScreen: View {
 
     private func dismissFromShelf(_ book: Book) {
         profileSession.dismissedShelves.insert(stableId: book.stableId)
-        reading.removeAll { $0.stableId == book.stableId }
-        listening.removeAll { $0.stableId == book.stableId }
+        withAnimation(reduceMotion ? nil : .snappy) {
+            reading.removeAll { $0.stableId == book.stableId }
+            listening.removeAll { $0.stableId == book.stableId }
+            rediscover.removeAll { $0.id == book.stableId }
+        }
         PlatformHaptics.impact(.light)
     }
 
@@ -524,7 +539,7 @@ struct HearthScreen: View {
         .padding(.vertical, 12)
     }
 
-    private func load() async {
+    private func load(rediscovering: Bool = true) async {
         if let stableId = lastOpened.stableId {
             let book = await engine.library.book(stableId: stableId)
             // A retired profile's task must not clear the persisted last-opened book.
@@ -548,10 +563,164 @@ struct HearthScreen: View {
         reading = profileSession.preferences.readingEnabled ? feed.reading : []
         fresh = feed.fresh.filter(profileSession.preferences.includesLibraryBook)
         downloaded = feed.downloaded.filter(profileSession.preferences.includesLibraryBook)
+        loaded = true
+
+        var shown = Set((listening + reading).map(\.stableId))
+        if let hero { shown.insert(hero.stableId) }
+        var indexedCount: Int?
+        var refreshPicks = false
+        if rediscovering, sectionOrder.contains(.rediscover) {
+            indexedCount = await appState.bookStore.bookCount()
+            let expired = rediscoverRefreshDate.map { Date().timeIntervalSince($0) >= 15 * 60 } ?? true
+            refreshPicks = expired || indexedCount != rediscoverLibraryCount
+        }
+        guard !Task.isCancelled else { return }
+        if refreshPicks {
+            let picks = await rediscoverPicks(excluding: shown)
+            guard !Task.isCancelled else { return }
+            rediscover = picks
+            rediscoverRefreshDate = Date()
+            rediscoverLibraryCount = indexedCount
+        } else {
+            let currentBooks = await appState.bookStore.booksByStableIds(Set(rediscover.map(\.id)))
+            var remaining: [RediscoverPick] = []
+            for pick in rediscover where !shown.contains(pick.id) {
+                guard let current = currentBooks[pick.id],
+                    !RediscoverPolicy.isCompleted(current)
+                else { continue }
+                guard !Task.isCancelled else { return }
+                if pick.reason != .waiting && pick.reason != .nextInSeries || !RediscoverPolicy.isStarted(current) {
+                    remaining.append(RediscoverPick(book: current, reason: pick.reason))
+                }
+            }
+            guard !Task.isCancelled else { return }
+            rediscover = remaining
+        }
 
         if let hero {
             heroTint = await profileSession.ambientColors.resolve(for: hero)
         }
+    }
+
+    // Progress writes also notify library changes, so unchanged book counts reuse picks for 15 minutes.
+    private func rediscoverPicks(excluding shown: Set<String>) async -> [RediscoverPick] {
+        guard sectionOrder.contains(.rediscover) else { return [] }
+        let library = profileSession.preferences
+        let preferences = library.loadPreferences()
+        let indexed = await appState.bookStore.allBooks()
+        guard !Task.isCancelled else { return [] }
+        let books = indexed.filter(library.includesLibraryBook)
+        let exclusions = RediscoverPolicy.Exclusions(
+            stableIds: shown
+                .union(profileSession.dismissedShelves.stableIds)
+                .union(preferences.hiddenBookIds)
+                .union(profileSession.deletedBooks.allDeleted),
+            libraryKeys: preferences.excludedLibraryIds
+        )
+        let now = Date()
+        return await Task.detached(priority: .utility) {
+            RediscoverPolicy.picks(from: books, now: now, calendar: .current, exclusions: exclusions)
+        }.value
+    }
+}
+
+private struct HearthRediscoverShelf<MenuItems: View>: View {
+    let picks: [RediscoverPick]
+    @ViewBuilder let menu: (Book) -> MenuItems
+
+    @Environment(EnveEngine.self) private var engine
+    @Environment(\.hearth) private var hearth
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ScaledMetric(relativeTo: .footnote) private var scaledCoverWidth: CGFloat = 104
+
+    private var coverWidth: CGFloat { min(scaledCoverWidth, dynamicTypeSize.isAccessibilitySize ? 220 : 150) }
+
+    private var shelfRatio: CGFloat {
+        picks.map(\.book.hearthCoverRatio).max() ?? 1
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            ShelfHeader(title: "Rediscover")
+            ScrollView(.horizontal) {
+                LazyHStack(alignment: .top, spacing: 16) {
+                    ForEach(picks) { pick in
+                        cell(pick)
+                    }
+                }
+                .overlay(alignment: .top) {
+                    ShelfLedge()
+                        .padding(.top, coverWidth * shelfRatio - 1)
+                        .padding(.horizontal, -10)
+                        .allowsHitTesting(false)
+                }
+                .padding(.horizontal, 24)
+            }
+            .scrollIndicators(.hidden)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("hearth-rediscover")
+    }
+
+    private func cell(_ pick: RediscoverPick) -> some View {
+        let book = pick.book
+        return NavigationLink {
+            BookDetailScreen(book: book)
+        } label: {
+            VStack(alignment: .center, spacing: 14) {
+                ShelfCoverCell(book: book, width: coverWidth, cellRatio: shelfRatio, showsProgress: pick.reason != .waiting)
+                VStack(alignment: .center, spacing: 6) {
+                    reasonLabel(pick.reason)
+                    Text(book.title)
+                        .font(.hearthDisplay(13, weight: .medium))
+                        .foregroundStyle(hearth.text)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 4 : 2)
+                        .multilineTextAlignment(.center)
+                    if let author = book.author, !author.isEmpty {
+                        Text(author)
+                            .font(.hearthUI(11))
+                            .foregroundStyle(hearth.textSecondary)
+                            .lineLimit(1)
+                    }
+                }
+                .frame(width: coverWidth)
+            }
+        }
+        .buttonStyle(PressableStyle())
+        .contextMenu { menu(book) }
+        .accessibilityLabel(accessibilityLabel(for: pick))
+        .accessibilityHint("Opens book details")
+        .accessibilityAction(named: book.mediaType == .ebook ? "Read" : "Listen") {
+            engine.playback.play(book)
+        }
+        .accessibilityIdentifier("hearth-rediscover-\(book.stableId)")
+    }
+
+    private func reasonLabel(_ reason: RediscoverPick.Reason) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: reason.glyph)
+                .foregroundStyle(hearth.ember)
+                .accessibilityHidden(true)
+            Text(reason.label)
+                .foregroundStyle(hearth.text)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .font(.hearthUI(10, weight: .semibold))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background {
+            Capsule()
+                .fill(hearth.emberSoft)
+                .overlay(Capsule().strokeBorder(hearth.hairline.opacity(0.75), lineWidth: 1))
+        }
+    }
+
+    private func accessibilityLabel(for pick: RediscoverPick) -> String {
+        var parts = [pick.book.title]
+        if let author = pick.book.author, !author.isEmpty { parts.append(author) }
+        parts.append(pick.reason.label)
+        return parts.joined(separator: ", ")
     }
 }
 

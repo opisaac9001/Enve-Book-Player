@@ -30,7 +30,10 @@ final class PodcastsModel {
     }
 
     func loadIfNeeded() async {
-        guard !hasFreshCache else { return }
+        guard !hasFreshCache else {
+            refreshRSSProgress()
+            return
+        }
         await load()
     }
 
@@ -52,6 +55,17 @@ final class PodcastsModel {
     func reloadSubscriptions() async {
         rssShows = await podcastsFetchRSSShows()
         (profileSession?.engine ?? EnveEngine.shared).podcastAutoQueue.reconcile(allShows)
+    }
+
+    func refreshRSSProgress() {
+        let podcasts = (profileSession?.engine ?? EnveEngine.shared).podcasts
+        rssShows = rssShows.map { show in
+            AudiobookshelfProvider.PodcastShow(
+                id: show.id, title: show.title, author: show.author,
+                description: show.description, coverURL: show.coverURL, genres: show.genres,
+                episodes: podcasts.hydrated(show.episodes), addedAt: show.addedAt, feedURL: show.feedURL
+            )
+        }
     }
 
     func showBook(for show: AudiobookshelfProvider.PodcastShow) -> Book {

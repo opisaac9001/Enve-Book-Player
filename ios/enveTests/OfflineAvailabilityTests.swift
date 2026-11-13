@@ -17,7 +17,7 @@ struct OfflineAvailabilityTests {
 
         #expect(!downloads.isDownloaded(book))
         #expect(!downloads.isLibraryDownloaded(book))
-        #expect(!session.engine.library.matchesStatus(book, status: .downloaded, downloadedIds: [book.stableId]))
+        #expect(!session.engine.library.matchesStatus(book, status: .downloaded))
         #expect(await session.bookStore.downloadedEbooks(limit: 10).isEmpty)
         #expect(await downloads.downloadedStorageItems().isEmpty)
         let model = LibraryModel(profileSession: session)
@@ -29,7 +29,7 @@ struct OfflineAvailabilityTests {
         await session.bookStore.upsertBooks([book])
         #expect(downloads.isDownloaded(book))
         #expect(downloads.isLibraryDownloaded(book))
-        #expect(session.engine.library.matchesStatus(book, status: .downloaded, downloadedIds: []))
+        #expect(session.engine.library.matchesStatus(book, status: .downloaded))
         #expect(await session.bookStore.downloadedEbooks(limit: 10).map(\.uniqueId) == [book.uniqueId])
         #expect(await downloads.downloadedStorageBytes() == Int64(bytes.count))
         await model.reload()
@@ -129,6 +129,42 @@ struct OfflineAvailabilityTests {
         await model.bootstrap()
         #expect(!model.isDownloaded(book))
         #expect(await session.engine.downloads.downloadedStorageItems().isEmpty)
+        await fixture.close()
+    }
+
+    @Test func downloadedShelfFindsAudioWithoutCompletedQueueEntries() async throws {
+        let fixture = try OfflineAvailabilityFixture()
+        let session = fixture.session
+        let storage = session.localStorage
+        let saved = Book(id: "saved", title: "Saved audiobook", source: .audiobookshelf,
+                         series: "Fixture", seriesNumber: 2, providerId: fixture.providerID)
+        let incomplete = Book(id: "partial", title: "Incomplete audiobook", source: .audiobookshelf,
+                              series: "Fixture", seriesNumber: 3, providerId: fixture.providerID)
+        await session.bookStore.upsertBooks([saved, incomplete])
+
+        let savedFolder = storage.bookAudioDirectory(for: saved.downloadKey)
+        let incompleteFolder = storage.bookAudioDirectory(for: incomplete.downloadKey)
+        try FileManager.default.createDirectory(at: savedFolder, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: incompleteFolder, withIntermediateDirectories: true)
+        try Data(repeating: 1, count: 110_000).write(to: savedFolder.appendingPathComponent("chapter_0.m4b"))
+        try Data([1]).write(to: incompleteFolder.appendingPathComponent("chapter_0.m4b"))
+
+        fixture.defaults.set("downloaded", forKey: "imagine.library.status")
+        let filters = LibraryAdvancedFilters(series: .inSeries)
+        fixture.defaults.set(try JSONEncoder().encode(filters), forKey: "imagine.library.advancedFilters")
+        let model = LibraryModel(profileSession: session)
+        await model.bootstrap()
+
+        #expect(session.engine.downloads.completedDownloadBookIds.isEmpty)
+        #expect(model.books.map(\.uniqueId) == [saved.uniqueId])
+        #expect(model.displayBooks.map(\.uniqueId) == [saved.uniqueId])
+        #expect(model.isDownloaded(saved))
+        #expect(!model.isDownloaded(incomplete))
+
+        try storage.deleteDownloadedAudiobook(saved.downloadKey)
+        await model.reload()
+        #expect(model.books.isEmpty)
+        #expect(!model.isDownloaded(saved))
         await fixture.close()
     }
 

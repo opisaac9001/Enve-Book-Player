@@ -11,6 +11,13 @@ class AudibleService {
     static let shared = AudibleService()
 
     private let baseURL = URL(string: "https://api.audible.com/1.0/catalog/products")!
+    private let session: URLSession
+    private let policy: ExternalServicesPolicy
+
+    init(session: URLSession = .shared, policy: ExternalServicesPolicy = .shared) {
+        self.session = session
+        self.policy = policy
+    }
 
     private func looksLikeASIN(_ raw: String) -> Bool {
         let s = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
@@ -142,6 +149,7 @@ class AudibleService {
         numResults: Int = 50,
         countryCode: String? = nil
     ) async throws -> [AudibleSearchResult] {
+        try policy.checkAllowed(.audible)
         let cleanedQuery = cleanSearchQuery(query)
 
         guard !cleanedQuery.isEmpty else {
@@ -175,7 +183,7 @@ class AudibleService {
 
         var request = URLRequest(url: url)
         request.timeoutInterval = 20
-        let (data, urlResponse) = try await URLSession.shared.data(for: request)
+        let (data, urlResponse) = try await session.data(for: request)
 
         if let http = urlResponse as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             let snippet = String(data: data.prefix(400), encoding: .utf8) ?? "<non-utf8>"
@@ -232,6 +240,7 @@ class AudibleService {
         author: String? = nil,
         countryCode: String? = nil
     ) async throws -> [AudibleSearchResult] {
+        try policy.checkAllowed(.audible)
         let searchQuery = cleanSearchQuery(query)
 
         var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: true)!
@@ -273,7 +282,7 @@ class AudibleService {
 
         AppLogger.network.info("title search…")
 
-        let (data, urlResponse) = try await URLSession.shared.data(from: url)
+        let (data, urlResponse) = try await session.data(from: url)
 
         if let http = urlResponse as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             let snippet = String(data: data.prefix(400), encoding: .utf8) ?? "<non-utf8>"
@@ -314,6 +323,7 @@ class AudibleService {
     }
 
     func getSearchResultByASIN(asin: String, countryCode: String? = nil) async throws -> AudibleSearchResult {
+        try policy.checkAllowed(.audible)
         let url = baseURL.appendingPathComponent(asin)
         var components = URLComponents(url: url, resolvingAgainstBaseURL: true)!
         var items: [URLQueryItem] = [
@@ -328,7 +338,7 @@ class AudibleService {
 
         AppLogger.network.info("identifier lookup…")
 
-        let (data, urlResponse) = try await URLSession.shared.data(from: requestUrl)
+        let (data, urlResponse) = try await session.data(from: requestUrl)
         if let http = urlResponse as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             let snippet = String(data: data.prefix(400), encoding: .utf8) ?? "<non-utf8>"
             throw NSError(
@@ -364,6 +374,7 @@ class AudibleService {
     }
 
     func getProductDetails(asin: String, countryCode: String? = nil) async throws -> AudibleMetadataLayer {
+        try policy.checkAllowed(.audible)
         let url = baseURL.appendingPathComponent(asin)
         var components = URLComponents(url: url, resolvingAgainstBaseURL: true)!
 
@@ -385,7 +396,7 @@ class AudibleService {
 
         AppLogger.network.info("fetching details for: \(asin)")
 
-        let (data, urlResponse) = try await URLSession.shared.data(from: requestUrl)
+        let (data, urlResponse) = try await session.data(from: requestUrl)
 
         if let http = urlResponse as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             let snippet = String(data: data.prefix(400), encoding: .utf8) ?? "<non-utf8>"

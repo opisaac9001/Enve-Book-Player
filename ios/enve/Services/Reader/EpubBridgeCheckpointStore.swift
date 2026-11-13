@@ -564,10 +564,9 @@ enum EpubBridgeBookKey {
         }
         let downloadedFileID: String? = fileURL.flatMap { url in
             let stem = url.deletingPathExtension().lastPathComponent
-            guard let candidate = stem.split(separator: "-").last,
-                Int(candidate) != nil
-            else { return nil }
-            return String(candidate)
+            let prefix = "silo-\(book.providerId.uuidString)-\(book.id)-"
+            guard stem.hasPrefix(prefix) else { return nil }
+            return String(stem.dropFirst(prefix.count)).nilIfEmpty
         }
         let fileID =
             downloadedFileID

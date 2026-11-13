@@ -128,7 +128,15 @@ Use a synthetic local fixture for destructive catalog scenarios, never a custome
 
 `NativeTtsSynthesisTest` verifies installed-engine discovery and non-silent synthesized PCM. `ReaderTtsPlaybackTest` exercises the real reader and native speech with Readium and Foliate. `LibraryControlsParityTest` checks sort persistence, scope-preserving reset, touch targets and adaptive layouts. Run these on the Pixel 7a; they use generated text fixtures rather than customer books. The reader also offers local Kokoro, Supertonic 3 and Pocket TTS packs. Pass the instrument argument `readerNarrator` with `KOKORO`, `SUPERTONIC` or `POCKET` to exercise a download, local playback and pause/resume in `ReaderTtsPlaybackTest.downloadedNarratorReadsLocally`. After installing Kokoro, run `KokoroEnglishFrontendTest` to check that names, numbers and punctuation are spoken.
 
-Read-aloud transport references refreshed on 2026-11-06: Silveran Reader `669a56903316fa51bf9c2850bdc89d9bbcac37dc` and Storyteller `b7a91e9d22e6792587db27b0dc33c44a0ac3a6cd`. Both clean reference checkouts were fetched; Storyteller was fast-forwarded to upstream `main`.
+Read-aloud transport references reviewed on 2026-11-10 after updating both clean checkouts from upstream `main`. Silveran Reader was at `669a56903316fa51bf9c2850bdc89d9bbcac37dc` and Storyteller was at `fefce4b929f5dc2bb0979e48d0e0c293dc3c882b`.
+
+### Phonon and Woof on ARM64
+
+Set `ANDROID_NDK_HOME` to NDK 27.2.12479018, install Rust, and run `./scripts/build-phonon-android /path/to/phonon-checkout`. Pass `-PenvePhononLibrary=/path/to/phonon-checkout/target/aarch64-linux-android/release/libptts_ffi.so` to Gradle to include the native Phonon runtime. The reader downloads the model and the Spencer and Hugh voices on first use.
+
+For private Woof evaluation, install Python 3.13 and put `python3.13` on `PATH`. Download the pinned [Woof snapshot](https://huggingface.co/ConwayResearch/Underdog-Woof/tree/be702960539777fc3f698e54335276a8391b00f9) and point `-PenveWoofSource` at the directory containing `underdog_woof`, `LICENSE`, and `NOTICE`. The opt-in dependency applies to the debug variant. The model downloads separately.
+
+Build `:app:assembleDebug :app:assembleDebugAndroidTest :engine:assembleDebugAndroidTest` with the selected arguments. Run `ReaderTtsPlaybackTest.downloadedNarratorReadsLocally` with `readerNarrator=PHONON` or `readerNarrator=WOOF`. Run `LocalNarratorRuntimeVerificationTest` with `enveNarratorPacks=PHONON,WOOF` to exercise each voice and verify offline synthesis on a longer passage.
 
 ## Settings
 

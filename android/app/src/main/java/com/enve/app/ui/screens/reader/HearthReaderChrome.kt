@@ -5,6 +5,24 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.ui.layout.layout
+import androidx.compose.animation.core.tween
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.material.icons.outlined.BookmarkAdd
+import androidx.compose.material.icons.automirrored.outlined.StickyNote2
+import androidx.compose.foundation.gestures.detectTapGestures
+import com.enve.app.viewmodel.ChapterMark
+import com.enve.app.viewmodel.PageMark
+import androidx.compose.ui.text.style.TextOverflow
+import kotlin.math.roundToInt
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
@@ -28,7 +46,6 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -38,7 +55,6 @@ import androidx.compose.material.icons.automirrored.outlined.MenuBook
 import androidx.compose.material.icons.automirrored.outlined.Subject
 import androidx.compose.material.icons.outlined.AutoStories
 import androidx.compose.material.icons.outlined.Bookmark
-import androidx.compose.material.icons.outlined.BorderColor
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Edit
@@ -89,10 +105,12 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.enve.app.readium.narrator.NarratorPack
 import com.enve.app.data.reader.ReaderTheme
 import com.enve.app.ui.components.AnnotationEditSheet
 import com.enve.app.ui.screens.PerBookAnnotationsSheet
 import com.enve.app.ui.screens.ReaderStatusStrip
+import com.enve.app.ui.screens.printedPageLabel
 import com.enve.app.viewmodel.ReaderViewModel
 import com.enve.core.data.model.AnnotationStyle
 import com.enve.core.data.model.Book
@@ -108,8 +126,6 @@ import com.enve.hearth.design.LocalHearthEink
 import com.enve.hearth.design.Overline
 import com.enve.hearth.design.parseHexColor
 
-private val INKS = listOf("#FFF59D", "#A5D6A7", "#90CAF9", "#F8BBD0", "#FFCC80", "#CE93D8")
-
 @Composable
 fun HearthReaderChrome(
     vm: ReaderViewModel,
@@ -119,6 +135,7 @@ fun HearthReaderChrome(
     paletteStyle: HearthPaletteStyle,
     onBack: () -> Unit,
     onAskLibrarian: () -> Unit,
+    onMarkFinished: suspend () -> Boolean,
     onVerticalMarginsChanged: (Float) -> Unit,
     einkActive: Boolean,
     readNextEnabled: Boolean = true,
@@ -164,7 +181,7 @@ fun HearthReaderChrome(
             !state.showMoreMenu &&
             !state.readAlongPreparing && !state.liveReadAlongPreparing
         ) {
-            kotlinx.coroutines.delay(if (einkActive) 15_000L else 5_000L)
+            kotlinx.coroutines.delay(if (einkActive) 15_000L else CHROME_AUTO_HIDE_MS)
             vm.hideChrome()
         }
     }
@@ -206,6 +223,7 @@ fun HearthReaderChrome(
                     lastPageLabel = state.lastPageLabel,
                     progressPct = state.progressPct,
                     chapter = state.currentSection,
+                    minutesLeft = state.minutesLeftInBook,
                     chromeVisible = state.showChrome,
                     textColor = palette.textSecondary,
                     modifier = Modifier.align(Alignment.TopCenter),
@@ -226,8 +244,6 @@ fun HearthReaderChrome(
                             },
                             onAddNote = { vm.addStandaloneNote() },
                             onAnnotations = { vm.showAnnotationsSheet(true) },
-                            onAppearance = { vm.showAppearance(true) },
-                            onSearch = { vm.showSearch(true) },
                             onLibrarian = onAskLibrarian,
                             showContents = state.readAlongActive,
                             onContents = { vm.showToc(true) },
@@ -237,8 +253,8 @@ fun HearthReaderChrome(
             } else {
                 AnimatedVisibility(
                     visible = state.showChrome,
-                    enter = slideInVertically { -it },
-                    exit = slideOutVertically { -it },
+                    enter = fadeIn(tween(CHROME_FADE_MS)) + slideInVertically(tween(CHROME_FADE_MS)) { -it / 6 },
+                    exit = fadeOut(tween(CHROME_FADE_MS)) + slideOutVertically(tween(CHROME_FADE_MS)) { -it / 6 },
                     modifier = Modifier.align(Alignment.TopCenter),
                 ) {
                     TopVeil(
@@ -252,8 +268,6 @@ fun HearthReaderChrome(
                         },
                         onAddNote = { vm.addStandaloneNote() },
                         onAnnotations = { vm.showAnnotationsSheet(true) },
-                        onAppearance = { vm.showAppearance(true) },
-                        onSearch = { vm.showSearch(true) },
                         onLibrarian = onAskLibrarian,
                         showContents = state.readAlongActive,
                         onContents = { vm.showToc(true) },
@@ -320,11 +334,12 @@ fun HearthReaderChrome(
                         readAlongSupported = state.readAlongSupported || state.liveReadAlongAvailable,
                         onSeek = vm::seekToProgress,
                         onContents = { vm.showToc(true) },
-                        onBookmark = {
-                            if (vm.addBookmark()) vm.postTransientMessage("Bookmark added.")
-                            else vm.postTransientMessage("Reader is still loading.")
-                        },
-                        onAnnotations = { vm.showAnnotationsSheet(true) },
+                        onAppearance = { vm.showAppearance(true) },
+                        onSearch = { vm.showSearch(true) },
+                        chapterMarks = state.chapterMarks,
+                        pageMarks = state.pageMarks,
+                        totalPages = state.totalPages,
+                        currentPage = state.currentPage,
                         onNarrate = vm::toggleReadAlongPlayback,
                         onReadBack = vm::toggleTtsPlayback,
                         ttsActive = state.ttsPlayback.active,
@@ -337,16 +352,22 @@ fun HearthReaderChrome(
                                 onBack = vm::previousTtsParagraph,
                                 onForward = vm::nextTtsParagraph,
                                 onSettings = { vm.showTtsSheet(true) },
+                                pack = state.ttsNarratorPack,
                             )
                         },
                     )
                 }
             }
 
-            if (!state.showChrome && (state.ttsPlayback.active || state.readAlongActive || state.liveReadAlongActive)) {
-                val live = state.liveReadAlongActive
-                val narrated = state.readAlongActive || live
-                Box(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(Hearth.Spacing.M)) {
+            val live = state.liveReadAlongActive
+            val narrated = state.readAlongActive || live
+            AnimatedVisibility(
+                visible = !state.showChrome && (narrated || (state.ttsPlayback.active && state.ttsControlsVisible)),
+                enter = if (einkActive) EnterTransition.None else fadeIn() + slideInVertically { it / 2 },
+                exit = if (einkActive) ExitTransition.None else fadeOut() + slideOutVertically { it / 2 },
+                modifier = Modifier.align(Alignment.BottomCenter),
+            ) {
+                Box(Modifier.navigationBarsPadding().padding(Hearth.Spacing.M)) {
                     ReaderSpeechTransport(
                         playing = if (live) state.liveReadAlongPlaying else if (narrated) state.readAlongPlaying else state.ttsPlayback.playing,
                         preparing = if (live) state.liveReadAlongPreparing else if (narrated) state.readAlongPreparing else state.ttsPlayback.preparing,
@@ -356,6 +377,7 @@ fun HearthReaderChrome(
                         onForward = if (live) vm::skipLiveReadAlongForward else if (narrated) vm::skipReadAlongForward else vm::nextTtsParagraph,
                         onSettings = { if (live) vm.toggleChrome() else if (narrated) vm.showReadAloudSheet(true) else vm.showTtsSheet(true) },
                         onShowControls = { vm.toggleChrome() },
+                        pack = state.ttsNarratorPack.takeUnless { narrated },
                     )
                 }
             }
@@ -366,8 +388,8 @@ fun HearthReaderChrome(
             } else {
                 AnimatedVisibility(
                     visible = state.showChrome && !state.readAlongActive,
-                    enter = slideInVertically { it },
-                    exit = slideOutVertically { it },
+                    enter = fadeIn(tween(CHROME_FADE_MS)) + slideInVertically(tween(CHROME_FADE_MS)) { it / 6 },
+                    exit = fadeOut(tween(CHROME_FADE_MS)) + slideOutVertically(tween(CHROME_FADE_MS)) { it / 6 },
                     modifier = Modifier.align(Alignment.BottomCenter),
                 ) {
                     bottomVeil()
@@ -376,6 +398,8 @@ fun HearthReaderChrome(
 
             if (state.showSelectionPopup && state.pendingSelection != null) {
                 SelectionPalette(
+                    ink = vm.lastHighlightInk,
+                    onInkChange = { vm.lastHighlightInk = it },
                     onApply = { style, hex ->
                         vm.addAnnotation(state.pendingSelection!!, style, hex, "", state.selectionText)
                         vm.hideSelectionPopup()
@@ -389,12 +413,7 @@ fun HearthReaderChrome(
                         vm.hideSelectionPopup()
                         vm.showAnnotationDialog(true)
                     },
-                    onDictionary = {
-                        val word = state.selectionText.trim()
-                        vm.saveToVocab()
-                        vm.hideSelectionPopup()
-                        if (word.isNotBlank()) vm.postTransientMessage("Saved “$word” to Vocabulary.")
-                    },
+                    onDictionary = vm::define,
                     onShare = {
                         val quote = state.selectionText
                         if (quote.isNotBlank()) {
@@ -419,7 +438,7 @@ fun HearthReaderChrome(
                             vm.clearSelection()
                         }
                     } else null,
-                    modifier = Modifier
+                    modifier = state.selectionBounds?.let { Modifier.floatingNear(it) } ?: Modifier
                         .align(Alignment.BottomCenter)
                         .navigationBarsPadding()
                         .padding(horizontal = Hearth.Spacing.L, vertical = Hearth.Spacing.L),
@@ -429,6 +448,17 @@ fun HearthReaderChrome(
             val nextBook = state.nextInSeries
             val atEnd = state.totalPages > 0 && state.currentPage >= state.totalPages ||
                 state.progressPct >= 98
+            var finishedDismissed by remember { mutableStateOf(false) }
+            if (atEnd && !finishedDismissed && !(readNextEnabled && nextBook != null) && !state.showChrome) {
+                FinishedBookCard(
+                    title = bookTitle,
+                    onMarkFinished = onMarkFinished,
+                    onDismiss = { finishedDismissed = true },
+                    onLeave = onBack,
+                    modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding()
+                        .padding(bottom = Hearth.Spacing.XXL, start = Hearth.Spacing.XL, end = Hearth.Spacing.XL),
+                )
+            }
             if (readNextEnabled && nextBook != null && atEnd) {
                 HearthReadNextButton(
                     book = nextBook,
@@ -536,63 +566,51 @@ private fun TopVeil(
     onBookmark: () -> Unit,
     onAddNote: () -> Unit,
     onAnnotations: () -> Unit,
-    onAppearance: () -> Unit,
-    onSearch: () -> Unit,
     onLibrarian: () -> Unit,
     showContents: Boolean,
     onContents: () -> Unit,
 ) {
     val palette = Hearth.palette
     val eink = Hearth.eink
-    Column(Modifier.fillMaxWidth().background(palette.bg.copy(alpha = if (eink.active) 1f else 0.94f))) {
+    val haptics = rememberReaderHaptics()
+    val background = if (eink.active) Modifier.background(palette.bg) else Modifier.background(
+        Brush.verticalGradient(0f to palette.bg, 0.7f to palette.bg, 1f to palette.bg.copy(alpha = 0f)),
+    )
+    Column(Modifier.fillMaxWidth().then(background)) {
         Row(
             Modifier.fillMaxWidth().statusBarsPadding()
-                .padding(horizontal = Hearth.Spacing.S, vertical = Hearth.Spacing.XS),
+                .padding(start = Hearth.Spacing.S, end = Hearth.Spacing.S, top = Hearth.Spacing.XS, bottom = Hearth.Spacing.L),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             GlyphBtn(Icons.AutoMirrored.Outlined.ArrowBack, "Close", onBack, palette.text)
             Spacer(Modifier.width(Hearth.Spacing.S))
             Overline(title, modifier = Modifier.weight(1f))
+            GlyphBtn(Icons.Outlined.BookmarkAdd, "Bookmark this page", { haptics.confirm(); onBookmark() }, palette.textSecondary)
             Box {
                 GlyphBtn(Icons.Outlined.MoreHoriz, "More", { onMenuExpandedChange(true) }, palette.textSecondary)
-                DropdownMenu(expanded = menuExpanded, onDismissRequest = { onMenuExpandedChange(false) }) {
-                    if (showContents) {
+                DropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { onMenuExpandedChange(false) },
+                    shape = RoundedCornerShape(if (eink.sharpCorners) 0.dp else Hearth.Radius.Card),
+                    containerColor = palette.bgElevated,
+                    border = androidx.compose.foundation.BorderStroke(1.dp, palette.hairline),
+                    shadowElevation = if (eink.borderInsteadOfShadow) 0.dp else 8.dp,
+                ) {
+                    val item: @Composable (String, ImageVector, () -> Unit) -> Unit = { label, icon, action ->
                         DropdownMenuItem(
-                            text = { Text("Contents") },
-                            leadingIcon = { Icon(Icons.AutoMirrored.Outlined.List, contentDescription = null) },
-                            onClick = { onMenuExpandedChange(false); onContents() },
+                            text = { Text(label, style = HearthText.Body) },
+                            leadingIcon = { Icon(icon, contentDescription = null) },
+                            onClick = { onMenuExpandedChange(false); action() },
+                            colors = androidx.compose.material3.MenuDefaults.itemColors(
+                                textColor = palette.text,
+                                leadingIconColor = palette.textSecondary,
+                            ),
                         )
                     }
-                    DropdownMenuItem(
-                        text = { Text("Add bookmark") },
-                        leadingIcon = { Icon(Icons.Outlined.Bookmark, contentDescription = null) },
-                        onClick = { onMenuExpandedChange(false); onBookmark() },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("New note") },
-                        leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
-                        onClick = { onMenuExpandedChange(false); onAddNote() },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Notes & Highlights") },
-                        leadingIcon = { Icon(Icons.AutoMirrored.Outlined.List, contentDescription = null) },
-                        onClick = { onMenuExpandedChange(false); onAnnotations() },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Appearance") },
-                        leadingIcon = { Icon(Icons.Outlined.TextFields, contentDescription = null) },
-                        onClick = { onMenuExpandedChange(false); onAppearance() },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Search") },
-                        leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
-                        onClick = { onMenuExpandedChange(false); onSearch() },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Ask the Librarian") },
-                        leadingIcon = { Icon(Icons.Outlined.AutoStories, contentDescription = null) },
-                        onClick = { onMenuExpandedChange(false); onLibrarian() },
-                    )
+                    if (showContents) item("Contents", Icons.AutoMirrored.Outlined.List, onContents)
+                    item("New note", Icons.Outlined.Edit, onAddNote)
+                    item("Notes & highlights", Icons.AutoMirrored.Outlined.StickyNote2, onAnnotations)
+                    item("Ask the Librarian", Icons.Outlined.AutoStories, onLibrarian)
                 }
             }
         }
@@ -600,7 +618,6 @@ private fun TopVeil(
     }
 }
 
-@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun BottomVeil(
     progress: Float,
@@ -608,8 +625,12 @@ private fun BottomVeil(
     readAlongSupported: Boolean,
     onSeek: (Float) -> Unit,
     onContents: () -> Unit,
-    onBookmark: () -> Unit,
-    onAnnotations: () -> Unit,
+    onAppearance: () -> Unit,
+    onSearch: () -> Unit,
+    chapterMarks: List<ChapterMark>,
+    pageMarks: List<PageMark>,
+    totalPages: Int,
+    currentPage: Int,
     onNarrate: () -> Unit,
     onReadBack: () -> Unit,
     ttsActive: Boolean,
@@ -617,20 +638,41 @@ private fun BottomVeil(
 ) {
     val palette = Hearth.palette
     val eink = Hearth.eink
-    Column(Modifier.fillMaxWidth().background(palette.bg.copy(alpha = if (eink.active) 1f else 0.94f))) {
+    var preview by remember { mutableStateOf<Float?>(null) }
+    val background = if (eink.active) Modifier.background(palette.bg) else Modifier.background(
+        Brush.verticalGradient(0f to palette.bg.copy(alpha = 0f), 0.1f to palette.bg.copy(alpha = 0.88f), 0.18f to palette.bg),
+    )
+    Column(Modifier.fillMaxWidth().then(background)) {
         if (eink.active) Box(Modifier.fillMaxWidth().height(1.dp).background(palette.hairline))
         Column(
             Modifier.fillMaxWidth().navigationBarsPadding()
-                .padding(horizontal = Hearth.Spacing.XL, vertical = Hearth.Spacing.M),
+                .padding(start = Hearth.Spacing.XL, end = Hearth.Spacing.XL, top = if (eink.active) Hearth.Spacing.M else Hearth.Spacing.XXL, bottom = Hearth.Spacing.S),
             verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
         ) {
-            ProgressRibbon(progress, onSeek)
-            Text(summary, style = HearthText.Caption, color = palette.textSecondary)
-            if (ttsActive) ttsControls()
-            androidx.compose.foundation.layout.FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+            ProgressRibbon(progress, chapterMarks, onPreview = { preview = it }, onSeek = onSeek)
+            var chapterScope by rememberSaveable { mutableStateOf(false) }
+            val chapterSummary = chapterPagesLeft(currentPage, totalPages, chapterMarks)
+            Text(
+                preview?.let { scrubPreview(it, chapterMarks, pageMarks, totalPages) }
+                    ?: chapterSummary?.takeIf { chapterScope } ?: summary,
+                style = HearthText.Caption.copy(fontFeatureSettings = "tnum"),
+                color = if (preview != null) palette.text else palette.textSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth().then(
+                    if (chapterSummary != null) {
+                        Modifier.clickable(
+                            role = Role.Button,
+                            onClickLabel = if (chapterScope) "Show book position" else "Show pages left in chapter",
+                        ) { chapterScope = !chapterScope }
+                    } else Modifier,
+                ),
+            )
+            if (ttsActive) Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { ttsControls() }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                 ChromeBtn(Icons.AutoMirrored.Outlined.List, "Contents", onContents)
-                ChromeBtn(Icons.Outlined.Bookmark, "Bookmark", onBookmark)
-                ChromeBtn(Icons.Outlined.Edit, "Notes", onAnnotations)
+                ChromeBtn(Icons.Outlined.TextFields, "Appearance", onAppearance)
+                ChromeBtn(Icons.Outlined.Search, "Search", onSearch)
                 if (readAlongSupported) ChromeBtn(Icons.Outlined.RecordVoiceOver, "Read Aloud", onNarrate)
                 else if (!ttsActive) ChromeBtn(Icons.Outlined.RecordVoiceOver, "Read back", onReadBack)
             }
@@ -638,30 +680,114 @@ private fun BottomVeil(
     }
 }
 
+private fun chapterPagesLeft(currentPage: Int, totalPages: Int, marks: List<ChapterMark>): String? {
+    if (totalPages <= 0 || marks.isEmpty()) return null
+    val fraction = currentPage.toFloat() / totalPages
+    val next = marks.firstOrNull { it.start > fraction + 0.0005f }?.start ?: 1f
+    val left = ((next * totalPages).roundToInt() - currentPage).coerceAtLeast(0)
+    val chapter = marks.lastOrNull { it.start <= fraction + 0.0005f }?.title?.takeIf(String::isNotBlank)
+    val pages = if (left == 1) "1 page left in chapter" else "$left pages left in chapter"
+    return listOfNotNull(pages, chapter).joinToString(" · ")
+}
+
+private fun scrubPreview(fraction: Float, marks: List<ChapterMark>, pageMarks: List<PageMark>, totalPages: Int): String {
+    val chapter = marks.lastOrNull { it.start <= fraction + 0.0005f }?.title
+    val page = when {
+        pageMarks.isNotEmpty() -> {
+            val label = (pageMarks.lastOrNull { it.start <= fraction + 0.0005f } ?: pageMarks.first()).label
+            "Page ${printedPageLabel(label)} of ${printedPageLabel(pageMarks.last().label)}"
+        }
+        totalPages > 0 -> "Location ${(fraction * totalPages).roundToInt().coerceIn(1, totalPages)} of $totalPages"
+        else -> null
+    }
+    return listOfNotNull(page, "${(fraction * 100).roundToInt()}%", chapter?.takeIf(String::isNotBlank)).joinToString(" · ")
+}
+
 @Composable
-private fun ProgressRibbon(progress: Float, onSeek: (Float) -> Unit) {
+private fun ProgressRibbon(
+    progress: Float,
+    chapterMarks: List<ChapterMark>,
+    onPreview: (Float?) -> Unit,
+    onSeek: (Float) -> Unit,
+) {
     val palette = Hearth.palette
     val eink = Hearth.eink
+    val haptics = rememberReaderHaptics()
     var drag by remember { mutableStateOf<Float?>(null) }
     val shown = drag ?: progress.coerceIn(0f, 1f)
+    val ticks = chapterMarks.map { it.start }.filter { it in 0.005f..0.995f }
+    fun chapterAt(fraction: Float) = ticks.count { it <= fraction }
     Canvas(
-        Modifier.fillMaxWidth().height(20.dp).pointerInput(Unit) {
-            detectHorizontalDragGestures(
-                onDragStart = { o -> drag = (o.x / size.width).coerceIn(0f, 1f) },
-                onHorizontalDrag = { c, _ -> drag = (c.position.x / size.width).coerceIn(0f, 1f) },
-                onDragEnd = { drag?.let(onSeek); drag = null },
-                onDragCancel = { drag = null },
-            )
-        },
+        Modifier.fillMaxWidth().height(28.dp)
+            .semantics { contentDescription = "Reading position ${(progress * 100).roundToInt()}%" }
+            .pointerInput(ticks) {
+                detectHorizontalDragGestures(
+                    onDragStart = { o ->
+                        val f = (o.x / size.width).coerceIn(0f, 1f)
+                        drag = f
+                        onPreview(f)
+                        haptics.tick()
+                    },
+                    onHorizontalDrag = { c, _ ->
+                        val previous = drag ?: 0f
+                        val f = (c.position.x / size.width).coerceIn(0f, 1f)
+                        if (chapterAt(f) != chapterAt(previous)) haptics.tick()
+                        drag = f
+                        onPreview(f)
+                    },
+                    onDragEnd = {
+                        drag?.let(onSeek)
+                        haptics.confirm()
+                        drag = null
+                        onPreview(null)
+                    },
+                    onDragCancel = { drag = null; onPreview(null) },
+                )
+            }
+            .pointerInput(Unit) {
+                detectTapGestures { o ->
+                    haptics.confirm()
+                    onSeek((o.x / size.width).coerceIn(0f, 1f))
+                }
+            },
     ) {
         val h = if (eink.active) 5.dp.toPx() else 3.dp.toPx()
         val y = size.height / 2f
         val fill = if (eink.monochrome) palette.text else palette.ember
         drawLine(palette.hairline, Offset(0f, y), Offset(size.width, y), h, StrokeCap.Round)
         drawLine(fill, Offset(0f, y), Offset(size.width * shown, y), h, StrokeCap.Round)
-        drawCircle(fill, h * 1.8f, Offset(size.width * shown, y))
+        ticks.forEach { tick ->
+            val x = size.width * tick
+            drawLine(if (tick <= shown) palette.bg.copy(alpha = 0.55f) else palette.textTertiary, Offset(x, y - h * 1.4f), Offset(x, y + h * 1.4f), 1.dp.toPx())
+        }
+        drawCircle(fill, if (drag != null) h * 2.6f else h * 1.9f, Offset(size.width * shown, y))
     }
 }
+
+@Composable
+private fun Modifier.floatingNear(bounds: com.enve.app.ui.screens.reader.ReaderSelectionBounds): Modifier {
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val topInset = WindowInsets.statusBars.getTop(density)
+    val bottomInset = WindowInsets.navigationBars.getBottom(density)
+    return layout { measurable, constraints ->
+        val margin = 16.dp.roundToPx()
+        val gapAbove = 12.dp.roundToPx()
+        val gapBelow = 28.dp.roundToPx()
+        val palette = measurable.measure(constraints.copy(minWidth = 0, minHeight = 0, maxWidth = constraints.maxWidth - margin * 2))
+        layout(constraints.maxWidth, constraints.maxHeight) {
+            val above = bounds.top.roundToInt() - gapAbove - palette.height
+            val below = bounds.bottom.roundToInt() + gapBelow
+            val y = when {
+                above >= topInset + margin -> above
+                below + palette.height <= constraints.maxHeight - bottomInset - margin -> below
+                else -> constraints.maxHeight - bottomInset - margin - palette.height
+            }
+            palette.place((constraints.maxWidth - palette.width) / 2, y)
+        }
+    }
+}
+private const val CHROME_AUTO_HIDE_MS = 3_500L
+private const val CHROME_FADE_MS = 300
 
 @Composable
 private fun ReadAloudBar(
@@ -714,30 +840,38 @@ internal fun ReaderSpeechTransport(
     onForward: () -> Unit,
     onSettings: (() -> Unit)?,
     onShowControls: (() -> Unit)? = null,
+    pack: NarratorPack? = null,
 ) {
     val palette = Hearth.palette
     val shape = RoundedCornerShape(if (Hearth.eink.sharpCorners) 0.dp else Hearth.Radius.Bar)
-    Row(
-        Modifier.clip(shape).background(palette.bgElevated).border(1.dp, palette.hairline, shape)
-            .padding(horizontal = Hearth.Spacing.S, vertical = Hearth.Spacing.XS),
-        horizontalArrangement = Arrangement.Center,
-        verticalAlignment = Alignment.CenterVertically,
+    Column(
+        Modifier.clip(shape).background(palette.bgElevated).border(1.dp, palette.hairline, shape),
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        GlyphBtn(Icons.Filled.SkipPrevious, if (narrated) "Previous clip" else "Previous paragraph", onBack, palette.text, !preparing)
-        GlyphBtn(
-            if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-            if (playing) "Pause read back" else "Resume read back",
-            onToggle,
-            palette.ember,
-        )
-        GlyphBtn(Icons.Filled.SkipNext, if (narrated) "Next clip" else "Next paragraph", onForward, palette.text, !preparing)
-        onSettings?.let { GlyphBtn(Icons.Outlined.Tune, if (narrated) "Read aloud settings" else "Voice and speed", it, palette.textSecondary) }
-        onShowControls?.let { GlyphBtn(Icons.Outlined.KeyboardArrowUp, "Show reader controls", it, palette.textSecondary) }
+        if (pack == NarratorPack.WOOF) WoofAttribution()
+        Row(
+            Modifier.padding(horizontal = Hearth.Spacing.S, vertical = Hearth.Spacing.XS),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            GlyphBtn(Icons.Filled.SkipPrevious, if (narrated) "Previous clip" else "Previous paragraph", onBack, palette.text, !preparing)
+            GlyphBtn(
+                if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                if (playing) "Pause read back" else "Resume read back",
+                onToggle,
+                palette.ember,
+            )
+            GlyphBtn(Icons.Filled.SkipNext, if (narrated) "Next clip" else "Next paragraph", onForward, palette.text, !preparing)
+            onSettings?.let { GlyphBtn(Icons.Outlined.Tune, if (narrated) "Read aloud settings" else "Voice and speed", it, palette.textSecondary) }
+            onShowControls?.let { GlyphBtn(Icons.Outlined.KeyboardArrowUp, "Show reader controls", it, palette.textSecondary) }
+        }
     }
 }
 
 @Composable
 private fun SelectionPalette(
+    ink: String,
+    onInkChange: (String) -> Unit,
     onApply: (AnnotationStyle, String) -> Unit,
     onCopy: () -> Unit,
     onNote: () -> Unit,
@@ -749,80 +883,59 @@ private fun SelectionPalette(
 ) {
     val palette = Hearth.palette
     val eink = Hearth.eink
-    val shape = RoundedCornerShape(if (eink.sharpCorners) 0.dp else Hearth.Radius.Card)
-    var ink by remember { mutableStateOf(INKS.first()) }
+    val haptics = rememberReaderHaptics()
+    val shape = RoundedCornerShape(if (eink.sharpCorners) 0.dp else 28.dp)
     var moreMenu by remember { mutableStateOf(false) }
-    Column(
-        modifier.widthIn(max = 440.dp).clip(shape)
-            .background(palette.bgElevated.copy(alpha = if (eink.active) 1f else 0.97f))
+    Row(
+        modifier.clip(shape)
+            .background(palette.bgElevated.copy(alpha = if (eink.active) 1f else 0.98f))
             .border(1.dp, palette.hairline, shape)
-            .padding(horizontal = Hearth.Spacing.M, vertical = Hearth.Spacing.S),
-        horizontalAlignment = Alignment.CenterHorizontally,
+            .padding(horizontal = Hearth.Spacing.S, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(
-            Modifier.horizontalScroll(rememberScrollState()),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.XS),
-        ) {
-            StyleGlyph(Icons.Outlined.BorderColor, "Highlight") {
-                onApply(AnnotationStyle.HIGHLIGHT, ink)
+        SELECTION_INKS.forEach { hex ->
+            InkSwatch(hex, ink == hex) {
+                haptics.confirm()
+                onInkChange(hex)
+                onApply(AnnotationStyle.HIGHLIGHT, hex)
             }
-            StyleGlyph(Icons.Outlined.FormatUnderlined, "Underline") {
-                onApply(AnnotationStyle.UNDERLINE, ink)
-            }
-            StyleGlyph(Icons.Outlined.FormatStrikethrough, "Strikethrough") {
-                onApply(AnnotationStyle.STRIKETHROUGH, ink)
-            }
-            StyleGlyph(Icons.Outlined.Gesture, "Squiggly") {
-                onApply(AnnotationStyle.SQUIGGLY, ink)
-            }
-            Box(Modifier.padding(horizontal = Hearth.Spacing.XS).width(1.dp).height(26.dp).background(palette.hairline))
-            INKS.forEach { hex -> InkSwatch(hex, ink == hex) { ink = hex } }
         }
-        Box(Modifier.fillMaxWidth().padding(vertical = Hearth.Spacing.XS).height(1.dp).background(palette.hairline))
-        Row(
-            Modifier.horizontalScroll(rememberScrollState()),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.XS),
-        ) {
-            PaletteAction(Icons.Outlined.ContentCopy, "Copy", onCopy)
-            PaletteAction(Icons.Outlined.Edit, "Note", onNote)
-            PaletteAction(Icons.AutoMirrored.Outlined.MenuBook, "Dictionary", onDictionary)
-            Box {
-                PaletteAction(Icons.Outlined.MoreHoriz, "More", { moreMenu = true })
-                DropdownMenu(
-                    expanded = moreMenu,
-                    onDismissRequest = { moreMenu = false },
-                    containerColor = palette.bgElevated,
-                ) {
+        Box(Modifier.padding(horizontal = Hearth.Spacing.XS).width(1.dp).height(24.dp).background(palette.hairline))
+        StyleGlyph(Icons.Outlined.Edit, "Note", onNote)
+        StyleGlyph(Icons.Outlined.ContentCopy, "Copy") { haptics.confirm(); onCopy() }
+        StyleGlyph(Icons.AutoMirrored.Outlined.MenuBook, "Define", onDictionary)
+        Box {
+            StyleGlyph(Icons.Outlined.MoreHoriz, "More") { moreMenu = true }
+            DropdownMenu(
+                expanded = moreMenu,
+                onDismissRequest = { moreMenu = false },
+                shape = RoundedCornerShape(if (eink.sharpCorners) 0.dp else Hearth.Radius.Card),
+                containerColor = palette.bgElevated,
+                border = androidx.compose.foundation.BorderStroke(1.dp, palette.hairline),
+            ) {
+                val item: @Composable (String, ImageVector, () -> Unit) -> Unit = { label, icon, action ->
                     DropdownMenuItem(
-                        text = { Text("Share", color = palette.text) },
-                        leadingIcon = {
-                            Icon(Icons.Outlined.Share, contentDescription = null, tint = palette.textSecondary)
-                        },
-                        onClick = { moreMenu = false; onShare() },
+                        text = { Text(label, style = HearthText.Body) },
+                        leadingIcon = { Icon(icon, contentDescription = null) },
+                        onClick = { moreMenu = false; action() },
+                        colors = androidx.compose.material3.MenuDefaults.itemColors(
+                            textColor = palette.text,
+                            leadingIconColor = palette.textSecondary,
+                        ),
                     )
-                    DropdownMenuItem(
-                        text = { Text("Speak", color = palette.text) },
-                        leadingIcon = {
-                            Icon(Icons.Outlined.RecordVoiceOver, contentDescription = null, tint = palette.textSecondary)
-                        },
-                        onClick = { moreMenu = false; onSpeak() },
-                    )
-                    onListen?.let { listen ->
-                        DropdownMenuItem(
-                            text = { Text("Listen from here", color = palette.text) },
-                            leadingIcon = {
-                                Icon(Icons.Outlined.Headphones, contentDescription = null, tint = palette.textSecondary)
-                            },
-                            onClick = { moreMenu = false; listen() },
-                        )
-                    }
                 }
+                item("Underline", Icons.Outlined.FormatUnderlined) { haptics.confirm(); onApply(AnnotationStyle.UNDERLINE, ink) }
+                item("Strikethrough", Icons.Outlined.FormatStrikethrough) { haptics.confirm(); onApply(AnnotationStyle.STRIKETHROUGH, ink) }
+                item("Squiggle", Icons.Outlined.Gesture) { haptics.confirm(); onApply(AnnotationStyle.SQUIGGLY, ink) }
+                item("Share", Icons.Outlined.Share, onShare)
+                item("Speak", Icons.Outlined.RecordVoiceOver, onSpeak)
+                onListen?.let { item("Listen from here", Icons.Outlined.Headphones, it) }
             }
         }
     }
 }
+
+private val SELECTION_INKS = listOf("#FFF59D", "#A5D6A7", "#90CAF9", "#F8BBD0")
 
 @Composable
 private fun StyleGlyph(icon: ImageVector, cd: String, onClick: () -> Unit) {
@@ -830,8 +943,8 @@ private fun StyleGlyph(icon: ImageVector, cd: String, onClick: () -> Unit) {
     val eink = Hearth.eink
     val shape = RoundedCornerShape(if (eink.sharpCorners) 0.dp else Hearth.Radius.Inner)
     Box(
-        Modifier.size(48.dp).clip(shape)
-            .clickable(role = Role.Button, onClick = onClick),
+        Modifier.size(44.dp).clip(shape)
+            .clickable(role = Role.Button, onClickLabel = cd, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Icon(icon, cd, tint = palette.textSecondary, modifier = Modifier.size(21.dp))
@@ -845,37 +958,15 @@ private fun InkSwatch(hex: String, selected: Boolean, onClick: () -> Unit) {
     val ring = if (eink.monochrome) palette.text else palette.ember
     val label = annotationColorLabel(hex)
     Box(
-        Modifier.size(48.dp).clip(CircleShape)
-            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
-            .semantics { contentDescription = "$label ink" },
+        Modifier.size(40.dp).clip(CircleShape)
+            .clickable(role = Role.Button, onClickLabel = "Highlight in $label", onClick = onClick)
+            .semantics { contentDescription = "Highlight in $label" },
         contentAlignment = Alignment.Center,
     ) {
         Box(
             Modifier.size(26.dp).clip(CircleShape).background(parseHexColor(hex) ?: EmberAccent)
                 .border(if (selected) 2.dp else 1.dp, if (selected) ring else palette.hairline, CircleShape),
         )
-    }
-}
-
-@Composable
-private fun PaletteAction(icon: ImageVector, label: String, onClick: () -> Unit, emphasized: Boolean = false) {
-    val palette = Hearth.palette
-    val eink = Hearth.eink
-    val shape = RoundedCornerShape(if (eink.sharpCorners) 0.dp else Hearth.Radius.Inner)
-    val tint = when {
-        emphasized && eink.monochrome -> palette.text
-        emphasized -> palette.ember
-        else -> palette.textSecondary
-    }
-    Column(
-        Modifier.clip(shape).clickable(onClick = onClick)
-            .padding(horizontal = Hearth.Spacing.S, vertical = Hearth.Spacing.XS)
-            .widthIn(min = 52.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(2.dp),
-    ) {
-        Icon(icon, label, tint = tint, modifier = Modifier.size(20.dp))
-        Text(label, style = HearthText.Overline, color = if (emphasized) tint else palette.textSecondary)
     }
 }
 
@@ -925,10 +1016,7 @@ private fun pageSummary(
     )
     val loc = if (position.isNotEmpty()) "$position · $pct%" else "$pct%"
 
-    val left = if (minutesRemaining != null) {
-        val mins = minutesRemaining
-        if (mins >= 60) " · ~${mins / 60}h ${mins % 60}m left" else " · ~${mins}m left"
-    } else ""
+    val left = minutesRemaining?.let { " · ${com.enve.app.ui.screens.readingTimeLeft(it)}" }.orEmpty()
     return if (section.isNotBlank()) "$loc$left · $section" else "$loc$left"
 }
 

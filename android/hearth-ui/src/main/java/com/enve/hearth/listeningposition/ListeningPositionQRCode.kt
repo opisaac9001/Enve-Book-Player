@@ -82,7 +82,7 @@ object ListeningPositionQRCode {
         } finally { if (!bitmap.isRecycled) bitmap.recycle() }
     }
 
-    fun share(context: Context, bitmap: Bitmap) {
+    fun share(context: Context, bitmap: Bitmap, title: String = "Share listening position") {
         val application = context.applicationContext
         val directory = File(application.cacheDir, "listening-position-share").apply { mkdirs() }
         directory.listFiles()?.sortedByDescending { it.lastModified() }?.drop(15)?.forEach { it.delete() }
@@ -92,9 +92,9 @@ object ListeningPositionQRCode {
         val intent = Intent(Intent.ACTION_SEND).apply {
             type = "image/png"
             putExtra(Intent.EXTRA_STREAM, uri)
-            clipData = ClipData.newRawUri("Listening position", uri)
+            clipData = ClipData.newRawUri(title, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        context.startActivity(Intent.createChooser(intent, "Share listening position"))
+        context.startActivity(Intent.createChooser(intent, title))
     }
 }

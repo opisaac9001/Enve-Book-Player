@@ -185,7 +185,8 @@ final class LibraryModel {
     private(set) var totalLibraryCount = 0
     private(set) var resultTotalCount = 0
     private(set) var downloadedBookIds: Set<String> = []
-    private(set) var downloadedStableIds: Set<String> = []
+    private var downloadedAudioStorageKeys: Set<String> = []
+    @ObservationIgnored private var offlineBooks: [Book] = []
     private(set) var hasLoaded = false
     private(set) var isPagedMode = false
 
@@ -484,8 +485,10 @@ final class LibraryModel {
     }
 
     func isDownloaded(_ book: Book) -> Bool {
-        downloadedBookIds.contains(book.uniqueId)
-            || (book.mediaType != .ebook && downloadedStableIds.contains(book.stableId))
+        if book.mediaType == .ebook { return downloadedBookIds.contains(book.uniqueId) }
+        let storage = profileSession?.localStorage ?? LocalStorageManager.shared
+        return storage.isAudiobookDownloaded(book, downloadedIds: downloadedAudioStorageKeys)
+            && storage.isAudiobookDownloaded(book)
     }
 
     func clearFilters() {
@@ -499,6 +502,15 @@ final class LibraryModel {
         defaults.removeObject(forKey: Self.advancedFiltersKey)
         if leavesComics { applyBrowsePreferences() }
         scheduleReload()
+    }
+
+    var hasAdditionalDownloadFilters: Bool {
+        sourceFilter != .all || media != .all || advancedFilters.isActive
+    }
+
+    func clearAdditionalDownloadFilters() {
+        setAdvancedFilters(.empty)
+        focus(status: .downloaded, media: .all, source: .all)
     }
 
     func toggleGenre(_ genre: String) {
@@ -534,10 +546,9 @@ final class LibraryModel {
         isLoadingAdvancedFilterOptions = true
         defer { isLoadingAdvancedFilterOptions = false }
         let library = (profileSession?.engine ?? EnveEngine.shared).library
-        let downloaded = status == .downloaded ? downloadedStableIdsFromTasks() : []
         let media = media
         let list = await sourceScopedBooks(library: library, mediaType: nil, boundedForSupportData: true)
-            .filter { media.matches($0) && library.matchesStatus($0, status: status, downloadedIds: downloaded) }
+            .filter { media.matches($0) && (status == .downloaded || library.matchesStatus($0, status: status)) }
         advancedFilterOptions = LibraryAdvancedFilterPolicy.options(from: list)
     }
 
@@ -861,7 +872,7 @@ final class LibraryModel {
         excludedLibraryKeys = (profileSession?.preferences ?? LibraryDisplayPreferencesStore.shared).loadPreferences().excludedLibraryIds
         totalLibraryCount = await library.totalBookCount()
         if facet == .books || isSearchActive {
-            if readingEnabled, await shouldBuildWorkIndex(library: library) {
+            if query.status != .downloaded, readingEnabled, await shouldBuildWorkIndex(library: library) {
                 await rebuildWorkIndex()
             } else {
                 workHiddenIds = []
@@ -869,21 +880,23 @@ final class LibraryModel {
                 libraryRecollapse()
             }
         }
-        let downloadedLimit = max(totalLibraryCount, 1)
-        let downloadedEbooks = await library.downloadedEbooks(limit: downloadedLimit)
+        let storage = session?.localStorage ?? LocalStorageManager.shared
+        let audioKeys = Set(storage.downloadedAudiobookIds())
+        let downloadedEbooks = await library.downloadedEbooks(limit: max(totalLibraryCount, 1))
+        let downloadedAudio = query.status == .downloaded ? await library.downloadedAudiobooks(storageKeys: audioKeys) : []
         guard gen == generation else { return }
         downloadedBookIds = Set(downloadedEbooks.map(\.uniqueId))
-        downloadedStableIds = Set(downloadedEbooks.map(\.stableId))
-        downloadedStableIds.formUnion(downloadedStableIdsFromTasks())
+        downloadedAudioStorageKeys = audioKeys
+        offlineBooks = query.status == .downloaded ? downloadedEbooks + downloadedAudio : []
 
         if isSearchActive {
             let results = await library.searchBooks(query: searchQuery, sourceFilter: sourceFilter, limit: 200)
             guard gen == generation else { return }
-            let downloaded = status == .downloaded ? downloadedStableIdsFromTasks() : []
             let media = media
+            let offlineIDs = Set(offlineBooks.map(\.uniqueId))
             let kept = results.filter {
                 media.matches($0)
-                    && library.matchesStatus($0, status: status, downloadedIds: downloaded)
+                    && (status == .downloaded ? offlineIDs.contains($0.uniqueId) : library.matchesStatus($0, status: status))
                     && libraryMatchesSource($0)
                     && LibraryAdvancedFilterPolicy.matches($0, filters: advancedFilters)
             }
@@ -915,7 +928,7 @@ final class LibraryModel {
     }
 
     private func loadGrid(gen: Int, library: LibraryEngine) async {
-        if !readingEnabled || advancedFilters.isActive || (media == .comics && status != .all) {
+        if status != .downloaded && (!readingEnabled || advancedFilters.isActive || (media == .comics && status != .all)) {
             await presentStatusScopedBooks(library: library, gen: gen)
             return
         }
@@ -1042,24 +1055,13 @@ final class LibraryModel {
                 await presentStatusScopedBooks(library: library, gen: gen)
             }
         case .downloaded:
-            if sourceFilter == .all {
-                let ids = downloadedStableIdsFromTasks()
-                let list = await library.downloadedBooks(audioStableIds: ids, ebookLimit: max(totalLibraryCount, 1))
-                let kept = library.filterStatus(list, status: .downloaded, downloadedIds: ids)
-                await present(kept, gen: gen)
-            } else {
-                await presentStatusScopedBooks(library: library, gen: gen)
-            }
+            await present(offlineBooks, gen: gen)
         }
     }
 
     private func presentStatusScopedBooks(library: LibraryEngine, gen: Int) async {
-        let downloaded = status == .downloaded ? downloadedStableIdsFromTasks() : []
         let list = await sourceScopedBooks(library: library, mediaType: media.mediaTypeRaw, boundedForSupportData: readingEnabled && media != .comics)
-        let kept = status == .downloaded && media == .comics
-            ? list.filter { downloadedBookIds.contains($0.uniqueId) }
-            : library.filterStatus(list, status: status, downloadedIds: downloaded)
-        await present(kept, gen: gen)
+        await present(library.filterStatus(list, status: status), gen: gen)
     }
 
     private func present(_ list: [Book], gen: Int) async {
@@ -1328,10 +1330,9 @@ final class LibraryModel {
     }
 
     private func sourceScopedBooksForCurrentMedia(library: LibraryEngine, boundedForSupportData: Bool = false) async -> [Book] {
-        let downloaded = status == .downloaded ? downloadedStableIdsFromTasks() : []
         let media = media
         return await sourceScopedBooks(library: library, mediaType: nil, boundedForSupportData: boundedForSupportData)
-            .filter { media.matches($0) && (status == .downloaded && media == .comics ? downloadedBookIds.contains($0.uniqueId) : library.matchesStatus($0, status: status, downloadedIds: downloaded)) }
+            .filter { media.matches($0) && (status == .downloaded || library.matchesStatus($0, status: status)) }
             .filter { LibraryAdvancedFilterPolicy.matches($0, filters: advancedFilters) }
     }
 
@@ -1340,6 +1341,7 @@ final class LibraryModel {
         mediaType: String?,
         boundedForSupportData: Bool = false
     ) async -> [Book] {
+        if status == .downloaded { return offlineBooks.filter(libraryMatchesSource) }
         let mediaTypes = mediaType.map { [$0] } ?? mediaScope
         return await library.sourceScopedBooks(
             sourceFilter: sourceFilter,
@@ -1372,10 +1374,6 @@ final class LibraryModel {
             await (profileSession?.engine ?? EnveEngine.shared).library.hideFromLibrary(booksToHide)
         }
         PlatformHaptics.impact(.light)
-    }
-
-    private func downloadedStableIdsFromTasks() -> Set<String> {
-        (profileSession?.engine ?? EnveEngine.shared).downloads.completedDownloadBookIds
     }
 
     private static let finishedCollection = SmartCollection(

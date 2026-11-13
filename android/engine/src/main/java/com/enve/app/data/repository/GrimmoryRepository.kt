@@ -1827,7 +1827,8 @@ class GrimmoryRepository @Inject constructor(
                 updatedAtMs = parseIsoToEpochMs(
                     body.epubProgress?.updatedAt
                         ?: body.pdfProgress?.updatedAt
-                        ?: body.cbxProgress?.updatedAt,
+                        ?: body.cbxProgress?.updatedAt
+                        ?: body.lastReadTime,
                 ),
             )
             if (snapshot == null || snapshot.epubCfi != null || body.epubProgress == null) {

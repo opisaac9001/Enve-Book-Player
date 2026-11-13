@@ -1,5 +1,7 @@
 package com.enve.app.readium.narrator
 
+import com.enve.engine.impl.BuildConfig
+import java.security.MessageDigest
 import java.util.Locale
 
 enum class NarratorPack(
@@ -102,9 +104,51 @@ enum class NarratorPack(
                 ),
             ),
         ),
+    ),
+    PHONON(
+        title = "Phonon",
+        voices = listOf("spencer", "hugh"),
+        license = "Apache-2.0",
+        termsUrl = "https://huggingface.co/gradium/phonon-31m-en/blob/92741c5b07d085ff840e26fea8ce43110b87852f/README.md",
+        terms = "Phonon 31M English and the Spencer and Hugh voices by Gradium are licensed under Apache 2.0.",
+        speakerIds = emptyList(),
+        languages = setOf("en"),
+        assets = NarratorAssets(
+            files = listOf(
+                NarratorFile("model.q8.gguf", 64_512_352, "a7d9aad2cd6dc66473f24a08bc6d2939030ef4d751ef82349361fbef3272dbae",
+                    url = "$PHONON_MODEL/model.q8.gguf"),
+                NarratorFile("config.json", 4_634, "b5d0f88353638370d94035b7d73d7d6577c0554d78f8d7ecfd40490aae39ae85",
+                    url = "$PHONON_MODEL/config.json"),
+                NarratorFile("tokenizer.json", 277_967, "691a00068fa7b989f2f3e5ae5daa2d1a5bb319f2d5360deafcfb19a8bb6e7936",
+                    url = "$PHONON_MODEL/tokenizer.json"),
+                NarratorFile("voices/spencer.safetensors", 256_136, "cc9ac1107b0ffce282374a19beb7bfa95847724e6b7afbac991b4ae4277d5e6d",
+                    url = "$PHONON_VOICES/JOW0vchyswkQUMDS.safetensors"),
+                NarratorFile("voices/hugh.safetensors", 256_136, "3169d74b47a54d1eb15e4c243f56393abe9fe90c7e1c308ecf96ee67618b152a",
+                    url = "$PHONON_VOICES/YyKcxPG7iIgS3jsK.safetensors"),
+            ),
+        ),
+    ),
+    WOOF(
+        title = "Underdog Woof",
+        voices = listOf("juno", "mira"),
+        license = "Underdog Woof License",
+        termsUrl = "https://huggingface.co/ConwayResearch/Underdog-Woof/blob/be702960539777fc3f698e54335276a8391b00f9/LICENSE",
+        terms = "Woof is available in this build for private, noncommercial evaluation under the Underdog Woof License.",
+        speakerIds = emptyList(),
+        languages = setOf("en"),
+        assets = NarratorAssets(
+            files = listOf(
+                NarratorFile(WOOF_WEIGHTS, 40_595_426, "d895fbbe84b8f4f461e3e94ab48b1164353b1988ce8d365f5aa8263d0de1203e",
+                    url = "$WOOF_MODEL/$WOOF_WEIGHTS"),
+                NarratorFile("LICENSE", 7_612, "784c4a353d15f370ff387f74bde64f50a2041df9c6f2338c3d8a2f781b944de5",
+                    url = "$WOOF_MODEL/LICENSE"),
+                NarratorFile("NOTICE", 919, "0849de251c109869d24f8a0b520260afa10594334ae3d0c06b75e68be1e2c623",
+                    url = "$WOOF_MODEL/NOTICE"),
+            ),
+        ),
     );
 
-    val downloadBytes: Long get() = assets.archive.bytes + assets.downloads.sumOf { it.bytes }
+    val downloadBytes: Long get() = (assets.archive?.bytes ?: 0) + assets.downloads.sumOf { it.bytes }
 
     internal val id: String get() = name.lowercase(Locale.ROOT)
 
@@ -115,6 +159,16 @@ enum class NarratorPack(
         }
         require(code in languages) { "$title does not support language \"$language\"" }
         return code
+    }
+
+    companion object {
+        val available: List<NarratorPack> = entries.filter { pack ->
+            when (pack) {
+                PHONON -> BuildConfig.PHONON_AVAILABLE
+                WOOF -> WoofBackend.available
+                else -> true
+            }
+        }
     }
 
     private fun baseLanguage(tag: String): String {
@@ -129,7 +183,11 @@ internal class NarratorArchive(val url: String, val bytes: Long, val sha256: Str
 
 internal class NarratorFile(val name: String, val bytes: Long, val sha256: String, val url: String? = null)
 
-internal class NarratorAssets(val archive: NarratorArchive, val files: List<NarratorFile>) {
+internal class NarratorAssets(val archive: NarratorArchive? = null, val files: List<NarratorFile>) {
+    val version: String = archive?.sha256 ?: MessageDigest.getInstance("SHA-256")
+        .digest(files.joinToString("\n") { "${it.name}:${it.sha256}" }.toByteArray())
+        .joinToString("") { "%02x".format(it) }
+
     val extracted: List<NarratorFile> get() = files.filter { it.url == null }
     val downloads: List<NarratorFile> get() = files.filter { it.url != null }
 }
@@ -140,3 +198,8 @@ private const val DEFAULT_LANGUAGE = "en"
 private val UNDETERMINED_LANGUAGES = setOf("und", "mul")
 
 private const val KOKORO_FRONTEND = "https://huggingface.co/nekwo/misaki-en-us-g2p-onnx/resolve/4b3a605d2f605318ab4f762ab9855c44106528b7"
+
+internal const val WOOF_WEIGHTS = "woof_int8.npz"
+private const val WOOF_MODEL = "https://huggingface.co/ConwayResearch/Underdog-Woof/resolve/be702960539777fc3f698e54335276a8391b00f9"
+private const val PHONON_MODEL = "https://huggingface.co/gradium/phonon-31m-en/resolve/92741c5b07d085ff840e26fea8ce43110b87852f"
+private const val PHONON_VOICES = "https://huggingface.co/gradium/phonon-voices/resolve/da6c9ec0d47be8df5c87c730a3aa97187f3229c3/voices"

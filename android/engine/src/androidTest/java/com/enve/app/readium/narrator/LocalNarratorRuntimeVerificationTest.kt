@@ -42,9 +42,10 @@ class LocalNarratorRuntimeVerificationTest {
                 val audio = runtime.synthesize(NarratorPack.SUPERTONIC, "M1", GERMAN_SENTENCE, "de-DE", 1.2f)
                 assertSpeech("Supertonic 3 German", NarratorPack.SUPERTONIC, audio, 1.0..20.0)
             }
-            val longPack = packs.first()
-            val passage = runtime.synthesize(longPack, longPack.voices.first(), PASSAGE, "en", 1f)
-            assertSpeech("${longPack.title} passage", longPack, passage, 30.0..300.0)
+            for (pack in packs) {
+                val passage = runtime.synthesize(pack, pack.voices.first(), PASSAGE, "en", 1f)
+                assertSpeech("${pack.title} passage", pack, passage, 30.0..300.0)
+            }
             val traffic = TrafficStats.getUidRxBytes(uid) + TrafficStats.getUidTxBytes(uid) - trafficBefore
             assertTrue("synthesis used the network ($traffic bytes)", traffic < 16_384)
         } finally {
@@ -66,6 +67,8 @@ class LocalNarratorRuntimeVerificationTest {
             NarratorPack.KOKORO to 24_000,
             NarratorPack.SUPERTONIC to 44_100,
             NarratorPack.POCKET to 24_000,
+            NarratorPack.PHONON to 24_000,
+            NarratorPack.WOOF to 24_000,
         )
         const val SENTENCE = "Please close the window before you leave. The books beside the desk must stay dry."
         const val GERMAN_SENTENCE = "Bitte schließe das Fenster, bevor du gehst. Die Bücher neben dem Schreibtisch müssen trocken bleiben."

@@ -26,6 +26,7 @@ nonisolated public struct Book: Identifiable, Codable, Equatable, Sendable {
     var episodeId: String?
     var podcastLibraryItemId: String?
     var podcastName: String?
+    var podcastShareURL: URL?
 
     var mediaType: AppMediaType = .audiobook
     var ebookFormat: String?
@@ -277,6 +278,7 @@ nonisolated public struct Book: Identifiable, Codable, Equatable, Sendable {
         episodeId: String? = nil,
         podcastLibraryItemId: String? = nil,
         podcastName: String? = nil,
+        podcastShareURL: URL? = nil,
         mediaType: AppMediaType = .audiobook,
         ebookFormat: String? = nil,
         comicMetadata: ComicMetadata? = nil,
@@ -335,6 +337,7 @@ nonisolated public struct Book: Identifiable, Codable, Equatable, Sendable {
         self.episodeId = episodeId
         self.podcastLibraryItemId = podcastLibraryItemId
         self.podcastName = podcastName
+        self.podcastShareURL = podcastShareURL
         self.mediaType = mediaType
         self.ebookFormat = ebookFormat
         self.comicMetadata = comicMetadata
@@ -397,6 +400,7 @@ nonisolated public struct Book: Identifiable, Codable, Equatable, Sendable {
         episodeId: String? = nil,
         podcastLibraryItemId: String? = nil,
         podcastName: String? = nil,
+        podcastShareURL: URL? = nil,
         mediaType: AppMediaType = .audiobook,
         ebookFormat: String? = nil,
         comicMetadata: ComicMetadata? = nil,
@@ -450,6 +454,7 @@ nonisolated public struct Book: Identifiable, Codable, Equatable, Sendable {
         self.episodeId = episodeId
         self.podcastLibraryItemId = podcastLibraryItemId
         self.podcastName = podcastName
+        self.podcastShareURL = podcastShareURL
         self.mediaType = mediaType
         self.ebookFormat = ebookFormat
         self.comicMetadata = comicMetadata
@@ -512,6 +517,7 @@ nonisolated public struct Book: Identifiable, Codable, Equatable, Sendable {
         episodeId = try c.decodeIfPresent(String.self, forKey: .episodeId)
         podcastLibraryItemId = try c.decodeIfPresent(String.self, forKey: .podcastLibraryItemId)
         podcastName = try c.decodeIfPresent(String.self, forKey: .podcastName)
+        podcastShareURL = try c.decodeIfPresent(URL.self, forKey: .podcastShareURL)
 
         description = try c.decodeIfPresent(String.self, forKey: .description)
         series = try c.decodeIfPresent(String.self, forKey: .series)
@@ -791,6 +797,7 @@ nonisolated public struct Book: Identifiable, Codable, Equatable, Sendable {
             episodeId: episodeId,
             podcastLibraryItemId: podcastLibraryItemId,
             podcastName: podcastName,
+            podcastShareURL: podcastShareURL,
             mediaType: mediaType,
             ebookFormat: ebookFormat,
             comicMetadata: comicMetadata,

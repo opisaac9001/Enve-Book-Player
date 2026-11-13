@@ -31,6 +31,7 @@ import com.enve.storyteller.StorytellerRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -127,12 +128,16 @@ class AuthViewModel @Inject constructor(
     private val komgaOAuthFlow: com.enve.komga.auth.KomgaOAuthFlow,
     private val bookOrbitOidcFlow: BookOrbitOidcFlow,
     private val siloOidcFlow: SiloOidcFlow,
+    private val siloProfileLogin: com.enve.silo.auth.SiloProfileLogin,
     private val passwordLogins: Map<BookSource, @JvmSuppressWildcards PasswordLogin>,
     private val announcements: com.enve.core.data.local.DeviceAnnouncementStore,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(AuthState())
     val state: StateFlow<AuthState> = _state.asStateFlow()
+
+    val siloProfiles = siloProfileLogin.state
+    fun selectSiloProfile(choice: com.enve.silo.auth.SiloProfileChoice?) { siloProfileLogin.choose(choice) }
 
     private var plexPollJob: Job? = null
 
@@ -498,7 +503,8 @@ class AuthViewModel @Inject constructor(
             val previousServerUrl = prefs.serverUrl.first()
             val previousUsername = prefs.username.first()
             stagePendingLoginHeaders(current.effectiveHeaders)
-            val result = if (current.selectedSource == BookSource.STORYTELLER) {
+            var siloConnectionId: String? = null
+            val result = (if (current.selectedSource == BookSource.STORYTELLER) {
                 storytellerRepository.login(
                     serverUrl = trimmedServerUrl,
                     username = current.username,
@@ -514,11 +520,22 @@ class AuthViewModel @Inject constructor(
                 } else {
                     handler.login(trimmedServerUrl, current.username, current.password)
                 }
+            }).mapCatching {
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                if (current.selectedSource == BookSource.SILO) {
+                    val username = prefs.username.first().orEmpty()
+                    siloConnectionId = siloProfileLogin.prepare(trimmedServerUrl, current.effectiveHeaders, current.editingConnectionId)
+                    storePerConnectionCredentials(requireNotNull(siloConnectionId), username, current.password)
+                }
             }
             result.onSuccess {
-                val connState = current.copy(serverUrl = normalizedUrl)
+                val connState = current.copy(
+                    serverUrl = normalizedUrl,
+                    username = if (current.selectedSource == BookSource.SILO) prefs.username.first().orEmpty() else current.username,
+                    editingConnectionId = siloConnectionId ?: current.editingConnectionId,
+                )
                 val connectionId = upsertConnectionForCurrentState(connState)
-                storePerConnectionCredentials(connectionId, current.username, current.password)
+                storePerConnectionCredentials(connectionId, connState.username, current.password)
                 prefs.setActiveConnectionId(connectionId)
                 _state.update {
                     it.copy(
@@ -531,6 +548,7 @@ class AuthViewModel @Inject constructor(
                     )
                 }
             }.onFailure { e ->
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 if (current.selectedSource != BookSource.STORYTELLER) {
                     prefs.setActiveBookSource(previousSource)
                     prefs.setActiveConnectionId(previousConnectionId)
@@ -636,7 +654,8 @@ class AuthViewModel @Inject constructor(
             _state.update { it.copy(serverUrl = effectiveServerUrl) }
             stagePendingLoginHeaders(current.effectiveHeaders)
 
-            val result = if (current.selectedSource == BookSource.STORYTELLER) {
+            var siloConnectionId: String? = null
+            val result = (if (current.selectedSource == BookSource.STORYTELLER) {
                 storytellerRepository.loginWithToken(
                     serverUrl = effectiveServerUrl.trimEnd('/'),
                     username = current.username,
@@ -649,14 +668,25 @@ class AuthViewModel @Inject constructor(
                     username = current.username,
                     accessToken = effectiveToken,
                 )
+            }).mapCatching {
+                if (current.selectedSource == BookSource.SILO) {
+                    siloConnectionId = siloProfileLogin.prepare(effectiveServerUrl, current.effectiveHeaders, current.editingConnectionId)
+                    vault.remove(CredentialVault.refreshTokenKey(requireNotNull(siloConnectionId)))
+                    vault.remove(CredentialVault.passwordKey(requireNotNull(siloConnectionId)))
+                    val username = vault.get("silo_profile_user_id_$siloConnectionId").orEmpty()
+                    prefs.saveServerInfo(effectiveServerUrl, username)
+                    storePerConnectionCredentials(requireNotNull(siloConnectionId), username, null)
+                }
             }
             result.onSuccess {
                 val connState = current.copy(
                     serverUrl = effectiveServerUrl,
                     selectedSource = current.selectedSource,
+                    username = if (current.selectedSource == BookSource.SILO) prefs.username.first().orEmpty() else current.username,
+                    editingConnectionId = siloConnectionId ?: current.editingConnectionId,
                 )
                 val connectionId = upsertConnectionForCurrentState(connState)
-                storePerConnectionCredentials(connectionId, current.username, null)
+                storePerConnectionCredentials(connectionId, connState.username, null)
                 prefs.setActiveConnectionId(connectionId)
                 if (current.selectedSource == BookSource.TORBOX) {
                     prepareCloudRootSelection(connectionId)
@@ -673,6 +703,7 @@ class AuthViewModel @Inject constructor(
                     )
                 }
             }.onFailure { e ->
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 clearPendingLoginContext()
                 _state.update {
                     it.copy(
@@ -1293,8 +1324,16 @@ class AuthViewModel @Inject constructor(
                         authMode = ConnectionAuthMode.SSO,
                     )
                     _state.update { connState }
-                    val connectionId = upsertConnectionForCurrentState(connState)
-                    siloOidcFlow.persistTokensForConnection(connectionId, result.username)
+                    val selectedId = try {
+                        siloProfileLogin.prepare(result.serverUrl, connState.effectiveHeaders, connState.editingConnectionId)
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        _state.update { it.copy(isLoading = false, error = e.message ?: "Silo profile selection failed") }
+                        return@launch
+                    }
+                    siloOidcFlow.persistTokensForConnection(selectedId, result.username)
+                    val connectionId = upsertConnectionForCurrentState(connState.copy(editingConnectionId = selectedId))
                     prefs.setActiveBookSource(BookSource.SILO)
                     prefs.saveServerInfo(result.serverUrl, result.username)
                     prefs.setActiveConnectionId(connectionId)

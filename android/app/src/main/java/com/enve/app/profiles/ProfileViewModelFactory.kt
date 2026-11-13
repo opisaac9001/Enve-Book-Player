@@ -351,6 +351,7 @@ class ProfileViewModelFactory(private val component: com.enve.app.profiles.Profi
             component.komgaOAuthFlow(),
             component.bookOrbitOidcFlow(),
             component.siloOidcFlow(),
+            component.siloProfileLogin(),
             component.passwordLogins(),
             component.deviceAnnouncements(),
         )

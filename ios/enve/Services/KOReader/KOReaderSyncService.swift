@@ -25,6 +25,7 @@ final class KOReaderSyncService {
 
     @ObservationIgnored private let userDefaults = UserDefaults.standard
     @ObservationIgnored private let keychain = KeychainHelper.shared
+    @ObservationIgnored private let progressQueue = PerBookSerialQueue()
 
     @ObservationIgnored private lazy var session: URLSession = {
         let cfg = URLSessionConfiguration.default
@@ -206,20 +207,7 @@ final class KOReaderSyncService {
 
         await AppState.shared.withAllBooksTransaction {
             for book in books {
-                guard let plan = await documentMatchPlan(for: book) else { continue }
-                do {
-                    guard let remote = try await fetchRemoteProgress(plan: plan, bookStableId: book.stableId),
-                        remote.percentage > 0
-                    else { continue }
-                    if await mergeRemoteProgress(into: book, remote: remote) {
-                        applied += 1
-                    }
-                    updateLinkSyncStatus(bookStableId: book.stableId, percentage: remote.percentage)
-                } catch {
-                    AppLogger.sync.error(
-                        "KOReader pull failed bookId=\(DiagnosticLogSanitizer.identifier(for: book.stableId)): \(error.localizedDescription)"
-                    )
-                }
+                if await pullAndMerge(book: book) { applied += 1 }
             }
         }
 
@@ -229,20 +217,50 @@ final class KOReaderSyncService {
     }
 
     @discardableResult
-    func mergeRemoteProgress(into book: Book, remote: KOReaderProgress) async -> Bool {
-        guard let current = AppState.shared.bookInMemory(stableId: book.stableId) else { return false }
+    func pullAndMerge(book: Book) async -> Bool {
+        guard config.isConfigured, book.mediaType == .ebook, !Task.isCancelled else { return false }
+        var applied = false
+        await progressQueue.enqueue(bookId: book.stableId) {
+            let configuration = self.config
+            guard let plan = await self.documentMatchPlan(for: book) else { return }
+            do {
+                guard let remote = try await self.fetchRemoteProgress(plan: plan, bookStableId: book.stableId) else { return }
+                guard self.config == configuration else { return }
+                applied = await self.mergeRemoteProgress(into: book, remote: remote)
+                self.updateLinkSyncStatus(bookStableId: book.stableId, percentage: remote.percentage)
+            } catch {
+                AppLogger.sync.error(
+                    "KOReader pull failed bookId=\(DiagnosticLogSanitizer.identifier(for: book.stableId)): \(error.localizedDescription)"
+                )
+            }
+        }
+        return applied
+    }
+
+    @discardableResult
+    func mergeRemoteProgress(into book: Book, remote: KOReaderProgress, profileSession: ProfileSession = .owner) async -> Bool {
+        guard profileSession.serverSyncEnabled, !profileSession.isRetired,
+            profileSession.pendingSync.entries[book.stableId]?.domainRaw != "ebook"
+        else { return false }
+        let appState = profileSession.appState
+        let stored = await profileSession.bookStore.book(uniqueId: book.uniqueId)
+        guard let current = appState.bookInMemory(uniqueId: book.uniqueId) ?? stored else { return false }
         let percentage = max(0, min(1, remote.percentage))
         let local = current.canonicalEbookProgress
         guard percentage > local + 0.005 else { return false }
 
         var resolvedLocator: String? = nil
-        if remote.progress.hasPrefix("{") {
-            resolvedLocator = remote.progress
-        } else if remote.progress.hasPrefix("/body/DocFragment") {
+        let remoteLocation = remote.progress.trimmingCharacters(in: .whitespacesAndNewlines)
+        if remoteLocation.hasPrefix("{"), EpubCFI.jsonObject(remoteLocation) != nil {
+            resolvedLocator = remoteLocation
+        } else if remoteLocation.hasPrefix("epubcfi("),
+            let url = EbookChapterSyncService.shared.resolvedFileURL(for: book) {
+            resolvedLocator = await EpubCFI.readiumLocatorJSON(forCFI: remoteLocation, totalProgression: percentage, epubFileURL: url)
+        } else if remoteLocation.hasPrefix("/body/DocFragment") {
             let fileURL = EbookChapterSyncService.shared.resolvedFileURL(for: book)
             if let url = fileURL,
                 let locatorJSON = await KOReaderXPointerConverter.locatorJSON(
-                    xpointer: remote.progress,
+                    xpointer: remoteLocation,
                     percentage: percentage,
                     epubFileURL: url
                 )
@@ -251,15 +269,28 @@ final class KOReaderSyncService {
             }
         }
 
-        AppState.shared.mutateBook(stableId: book.stableId) { updated in
+        guard !Task.isCancelled, profileSession.serverSyncEnabled, !profileSession.isRetired,
+            profileSession.pendingSync.entries[book.stableId]?.domainRaw != "ebook"
+        else { return false }
+        let latest = appState.bookInMemory(uniqueId: book.uniqueId) ?? current
+        guard percentage > latest.canonicalEbookProgress + 0.005 else { return false }
+        let observedAt = remote.timestamp.flatMap { $0 > 0 ? Date(timeIntervalSince1970: $0) : nil } ?? latest.lastUpdate
+        if appState.bookInMemory(uniqueId: book.uniqueId) == nil { appState.hotCache.insert(latest) }
+        guard let updated = appState.mutateBook(stableId: book.stableId, { updated in
             updated.ebookProgress = percentage
-            if let loc = resolvedLocator {
-                updated.epubLocator = loc
-            }
-            updated.lastUpdate = Date()
-        }
-        EbookLinkStore.shared.saveLinks()
-        AppState.shared.allBooksChanged.send(())
+            updated.epubLocator = resolvedLocator
+            updated.lastUpdate = observedAt
+        }) else { return false }
+        await profileSession.bookStore.applyAuthoritativeProgress([
+            AuthoritativeProgressUpdate(
+                bookUniqueId: updated.uniqueId, stableId: updated.stableId,
+                currentTime: updated.currentTime, duration: updated.duration ?? 0,
+                ebookProgress: percentage, epubLocator: resolvedLocator,
+                isFinished: updated.isFinished, lastUpdate: observedAt,
+                hideFromContinue: updated.hideFromContinue, serverReadStatus: updated.serverReadStatus
+            )
+        ])
+        appState.allBooksChanged.send(())
         return true
     }
 

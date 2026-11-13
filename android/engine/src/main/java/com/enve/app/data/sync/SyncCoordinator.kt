@@ -147,14 +147,12 @@ class SyncCoordinator @Inject constructor(
                         "Annotation push rejected ${pushResult.rejected.size} item(s) for ${book.id}",
                     )
                 }
-                pushResult.accepted.forEach { acc ->
-                    annotationRepo.markClean(acc.id, acc.etag, acc.serverId)
-                }
-                pushResult.conflicts.forEach { remote ->
-                    val local = dirty.firstOrNull { it.id == remote.id }
-                    if (local != null && remote.updatedAt > local.updatedAt) {
-                        annotationRepo.applyRemote(listOf(remote))
-                    }
+                annotationRepo.acknowledgePushed(dirty, pushResult.accepted)
+                if (pushResult.conflicts.isNotEmpty()) {
+                    Log.w(
+                        TAG,
+                        "Annotation push kept ${pushResult.conflicts.size} conflicting local edit(s) for ${book.id}",
+                    )
                 }
             }
         }
@@ -320,7 +318,7 @@ class SyncCoordinator @Inject constructor(
                         progress = normalizedProgress,
                         currentTimeSec = currentTimeSec,
                         locatorJson = null,
-                        nowMs = System.currentTimeMillis(),
+                        nowMs = requestedAt,
                     )
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
@@ -357,6 +355,7 @@ class SyncCoordinator @Inject constructor(
                             percentage = normalizedProgress,
                             locator = ebookLocator,
                             connectionId = book.connectionId,
+                            observedAt = requestedAt,
                         )
                     }
                     result.getOrThrow()

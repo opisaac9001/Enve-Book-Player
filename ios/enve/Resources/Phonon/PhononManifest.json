@@ -1,0 +1,35 @@
+{
+  "revision": "92741c5b07d085ff840e26fea8ce43110b87852f-0.7.0-da6c9ec0d47be8df5c87c730a3aa97187f3229c3",
+  "files": [
+    {
+      "path": "model.q8.gguf",
+      "size": 64512352,
+      "sha256": "a7d9aad2cd6dc66473f24a08bc6d2939030ef4d751ef82349361fbef3272dbae",
+      "url": "https://huggingface.co/gradium/phonon-31m-en/resolve/92741c5b07d085ff840e26fea8ce43110b87852f/model.q8.gguf"
+    },
+    {
+      "path": "config.json",
+      "size": 4634,
+      "sha256": "b5d0f88353638370d94035b7d73d7d6577c0554d78f8d7ecfd40490aae39ae85",
+      "url": "https://huggingface.co/gradium/phonon-31m-en/resolve/92741c5b07d085ff840e26fea8ce43110b87852f/config.json"
+    },
+    {
+      "path": "tokenizer.json",
+      "size": 277967,
+      "sha256": "691a00068fa7b989f2f3e5ae5daa2d1a5bb319f2d5360deafcfb19a8bb6e7936",
+      "url": "https://huggingface.co/gradium/phonon-31m-en/resolve/92741c5b07d085ff840e26fea8ce43110b87852f/tokenizer.json"
+    },
+    {
+      "path": "Hugh.safetensors",
+      "size": 256136,
+      "sha256": "3169d74b47a54d1eb15e4c243f56393abe9fe90c7e1c308ecf96ee67618b152a",
+      "url": "https://huggingface.co/gradium/phonon-voices/resolve/da6c9ec0d47be8df5c87c730a3aa97187f3229c3/voices/YyKcxPG7iIgS3jsK.safetensors"
+    },
+    {
+      "path": "Spencer.safetensors",
+      "size": 256136,
+      "sha256": "cc9ac1107b0ffce282374a19beb7bfa95847724e6b7afbac991b4ae4277d5e6d",
+      "url": "https://huggingface.co/gradium/phonon-voices/resolve/da6c9ec0d47be8df5c87c730a3aa97187f3229c3/voices/JOW0vchyswkQUMDS.safetensors"
+    }
+  ]
+}

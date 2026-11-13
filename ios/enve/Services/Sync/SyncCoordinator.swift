@@ -61,7 +61,7 @@ final class SyncCoordinator {
     private var defaults: UserDefaults { profileSession?.defaults ?? .standard }
     private var allowsOwnerIntegrations: Bool { profileSession?.isOwner ?? true }
     private var allowsServerSync: Bool { !isRetired && (profileSession?.serverSyncEnabled ?? true) }
-    private let serialQueue = PerBookSerialQueue()
+    private let serialQueue: PerBookSerialQueue
     private let providerResolver: any LibraryProviderResolving
     private let pendingSyncFlusher: PendingSyncQueueFlusher
     private let recentlyPlayedSync: any RecentlyPlayedSyncing
@@ -89,14 +89,21 @@ final class SyncCoordinator {
         providerResolver: any LibraryProviderResolving,
         pendingSyncFlusher: PendingSyncQueueFlusher,
         recentlyPlayedSync: any RecentlyPlayedSyncing,
-        profileSession: ProfileSession? = nil
+        profileSession: ProfileSession? = nil,
+        serialQueue: PerBookSerialQueue = PerBookSerialQueue()
     ) {
         self.profileSession = profileSession
         self.providerResolver = providerResolver
         self.pendingSyncFlusher = pendingSyncFlusher
         self.recentlyPlayedSync = recentlyPlayedSync
+        self.serialQueue = serialQueue
         pendingSyncFlusher.onValidationFailure = { [weak self] bookId, message in
             self?.emit(.pushFailed(bookId: bookId, error: message, retryable: false))
+        }
+        pendingSyncFlusher.onDownloadedConflict = { [weak self] stableId, serverPosition in
+            self?.profileSession?.playback.manager.presentDownloadedProgressConflict(
+                stableId: stableId, serverPosition: serverPosition
+            )
         }
         loadSettings()
     }
@@ -193,6 +200,26 @@ final class SyncCoordinator {
         if allowsOwnerIntegrations { enabled ? (profileSession?.autoSaver ?? ProgressAutoSaver.shared).start() : (profileSession?.autoSaver ?? ProgressAutoSaver.shared).stop() }
     }
 
+    func protectDownloadedProgress(for book: Book, position: TimeInterval, updatedAt: Date, duration: TimeInterval) {
+        let pendingSync = profileSession?.pendingSync ?? PendingSyncQueueStore.shared
+        guard allowsServerSync, book.mediaType == .audiobook,
+            pendingSync.entries[book.stableId]?.downloadedBaseline == nil,
+            let provider = providerResolver.provider(for: book),
+            provider is any AudiobookProgressPulling, provider is any AudiobookProgressPushing,
+            provider.syncCapability.contains(.readWrite)
+        else { return }
+
+        var baselineBook = book
+        baselineBook.lastUpdate = updatedAt
+        enqueuePendingSync(
+            book: baselineBook, position: position, duration: duration, serverItemId: book.partKey ?? book.id,
+            isFinished: book.isFinished,
+            downloadedBaseline: DownloadedProgressBaseline(
+                position: position, updatedAt: updatedAt, isFinished: book.isFinished
+            )
+        )
+    }
+
     func enqueuePendingSync(
         book: Book,
         position: TimeInterval,
@@ -201,7 +228,8 @@ final class SyncCoordinator {
         domain: ProgressSyncDomain = .audiobook,
         progress: Double? = nil,
         locator: String? = nil,
-        isFinished: Bool? = nil
+        isFinished: Bool? = nil,
+        downloadedBaseline: DownloadedProgressBaseline? = nil
     ) {
         guard allowsServerSync else { return }
         (profileSession?.pendingSync ?? PendingSyncQueueStore.shared).enqueue(
@@ -216,7 +244,8 @@ final class SyncCoordinator {
                 domainRaw: domain.usesEbookProgress ? "ebook" : "audiobook",
                 progress: progress,
                 locator: locator,
-                isFinished: isFinished
+                isFinished: isFinished,
+                downloadedBaseline: downloadedBaseline
             )
         )
         AppLogger.sync.debug(
@@ -288,6 +317,11 @@ final class SyncCoordinator {
 
         let pendingPushes = Array(pushDebounceTasks.values)
         let task = Task<ServerStatusSyncResult, Never> { @MainActor [pendingSyncFlusher, recentlyPlayedSync] in
+            if trigger == .appLaunch {
+                let result = await recentlyPlayedSync.sync(trigger: trigger)
+                if !Task.isCancelled { await pendingSyncFlusher.flush() }
+                return result
+            }
             for push in pendingPushes { await push.value }
             await pendingSyncFlusher.flush()
             return await recentlyPlayedSync.sync(trigger: trigger)
@@ -641,6 +675,9 @@ final class SyncCoordinator {
 
         var succeeded = false
         await serialQueue.enqueue(bookId: book.stableId) {
+            guard (self.profileSession?.pendingSync ?? PendingSyncQueueStore.shared)
+                .entries[book.stableId]?.downloadedBaseline == nil
+            else { return }
             do {
                 try await sink.push(update)
                 succeeded = true
@@ -690,7 +727,7 @@ final class SyncCoordinator {
         return stream
     }
 
-    private func emit(_ event: SyncEvent) {
+    private func emit(_ event: SyncEvent, recordsHistory: Bool = true) {
         let bookId: String
         switch event {
         case .pullStarted(let id), .pullCompleted(let id, _), .pullFailed(let id, _),
@@ -699,6 +736,18 @@ final class SyncCoordinator {
             bookId = id
         }
         eventContinuations[bookId]?.values.forEach { $0.yield(event) }
+        guard recordsHistory, let profileSession, let content = PlaybackHistoryStore.content(for: event) else { return }
+        if let book = profileSession.appState.bookInMemory(stableId: bookId) {
+            profileSession.playbackHistory.record(content.kind, book: book, detail: content.detail)
+        } else {
+            let store = profileSession.appState.bookStore
+            Task { [weak profileSession] in
+                guard let book = await store.book(stableId: bookId),
+                    let profileSession, !profileSession.isRetired
+                else { return }
+                profileSession.playbackHistory.record(content.kind, book: book, detail: content.detail)
+            }
+        }
     }
 
     private func pickFreshest(_ snapshots: [SyncSnapshot]) -> SyncSnapshot? {
@@ -862,19 +911,30 @@ final class SyncCoordinator {
         let sinks = (profileSession?.registry ?? PluginRegistry.shared).sinks(applicableTo: book, domain: update.domain)
         let providerSink = sinks.first { $0.id == ProviderSyncSink.identifier }
         let hasProviderSync = providerSink != nil
+        let pendingSync = profileSession?.pendingSync ?? PendingSyncQueueStore.shared
+        let resolution = pendingSync.downloadedProgressResolution(for: bookId)
 
         if hasProviderSync {
             emit(.pushStarted(bookId: bookId))
         }
 
         await serialQueue.enqueue(bookId: bookId) { [weak self] in
-            guard let self, self.allowsServerSync else { return }
+            guard let self, self.allowsServerSync,
+                pendingSync.downloadedProgressResolution(for: bookId) == resolution
+            else { return }
             var providerSucceeded = false
             var providerError: Error?
             var anySinkSucceeded = false
 
             for sink in sinks {
-                guard self.allowsServerSync else { return }
+                guard self.allowsServerSync,
+                    pendingSync.downloadedProgressResolution(for: bookId) == resolution
+                else { return }
+                if update.domain == .audiobook, sink.id != ProviderSyncSink.identifier,
+                    pendingSync.entries[bookId]?.downloadedBaseline != nil
+                {
+                    continue
+                }
                 do {
                     try await sink.push(update)
                     anySinkSucceeded = true
@@ -901,7 +961,16 @@ final class SyncCoordinator {
                 )
             }
 
-            if let providerError {
+            guard pendingSync.downloadedProgressResolution(for: bookId) == resolution else { return }
+            if let conflict = providerError as? DownloadedProgressConflict {
+                enqueuePendingSync(
+                    book: book, position: update.positionSeconds, duration: book.duration ?? 0,
+                    serverItemId: book.partKey ?? book.id, isFinished: update.isFinished
+                )
+                profileSession?.playback.manager.presentDownloadedProgressConflict(
+                    stableId: bookId, serverPosition: conflict.serverPosition
+                )
+            } else if let providerError {
                 let nsErr = providerError as NSError
                 let retryable = nsErr.domain == NSURLErrorDomain
                 AppLogger.sync.error(
@@ -937,7 +1006,8 @@ final class SyncCoordinator {
                 )
                 self.emit(.pushCompleted(bookId: bookId))
             } else if !hasProviderSync && update.isFinished {
-                self.emit(.pushCompleted(bookId: bookId))
+                // Without a provider sink no server confirmed this write, so it isn't a sync to report.
+                self.emit(.pushCompleted(bookId: bookId), recordsHistory: false)
             }
         }
     }

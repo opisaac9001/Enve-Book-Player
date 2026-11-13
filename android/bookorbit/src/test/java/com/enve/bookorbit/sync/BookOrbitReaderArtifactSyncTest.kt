@@ -243,6 +243,9 @@ private class FakeReaderAnnotationDao(vararg seed: ReaderAnnotation) : ReaderAnn
     override suspend fun getByServerId(serverId: String, providerSource: String): ReaderAnnotation? =
         rows.values.firstOrNull { it.serverId == serverId && it.providerSource == providerSource }
 
+    override suspend fun getByServerIdForBook(serverId: String, providerSource: String, bookId: String): ReaderAnnotation? =
+        rows.values.firstOrNull { it.serverId == serverId && it.providerSource == providerSource && it.bookId == bookId }
+
     override suspend fun getDirty(): List<ReaderAnnotation> = rows.values.filter { it.syncDirty }
 
     override suspend fun getDirtyForBook(bookId: String): List<ReaderAnnotation> =

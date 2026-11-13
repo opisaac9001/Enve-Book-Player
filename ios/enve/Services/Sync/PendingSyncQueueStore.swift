@@ -1,5 +1,24 @@
 import Foundation
 
+struct DownloadedProgressBaseline: Codable, Equatable, Sendable {
+    let id: UUID
+    let position: TimeInterval
+    let updatedAt: Date
+    let isFinished: Bool
+
+    init(position: TimeInterval, updatedAt: Date, isFinished: Bool) {
+        id = UUID()
+        self.position = position
+        self.updatedAt = updatedAt
+        self.isFinished = isFinished
+    }
+
+    func conflicts(with remote: ProviderAudiobookProgress, position remotePosition: TimeInterval) -> Bool {
+        let differs = abs(remotePosition - position) >= 1 || remote.readState.isFinished != isFinished
+        return differs && (remote.updatedAt.map { $0 > updatedAt } ?? true)
+    }
+}
+
 struct PendingServerSync: Codable, Equatable {
     let stableId: String
     let sourceRaw: String
@@ -12,6 +31,7 @@ struct PendingServerSync: Codable, Equatable {
     let progress: Double?
     let locator: String?
     let isFinished: Bool?
+    var downloadedBaseline: DownloadedProgressBaseline?
     var retryCount: Int = 0
     var nextRetryAfter: TimeInterval = 0
     var validationFailureMessage: String?
@@ -28,6 +48,7 @@ struct PendingServerSync: Codable, Equatable {
         progress: Double? = nil,
         locator: String? = nil,
         isFinished: Bool? = nil,
+        downloadedBaseline: DownloadedProgressBaseline? = nil,
         retryCount: Int = 0,
         nextRetryAfter: TimeInterval = 0,
         validationFailureMessage: String? = nil
@@ -43,6 +64,7 @@ struct PendingServerSync: Codable, Equatable {
         self.progress = progress
         self.locator = locator
         self.isFinished = isFinished
+        self.downloadedBaseline = downloadedBaseline
         self.retryCount = retryCount
         self.nextRetryAfter = nextRetryAfter
         self.validationFailureMessage = validationFailureMessage
@@ -69,6 +91,7 @@ final class PendingSyncQueueStore {
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let storageKey: String
 
+    @ObservationIgnored private var resolutionRevisions: [String: UUID] = [:]
     private(set) var entries: [String: PendingServerSync] = [:]
 
     var count: Int { entries.count }
@@ -84,8 +107,32 @@ final class PendingSyncQueueStore {
     }
 
     func enqueue(_ entry: PendingServerSync) {
+        var entry = entry
+        if entry.domain == .audiobook, let existing = entries[entry.stableId]?.downloadedBaseline {
+            entry.downloadedBaseline = existing
+        }
         entries[entry.stableId] = entry
         persist()
+    }
+
+    func acknowledgeDownloadedProgress(_ sent: PendingServerSync) {
+        guard var latest = entries[sent.stableId], latest.downloadedBaseline == sent.downloadedBaseline else { return }
+        if latest == sent {
+            remove(stableId: sent.stableId)
+        } else {
+            latest.downloadedBaseline = nil
+            entries[sent.stableId] = latest
+            persist()
+        }
+    }
+
+    func downloadedProgressResolution(for stableId: String) -> UUID? {
+        resolutionRevisions[stableId]
+    }
+
+    func resolveDownloadedProgress(stableId: String) {
+        resolutionRevisions[stableId] = UUID()
+        remove(stableId: stableId)
     }
 
     func remove(stableId: String) {
@@ -106,10 +153,10 @@ final class PendingSyncQueueStore {
 
     func markRetry(stableId: String, maxRetries: Int = 10, at now: Date = Date()) {
         guard var entry = entries[stableId] else { return }
-        if entry.retryCount >= maxRetries {
+        if entry.retryCount >= maxRetries, entry.downloadedBaseline == nil {
             entries.removeValue(forKey: stableId)
         } else {
-            entry.retryCount += 1
+            entry.retryCount = min(entry.retryCount + 1, maxRetries)
             entry.nextRetryAfter = now.timeIntervalSince1970 + entry.backoffDelay
             entries[stableId] = entry
         }

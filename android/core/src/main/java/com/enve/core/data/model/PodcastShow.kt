@@ -17,6 +17,7 @@ data class PodcastFeedKey(
     val enclosureUrl: String?,
     val title: String,
     val publishedAtMs: Long?,
+    val storedEpisodeId: String? = null,
 )
 
 data class PodcastFeedEpisode(
@@ -27,4 +28,5 @@ data class PodcastFeedEpisode(
     val durationSec: Long,
     val enclosureUrl: String,
     val enclosureType: String?,
+    val episodeLink: String? = null,
 )

@@ -190,6 +190,14 @@ private struct ReaderVoicePicker: View {
     let onBack: () -> Void
 
     @Environment(\.hearth) private var hearth
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var preview: NarratorVoicePreview
+
+    init(tts: EbookTTSService, onBack: @escaping () -> Void) {
+        self.tts = tts
+        self.onBack = onBack
+        _preview = State(initialValue: NarratorVoicePreview(models: tts.models))
+    }
 
     private var selectedLanguage: Language {
         if let preferred = tts.preferredLanguageIdentifier {
@@ -223,17 +231,24 @@ private struct ReaderVoicePicker: View {
             .padding(.top, 20)
             .padding(.bottom, 6)
 
+            if preview.phase != .idle {
+                sampleStatus
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 8)
+            }
+
             List {
                 Section {
                     ForEach(EbookTTSEngineChoice.allCases) { engine in
                         voiceRow(
                             title: engine.displayName,
                             subtitle: engine.detail,
-                            isSelected: tts.engineChoice == engine
+                            isSelected: tts.engineChoice == engine,
+                            sample: tts.models.isReady(engine) ? currentSample(for: engine) : nil,
+                            identifier: "tts-engine-\(engine.rawValue)"
                         ) {
                             tts.setEngineChoice(engine)
                         }
-                        .accessibilityIdentifier("tts-engine-\(engine.rawValue)")
                     }
                 } header: {
                     Overline("Engine")
@@ -241,8 +256,18 @@ private struct ReaderVoicePicker: View {
                 .listRowBackground(Color.clear)
                 .listRowSeparatorTint(hearth.hairline)
 
-                ForEach(EbookTTSEngineChoice.allCases.filter { $0 != .apple }) { engine in
-                    modelDownloadSection(for: engine)
+                ForEach(EbookTTSEngineChoice.downloadableCases) { engine in
+                    Section {
+                        NarratorModelControls(engine: engine, models: tts.models) { tts.downloadModel(for: engine) }
+                            .padding(.vertical, 4)
+                    } footer: {
+                        if let license = engine.license, tts.downloadState(for: engine) != .ready {
+                            Link(license.title, destination: license.url)
+                                .font(.hearthCaption)
+                        }
+                    }
+                    .listRowBackground(Color.clear)
+                    .listRowSeparatorTint(hearth.hairline)
                 }
 
                 Section {
@@ -274,7 +299,8 @@ private struct ReaderVoicePicker: View {
                         voiceRow(
                             title: "Automatic",
                             subtitle: automaticSubtitle,
-                            isSelected: tts.selectedVoiceIdentifier == nil
+                            isSelected: tts.selectedVoiceIdentifier == nil,
+                            sample: .apple(voiceIdentifier: tts.recommendedVoice()?.identifier, language: tts.narrationLanguageCode)
                         ) {
                             tts.setVoice(nil)
                         }
@@ -282,7 +308,8 @@ private struct ReaderVoicePicker: View {
                             voiceRow(
                                 title: voice.name,
                                 subtitle: voiceSubtitle(for: voice),
-                                isSelected: tts.selectedVoiceIdentifier == voice.identifier
+                                isSelected: tts.selectedVoiceIdentifier == voice.identifier,
+                                sample: .apple(voiceIdentifier: voice.identifier, language: voice.language.code.bcp47)
                             ) {
                                 tts.setVoice(voice.identifier)
                             }
@@ -292,24 +319,44 @@ private struct ReaderVoicePicker: View {
                             voiceRow(
                                 title: voice.displayName,
                                 subtitle: voice.detail,
-                                isSelected: tts.kokoroVoice == voice
+                                isSelected: tts.kokoroVoice == voice,
+                                sample: .kokoro(voice),
+                                identifier: "kokoro-voice-\(voice.rawValue)"
                             ) {
                                 tts.setKokoroVoice(voice)
                             }
-                            .accessibilityIdentifier("kokoro-voice-\(voice.rawValue)")
                         }
                     case .pocket:
-                        Text("Alba MacKenna")
+                        HStack(spacing: 10) {
+                            Text("Alba MacKenna")
+                                .font(.hearthUI(15, weight: .medium))
+                                .foregroundStyle(hearth.text)
+                            Spacer()
+                            sampleButton(.pocket, title: "Alba MacKenna")
+                        }
+                    case .phonon:
+                        ForEach(PhononVoice.allCases) { voice in
+                            voiceRow(
+                                title: voice.rawValue,
+                                subtitle: "British English",
+                                isSelected: tts.phononVoice == voice,
+                                sample: .phonon(voice),
+                                identifier: "phonon-voice-\(voice.rawValue)"
+                            ) {
+                                tts.setPhononVoice(voice)
+                            }
+                        }
                     case .supertonic3:
                         ForEach(EnhancedTTSVoice.allCases) { voice in
                             voiceRow(
                                 title: voice.displayName,
                                 subtitle: voice.detail,
-                                isSelected: tts.enhancedVoice == voice
+                                isSelected: tts.enhancedVoice == voice,
+                                sample: .supertonic(voice, language: supertonicSampleLanguage),
+                                identifier: "supertonic-voice-\(voice.rawValue)"
                             ) {
                                 tts.setEnhancedVoice(voice)
                             }
-                            .accessibilityIdentifier("supertonic-voice-\(voice.rawValue)")
                         }
                     }
                 } header: {
@@ -321,108 +368,70 @@ private struct ReaderVoicePicker: View {
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
         }
+        .task { await tts.models.refreshStorage() }
+        .onDisappear { preview.invalidate() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { preview.stop() }
+        }
+        .onChange(of: tts.isPlaying) { _, playing in
+            if playing { preview.stop() }
+        }
+        .onChange(of: tts.engineChoice) { _, _ in preview.stop() }
     }
 
-    @ViewBuilder
-    private func modelDownloadSection(for engine: EbookTTSEngineChoice) -> some View {
-        switch tts.downloadState(for: engine) {
-        case .notDownloaded:
-            Section {
-                downloadRow(for: engine, title: engine.downloadTitle)
-            } footer: {
-                if engine == .supertonic3 {
-                    Link("Supertonic model license and use terms", destination: URL(string: "https://huggingface.co/Supertone/supertonic-3/blob/main/LICENSE")!)
-                } else if engine == .pocket {
-                    Link("Kyutai and Alba MacKenna · CC BY 4.0", destination: URL(string: "https://creativecommons.org/licenses/by/4.0/")!)
-                }
-                Text("Download once to narrate offline.")
-                    .font(.hearthCaption)
-                    .foregroundStyle(hearth.textTertiary)
-            }
-            .listRowBackground(Color.clear)
-            .listRowSeparatorTint(hearth.hairline)
-        case .downloading(let progress):
-            Section {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("Downloading \(engine.modelName)")
-                            .font(.hearthUI(15, weight: .medium))
-                            .foregroundStyle(hearth.text)
-                        Spacer()
-                        Text("\(Int(progress * 100))%")
-                            .font(.hearthCaption.monospacedDigit())
-                            .foregroundStyle(hearth.textSecondary)
+    private var sampleStatus: some View {
+        HStack(spacing: 12) {
+            Group {
+                switch preview.phase {
+                case .idle:
+                    EmptyView()
+                case .preparing(let sample):
+                    Label {
+                        Text("Preparing sample · \(sample.displayName)")
+                    } icon: {
+                        ProgressView().tint(hearth.ember)
                     }
-                    ProgressView(value: progress)
-                        .tint(hearth.ember)
-                }
-                .padding(.vertical, 4)
-            }
-            .listRowBackground(Color.clear)
-            .listRowSeparatorTint(hearth.hairline)
-        case .removing:
-            Section {
-                HStack(spacing: 12) {
-                    ProgressView()
-                        .tint(hearth.ember)
-                    Text("Removing \(engine.modelName)")
-                        .font(.hearthUI(15, weight: .medium))
+                    .foregroundStyle(hearth.textSecondary)
+                case .playing(let sample):
+                    Label("Playing sample · \(sample.displayName)", systemImage: "waveform")
                         .foregroundStyle(hearth.text)
-                }
-                .padding(.vertical, 4)
-            }
-            .listRowBackground(Color.clear)
-            .listRowSeparatorTint(hearth.hairline)
-        case .failed(let message):
-            Section {
-                downloadRow(for: engine, title: "Try \(engine.modelName) again")
-            } footer: {
-                Text(message)
-                    .font(.hearthCaption)
-                    .foregroundStyle(hearth.textTertiary)
-            }
-            .listRowBackground(Color.clear)
-            .listRowSeparatorTint(hearth.hairline)
-        case .ready:
-            Section {
-                Button(role: .destructive) {
-                    tts.removeModel(for: engine)
-                } label: {
-                    HStack {
-                        Text("Remove \(engine.modelName) download")
-                            .font(.hearthUI(15, weight: .medium))
-                        Spacer()
-                        Image(systemName: "trash")
-                            .font(.hearthUI(15, weight: .medium))
-                    }
-                    .contentShape(Rectangle())
+                case .failed(_, let message):
+                    Label(message, systemImage: "exclamationmark.circle")
+                        .foregroundStyle(hearth.statusError)
                 }
             }
-            .listRowBackground(Color.clear)
-            .listRowSeparatorTint(hearth.hairline)
+            .font(.hearthCaption)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("tts-sample-status")
+
+            if case .failed = preview.phase {
+                GlyphButton(systemImage: "xmark", size: 34, glyphSize: 12, label: "Dismiss") { preview.stop() }
+            } else {
+                QuietButton(title: "Stop sample", systemImage: "stop.fill") { preview.stop() }
+                    .accessibilityIdentifier("tts-sample-stop")
+            }
         }
     }
 
-    private func downloadRow(for engine: EbookTTSEngineChoice, title: String) -> some View {
-        Button {
-            tts.downloadModel(for: engine)
-        } label: {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.hearthUI(15, weight: .medium))
-                        .foregroundStyle(hearth.ember)
-                    Text(engine.downloadDetail)
-                        .font(.hearthCaption)
-                        .foregroundStyle(hearth.textSecondary)
-                }
-                Spacer()
-                Image(systemName: "arrow.down.circle")
-                    .font(.hearthUI(17, weight: .medium))
-                    .foregroundStyle(hearth.ember)
-            }
-            .contentShape(Rectangle())
+    private func currentSample(for engine: EbookTTSEngineChoice) -> NarratorVoiceSample {
+        switch engine {
+        case .apple:
+            .apple(
+                voiceIdentifier: tts.selectedVoiceIdentifier ?? tts.recommendedVoice()?.identifier,
+                language: tts.narrationLanguageCode
+            )
+        case .kokoro: .kokoro(tts.kokoroVoice)
+        case .supertonic3: .supertonic(tts.enhancedVoice, language: supertonicSampleLanguage)
+        case .pocket: .pocket
+        case .phonon: .phonon(tts.phononVoice)
         }
+    }
+
+    private var supertonicSampleLanguage: String {
+        let language = tts.narrationLanguageCode
+        return EnhancedTTSVoice.supportedLanguageCodes.contains(language) ? language : "en"
     }
 
     private var automaticSubtitle: String {
@@ -432,31 +441,63 @@ private struct ReaderVoicePicker: View {
         return "\(recommended.name) · \(tts.currentLanguageDisplayName)"
     }
 
-    private func voiceRow(title: String, subtitle: String?, isSelected: Bool, action: @escaping () -> Void) -> some View {
-        Button {
-            PlatformHaptics.selection()
-            action()
-        } label: {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.hearthUI(15, weight: .medium))
-                        .foregroundStyle(hearth.text)
-                    if let subtitle, !subtitle.isEmpty {
-                        Text(subtitle)
-                            .font(.hearthCaption)
-                            .foregroundStyle(hearth.textSecondary)
+    private func voiceRow(
+        title: String,
+        subtitle: String?,
+        isSelected: Bool,
+        sample: NarratorVoiceSample? = nil,
+        identifier: String? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
+        HStack(spacing: 10) {
+            Button {
+                PlatformHaptics.selection()
+                preview.stop()
+                action()
+            } label: {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title)
+                            .font(.hearthUI(15, weight: .medium))
+                            .foregroundStyle(hearth.text)
+                        if let subtitle, !subtitle.isEmpty {
+                            Text(subtitle)
+                                .font(.hearthCaption)
+                                .foregroundStyle(hearth.textSecondary)
+                        }
+                    }
+                    Spacer()
+                    if isSelected {
+                        Image(systemName: "checkmark")
+                            .font(.hearthUI(13, weight: .semibold))
+                            .foregroundStyle(hearth.ember)
                     }
                 }
-                Spacer()
-                if isSelected {
-                    Image(systemName: "checkmark")
-                        .font(.hearthUI(13, weight: .semibold))
-                        .foregroundStyle(hearth.ember)
-                }
+                .padding(.vertical, 2)
+                .contentShape(Rectangle())
             }
-            .padding(.vertical, 2)
-            .contentShape(Rectangle())
+            // A non-default style keeps List from routing the sample button's taps to this row.
+            .buttonStyle(PressableStyle())
+            .accessibilityAddTraits(isSelected ? .isSelected : [])
+            .accessibilityIdentifier(identifier ?? "")
+
+            if let sample { sampleButton(sample, title: title) }
+        }
+    }
+
+    private func sampleButton(_ sample: NarratorVoiceSample, title: String) -> some View {
+        let isActive = preview.isActive(sample)
+        return GlyphButton(
+            systemImage: isActive ? "stop.fill" : "speaker.wave.2",
+            size: 44,
+            glyphSize: 13,
+            label: isActive ? "Stop sample" : "Play sample of \(title)"
+        ) {
+            if isActive {
+                preview.stop()
+            } else {
+                preview.play(sample, rate: tts.rate, pausing: tts)
+            }
         }
     }
 

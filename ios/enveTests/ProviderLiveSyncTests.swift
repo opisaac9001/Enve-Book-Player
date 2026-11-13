@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import Testing
 
@@ -203,7 +204,7 @@ struct ProviderLiveSyncTests {
                 }
             }
             if let sync = provider as? any EbookProgressProvider,
-               let book = genericEbook {
+               var book = genericEbook {
                 stage = "ebook round trip"
                 record("LAB \(service) ebook fixture=\(book.title)")
                 let tolerance: Double
@@ -285,22 +286,25 @@ struct ProviderLiveSyncTests {
                         )
                     }
                     stage = "ebook round trip"
-                    for fraction in [0.42, 1.0, 0.0] {
+                    for fraction in (service == "Silo" ? [0.42, 0.7, 0.0] : [0.42, 1.0, 0.0]) {
+                        book.lastUpdate = Date()
                         try await sync.updateEbookProgress(for: book, progress: fraction, epubLocator: nil)
                         let remote = try await sync.fetchEbookProgress(for: book)
                         record("LAB \(service) ebook sent=\(fraction) received=\(remote?.progress ?? -1)")
                         guard abs((remote?.progress ?? 0) - fraction) < tolerance else { throw LabError.progressMismatch }
                     }
                 } catch {
+                    book.lastUpdate = Date()
                     try await sync.updateEbookProgress(for: book, progress: original?.progress ?? 0, epubLocator: original?.locator)
                     try await restoreOriginalAudio()
                     throw error
                 }
+                book.lastUpdate = Date()
                 try await sync.updateEbookProgress(for: book, progress: original?.progress ?? 0, epubLocator: original?.locator)
                 try await restoreOriginalAudio()
             }
             if let sync = provider as? any AudiobookProgressProvider,
-               let book = books.first(where: { $0.mediaType == .audiobook && ($0.duration ?? 0) > 30 }) {
+               var book = books.first(where: { $0.mediaType == .audiobook && ($0.duration ?? 0) > 30 }) {
                 stage = "audiobook round trip"
                 record("LAB \(service) audio fixture=\(book.title) duration=\(book.duration ?? 0) podcast=\(book.isPodcastEpisode)")
                 let original = try await sync.fetchAudiobookProgress(for: book)
@@ -324,19 +328,53 @@ struct ProviderLiveSyncTests {
                             guard status == 206, !data.isEmpty else { throw LabError.rejected }
                         }
                         record("LAB \(service) stream and byte-range seek passed")
+                        if let silo = provider as? SiloProvider {
+                            func verifyPlayer(_ mediaURL: URL, headers: [String: String]) async throws {
+                                let asset = AVURLAsset(url: mediaURL, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
+                                let player = AVPlayer(playerItem: AVPlayerItem(asset: asset))
+                                defer {
+                                    player.pause()
+                                    player.replaceCurrentItem(with: nil)
+                                }
+                                player.play()
+                                let deadline = Date().addingTimeInterval(20)
+                                while player.currentTime().seconds < 0.5 && Date() < deadline {
+                                    try await Task.sleep(for: .milliseconds(100))
+                                }
+                                try #require(player.currentTime().seconds >= 0.5)
+                                let sought = await player.seek(to: CMTime(seconds: 40, preferredTimescale: 600))
+                                try #require(sought)
+                                try #require(player.currentTime().seconds >= 39)
+                            }
+                            try await verifyPlayer(url, headers: playback.getStreamingHeaders())
+                            record("LAB Silo AVPlayer decoding and time seek passed")
+                            stage = "audiobook download and local playback"
+                            let requests = try await silo.audiobookDownloadRequests(for: book)
+                            let download = try #require(requests.first)
+                            let (bytes, response) = try await URLSession.shared.data(for: download.request)
+                            try #require((response as? HTTPURLResponse)?.statusCode == 200 && !bytes.isEmpty)
+                            let localURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".m4b")
+                            defer { try? FileManager.default.removeItem(at: localURL) }
+                            try bytes.write(to: localURL)
+                            try await verifyPlayer(localURL, headers: [:])
+                            record("LAB Silo direct audiobook download and local AVPlayer seek passed")
+                        }
                     }
                     stage = "audiobook round trip"
                     for seconds in [23.0, 0.0] {
+                        book.lastUpdate = Date()
                         try await sync.updatePlaybackProgress(book: book, sessionId: nil, currentTime: seconds, isFinished: false, timeListened: 0)
                         let remote = try await sync.fetchAudiobookProgress(for: book)
                         record("LAB \(service) audiobook sent=\(seconds) received=\(remote?.positionSeconds ?? -1)")
                         guard abs((remote?.positionSeconds ?? 0) - seconds) < 1 else { throw LabError.progressMismatch }
                     }
                 } catch {
+                    book.lastUpdate = Date()
                     try await sync.updatePlaybackProgress(book: book, sessionId: nil, currentTime: original?.positionSeconds ?? 0, isFinished: book.isFinished, timeListened: 0)
                     try await closeSession(activeSession, provider: provider, book: book, position: original?.positionSeconds ?? 0)
                     throw error
                 }
+                book.lastUpdate = Date()
                 try await sync.updatePlaybackProgress(book: book, sessionId: nil, currentTime: original?.positionSeconds ?? 0, isFinished: book.isFinished, timeListened: 0)
                 try await closeSession(activeSession, provider: provider, book: book, position: original?.positionSeconds ?? 0)
             }
@@ -799,22 +837,20 @@ struct ProviderLiveSyncTests {
 
     private func closeSession(_ session: PlaybackSessionInfo?, provider: any LibraryProvider, book: Book, position: Double) async throws {
         guard let session, let playback = provider as? any PlaybackSessionProvider else { return }
-        let path: String
-        switch provider.connection.type {
-        case .audiobookshelf: path = "/api/session/\(session.sessionId)/close"
-        case .silo: path = "/api/v1/playback/\(session.sessionId)"
-        default: return
+        // Silo v2 stops are sequenced and carry a stop identity, which only the provider can mint.
+        if provider.connection.type == .silo {
+            await playback.reportPlayback(.stopped, book: book, sessionId: session.sessionId, position: position)
+            return
         }
-        let url = try #require(URL(string: provider.connection.url + path))
+        guard provider.connection.type == .audiobookshelf else { return }
+        let url = try #require(URL(string: provider.connection.url + "/api/session/\(session.sessionId)/close"))
         var request = URLRequest(url: url)
-        request.httpMethod = provider.connection.type == .silo ? "DELETE" : "POST"
+        request.httpMethod = "POST"
         for (key, value) in playback.getStreamingHeaders() { request.setValue(value, forHTTPHeaderField: key) }
-        if provider.connection.type == .audiobookshelf {
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = try JSONSerialization.data(withJSONObject: [
-                "currentTime": position, "duration": book.duration ?? 0, "timeListened": 0,
-            ])
-        }
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "currentTime": position, "duration": book.duration ?? 0, "timeListened": 0,
+        ])
         let (_, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else { throw LabError.rejected }
     }

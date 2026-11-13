@@ -5,6 +5,7 @@ struct ProfilesScreen: View {
     @Environment(\.hearth) private var hearth
     @State private var editor: ProfileEditorAction?
     @State private var pendingProfileID: String?
+    @State private var switchingProfileID: String?
     @State private var errorMessage: String?
     @State private var isWorking = false
 
@@ -45,16 +46,16 @@ struct ProfilesScreen: View {
                                         .accessibilityIdentifier("profile-current-\(profile.id)")
                                 }
                             }
-                            QuietButton(title: "Use \(profile.name)") {
-                                if profile.role == .adult && needsAuthorization {
-                                    pendingProfileID = profile.id
-                                    editor = .unlock
-                                } else {
-                                    perform { try await profiles.switchProfile(id: profile.id) }
+                            ViewThatFits(in: .horizontal) {
+                                HStack(spacing: 12) {
+                                    useButton(for: profile)
+                                    if switchingProfileID == profile.id { switchingStatus(for: profile) }
+                                }
+                                VStack(alignment: .leading, spacing: 8) {
+                                    useButton(for: profile)
+                                    if switchingProfileID == profile.id { switchingStatus(for: profile) }
                                 }
                             }
-                            .disabled(!profiles.supportsMultipleProfiles && profile.id != profiles.activeProfile.id)
-                            .accessibilityIdentifier("profile-switch-\(profile.id)")
                             if !needsAuthorization {
                                 Toggle("Server syncing", isOn: Binding(
                                     get: { profiles.serverSyncEnabled(profileID: profile.id) },
@@ -96,7 +97,7 @@ struct ProfilesScreen: View {
                     }
                 }
             }
-            if isWorking || profiles.isSwitching { ProgressView() }
+            if (isWorking || profiles.isSwitching) && switchingProfileID == nil { ProgressView() }
             if let message = errorMessage ?? profiles.errorMessage {
                 Text(message).font(.hearthCaption).foregroundStyle(hearth.statusError)
             }
@@ -106,12 +107,46 @@ struct ProfilesScreen: View {
             guard let id = pendingProfileID else { return }
             pendingProfileID = nil
             if profiles.isParentAuthorized {
-                perform { try await profiles.switchProfile(id: id) }
+                switchProfile(id: id)
             }
         }) { action in
             ProfileEditorSheet(action: action)
         }
         .accessibilityIdentifier("profiles-screen")
+    }
+
+    private func useButton(for profile: FamilyProfile) -> some View {
+        QuietButton(title: "Use \(profile.name)") {
+            if profile.role == .adult && needsAuthorization {
+                pendingProfileID = profile.id
+                editor = .unlock
+            } else {
+                switchProfile(id: profile.id)
+            }
+        }
+        .disabled(!profiles.supportsMultipleProfiles && profile.id != profiles.activeProfile.id)
+        .accessibilityIdentifier("profile-switch-\(profile.id)")
+    }
+
+    private func switchingStatus(for profile: FamilyProfile) -> some View {
+        HStack(spacing: 8) {
+            ProgressView()
+            Text("Switching to \(profile.name)…")
+                .font(.hearthCaption)
+                .foregroundStyle(hearth.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("profile-switching-\(profile.id)")
+    }
+
+    private func switchProfile(id: String) {
+        guard switchingProfileID == nil, !isWorking else { return }
+        switchingProfileID = id
+        perform {
+            defer { switchingProfileID = nil }
+            try await profiles.switchProfile(id: id)
+        }
     }
 
     private func perform(_ action: @escaping @MainActor () async throws -> Void) {

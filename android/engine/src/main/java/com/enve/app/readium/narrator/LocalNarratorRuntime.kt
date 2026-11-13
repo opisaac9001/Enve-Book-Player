@@ -23,10 +23,11 @@ import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
 
 class LocalNarratorRuntime(context: Context) {
-    private val store = NarratorPackStore(context.applicationContext)
+    private val appContext = context.applicationContext
+    private val store = NarratorPackStore(appContext)
     private val engineLock = Mutex()
     private val epochs = NarratorPack.entries.associateWith { AtomicInteger() }
-    private var engine: Engine? = null
+    private var engine: LoadedNarrator? = null
 
     fun isInstalled(pack: NarratorPack): Boolean = store.isInstalled(pack)
 
@@ -45,8 +46,7 @@ class LocalNarratorRuntime(context: Context) {
         language: String,
         speed: Float,
     ): NarratorAudio {
-        val voiceIndex = pack.voices.indexOf(voice)
-        require(voiceIndex >= 0) { "${pack.title} has no voice \"$voice\"" }
+        require(voice in pack.voices) { "${pack.title} has no voice \"$voice\"" }
         val languageCode = pack.languageCode(language)
         require(text.isNotBlank() && text.length <= MAX_TEXT_LENGTH) {
             "Narration text must contain 1 to $MAX_TEXT_LENGTH characters"
@@ -58,13 +58,11 @@ class LocalNarratorRuntime(context: Context) {
         return engineLock.withLock {
             withContext(Dispatchers.IO) {
                 if (!generation.isCurrent) throw CancellationException("${pack.title} narration stopped")
-                val loaded = engineFor(pack)
-                val config = loaded.generationConfig(text, pack.speakerIds[voiceIndex], languageCode, speed)
-                    ?: return@withContext NarratorAudio(FloatArray(0), loaded.tts.sampleRate())
-                val audio = loaded.tts.generateWithConfigAndCallback(text, config, generation)
-                if (!generation.isCurrent) throw CancellationException("${pack.title} narration stopped")
-                check(audio.samples.isNotEmpty()) { "${pack.title} produced no audio" }
-                NarratorAudio(audio.samples, audio.sampleRate, if (pack == NarratorPack.POCKET) speed else 1f)
+                try {
+                    engineFor(pack).synthesize(text, voice, languageCode, speed) { generation.isCurrent }
+                } finally {
+                    if (!generation.isCurrent) throw CancellationException("${pack.title} narration stopped")
+                }
             }
         }
     }
@@ -77,34 +75,56 @@ class LocalNarratorRuntime(context: Context) {
             val loaded = engine
             if (loaded != null && (pack == null || loaded.pack == pack)) {
                 engine = null
-                loaded.close()
+                loaded.backend.close()
             }
         }
     }
 
-    private suspend fun engineFor(pack: NarratorPack): Engine {
+    private suspend fun engineFor(pack: NarratorPack): NarratorBackend {
         engine?.let { loaded ->
-            if (loaded.pack == pack) return loaded
+            if (loaded.pack == pack) return loaded.backend
             engine = null
-            loaded.close()
+            loaded.backend.close()
         }
-        return store.useInstalled(pack) { directory -> Engine.open(pack, directory) }.also { engine = it }
+        check(pack in NarratorPack.available) { "${pack.title} is unavailable in this build" }
+        return store.useInstalled(pack) { directory ->
+            when (pack) {
+                NarratorPack.PHONON -> PhononBackend(directory)
+                NarratorPack.WOOF -> WoofBackend.open(appContext, directory)
+                else -> SherpaBackend.open(pack, directory)
+            }
+        }.also { engine = LoadedNarrator(pack, it) }
     }
 
-    private inner class Generation(private val pack: NarratorPack, private val job: Job) : (FloatArray) -> Int {
+    private class LoadedNarrator(val pack: NarratorPack, val backend: NarratorBackend)
+
+    private inner class Generation(private val pack: NarratorPack, private val job: Job) {
         private val epoch = epochs.getValue(pack).get()
 
         val isCurrent: Boolean get() = job.isActive && epochs.getValue(pack).get() == epoch
-
-        override fun invoke(samples: FloatArray): Int = if (isCurrent) 1 else 0
     }
 
-    private class Engine(
-        val pack: NarratorPack,
-        val tts: OfflineTts,
+    private class SherpaBackend(
+        private val pack: NarratorPack,
+        private val tts: OfflineTts,
         private val reference: WaveData?,
         private val frontend: KokoroEnglishFrontend?,
-    ) : AutoCloseable {
+    ) : NarratorBackend {
+        override fun synthesize(
+            text: String,
+            voice: String,
+            language: String,
+            speed: Float,
+            isCurrent: () -> Boolean,
+        ): NarratorAudio {
+            val speakerId = pack.speakerIds[pack.voices.indexOf(voice)]
+            val config = generationConfig(text, speakerId, language, speed)
+                ?: return NarratorAudio(FloatArray(0), tts.sampleRate())
+            val audio = tts.generateWithConfigAndCallback(text, config) { if (isCurrent()) 1 else 0 }
+            check(audio.samples.isNotEmpty() || !isCurrent()) { "${pack.title} produced no audio" }
+            return NarratorAudio(audio.samples, audio.sampleRate, if (pack == NarratorPack.POCKET) speed else 1f)
+        }
+
         override fun close() {
             try {
                 tts.release()
@@ -113,7 +133,7 @@ class LocalNarratorRuntime(context: Context) {
             }
         }
 
-        fun generationConfig(text: String, speakerId: Int, language: String, speed: Float): GenerationConfig? = when (pack) {
+        private fun generationConfig(text: String, speakerId: Int, language: String, speed: Float): GenerationConfig? = when (pack) {
             NarratorPack.KOKORO -> kokoroSentences(checkNotNull(frontend).phonemes(text))
                 .takeIf { it.isNotEmpty() }
                 ?.let { GenerationConfig(sid = speakerId, speed = speed, phonemeCodepoints = it) }
@@ -126,16 +146,17 @@ class LocalNarratorRuntime(context: Context) {
                     extra = mapOf("temperature" to "0.7"),
                 )
             }
+            else -> error("Unsupported Sherpa-ONNX pack: ${pack.title}")
         }
 
         companion object {
-            fun open(pack: NarratorPack, directory: File): Engine {
+            fun open(pack: NarratorPack, directory: File): SherpaBackend {
                 val threads = Runtime.getRuntime().availableProcessors().coerceAtMost(4)
                 val reference = if (pack == NarratorPack.POCKET) WaveReader.readWave(File(directory, POCKET_VOICE).absolutePath) else null
                 val frontend = if (pack == NarratorPack.KOKORO) KokoroEnglishFrontend(directory) else null
                 try {
                     val tts = OfflineTts(config = OfflineTtsConfig(model = pack.modelConfig(directory, threads)))
-                    return Engine(pack, tts, reference, frontend)
+                    return SherpaBackend(pack, tts, reference, frontend)
                 } catch (failure: Throwable) {
                     frontend?.close()
                     throw failure
@@ -199,7 +220,12 @@ internal fun NarratorPack.modelConfig(directory: File, threads: Int): OfflineTts
             ),
             numThreads = threads,
         )
+        else -> error("Unsupported Sherpa-ONNX pack: $title")
     }
+}
+
+internal interface NarratorBackend : AutoCloseable {
+    fun synthesize(text: String, voice: String, language: String, speed: Float, isCurrent: () -> Boolean): NarratorAudio
 }
 
 private const val MAX_TEXT_LENGTH = 4_000

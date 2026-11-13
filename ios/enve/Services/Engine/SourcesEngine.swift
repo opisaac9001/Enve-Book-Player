@@ -481,6 +481,8 @@ enum SourcesFinalizer {
     }
 
     private static func duplicateIndex(for connection: ServerConnection, in connections: [ServerConnection]) -> Int? {
+        // Silo profiles and offline progress belong to the login's connection identity.
+        guard connection.type != .silo else { return nil }
         if connection.type == .oneDrive, let driveId = connection.userId, !driveId.isEmpty {
             return connections.firstIndex {
                 $0.id != connection.id

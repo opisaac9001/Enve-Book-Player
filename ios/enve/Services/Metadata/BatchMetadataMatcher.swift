@@ -147,6 +147,10 @@ final class BatchMetadataMatcher: @unchecked Sendable {
                         await addToPendingQueue(book: book, matches: matches)
                         pending += 1
                     }
+                } catch let error as ExternalServiceDisabledError {
+                    errors += 1
+                    errorsList.append(error.localizedDescription)
+                    break
                 } catch {
                     errors += 1
                     errorsList.append("\(book.title): \(error.localizedDescription)")
@@ -544,6 +548,8 @@ final class BatchMetadataMatcher: @unchecked Sendable {
                 } else {
                     return Array(matchCandidates.sorted { $0.confidence > $1.confidence }.prefix(20))
                 }
+            } catch let error as ExternalServiceDisabledError {
+                throw error
             } catch {
                 AppLogger.network.error("failed: \(error.localizedDescription)")
                 return []

@@ -793,12 +793,12 @@ final class BookOrbitLoginDelegate: UnifiedLoginDelegate {
 
 final class SiloLoginDelegate: UnifiedLoginDelegate {
     private unowned let profileSession: ProfileSession
-    private let appState: AppState
     private let validatedLogin: ValidatedConnectionLoginDelegate
+    private let originalConnection: ServerConnection?
 
-    init(appState: AppState, profileSession: ProfileSession = .owner) {
+    init(appState: AppState, profileSession: ProfileSession = .owner, reauthenticating: ServerConnection? = nil) {
         self.profileSession = profileSession
-        self.appState = appState
+        self.originalConnection = reauthenticating
         self.validatedLogin = ValidatedConnectionLoginDelegate(
             appState: appState,
             providerType: .silo,
@@ -813,16 +813,18 @@ final class SiloLoginDelegate: UnifiedLoginDelegate {
         password: String,
         customHeaders: [String: String]?
     ) async throws -> ServerConnection {
-        try await validatedLogin.authenticate(
-            serverURL: serverURL,
-            username: username,
-            password: password,
-            customHeaders: customHeaders
-        )
+        try await finishLogin(SiloProvider(connection: ServerConnection(
+            name: "Silo", url: normalizedURL(serverURL), type: .silo,
+            username: username, password: password, isConnected: false,
+            customHeaders: customHeaders, authMode: .usernamePassword
+        ), profileSession: profileSession))
     }
 
     func authenticateWithToken(serverURL: String, token: String, customHeaders: [String: String]?) async throws -> ServerConnection {
-        try await validatedLogin.authenticateWithToken(serverURL: serverURL, token: token, customHeaders: customHeaders)
+        try await finishLogin(SiloProvider(connection: ServerConnection(
+            name: "Silo", url: normalizedURL(serverURL), type: .silo,
+            token: token, isConnected: false, customHeaders: customHeaders, authMode: .token
+        ), profileSession: profileSession))
     }
 
     func authenticateWithOIDC(
@@ -838,10 +840,7 @@ final class SiloLoginDelegate: UnifiedLoginDelegate {
             customHeaders: customHeaders,
             authMode: .sso
         )
-        // The provider stores the refresh token under the pending connection's id, which
-        // validation and the saved connection keep.
         let provider = SiloProvider(connection: pendingConnection, profileSession: profileSession)
-        let signedIn: ServerConnection
         do {
             let option = try await chooseOAuthOption(from: try await provider.nativeOAuthOptions())
             let attempt = try await provider.beginNativeOAuth(with: option)
@@ -850,19 +849,83 @@ final class SiloLoginDelegate: UnifiedLoginDelegate {
                 callbackScheme: SiloProvider.NativeOAuthAttempt.callbackScheme
             )
             try await provider.completeNativeOAuth(callbackURL: callbackURL, attempt: attempt)
-            signedIn = provider.connection
+            return try await finishLogin(provider)
         } catch {
             await provider.retire()
             throw error
         }
-        await provider.retire()
+    }
 
-        let (isValid, validatedConnection) = try await appState.validateConnection(signedIn)
-        guard isValid else { throw ProviderError.unauthorized }
-        var finalConnection = validatedConnection
-        finalConnection.isConnected = true
-        finalConnection.lastVerified = Date()
-        return finalConnection
+    private func finishLogin(_ provider: SiloProvider) async throws -> ServerConnection {
+        do {
+            let profiles = try await provider.loginProfiles()
+            guard !profiles.isEmpty else { throw ProviderError.serverError("No Silo profile is available for this account.") }
+            let profile: SiloProfile
+            if let originalConnection,
+                let profileID = profileSession.defaults.string(forKey: "silo_profile_id_\(originalConnection.id.uuidString)")
+            {
+                guard originalConnection.userId == nil || originalConnection.userId == provider.connection.userId,
+                    let saved = profiles.first(where: { $0.id == profileID })
+                else { throw ProviderError.serverError("This connection’s Silo profile is unavailable. Add a separate connection for another profile.") }
+                profile = saved
+            } else {
+                profile = try await chooseProfile(from: profiles)
+            }
+            let pin = profile.hasPIN == true ? try await profilePIN(for: profile.name) : nil
+            try await provider.selectLoginProfile(profile, pin: pin)
+            guard try await provider.validateConnection() else { throw ProviderError.unauthorized }
+            if let originalConnection { try provider.restoreLoginProfile(from: originalConnection) }
+            let connection = provider.connection
+            await provider.retire()
+            return connection
+        } catch {
+            await provider.retire()
+            throw error
+        }
+    }
+
+    private func chooseProfile(from profiles: [SiloProfile]) async throws -> SiloProfile {
+        guard profiles.count > 1 else { return profiles[0] }
+        return try await withCheckedThrowingContinuation { continuation in
+            let alert = UIAlertController(title: "Silo profile", message: "This connection will use the selected profile for books and progress.", preferredStyle: .alert)
+            for profile in profiles {
+                alert.addAction(UIAlertAction(title: profile.name, style: .default) { _ in
+                    continuation.resume(returning: profile)
+                })
+            }
+            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in
+                continuation.resume(throwing: CancellationError())
+            })
+            do { try presenter().present(alert, animated: true) }
+            catch { continuation.resume(throwing: error) }
+        }
+    }
+
+    private func profilePIN(for name: String) async throws -> String {
+        try await withCheckedThrowingContinuation { continuation in
+            let alert = UIAlertController(title: "Unlock \(name)", message: "Enter the Silo profile PIN.", preferredStyle: .alert)
+            alert.addTextField { field in
+                field.isSecureTextEntry = true
+                field.keyboardType = .asciiCapable
+                field.accessibilityLabel = "Silo profile PIN"
+            }
+            alert.addAction(UIAlertAction(title: "Unlock", style: .default) { _ in
+                continuation.resume(returning: alert.textFields?.first?.text ?? "")
+            })
+            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in
+                continuation.resume(throwing: CancellationError())
+            })
+            do { try presenter().present(alert, animated: true) }
+            catch { continuation.resume(throwing: error) }
+        }
+    }
+
+    private func presenter() throws -> UIViewController {
+        let windows = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.flatMap(\.windows)
+        var controller = windows.first(where: \.isKeyWindow)?.rootViewController ?? windows.first?.rootViewController
+        while let presented = controller?.presentedViewController { controller = presented }
+        guard let controller else { throw OAuthError.invalidConfiguration }
+        return controller
     }
 
     func fetchLibraries(connection: ServerConnection) async throws -> [LibraryMetadata] {

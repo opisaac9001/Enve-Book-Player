@@ -9,8 +9,11 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.PrimaryKey
 import androidx.room.Query
+import androidx.room.Transaction
 import androidx.room.Update
+import com.enve.core.data.sync.AcceptedAnnotation
 import kotlinx.coroutines.flow.Flow
+import java.util.UUID
 
 enum class AnnotationKind {
     HIGHLIGHT, NOTE, BOOKMARK;
@@ -135,6 +138,9 @@ interface ReaderAnnotationDao {
     @Query("SELECT * FROM reader_annotations WHERE serverId = :serverId AND providerSource = :providerSource LIMIT 1")
     suspend fun getByServerId(serverId: String, providerSource: String): ReaderAnnotation?
 
+    @Query("SELECT * FROM reader_annotations WHERE serverId = :serverId AND providerSource = :providerSource AND bookId = :bookId LIMIT 1")
+    suspend fun getByServerIdForBook(serverId: String, providerSource: String, bookId: String): ReaderAnnotation?
+
     @Query("SELECT * FROM reader_annotations WHERE syncDirty = 1")
     suspend fun getDirty(): List<ReaderAnnotation>
 
@@ -186,4 +192,53 @@ interface ReaderAnnotationDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(a: ReaderAnnotation)
+
+    @Transaction
+    suspend fun reconcileRemote(remotes: List<ReaderAnnotation>) {
+        remotes.forEach { reconcileRemoteRow(it) }
+    }
+
+    @Transaction
+    suspend fun reconcileAuthoritativeRemote(
+        bookId: String,
+        providerSource: String,
+        remotes: List<ReaderAnnotation>,
+    ) {
+        remotes.forEach { reconcileRemoteRow(it) }
+        val serverIds = remotes.mapNotNull(ReaderAnnotation::serverId).distinct()
+        if (serverIds.isEmpty()) {
+            purgeCleanProviderRows(bookId, providerSource)
+        } else {
+            purgeCleanProviderRowsMissing(bookId, providerSource, serverIds)
+        }
+    }
+
+    @Transaction
+    suspend fun acknowledgePushed(sent: List<ReaderAnnotation>, accepted: List<AcceptedAnnotation>) {
+        val sentById = sent.associateBy(ReaderAnnotation::id)
+        accepted.forEach { ack ->
+            val snapshot = sentById[ack.id] ?: return@forEach
+            val current = getById(ack.id) ?: return@forEach
+            when {
+                current == snapshot -> markClean(ack.id, ack.etag, ack.serverId)
+                current.syncDirty -> update(
+                    current.copy(serverId = ack.serverId ?: current.serverId, syncEtag = ack.etag),
+                )
+            }
+        }
+    }
+}
+
+private suspend fun ReaderAnnotationDao.reconcileRemoteRow(remote: ReaderAnnotation) {
+    val sameId = getById(remote.id)
+    val local = remote.serverId?.let { getByServerIdForBook(it, remote.providerSource, remote.bookId) }
+        ?: sameId?.takeIf { it.bookId == remote.bookId && it.providerSource == remote.providerSource }
+    val deletedAt = local?.deletedAt
+    when {
+        local == null && sameId == null -> upsert(remote)
+        local == null && remote.serverId != null -> upsert(remote.copy(id = UUID.randomUUID().toString()))
+        local == null || local.syncDirty -> Unit
+        deletedAt != null && remote.deletedAt == null && remote.updatedAt <= deletedAt -> Unit
+        else -> upsert(remote.copy(id = local.id))
+    }
 }

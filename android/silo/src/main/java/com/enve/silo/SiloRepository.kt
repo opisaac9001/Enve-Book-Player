@@ -1,10 +1,7 @@
 package com.enve.silo
 
-import com.enve.core.data.local.ConnectionRegistry
 import com.enve.core.auth.CredentialVault
-import com.enve.core.data.model.AnnotationKind
-import com.enve.core.data.model.AnnotationMedia
-import com.enve.core.data.model.AnnotationStyle
+import com.enve.core.data.local.ConnectionRegistry
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.AudioTrack
 import com.enve.core.data.model.Book
@@ -14,58 +11,42 @@ import com.enve.core.data.model.Library
 import com.enve.core.data.model.ProviderConnection
 import com.enve.core.data.model.ReadStatus
 import com.enve.core.data.model.ReaderAnnotation
-import com.enve.core.data.provider.ProviderPlaybackSession
 import com.enve.core.data.provider.ProviderEbookResource
+import com.enve.core.data.provider.ProviderPlaybackSession
 import com.enve.core.data.remote.ConnectionScope
+import com.enve.core.data.sync.AnnotationsPushResult
+import com.enve.core.data.sync.SyncSnapshot
 import com.enve.core.data.util.FINISHED_PROGRESS_THRESHOLD
 import com.enve.core.data.util.reachesFinishedThreshold
-import com.enve.core.reader.EpubBridgeCheckpointCodec
-import com.enve.core.data.sync.AcceptedAnnotation
-import com.enve.core.data.sync.AnnotationsPushResult
-import com.enve.core.data.sync.RejectedAnnotation
-import com.enve.core.data.sync.SyncSnapshot
 import com.enve.core.data.util.runSuspendCatching
+import com.enve.core.reader.EpubBridgeCheckpointCodec
 import com.enve.silo.api.SiloApi
-import com.enve.silo.dto.SiloCatalogItemDto
 import com.enve.silo.dto.SiloAdminServerStatusDto
 import com.enve.silo.dto.SiloAdminStatsDto
 import com.enve.silo.dto.SiloAdminUserDto
+import com.enve.silo.dto.SiloCatalogItemDto
+import com.enve.silo.dto.SiloEbookProgressDto
+import com.enve.silo.dto.SiloEbookProgressEnvelope
 import com.enve.silo.dto.SiloEbookProgressRequest
-import com.enve.silo.dto.SiloEbookProgressResponse
 import com.enve.silo.dto.SiloFileVersionDto
 import com.enve.silo.dto.SiloItemDetailDto
-import com.enve.silo.dto.SiloLibrariesEnvelope
-import com.enve.silo.dto.SiloLibraryDto
+import com.enve.silo.dto.SiloPlaybackMutationDto
+import com.enve.silo.dto.SiloPlaybackPlan
 import com.enve.silo.dto.SiloPlaybackProgressRequest
 import com.enve.silo.dto.SiloPlaybackStartRequest
 import com.enve.silo.dto.SiloPlaybackStartResponse
-import com.enve.silo.dto.SiloPlaybackPlan
+import com.enve.silo.dto.SiloPlaybackStopRequest
 import com.enve.silo.dto.SiloProgressStateDto
 import com.enve.silo.dto.SiloProgressSyncItem
 import com.enve.silo.dto.SiloProgressSyncRequest
-import com.enve.silo.dto.SiloReaderAnnotationRecord
-import com.enve.silo.dto.SiloReaderAnnotationRequest
 import kotlinx.coroutines.CancellationException
-import kotlinx.serialization.builtins.ListSerializer
-import kotlinx.serialization.json.decodeFromJsonElement
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import retrofit2.Response
 import java.net.URI
-import java.time.Instant
-import java.time.LocalDate
-import java.time.LocalDateTime
-import java.time.OffsetDateTime
-import java.time.ZoneOffset
-import java.time.format.DateTimeFormatter
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.roundToLong
@@ -77,19 +58,28 @@ internal fun siloProgressLocation(locator: String?, progress: Double): String {
     return "fraction:${"%.6f".format(Locale.US, progress.coerceIn(0.0, 1.0))}"
 }
 
-internal fun siloActiveEpubFileId(locator: String?): Int? =
+internal fun siloActiveEpubFileId(locator: String?): String? =
     EpubBridgeCheckpointCodec.decode(locator)
         ?.providerFileId
-        ?.toIntOrNull()
+        ?.takeIf { it.isNotBlank() }
 
-internal fun siloEbookProgressBody(
-    response: Response<SiloEbookProgressResponse>,
-): SiloEbookProgressResponse? {
-    if (response.code() == 404 || response.code() == 204) return null
-    if (!response.isSuccessful) {
-        error("Silo ebook progress failed: HTTP ${response.code()} ${response.message()}".trim())
-    }
-    return response.body() ?: error("Silo ebook progress failed: empty response body")
+internal fun siloEbookProgress(response: Response<SiloEbookProgressEnvelope>): SiloEbookProgressDto? {
+    if (response.code() == 404) return null
+    return response.siloBody("Silo ebook progress failed").progress
+}
+
+internal suspend fun SiloApi.saveSiloEbookProgress(profileId: String, bookId: String, request: SiloEbookProgressRequest) {
+    val current = updateEbookProgress(profileId, bookId, request)
+        .siloBody("Silo ebook progress sync failed")
+        .progress
+        ?: error("Silo did not return the saved ebook position")
+    val observedAt = siloInstantMillis(request.updatedAt) ?: error("Silo ebook observation time is invalid")
+    val storedAt = siloInstantMillis(current.updatedAt) ?: error("Silo ebook response time is invalid")
+    if (storedAt > observedAt) return
+    val kept = current.fileId == request.fileId &&
+        current.location == request.location &&
+        storedAt == observedAt
+    if (!kept) error("Silo did not acknowledge the ebook position")
 }
 
 internal fun siloNavigatorLocator(location: String?, progress: Double): String? {
@@ -110,50 +100,81 @@ internal fun SiloPlaybackStartResponse.audioPlan(): Pair<String, SiloPlaybackPla
     return id to plan
 }
 
+internal enum class SiloSampleOutcome { APPLIED, SESSION_GONE, INSTALLATION_CHANGED }
+
+internal fun Response<SiloPlaybackMutationDto>.sampleOutcome(sequence: Long, lastIssued: Long): SiloSampleOutcome {
+    if (isSuccessful) {
+        val mutation = body() ?: error("Silo playback progress failed: empty response body")
+        return when (mutation.outcome) {
+            "applied", "replayed" -> SiloSampleOutcome.APPLIED
+            "stale_sample" -> {
+                val accepted = mutation.accepted?.sequence ?: 0L
+                if (accepted in (sequence + 1)..lastIssued) SiloSampleOutcome.APPLIED
+                else error("Silo kept a newer playback sample")
+            }
+            else -> error("Silo returned an unknown playback progress outcome")
+        }
+    }
+    val problem = siloProblem()
+    return when {
+        code() == 404 || code() == 410 -> SiloSampleOutcome.SESSION_GONE
+        problem?.id == SILO_INSTALLATION_CHANGED -> SiloSampleOutcome.INSTALLATION_CHANGED
+        else -> siloFailure("Silo audiobook progress sync failed", this, problem)
+    }
+}
+
+data class SiloAudioDownload(val tracks: List<AudioTrack>, val headers: Map<String, String>)
+
 @Singleton
 class SiloRepository @Inject constructor(
     private val api: SiloApi,
     private val vault: CredentialVault,
     private val connectionRegistry: ConnectionRegistry,
+    private val installations: SiloPlaybackInstallations,
+    private val catalogCursors: SiloCatalogCursors,
 ) {
-    private val json = Json { ignoreUnknownKeys = true; isLenient = true; encodeDefaults = true; explicitNulls = false }
     private val detailCache = ConcurrentHashMap<String, SiloItemDetailDto>()
     private val playbackSessions = ConcurrentHashMap<String, List<SiloPartSession>>()
     private val pausedBooks = ConcurrentHashMap.newKeySet<String>()
 
-    private data class SiloPartSession(
+    private class SiloPartSession(
         val sessionId: String,
-        val fileId: Int,
+        val fileId: String,
         val startOffsetSec: Long,
         val durationSec: Long,
-    )
+        val installationId: String,
+    ) {
+        private val sequence = AtomicLong()
+        val stopId: String = UUID.randomUUID().toString()
+        val lastSequence: Long get() = sequence.get()
+        fun nextSequence(): Long = sequence.incrementAndGet()
+    }
 
     suspend fun isCurrentUserAdmin(): Result<Boolean> = runSuspendCatching {
         val response = api.me()
         if (response.code() == 401 || response.code() == 403) return@runSuspendCatching false
-        val me = response.bodyOrThrow("Silo current-user check failed")
-        me.role.equals("admin", ignoreCase = true)
+        response.siloBody("Silo current-user check failed").role.equals("admin", ignoreCase = true)
     }
 
     suspend fun getAdminStats(): Result<SiloAdminStatsDto> = runSuspendCatching {
-        api.adminStats().bodyOrThrow("Silo admin stats failed")
+        api.adminStats(ensureProfile()).siloBody("Silo admin stats failed")
     }
 
     suspend fun getAdminServerStatus(): Result<SiloAdminServerStatusDto> = runSuspendCatching {
-        api.adminServerStatus().bodyOrThrow("Silo server status failed")
+        api.adminServerStatus(ensureProfile()).siloBody("Silo server status failed")
     }
 
     suspend fun getAdminUsers(): Result<List<SiloAdminUserDto>> = runSuspendCatching {
-        api.adminUsers().bodyOrThrow("Silo admin users failed")
+        val profileId = ensureProfile()
+        siloCollectAll { cursor -> api.adminUsers(profileId, cursor).siloBody("Silo admin users failed") }
     }
 
     suspend fun getLibraries(): Result<List<Library>> = runSuspendCatching {
-        val libraries = decodeLibraries(api.libraries().bodyOrThrow("Silo libraries failed"))
-        libraries
+        api.libraries(ensureProfile()).siloBody("Silo libraries failed").items
             .filter { it.type.lowercase() in SUPPORTED_LIBRARY_TYPES }
             .map {
                 Library(
-                    id = it.id.toString(),
+                    id = it.id,
                     name = it.name,
                     source = BookSource.SILO,
                     connectionId = currentConnection()?.id,
@@ -163,38 +184,23 @@ class SiloRepository @Inject constructor(
 
     suspend fun getBooks(libraryId: String?, page: Int, size: Int, sort: String, dir: String): Result<List<Book>> = runSuspendCatching {
         val libId = libraryId ?: getLibraries().getOrThrow().firstOrNull()?.id ?: return@runSuspendCatching emptyList()
-        val requestedSize = size.coerceAtLeast(1)
-        val offset = page.coerceAtLeast(0) * requestedSize
+        val pageSize = size.coerceIn(1, MAX_PAGE_SIZE)
         val profileId = ensureProfile()
-        val response = api.catalog(
-            profileId = profileId,
-            libraryId = libId,
-            offset = offset,
-            limit = requestedSize,
-            sort = sort.toSiloSort(),
-            order = dir.toSiloOrder(),
-        )
-        val body = response.bodyOrThrow("Silo catalog failed")
-        body.items.mapNotNull { item -> bookFromCatalogItem(item, libId) }
+        val siloSort = siloSort(sort, dir)
+        val listingKey = listOf(connectionKey(), profileId, libId, siloSort.orEmpty(), pageSize).joinToString("|")
+        catalogCursors.page(listingKey, page.coerceAtLeast(0), pageSize) { cursor ->
+            api.catalog(profileId, libId, siloSort, cursor, pageSize).siloBody("Silo catalog failed")
+        }.mapNotNull { item -> bookFromCatalogItem(item, libId) }
     }
 
     suspend fun getRecentlyAdded(limit: Int = 20): Result<List<Book>> = runSuspendCatching {
+        val count = limit.coerceIn(1, MAX_PAGE_SIZE)
+        val profileId = ensureProfile()
         getLibraries().getOrThrow()
             .flatMap { library ->
-                val profileId = ensureProfile()
-                val response = api.catalog(
-                    profileId = profileId,
-                    libraryId = library.id,
-                    offset = 0,
-                    limit = limit.coerceIn(1, PAGE_SIZE),
-                    sort = "added_at",
-                    order = "desc",
-                )
-                response.bodyOrThrow("Silo recently-added failed").items.mapNotNull { item ->
-                    bookFromCatalogItem(item, library.id)
-                }
+                newestItems(profileId, library.id, count).mapNotNull { item -> bookFromCatalogItem(item, library.id) }
             }
-            .take(limit.coerceAtLeast(1))
+            .take(count)
     }
 
     suspend fun getContinueListening(): Result<List<Book>> = getContinue(AppMediaType.AUDIOBOOK)
@@ -203,43 +209,61 @@ class SiloRepository @Inject constructor(
 
     private suspend fun getContinue(mediaType: AppMediaType): Result<List<Book>> = runSuspendCatching {
         val profileId = ensureProfile()
-
-        val progressResponse = api.progressList(profileId)
-        val recencyByItem = if (progressResponse.isSuccessful) {
-            progressResponse.body()?.progress.orEmpty()
-                .mapNotNull { entry -> parseDateMillis(entry.updatedAt)?.let { entry.mediaItemId to it } }
-                .toMap()
-        } else {
-            emptyMap()
-        }
         getLibraries().getOrThrow()
             .flatMap { library ->
-                api.catalog(
-                    profileId = profileId,
-                    libraryId = library.id,
-                    offset = 0,
-                    limit = PAGE_SIZE,
-                    sort = "added_at",
-                    order = "desc",
-                ).bodyOrThrow("Silo continue failed").items.mapNotNull { item ->
-                    bookFromCatalogItem(item, library.id)
-                }
+                val recency = siloCollectAll { cursor ->
+                    api.progressList(profileId, library.id, cursor).siloBody("Silo progress failed")
+                }.associate { it.mediaItemId to (siloInstantMillis(it.updatedAt) ?: 0L) }
+                val newest = newestItems(profileId, library.id, MAX_PAGE_SIZE)
+                    .mapNotNull { item -> bookFromCatalogItem(item, library.id) }
+                val inProgress = recency.keys
+                    .filter { id -> newest.none { it.id == id } }
+                    .mapNotNull { id -> runSuspendCatching { getBook(id, library.id).getOrThrow() }.getOrNull() }
+                (newest + inProgress).map { book -> recency[book.id]?.let { book.copy(lastReadTime = it) } ?: book }
             }
             .filter { it.mediaType == mediaType && it.readProgress in 0.001f..0.999f }
-            .map { book -> recencyByItem[book.id]?.let { book.copy(lastReadTime = it) } ?: book }
+            .distinctBy { it.id }
             .sortedByDescending { it.lastReadTime }
     }
+
+    private suspend fun newestItems(profileId: String, libraryId: String, count: Int): List<SiloCatalogItemDto> =
+        siloFillPage(SiloPageStart(null), count) { cursor ->
+            api.catalog(profileId, libraryId, "-added_at", cursor, count).siloBody("Silo catalog failed")
+        }.items
 
     suspend fun getBook(bookId: String, fallbackLibraryId: String?): Result<Book> = runSuspendCatching {
         itemDetail(bookId).toBook(fallbackLibraryId) ?: error("Silo item is not an ebook or audiobook")
     }
 
     suspend fun getAudioTracks(book: Book): Result<List<AudioTrack>> = runSuspendCatching {
-        if (book.audioTracks.isNotEmpty()) return@runSuspendCatching book.audioTracks
+        if (book.audioTracks.isNotEmpty()) return@runSuspendCatching book.audioTracks.map { track ->
+            val scheme = track.contentUrl?.substringBefore(':')?.lowercase()
+            if (scheme == "http" || scheme == "https") track.copy(contentUrl = null) else track
+        }
         getBook(book.id, book.libraryId).getOrThrow().audioTracks
     }
 
-    suspend fun startPlaybackSession(book: Book): Result<ProviderPlaybackSession> = runSuspendCatching {
+    suspend fun getAudioDownload(book: Book): Result<SiloAudioDownload> = runSuspendCatching {
+        val profileId = ensureProfile()
+        val tracks = itemDetail(book.id, forceRefresh = true).toBook(book.libraryId)?.audioTracks.orEmpty()
+        check(tracks.isNotEmpty()) { "Silo returned no audio files" }
+        val connection = currentConnection() ?: error("No Silo connection selected")
+        val token = vault.get(CredentialVault.accessTokenKey(connection.id)) ?: error("Silo authentication is unavailable")
+        SiloAudioDownload(
+            tracks.map { track ->
+                val fileId = track.fileId ?: error("Silo audio file has no identifier")
+                track.copy(contentUrl = apiBaseUrl().toHttpUrl().newBuilder()
+                    .addPathSegment("direct-download").addQueryParameter("file_id", fileId).build().toString())
+            },
+            buildMap {
+                put("Authorization", "Bearer $token")
+                put("X-Profile-Id", profileId)
+                vault.get("silo_profile_token_${connection.id}")?.takeIf { it.isNotBlank() }?.let { put("X-Profile-Token", it) }
+            },
+        )
+    }
+
+    suspend fun startPlaybackSession(book: Book, persistProgress: Boolean = true): Result<ProviderPlaybackSession> = runSuspendCatching {
         val profileId = ensureProfile()
         val detail = itemDetail(book.id)
         playbackSessions.remove(sessionKey(book))
@@ -250,18 +274,23 @@ class SiloRepository @Inject constructor(
         }
 
         val version = primaryVersion(detail) ?: error("No playable Silo file is available")
-        val response = api.startPlayback(
-            profileId = profileId,
-            request = SiloPlaybackStartRequest(fileId = version.fileId, profileId = profileId, playbackAttemptId = UUID.randomUUID().toString()),
-        )
-        val (sessionId, plan) = response.bodyOrThrow("Silo playback start failed").audioPlan()
-        val durationSec = (plan.source.durationSeconds ?: version.duration?.toDouble() ?: detail.runtime?.toDouble() ?: 0.0)
+        val (installation, response) = startAttempt(profileId) { installationId ->
+            SiloPlaybackStartRequest(
+                installationId = installationId,
+                fileId = version.fileId,
+                profileId = profileId,
+                playbackAttemptId = UUID.randomUUID().toString(),
+                progressPersistence = if (persistProgress) "server" else "client",
+                startPosition = if (persistProgress) null else 0.0,
+            )
+        }
+        val (sessionId, plan) = response.audioPlan()
+        val durationSec = (plan.source.durationSeconds ?: version.duration?.toDouble() ?: detail.runtimeSeconds()?.toDouble() ?: 0.0)
             .roundToLong()
             .coerceAtLeast(0L)
         playbackSessions[sessionKey(book)] = listOf(
-            SiloPartSession(sessionId, version.fileId, startOffsetSec = 0L, durationSec = durationSec),
+            SiloPartSession(sessionId, version.fileId, startOffsetSec = 0L, durationSec = durationSec, installationId = installation),
         )
-        val streamUrl = absoluteUrl(plan.stream.url, addTokenForStream = true)
         val track = AudioTrack(
             index = 0,
             fileName = version.fileName ?: book.title,
@@ -269,8 +298,8 @@ class SiloRepository @Inject constructor(
             durationMs = durationSec * 1000L,
             fileSizeBytes = version.fileSize ?: 0L,
             cumulativeStartMs = 0L,
-            fileId = version.fileId.toString(),
-            contentUrl = streamUrl,
+            fileId = version.fileId,
+            contentUrl = streamUrl(plan.stream.url),
         )
         ProviderPlaybackSession(
             sessionId = sessionId,
@@ -287,20 +316,20 @@ class SiloRepository @Inject constructor(
     ): ProviderPlaybackSession {
         val tracks = mutableListOf<AudioTrack>()
         val sessions = mutableListOf<SiloPartSession>()
-        var serverPositionSec: Long? = null
         var offsetSec = 0L
 
         parts.forEachIndexed { index, part ->
-            val (sessionId, plan) = api.startPlayback(
-                profileId = profileId,
-                request = SiloPlaybackStartRequest(
+            val (installation, response) = startAttempt(profileId) { installationId ->
+                SiloPlaybackStartRequest(
+                    installationId = installationId,
                     fileId = part.fileId,
                     profileId = profileId,
                     playbackAttemptId = UUID.randomUUID().toString(),
                     progressPersistence = "client",
                     startPosition = 0.0,
-                ),
-            ).bodyOrThrow("Silo playback start failed").audioPlan()
+                )
+            }
+            val (sessionId, plan) = response.audioPlan()
             val partDurationSec = (plan.source.durationSeconds ?: part.duration?.toDouble() ?: 0.0)
                 .roundToLong()
                 .coerceAtLeast(0L)
@@ -311,11 +340,10 @@ class SiloRepository @Inject constructor(
                 durationMs = partDurationSec * 1000L,
                 fileSizeBytes = part.fileSize ?: 0L,
                 cumulativeStartMs = offsetSec * 1000L,
-                fileId = part.fileId.toString(),
-                contentUrl = absoluteUrl(plan.stream.url, addTokenForStream = true),
+                fileId = part.fileId,
+                contentUrl = streamUrl(plan.stream.url),
             )
-            sessions += SiloPartSession(sessionId, part.fileId, offsetSec, partDurationSec)
-            if (index == 0) serverPositionSec = 0L
+            sessions += SiloPartSession(sessionId, part.fileId, offsetSec, partDurationSec, installation)
             offsetSec += partDurationSec
         }
 
@@ -324,39 +352,65 @@ class SiloRepository @Inject constructor(
             sessionId = sessions.first().sessionId,
             audioTracks = tracks,
             chapters = combinedChapters(parts),
-            serverCurrentTimeSec = serverPositionSec,
+            serverCurrentTimeSec = 0L,
         )
+    }
+
+    private suspend fun startAttempt(
+        profileId: String,
+        request: (installationId: String) -> SiloPlaybackStartRequest,
+    ): Pair<String, SiloPlaybackStartResponse> {
+        val key = connectionKey()
+        var installation = installations.current(key, profileId)
+        var response = api.startPlayback(profileId, request(installation))
+        var problem = response.siloProblem()
+        if (problem?.id == SILO_INSTALLATION_CHANGED) {
+            installations.forget(key)
+            installation = installations.current(key, profileId)
+            response = api.startPlayback(profileId, request(installation))
+            problem = response.siloProblem()
+        }
+        if (!response.isSuccessful) siloFailure("Silo playback start failed", response, problem)
+        return installation to (response.body() ?: error("Silo playback start failed: empty response body"))
+    }
+
+    private suspend fun sendSample(profileId: String, session: SiloPartSession, positionSec: Long, paused: Boolean): SiloSampleOutcome {
+        val sequence = session.nextSequence()
+        val outcome = api.updatePlaybackProgress(
+            profileId = profileId,
+            sessionId = session.sessionId,
+            request = SiloPlaybackProgressRequest(session.installationId, sequence, positionSec.toDouble(), paused),
+        ).sampleOutcome(sequence, session.lastSequence)
+        if (outcome == SiloSampleOutcome.INSTALLATION_CHANGED) installations.forget(connectionKey())
+        return outcome
+    }
+
+    private fun List<SiloPartSession>.activePart(positionSec: Long): Pair<SiloPartSession, Long> {
+        if (size == 1) return first() to positionSec
+        val active = lastOrNull { positionSec >= it.startOffsetSec } ?: first()
+        return active to (positionSec - active.startOffsetSec).coerceIn(0L, active.durationSec)
     }
 
     suspend fun setPlaybackPaused(book: Book, positionSec: Long, paused: Boolean): Result<Unit> = runSuspendCatching {
         if (paused) pausedBooks += sessionKey(book) else pausedBooks -= sessionKey(book)
         val sessions = playbackSessions[sessionKey(book)] ?: return@runSuspendCatching
-        val position = positionSec.coerceAtLeast(0L)
-        val active = sessions.lastOrNull { position >= it.startOffsetSec } ?: sessions.first()
-        val localPosition = if (sessions.size > 1) (position - active.startOffsetSec).coerceIn(0L, active.durationSec) else position
-        api.updatePlaybackProgress(ensureProfile(), active.sessionId, SiloPlaybackProgressRequest(localPosition.toDouble(), paused))
+        val (active, localPosition) = sessions.activePart(positionSec.coerceAtLeast(0L))
+        sendSample(ensureProfile(), active, localPosition, paused)
+        Unit
     }
 
     suspend fun syncAudiobookProgress(book: Book, currentTimeSec: Long, progressFraction: Float): Result<Unit> = runSuspendCatching {
         val profileId = ensureProfile()
         val position = currentTimeSec.coerceAtLeast(0L)
-        val sessions = playbackSessions[sessionKey(book)]
-        if (sessions == null) {
-            syncProgressWithoutSession(profileId, book, position)
-            return@runSuspendCatching
-        }
-        val isPaused = sessionKey(book) in pausedBooks
+        val key = sessionKey(book)
+        val sessions = playbackSessions[key]
+            ?: return@runSuspendCatching syncProgressWithoutSession(profileId, book, position)
+        val paused = key in pausedBooks
 
         if (sessions.size > 1) {
-
-            val active = sessions.lastOrNull { position >= it.startOffsetSec } ?: sessions.first()
-            val localPosition = (position - active.startOffsetSec).coerceIn(0L, active.durationSec)
+            val (active, localPosition) = sessions.activePart(position)
             try {
-                api.updatePlaybackProgress(
-                    profileId = profileId,
-                    sessionId = active.sessionId,
-                    request = SiloPlaybackProgressRequest(localPosition.toDouble(), isPaused),
-                )
+                sendSample(profileId, active, localPosition, paused)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -366,47 +420,54 @@ class SiloRepository @Inject constructor(
         }
 
         val single = sessions.first()
-        val request = SiloPlaybackProgressRequest(position.toDouble(), isPaused)
-        var response = api.updatePlaybackProgress(profileId, single.sessionId, request)
-        if (response.code() == 404) {
-            try {
-                val restarted = api.startPlayback(
-                    profileId = profileId,
-                    request = SiloPlaybackStartRequest(fileId = single.fileId, profileId = profileId, playbackAttemptId = UUID.randomUUID().toString(), startPosition = position.toDouble()),
-                ).bodyOrThrow("Silo playback session restart failed")
-                val (restartedId, _) = restarted.audioPlan()
-                playbackSessions[sessionKey(book)] = listOf(single.copy(sessionId = restartedId))
-                response = api.updatePlaybackProgress(profileId, restartedId, request)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                syncProgressWithoutSession(profileId, book, position)
-                return@runSuspendCatching
-            }
+        when (sendSample(profileId, single, position, paused)) {
+            SiloSampleOutcome.APPLIED -> return@runSuspendCatching
+            SiloSampleOutcome.INSTALLATION_CHANGED -> Unit
+            SiloSampleOutcome.SESSION_GONE -> if (restartedSampleApplied(profileId, key, single, position, paused)) return@runSuspendCatching
         }
-        if (response.code() == 404) {
-            syncProgressWithoutSession(profileId, book, position)
-            return@runSuspendCatching
+        playbackSessions.remove(key)
+        syncProgressWithoutSession(profileId, book, position)
+    }
+
+    private suspend fun restartedSampleApplied(
+        profileId: String,
+        key: String,
+        previous: SiloPartSession,
+        positionSec: Long,
+        paused: Boolean,
+    ): Boolean = try {
+        val (installation, response) = startAttempt(profileId) { installationId ->
+            SiloPlaybackStartRequest(
+                installationId = installationId,
+                fileId = previous.fileId,
+                profileId = profileId,
+                playbackAttemptId = UUID.randomUUID().toString(),
+                startPosition = positionSec.toDouble(),
+            )
         }
-        if (!response.isSuccessful) error(httpMessage("Silo audiobook progress sync failed", response))
+        val (sessionId, _) = response.audioPlan()
+        val replacement = SiloPartSession(sessionId, previous.fileId, 0L, previous.durationSec, installation)
+        playbackSessions[key] = listOf(replacement)
+        sendSample(profileId, replacement, positionSec, paused) == SiloSampleOutcome.APPLIED
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        false
     }
 
     private suspend fun syncProgressWithoutSession(profileId: String, book: Book, positionSec: Long) {
-        val result = api.syncProgress(
-            profileId = profileId,
-            request = SiloProgressSyncRequest(
-                items = listOf(
-                    SiloProgressSyncItem(
-                        mediaItemId = book.id,
-                        position = positionSec.toDouble(),
-                        duration = maxOf(book.duration, positionSec).toDouble(),
-                        updatedAt = Instant.now().toString(),
-                    ),
-                ),
-            ),
-        ).bodyOrThrow("Silo audiobook progress sync failed")
-        if (result.results.none { it.mediaItemId == book.id && it.status == "ok" }) {
-            error("Silo rejected the progress update")
+        val item = SiloProgressSyncItem(
+            mediaItemId = book.id,
+            positionMs = positionSec * 1000L,
+            durationMs = maxOf(book.duration, positionSec) * 1000L,
+            updatedAt = siloInstant(book.lastReadTime.takeIf { it > 0L } ?: error("Silo progress has no observation timestamp")),
+        )
+        val result = api.syncProgress(profileId, SiloProgressSyncRequest(listOf(item)))
+            .siloBody("Silo audiobook progress sync failed")
+            .items
+            .firstOrNull { it.mediaItemId == book.id }
+        if (result?.status != "success") {
+            error("Silo rejected the progress update: ${result?.failure?.id ?: "no result"}")
         }
     }
 
@@ -415,8 +476,14 @@ class SiloRepository @Inject constructor(
         val sessions = playbackSessions.remove(sessionKey(book)) ?: return@runSuspendCatching
         val profileId = ensureProfile()
         sessions.forEach { session ->
-
-            api.stopPlayback(profileId, session.sessionId)
+            val response = api.stopPlayback(profileId, session.sessionId, SiloPlaybackStopRequest(session.installationId, session.stopId))
+            if (response.isSuccessful || response.code() == 404 || response.code() == 410) return@forEach
+            val problem = response.siloProblem()
+            if (problem?.id == SILO_INSTALLATION_CHANGED) {
+                installations.forget(connectionKey())
+                return@forEach
+            }
+            siloFailure("Silo playback stop failed", response, problem)
         }
     }
 
@@ -431,48 +498,47 @@ class SiloRepository @Inject constructor(
             percentage = percentage,
             positionMs = (position * 1000.0).roundToLong(),
             source = BookSource.SILO.displayName,
-
             updatedAt = null,
             finished = userData.played ?: (percentage >= FINISHED_PROGRESS_THRESHOLD),
         )
     }
 
-    suspend fun syncEbookProgress(bookId: String, percentage: Float, locator: String?): Result<Unit> = runSuspendCatching {
-        val profileId = ensureProfile()
+    suspend fun syncEbookProgress(
+        bookId: String,
+        percentage: Float,
+        locator: String?,
+        observedAt: Long = System.currentTimeMillis(),
+    ): Result<Unit> = runSuspendCatching {
         val fileId = siloActiveEpubFileId(locator)
             ?: error("Silo active EPUB file id was unavailable.")
         val bounded = percentage.coerceIn(0f, 1f).toDouble()
-        val response = api.updateEbookProgress(
-            profileId = profileId,
+        api.saveSiloEbookProgress(
+            profileId = ensureProfile(),
             bookId = bookId,
             request = SiloEbookProgressRequest(
                 fileId = fileId,
                 location = siloProgressLocation(locator, bounded),
                 progress = bounded,
+                updatedAt = siloInstant(observedAt),
             ),
         )
-        if (!response.isSuccessful) error(httpMessage("Silo ebook progress sync failed", response))
     }
 
     suspend fun fetchEbookProgress(book: Book): Result<SyncSnapshot?> = runSuspendCatching {
-        val progress = siloEbookProgressBody(
-            api.ebookProgress(ensureProfile(), book.id),
-        ) ?: return@runSuspendCatching null
-        val value = progress.progress ?: return@runSuspendCatching null
+        val progress = siloEbookProgress(api.ebookProgress(ensureProfile(), book.id))
+            ?: return@runSuspendCatching null
         val selectedFileId = preferredSiloEpubVersion(
             versions = itemDetail(book.id).versions,
             savedProgressFileId = progress.fileId,
         )?.fileId
-        val location = progress.location.takeIf {
-            selectedFileId != null && progress.fileId == selectedFileId
-        }
+        val location = progress.location.takeIf { selectedFileId == progress.fileId }
         SyncSnapshot(
-            percentage = value.toFloat().coerceIn(0f, 1f),
-            locatorJson = location?.let { siloNavigatorLocator(it, value) },
+            percentage = progress.progress.toFloat().coerceIn(0f, 1f),
+            locatorJson = location?.let { siloNavigatorLocator(it, progress.progress) },
             epubCfi = location?.takeIf(EpubBridgeCheckpointCodec::isFullEpubCfi),
             source = BookSource.SILO.displayName,
-            updatedAt = parseDateMillis(progress.updatedAt),
-            finished = value.reachesFinishedThreshold(),
+            updatedAt = siloInstantMillis(progress.updatedAt),
+            finished = progress.progress.reachesFinishedThreshold(),
         )
     }
 
@@ -488,78 +554,38 @@ class SiloRepository @Inject constructor(
     }
 
     suspend fun getEbookResource(bookId: String): ProviderEbookResource? {
-        val profileId = ensureProfile()
-        val fileId = selectedEpubVersion(profileId, bookId, itemDetail(bookId))?.fileId ?: return null
+        val savedFileId = siloEbookProgress(api.ebookProgress(ensureProfile(), bookId))?.fileId
+        val fileId = preferredSiloEpubVersion(itemDetail(bookId).versions, savedFileId)?.fileId ?: return null
         return ProviderEbookResource(
-            url = "${apiBaseUrl()}/ebooks/$bookId/files/$fileId/read",
-            providerFileId = fileId.toString(),
+            url = apiBaseUrl().toHttpUrl().newBuilder()
+                .addPathSegment("ebooks").addPathSegment(bookId).addPathSegment("files")
+                .addPathSegment(fileId).addPathSegment("read").build().toString(),
+            providerFileId = fileId,
         )
     }
 
     suspend fun validateConnection(): Result<Boolean> = runSuspendCatching {
-        ensureProfile()
-        api.libraries().isSuccessful
+        api.libraries(ensureProfile()).isSuccessful
     }
 
     suspend fun pushAnnotations(book: Book, annotations: List<ReaderAnnotation>): Result<AnnotationsPushResult> = runSuspendCatching {
         if (annotations.isEmpty()) return@runSuspendCatching AnnotationsPushResult()
-        val profileId = ensureProfile()
-        val accepted = mutableListOf<AcceptedAnnotation>()
-        val rejected = mutableListOf<RejectedAnnotation>()
-        annotations.forEach { annotation ->
-            if (annotation.deletedAt != null) {
-                val serverId = annotation.serverId
-                if (!serverId.isNullOrBlank()) {
-                    val response = api.deleteAnnotation(profileId, book.id, serverId)
-                    if (!response.isSuccessful && response.code() != 404) {
-                        rejected += RejectedAnnotation(annotation.id, "HTTP ${response.code()}")
-                        return@forEach
-                    }
-                }
-                accepted += AcceptedAnnotation(annotation.id, serverId)
-                return@forEach
-            }
-            val request = annotation.toSiloRequest()
-            if (request == null) {
-                rejected += RejectedAnnotation(annotation.id, "Silo requires an EPUB CFI or reader location")
-                return@forEach
-            }
-            val serverId = annotation.serverId
-            val response = if (serverId.isNullOrBlank()) {
-                api.createAnnotation(profileId, book.id, request)
-            } else {
-                api.updateAnnotation(profileId, book.id, serverId, request)
-            }
-            if (response.isSuccessful) {
-                val body = response.body()
-                accepted += AcceptedAnnotation(
-                    id = annotation.id,
-                    serverId = body?.id ?: serverId,
-                    etag = body?.updatedAt,
-                )
-            } else {
-                rejected += RejectedAnnotation(annotation.id, "HTTP ${response.code()}")
-            }
-        }
-        AnnotationsPushResult(accepted = accepted, rejected = rejected)
+        SiloAnnotationSync(api, ensureProfile(), book.id).push(annotations)
     }
 
     suspend fun fetchAnnotations(book: Book): Result<List<ReaderAnnotation>> = runSuspendCatching {
-        val response = api.annotations(ensureProfile(), book.id)
-        if (response.code() == 404 || response.code() == 204) return@runSuspendCatching emptyList()
-        response.bodyOrThrow("Silo annotations pull failed").items.map { it.toReaderAnnotation(book.id) }
+        SiloAnnotationSync(api, ensureProfile(), book.id).records().map { it.toReaderAnnotation(book.id) }
     }
 
     suspend fun deleteRemoteAnnotation(book: Book, serverId: String): Result<Unit> = runSuspendCatching {
-        val response = api.deleteAnnotation(ensureProfile(), book.id, serverId)
-        if (!response.isSuccessful && response.code() != 404) {
-            error(httpMessage("Silo annotation delete failed", response))
-        }
+        SiloAnnotationSync(api, ensureProfile(), book.id).deleteRemote(serverId)
     }
 
     fun invalidateCaches() {
         detailCache.clear()
         playbackSessions.clear()
+        catalogCursors.clear()
+        installations.clear()
     }
 
     private suspend fun bookFromCatalogItem(item: SiloCatalogItemDto, libraryId: String): Book? {
@@ -568,16 +594,14 @@ class SiloRepository @Inject constructor(
     }
 
     private suspend fun itemDetail(id: String, forceRefresh: Boolean = false): SiloItemDetailDto {
-        val cacheKey = detailCacheKey(id)
+        val cacheKey = "${connectionKey()}:$id"
         if (!forceRefresh) {
             detailCache[cacheKey]?.let { return it }
         }
-        val detail = api.itemDetail(id).bodyOrThrow("Silo item detail failed")
+        val detail = api.itemDetail(ensureProfile(), id).siloBody("Silo item detail failed")
         detailCache[cacheKey] = detail
         return detail
     }
-
-    private fun detailCacheKey(id: String): String = "${currentConnection()?.id.orEmpty()}:$id"
 
     internal suspend fun ensureProfile(): String {
         val connection = currentConnection()
@@ -587,18 +611,19 @@ class SiloRepository @Inject constructor(
             val storedUser = vault.get(profileUserIdKey(connectionId))
             if (!storedProfile.isNullOrBlank() && storedUser == connection.username) return storedProfile
         }
-        val response = api.profiles()
-        val profiles = response.bodyOrThrow("Silo profiles failed").profiles
-        val profile = profiles
-            .firstOrNull { it.isPrimary }
+        val profiles = api.profiles().siloBody("Silo profiles failed").items
+        val profile = profiles.firstOrNull { it.isPrimary }
             ?: profiles.firstOrNull()
             ?: error("No Silo profile is available for this account")
+        if (profile.hasPin) error("Sign in again to unlock your Silo profile with its PIN.")
         if (connectionId != null) {
             vault.put(profileIdKey(connectionId), profile.id)
             vault.put(profileUserIdKey(connectionId), connection.username)
         }
         return profile.id
     }
+
+    private fun SiloItemDetailDto.runtimeSeconds(): Long? = runtimeMinutes?.toLong()?.times(60L)
 
     private fun SiloItemDetailDto.toBook(fallbackLibraryId: String?, fallbackPosterUrl: String? = null): Book? {
         val isAudiobook = type.equals("audiobook", ignoreCase = true)
@@ -611,7 +636,12 @@ class SiloRepository @Inject constructor(
         val durationSec = if (partVersions != null) {
             partVersions.sumOf { (it.duration ?: 0).toLong() }.coerceAtLeast(0L)
         } else {
-            (audiobook?.totalDurationSeconds ?: version?.duration ?: runtime ?: 0).toLong().coerceAtLeast(0L)
+            (
+                audiobook?.totalDurationSeconds?.takeIf { it > 0 }?.toLong()
+                    ?: version?.duration?.takeIf { it > 0 }?.toLong()
+                    ?: runtimeSeconds()
+                    ?: 0L
+            ).coerceAtLeast(0L)
         }
         val userProgress = progressSnapshot(userData, durationSec)
         val chapters = partVersions?.let { combinedChapters(it) }
@@ -628,7 +658,7 @@ class SiloRepository @Inject constructor(
                         durationMs = partDurationSec * 1000L,
                         fileSizeBytes = part.fileSize ?: 0L,
                         cumulativeStartMs = offsetSec * 1000L,
-                        fileId = part.fileId.toString(),
+                        fileId = part.fileId,
                         contentUrl = null,
                     ).also { offsetSec += partDurationSec }
                 }
@@ -641,7 +671,7 @@ class SiloRepository @Inject constructor(
                     durationMs = durationSec * 1000L,
                     fileSizeBytes = version.fileSize ?: 0L,
                     cumulativeStartMs = 0L,
-                    fileId = version.fileId.toString(),
+                    fileId = version.fileId,
                     contentUrl = null,
                 )
             )
@@ -696,18 +726,6 @@ class SiloRepository @Inject constructor(
         return SiloMappedProgress(position, fraction, progress.played)
     }
 
-    private fun decodeLibraries(element: JsonElement?): List<SiloLibraryDto> {
-        if (element == null) return emptyList()
-        return when (element) {
-            is JsonArray -> json.decodeFromJsonElement(ListSerializer(SiloLibraryDto.serializer()), element)
-            is JsonObject -> {
-                val envelope = json.decodeFromJsonElement(SiloLibrariesEnvelope.serializer(), element)
-                envelope.libraries ?: envelope.items ?: emptyList()
-            }
-            else -> emptyList()
-        }
-    }
-
     private fun primaryVersion(detail: SiloItemDetailDto): SiloFileVersionDto? =
         if (detail.type.equals("ebook", ignoreCase = true)) {
             preferredSiloEpubVersion(detail.versions) ?: detail.versions.firstOrNull()
@@ -759,17 +777,6 @@ class SiloRepository @Inject constructor(
         return result
     }
 
-    private suspend fun selectedEpubVersion(
-        profileId: String,
-        bookId: String,
-        detail: SiloItemDetailDto,
-    ): SiloFileVersionDto? {
-        val savedFileId = siloEbookProgressBody(
-            api.ebookProgress(profileId, bookId),
-        )?.fileId
-        return preferredSiloEpubVersion(detail.versions, savedFileId)
-    }
-
     private fun chaptersFrom(version: SiloFileVersionDto, fallbackDurationSec: Long, isAudiobook: Boolean): List<Chapter> {
         val chapters = version.chapters.orEmpty()
         if (chapters.isEmpty()) {
@@ -793,21 +800,17 @@ class SiloRepository @Inject constructor(
         return "${serverUrl().trimEnd('/')}${if (value.startsWith("/")) value else "/$value"}"
     }
 
-    private fun absoluteUrl(raw: String, addTokenForStream: Boolean): String {
+    private fun streamUrl(raw: String): String {
         val value = raw.trim()
         val absolute = if (value.startsWith("http://") || value.startsWith("https://")) {
             value
-        } else if (value == "/stream" || value.startsWith("/stream/")) {
-            "${apiBaseUrl()}$value"
         } else {
             "${serverUrl().trimEnd('/')}${if (value.startsWith("/")) value else "/$value"}"
         }
-        if (!addTokenForStream) return absolute
         val streamUri = runCatching { URI(absolute) }.getOrNull() ?: return absolute
         val serverUri = runCatching { URI(serverUrl()) }.getOrNull() ?: return absolute
         if (streamUri.scheme != serverUri.scheme || streamUri.authority != serverUri.authority) return absolute
-        val path = streamUri.path.orEmpty()
-        if (!path.contains("/stream/") && path != "/api/v1/stream") return absolute
+        if (!streamUri.path.orEmpty().contains("/stream/")) return absolute
         if (absolute.contains("token=")) return absolute
         val token = currentConnection()?.id?.let { vault.get(CredentialVault.accessTokenKey(it)) }
             ?: vault.get(CredentialVault.KEY_ACCESS_TOKEN)
@@ -816,29 +819,23 @@ class SiloRepository @Inject constructor(
         return "$absolute${separator}token=$token"
     }
 
-    private fun apiBaseUrl(): String = "${serverUrl().trimEnd('/')}/api/v1"
+    private fun apiBaseUrl(): String = "${serverUrl().trimEnd('/')}/api/v2"
 
     private fun serverUrl(): String =
         currentConnection()?.serverUrl ?: error("No Silo server URL configured")
+
+    private fun connectionKey(): String = currentConnection()?.id.orEmpty()
 
     private fun currentConnection(): ProviderConnection? {
         val scopedId = ConnectionScope.getConnectionId()
         val connections = connectionRegistry.getConnectionsSync()
         if (scopedId != null) {
-            connections.firstOrNull { it.id == scopedId }?.let { return it }
+            return connections.firstOrNull { it.id == scopedId && it.source == BookSource.SILO }
+                ?: error("The selected Silo connection is unavailable")
         }
         return connections.firstOrNull { it.source == BookSource.SILO && it.enabled }
             ?: connections.firstOrNull { it.source == BookSource.SILO }
     }
-
-    private fun String.toSiloSort(): String = when (lowercase()) {
-        "addedon", "added_at", "date_added" -> "added_at"
-        "progress" -> "progress"
-        "title" -> "title"
-        else -> this
-    }
-
-    private fun String.toSiloOrder(): String = if (equals("asc", true) || equals("ascending", true)) "asc" else "desc"
 
     private fun ebookFormat(version: SiloFileVersionDto?): String? {
         val container = version?.container?.lowercase()?.takeIf { it.isNotBlank() }
@@ -848,117 +845,34 @@ class SiloRepository @Inject constructor(
 
     private fun sessionKey(book: Book): String = "${book.connectionId.orEmpty()}:${book.id}"
 
-    private fun extractCfi(locator: String?): String? {
-        EpubBridgeCheckpointCodec.cfi(locator)?.let { return it }
-        val raw = locator?.trim()?.takeIf { it.isNotBlank() } ?: return null
-        if (raw.startsWith("epubcfi(")) return raw
-        val parsed = runCatching { json.parseToJsonElement(raw).jsonObject }.getOrNull() ?: return null
-        val locations = parsed["locations"]?.jsonObject ?: return null
-        val fragments = runCatching { locations["fragments"]?.jsonArray }.getOrNull()
-        fragments?.firstOrNull { it.jsonPrimitive.content.startsWith("epubcfi(") }?.let { return it.jsonPrimitive.content }
-        return locations["cfi"]?.jsonPrimitive?.content?.takeIf { it.startsWith("epubcfi(") }
-    }
-
-    private fun ReaderAnnotation.toSiloRequest(): SiloReaderAnnotationRequest? {
-        val location = cfi?.takeIf { it.isNotBlank() }
-            ?: extractCfi(locatorJson)
-            ?: locatorJson?.takeIf { it.startsWith("fraction:") }
-            ?: totalProgression?.let {
-                "fraction:${"%.6f".format(Locale.US, it.coerceIn(0.0, 1.0))}"
-            }
-            ?: progression?.let {
-                "fraction:${"%.6f".format(Locale.US, it.coerceIn(0.0, 1.0))}"
-            }
-            ?: return null
-        val hasCfi = location.startsWith("epubcfi(")
-        val parsedKind = AnnotationKind.parse(kind)
-        val siloKind = if (parsedKind == AnnotationKind.BOOKMARK || !hasCfi) {
-            "bookmark"
-        } else {
-            when (parsedKind) {
-                AnnotationKind.NOTE -> "note"
-                AnnotationKind.HIGHLIGHT -> "highlight"
-                AnnotationKind.BOOKMARK -> "bookmark"
-            }
-        }
-        return SiloReaderAnnotationRequest(
-            kind = siloKind,
-            cfiRange = location.takeIf { hasCfi },
-            location = location,
-            selectedText = selectedText,
-            note = note,
-            style = AnnotationStyle.parse(style).name.lowercase(),
-            color = colorHex,
-            metadata = buildMap {
-                put("enve_local_id", id)
-                put("enve_position", (totalProgression ?: progression ?: 0.0).toString())
-                chapterId?.let { put("enve_chapter_title", it) }
-            },
-        )
-    }
-
-    private fun SiloReaderAnnotationRecord.toReaderAnnotation(bookId: String): ReaderAnnotation {
-        val localId = metadata["enve_local_id"]?.takeIf { it.isNotBlank() } ?: id
-        val cfi = cfiRange?.takeIf { it.startsWith("epubcfi(") }
-            ?: location?.takeIf { it.startsWith("epubcfi(") }
-        val progression = metadata["enve_position"]?.toDoubleOrNull()
-        return ReaderAnnotation(
-            id = localId,
-            bookId = bookId,
-            kind = when (kind.lowercase()) {
-                "bookmark" -> AnnotationKind.BOOKMARK.name
-                "note" -> AnnotationKind.NOTE.name
-                else -> AnnotationKind.HIGHLIGHT.name
-            },
-            media = AnnotationMedia.EPUB.name,
-            style = AnnotationStyle.parse(style.uppercase()).name,
-            colorHex = color,
-            locatorJson = siloNavigatorLocator(location ?: cfi, progression ?: 0.0),
-            cfi = cfi,
-            progression = progression,
-            totalProgression = progression,
-            selectedText = selectedText,
-            note = note,
-            chapterId = metadata["enve_chapter_title"]?.takeIf { it.isNotBlank() },
-            createdAt = parseDateMillis(createdAt) ?: System.currentTimeMillis(),
-            updatedAt = parseDateMillis(updatedAt) ?: System.currentTimeMillis(),
-            serverId = id,
-            providerSource = BookSource.SILO.displayName.lowercase(),
-            syncDirty = false,
-            syncEtag = updatedAt,
-        )
-    }
-
-    private fun parseDateMillis(raw: String?): Long? {
-        if (raw.isNullOrBlank()) return null
-        return runCatching { Instant.parse(raw).toEpochMilli() }.getOrNull()
-            ?: runCatching { OffsetDateTime.parse(raw).toInstant().toEpochMilli() }.getOrNull()
-            ?: runCatching { LocalDateTime.parse(raw, DateTimeFormatter.ISO_DATE_TIME).toInstant(ZoneOffset.UTC).toEpochMilli() }.getOrNull()
-            ?: runCatching { LocalDate.parse(raw, DateTimeFormatter.ISO_DATE).atStartOfDay().toInstant(ZoneOffset.UTC).toEpochMilli() }.getOrNull()
-            ?: raw.toLongOrNull()?.let { if (it > 1_000_000_000_000L) it else it * 1000L }
-    }
-
-    private fun <T> Response<T>.bodyOrThrow(prefix: String): T {
-        if (!isSuccessful) error(httpMessage(prefix, this))
-        return body() ?: error("$prefix: empty response body")
-    }
-
-    private fun httpMessage(prefix: String, response: Response<*>): String =
-        "$prefix: HTTP ${response.code()} ${response.message()}".trim()
-
     private fun profileIdKey(connectionId: String) = "silo_profile_id_$connectionId"
     private fun profileUserIdKey(connectionId: String) = "silo_profile_user_id_$connectionId"
 
     private companion object {
-        const val PAGE_SIZE = 100
+        const val MAX_PAGE_SIZE = 200
 
         val SUPPORTED_LIBRARY_TYPES = setOf("audiobooks", "audiobook", "ebooks", "ebook", "books")
     }
 }
 
+internal fun siloSort(sort: String, dir: String): String? {
+    val field = when (sort.lowercase()) {
+        "addedon", "added_at", "addedat", "date_added" -> "added_at"
+        "title" -> "title"
+        "progress" -> "progress"
+        "author" -> "author"
+        "narrator" -> "narrator"
+        "series", "seriesname" -> "series"
+        "year", "publisheddate", "published_date" -> "year"
+        else -> return null
+    }
+    val descending = !(dir.equals("asc", true) || dir.equals("ascending", true))
+    return if (descending) "-$field" else field
+}
+
 internal fun preferredSiloEpubVersion(
     versions: List<SiloFileVersionDto>,
-    savedProgressFileId: Int? = null,
+    savedProgressFileId: String? = null,
 ): SiloFileVersionDto? =
     versions.firstOrNull { version ->
         version.fileId == savedProgressFileId &&
@@ -969,12 +883,12 @@ internal fun preferredSiloEpubVersion(
 private fun SiloFileVersionDto.siloReaderFormat(): String {
     val name = fileName ?: filePath.orEmpty()
     if (name.endsWith(".fb2.zip", ignoreCase = true)) return "fbz"
-    val extension = name.substringAfterLast('.', missingDelimiterValue = "").lowercase()
+    val extension = name.substringAfterLast('.', missingDelimiterValue = "")
     val normalizedContainer = container?.trim()?.lowercase()?.removePrefix(".").orEmpty()
     return if (normalizedContainer.isNotBlank() && normalizedContainer !in setOf("zip", "rar")) {
         normalizedContainer
     } else {
-        extension.ifBlank { normalizedContainer }
+        extension.lowercase().ifBlank { normalizedContainer }
     }
 }
 

@@ -464,6 +464,8 @@ fun EnveApp(
                 ServiceLoginScreen(
                     source = source,
                     authState = authState,
+                    siloProfiles = authViewModel.siloProfiles.collectAsState().value,
+                    onSiloProfileSelected = authViewModel::selectSiloProfile,
                     dynamicBackgroundEnabled = themeState.dynamicBackgroundEnabled,
                     onBack = goBack,
                     onServerUrlChange = { authViewModel.updateServerUrl(it) },

@@ -2,14 +2,19 @@
 
 Release notes for the Android app. Versions are `<name> build <code>`, matching `versionName` and `versionCode` in `app/build.gradle.kts`.
 
-## Unreleased
+## 1.2 build 57 — 2026-11-13
 
-- Add optional offline Kokoro, Supertonic 3 and Pocket TTS narration with downloadable models and voice selection.
+- Move native Silo connections to API v2, including profiles, downloads, progress and annotations.
+- Fix BookBridge/KOReader resume and keep saved library filters while sources load.
+- Support both stable and development Grimmory recommendations.
+
+- Add optional offline Kokoro, Supertonic 3, Pocket TTS and Phonon narration with downloadable models and voice selection.
 - Import books from cloud document providers and turn web stories into local EPUBs.
 - Show download progress above navigation and open the download hub from the progress pill.
 - Add source-scoped library filters, separate reading and listening shelves, and an audiobook-only preference.
 - Browse comics by series, volumes and specials, with next-issue navigation.
-- Add per-book PDF Crop, Fit, Fill Height and Fill Width controls with pan and zoom.
+- Add saved per-book PDF Crop, Fit, Fill Height and Fill Width controls, contributed by [DiegoBM](https://github.com/DiegoBM) in [#36](https://github.com/opisaac9001/Enve-Book-Player/pull/36).
+- Add PDF pan and zoom.
 - Improve linked read-along with passage preparation, retry controls, word timing and reading-to-listening handoff.
 
 ## 1.2 build 56 — 2026-10-29

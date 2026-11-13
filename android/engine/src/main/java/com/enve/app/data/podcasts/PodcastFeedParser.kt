@@ -76,6 +76,7 @@ internal object PodcastFeedParser {
                 "" -> when (localName) {
                     "title" -> fields.title = value
                     "guid" -> fields.guid = value.takeIf(String::isNotEmpty)
+                    "link" -> fields.episodeLink = value.takeIf(String::isNotEmpty)
                     "pubDate" -> fields.publishedAtMs = parseDate(value)
                     "description" -> fields.description = value.takeIf(String::isNotEmpty)
                     "item" -> {
@@ -102,6 +103,7 @@ internal object PodcastFeedParser {
         var summary: String? = null
         var enclosureUrl: String? = null
         var enclosureType: String? = null
+        var episodeLink: String? = null
 
         fun toEpisode(): PodcastFeedEpisode? {
             val url = enclosureUrl ?: return null
@@ -114,6 +116,7 @@ internal object PodcastFeedParser {
                 durationSec = durationSec,
                 enclosureUrl = url,
                 enclosureType = enclosureType,
+                episodeLink = episodeLink,
             )
         }
     }

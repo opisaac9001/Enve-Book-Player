@@ -1,7 +1,33 @@
+@file:OptIn(ExperimentalSerializationApi::class)
+
 package com.enve.silo.dto
 
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
+
+@Serializable
+data class SiloPageInfo(
+    @SerialName("next_cursor") val nextCursor: String? = null,
+    @SerialName("has_more") val hasMore: Boolean = false,
+)
+
+@Serializable
+data class SiloCollection<T>(
+    val items: List<T> = emptyList(),
+    val page: SiloPageInfo? = null,
+)
+
+@Serializable
+data class SiloProblem(
+    val type: String = "",
+    val status: Int = 0,
+    val detail: String = "",
+) {
+    val id: String get() = type.substringAfterLast('/')
+}
 
 @Serializable
 data class SiloLoginRequest(
@@ -29,7 +55,7 @@ data class SiloRefreshResponse(
 
 @Serializable
 data class SiloUserDto(
-    val id: Int,
+    val id: String,
     val username: String,
     val email: String? = null,
     val role: String? = null,
@@ -61,7 +87,7 @@ data class SiloAdminServerStatusDto(
 
 @Serializable
 data class SiloAdminUserDto(
-    val id: Int,
+    val id: String,
     val username: String,
     val email: String = "",
     val role: String = "user",
@@ -70,35 +96,18 @@ data class SiloAdminUserDto(
 )
 
 @Serializable
-data class SiloProfilesResponse(
-    val profiles: List<SiloProfileDto> = emptyList(),
-)
-
-@Serializable
 data class SiloProfileDto(
     val id: String,
     val name: String,
     @SerialName("is_primary") val isPrimary: Boolean = false,
+    @SerialName("has_pin") val hasPin: Boolean = false,
 )
 
 @Serializable
 data class SiloLibraryDto(
-    val id: Int,
+    val id: String,
     val name: String,
     val type: String,
-)
-
-@Serializable
-data class SiloLibrariesEnvelope(
-    val libraries: List<SiloLibraryDto>? = null,
-    val items: List<SiloLibraryDto>? = null,
-)
-
-@Serializable
-data class SiloCatalogResponse(
-    val total: Int = 0,
-    @SerialName("has_more") val hasMore: Boolean? = null,
-    val items: List<SiloCatalogItemDto> = emptyList(),
 )
 
 @Serializable
@@ -115,7 +124,7 @@ data class SiloItemDetailDto(
     val title: String,
     val year: Int? = null,
     val overview: String? = null,
-    val runtime: Int? = null,
+    @SerialName("runtime") val runtimeMinutes: Int? = null,
     val genres: List<String>? = null,
     @SerialName("poster_url") val posterUrl: String? = null,
     @SerialName("series_title") val seriesTitle: String? = null,
@@ -134,7 +143,7 @@ data class SiloPlaybackVariantDto(
 @Serializable
 data class SiloPlaybackVariantPartDto(
     @SerialName("part_index") val partIndex: Int = 0,
-    @SerialName("default_file_id") val defaultFileId: Int? = null,
+    @SerialName("default_file_id") val defaultFileId: String? = null,
     val versions: List<SiloFileVersionDto> = emptyList(),
 )
 
@@ -143,11 +152,6 @@ data class SiloProgressStateDto(
     @SerialName("position_seconds") val positionSeconds: Double? = null,
     @SerialName("duration_seconds") val durationSeconds: Double? = null,
     val played: Boolean? = null,
-)
-
-@Serializable
-data class SiloProgressListResponse(
-    val progress: List<SiloProgressEntryDto> = emptyList(),
 )
 
 @Serializable
@@ -184,7 +188,7 @@ data class SiloSeriesGroupDto(
 
 @Serializable
 data class SiloFileVersionDto(
-    @SerialName("file_id") val fileId: Int,
+    @SerialName("file_id") val fileId: String,
     @SerialName("file_name") val fileName: String? = null,
     @SerialName("file_path") val filePath: String? = null,
     val container: String? = null,
@@ -203,22 +207,34 @@ data class SiloChapterDto(
 )
 
 @Serializable
+data class SiloPlaybackCapabilitiesDto(
+    val state: String = "",
+    val allowed: Boolean? = null,
+    @SerialName("installation_id") val installationId: String? = null,
+    @SerialName("protocol_versions") val protocolVersions: List<Int> = emptyList(),
+    val features: List<String> = emptyList(),
+)
+
+@Serializable
 data class SiloPlaybackStartRequest(
+    @SerialName("installation_id") val installationId: String,
     @SerialName("protocol_version") val protocolVersion: Int = 3,
     @SerialName("client_features") val clientFeatures: List<String> = emptyList(),
-    @SerialName("file_id") val fileId: Int,
+    @SerialName("file_id") val fileId: String,
     @SerialName("profile_id") val profileId: String,
     @SerialName("playback_attempt_id") val playbackAttemptId: String,
-    @SerialName("quality_preference") val qualityPreference: String = "original",
+    @SerialName("quality_preference") val qualityPreference: String = "auto",
     @SerialName("subtitle_fidelity_preference") val subtitleFidelityPreference: String = "compatible",
     @SerialName("progress_persistence") val progressPersistence: String = "server",
-    @SerialName("start_position") val startPosition: Double? = null,
+    @EncodeDefault(EncodeDefault.Mode.NEVER) @SerialName("start_position") val startPosition: Double? = null,
     @SerialName("client_capabilities") val clientCapabilities: SiloAudioCapabilities = SiloAudioCapabilities(),
     @SerialName("client_playback_context") val playbackContext: SiloPlaybackContext = SiloPlaybackContext(),
 )
 
 @Serializable
 data class SiloAudioCapabilities(
+    @SerialName("codecs_video") val videoCodecs: List<String> = emptyList(),
+    @SerialName("codecs_video_hardware") val hardwareVideoCodecs: List<String> = emptyList(),
     @SerialName("video_evidence") val videoEvidence: String = "declared",
     @SerialName("audio_evidence") val audioEvidence: String = "declared",
     @SerialName("codecs_audio") val audioCodecs: List<String> = listOf("aac", "mp3"),
@@ -228,6 +244,8 @@ data class SiloAudioCapabilities(
 
 @Serializable
 data class SiloPlaybackContext(
+    @SerialName("app_version") val appVersion: String = "",
+    val output: Map<String, String> = emptyMap(),
     @SerialName("protocol_version") val protocolVersion: Int = 3,
     @SerialName("form_factor") val formFactor: String = "phone",
     val device: SiloPlaybackDevice = SiloPlaybackDevice(),
@@ -239,6 +257,7 @@ data class SiloPlaybackDevice(val platform: String = "android")
 
 @Serializable
 data class SiloAudioDelivery(
+    @SerialName("video_codecs") val videoCodecs: List<String> = emptyList(),
     val enabled: Boolean = true,
     @SerialName("supported_on_device") val supportedOnDevice: Boolean = true,
     val containers: List<String> = listOf("mp3", "m4a", "m4b", "aac", "mp4"),
@@ -297,8 +316,29 @@ data class SiloPlaybackTerminal(val reason: String)
 
 @Serializable
 data class SiloPlaybackProgressRequest(
+    @SerialName("installation_id") val installationId: String,
+    val sequence: Long,
     val position: Double,
     @SerialName("is_paused") val isPaused: Boolean,
+)
+
+@Serializable
+data class SiloPlaybackStopRequest(
+    @SerialName("installation_id") val installationId: String,
+    @SerialName("stop_id") val stopId: String,
+)
+
+@Serializable
+data class SiloPlaybackAcceptedDto(
+    val sequence: Long,
+    val position: Double,
+    @SerialName("is_paused") val isPaused: Boolean = false,
+)
+
+@Serializable
+data class SiloPlaybackMutationDto(
+    val outcome: String,
+    val accepted: SiloPlaybackAcceptedDto? = null,
 )
 
 @Serializable
@@ -309,40 +349,42 @@ data class SiloProgressSyncRequest(
 @Serializable
 data class SiloProgressSyncItem(
     @SerialName("media_item_id") val mediaItemId: String,
-    val position: Double,
-    val duration: Double,
-    @SerialName("updated_at") val updatedAt: String,
+    @SerialName("position_ms") val positionMs: Long,
+    @SerialName("duration_ms") val durationMs: Long,
+    @EncodeDefault(EncodeDefault.Mode.NEVER) @SerialName("updated_at") val updatedAt: String? = null,
 )
 
 @Serializable
 data class SiloProgressSyncResponse(
-    val results: List<SiloProgressSyncResult> = emptyList(),
+    val items: List<SiloProgressSyncResult> = emptyList(),
 )
 
 @Serializable
 data class SiloProgressSyncResult(
     @SerialName("media_item_id") val mediaItemId: String,
     val status: String = "",
+    val failure: SiloProblem? = null,
 )
 
 @Serializable
 data class SiloEbookProgressRequest(
-    @SerialName("file_id") val fileId: Int,
+    @SerialName("file_id") val fileId: String,
     val location: String,
     val progress: Double,
+    @SerialName("updated_at") val updatedAt: String,
 )
 
 @Serializable
-data class SiloEbookProgressResponse(
-    @SerialName("file_id") val fileId: Int? = null,
-    val location: String? = null,
-    val progress: Double? = null,
-    @SerialName("updated_at") val updatedAt: String? = null,
+data class SiloEbookProgressEnvelope(
+    val progress: SiloEbookProgressDto? = null,
 )
 
 @Serializable
-data class SiloReaderAnnotationsEnvelope(
-    val items: List<SiloReaderAnnotationRecord> = emptyList(),
+data class SiloEbookProgressDto(
+    @SerialName("file_id") val fileId: String,
+    val location: String,
+    val progress: Double,
+    @SerialName("updated_at") val updatedAt: String,
 )
 
 @Serializable
@@ -354,17 +396,19 @@ data class SiloReaderAnnotationRecord(
     val location: String? = null,
     @SerialName("selected_text") val selectedText: String = "",
     val note: String = "",
-    val style: String = "highlight",
-    val color: String = "#facc15",
-    val metadata: Map<String, String> = emptyMap(),
+    val style: String = "",
+    val color: String = "",
+    val metadata: Map<String, JsonElement> = emptyMap(),
     @SerialName("created_at") val createdAt: String? = null,
     @SerialName("updated_at") val updatedAt: String? = null,
+    val etag: String,
 )
 
 @Serializable
-data class SiloReaderAnnotationRequest(
+data class SiloReaderAnnotationCreateRequest(
+    val id: String,
     val kind: String,
-    @SerialName("cfi_range") val cfiRange: String? = null,
+    @EncodeDefault(EncodeDefault.Mode.NEVER) @SerialName("cfi_range") val cfiRange: String? = null,
     val location: String,
     @SerialName("selected_text") val selectedText: String,
     val note: String,
@@ -374,29 +418,28 @@ data class SiloReaderAnnotationRequest(
 )
 
 @Serializable
-data class SiloItemListResponse(
-    val items: List<SiloItemListEntryDto> = emptyList(),
-    @SerialName("has_more") val hasMore: Boolean = false,
+data class SiloReaderAnnotationPatchRequest(
+    val kind: String,
+    @SerialName("cfi_range") val cfiRange: String?,
+    val location: String,
+    @SerialName("selected_text") val selectedText: String,
+    val note: String,
+    val style: String,
+    val color: String,
+    val metadata: Map<String, String>,
 )
 
 @Serializable
-data class SiloItemListEntryDto(
+data class SiloHistoryCardDto(
     @SerialName("content_id") val contentId: String,
     val type: String = "",
     val title: String = "",
     @SerialName("series_title") val seriesTitle: String? = null,
-    val runtime: Int = 0,
+    @SerialName("runtime") val runtimeMinutes: Int = 0,
+    val watch: SiloHistoryWatchDto? = null,
 )
 
 @Serializable
-data class SiloScoredItemsResponse(
-    val items: List<SiloScoredItemDto> = emptyList(),
-)
-
-@Serializable
-data class SiloScoredItemDto(
-    @SerialName("media_item_id") val mediaItemId: String,
-    val score: Double = 0.0,
-    val reason: String = "",
-    @SerialName("reason_detail") val reasonDetail: String? = null,
+data class SiloHistoryWatchDto(
+    @SerialName("duration_seconds") val durationSeconds: Double = 0.0,
 )

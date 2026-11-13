@@ -8,6 +8,7 @@ import com.enve.app.data.offline.resolvers.BookOrbitTrackResolver
 import com.enve.app.data.offline.resolvers.GrimmoryTrackResolver
 import com.enve.app.data.offline.resolvers.JellyfinTrackResolver
 import com.enve.app.data.offline.resolvers.PlexTrackResolver
+import com.enve.app.data.offline.resolvers.SiloTrackResolver
 import com.enve.app.data.offline.resolvers.StorytellerTrackResolver
 import com.enve.app.data.offline.resolvers.TorBoxTrackResolver
 import dagger.Binds
@@ -19,6 +20,11 @@ import dagger.multibindings.IntoMap
 @Module
 @InstallIn(SingletonComponent::class)
 abstract class AudiobookDownloadModule {
+
+    @Binds
+    @IntoMap
+    @AudiobookTrackResolverKey(BookSource.SILO)
+    abstract fun bindSiloResolver(impl: SiloTrackResolver): AudiobookTrackResolver
 
     @Binds
     @IntoMap

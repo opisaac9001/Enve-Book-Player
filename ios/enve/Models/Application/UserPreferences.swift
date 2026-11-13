@@ -257,6 +257,7 @@ public struct UserPreferences: Codable, Equatable {
         case continueReading
         case continueListening
         case recentlyAdded
+        case rediscover
         case downloaded
         case doorways
 
@@ -267,6 +268,7 @@ public struct UserPreferences: Codable, Equatable {
             case .continueReading: "Continue Reading"
             case .continueListening: "Continue Listening"
             case .recentlyAdded: "Recently Added"
+            case .rediscover: "Rediscover"
             case .downloaded: "On this device"
             case .doorways: "Doorways"
             }
@@ -277,15 +279,26 @@ public struct UserPreferences: Codable, Equatable {
             case .continueReading: "book.pages"
             case .continueListening: "headphones"
             case .recentlyAdded: "sparkles"
+            case .rediscover: "clock.arrow.circlepath"
             case .downloaded: "arrow.down.circle"
             case .doorways: "rectangle.portrait.and.arrow.right"
             }
         }
     }
 
+    // Shelves added after an order was saved slot in beside their default neighbor instead of trailing the list.
     var normalizedHomeSectionOrder: [HomeSection] {
-        var seen = Set<HomeSection>()
-        return (homeSectionOrder + HomeSection.allCases).filter { seen.insert($0).inserted }
+        var order: [HomeSection] = []
+        for section in homeSectionOrder where !order.contains(section) {
+            order.append(section)
+        }
+        let defaults = HomeSection.allCases
+        for (index, section) in defaults.enumerated() where !order.contains(section) {
+            let anchor = defaults[..<index].last { order.contains($0) }
+            let position = anchor.flatMap { order.firstIndex(of: $0) }.map { $0 + 1 } ?? 0
+            order.insert(section, at: position)
+        }
+        return order
     }
 
     var visibleHomeSections: [HomeSection] {
@@ -626,8 +639,9 @@ public struct UserPreferences: Codable, Equatable {
         if let v = decode(PlayerBackgroundStyle.self, .playerBackgroundStyle) { playerBackgroundStyle = v }
         if let v = decode(ShellNavigationStyle.self, .shellNavigationStyle) { shellNavigationStyle = v }
         if let v = decode(PreferredStartTab.self, .preferredStartTab) { preferredStartTab = v }
-        if let v = decode([HomeSection].self, .homeSectionOrder) { homeSectionOrder = v }
-        if let v = decode(Set<HomeSection>.self, .hiddenHomeSections) { hiddenHomeSections = v }
+        // Raw strings keep a saved order readable when it names a shelf this build doesn't know.
+        if let v = decode([String].self, .homeSectionOrder) { homeSectionOrder = v.compactMap(HomeSection.init(rawValue:)) }
+        if let v = decode([String].self, .hiddenHomeSections) { hiddenHomeSections = Set(v.compactMap(HomeSection.init(rawValue:))) }
         if let v = decode(CGFloat.self, .primaryColorRed) { primaryColorRed = v }
         if let v = decode(CGFloat.self, .primaryColorGreen) { primaryColorGreen = v }
         if let v = decode(CGFloat.self, .primaryColorBlue) { primaryColorBlue = v }

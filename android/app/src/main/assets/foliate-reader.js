@@ -1,5 +1,6 @@
 import { makeBook } from './foliate/view.js'
 import { Overlayer } from './foliate/overlayer.js'
+import * as CFI from './foliate/epubcfi.js'
 import { FootnoteHandler } from './foliate/footnotes.js'
 
 const bridge = window.EnveFoliate
@@ -63,6 +64,9 @@ let userInteractionToken = 0
 let restorePending = true
 let annotationValues = new Map()
 let annotationRevision = 0
+let speechHighlight = null
+let speechHighlightRevision = 0
+let visibleCfi = null
 let activeFootnote = null
 let footnoteOpenReported = false
 let wideContentFit = null
@@ -561,6 +565,7 @@ view.addEventListener('relocate', event => {
     userInteractionToken += 1
     userInteractionPending = false
     lastLocation = payload
+    visibleCfi = detail.cfi ?? visibleCfi
     postNative('relocate', payload)
 })
 
@@ -586,7 +591,12 @@ view.addEventListener('load', event => {
             lastLocation?.checkpoint?.totalProgression,
         )
         currentSelection = locatorFromCheckpoint(checkpoint)
-        postNative('selection', { locator: currentSelection })
+        const bounds = range.getBoundingClientRect()
+        const frame = doc.defaultView.frameElement?.getBoundingClientRect()
+        postNative('selection', {
+            locator: currentSelection,
+            bounds: { top: (frame?.top ?? 0) + bounds.top, bottom: (frame?.top ?? 0) + bounds.bottom },
+        })
         selectionGestureLocked = false
     }
     const scheduleSelectionPublish = () => {
@@ -789,6 +799,11 @@ const applyPreferences = next => {
             letter-spacing: ${preferences.letterSpacing ?? 0}em${important};
             font-weight: ${Math.round(400 * (preferences.fontWeight ?? 1))}${important};
             text-align: ${preferences.justified === false ? 'start' : 'justify'}${important};
+            hyphens: ${preferences.hyphenate === false ? 'manual' : 'auto'}${important};
+            -webkit-hyphens: ${preferences.hyphenate === false ? 'manual' : 'auto'}${important};
+        }
+        ::selection {
+            background: rgba(245, 146, 26, 0.34);
         }
         body :not(code):not(pre):not(kbd):not(samp) {
             font-family: inherit !important;
@@ -799,6 +814,7 @@ const applyPreferences = next => {
         }
     `)
     view.renderer?.setAttribute('flow', preferences.scroll ? 'scrolled' : 'paginated')
+    view.renderer?.toggleAttribute('animated', preferences.animatedPageTurns !== false)
     view.renderer?.setAttribute(
         'gap',
         `${Math.min(7, Math.max(0, preferences.pageMargins ?? 1) * 7)}%`,
@@ -907,26 +923,67 @@ const restoreFromCheckpoint = async checkpoint => {
     return 'start'
 }
 
-const tocProgression = async (href, sectionFractions) => {
-    if (!href || href.includes('#')) return null
-    const index = (await view.resolveNavigation(href))?.index
-    const start = sectionFractions[index]
-    const end = sectionFractions[index + 1]
-    return Number.isFinite(start) && Number.isFinite(end) && end > start ? start : null
+const fragmentOffset = async (documents, index, fragment) => {
+    if (!documents.has(index)) {
+        documents.set(index, Promise.resolve(view.book.sections[index]?.createDocument?.()).catch(() => null))
+    }
+    const doc = await documents.get(index)
+    const body = doc?.body
+    const target = doc?.getElementById(fragment) ?? doc?.getElementsByName?.(fragment)?.[0]
+    if (!body || !target || !body.contains(target)) return 0
+    const range = doc.createRange()
+    range.setStart(body, 0)
+    range.setEndBefore(target)
+    const total = body.textContent.length
+    return total > 0 ? range.toString().length / total : 0
 }
 
-const flattenToc = async (items, sectionFractions, depth = 0) => {
+const flattenToc = async (items, sectionFractions) => {
     const entries = []
-    for (const item of items ?? []) {
-        entries.push({
+    const visit = (list, depth) => {
+        for (const item of list ?? []) {
+            entries.push({ item, depth })
+            visit(item.subitems, depth + 1)
+        }
+    }
+    visit(items, 0)
+    const indices = []
+    for (const { item } of entries) {
+        try {
+            indices.push(item.href ? (await view.resolveNavigation(item.href))?.index : undefined)
+        } catch {
+            indices.push(undefined)
+        }
+    }
+    const sharing = new Map()
+    for (const index of indices) {
+        if (Number.isInteger(index)) sharing.set(index, (sharing.get(index) ?? 0) + 1)
+    }
+    const documents = new Map()
+    const flattened = []
+    for (const [position, { item, depth }] of entries.entries()) {
+        const index = indices[position]
+        const start = sectionFractions[index]
+        const end = sectionFractions[index + 1]
+        let progression = null
+        if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
+            const fragment = item.href?.split('#')[1]
+            if (fragment && sharing.get(index) > 1) {
+                let id = fragment
+                try { id = decodeURIComponent(fragment) } catch {}
+                progression = start + (end - start) * await fragmentOffset(documents, index, id)
+            } else {
+                progression = start
+            }
+        }
+        flattened.push({
             title: compact(item.label) || 'Untitled',
             href: item.href ?? '',
             depth,
-            progression: await tocProgression(item.href, sectionFractions),
+            progression,
         })
-        entries.push(...await flattenToc(item.subitems, sectionFractions, depth + 1))
     }
-    return entries
+    return flattened
 }
 
 const sanitizePublicationDocument = (source, mediaType, original = null) => {
@@ -1052,7 +1109,26 @@ const renderAnnotations = async () => {
     for (const [cfi, annotation] of annotationValues) {
         await view.addAnnotation({ value: cfi, color: annotation.color, style: annotation.style }).catch(() => {})
     }
+    if (speechHighlight) await view.addAnnotation(speechHighlight).catch(() => {})
 }
+
+const speechCfi = async locator => {
+    const exact = locator?.text?.highlight
+    const resolved = exact && locator.href ? await resolveBookHref(locator.href) : null
+    if (!resolved) return null
+    const doc = view.renderer?.getContents?.()?.find(item => item.index === resolved.index)?.doc
+        ?? await view.book.sections[resolved.index]?.createDocument?.()
+    if (!doc) return null
+    const range = rangeFromTextQuote(
+        doc,
+        { exact, prefix: locator.text.before, suffix: locator.text.after },
+        locator.locations?.cssSelector,
+    )
+    return range ? view.getCFI(resolved.index, range) : null
+}
+
+const outsideVisiblePage = cfi => visibleCfi &&
+    (CFI.compare(cfi, CFI.collapse(visibleCfi)) < 0 || CFI.compare(cfi, CFI.collapse(visibleCfi, true)) > 0)
 
 view.addEventListener('create-overlay', () => { renderAnnotations().catch(() => {}) })
 
@@ -1107,6 +1183,18 @@ const annotationCfi = async annotation => {
 }
 
 window.enveReader = {
+    async setSpeechHighlight(locator, color) {
+        const revision = ++speechHighlightRevision
+        const value = locator ? await speechCfi(locator).catch(() => null) : null
+        if (revision !== speechHighlightRevision) return
+        if (speechHighlight && speechHighlight.value !== value) {
+            await view.deleteAnnotation({ value: speechHighlight.value }).catch(() => {})
+        }
+        speechHighlight = value ? { value, color, style: 'highlight' } : null
+        if (!speechHighlight) return
+        await view.addAnnotation(speechHighlight).catch(() => {})
+        if (revision === speechHighlightRevision && outsideVisiblePage(value)) await view.goTo(value).catch(() => {})
+    },
     installSelectionHandleFix(fix) {
         selectionHandleFix = typeof fix === 'function' ? fix : null
         fitAllWideContent()

@@ -54,6 +54,7 @@ enum class ReaderProgressDisplay(val label: String) {
     PERCENT("Percentage"),
     CHAPTER("Chapter title"),
     PAGE_AND_PERCENT("Page + %"),
+    TIME_LEFT("Time left"),
 }
 
 @OptIn(ExperimentalReadiumApi::class)
@@ -75,6 +76,8 @@ data class ReaderPreferences(
 
     val publisherStyles:  Boolean       = true,
     val justified:        Boolean       = true,
+    val hyphenate:        Boolean       = true,
+    val animatedPageTurns: Boolean      = true,
     val columns:          ReaderColumns = ReaderColumns.AUTO,
 
     val volumeButtonNavigation: Boolean = true,
@@ -95,7 +98,7 @@ data class ReaderPreferences(
     val showClock:        Boolean = false,
     val showBattery:      Boolean = false,
     val progressDisplay:  ReaderProgressDisplay = ReaderProgressDisplay.NONE,
-    val tapZoneWidth:     Float = 0.20f,
+    val tapZoneWidth:     Float = 0.13f,
     val edgeBrightnessSwipe: Boolean = true,
 
     val bionicReading:    Boolean = false,
@@ -151,6 +154,7 @@ data class ReaderPreferences(
             scroll          = scroll,
             publisherStyles = publisherStyles,
             textAlign       = if (justified) TextAlign.JUSTIFY else TextAlign.START,
+            hyphens         = hyphenate,
             columnCount     = columns.toReadiumColumnCount(einkActive),
         )
     }

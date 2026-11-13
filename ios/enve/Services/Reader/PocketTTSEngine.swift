@@ -81,9 +81,8 @@ actor PocketTTSRuntime {
 
     func removeModels() async throws {
         await unload()
-        let root = try LocalNarratorPack.pocket.root
-        if FileManager.default.fileExists(atPath: root.path) {
-            try FileManager.default.removeItem(at: root)
+        for url in try LocalNarratorPack.pocket.storageDirectories where FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
         }
         try? audioCache.removeAll()
     }
@@ -98,8 +97,10 @@ actor PocketTTSRuntime {
         let tasks = Array(inFlight.values)
         inFlight.removeAll()
         tasks.forEach { $0.cancel() }
-        _ = try? await preparing?.value
+        // A preparation can finish after cancellation; its manager is never adopted, so release it here.
+        let prepared = try? await preparing?.value
         for task in tasks { _ = try? await task.value }
+        await prepared?.cleanup()
         await previous?.cleanup()
     }
 }

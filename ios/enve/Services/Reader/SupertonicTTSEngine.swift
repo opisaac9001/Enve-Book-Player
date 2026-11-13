@@ -141,9 +141,7 @@ actor SupertonicTTSRuntime {
 
     func removeModels() async throws {
         await unload()
-        let root = try LocalNarratorPack.supertonic.root
-        let legacy = try TtsCacheDirectory.ensure().appendingPathComponent("Models/\(Repo.supertonic3.folderName)")
-        for url in [root, legacy] where FileManager.default.fileExists(atPath: url.path) {
+        for url in try LocalNarratorPack.supertonic.storageDirectories where FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)
         }
         try? audioCache.removeAll()
@@ -159,8 +157,10 @@ actor SupertonicTTSRuntime {
         let tasks = Array(inFlight.values)
         inFlight.removeAll()
         tasks.forEach { $0.cancel() }
-        _ = try? await preparing?.value
+        // A preparation can finish after cancellation; its pack is never adopted, so release it here.
+        let prepared = try? await preparing?.value
         for task in tasks { _ = try? await task.value }
+        await prepared?.manager.cleanup()
         await previous?.manager.cleanup()
     }
 }

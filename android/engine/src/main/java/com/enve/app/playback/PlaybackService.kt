@@ -1,5 +1,6 @@
 package com.enve.app.playback
 
+import com.enve.core.data.model.BookSource
 import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.ApplicationInfo
@@ -1311,12 +1312,19 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
-    private fun checkpointPlayback(player: Player) {
+    private fun checkpointPlayback(player: Player, closeSiloSession: Boolean = false) {
         if (activePlaybackTarget() !== player || pendingCastHandoff != null) return
         val snapshot = captureCheckpoint(player) ?: return
         serviceScope?.launch(start = CoroutineStart.UNDISPATCHED) {
             try {
                 val service = progressService ?: return@launch
+                if (closeSiloSession) {
+                    playerSessionService?.close(
+                        positionSec = snapshot.positionMs / 1000L,
+                        durationSec = snapshot.durationMs / 1000L,
+                        sourceFilter = BookSource.SILO,
+                    )
+                }
                 val result = checkpointBuffer.persistCaptured(snapshot) { service.persistCheckpoint(it, force = true) }
                 reportCheckpointRetry(result)
                 if (result is PlayerProgressService.SaveResult.Saved) {
@@ -2032,7 +2040,7 @@ class PlaybackService : MediaLibraryService() {
         }
 
         override fun stop() {
-            checkpointPlayback(underlying)
+            checkpointPlayback(underlying, closeSiloSession = true)
             if (underlying === castPlayer) {
                 pendingCastHandoff?.let { pending ->
                     castReceiverState()?.let { receiverState ->

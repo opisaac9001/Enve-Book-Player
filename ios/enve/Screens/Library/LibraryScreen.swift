@@ -762,7 +762,9 @@ struct LibraryScreen: View {
                     browseShowsLink
                 }
                 if model.displayBooks.isEmpty {
-                    if model.isNarrowed {
+                    if model.status == .downloaded {
+                        downloadsEmpty
+                    } else if model.isNarrowed {
                         filteredEmpty
                     } else {
                         quietNote("Nothing here yet.")
@@ -1026,19 +1028,48 @@ struct LibraryScreen: View {
             .padding(.vertical, 56)
     }
 
+    @ViewBuilder
+    private var downloadsEmpty: some View {
+        if model.hasAdditionalDownloadFilters {
+            filterEmpty(
+                title: "No downloads match these filters.",
+                message: "Clear the other filters to see all downloaded books.",
+                actionTitle: "Show all downloads"
+            ) {
+                model.clearAdditionalDownloadFilters()
+            }
+        } else {
+            filterEmpty(
+                title: "No downloaded books yet.",
+                message: "Open a book and tap Download to keep it on this device.",
+                actionTitle: "Show all books",
+                action: model.clearFilters
+            )
+        }
+    }
+
     private var filteredEmpty: some View {
+        filterEmpty(
+            title: "Nothing matches this filter.",
+            message: "Your shelves aren't empty. A filter is just hiding them.",
+            actionTitle: "Show everything",
+            action: model.clearFilters
+        )
+    }
+
+    private func filterEmpty(title: String, message: String, actionTitle: String, action: @escaping () -> Void) -> some View {
         VStack(spacing: 16) {
-            Text("Nothing matches this filter.")
+            Text(title)
                 .font(.hearthDisplay(22))
                 .foregroundStyle(hearth.text)
                 .multilineTextAlignment(.center)
-            Text("Your shelves aren't empty. A filter is just hiding them.")
+            Text(message)
                 .font(.hearthUI(14))
                 .foregroundStyle(hearth.textSecondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
-            QuietButton(title: "Show everything", systemImage: "line.3.horizontal.decrease.circle") {
-                model.clearFilters()
+            QuietButton(title: actionTitle, systemImage: "line.3.horizontal.decrease.circle") {
+                action()
                 PlatformHaptics.selection()
             }
         }

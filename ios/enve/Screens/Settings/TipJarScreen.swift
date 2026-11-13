@@ -63,7 +63,7 @@ struct TipJarScreen: View {
 
     var body: some View {
         SettingsScaffold(
-            overline: "About",
+            overline: "Settings",
             title: "Tip jar",
             subtitle: "Entirely optional. Every feature stays free either way."
         ) {

@@ -48,11 +48,15 @@ internal class NarratorPackStore(context: Context) {
 
             val total = (pack.downloadBytes + assets.extracted.sumOf { it.bytes }).toFloat()
             var completed = 0L
-            val archive = partial(pack, assets.archive.fileName)
-            download(assets.archive.url, assets.archive.bytes, assets.archive.sha256, archive) {
-                onProgress((completed + it) / total)
+            val archive = assets.archive
+            val archiveFile = archive?.let {
+                partial(pack, it.fileName).also { file ->
+                    download(it.url, it.bytes, it.sha256, file) { bytes ->
+                        onProgress((completed + bytes) / total)
+                    }
+                    completed += it.bytes
+                }
             }
-            completed += assets.archive.bytes
             val downloads = assets.downloads.associateWith { file ->
                 partial(pack, file.name).also { partial ->
                     download(requireNotNull(file.url), file.bytes, file.sha256, partial) {
@@ -65,12 +69,16 @@ internal class NarratorPackStore(context: Context) {
             val staging = File(root, "${pack.id}-staging")
             staging.deleteRecursively()
             check(staging.mkdirs()) { "Could not prepare ${pack.title}" }
-            extract(archive, assets, staging, checkCancellation) {
-                completed += it
-                onProgress(completed / total)
+            if (archive != null && archiveFile != null) {
+                extract(archiveFile, archive, assets.extracted, staging, checkCancellation) {
+                    completed += it
+                    onProgress(completed / total)
+                }
             }
             downloads.forEach { (file, partial) ->
-                check(partial.renameTo(File(staging, file.name))) { "Could not prepare ${pack.title}" }
+                val destination = File(staging, file.name)
+                destination.parentFile?.mkdirs()
+                check(partial.renameTo(destination)) { "Could not prepare ${pack.title}" }
             }
 
             val replaced = File(root, "${pack.id}-replaced")
@@ -86,9 +94,9 @@ internal class NarratorPackStore(context: Context) {
         withContext(Dispatchers.IO) { removeStale(pack, keep = null) }
     }
 
-    private fun directory(pack: NarratorPack) = File(root, "${pack.id}-${pack.assets.archive.sha256.take(12)}")
+    private fun directory(pack: NarratorPack) = File(root, "${pack.id}-${pack.assets.version.take(12)}")
 
-    private fun partial(pack: NarratorPack, name: String) = File(root, "${pack.id}-$name.part")
+    private fun partial(pack: NarratorPack, name: String) = File(root, "${pack.id}-${name.replace('/', '_')}.part")
 
     private fun removeStale(pack: NarratorPack, keep: File?) {
         root.listFiles().orEmpty()
@@ -148,12 +156,13 @@ internal class NarratorPackStore(context: Context) {
 
     private fun extract(
         archive: File,
-        assets: NarratorAssets,
+        manifest: NarratorArchive,
+        files: List<NarratorFile>,
         staging: File,
         checkCancellation: () -> Unit,
         onFile: (Long) -> Unit,
     ) {
-        val wanted = assets.extracted.associateBy { "${assets.archive.root}/${it.name}" }
+        val wanted = files.associateBy { "${manifest.root}/${it.name}" }
         val found = HashSet<String>()
         val handle = Archive.readNew()
         try {
@@ -174,7 +183,7 @@ internal class NarratorPackStore(context: Context) {
                     ArchiveEntry.filetype(entry) == ArchiveEntry.AE_IFREG &&
                         ArchiveEntry.size(entry) == file.bytes &&
                         found.add(name)
-                ) { "Unexpected $name in ${assets.archive.fileName}" }
+                ) { "Unexpected $name in ${manifest.fileName}" }
                 val output = File(staging, file.name)
                 ParcelFileDescriptor.open(
                     output,
@@ -188,7 +197,7 @@ internal class NarratorPackStore(context: Context) {
         } finally {
             Archive.readFree(handle)
         }
-        check(found.size == wanted.size) { "${assets.archive.fileName} is missing narrator files" }
+        check(found.size == wanted.size) { "${manifest.fileName} is missing narrator files" }
     }
 
     private fun File.matches(file: NarratorFile, checkCancellation: () -> Unit): Boolean =

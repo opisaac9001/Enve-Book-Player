@@ -3,25 +3,27 @@ import Foundation
 import Logging
 
 struct SiloEbookProgressUpdateRequest: Encodable {
-    let fileID: Int
+    let fileID: String
     let location: String
     let progress: Double
+    let updatedAt: String
 
     enum CodingKeys: String, CodingKey {
         case fileID = "file_id"
         case location
         case progress
+        case updatedAt = "updated_at"
     }
 }
 
-struct SiloProgressDeltaPage {
-    let progress: [UserMediaProgress]
-    let nextCursor: String
+struct SiloReaderAnnotationMutation {
+    let record: SiloReaderAnnotationRecord
+    let created: Bool
 }
 
-enum SiloProgressDeltaError: Error {
-    case unsupported
-    case stalledCursor
+enum SiloReaderAnnotationError: Error, Equatable {
+    case preconditionFailed
+    case notFound
 }
 
 final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, AudiobookProgressProvider,
@@ -41,21 +43,34 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
     }
 
     private let pageSize = 100
+    private let progressPageSize = 200
+    private let annotationPageSize = 50
+    private let progressBatchLimit = 100
     private let session: URLSession
     private let decoder: JSONDecoder
     private let encoder = JSONEncoder()
 
     private var detailCache: [String: SiloItemDetail] = [:]
-    private var activeEbookFileIDs: [String: Int] = [:]
+    private var activeEbookFileIDs: [String: String] = [:]
     private var multipartSessions: [String: [MultipartPartSession]] = [:]
-    private var singleSessionFiles: [String: Int] = [:]
+    private var singleSessionFiles: [String: String] = [:]
     private var replacementSessionIDs: [String: String] = [:]
     private var pausedSessionIDs: Set<String> = []
+    private var playbackInstallationID: String?
+    private var progressSequences: [String: Int64] = [:]
+    private var pendingStops: [String: PendingStop] = [:]
+    private var authenticationRecovery: Task<Bool, Never>?
 
     private struct MultipartPartSession {
         let sessionID: String
         let startOffset: Double
         let duration: Double
+    }
+
+    private struct PendingStop {
+        let stopID: String
+        let sequence: Int64?
+        let position: Double?
     }
 
     private let keychain: SharedKeychainStore
@@ -124,14 +139,18 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
 
     func fetchLibraries() async throws -> [Library] {
         try await ensureAuthenticated()
-        let libraries = try await fetchSiloLibraries()
+        _ = try await ensureProfile()
+        let libraries = try await send(
+            try makeRequest(path: "/user/libraries"),
+            as: SiloLibrariesResponse.self
+        ).items
         return
             libraries
             .filter { ["audiobooks", "audiobook", "ebooks", "ebook", "books", "manga"].contains($0.type.lowercased()) }
             .map {
                 let rawType = $0.type.lowercased()
                 return Library(
-                    id: String($0.id),
+                    id: $0.id,
                     name: $0.name,
                     type: rawType.contains("audio") ? "audiobooks" : "books",
                     providerId: connection.id
@@ -140,24 +159,11 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
     }
 
     func fetchBooks(libraryId: String) async throws -> [Book] {
-        detailCache.removeAll()
+        let traversal = try await catalogTraversal(libraryId: libraryId, resumeAfter: nil, expectedSnapshotIdentifier: nil)
         var books: [Book] = []
-        var offset = 0
-        var total: Int?
-
-        while total == nil || offset < (total ?? 0) {
-            let batch = try await fetchCatalogPage(libraryId: libraryId, offset: offset, limit: pageSize)
-            total = batch.total
-            let mapped = try await mapCatalogItems(
-                batch.items,
-                libraryId: libraryId,
-                fallbackScope: "offset-\(offset)-detail"
-            )
-            books.append(contentsOf: mapped.books)
-            if batch.rawItemCount < pageSize || batch.hasMore == false { break }
-            offset += batch.rawItemCount
+        while let batch = try await traversal.next() {
+            books.append(contentsOf: batch.books)
         }
-
         return books
     }
 
@@ -166,34 +172,61 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         resumeAfter: String?,
         expectedSnapshotIdentifier: String?
     ) async throws -> LibraryCatalogBatchSource {
-        detailCache.removeAll()
-        let firstPage = try await catalogPage(libraryId: libraryId, page: 0)
-        return LibraryCatalogBatchSource.paged(
-            firstPage: firstPage,
-            pageSize: pageSize,
-            pageConcurrency: 4,
+        let traversal = try await catalogTraversal(
+            libraryId: libraryId,
             resumeAfter: resumeAfter,
-            expectedSnapshotIdentifier: expectedSnapshotIdentifier,
-            fetchPage: { try await self.catalogPage(libraryId: libraryId, page: $0) }
+            expectedSnapshotIdentifier: expectedSnapshotIdentifier
+        )
+        return LibraryCatalogBatchSource(
+            snapshotIdentifier: traversal.snapshotIdentifier,
+            resumed: traversal.resumed,
+            next: { try await traversal.next() }
         )
     }
 
-    private func catalogPage(libraryId: String, page: Int) async throws -> LibraryCatalogPage {
-        let offset = page * pageSize
+    // A stored cursor resumes only when the first page still fingerprints the same snapshot and the server accepts it.
+    private func catalogTraversal(
+        libraryId: String,
+        resumeAfter: String?,
+        expectedSnapshotIdentifier: String?
+    ) async throws -> SiloCatalogTraversal {
+        detailCache.removeAll()
+        let firstPage = try await catalogPage(libraryId: libraryId, cursor: nil, index: 0)
+        let snapshotIdentifier = Self.snapshotIdentifier(of: firstPage)
+        var start = firstPage
+        var resumed = false
+        if let resumeAfter, !resumeAfter.isEmpty, expectedSnapshotIdentifier == snapshotIdentifier {
+            do {
+                start = try await catalogPage(libraryId: libraryId, cursor: resumeAfter, index: 1)
+                resumed = true
+            } catch SiloCursorError.invalid {}
+        }
+        return SiloCatalogTraversal(
+            snapshotIdentifier: snapshotIdentifier,
+            resumed: resumed,
+            firstPage: start,
+            totalCount: firstPage.totalCount,
+            fetchPage: { try await self.catalogPage(libraryId: libraryId, cursor: $0, index: $1) }
+        )
+    }
+
+    private func catalogPage(libraryId: String, cursor: String?, index: Int) async throws -> SiloCatalogPage {
         let response = try await fetchCatalogPage(
             libraryId: libraryId,
-            offset: offset,
-            limit: pageSize
+            cursor: cursor,
+            sort: "title",
+            limit: pageSize,
+            fallbackScope: "page-\(index)"
         )
         let mapped = try await mapCatalogItems(
             response.items,
             libraryId: libraryId,
-            fallbackScope: "page-\(page)-detail"
+            fallbackScope: "page-\(index)-detail"
         )
-        return LibraryCatalogPage(
+        return SiloCatalogPage(
             books: mapped.books,
             totalCount: response.total,
-            isLast: response.hasMore == false || offset + response.rawItemCount >= response.total,
+            nextCursor: try SiloPageInfo.continuation(of: response.page),
             isComplete: response.rejectedItems.isEmpty && mapped.rejectedItems.isEmpty
         )
     }
@@ -209,27 +242,19 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
                 defer { self.streamTasks[id] = nil }
                 do {
                     try Task.checkCancellation()
-                    self.detailCache.removeAll()
-                    var offset = 0
+                    let traversal = try await self.catalogTraversal(
+                        libraryId: libraryId,
+                        resumeAfter: nil,
+                        expectedSnapshotIdentifier: nil
+                    )
                     var loaded = 0
-                    var total: Int?
-
-                    while total == nil || offset < (total ?? 0) {
+                    while let batch = try await traversal.next() {
                         try Task.checkCancellation()
-                        let batch = try await self.fetchCatalogPage(libraryId: libraryId, offset: offset, limit: self.pageSize)
-                        total = batch.total
-                        let mapped = try await self.mapCatalogItems(
-                            batch.items,
-                            libraryId: libraryId,
-                            fallbackScope: "offset-\(offset)-detail"
+                        loaded += batch.books.count
+                        continuation.yield(
+                            LibraryFetchBatchResult(books: batch.books, loadedSoFar: loaded, totalCount: batch.totalCount)
                         )
-                        try Task.checkCancellation()
-                        loaded += mapped.books.count
-                        continuation.yield(LibraryFetchBatchResult(books: mapped.books, loadedSoFar: loaded, totalCount: batch.total))
-                        if batch.rawItemCount < self.pageSize || batch.hasMore == false { break }
-                        offset += batch.rawItemCount
                     }
-
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -244,10 +269,10 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         detailCache.removeAll()
         let batch = try await fetchCatalogPage(
             libraryId: libraryId,
-            offset: 0,
+            cursor: nil,
+            sort: "-added_at",
             limit: min(max(limit, 1), pageSize),
-            sort: "added_at",
-            order: "desc"
+            fallbackScope: "recent"
         )
         return try await mapCatalogItems(
             batch.items,
@@ -280,31 +305,19 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
     func fetchUserMediaProgress(libraryId: String) async throws -> [UserMediaProgress] {
         try await ensureAuthenticated()
         _ = try await ensureProfile()
-        let limit = 500
-        var offset = 0
         var progress: [UserMediaProgress] = []
-
-        while true {
-            var query = [
-                URLQueryItem(name: "status", value: "all"),
-                URLQueryItem(name: "limit", value: String(limit)),
-                URLQueryItem(name: "offset", value: String(offset)),
-            ]
+        try await traversePages(SiloProgressPage.self) { cursor in
+            var query = [URLQueryItem(name: "limit", value: String(self.progressPageSize))]
             if !libraryId.isEmpty {
                 query.append(URLQueryItem(name: "library_id", value: libraryId))
             }
-            let response = try await send(
-                try makeRequest(path: "/progress", query: query),
-                as: SiloProgressListResponse.self
-            )
-            progress.append(contentsOf: response.progress.map(userMediaProgress))
-            if response.progress.count < limit { break }
-            offset += response.progress.count
-            if offset > 5_000_000 {
-                throw ProviderError.serverError("Silo progress snapshot exceeded the safety limit")
+            if let cursor {
+                query.append(URLQueryItem(name: "cursor", value: cursor))
             }
+            return try self.makeRequest(path: "/progress", query: query)
+        } handle: { page in
+            progress.append(contentsOf: page.items.map(self.userMediaProgress))
         }
-
         return progress
     }
 
@@ -313,42 +326,43 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         return try await ensureProfile()
     }
 
-    func fetchProgressDelta(since cursor: String) async throws -> SiloProgressDeltaPage {
-        try await ensureAuthenticated()
-        _ = try await ensureProfile()
-        let response = try await progressDeltaResponse(since: cursor)
-        guard let nextCursor = response.nextCursor else {
-            throw SiloProgressDeltaError.unsupported
-        }
-        if !response.progress.isEmpty, nextCursor == cursor {
-            throw SiloProgressDeltaError.stalledCursor
-        }
-        return SiloProgressDeltaPage(
-            progress: response.progress.map(userMediaProgress),
-            nextCursor: nextCursor
-        )
-    }
-
     func syncAudiobookProgress(_ updates: [UserMediaProgress]) async throws -> Set<String> {
         guard !updates.isEmpty else { return [] }
         try await ensureAuthenticated()
         _ = try await ensureProfile()
 
-        let items = updates.map { progress in
-            let duration = max(0, progress.duration)
-            return SiloProgressSyncItem(
-                mediaItemID: progress.libraryItemId,
-                position: progress.isFinished && duration > 0
-                    ? duration
-                    : max(0, progress.currentTime),
-                duration: duration,
-                updatedAt: Self.rfc3339Formatter.string(from: progress.lastUpdate)
-            )
+        // The batch refuses duplicate targets, so only each item's latest write is sent.
+        var latest: [String: UserMediaProgress] = [:]
+        var order: [String] = []
+        for update in updates {
+            if let existing = latest[update.libraryItemId] {
+                if update.lastUpdate >= existing.lastUpdate { latest[update.libraryItemId] = update }
+            } else {
+                order.append(update.libraryItemId)
+                latest[update.libraryItemId] = update
+            }
         }
-        var request = try makeRequest(path: "/sync/progress", method: "POST")
-        request.httpBody = try encoder.encode(SiloProgressSyncRequest(items: items))
-        let response = try await send(request, as: SiloProgressSyncResponse.self)
-        return Set(response.results.lazy.filter { $0.status == "ok" }.map(\.mediaItemID))
+
+        var succeeded = Set<String>()
+        for start in stride(from: 0, to: order.count, by: progressBatchLimit) {
+            let items = order[start..<min(start + progressBatchLimit, order.count)].compactMap { id in
+                latest[id].map { progress in
+                    let duration = max(0, progress.duration)
+                    let position = progress.isFinished && duration > 0 ? duration : max(0, progress.currentTime)
+                    return SiloProgressSyncItem(
+                        mediaItemID: progress.libraryItemId,
+                        positionMs: Self.milliseconds(position),
+                        durationMs: Self.milliseconds(duration),
+                        updatedAt: Self.rfc3339Formatter.string(from: progress.lastUpdate)
+                    )
+                }
+            }
+            var request = try makeRequest(path: "/sync/progress", method: "POST")
+            request.httpBody = try encoder.encode(SiloProgressSyncRequest(items: items))
+            let response = try await send(request, as: SiloProgressSyncResponse.self)
+            succeeded.formUnion(response.items.lazy.filter { $0.status == "success" }.map(\.mediaItemID))
+        }
+        return succeeded
     }
 
     func fetchFullBookDetails(bookId: String, libraryId: String) async throws -> Book {
@@ -369,13 +383,27 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         }
         if let profileID = storedProfileID(), !profileID.isEmpty {
             headers["X-Profile-Id"] = profileID
+            if let proof = legacyKeychain.get(profileTokenKey) { headers["X-Profile-Token"] = proof }
         }
         return headers
+    }
+
+    func audiobookDownloadRequests(for book: Book) async throws -> [(request: URLRequest, mimeType: String?)] {
+        try await ensureAuthenticated()
+        _ = try await ensureProfile()
+        let detail = try await itemDetail(book.id)
+        let versions = audiobookPartVersions(for: detail) ?? primaryVersion(for: detail).map { [$0] } ?? []
+        guard !versions.isEmpty else { throw ProviderError.invalidResponse }
+        return try versions.map { version in
+            let request = try makeRequest(path: "/direct-download", query: [URLQueryItem(name: "file_id", value: version.fileID)])
+            return (request, mimeType(for: version.container))
+        }
     }
 
     func startPlaybackSession(for book: Book) async throws -> PlaybackSessionInfo {
         try await ensureAuthenticated()
         let profileID = try await ensureProfile()
+        await flushPendingStops()
         let detail = try await itemDetail(book.id)
         multipartSessions[book.id] = nil
         singleSessionFiles[book.id] = nil
@@ -394,7 +422,7 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         )
         let (sessionID, plan) = try response.audioPlan()
         singleSessionFiles[book.id] = version.fileID
-        let duration = plan.source.durationSeconds ?? Double(version.duration ?? detail.runtime ?? 0)
+        let duration = plan.source.durationSeconds ?? Double(version.duration ?? detail.runtimeSeconds ?? 0)
         let streamURL = try absoluteURL(plan.stream.url).absoluteString
         let track = AudioTrackInfo(
             index: 0,
@@ -463,46 +491,53 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
     }
 
     private func startPartSession(
-        fileID: Int,
+        fileID: String,
         profileID: String,
         disableProgressPersistence: Bool,
         startPosition: Double? = nil
     ) async throws -> SiloPlaybackStartResponse {
-        var request = try makeRequest(path: "/playback/start", method: "POST")
+        let attemptID = Self.canonicalUUID()
         let audioCodecs = ["aac", "mp3"]
         let containers = ["mp3", "m4a", "m4b", "aac", "mp4"]
-        var body: [String: Any] = [
-            "protocol_version": 3,
-            "client_features": [],
-            "file_id": fileID,
-            "profile_id": profileID,
-            "playback_attempt_id": UUID().uuidString,
-            "quality_preference": "original",
-            "subtitle_fidelity_preference": "compatible",
-            "progress_persistence": disableProgressPersistence ? "client" : "server",
-            "client_capabilities": [
-                "video_evidence": "declared", "audio_evidence": "declared",
-                "codecs_audio": audioCodecs, "containers": containers, "hdr": false,
-            ],
-            "client_playback_context": [
-                "protocol_version": 3, "form_factor": "phone",
-                "device": ["platform": "ios"],
-                "deliveries": ["original_http": [
-                    "enabled": true, "supported_on_device": true,
-                    "containers": containers, "audio_decode_codecs": audioCodecs,
-                    "audio_passthrough_codecs": [], "subtitles": [
-                        "embedded_text": false, "sidecar_text": false, "ass_styling": false,
-                        "embedded_bitmap": false, "sidecar_bitmap": false, "font_attachments": false,
-                    ], "features": [], "auth_header_refresh": false,
-                    "validated_claims": [], "transformations": [],
-                ]],
-            ],
-        ]
-        if disableProgressPersistence || startPosition != nil {
-            body["start_position"] = startPosition ?? 0
+        let (data, http) = try await sendPlaybackCommand(path: "/playback/start", method: "POST") { installationID in
+            var body: [String: Any] = [
+                "installation_id": installationID,
+                "protocol_version": 3,
+                "client_features": [],
+                "file_id": fileID,
+                "profile_id": profileID,
+                "playback_attempt_id": attemptID,
+                "quality_preference": "original",
+                "subtitle_fidelity_preference": "compatible",
+                "progress_persistence": disableProgressPersistence ? "client" : "server",
+                "client_capabilities": [
+                    "video_evidence": "declared", "audio_evidence": "declared",
+                    "codecs_video": [String](), "codecs_video_hardware": [String](),
+                    "codecs_audio": audioCodecs, "containers": containers, "hdr": false,
+                ],
+                "client_playback_context": [
+                    "protocol_version": 3, "form_factor": "phone",
+                    "app_version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "",
+                    "output": [String: String](),
+                    "device": ["platform": "ios"],
+                    "deliveries": ["original_http": [
+                        "enabled": true, "supported_on_device": true,
+                        "containers": containers, "video_codecs": [String](), "audio_decode_codecs": audioCodecs,
+                        "audio_passthrough_codecs": [], "subtitles": [
+                            "embedded_text": false, "sidecar_text": false, "ass_styling": false,
+                            "embedded_bitmap": false, "sidecar_bitmap": false, "font_attachments": false,
+                        ], "features": [], "auth_header_refresh": false,
+                        "validated_claims": [], "transformations": [],
+                    ]],
+                ],
+            ]
+            if disableProgressPersistence || startPosition != nil {
+                body["start_position"] = startPosition ?? 0
+            }
+            return try JSONSerialization.data(withJSONObject: body)
         }
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        return try await send(request, as: SiloPlaybackStartResponse.self)
+        try validate(http, data)
+        return try decode(SiloPlaybackStartResponse.self, from: data)
     }
 
     func updatePlaybackProgress(
@@ -515,21 +550,16 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         guard serverSyncEnabled() else { return }
         if let sessionId, !sessionId.isEmpty {
             if let parts = multipartSessions[book.id], parts.contains(where: { $0.sessionID == sessionId }) {
-
                 await heartbeatMultipartSession(parts: parts, currentTime: currentTime, isPaused: pausedSessionIDs.contains(sessionId))
             } else {
                 let activeSessionID = replacementSessionIDs[sessionId] ?? sessionId
+                let isPaused = pausedSessionIDs.contains(sessionId) || pausedSessionIDs.contains(activeSessionID)
                 do {
-                    var request = try makeRequest(path: "/playback/\(activeSessionID)/progress", method: "POST")
-                    request.httpBody = try JSONSerialization.data(withJSONObject: [
-                        "position": max(0, currentTime),
-                        "is_paused": pausedSessionIDs.contains(sessionId) || pausedSessionIDs.contains(activeSessionID),
-                    ])
-                    try await sendEmpty(request)
+                    try await sendProgressSample(sessionID: activeSessionID, position: currentTime, isPaused: isPaused)
                     return
                 } catch is CancellationError {
                     throw CancellationError()
-                } catch ProviderError.serverError(let message) where message == "Silo returned HTTP 404" {
+                } catch SiloPlaybackError.sessionNotFound {
                     if let fileID = singleSessionFiles[book.id] {
                         do {
                             let profileID = try await ensureProfile()
@@ -542,12 +572,7 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
                             let (newSessionID, _) = try response.audioPlan()
                             replacementSessionIDs[sessionId] = newSessionID
                             replacementSessionIDs[activeSessionID] = newSessionID
-                            var request = try makeRequest(path: "/playback/\(newSessionID)/progress", method: "POST")
-                            request.httpBody = try JSONSerialization.data(withJSONObject: [
-                                "position": max(0, currentTime),
-                                "is_paused": pausedSessionIDs.contains(sessionId) || pausedSessionIDs.contains(activeSessionID),
-                            ])
-                            try await sendEmpty(request)
+                            try await sendProgressSample(sessionID: newSessionID, position: currentTime, isPaused: isPaused)
                             return
                         } catch is CancellationError {
                             throw CancellationError()
@@ -555,12 +580,11 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
                             // Keep the position through item-level sync when session recovery fails.
                         }
                     }
-                } catch {
-
-                }
+                } catch {}
             }
         }
 
+        // Replayed queue entries carry their original event time on the book.
         let duration = max(book.duration ?? 0, currentTime)
         let progress = UserMediaProgress(
             id: book.id,
@@ -571,7 +595,7 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
             progress: duration > 0 ? min(max(currentTime / duration, 0), 1) : 0,
             isFinished: isFinished,
             duration: duration,
-            lastUpdate: Date(),
+            lastUpdate: book.lastUpdate,
             ebookProgress: nil
         )
         let succeeded = try await syncAudiobookProgress([progress])
@@ -590,11 +614,10 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         let fileID = version.fileID
 
         onProgress?(0)
-        let request = try makeRequest(path: "/ebooks/\(book.id)/files/\(fileID)/read")
-        let (tempURL, response) = try await session.download(for: request)
-        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
-            throw ProviderError.serverError("Failed to download ebook")
-        }
+        let request = try makeRequest(
+            path: "/ebooks/\(Self.pathSegment(book.id))/files/\(Self.pathSegment(fileID))/read"
+        )
+        let tempURL = try await downloadFile(request)
 
         let ext = ebookFormat(from: version) ?? "epub"
         let destination = FileManager.default.temporaryDirectory
@@ -622,36 +645,25 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
     ) async throws {
         try await ensureAuthenticated()
         _ = try await ensureProfile()
-        if progress <= 0 {
-            let request = try makeRequest(path: "/watched/\(book.id)", method: "DELETE")
-            try await sendEmpty(request)
-            detailCache.removeValue(forKey: book.id)
-            return
-        }
+        let eventDate = book.lastUpdate
         let detail = try await itemDetail(book.id)
         guard let version = try await activeEbookVersion(for: detail) else {
             throw ProviderError.invalidResponse
         }
         let boundedProgress = min(max(progress, 0), 1)
-        // Silo latches completion until the watched state is explicitly cleared.
-        if boundedProgress < Book.finishedProgressThreshold,
-            let previous = try await siloEbookProgress(for: book.id), (previous.progress ?? 0) >= Book.finishedProgressThreshold
-        {
-            try await sendEmpty(makeRequest(path: "/watched/\(book.id)", method: "DELETE"))
-            detailCache.removeValue(forKey: book.id)
-        }
         let location = siloReaderLocation(
             from: epubLocator,
             progress: boundedProgress,
             sourceEngine: sourceEngine
         )
 
-        var request = try makeRequest(path: "/ebooks/\(book.id)/progress", method: "PUT")
+        var request = try makeRequest(path: "/ebooks/\(Self.pathSegment(book.id))/progress", method: "PUT")
         request.httpBody = try encoder.encode(
             SiloEbookProgressUpdateRequest(
                 fileID: version.fileID,
                 location: location,
-                progress: boundedProgress
+                progress: boundedProgress,
+                updatedAt: Self.rfc3339Formatter.string(from: eventDate)
             )
         )
         try await sendEmpty(request)
@@ -663,29 +675,24 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         guard let progress = try await siloEbookProgress(for: book.id) else {
             return nil
         }
-        guard let value = progress.progress,
-            let progressFileID = progress.fileID
-        else {
-            return nil
-        }
         if let activeFileID = activeEbookFileIDs[book.id],
-            activeFileID != progressFileID
+            activeFileID != progress.fileID
         {
             return nil
         }
         let detail = try await itemDetail(book.id)
         guard
             let selectedVersion = readableEbookVersions(for: detail)
-                .first(where: { $0.fileID == progressFileID })
+                .first(where: { $0.fileID == progress.fileID })
         else {
             return nil
         }
         activeEbookFileIDs[detail.contentID] = selectedVersion.fileID
         let locator = readiumLocator(
             fromSiloLocation: progress.location,
-            progress: value
+            progress: progress.progress
         )
-        return (value, locator, progress.updatedAt, value >= Book.finishedProgressThreshold)
+        return (progress.progress, locator, progress.updatedAt, progress.progress >= Book.finishedProgressThreshold)
     }
 
     func fetchAudiobookProgress(
@@ -706,16 +713,32 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
     func fetchPageCount(for book: Book) async throws -> Int { throw ProviderError.notImplemented }
     func fetchPage(_ pageNumber: Int, for book: Book) async throws -> Data { throw ProviderError.notImplemented }
 
+    func readerArtifactScope(for book: Book) async throws -> SiloReaderArtifactScope {
+        try await ensureAuthenticated()
+        let profileID = try await ensureProfile()
+        return SiloReaderArtifactScope(
+            connectionID: connection.id,
+            account: "\(connection.userId ?? "")/\(profileID)",
+            bookID: book.stableId
+        )
+    }
+
     func fetchReaderAnnotations(for book: Book) async throws -> [SiloReaderAnnotationRecord] {
         let resource = try await annotationResource(for: book)
-        let envelope = try await send(
-            try makeRequest(path: "/ebooks/\(book.id)/annotations"),
-            as: SiloReaderAnnotationsEnvelope.self
-        )
+        var records: [SiloReaderAnnotationRecord] = []
+        try await traversePages(SiloReaderAnnotationsPage.self) { cursor in
+            var query = [URLQueryItem(name: "limit", value: String(self.annotationPageSize))]
+            if let cursor {
+                query.append(URLQueryItem(name: "cursor", value: cursor))
+            }
+            return try self.makeRequest(path: "/ebooks/\(Self.pathSegment(book.id))/annotations", query: query)
+        } handle: { page in
+            records.append(contentsOf: page.items)
+        }
         let fingerprint = annotationResourceFingerprint(for: resource.version)
-        return (envelope.items ?? []).filter { record in
+        return records.filter { record in
             if let rawFileID = record.metadata[Self.annotationFileIDKey],
-                Int(rawFileID) != resource.version.fileID
+                rawFileID != resource.version.fileID
             {
                 return false
             }
@@ -731,12 +754,62 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         }
     }
 
-    func createReaderAnnotation(for book: Book, annotation: ReaderAnnotation) async throws -> SiloReaderAnnotationRecord {
+    // The local artifact ID is the client-selected server identity, so a retried create resolves to the same row.
+    func createReaderAnnotation(for book: Book, annotation: ReaderAnnotation) async throws -> SiloReaderAnnotationMutation {
+        let body = try await annotationBody(for: book, annotation: annotation)
+        return try await createAnnotationRecord(id: annotation.id, body: body, for: book)
+    }
+
+    func createReaderBookmark(for book: Book, bookmark: Bookmark) async throws -> SiloReaderAnnotationMutation {
+        let body = try await bookmarkBody(for: book, bookmark: bookmark)
+        return try await createAnnotationRecord(id: bookmark.id, body: body, for: book)
+    }
+
+    func updateReaderAnnotation(
+        id: String,
+        etag: String,
+        for book: Book,
+        annotation: ReaderAnnotation
+    ) async throws -> SiloReaderAnnotationRecord {
+        let body = try await annotationBody(for: book, annotation: annotation)
+        return try await patchAnnotationRecord(id: id, etag: etag, body: body, for: book)
+    }
+
+    func updateReaderBookmark(
+        id: String,
+        etag: String,
+        for book: Book,
+        bookmark: Bookmark
+    ) async throws -> SiloReaderAnnotationRecord {
+        let body = try await bookmarkBody(for: book, bookmark: bookmark)
+        return try await patchAnnotationRecord(id: id, etag: etag, body: body, for: book)
+    }
+
+    func deleteReaderAnnotation(id: String, etag: String, for book: Book) async throws {
+        try await ensureAuthenticated()
+        _ = try await ensureProfile()
+        var request = try makeRequest(
+            path: "/ebooks/\(Self.pathSegment(book.id))/annotations/\(Self.pathSegment(id))",
+            method: "DELETE"
+        )
+        request.setValue(etag, forHTTPHeaderField: "If-Match")
+        let (data, http) = try await perform(request)
+        switch http.statusCode {
+        case 404: return
+        case 412: throw SiloReaderAnnotationError.preconditionFailed
+        default: try validate(http, data)
+        }
+    }
+
+    private static let annotationFileIDKey = "enve_file_id"
+    private static let annotationFingerprintKey = "enve_resource_fingerprint"
+
+    private func annotationBody(for book: Book, annotation: ReaderAnnotation) async throws -> SiloReaderAnnotationRequest {
         guard let cfi = extractCFI(from: annotation.locator) else {
             throw ProviderError.noCFI
         }
         let resource = try await annotationResource(for: book)
-        let requestBody = SiloReaderAnnotationRequest(
+        return SiloReaderAnnotationRequest(
             kind: annotation.note?.isEmpty == false ? "note" : "highlight",
             cfiRange: cfi,
             location: cfi,
@@ -753,45 +826,14 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
                 for: resource.version
             )
         )
-        var request = try makeRequest(path: "/ebooks/\(book.id)/annotations", method: "POST")
-        request.httpBody = try encoder.encode(requestBody)
-        return try await send(request, as: SiloReaderAnnotationRecord.self)
     }
 
-    func updateReaderAnnotation(id: String, for book: Book, annotation: ReaderAnnotation) async throws -> SiloReaderAnnotationRecord {
-        guard let cfi = extractCFI(from: annotation.locator) else {
-            throw ProviderError.noCFI
-        }
+    private func bookmarkBody(for book: Book, bookmark: Bookmark) async throws -> SiloReaderAnnotationRequest {
         let resource = try await annotationResource(for: book)
-        let requestBody = SiloReaderAnnotationRequest(
-            kind: annotation.note?.isEmpty == false ? "note" : "highlight",
-            cfiRange: cfi,
-            location: cfi,
-            selectedText: annotation.text,
-            note: annotation.note ?? "",
-            style: annotation.style.rawValue,
-            color: annotation.colorHex,
-            metadata: annotationMetadata(
-                [
-                    "enve_local_id": annotation.id,
-                    "enve_position": String(annotation.position),
-                    "enve_chapter_title": annotation.chapterTitle ?? "",
-                ],
-                for: resource.version
-            )
-        )
-        var request = try makeRequest(path: "/ebooks/\(book.id)/annotations/\(id)", method: "PATCH")
-        request.httpBody = try encoder.encode(requestBody)
-        return try await send(request, as: SiloReaderAnnotationRecord.self)
-    }
-
-    func createReaderBookmark(for book: Book, bookmark: Bookmark) async throws -> SiloReaderAnnotationRecord {
-        let resource = try await annotationResource(for: book)
-        let location = siloReaderLocation(from: bookmark.locator, progress: bookmark.position)
-        let requestBody = SiloReaderAnnotationRequest(
+        return SiloReaderAnnotationRequest(
             kind: "bookmark",
             cfiRange: nil,
-            location: location,
+            location: siloReaderLocation(from: bookmark.locator, progress: bookmark.position),
             selectedText: bookmark.title,
             note: bookmark.note ?? "",
             style: "bookmark",
@@ -805,18 +847,45 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
                 for: resource.version
             )
         )
-        var request = try makeRequest(path: "/ebooks/\(book.id)/annotations", method: "POST")
-        request.httpBody = try encoder.encode(requestBody)
-        return try await send(request, as: SiloReaderAnnotationRecord.self)
     }
 
-    func deleteReaderAnnotation(id: String, for book: Book) async throws {
-        let request = try makeRequest(path: "/ebooks/\(book.id)/annotations/\(id)", method: "DELETE")
-        try await sendEmpty(request)
+    private func createAnnotationRecord(
+        id: String,
+        body: SiloReaderAnnotationRequest,
+        for book: Book
+    ) async throws -> SiloReaderAnnotationMutation {
+        var body = body
+        body.id = id
+        var request = try makeRequest(path: "/ebooks/\(Self.pathSegment(book.id))/annotations", method: "POST")
+        request.httpBody = try encoder.encode(body)
+        let (data, http) = try await perform(request)
+        try validate(http, data)
+        return SiloReaderAnnotationMutation(
+            record: try decode(SiloReaderAnnotationRecord.self, from: data),
+            created: http.statusCode == 201
+        )
     }
 
-    private static let annotationFileIDKey = "enve_file_id"
-    private static let annotationFingerprintKey = "enve_resource_fingerprint"
+    private func patchAnnotationRecord(
+        id: String,
+        etag: String,
+        body: SiloReaderAnnotationRequest,
+        for book: Book
+    ) async throws -> SiloReaderAnnotationRecord {
+        var request = try makeRequest(
+            path: "/ebooks/\(Self.pathSegment(book.id))/annotations/\(Self.pathSegment(id))",
+            method: "PATCH"
+        )
+        request.setValue(etag, forHTTPHeaderField: "If-Match")
+        request.httpBody = try encoder.encode(body)
+        let (data, http) = try await perform(request)
+        switch http.statusCode {
+        case 404: throw SiloReaderAnnotationError.notFound
+        case 412: throw SiloReaderAnnotationError.preconditionFailed
+        default: try validate(http, data)
+        }
+        return try decode(SiloReaderAnnotationRecord.self, from: data)
+    }
 
     private func annotationResource(
         for book: Book
@@ -835,7 +904,7 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         for version: SiloFileVersion
     ) -> String {
         let identity = [
-            String(version.fileID),
+            version.fileID,
             String(version.fileSize ?? -1),
             version.addedAt.map { String($0.timeIntervalSince1970) } ?? "",
             version.fileName ?? "",
@@ -852,7 +921,7 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         for version: SiloFileVersion
     ) -> [String: String] {
         var metadata = metadata
-        metadata[Self.annotationFileIDKey] = String(version.fileID)
+        metadata[Self.annotationFileIDKey] = version.fileID
         metadata[Self.annotationFingerprintKey] = annotationResourceFingerprint(
             for: version
         )
@@ -910,10 +979,9 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
 
     func nativeOAuthOptions() async throws -> [OAuthOption] {
         let capabilitiesRequest = try makeRequest(
-            path: "/auth/oauth/capabilities", profileRequired: false, includeAuth: false, apiVersion: "v2"
+            path: "/auth/oauth/capabilities", profileRequired: false, includeAuth: false
         )
-        let (data, response) = try await session.data(for: capabilitiesRequest)
-        guard let http = response as? HTTPURLResponse else { throw ProviderError.invalidResponse }
+        let (data, http) = try await perform(capabilitiesRequest, retryingAuth: false)
         // Servers that predate the v2 OAuth contract do not expose the capabilities endpoint.
         if http.statusCode == 404 { throw SiloOAuthError.nativeSignInUnavailable }
         guard (200...299).contains(http.statusCode) else {
@@ -925,13 +993,13 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         guard capabilities.native else { throw SiloOAuthError.nativeSignInUnavailable }
 
         let providers = try await send(
-            try makeRequest(path: "/auth/providers", profileRequired: false, includeAuth: false, apiVersion: "v2"),
+            try makeRequest(path: "/auth/providers", profileRequired: false, includeAuth: false),
             as: SiloAuthProvidersResponse.self,
             retryingAuth: false
         )
         let options = providers.items.compactMap { item -> OAuthOption? in
             guard item.mode == "oauth", let path = item.nativeStartPath, !path.isEmpty else { return nil }
-            return OAuthOption(displayName: item.displayName ?? item.name ?? "Single Sign-On", nativeStartPath: path)
+            return OAuthOption(displayName: item.displayName.isEmpty ? "Single Sign-On" : item.displayName, nativeStartPath: path)
         }
         guard !options.isEmpty else { throw SiloOAuthError.noProviders }
         return options
@@ -942,7 +1010,7 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
             throw ProviderError.invalidURL
         }
         let identity = try await send(
-            try makeRequest(path: "/system/identity", profileRequired: false, includeAuth: false, apiVersion: "v2"),
+            try makeRequest(path: "/system/identity", profileRequired: false, includeAuth: false),
             as: SiloServerIdentity.self,
             retryingAuth: false
         )
@@ -979,7 +1047,7 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
     func completeNativeOAuth(callbackURL: URL, attempt: NativeOAuthAttempt) async throws {
         let code = try attempt.authorizationCode(from: callbackURL)
         var request = try makeRequest(
-            path: "/auth/oauth/complete", method: "POST", profileRequired: false, includeAuth: false, apiVersion: "v2"
+            path: "/auth/oauth/complete", method: "POST", profileRequired: false, includeAuth: false
         )
         request.httpBody = try JSONSerialization.data(withJSONObject: [
             "code": code,
@@ -1032,6 +1100,60 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         }
     }
 
+    func loginProfiles() async throws -> [SiloProfile] {
+        try await ensureAuthenticated()
+        let user = try await send(try makeRequest(path: "/account/me", profileRequired: false), as: SiloUser.self)
+        connection.userId = user.id
+        connection.username = user.username
+        return try await send(
+            try makeRequest(path: "/profiles", profileRequired: false), as: SiloProfilesResponse.self
+        ).items
+    }
+
+    func selectLoginProfile(_ profile: SiloProfile, pin: String?) async throws {
+        if let stored = storedProfileID(), stored != profile.id {
+            throw ProviderError.serverError("Add a separate connection to use another Silo profile.")
+        }
+        if profile.hasPIN == true {
+            var request = try makeRequest(
+                path: "/profiles/\(Self.pathSegment(profile.id))/verify-pin", method: "POST", profileRequired: false
+            )
+            request.httpBody = try JSONSerialization.data(withJSONObject: ["pin": pin ?? ""])
+            let proof = try await send(request, as: SiloProfileProof.self)
+            guard proof.valid, let token = proof.profileToken, !token.isEmpty else {
+                throw ProviderError.serverError("Incorrect Silo profile PIN.")
+            }
+            legacyKeychain.set(token, key: profileTokenKey)
+        } else {
+            legacyKeychain.delete(profileTokenKey)
+        }
+        storeProfile(profile)
+    }
+
+    func restoreLoginProfile(from original: ServerConnection) throws {
+        guard original.userId == nil || original.userId == connection.userId else {
+            throw ProviderError.serverError("Sign in to the same Silo account to preserve this connection’s downloads and progress.")
+        }
+        let oldID = defaults.string(forKey: "silo_profile_id_\(original.id.uuidString)")
+        guard oldID == nil || oldID == storedProfileID() else {
+            throw ProviderError.serverError("Sign in to the same Silo profile to preserve this connection’s downloads and progress.")
+        }
+        for suffix in ["id", "name", "user_id"] {
+            let source = "silo_profile_\(suffix)_\(connection.id.uuidString)"
+            if let value = defaults.string(forKey: source) {
+                defaults.set(value, forKey: "silo_profile_\(suffix)_\(original.id.uuidString)")
+                defaults.removeObject(forKey: source)
+            }
+        }
+        let destination = "silo_profile_token_\(original.id.uuidString)"
+        if let token = legacyKeychain.get(profileTokenKey) {
+            legacyKeychain.set(token, key: destination)
+        } else {
+            legacyKeychain.delete(destination)
+        }
+        legacyKeychain.delete(profileTokenKey)
+    }
+
     func ensureProfile() async throws -> String {
         if let stored = storedProfileID(),
             !stored.isEmpty,
@@ -1039,21 +1161,23 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         {
             return stored
         }
-        let profiles = try await listProfiles()
+        let profiles = try await send(
+            try makeRequest(path: "/profiles", profileRequired: false),
+            as: SiloProfilesResponse.self
+        ).items
         guard let selected = profiles.first(where: { $0.isPrimary }) ?? profiles.first else {
             throw ProviderError.serverError("No Silo profile is available for this account")
+        }
+        guard selected.hasPIN != true else {
+            throw ProviderError.serverError("Sign in again to unlock your Silo profile with its PIN.")
         }
         storeProfile(selected)
         return selected.id
     }
 
-    private func listProfiles() async throws -> [SiloProfile] {
-        let response = try await send(try makeRequest(path: "/profiles", profileRequired: false), as: SiloProfilesResponse.self)
-        return response.profiles
-    }
-
     private var refreshTokenKey: String { "silo_refresh_\(connection.id.uuidString)" }
     private var legacyPasswordKey: String { "silo_password_\(connection.id.uuidString)" }
+    private var profileTokenKey: String { "silo_profile_token_\(connection.id.uuidString)" }
     private var profileIDKey: String { "silo_profile_id_\(connection.id.uuidString)" }
     private var profileNameKey: String { "silo_profile_name_\(connection.id.uuidString)" }
     private var profileUserIDKey: String { "silo_profile_user_id_\(connection.id.uuidString)" }
@@ -1080,7 +1204,7 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         return value
     }
 
-    private func apiURL(path: String, query: [URLQueryItem] = [], apiVersion: String = "v1") throws -> URL {
+    private func apiURL(path: String, query: [URLQueryItem] = [], apiVersion: String = "v2") throws -> URL {
         guard var components = URLComponents(string: "\(baseURLString)/api/\(apiVersion)\(path)") else {
             throw ProviderError.invalidURL
         }
@@ -1097,7 +1221,7 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         method: String = "GET",
         profileRequired: Bool = true,
         includeAuth: Bool = true,
-        apiVersion: String = "v1"
+        apiVersion: String = "v2"
     ) throws -> URLRequest {
         guard !isRetired else { throw CancellationError() }
         try Task.checkCancellation()
@@ -1118,11 +1242,26 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         }
         if profileRequired, let profileID = storedProfileID(), !profileID.isEmpty {
             request.setValue(profileID, forHTTPHeaderField: "X-Profile-Id")
+            if let proof = legacyKeychain.get(profileTokenKey) {
+                request.setValue(proof, forHTTPHeaderField: "X-Profile-Token")
+            }
         }
         return request
     }
 
     func send<T: Decodable>(_ request: URLRequest, as type: T.Type, retryingAuth: Bool = true) async throws -> T {
+        let (data, http) = try await perform(request, retryingAuth: retryingAuth)
+        try validate(http, data)
+        return try decode(T.self, from: data)
+    }
+
+    private func sendEmpty(_ request: URLRequest, retryingAuth: Bool = true) async throws {
+        let (data, http) = try await perform(request, retryingAuth: retryingAuth)
+        try validate(http, data)
+    }
+
+    // A recovered 401 resends the identical request, so sequenced and identity-bearing bodies are never re-minted.
+    private func perform(_ request: URLRequest, retryingAuth: Bool = true) async throws -> (Data, HTTPURLResponse) {
         guard !isRetired else { throw CancellationError() }
         try Task.checkCancellation()
         let (data, response) = try await session.data(for: request)
@@ -1132,12 +1271,22 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         if http.statusCode == 401, retryingAuth, await recoverAuthentication() {
             var retried = request
             retried.setValue("Bearer \(connection.token ?? "")", forHTTPHeaderField: "Authorization")
-            return try await send(retried, as: type, retryingAuth: false)
+            return try await perform(retried, retryingAuth: false)
         }
-        guard (200...299).contains(http.statusCode) else {
-            if http.statusCode == 401 || http.statusCode == 403 { throw ProviderError.unauthorized }
-            throw ProviderError.serverError("Silo returned HTTP \(http.statusCode)")
+        return (data, http)
+    }
+
+    private func validate(_ http: HTTPURLResponse, _ data: Data) throws {
+        guard !(200...299).contains(http.statusCode) else { return }
+        if Self.problemType(data) == "profile_verification_required" {
+            throw ProviderError.serverError("Sign in again to unlock your Silo profile with its PIN.")
         }
+        if http.statusCode == 401 || http.statusCode == 403 { throw ProviderError.unauthorized }
+        if http.statusCode == 400, Self.problemType(data) == "invalid_cursor" { throw SiloCursorError.invalid }
+        throw ProviderError.serverError("Silo returned HTTP \(http.statusCode)")
+    }
+
+    private func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
         do {
             return try decoder.decode(T.self, from: data)
         } catch {
@@ -1146,79 +1295,49 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         }
     }
 
-    private func sendEmpty(_ request: URLRequest, retryingAuth: Bool = true) async throws {
+    private func downloadFile(_ request: URLRequest, retryingAuth: Bool = true) async throws -> URL {
         guard !isRetired else { throw CancellationError() }
         try Task.checkCancellation()
-        let (_, response) = try await session.data(for: request)
-        try Task.checkCancellation()
-        guard !isRetired else { throw CancellationError() }
-        guard let http = response as? HTTPURLResponse else { throw ProviderError.invalidResponse }
-        if http.statusCode == 401, retryingAuth, await recoverAuthentication() {
-            var retried = request
-            retried.setValue("Bearer \(connection.token ?? "")", forHTTPHeaderField: "Authorization")
-            return try await sendEmpty(retried, retryingAuth: false)
+        let (tempURL, response) = try await session.download(for: request)
+        guard !isRetired, !Task.isCancelled else {
+            try? FileManager.default.removeItem(at: tempURL)
+            throw CancellationError()
         }
-        guard (200...299).contains(http.statusCode) else {
-            if http.statusCode == 401 || http.statusCode == 403 { throw ProviderError.unauthorized }
-            throw ProviderError.serverError("Silo returned HTTP \(http.statusCode)")
-        }
-    }
-
-    private func sendData(_ request: URLRequest, retryingAuth: Bool = true) async throws -> Data {
-        guard !isRetired else { throw CancellationError() }
-        try Task.checkCancellation()
-        let (data, response) = try await session.data(for: request)
-        try Task.checkCancellation()
-        guard !isRetired else { throw CancellationError() }
-        guard let http = response as? HTTPURLResponse else { throw ProviderError.invalidResponse }
-        if http.statusCode == 401, retryingAuth, await recoverAuthentication() {
-            var retried = request
-            retried.setValue("Bearer \(connection.token ?? "")", forHTTPHeaderField: "Authorization")
-            return try await sendData(retried, retryingAuth: false)
-        }
-        guard (200...299).contains(http.statusCode) else {
-            if http.statusCode == 401 || http.statusCode == 403 { throw ProviderError.unauthorized }
-            throw ProviderError.serverError("Silo returned HTTP \(http.statusCode)")
-        }
-        return data
-    }
-
-    private func progressDeltaResponse(
-        since cursor: String,
-        retryingAuth: Bool = true
-    ) async throws -> SiloProgressListResponse {
-        let request = try makeRequest(
-            path: "/progress",
-            query: [URLQueryItem(name: "since", value: cursor)]
-        )
-        guard !isRetired else { throw CancellationError() }
-        try Task.checkCancellation()
-        let (data, response) = try await session.data(for: request)
-        try Task.checkCancellation()
-        guard !isRetired else { throw CancellationError() }
         guard let http = response as? HTTPURLResponse else {
+            try? FileManager.default.removeItem(at: tempURL)
             throw ProviderError.invalidResponse
         }
-        if http.statusCode == 401,
-            retryingAuth,
-            await recoverAuthentication()
-        {
-            return try await progressDeltaResponse(since: cursor, retryingAuth: false)
-        }
-        if http.statusCode == 404 || http.statusCode == 405 {
-            throw SiloProgressDeltaError.unsupported
+        if http.statusCode == 401, retryingAuth {
+            try? FileManager.default.removeItem(at: tempURL)
+            guard await recoverAuthentication() else { throw ProviderError.unauthorized }
+            var retried = request
+            retried.setValue("Bearer \(connection.token ?? "")", forHTTPHeaderField: "Authorization")
+            return try await downloadFile(retried, retryingAuth: false)
         }
         guard (200...299).contains(http.statusCode) else {
-            if http.statusCode == 401 || http.statusCode == 403 {
-                throw ProviderError.unauthorized
+            try? FileManager.default.removeItem(at: tempURL)
+            if http.statusCode == 401 || http.statusCode == 403 { throw ProviderError.unauthorized }
+            throw ProviderError.serverError("Failed to download ebook")
+        }
+        return tempURL
+    }
+
+    // Every v2 list follows page.next_cursor until has_more is false, whatever each page's length.
+    private func traversePages<Page: SiloCursorPaged>(
+        _ type: Page.Type,
+        request: (String?) throws -> URLRequest,
+        handle: (Page) async throws -> Void
+    ) async throws {
+        var cursor: String?
+        var seen = Set<String>()
+        repeat {
+            let page = try await send(try request(cursor), as: Page.self)
+            try await handle(page)
+            cursor = try SiloPageInfo.continuation(of: page.page)
+            if let cursor, !seen.insert(cursor).inserted {
+                throw ProviderError.serverError("Silo pagination repeated a cursor")
             }
-            throw ProviderError.serverError("Silo returned HTTP \(http.statusCode)")
-        }
-        do {
-            return try decoder.decode(SiloProgressListResponse.self, from: data)
-        } catch {
-            throw ProviderError.decodingFailed
-        }
+        } while cursor != nil
     }
 
     private func userMediaProgress(_ entry: SiloProgressEntry) -> UserMediaProgress {
@@ -1242,47 +1361,35 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
     }
 
     private func recoverAuthentication() async -> Bool {
-        if await refreshAccessToken() {
-            return true
+        if let authenticationRecovery { return await authenticationRecovery.value }
+        let task = Task { () -> Bool in
+            if await self.refreshAccessToken() { return true }
+            self.connection.token = nil
+            return await self.reauthenticateWithStoredCredentials()
         }
-        connection.token = nil
-        return await reauthenticateWithStoredCredentials()
-    }
-
-    private func fetchSiloLibraries() async throws -> [SiloLibrary] {
-        let request = try makeRequest(path: "/user/libraries", profileRequired: false)
-        let data = try await sendData(request)
-        if let array = try? decoder.decode([SiloLibrary].self, from: data) {
-            return array
-        }
-        let envelope = try decoder.decode(SiloLibrariesEnvelope.self, from: data)
-        return envelope.libraries ?? envelope.items ?? []
+        authenticationRecovery = task
+        defer { authenticationRecovery = nil }
+        return await task.value
     }
 
     private func fetchCatalogPage(
         libraryId: String,
-        offset: Int,
+        cursor: String?,
+        sort: String,
         limit: Int,
-        sort: String = "title",
-        order: String = "asc"
+        fallbackScope: String
     ) async throws -> SiloCatalogResponse {
         try await ensureAuthenticated()
         _ = try await ensureProfile()
-        let result = try await send(
-            try makeRequest(
-                path: "/catalog",
-                query: [
-                    URLQueryItem(name: "library_id", value: libraryId),
-                    URLQueryItem(name: "type", value: "audiobook,ebook"),
-                    URLQueryItem(name: "offset", value: String(offset)),
-                    URLQueryItem(name: "limit", value: String(limit)),
-                    URLQueryItem(name: "sort", value: sort),
-                    URLQueryItem(name: "order", value: order),
-                    URLQueryItem(name: "include_total", value: "true"),
-                ]
-            ),
-            as: SiloCatalogResponse.self
-        )
+        var query = [
+            URLQueryItem(name: "library_id", value: libraryId),
+            URLQueryItem(name: "sort", value: sort),
+            URLQueryItem(name: "limit", value: String(limit)),
+        ]
+        if let cursor {
+            query.append(URLQueryItem(name: "cursor", value: cursor))
+        }
+        let result = try await send(try makeRequest(path: "/catalog", query: query), as: SiloCatalogResponse.self)
         rejectedContent.record(
             providerId: connection.id,
             providerType: connection.type,
@@ -1293,7 +1400,7 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
                     itemIdentifier: candidate.itemIdentifier,
                     title: candidate.title,
                     reason: candidate.reason,
-                    fallbackIdentifier: "offset-\(offset)-\(candidate.fallbackIdentifier)"
+                    fallbackIdentifier: "\(fallbackScope)-\(candidate.fallbackIdentifier)"
                 )
             }
         )
@@ -1305,7 +1412,7 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
             try makeRequest(path: "/collections"),
             as: SiloPersonalCollectionsResponse.self
         )
-        let fetched = try await mapConcurrently(response.collections) { collection in
+        let fetched = try await mapConcurrently(response.items) { collection in
             let ids = try await self.fetchPersonalCollectionBookIds(
                 collectionId: collection.id,
                 libraryIds: libraryIds
@@ -1313,7 +1420,7 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
             return (collection, ids)
         }
         let memberships = Dictionary(uniqueKeysWithValues: fetched.map { ($0.0.id, $0.1) })
-        return response.collections
+        return response.items
             .sorted { $0.sortOrder < $1.sortOrder }
             .map { collection in
                 var mapped = Collection(
@@ -1345,80 +1452,23 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         var ids: [String] = []
         var seen = Set<String>()
         for libraryId in scopes {
-            for id in try await fetchPersonalCollectionBookIds(
-                collectionId: collectionId,
-                libraryId: libraryId
-            ) where seen.insert(id).inserted {
-                ids.append(id)
-            }
-        }
-        return ids
-    }
-
-    private func fetchPersonalCollectionBookIds(
-        collectionId: String,
-        libraryId: String?
-    ) async throws -> [String] {
-        var offset = 0
-        var expectedTotal: Int?
-        var snapshot: String?
-        var ids: [String] = []
-
-        while true {
-            var query = [
-                URLQueryItem(name: "source", value: "user_collection"),
-                URLQueryItem(name: "collection_id", value: collectionId),
-                URLQueryItem(name: "offset", value: String(offset)),
-                URLQueryItem(name: "limit", value: String(pageSize)),
-                URLQueryItem(name: "include_total", value: "true"),
-            ]
-            if let libraryId {
-                query.append(URLQueryItem(name: "library_id", value: libraryId))
-            }
-            if let snapshot {
-                query.append(URLQueryItem(name: "snapshot", value: snapshot))
-            }
-
-            let page = try await send(
-                try makeRequest(path: "/catalog", query: query),
-                as: SiloCatalogResponse.self
-            )
-            guard let hasMore = page.hasMore else {
-                throw ProviderError.serverError("Silo did not return a collection pagination boundary")
-            }
-            if snapshot == nil {
-                snapshot = page.snapshot
-            } else if let pageSnapshot = page.snapshot, pageSnapshot != snapshot {
-                throw ProviderError.serverError("Silo collection snapshot changed during refresh")
-            }
-
-            if snapshot != nil {
-                if let expectedTotal, expectedTotal != page.total {
-                    throw ProviderError.serverError("Silo collection changed during refresh")
+            try await traversePages(SiloCatalogItemPage.self) { cursor in
+                var query = [
+                    URLQueryItem(name: "source", value: "user_collection"),
+                    URLQueryItem(name: "collection_id", value: collectionId),
+                    URLQueryItem(name: "limit", value: String(self.pageSize)),
+                ]
+                if let libraryId {
+                    query.append(URLQueryItem(name: "library_id", value: libraryId))
                 }
-                expectedTotal = page.total
-            }
-
-            ids.append(
-                contentsOf: page.items.compactMap { item in
-                    let type = item.type.lowercased()
-                    return type == "audiobook" || type == "ebook"
-                        ? item.contentID
-                        : nil
+                if let cursor {
+                    query.append(URLQueryItem(name: "cursor", value: cursor))
                 }
-            )
-            offset += page.items.count
-            if !hasMore {
-                if snapshot != nil, offset != page.total {
-                    throw ProviderError.serverError("Silo returned an incomplete collection")
+                return try self.makeRequest(path: "/catalog", query: query)
+            } handle: { page in
+                for id in page.readableContentIDs where seen.insert(id).inserted {
+                    ids.append(id)
                 }
-                break
-            }
-            guard !page.items.isEmpty, offset <= 1_000_000 else {
-                throw ProviderError.serverError("Silo collection pagination stalled")
-            }
-            if snapshot != nil, offset > page.total {
-                throw ProviderError.serverError("Silo collection pagination stalled")
             }
         }
         return ids
@@ -1427,7 +1477,7 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
     private func fetchServerCollections(libraryIds: [String]) async throws -> [Collection] {
         let collectionLists = try await mapConcurrently(libraryIds) { libraryId in
             let response = try await self.send(
-                try self.makeRequest(path: "/library/\(libraryId)/collections"),
+                try self.makeRequest(path: "/library/\(Self.pathSegment(libraryId))/collections"),
                 as: SiloLibraryCollectionsResponse.self
             )
             return response.collections
@@ -1439,22 +1489,7 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
             .filter { seen.insert($0.id).inserted }
 
         let fetched = try await mapConcurrently(summaries) { collection in
-            let response = try await self.send(
-                try self.makeRequest(
-                    path: "/library/\(collection.libraryID)/collections/\(collection.id)/items"
-                ),
-                as: SiloCollectionBrowseResponse.self
-            )
-            guard !response.hasMore, response.total == response.items.count else {
-                throw ProviderError.serverError("Silo returned an incomplete server collection")
-            }
-            let ids = response.items.compactMap { item in
-                let type = item.type.lowercased()
-                return type == "audiobook" || type == "ebook"
-                    ? item.contentID
-                    : nil
-            }
-            return (collection, ids)
+            (collection, try await self.fetchServerCollectionBookIds(collection))
         }
         let memberships = Dictionary(uniqueKeysWithValues: fetched.map { ($0.0.id, $0.1) })
         return
@@ -1480,6 +1515,21 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
                 }
                 return mapped
             }
+    }
+
+    private func fetchServerCollectionBookIds(_ collection: SiloLibraryCollection) async throws -> [String] {
+        let path = "/library/\(Self.pathSegment(collection.libraryID))/collections/\(Self.pathSegment(collection.id))/items"
+        var ids: [String] = []
+        try await traversePages(SiloCatalogItemPage.self) { cursor in
+            var query = [URLQueryItem(name: "limit", value: String(self.pageSize))]
+            if let cursor {
+                query.append(URLQueryItem(name: "cursor", value: cursor))
+            }
+            return try self.makeRequest(path: path, query: query)
+        } handle: { page in
+            ids.append(contentsOf: page.readableContentIDs)
+        }
+        return ids
     }
 
     private func mapConcurrently<Input: Sendable, Output: Sendable>(
@@ -1514,50 +1564,21 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         if let cached = detailCache[id] { return cached }
         try await ensureAuthenticated()
         _ = try await ensureProfile()
-        let detail = try await send(try makeRequest(path: "/catalog/items/\(id)"), as: SiloItemDetail.self)
+        let detail = try await send(
+            try makeRequest(path: "/catalog/items/\(Self.pathSegment(id))"),
+            as: SiloItemDetail.self
+        )
         detailCache[id] = detail
         return detail
     }
 
-    private func siloEbookProgress(
-        for contentID: String,
-        retryingAuth: Bool = true
-    ) async throws -> SiloEbookProgress? {
-        let request = try makeRequest(path: "/ebooks/\(contentID)/progress")
-        guard !isRetired else { throw CancellationError() }
-        try Task.checkCancellation()
-        let (data, response) = try await session.data(for: request)
-        try Task.checkCancellation()
-        guard !isRetired else { throw CancellationError() }
-        guard let http = response as? HTTPURLResponse else {
-            throw ProviderError.invalidResponse
-        }
-        if http.statusCode == 401,
-            retryingAuth,
-            await recoverAuthentication()
-        {
-            return try await siloEbookProgress(
-                for: contentID,
-                retryingAuth: false
-            )
-        }
-        if http.statusCode == 404 || http.statusCode == 204 {
-            return nil
-        }
-        guard (200...299).contains(http.statusCode) else {
-            if http.statusCode == 401 || http.statusCode == 403 {
-                throw ProviderError.unauthorized
-            }
-            throw ProviderError.serverError(
-                "Silo returned HTTP \(http.statusCode)"
-            )
-        }
-        guard !data.isEmpty else { return nil }
-        do {
-            return try decoder.decode(SiloEbookProgress.self, from: data)
-        } catch {
-            throw ProviderError.decodingFailed
-        }
+    private func siloEbookProgress(for contentID: String) async throws -> SiloEbookProgress? {
+        let (data, http) = try await perform(
+            try makeRequest(path: "/ebooks/\(Self.pathSegment(contentID))/progress")
+        )
+        if http.statusCode == 404 { return nil }
+        try validate(http, data)
+        return try decode(SiloEbookProgressEnvelope.self, from: data).progress
     }
 
     private func mapCatalogItems(
@@ -1621,7 +1642,7 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         if let partVersions {
             duration = Double(partVersions.reduce(0) { $0 + ($1.duration ?? 0) })
         } else {
-            duration = Double(detail.audiobook?.totalDurationSeconds ?? version?.duration ?? detail.runtime ?? 0)
+            duration = Double(detail.audiobook?.totalDurationSeconds ?? version?.duration ?? detail.runtimeSeconds ?? 0)
         }
         let mappedChapters: [Chapter]? = {
             if let partVersions {
@@ -1677,8 +1698,8 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
             seriesInfo: series.map { SeriesInfo(name: $0, sequence: nil) },
             duration: duration > 0 ? duration : nil,
             coverURL: coverURL(from: detail.posterURL),
-            partKey: version.map { String($0.fileID) },
-            audioFileIno: version.map { String($0.fileID) },
+            partKey: version?.fileID,
+            audioFileIno: version?.fileID,
             audioTracks: audioTracks,
             mediaType: isAudiobook ? .audiobook : .ebook,
             ebookFormat: isAudiobook ? nil : ebookFormat(from: version),
@@ -1769,24 +1790,22 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
             if event == .paused { pausedSessionIDs.formUnion(sessionIDs) } else { pausedSessionIDs.subtract(sessionIDs) }
             if let parts {
                 await heartbeatMultipartSession(parts: parts, currentTime: position, isPaused: event == .paused)
-            } else if var request = try? makeRequest(path: "/playback/\(activeSessionID)/progress", method: "POST") {
-                request.httpBody = try? JSONSerialization.data(withJSONObject: [
-                    "position": max(0, position),
-                    "is_paused": event == .paused,
-                ])
-                try? await sendEmpty(request)
+            } else {
+                try? await sendProgressSample(sessionID: activeSessionID, position: position, isPaused: event == .paused)
             }
         case .stopped:
-            // Silo writes watch history only when the session is deleted, using its last reported position.
+            // Silo writes watch history when the session stops, from the stop's final sample.
             pausedSessionIDs.subtract(sessionIDs)
             multipartSessions[book.id] = nil
             singleSessionFiles[book.id] = nil
             replacementSessionIDs[sessionId] = nil
             replacementSessionIDs[activeSessionID] = nil
-            for id in sessionIDs {
-                if let request = try? makeRequest(path: "/playback/\(id)", method: "DELETE") {
-                    try? await sendEmpty(request)
+            if let parts {
+                for part in parts {
+                    await stopPlaybackSession(part.sessionID, finalPosition: nil)
                 }
+            } else {
+                await stopPlaybackSession(activeSessionID, finalPosition: position)
             }
         }
     }
@@ -1796,17 +1815,109 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         currentTime: TimeInterval,
         isPaused: Bool
     ) async {
-        guard let active = parts.last(where: { currentTime >= $0.startOffset }) ?? parts.first,
-            var request = try? makeRequest(path: "/playback/\(active.sessionID)/progress", method: "POST")
-        else {
+        guard let active = parts.last(where: { currentTime >= $0.startOffset }) ?? parts.first else {
             return
         }
         let localPosition = min(max(currentTime - active.startOffset, 0), active.duration)
-        request.httpBody = try? JSONSerialization.data(withJSONObject: [
-            "position": localPosition,
-            "is_paused": isPaused,
-        ])
-        try? await sendEmpty(request)
+        try? await sendProgressSample(sessionID: active.sessionID, position: localPosition, isPaused: isPaused)
+    }
+
+    private func playbackInstallation(refresh: Bool = false) async throws -> String {
+        if !refresh, let playbackInstallationID { return playbackInstallationID }
+        let capabilities = try await send(
+            try makeRequest(path: "/playback/capabilities"),
+            as: SiloPlaybackCapabilities.self
+        )
+        guard capabilities.state == "available", capabilities.allowed != false,
+            let installationID = capabilities.installationID, !installationID.isEmpty
+        else {
+            throw ProviderError.serverError("Silo playback is not available")
+        }
+        playbackInstallationID = installationID
+        return installationID
+    }
+
+    // A server restart rotates the installation; the same command is resent once under the new one.
+    private func sendPlaybackCommand(
+        path: String,
+        method: String,
+        body: (String) throws -> Data
+    ) async throws -> (Data, HTTPURLResponse) {
+        var request = try makeRequest(path: path, method: method)
+        request.httpBody = try body(try await playbackInstallation())
+        let (data, http) = try await perform(request)
+        guard http.statusCode == 409, Self.problemType(data) == "installation_changed" else {
+            return (data, http)
+        }
+        let installationID = try await playbackInstallation(refresh: true)
+        var retried = try makeRequest(path: path, method: method)
+        retried.httpBody = try body(installationID)
+        return try await perform(retried)
+    }
+
+    private func sendProgressSample(sessionID: String, position: TimeInterval, isPaused: Bool) async throws {
+        let sequence = (progressSequences[sessionID] ?? 0) + 1
+        progressSequences[sessionID] = sequence
+        let (data, http) = try await sendPlaybackCommand(
+            path: "/playback/\(Self.pathSegment(sessionID))/progress",
+            method: "POST"
+        ) { installationID in
+            try JSONSerialization.data(withJSONObject: [
+                "installation_id": installationID,
+                "sequence": sequence,
+                "position": max(0, position),
+                "is_paused": isPaused,
+            ])
+        }
+        if http.statusCode == 404 || http.statusCode == 410 { throw SiloPlaybackError.sessionNotFound }
+        try validate(http, data)
+        let mutation = try decode(SiloPlaybackMutation.self, from: data)
+        switch mutation.outcome {
+        case "applied", "replayed": return
+        case "stale_sample":
+            if let accepted = mutation.accepted?.sequence,
+                accepted > sequence, accepted <= (progressSequences[sessionID] ?? sequence)
+            { return }
+            throw ProviderError.serverError("Silo kept a newer playback sample")
+        default: throw ProviderError.invalidResponse
+        }
+    }
+
+    // The stop identity and final sample are fixed on first attempt so every retry replays the same stop.
+    private func stopPlaybackSession(_ sessionID: String, finalPosition: TimeInterval?) async {
+        let stop: PendingStop
+        if let pending = pendingStops[sessionID] {
+            stop = pending
+        } else {
+            let sequence = finalPosition.map { _ in (progressSequences[sessionID] ?? 0) + 1 }
+            if let sequence { progressSequences[sessionID] = sequence }
+            stop = PendingStop(stopID: Self.canonicalUUID(), sequence: sequence, position: finalPosition.map { max(0, $0) })
+            pendingStops[sessionID] = stop
+        }
+        do {
+            let (_, http) = try await sendPlaybackCommand(
+                path: "/playback/\(Self.pathSegment(sessionID))",
+                method: "DELETE"
+            ) { installationID in
+                var body: [String: Any] = ["installation_id": installationID, "stop_id": stop.stopID]
+                if let sequence = stop.sequence, let position = stop.position {
+                    body["sequence"] = sequence
+                    body["position"] = position
+                }
+                return try JSONSerialization.data(withJSONObject: body)
+            }
+            let retryable = http.statusCode >= 500 || [401, 403, 429].contains(http.statusCode)
+            if !retryable {
+                pendingStops[sessionID] = nil
+                progressSequences[sessionID] = nil
+            }
+        } catch {}
+    }
+
+    private func flushPendingStops() async {
+        for sessionID in Array(pendingStops.keys) {
+            await stopPlaybackSession(sessionID, finalPosition: nil)
+        }
     }
 
     private func readableEbookVersions(for detail: SiloItemDetail) -> [SiloFileVersion] {
@@ -1815,7 +1926,7 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
 
     private func preferredEbookVersion(
         for detail: SiloItemDetail,
-        savedFileID: Int?
+        savedFileID: String?
     ) -> SiloFileVersion? {
         let readable = readableEbookVersions(for: detail)
         if let savedFileID,
@@ -1887,13 +1998,7 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         if let url = URL(string: value), url.scheme != nil {
             return authenticatedStreamURL(url)
         }
-        let resolvedValue: String
-        if value == "/stream" || value.hasPrefix("/stream/") {
-            resolvedValue = "\(baseURLString)/api/v1\(value)"
-        } else {
-            resolvedValue = baseURLString + (value.hasPrefix("/") ? value : "/\(value)")
-        }
-        guard let url = URL(string: resolvedValue) else {
+        guard let url = URL(string: baseURLString + (value.hasPrefix("/") ? value : "/\(value)")) else {
             throw ProviderError.invalidURL
         }
         return authenticatedStreamURL(url)
@@ -2002,6 +2107,36 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
     }()
+
+    private static func milliseconds(_ seconds: TimeInterval) -> Int64 {
+        Int64((max(0, seconds) * 1000).rounded())
+    }
+
+    // Playback and stop identities must be canonical lowercase UUIDs.
+    private static func canonicalUUID() -> String {
+        UUID().uuidString.lowercased()
+    }
+
+    static func pathSegment(_ value: String) -> String {
+        var allowed = CharacterSet.urlPathAllowed
+        allowed.remove("/")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+    }
+
+    private static func problemType(_ data: Data) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let type = object["type"] as? String,
+            let url = URL(string: type)
+        else { return nil }
+        return url.lastPathComponent
+    }
+
+    private static func snapshotIdentifier(of page: SiloCatalogPage) -> String {
+        let identity = "\(page.totalCount)|" + page.books.map(\.uniqueId).sorted().joined(separator: "\u{1F}")
+        return SHA256.hash(data: Data(identity.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
 
     nonisolated private static func decodeDate(_ decoder: Decoder) throws -> Date {
         let container = try decoder.singleValueContainer()
@@ -2122,6 +2257,96 @@ enum SiloOAuthError: LocalizedError, Equatable {
     }
 }
 
+private enum SiloCursorError: Error {
+    case invalid
+}
+
+private enum SiloPlaybackError: Error {
+    case sessionNotFound
+}
+
+private struct SiloCatalogPage {
+    let books: [Book]
+    let totalCount: Int
+    let nextCursor: String?
+    let isComplete: Bool
+}
+
+private final class SiloCatalogTraversal {
+    let snapshotIdentifier: String
+    let resumed: Bool
+    private let totalCount: Int
+    private let fetchPage: (String, Int) async throws -> SiloCatalogPage
+    private var pendingPage: SiloCatalogPage?
+    private var cursor: String?
+    private var seenCursors = Set<String>()
+    private var pageIndex = 1
+    private var loaded = 0
+    private var isComplete = true
+
+    init(
+        snapshotIdentifier: String,
+        resumed: Bool,
+        firstPage: SiloCatalogPage,
+        totalCount: Int,
+        fetchPage: @escaping (String, Int) async throws -> SiloCatalogPage
+    ) {
+        self.snapshotIdentifier = snapshotIdentifier
+        self.resumed = resumed
+        self.totalCount = totalCount
+        self.fetchPage = fetchPage
+        pendingPage = firstPage
+    }
+
+    func next() async throws -> LibraryCatalogBatch? {
+        let page: SiloCatalogPage
+        if let pendingPage {
+            page = pendingPage
+            self.pendingPage = nil
+        } else if let cursor {
+            pageIndex += 1
+            page = try await fetchPage(cursor, pageIndex)
+        } else {
+            return nil
+        }
+        if let next = page.nextCursor, !seenCursors.insert(next).inserted {
+            throw ProviderError.serverError("Silo catalog pagination repeated a cursor")
+        }
+        cursor = page.nextCursor
+        loaded += page.books.count
+        isComplete = isComplete && page.isComplete
+        return LibraryCatalogBatch(
+            books: page.books,
+            loadedSoFar: loaded,
+            totalCount: totalCount,
+            resumeToken: isComplete ? (page.nextCursor ?? "") : nil,
+            completesSnapshot: page.nextCursor == nil && isComplete
+        )
+    }
+}
+
+private protocol SiloCursorPaged: Decodable {
+    var page: SiloPageInfo? { get }
+}
+
+private struct SiloPageInfo: Decodable {
+    let nextCursor: String?
+    let hasMore: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case nextCursor = "next_cursor"
+        case hasMore = "has_more"
+    }
+
+    static func continuation(of page: SiloPageInfo?) throws -> String? {
+        guard let page, page.hasMore else { return nil }
+        guard let nextCursor = page.nextCursor, !nextCursor.isEmpty else {
+            throw ProviderError.serverError("Silo reported more results without a cursor")
+        }
+        return nextCursor
+    }
+}
+
 struct SiloReaderAnnotationRecord: Decodable, Sendable {
     let id: String
     let contentID: String
@@ -2135,9 +2360,10 @@ struct SiloReaderAnnotationRecord: Decodable, Sendable {
     let metadata: [String: String]
     let createdAt: Date?
     let updatedAt: Date?
+    let etag: String
 
     enum CodingKeys: String, CodingKey {
-        case id, kind, location, note, style, color, metadata
+        case id, kind, location, note, style, color, metadata, etag
         case contentID = "content_id"
         case cfiRange = "cfi_range"
         case selectedText = "selected_text"
@@ -2156,17 +2382,31 @@ struct SiloReaderAnnotationRecord: Decodable, Sendable {
         note = try container.decodeIfPresent(String.self, forKey: .note) ?? ""
         style = try container.decodeIfPresent(String.self, forKey: .style) ?? "highlight"
         color = try container.decodeIfPresent(String.self, forKey: .color) ?? "#facc15"
-        metadata = (try? container.decode([String: String].self, forKey: .metadata)) ?? [:]
+        // Metadata is a shared extension bag; values other clients store as non-strings are ignored.
+        metadata =
+            (try? container.decode([String: SiloMetadataValue].self, forKey: .metadata))?
+            .compactMapValues(\.string) ?? [:]
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt)
         updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt)
+        etag = try container.decode(String.self, forKey: .etag)
     }
 }
 
-private struct SiloReaderAnnotationsEnvelope: Decodable {
-    let items: [SiloReaderAnnotationRecord]?
+private struct SiloMetadataValue: Decodable {
+    let string: String?
+
+    init(from decoder: Decoder) throws {
+        string = try? decoder.singleValueContainer().decode(String.self)
+    }
+}
+
+private struct SiloReaderAnnotationsPage: @MainActor SiloCursorPaged {
+    let items: [SiloReaderAnnotationRecord]
+    let page: SiloPageInfo?
 }
 
 private struct SiloReaderAnnotationRequest: Encodable {
+    var id: String?
     let kind: String
     let cfiRange: String?
     let location: String
@@ -2177,7 +2417,7 @@ private struct SiloReaderAnnotationRequest: Encodable {
     let metadata: [String: String]
 
     enum CodingKeys: String, CodingKey {
-        case kind, location, note, style, color, metadata
+        case id, kind, location, note, style, color, metadata
         case cfiRange = "cfi_range"
         case selectedText = "selected_text"
     }
@@ -2215,12 +2455,11 @@ private struct SiloAuthProvidersResponse: Decodable {
 
 private struct SiloAuthProviderItem: Decodable {
     let mode: String
-    let name: String?
-    let displayName: String?
+    let displayName: String
     let nativeStartPath: String?
 
     enum CodingKeys: String, CodingKey {
-        case mode, name
+        case mode
         case displayName = "display_name"
         case nativeStartPath = "native_start_path"
     }
@@ -2237,43 +2476,47 @@ private struct SiloServerIdentity: Decodable {
 private struct SiloUser: Decodable {
     let id: String
     let username: String
-
-    enum CodingKeys: String, CodingKey { case id, username }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        username = try container.decode(String.self, forKey: .username)
-        if let id = try? container.decode(String.self, forKey: .id) {
-            self.id = id
-        } else {
-            id = String(try container.decode(Int.self, forKey: .id))
-        }
-    }
 }
 
 private struct SiloProfilesResponse: Decodable {
-    let profiles: [SiloProfile]
+    let items: [SiloProfile]
 }
 
-private struct SiloProfile: Decodable {
+struct SiloProfile: Decodable {
     let id: String
     let name: String
     let isPrimary: Bool
+    let hasPIN: Bool?
 
     enum CodingKeys: String, CodingKey {
         case id, name
         case isPrimary = "is_primary"
+        case hasPIN = "has_pin"
     }
 }
 
+private struct SiloProfileProof: Decodable {
+    let valid: Bool
+    let profileToken: String?
+
+    enum CodingKeys: String, CodingKey {
+        case valid
+        case profileToken = "profile_token"
+    }
+}
+
+private struct SiloLibrariesResponse: Decodable {
+    let items: [SiloLibrary]
+}
+
 private struct SiloLibrary: Decodable {
-    let id: Int
+    let id: String
     let name: String
     let type: String
 }
 
 nonisolated private struct SiloPersonalCollectionsResponse: Decodable, Sendable {
-    let collections: [SiloPersonalCollection]
+    let items: [SiloPersonalCollection]
 }
 
 nonisolated private struct SiloPersonalCollection: Decodable, Sendable {
@@ -2300,7 +2543,7 @@ nonisolated private struct SiloLibraryCollectionsResponse: Decodable, Sendable {
 
 nonisolated private struct SiloLibraryCollection: Decodable, Sendable {
     let id: String
-    let libraryID: Int
+    let libraryID: String
     let title: String
     let description: String?
     let collectionType: String
@@ -2318,43 +2561,26 @@ nonisolated private struct SiloLibraryCollection: Decodable, Sendable {
     }
 }
 
-nonisolated private struct SiloCollectionBrowseResponse: Decodable, Sendable {
-    let items: [SiloCollectionBrowseItem]
-    let total: Int
-    let hasMore: Bool
+private struct SiloCatalogItemPage: @MainActor SiloCursorPaged {
+    let items: [SiloCatalogItem]
+    let page: SiloPageInfo?
 
-    enum CodingKeys: String, CodingKey {
-        case items, total
-        case hasMore = "has_more"
+    var readableContentIDs: [String] {
+        items.compactMap { item in
+            let type = item.type.lowercased()
+            return type == "audiobook" || type == "ebook" ? item.contentID : nil
+        }
     }
-}
-
-nonisolated private struct SiloCollectionBrowseItem: Decodable, Sendable {
-    let contentID: String
-    let type: String
-
-    enum CodingKeys: String, CodingKey {
-        case type
-        case contentID = "content_id"
-    }
-}
-
-private struct SiloLibrariesEnvelope: Decodable {
-    let libraries: [SiloLibrary]?
-    let items: [SiloLibrary]?
 }
 
 private struct SiloCatalogResponse: Decodable {
     let total: Int
-    let hasMore: Bool?
     let items: [SiloCatalogItem]
-    let snapshot: String?
+    let page: SiloPageInfo?
     let rejectedItems: [RejectedContentCandidate]
-    var rawItemCount: Int { items.count + rejectedItems.count }
 
     enum CodingKeys: String, CodingKey {
-        case total, items, snapshot
-        case hasMore = "has_more"
+        case total, items, page
     }
 
     init(from decoder: Decoder) throws {
@@ -2363,8 +2589,7 @@ private struct SiloCatalogResponse: Decodable {
         self.items = items.values
         rejectedItems = items.rejectedItems
         total = try container.decode(Int.self, forKey: .total)
-        hasMore = try container.decodeIfPresent(Bool.self, forKey: .hasMore)
-        snapshot = try container.decodeIfPresent(String.self, forKey: .snapshot)
+        page = try container.decodeIfPresent(SiloPageInfo.self, forKey: .page)
     }
 }
 
@@ -2384,7 +2609,7 @@ private struct SiloItemDetail: Decodable {
     let title: String
     let year: Int?
     let overview: String?
-    let runtime: Int?
+    let runtimeMinutes: Int?
     let genres: [String]?
     let posterURL: String?
     let seriesTitle: String?
@@ -2394,9 +2619,12 @@ private struct SiloItemDetail: Decodable {
     let audiobook: SiloAudiobookExtension?
     let ebook: SiloEbookExtension?
 
+    var runtimeSeconds: Int? { runtimeMinutes.map { $0 * 60 } }
+
     enum CodingKeys: String, CodingKey {
-        case type, title, year, overview, runtime, genres, versions, audiobook, ebook
+        case type, title, year, overview, genres, versions, audiobook, ebook
         case contentID = "content_id"
+        case runtimeMinutes = "runtime"
         case posterURL = "poster_url"
         case seriesTitle = "series_title"
         case userData = "user_data"
@@ -2410,7 +2638,7 @@ private struct SiloPlaybackVariant: Decodable {
 
 private struct SiloPlaybackVariantPart: Decodable {
     let partIndex: Int
-    let defaultFileID: Int?
+    let defaultFileID: String?
     let versions: [SiloFileVersion]
 
     enum CodingKeys: String, CodingKey {
@@ -2432,14 +2660,9 @@ private struct SiloProgressState: Decodable {
     }
 }
 
-private struct SiloProgressListResponse: Decodable {
-    let progress: [SiloProgressEntry]
-    let nextCursor: String?
-
-    enum CodingKeys: String, CodingKey {
-        case progress
-        case nextCursor = "next_cursor"
-    }
+private struct SiloProgressPage: @MainActor SiloCursorPaged {
+    let items: [SiloProgressEntry]
+    let page: SiloPageInfo?
 }
 
 private struct SiloProgressEntry: Decodable {
@@ -2464,19 +2687,20 @@ private struct SiloProgressSyncRequest: Encodable {
 
 private struct SiloProgressSyncItem: Encodable {
     let mediaItemID: String
-    let position: Double
-    let duration: Double
+    let positionMs: Int64
+    let durationMs: Int64
     let updatedAt: String
 
     enum CodingKeys: String, CodingKey {
         case mediaItemID = "media_item_id"
-        case position, duration
+        case positionMs = "position_ms"
+        case durationMs = "duration_ms"
         case updatedAt = "updated_at"
     }
 }
 
 private struct SiloProgressSyncResponse: Decodable {
-    let results: [SiloProgressSyncResult]
+    let items: [SiloProgressSyncResult]
 }
 
 private struct SiloProgressSyncResult: Decodable {
@@ -2517,7 +2741,7 @@ private struct SiloSeriesGroup: Decodable {
 }
 
 private struct SiloFileVersion: Decodable {
-    let fileID: Int
+    let fileID: String
     let fileName: String?
     let filePath: String?
     let container: String?
@@ -2547,6 +2771,17 @@ private struct SiloChapter: Decodable {
         case index, title
         case startSeconds = "start_seconds"
         case endSeconds = "end_seconds"
+    }
+}
+
+private struct SiloPlaybackCapabilities: Decodable {
+    let state: String
+    let allowed: Bool?
+    let installationID: String?
+
+    enum CodingKeys: String, CodingKey {
+        case state, allowed
+        case installationID = "installation_id"
     }
 }
 
@@ -2629,10 +2864,14 @@ private struct SiloPlaybackTerminal: Decodable {
     let reason: String
 }
 
+private struct SiloEbookProgressEnvelope: Decodable {
+    let progress: SiloEbookProgress?
+}
+
 private struct SiloEbookProgress: Decodable {
-    let fileID: Int?
-    let location: String?
-    let progress: Double?
+    let fileID: String
+    let location: String
+    let progress: Double
     let updatedAt: Date?
 
     enum CodingKeys: String, CodingKey {
@@ -2642,14 +2881,8 @@ private struct SiloEbookProgress: Decodable {
     }
 }
 
-private extension Sequence {
-    func asyncCompactMap<T>(_ transform: (Element) async throws -> T?) async throws -> [T] {
-        var values: [T] = []
-        for element in self {
-            if let value = try await transform(element) {
-                values.append(value)
-            }
-        }
-        return values
-    }
+private struct SiloPlaybackMutation: Decodable {
+    struct Sample: Decodable { let sequence: Int64 }
+    let outcome: String
+    let accepted: Sample?
 }

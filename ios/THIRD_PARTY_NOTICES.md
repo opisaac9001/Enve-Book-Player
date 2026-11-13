@@ -59,6 +59,12 @@ Enve does not bundle the large TTS model weights in its source repository or app
 
 Downloading or redistributing a model creates obligations separate from distributing the Enve source. A binary release must show the applicable model license and use restrictions before or with the model download.
 
+## Gradium Phonon narration
+
+Enve bundles the single-threaded SIMD WebAssembly module and JavaScript bindings from [phonon-tts 0.7.0](https://www.npmjs.com/package/phonon-tts/v/0.7.0), built from [xn-ptts v0.7.0](https://github.com/gradium-ai/xn-ptts/tree/v0.7.0). Enve uses the Apache-2.0 option and retains the dependency notices in `enve/Resources/Phonon/`. The local adapter serves only the runtime and verified model files to WebKit.
+
+On iOS 18 and later, readers may download [Phonon 31m English](https://huggingface.co/gradium/phonon-31m-en/tree/92741c5b07d085ff840e26fea8ce43110b87852f) and the Hugh and Spencer embeddings from the [Gradium voice catalog](https://huggingface.co/gradium/phonon-voices/tree/da6c9ec0d47be8df5c87c730a3aa97187f3229c3), both Apache-2.0. Model weights are downloaded separately and verified against SHA-256 digests.
+
 ## QuartzNet alignment model
 
 The optional StoryAlign CTC engine downloads a pinned English QuartzNet ONNX checkpoint from Storyteller's model registry (project `67994333`, version `3023100`). The model SHA-256 is `3a4cf199c53475ae752694bb65989c05755bf6920d8ac8aaf51581a1021bdf2c`. Model weights are not included in this repository.

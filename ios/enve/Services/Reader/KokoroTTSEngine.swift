@@ -150,18 +150,19 @@ actor KokoroTTSRuntime {
         return samples
     }
 
+    /// Everything removal deletes for both the Core ML and ONNX backends.
+    nonisolated static var modelDirectories: [URL] {
+        get throws {
+            let models = try TtsCacheDirectory.ensure().appendingPathComponent("Models", isDirectory: true)
+            let onnx = try KokoroONNXAssets.directory
+            return [Repo.kokoroAne, .kokoro].map { models.appendingPathComponent($0.folderName, isDirectory: true) } + [onnx]
+        }
+    }
+
     func removeModels() async throws {
         await unload()
-        let models = try TtsCacheDirectory.ensure()
-            .appendingPathComponent("Models", isDirectory: true)
-        for repo in [Repo.kokoroAne, .kokoro] {
-            let url = models.appendingPathComponent(repo.folderName, isDirectory: true)
-            if FileManager.default.fileExists(atPath: url.path) {
-                try FileManager.default.removeItem(at: url)
-            }
-        }
-        if let directory = try? KokoroONNXAssets.directory, FileManager.default.fileExists(atPath: directory.path) {
-            try FileManager.default.removeItem(at: directory)
+        for url in try Self.modelDirectories where FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
         }
         try? audioCache.removeAll()
     }

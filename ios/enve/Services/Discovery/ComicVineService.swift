@@ -66,9 +66,15 @@ struct ComicVineMetadataLayer: Equatable, Sendable {
 
 final class ComicVineService: Sendable {
     static let shared = ComicVineService()
-    private init() {}
 
     private let baseURL = URL(string: "https://comicvine.gamespot.com/api")!
+    private let session: URLSession
+    private let policy: ExternalServicesPolicy
+
+    init(session: URLSession = .shared, policy: ExternalServicesPolicy = .shared) {
+        self.session = session
+        self.policy = policy
+    }
 
     var hasApiKey: Bool {
         guard let key = SettingsManager.shared.comicVineApiKey else { return false }
@@ -76,6 +82,7 @@ final class ComicVineService: Sendable {
     }
 
     func search(query: String, limit: Int = 20) async throws -> [ComicVineMetadataLayer] {
+        try policy.checkAllowed(.comicVine)
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
 
@@ -105,7 +112,7 @@ final class ComicVineService: Sendable {
         var request = URLRequest(url: url)
         request.setValue("enve/1.0", forHTTPHeaderField: "User-Agent")
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             throw NSError(
                 domain: "ComicVineService",

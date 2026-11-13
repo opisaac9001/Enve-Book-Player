@@ -16,7 +16,7 @@ device. Every other device keeps the bottom-bar shell unchanged.
 | Open flat, held sideways | 951×669, regular × regular, fold inactive, side column | **Spread**: the stacks on the left page, the facing page on the right, the tabs in the side column, a faint spine along the fold | Lives on the facing page; the full-screen cover never opens | Two facing pages with a spine at the fold, buttons in the side column |
 | Open flat, upright | 669×951, regular × regular, horizontal bars | Standard shell at regular size (64pt bar) | Stacked cover | Single page |
 | Book pose (partly folded, sideways) | fold active, vertical | Spread with the pages inset from the hinge and a deep spine | Facing page | Two pages, deep spine |
-| Tabletop (partly folded, upright) | fold active, horizontal | **Nightstand**: the stacks stay on the upright half, the dock with the transport and the tabs lies on the flat half | Nightstand layout with a bedside clock on the upright half | Lectern: page upright, controls flat |
+| Tabletop (partly folded, upright) | fold active, horizontal | **Nightstand**: the stacks stay on the upright half and fade out above the fold; the dock on the flat half shows the book at cover size beside a large transport, above the tabs | Nightstand layout: a face (cover, bedside clock, title) on the upright half, every control on the flat half | Lectern: page upright, controls flat |
 
 Two rules from Apple's Duo guidance shape all of this. Size classes, not orientation, drive every decision,
 and the fold comes from the system rather than from the canvas shape: `GeometryProxy.hearthFold()` wraps
@@ -69,9 +69,9 @@ keeps the hinge's clearance on both sides), never at a presumed halfway line.
   mantel book to the facing page and the dock.
 - `enve/Screens/Player/PlayerScreen.swift` and `PlayerLayoutPolicy`: `PlayerPresentation` (`cover`, `page`,
   `dock`), the cover's side chrome (close, reading options, queue, AirPlay stacked in the column), the
-  nightstand clock, and the dock transport. The full-screen nightstand sizes its upright half, the cover's
-  budget, and the flat half from the measured fold; the facing page keeps its own horizontal row, because
-  those controls belong to that pane. The stacked column sits in a scroll view with the canvas as its
+  nightstand face and deck, and the dock transport. The full-screen nightstand sizes its upright half, the
+  cover's budget, and the flat half from the measured fold; the facing page keeps its own horizontal row,
+  because those controls belong to that pane. The stacked column sits in a scroll view with the canvas as its
   minimum height, so it spreads out as before where it fits and scrolls on a short canvas such as the
   facing page instead of pushing its top row above the screen.
 - `enve/Screens/Reader/ReaderScreen.swift` and `ReaderSpreadPolicy`: the facing-page spread, the lectern,
@@ -162,6 +162,38 @@ the spread, pocket, and nightstand assertions on devices and poses that don't ap
   so pushed destinations do not cover the shared surface.
 - Duo player and spread-navigation tests passed. Air appearance persistence, true black, and player
   rotation checks passed. No new compiler warnings; the existing CloudKit Sendable warning remains.
+
+## The nightstand
+
+Each half of a propped Duo is a short, wide pane (669 points across, about 365 usable above the fold and 415
+below), so the nightstand lays each one out sideways instead of stacking a phone layout into it. The split
+follows the tabletop guidance other platforms give for media: what you look at stands upright, what you
+touch lies flat, and controls grow because the phone is an arm's length away.
+
+- **Face (upright half of the player).** The cover takes the height the top buttons leave. On a half at
+  least `PlayerLayoutPolicy.nightstandWideFaceMinimumWidth` wide the clock and the title stand beside it;
+  a narrower half puts the clock above the cover and the title beside it. The clock shows digits at display
+  size with the day period small beside them, and the sleep timer's countdown joins the title.
+- **Deck (flat half of the player).** One scrubber with its times, a 108-point play button with 76-point
+  skips, and a row of 58-point pills that leads with Sleep, which otherwise lives in the More menu.
+- **Dock (flat half of the shell).** On a wide half the cover and title stand beside the scrubber, an
+  88-point transport and the utility pills; tapping the cover opens the full-screen nightstand player. An
+  ebook gets its cover at the same size with Continue reading beside it. The dock's ground runs up to the
+  fold under the spine shadow, and the Hearth above hides its hero card for the docked book, as it does for
+  the facing page.
+
+The player's scrubber is one control everywhere: the elapsed and remaining times are plain labels under the
+ribbon instead of a second capsule that read as another progress bar.
+
+### Nightstand redesign verification — 2026-11-10
+
+- Duo / iOS 27.1 in Device Hub's upright tabletop pose: full-screen player, shell dock with an audiobook,
+  and shell dock with an ebook checked visually. Air / iOS 27.0 with the DEBUG hinge and horizontal fold:
+  narrow face and deck checked visually; the ordinary stacked player checked for the scrubber change.
+- `PlayerLayoutPolicyTests`, `DuoShellLayoutTests` and `HingePoseTests`: 27 passed. The two nightstand tests
+  in `DuoLayoutSmokeUITests` passed on the Air with the DEBUG hinge and fold; the dock test needs an audiobook
+  as the most recent book. The rest of `AllTests` and `UISmokeTests` was not run.
+- Not checked: Dynamic Type above the default size, the Paper theme, VoiceOver order, and a physical device.
 
 Reader references consulted: Silveran `669a56903316fa51bf9c2850bdc89d9bbcac37dc` and Storyteller
 `2f12802e250fba5de8ad3a869feb3c010d39ff3f`, fetched before review.

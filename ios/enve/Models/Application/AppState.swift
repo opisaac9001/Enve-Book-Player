@@ -252,6 +252,11 @@ public class AppState {
 
             self.bootstrapComplete = true
 
+            if PlatformRuntime.cloudKitEnabled {
+                retainOperation(priority: .utility) { [self] in
+                    _ = await (profileSession?.sync ?? SyncCoordinator.shared).runRecentlyPlayedSync(trigger: .appLaunch)
+                }
+            }
             await self.catalog.resumeStartupCatalogWork()
 
             retainOperation { [self] in
@@ -305,9 +310,6 @@ public class AppState {
             retainOperation(priority: .utility) { [self] in
 
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
-                if PlatformRuntime.cloudKitEnabled {
-                    _ = await (profileSession?.sync ?? SyncCoordinator.shared).runRecentlyPlayedSync(trigger: .appLaunch)
-                }
                 await self.catalog.refreshStaleServerMirrorDomains()
             }
         }

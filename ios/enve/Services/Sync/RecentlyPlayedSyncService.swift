@@ -53,6 +53,7 @@ final class RecentlyPlayedSyncService: RecentlyPlayedSyncing {
     private let libraryCache: any RecentlyPlayedLibraryCaching
     private let ebookLinks: any EbookLinkPersisting
     private let strategyRegistry: any SyncStrategyProviding
+    private let pendingSync: PendingSyncQueueStore?
 
     init(
         playbackState: any PlaybackStateProvider,
@@ -64,7 +65,8 @@ final class RecentlyPlayedSyncService: RecentlyPlayedSyncing {
         progressCache: any RecentlyPlayedProgressCaching,
         libraryCache: any RecentlyPlayedLibraryCaching,
         ebookLinks: any EbookLinkPersisting,
-        strategyRegistry: any SyncStrategyProviding
+        strategyRegistry: any SyncStrategyProviding,
+        pendingSync: PendingSyncQueueStore? = nil
     ) {
         self.playbackState = playbackState
         self.providerConnections = providerConnections
@@ -76,13 +78,14 @@ final class RecentlyPlayedSyncService: RecentlyPlayedSyncing {
         self.libraryCache = libraryCache
         self.ebookLinks = ebookLinks
         self.strategyRegistry = strategyRegistry
+        self.pendingSync = pendingSync
     }
 
     func sync(trigger: ServerStatusSyncTrigger) async -> ServerStatusSyncResult {
         let progressBackends = providerConnections.allBackends().filter {
             $0.enabled && $0.type == .audiobookshelf
         }
-        let strategyConnectionCount = [ProviderType.booklore, .storyteller, .bookOrbit, .komga, .silo, .jellyfin, .emby, .plex, .kavita]
+        let strategyConnectionCount = [ProviderType.booklore, .storyteller, .bookOrbit, .komga, .silo, .jellyfin, .emby, .plex, .kavita, .opds]
             .reduce(0) { $0 + providerConnections.activeConnections(of: $1).count }
 
         guard !progressBackends.isEmpty || strategyConnectionCount > 0 else {
@@ -121,7 +124,7 @@ final class RecentlyPlayedSyncService: RecentlyPlayedSyncing {
                     for book in booksByItemId[libraryItemId] ?? [] {
                         guard !absorbedStableIds.contains(book.stableId) else { continue }
                         guard book.stableId != playbackState.currentBook?.stableId,
-                            PendingSyncQueueStore.shared.entries[book.stableId] == nil
+                            (pendingSync ?? PendingSyncQueueStore.shared).entries[book.stableId] == nil
                         else { continue }
 
                         let diagnosticID = DiagnosticLogSanitizer.identifier(for: book.stableId)

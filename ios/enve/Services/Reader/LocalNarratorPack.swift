@@ -36,9 +36,31 @@ nonisolated enum LocalNarratorPack {
         }
     }
 
+    /// Everything removal deletes, including the folder used before packs were pinned.
+    var storageDirectories: [URL] {
+        get throws {
+            let root = try root
+            guard self == .supertonic else { return [root] }
+            let legacy = try TtsCacheDirectory.ensure().appendingPathComponent("Models/\(Repo.supertonic3.folderName)")
+            return [root, legacy]
+        }
+    }
+
     var isInstalled: Bool {
         guard let pack = try? manifest.get(), let root = try? root else { return false }
         return pack.files.allSatisfy { $0.hasExpectedSize(at: destination(for: $0, in: root)) }
+    }
+
+    var byteCount: Int {
+        (try? manifest.get().files.reduce(0) { $0 + $1.size }) ?? 0
+    }
+
+    /// Bytes still to fetch; `install` verifies and keeps complete files saved by an earlier attempt.
+    var missingByteCount: Int {
+        guard let pack = try? manifest.get(), let root = try? root else { return byteCount }
+        return pack.files
+            .filter { !$0.hasExpectedSize(at: destination(for: $0, in: root)) }
+            .reduce(0) { $0 + $1.size }
     }
 
     private func destination(for file: NeuralTTSModelFile, in root: URL) -> URL {

@@ -103,8 +103,7 @@ struct ReaderScreen: View {
     // Fixed type boundaries keep reader metadata construction within the device’s main-thread stack.
     private var readerStage: some View {
         let lectern = lecternHalves
-        // The page keeps one place in the tree whatever the pose, so folding the phone resizes the engine's
-        // view above the controls instead of rebuilding it and losing its position.
+        // Preserve engine view identity and reading position when the fold changes.
         return ZStack {
             backdrop
             if let lectern {
@@ -507,15 +506,14 @@ struct ReaderScreen: View {
                 hideTTSControls()
             }
         }
-        .onReceive(model.ttsService.$kokoroDownloadState) { state in
+        .onChange(of: model.ttsService.downloadState(for: .kokoro), initial: true) { _, state in
             #if DEBUG
             guard debugRoute == "kokoroplayback", state == .ready, model.state.isReady else { return }
             startTTSPlaybackFixture()
             #endif
         }
         .preferredColorScheme(model.preferredColorScheme)
-        // On a folding phone the status bar's column is where the chrome stands, and hiding it would reflow
-        // the pages every time the chrome toggles.
+        // Hiding the status-bar column would repaginate the book on every chrome toggle.
         .statusBarHidden(!chromeVisible && !hinge.isKnown)
     }
 
@@ -585,7 +583,7 @@ struct ReaderScreen: View {
             ].contains(debugRoute) {
                 tray = .tts
             }
-            if debugRoute == "kokoroplayback", model.ttsService.kokoroDownloadState == .ready {
+            if debugRoute == "kokoroplayback", model.ttsService.downloadState(for: .kokoro) == .ready {
                 startTTSPlaybackFixture()
             }
             if !footnoteFixtureTriggered,
@@ -948,8 +946,6 @@ struct ReaderScreen: View {
         }
     }
 
-    // On a folding phone's outer display, and open sideways, the reader's buttons stand in the system's side
-    // column like any toolbar: close at the top, the tools at the bottom where the thumb rests.
     private func sideChrome(column: SideColumn) -> some View {
         VStack(spacing: 10) {
             closeButton
@@ -965,8 +961,6 @@ struct ReaderScreen: View {
         .accessibilityIdentifier("reader-side-chrome")
     }
 
-    // The side column exists on the outer display and on the open display held sideways; the lectern keeps
-    // its controls on the flat half instead.
     private var chromeColumn: SideColumn? {
         guard hinge.isKnown, !isLectern, !dynamicTypeSize.isAccessibilitySize else { return nil }
         return sideColumn
@@ -1027,7 +1021,6 @@ struct ReaderScreen: View {
                     .padding(.top, 2)
             }
         }
-        // The rail and controls stay a readable, reachable width on wide canvases; the veil itself spans the window.
         .frame(maxWidth: 720)
     }
 
@@ -1058,8 +1051,6 @@ struct ReaderScreen: View {
             .background { bottomVeilBackground }
     }
 
-    // The flat half of a device propped open on a table keeps the controls in reach the whole time, with page
-    // turns first so the upright page never has to be reached for.
     private var lecternPanel: some View {
         VStack(spacing: 14) {
             lecternPageTurns
@@ -1108,7 +1099,6 @@ struct ReaderScreen: View {
 
     private var isLectern: Bool { lecternHalves != nil }
 
-    // On the lectern the pills sit at the foot of the page rather than over the controls.
     private var floatingPillsInset: CGFloat {
         if let lectern = lecternHalves {
             return canvasSize.height - lectern.upperHeight + 12
@@ -2524,7 +2514,6 @@ struct ReaderNarrationTimeline {
     var fallbackProgress: Double = 0
 }
 
-/// Expanded narration controls shared by Read Aloud and Listen Along; each source supplies its own commands.
 struct ReaderNarrationBar<PositionControls: View, SpeedOptions: View>: View {
     let source: String
     let identifier: String
@@ -2791,8 +2780,7 @@ enum ReaderAnnotationToolbarLayout {
             x = size.width / 2
             preferredY = size.height - 140
         }
-        // Resolve the actual pill in the annotation layer's coordinate space, including
-        // safe-area insets. Bottom selections must leave both toolbars accessible.
+        // Include safe-area insets when locating the pill so selections leave both toolbars accessible.
         let y: CGFloat
         if let narrationBounds {
             y = max(barHeight / 2, min(preferredY, narrationBounds.minY - barHeight / 2 - controlsGap))
@@ -2840,7 +2828,6 @@ private struct ReaderNarratePill: View {
     }
 }
 
-/// The floating capsule that carries a narration source's transport while the reader chrome is hidden.
 struct ReaderNarrationCapsule<Content: View>: View {
     let identifier: String
     var spacing: CGFloat = 4

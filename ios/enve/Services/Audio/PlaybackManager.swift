@@ -219,6 +219,7 @@ final class PlaybackManager {
         currentSessionId?.hasPrefix("overlay-") == true
     }
     private var currentProvider: (any PlaybackSessionProvider)?
+    private var showedDownloadedProgressConflict = false
     private var playbackEndObserver: NSObjectProtocol?
     private var playbackFailureObserver: NSObjectProtocol?
     private var playbackStalledObserver: NSObjectProtocol?
@@ -980,12 +981,17 @@ final class PlaybackManager {
         }
     }
 
-    func playLocalBook(_ book: Book, startPosition: TimeInterval? = nil) {
+    func playLocalBook(
+        _ book: Book, startPosition: TimeInterval? = nil, provider: (any PlaybackSessionProvider)? = nil
+    ) {
         guard !isRetired else { return }
         let requestedStart = startPosition.map { max(0, $0) }
         AppLogger.player.debug("playLocalBook bookDiagnosticID=\(diagnosticBookID(book)) source=\(book.source)")
 
-        if currentBook?.stableId == book.stableId && player != nil {
+        let hasDownload = profileSession.localStorage.isAudiobookDownloaded(book)
+        let hasLocalPlayer = (player?.currentItem?.asset as? AVURLAsset)?.url.isFileURL == true
+        if currentBook?.stableId == book.stableId,
+            player?.currentItem?.status == .readyToPlay, !isLoading, !hasDownload || hasLocalPlayer {
             AppLogger.player.info("Same book already loaded, resuming...")
             if let requestedStart { seek(to: requestedStart) }
             resume()
@@ -994,12 +1000,9 @@ final class PlaybackManager {
 
         stop()
 
-        var resumeTime: TimeInterval = 0
-        var localUpdate = Date.distantPast
-        if let requestedStart {
-            resumeTime = requestedStart
-            localUpdate = Date()
-        } else if let storedProgress = profileSession.bookProgress.loadProgress(for: book) {
+        var resumeTime = hasDownload ? max(0, book.currentTime) : 0
+        var localUpdate = hasDownload && (resumeTime > 0 || book.isFinished) ? book.lastUpdate : .distantPast
+        if let storedProgress = profileSession.bookProgress.loadProgress(for: book) {
             resumeTime = storedProgress.progress
             localUpdate = Date(timeIntervalSince1970: storedProgress.lastUpdated)
             AppLogger.player.info("Using stored progress: \(resumeTime)s")
@@ -1010,23 +1013,35 @@ final class PlaybackManager {
         }
 
         currentBook = book
-        currentProvider = self.connectionStore.capability(PlaybackSessionProvider.self, for: book)
+        currentProvider = provider ?? connectionStore.capability(PlaybackSessionProvider.self, for: book)
         switchSpeedForCurrentBook()
         duration = book.duration ?? 0
-        currentTime = resumeTime
+        currentTime = requestedStart ?? resumeTime
         isLoading = true
         playbackError = nil
 
+        if hasDownload {
+            if profileSession.progress.syncProgressToServer {
+                profileSession.sync.protectDownloadedProgress(for: book, position: resumeTime, updatedAt: localUpdate, duration: duration)
+            }
+            startPlaybackPreparation(for: book) { [self] in
+                try await setupLocalPlayer(for: book, resumeTime: requestedStart ?? resumeTime)
+            }
+            return
+        }
+
         runOperation { [self] in
             do {
-                let resolvedResumeTime = requestedStart != nil
-                    ? resumeTime
-                    : await resolveProviderOpenResumeTime(
+                let resolvedResumeTime = if let requestedStart {
+                    requestedStart
+                } else {
+                    await resolveProviderOpenResumeTime(
                         for: book,
                         provider: currentProvider,
                         initialResumeTime: resumeTime,
                         localUpdate: localUpdate
                     )
+                }
                 try await setupLocalPlayer(for: book, resumeTime: resolvedResumeTime)
                 await MainActor.run {
                     self.isLoading = false
@@ -1192,6 +1207,12 @@ final class PlaybackManager {
 
     func playBook(_ book: Book, provider: any PlaybackSessionProvider, startPosition: TimeInterval? = nil) {
         guard !isRetired else { return }
+        if profileSession.localStorage.isAudiobookDownloaded(book),
+            profileSession.localStorage.unsupportedLocalPlaybackReason(for: book) == nil
+        {
+            playLocalBook(book, startPosition: startPosition, provider: provider)
+            return
+        }
         let requestedStart = startPosition.map { max(0, $0) }
         AppLogger.player.debug("playBook bookDiagnosticID=\(diagnosticBookID(book))")
         AppLogger.player.debug("Provider: \(type(of: provider))")
@@ -1522,7 +1543,7 @@ final class PlaybackManager {
                 ebookProgress: nil
             )
         )
-        guard !isRetired else { return }
+        guard !isRetired, profileSession.pendingSync.entries[book.stableId]?.downloadedBaseline == nil else { return }
         runOperation { [self] in
             await profileSession.playback.linkedProgress.recordAudiobookProgress(
                 book: book,
@@ -2357,6 +2378,10 @@ final class PlaybackManager {
 
     func stop(invalidatePendingOverlayPreparation: Bool = true) {
         AppLogger.player.info("stop() called")
+        if showedDownloadedProgressConflict {
+            syncConflict = nil
+            showedDownloadedProgressConflict = false
+        }
         let wasOverlayPlayback = isOverlayPlaybackActive
         let stoppedBook = currentBook
         let finalPosition = currentTime
@@ -2611,6 +2636,14 @@ final class PlaybackManager {
         syncProgress(forceLocalWrite: true)
     }
 
+    func presentDownloadedProgressConflict(stableId: String, serverPosition: TimeInterval) {
+        guard let book = currentBook, book.stableId == stableId, !showedDownloadedProgressConflict,
+            profileSession.pendingSync.entries[stableId]?.downloadedBaseline != nil
+        else { return }
+        showedDownloadedProgressConflict = true
+        syncConflict = (local: currentTime, server: serverPosition, bookId: book.id)
+    }
+
     func resolveConflict(useServer: Bool) {
         guard let conflict = syncConflict, let book = currentBook, let provider = currentProvider else {
             syncConflict = nil
@@ -2618,7 +2651,12 @@ final class PlaybackManager {
         }
 
         let grimmoryStamp = pendingGrimmoryServerStamp
-        let targetTime = useServer ? conflict.server : conflict.local
+        let isDownloadedConflict = showedDownloadedProgressConflict
+        let targetTime = useServer ? conflict.server : (isDownloadedConflict ? currentTime : conflict.local)
+        if isDownloadedConflict {
+            profileSession.pendingSync.resolveDownloadedProgress(stableId: book.stableId)
+            showedDownloadedProgressConflict = false
+        }
         syncConflict = nil
 
         if let grimmoryStamp {
@@ -2635,7 +2673,14 @@ final class PlaybackManager {
         }
 
         duration = book.duration ?? 0
-        currentTime = targetTime
+        if isDownloadedConflict {
+            applyOpenResumeTime(targetTime, for: book, updatedAt: nil, persist: true)
+            if targetTime == 0 {
+                profileSession.bookProgress.saveProgress(for: book, progress: 0, duration: duration)
+            }
+        } else {
+            currentTime = targetTime
+        }
 
         isLoading = true
 
@@ -2929,11 +2974,14 @@ final class PlaybackManager {
     // Lets media servers show what's playing and record it in their own history.
     private func reportPlayback(_ event: ServerPlaybackEvent) {
         guard !isRetired, let book = currentBook, let sessionId = currentSessionId, let provider = currentProvider,
-            profileSession.serverSyncEnabled, profileSession.progress.syncProgressToServer
+            profileSession.serverSyncEnabled, profileSession.progress.syncProgressToServer,
+            profileSession.pendingSync.entries[book.stableId]?.downloadedBaseline == nil
         else { return }
         let position = currentTime
         runOperation { [self] in
-            guard profileSession.serverSyncEnabled else { return }
+            guard profileSession.serverSyncEnabled,
+                profileSession.pendingSync.entries[book.stableId]?.downloadedBaseline == nil
+            else { return }
             await provider.reportPlayback(event, book: book, sessionId: sessionId, position: position)
         }
     }
@@ -2966,7 +3014,9 @@ final class PlaybackManager {
         }
 
         let listenedTime = timeListenedSinceLastSync
+        let resolution = profileSession.pendingSync.downloadedProgressResolution(for: book.stableId)
         runOperation { [self] in
+            guard profileSession.pendingSync.downloadedProgressResolution(for: book.stableId) == resolution else { return }
             await profileSession.sync.pushAudiobookProgress(
                 book: book,
                 position: time,
@@ -2975,8 +3025,15 @@ final class PlaybackManager {
                 timeListened: listenedTime,
                 forceImmediate: true
             )
-            self.timeListenedSinceLastSync = max(0, self.timeListenedSinceLastSync - listenedTime)
-            if profileSession.serverSyncEnabled, closingSession, let sessionId, let provider {
+            if currentBook?.stableId == book.stableId, currentSessionId == sessionId,
+                profileSession.pendingSync.entries[book.stableId]?.downloadedBaseline == nil
+            {
+                timeListenedSinceLastSync = max(0, timeListenedSinceLastSync - listenedTime)
+            }
+            if profileSession.serverSyncEnabled, closingSession, let sessionId, let provider,
+                profileSession.pendingSync.entries[book.stableId]?.downloadedBaseline == nil,
+                profileSession.pendingSync.downloadedProgressResolution(for: book.stableId) == resolution
+            {
                 await provider.reportPlayback(.stopped, book: book, sessionId: sessionId, position: time)
             }
             if book.source == .storyteller {
