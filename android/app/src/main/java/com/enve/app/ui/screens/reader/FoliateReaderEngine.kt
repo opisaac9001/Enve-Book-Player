@@ -114,6 +114,7 @@ class FoliateReaderEngine(
 
     @Volatile
     override var currentSelection: Locator? = null
+    override var currentSelectionBounds: ReaderSelectionBounds? = null
         private set
 
     @Volatile
@@ -179,6 +180,12 @@ class FoliateReaderEngine(
     }
 
     override var onAnnotationResolution: ((Map<String, Boolean>) -> Unit)? = null
+
+    override fun applySpeechHighlight(locator: Locator?, colorHex: String) {
+        if (!ready) return
+        val payload = locator?.toJSON()?.toString() ?: "null"
+        evaluate("window.enveReader.setSpeechHighlight($payload, ${JSONObject.quote(colorHex)})")
+    }
 
     override fun applyAnnotations(annotations: List<ReaderAnnotation>) {
         if (!ready) return
@@ -575,7 +582,18 @@ class FoliateReaderEngine(
             currentSelection = payload
                 ?.optJSONObject("locator")
                 ?.let { Locator.fromJSON(it) }
-            webView.post { onSelectionChanged() }
+            val bounds = payload?.optJSONObject("bounds")
+            webView.post {
+                currentSelectionBounds = bounds?.let {
+                    val origin = IntArray(2).also(webView::getLocationInWindow)[1]
+                    val density = webView.resources.displayMetrics.density
+                    ReaderSelectionBounds(
+                        top = origin + it.optDouble("top").toFloat() * density,
+                        bottom = origin + it.optDouble("bottom").toFloat() * density,
+                    )
+                }
+                onSelectionChanged()
+            }
         }
 
         private fun handleExternalLink(url: String) {
@@ -618,6 +636,8 @@ class FoliateReaderEngine(
             .put("scroll", scroll)
             .put("publisherStyles", publisherStyles)
             .put("justified", justified)
+            .put("hyphenate", hyphenate)
+            .put("animatedPageTurns", animatedPageTurns)
             .put("columns", columns.name)
             .put("bionicReading", bionicReading)
 

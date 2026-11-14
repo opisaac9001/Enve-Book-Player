@@ -139,7 +139,11 @@ final class OPDSProgressionSyncStrategy: ProviderSyncStrategy {
     ) async throws -> Outcome {
         let local = localProgression(of: book)
 
-        guard let document = try await provider.fetchProgression(for: book) else {
+        let remote = try await provider.fetchProgression(for: book)
+        guard book.stableId != playbackState.currentBook?.stableId,
+            pendingSyncs.entries[book.stableId] == nil
+        else { return .unchanged }
+        guard let document = remote else {
             guard local > 0.001 else { return .unchanged }
             return try await push(book: book, provider: provider)
         }

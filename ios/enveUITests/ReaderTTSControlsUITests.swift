@@ -77,7 +77,16 @@ final class ReaderTTSControlsUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Back"].firstMatch.waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["tts-engine-apple"].exists)
         XCTAssertTrue(app.buttons["tts-engine-kokoro"].exists)
-        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "tts-engine-")).count, 2)
+        XCTAssertTrue(app.buttons["tts-engine-supertonic3"].exists)
+        XCTAssertTrue(app.buttons["tts-engine-pocket"].exists)
+        let engineCount = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "tts-engine-")).count
+        if #available(iOS 18, *) {
+            XCTAssertTrue(app.buttons["tts-engine-phonon"].exists)
+            XCTAssertEqual(engineCount, 5)
+        } else {
+            XCTAssertEqual(engineCount, 4)
+        }
+        attachScreenshot(app, name: "reader-narration-engines")
         app.buttons["Back"].firstMatch.tap()
         XCTAssertTrue(app.buttons["Pause"].firstMatch.waitForExistence(timeout: 5))
         attachScreenshot(app, name: "tts-full-controls-while-playing")
@@ -107,6 +116,53 @@ final class ReaderTTSControlsUITests: XCTestCase {
         XCTAssertTrue(resume.waitForExistence(timeout: 5))
         resume.tap()
         XCTAssertTrue(app.buttons["Pause reading aloud"].firstMatch.waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    func testVoiceSampleLeavesBookPausedAndResumable() throws {
+        let app = try launchSpeakingReader()
+        app.buttons["Voice and speed"].firstMatch.tap()
+        let sheet = app.descendants(matching: .any)["reader-tts-sheet"].firstMatch
+        XCTAssertTrue(sheet.waitForExistence(timeout: 5))
+        let chooseVoice = app.buttons["Choose a voice"].firstMatch
+        for _ in 0..<4 where !chooseVoice.isHittable { sheet.swipeUp() }
+        chooseVoice.tap()
+        let sample = app.buttons["Play sample of Apple voices"].firstMatch
+        XCTAssertTrue(sample.waitForExistence(timeout: 5))
+        sample.tap()
+        let stop = app.buttons["tts-sample-stop"]
+        XCTAssertTrue(stop.waitForExistence(timeout: 5))
+        attachScreenshot(app, name: "voice-sample-controls")
+        if stop.exists { stop.tap() }
+        XCTAssertTrue(stop.waitForNonExistence(timeout: 5))
+        app.buttons["Back"].firstMatch.tap()
+        let resume = app.buttons["Read aloud"].firstMatch
+        XCTAssertTrue(resume.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Stop reading"].firstMatch.exists)
+        resume.tap()
+        XCTAssertTrue(app.buttons["Pause"].firstMatch.waitForExistence(timeout: 10))
+    }
+
+    @MainActor
+    func testInstalledKokoroSampleUsesNeuralAudioAndLeavesBookPaused() throws {
+        let app = try launchSpeakingReader()
+        app.buttons["Voice and speed"].firstMatch.tap()
+        let sheet = app.descendants(matching: .any)["reader-tts-sheet"].firstMatch
+        XCTAssertTrue(sheet.waitForExistence(timeout: 5))
+        let chooseVoice = app.buttons["Choose a voice"].firstMatch
+        for _ in 0..<4 where !chooseVoice.isHittable { sheet.swipeUp() }
+        chooseVoice.tap()
+        let sample = app.buttons["Play sample of Kokoro"].firstMatch
+        guard sample.waitForExistence(timeout: 5) else { throw XCTSkip("Requires Kokoro installed on the simulator") }
+        sample.tap()
+        let playing = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "Playing sample · Kokoro")).firstMatch
+        XCTAssertTrue(playing.waitForExistence(timeout: 60))
+        attachScreenshot(app, name: "kokoro-voice-sample")
+        let stop = app.buttons["tts-sample-stop"]
+        if stop.exists { stop.tap() }
+        app.buttons["Back"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["Read aloud"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Stop reading"].firstMatch.exists)
     }
 
     @MainActor

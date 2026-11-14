@@ -8,9 +8,14 @@ import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookCardStyle
 import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.BrowseGroup
+import com.enve.core.data.model.ComicSection
 import com.enve.core.data.model.Library
+import com.enve.core.data.model.ProviderConnection
 import com.enve.core.data.model.ReadStatus
+import com.enve.core.data.model.isComic
 import com.enve.core.data.util.FINISHED_PROGRESS_THRESHOLD
+import com.enve.hearth.hasPlayableAudio
+import com.enve.hearth.includesLibraryBook
 import com.enve.engine.library.LibraryFacade
 import com.enve.engine.library.SavedBookList
 import com.enve.engine.library.SavedBooksFacade
@@ -19,19 +24,27 @@ import com.enve.engine.library.LibraryConnectionOption
 import com.enve.engine.playback.PlaybackFacade
 import com.enve.engine.prefs.PreferencesFacade
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import java.text.Normalizer
 import java.util.Base64
 import java.util.Locale
@@ -48,7 +61,7 @@ enum class StatusFilter(val label: String) {
     READING("Reading ebooks"),
     DOWNLOADED("Downloaded"),
 }
-enum class MediaFilter(val label: String) { ALL("All media"), AUDIOBOOKS("Audiobooks"), EBOOKS("Ebooks") }
+enum class MediaFilter(val label: String) { ALL("All media"), AUDIOBOOKS("Audiobooks"), EBOOKS("Ebooks"), COMICS("Comics") }
 enum class SeriesFilter(val label: String) { ALL("Any"), IN_SERIES("In a series"), STANDALONE("Standalone") }
 
 data class LibraryAdvancedFilters(
@@ -169,13 +182,17 @@ class HearthLibraryViewModel @Inject constructor(
     val query = MutableStateFlow("")
     val facet = MutableStateFlow(LibraryFacet.BOOKS)
     val status = MutableStateFlow(StatusFilter.ALL)
-    val sourceFilter = MutableStateFlow<BookSource?>(null)
-    val libraryFilter = MutableStateFlow<String?>(null)
-    val media = MutableStateFlow(MediaFilter.ALL)
 
     private val _advancedFilters = MutableStateFlow(LibraryAdvancedFilters())
     val advancedFilters: StateFlow<LibraryAdvancedFilters> = _advancedFilters.asStateFlow()
     private var hasEditedAdvancedFilters = false
+    private var hasEditedStatus = false
+
+    val readingEnabled: StateFlow<Boolean> =
+        prefs.readingEnabled.stateIn(viewModelScope, SharingStarted.Eagerly, true)
+    val effectiveStatus: StateFlow<StatusFilter> =
+        combine(status, readingEnabled) { selected, reading -> effectiveLibraryStatus(selected, reading) }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, StatusFilter.ALL)
 
     val sortStack: StateFlow<List<SortDescriptor>> =
         prefs.librarySortStack.map(::decodeSortStack)
@@ -185,8 +202,8 @@ class HearthLibraryViewModel @Inject constructor(
         library.allBooks.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val savedBooks: StateFlow<Map<SavedBookList, List<Book>>> =
-        combine(allBooks, savedBooksFacade.saved) { books, saved ->
-            val byKey = books.associateBy(Book::uniqueKey)
+        combine(allBooks, savedBooksFacade.saved, readingEnabled) { books, saved, reading ->
+            val byKey = books.filter { includesLibraryBook(it, reading) }.associateBy(Book::uniqueKey)
             SavedBookList.entries.associateWith { list -> saved[list].orEmpty().mapNotNull(byKey::get) }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
 
@@ -194,19 +211,48 @@ class HearthLibraryViewModel @Inject constructor(
         prefs.excludedLibraryIds.stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
 
     private val visibleBooks: StateFlow<List<Book>> =
-        combine(allBooks, excludedLibraryIds) { books, excluded -> books.excludingLibraries(excluded) }
+        combine(allBooks, excludedLibraryIds, readingEnabled) { books, excluded, reading ->
+            books.excludingLibraries(excluded).filter { includesLibraryBook(it, reading) }
+        }.flowOn(Dispatchers.Default)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-
-    val totalCount: StateFlow<Int> =
-        library.totalCount.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
     val sources: StateFlow<List<BookSource>> =
         visibleBooks.map { list -> list.asSequence().map { it.source }.distinct().sortedBy { it.displayName }.toList() }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    private val availableLibraries: StateFlow<List<Library>> =
+        library.libraries.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    private val configuredConnections: StateFlow<List<ProviderConnection>?> = connectionRegistry.connections
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    private val requestedLibrarySelection = MutableStateFlow<LibrarySelection?>(null)
+
+    val librarySelection: StateFlow<LibrarySelection> = librarySelectionFlow(
+        prefs.librarySelection,
+        requestedLibrarySelection,
+        sources,
+        availableLibraries,
+        configuredConnections.filterNotNull(),
+        prefs.excludedLibraryIds,
+    ).stateIn(viewModelScope, SharingStarted.Eagerly, LibrarySelection())
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val effectiveMedia: StateFlow<MediaFilter> =
+        librarySelection.flatMapLatest { selection ->
+            combine(mediaPreference(libraryScopeKey(selection.source, selection.libraryId)), visibleBooks, readingEnabled) { saved, books, reading ->
+                val explicit = MediaFilter.entries.firstOrNull { it.name == saved }
+                effectiveLibraryMedia(resolveLibraryMedia(explicit, books, selection.source, selection.libraryId), reading)
+            }.flowOn(Dispatchers.Default)
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, MediaFilter.ALL)
+
+    val totalCount: StateFlow<Int> =
+        library.totalCount.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
     val libraries: StateFlow<List<Library>> =
-        combine(library.libraries, sourceFilter, excludedLibraryIds) { libs, src, excluded ->
+        combine(availableLibraries, librarySelection, excludedLibraryIds) { libs, selection, excluded ->
             val included = libs.filterNot { it.id in excluded }
+            val src = selection.source
             val scoped = if (src == null) included else included.filter { it.source == src }
             scoped
                 .sortedWith(compareBy<Library> { it.name.lowercase() }.thenBy { it.id })
@@ -224,7 +270,9 @@ class HearthLibraryViewModel @Inject constructor(
 
     val isRefreshing: StateFlow<Boolean> = library.isRefreshing
     val refreshError: StateFlow<String?> = library.refreshError
-    val importIssues = combine(library.importIssues, sourceFilter, libraryFilter) { issues, source, selected ->
+    val importIssues = combine(library.importIssues, librarySelection) { issues, selection ->
+        val source = selection.source
+        val selected = selection.libraryId
         issues.filter { issue ->
             (source == null || issue.report.source == source) && (selected == null || issue.scopeKey in setOf(
                 com.enve.core.data.provider.catalogImportScopeKey(selected.substringBefore("::"), selected.substringAfter("::")),
@@ -239,6 +287,18 @@ class HearthLibraryViewModel @Inject constructor(
     val cardStyle: StateFlow<BookCardStyle> =
         prefs.bookCardStyle.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), BookCardStyle.STANDARD)
 
+    private val libraryScope: StateFlow<String> =
+        librarySelection.map { libraryScopeKey(it.source, it.libraryId) }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, ALL_LIBRARY_SCOPE)
+    private val _comicBrowse = MutableStateFlow(ComicBrowseState())
+    val comicBrowse: StateFlow<ComicBrowseState> = _comicBrowse.asStateFlow()
+    private var comicBrowseScope: String? = null
+
+    val displayColumns: StateFlow<Int> =
+        combine(columns, comicBrowse, effectiveMedia) { global, comics, selected ->
+            if (selected == MediaFilter.COMICS) comics.columns ?: global else global
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 3)
+
     private data class Scope(
         val source: BookSource?,
         val libraryId: String?,
@@ -246,8 +306,8 @@ class HearthLibraryViewModel @Inject constructor(
         val hidden: Set<String>,
     )
 
-    private val scopeFilter = combine(sourceFilter, libraryFilter, media, hiddenIds) { src, lib, m, hid ->
-        Scope(src, lib, m, hid)
+    private val scopeFilter = combine(librarySelection, effectiveMedia, hiddenIds) { selection, media, hidden ->
+        Scope(selection.source, selection.libraryId, media, hidden)
     }
 
     private val baseScopedBooks: StateFlow<List<Book>> =
@@ -263,7 +323,7 @@ class HearthLibraryViewModel @Inject constructor(
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val advancedFilterOptions: StateFlow<LibraryAdvancedFilterOptions> =
-        combine(baseScopedBooks, status) { books, selectedStatus ->
+        combine(baseScopedBooks, effectiveStatus) { books, selectedStatus ->
             LibraryAdvancedFilterPolicy.options(books.filter { matchesStatus(it, selectedStatus) })
         }.flowOn(Dispatchers.Default)
             .stateIn(
@@ -281,7 +341,7 @@ class HearthLibraryViewModel @Inject constructor(
     )
 
     private val displayFilter =
-        combine(query, status, sortStack, scopeFilter, advancedFilters) { q, st, stack, scope, advanced ->
+        combine(query, effectiveStatus, sortStack, scopeFilter, advancedFilters) { q, st, stack, scope, advanced ->
             DisplayFilter(q, st, stack, scope, advanced)
         }
 
@@ -297,6 +357,18 @@ class HearthLibraryViewModel @Inject constructor(
         }.flowOn(Dispatchers.Default)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val comicSeries: StateFlow<List<ComicSeriesSummary>> =
+        combine(books, effectiveMedia) { list, selected ->
+            if (selected == MediaFilter.COMICS) comicSeriesSummaries(list) else emptyList()
+        }.flowOn(Dispatchers.Default)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val comicSeriesView: StateFlow<ComicSeriesView?> =
+        combine(baseScopedBooks, books, comicBrowse, effectiveMedia) { catalog, visible, state, selected ->
+            state.seriesKey?.takeIf { selected == MediaFilter.COMICS }?.let { comicSeriesView(it, catalog, visible, state) }
+        }.flowOn(Dispatchers.Default)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
     val selection = MutableStateFlow<Set<String>>(emptySet())
     val selectionMode = MutableStateFlow(false)
 
@@ -304,7 +376,7 @@ class HearthLibraryViewModel @Inject constructor(
         list.groupBy { it.seriesName?.trim().orEmpty() }
             .filterKeys { it.isNotBlank() }
             .map { (name, books) ->
-                val unread = books.count { !isRead(it) }
+                val unread = books.count { !isReadInLibrary(it) }
                 BrowseGroup(
                     key = name,
                     name = name,
@@ -349,17 +421,38 @@ class HearthLibraryViewModel @Inject constructor(
             if (!hasEditedAdvancedFilters) _advancedFilters.value = saved
         }
         viewModelScope.launch {
-            excludedLibraryIds.collect { excluded ->
-                if (libraryFilter.value in excluded) libraryFilter.value = null
-                invalidateDrill()
+            val savedStatus = prefs.libraryStatus.first().let { raw -> StatusFilter.entries.firstOrNull { it.name == raw } }
+            if (!hasEditedStatus) savedStatus?.let { status.value = it }
+        }
+        viewModelScope.launch {
+            libraryScope.collectLatest { scope ->
+                val savedComics = decodeComicBrowseState(prefs.comicBrowseState(scope).first())
+                if (scope != currentLibraryScope()) return@collectLatest
+                if (comicBrowseScope != scope) {
+                    comicBrowseScope = scope
+                    _comicBrowse.value = savedComics
+                }
             }
         }
         viewModelScope.launch {
-            sources.collect { visibleSources ->
-                val selectedSource = sourceFilter.value ?: return@collect
-                if (selectedSource !in visibleSources) sourceFilter.value = null
-            }
+            excludedLibraryIds.collect { invalidateDrill() }
         }
+    }
+
+    private fun currentLibraryScope(): String = librarySelection.value.let { libraryScopeKey(it.source, it.libraryId) }
+
+    private fun mediaPreference(scope: String) =
+        if (scope == ALL_LIBRARY_SCOPE) prefs.libraryMedia else prefs.scopedLibraryMedia(scope)
+
+    private fun currentLibrarySelection(): LibrarySelection {
+        val selection = requestedLibrarySelection.value ?: librarySelection.value
+        val connections = configuredConnections.value ?: return selection
+        return restorableLibrarySelection(selection, sources.value, availableLibraries.value, connections, excludedLibraryIds.value)
+    }
+
+    private fun persistLibrarySelection(selection: LibrarySelection) {
+        requestedLibrarySelection.value = selection
+        viewModelScope.launch { prefs.setLibrarySelection(encodeLibrarySelection(selection)) }
     }
 
     fun setQuery(q: String) {
@@ -382,18 +475,51 @@ class HearthLibraryViewModel @Inject constructor(
             )
         }
     }
-    fun setStatus(s: StatusFilter) { status.value = s }
+    fun setStatus(s: StatusFilter) {
+        hasEditedStatus = true
+        status.value = s
+        viewModelScope.launch { prefs.setLibraryStatus(s.name) }
+    }
     fun setSourceFilter(s: BookSource?) {
-        val selectedLibrary = libraryFilter.value
-        if (s != null && selectedLibrary != null && libraries.value.none { it.id == selectedLibrary && it.source == s }) {
-            libraryFilter.value = null
-        }
-        sourceFilter.value = s
+        val selection = currentLibrarySelection()
+        val keepsLibrary = s == null || availableLibraries.value.any { it.id == selection.libraryId && it.source == s }
+        persistLibrarySelection(if (keepsLibrary) selection.copy(source = s) else LibrarySelection(source = s))
     }
     fun setLibraryFilter(name: String?) {
-        libraryFilter.value = name?.takeUnless { it in excludedLibraryIds.value }
+        val selected = name?.takeUnless { it in excludedLibraryIds.value }
+        val target = availableLibraries.value.firstOrNull { it.id == selected }
+        val source = currentLibrarySelection().source?.takeIf { target == null || target.source == it }
+        persistLibrarySelection(LibrarySelection(source, selected, target?.connectionId))
     }
-    fun setMedia(m: MediaFilter) { media.value = m }
+    fun setMedia(m: MediaFilter) {
+        val scope = currentLibrarySelection().let { libraryScopeKey(it.source, it.libraryId) }
+        viewModelScope.launch {
+            if (scope == ALL_LIBRARY_SCOPE) prefs.setLibraryMedia(m.name) else prefs.setScopedLibraryMedia(scope, m.name)
+        }
+    }
+
+    fun setComicFacet(f: LibraryFacet) = updateComicBrowse {
+        it.copy(facet = f, seriesKey = null, section = null, expandedVolumeIds = emptySet())
+    }
+
+    fun openComicSeries(series: ComicSeriesSummary) = updateComicBrowse { state -> openedComicSeriesState(state, series) }
+
+    fun closeComicSeries() = updateComicBrowse { it.copy(seriesKey = null, section = null, expandedVolumeIds = emptySet()) }
+
+    fun selectComicSection(section: ComicSection) = updateComicBrowse { it.copy(section = section) }
+
+    fun toggleComicVolume(id: String) = updateComicBrowse { state ->
+        val expanded = state.expandedVolumeIds
+        state.copy(expandedVolumeIds = if (id in expanded) expanded - id else expanded + id)
+    }
+
+    private fun updateComicBrowse(transform: (ComicBrowseState) -> ComicBrowseState) {
+        val scope = currentLibraryScope()
+        val next = transform(if (comicBrowseScope == scope) _comicBrowse.value else ComicBrowseState())
+        comicBrowseScope = scope
+        _comicBrowse.value = next
+        viewModelScope.launch { prefs.setComicBrowseState(scope, encodeComicBrowseState(next)) }
+    }
 
     fun toggleGenre(genre: String) {
         val current = advancedFilters.value
@@ -439,8 +565,8 @@ class HearthLibraryViewModel @Inject constructor(
     fun clearSorting() = setSortStack(emptyList())
 
     fun resetFiltersAndSorting() {
-        status.value = StatusFilter.ALL
-        media.value = MediaFilter.ALL
+        setStatus(StatusFilter.ALL)
+        setMedia(MediaFilter.ALL)
         setAdvancedFilters(LibraryAdvancedFilters())
         clearSorting()
     }
@@ -549,6 +675,7 @@ class HearthLibraryViewModel @Inject constructor(
         while (true) {
             val result = library.shelfBooksPage(key, page = nextPage, query = query)
             val visible = result.items.excludingLibraries(excludedLibraryIds.value)
+                .filter { includesLibraryBook(it, readingEnabled.value) }
             if (visible.isNotEmpty() || !result.hasMore) return result.copy(items = visible)
             nextPage = result.page + 1
         }
@@ -602,8 +729,10 @@ class HearthLibraryViewModel @Inject constructor(
         }
     }
 
-    fun cycleColumns() = viewModelScope.launch {
-        prefs.setLibraryColumns(if (columns.value >= 4) 1 else columns.value + 1)
+    fun cycleColumns() {
+        val next = if (displayColumns.value >= 4) 1 else displayColumns.value + 1
+        if (effectiveMedia.value == MediaFilter.COMICS) updateComicBrowse { it.copy(columns = next) }
+        else viewModelScope.launch { prefs.setLibraryColumns(next) }
     }
 
     fun createBookOrbitCollection(connectionId: String, edit: BookOrbitCollectionEdit) = viewModelScope.launch {
@@ -733,14 +862,14 @@ class HearthLibraryViewModel @Inject constructor(
 
     fun playAllDrill(): Boolean {
         val current = _drill.value ?: return false
-        if (current.kind == DrillKind.SHELF || current.books.none(::isAudioPlayable)) return false
+        if (current.kind == DrillKind.SHELF || current.books.none(Book::hasPlayableAudio)) return false
         playback.playAll(current.books, "${current.kind.name}:${current.title}")
         return true
     }
 
     fun playSelected(): Boolean {
         val targets = selectedBooks()
-        if (targets.none(::isAudioPlayable)) {
+        if (targets.none(Book::hasPlayableAudio)) {
             notice.value = "The selected books don't contain playable audio."
             return false
         }
@@ -750,13 +879,13 @@ class HearthLibraryViewModel @Inject constructor(
     }
 
     fun addNext(book: Book) {
-        if (!isAudioPlayable(book)) return
+        if (!book.hasPlayableAudio) return
         playback.addNext(book)
         notice.value = "\"${book.title}\" will play next."
     }
 
     fun addLast(book: Book) {
-        if (!isAudioPlayable(book)) return
+        if (!book.hasPlayableAudio) return
         playback.addLast(book)
         notice.value = "Added \"${book.title}\" to Up Next."
     }
@@ -784,7 +913,7 @@ class HearthLibraryViewModel @Inject constructor(
     }
 
     fun bulkAddToUpNext() {
-        val targets = selectedBooks().filter(::isAudioPlayable)
+        val targets = selectedBooks().filter(Book::hasPlayableAudio)
         if (targets.isEmpty()) {
             notice.value = "The selected books don't contain playable audio."
             return
@@ -816,9 +945,6 @@ class HearthLibraryViewModel @Inject constructor(
 
     private fun selectedBooks(): List<Book> = selectionCandidates().filter { it.uniqueKey in selection.value }
 
-    private fun isAudioPlayable(book: Book): Boolean =
-        book.mediaType == AppMediaType.AUDIOBOOK || book.mediaType == AppMediaType.PODCAST || book.hasAudio
-
     private fun matchesScope(book: Book, scope: Scope): Boolean =
         book.id !in scope.hidden &&
             (scope.source == null || book.source == scope.source) &&
@@ -829,27 +955,24 @@ class HearthLibraryViewModel @Inject constructor(
         MediaFilter.ALL -> true
         MediaFilter.AUDIOBOOKS -> b.mediaType == AppMediaType.AUDIOBOOK
         MediaFilter.EBOOKS -> b.mediaType == AppMediaType.EBOOK
+        MediaFilter.COMICS -> b.isComic
     }
 
     private fun matchesStatus(b: Book, s: StatusFilter): Boolean = when (s) {
         StatusFilter.ALL -> true
         StatusFilter.CURRENTLY_READING -> inProgress(b)
-        StatusFilter.UNREAD -> !isRead(b)
+        StatusFilter.UNREAD -> !isReadInLibrary(b)
         StatusFilter.LISTENING -> b.mediaType == AppMediaType.AUDIOBOOK && inProgress(b)
         StatusFilter.READING -> b.mediaType == AppMediaType.EBOOK && inProgress(b)
-        StatusFilter.FINISHED -> isRead(b)
+        StatusFilter.FINISHED -> isReadInLibrary(b)
         StatusFilter.DOWNLOADED -> b.isDownloaded
     }
 
     private fun inProgress(b: Book): Boolean =
-        !isRead(b) && statusAllowsContinue(b) &&
+        !isReadInLibrary(b) && statusAllowsContinue(b) &&
             (b.readStatus == ReadStatus.IN_PROGRESS ||
                 b.serverReadStatus?.uppercase() in setOf("READING", "RE_READING", "IN_PROGRESS") ||
                 b.readProgress in 0.01f..FINISHED_PROGRESS_THRESHOLD || b.currentTime > 0L || (b.epubProgress ?: 0f) in 0.01f..FINISHED_PROGRESS_THRESHOLD)
-
-    private fun isRead(book: Book): Boolean =
-        book.isFinished || book.readStatus == ReadStatus.COMPLETED ||
-            book.serverReadStatus?.uppercase() in setOf("READ", "COMPLETED", "FINISHED")
 
     private fun statusAllowsContinue(book: Book): Boolean {
         if (book.source != BookSource.GRIMMORY && book.source != BookSource.BOOKORBIT) return true
@@ -897,7 +1020,7 @@ class HearthLibraryViewModel @Inject constructor(
         LibrarySort.SERIES -> b.seriesName.isNullOrBlank()
         LibrarySort.PROGRESS -> false
         LibrarySort.DURATION -> b.duration <= 0L
-        LibrarySort.YEAR -> yearOf(b) == null
+        LibrarySort.YEAR -> publishedYear(b) == null
         LibrarySort.GOODREADS_RATING -> b.goodreadsRating == null
     }
 
@@ -916,7 +1039,7 @@ class HearthLibraryViewModel @Inject constructor(
         }
         LibrarySort.PROGRESS -> bookProgress(a).compareTo(bookProgress(b))
         LibrarySort.DURATION -> a.duration.compareTo(b.duration)
-        LibrarySort.YEAR -> (yearOf(a) ?: 0).compareTo(yearOf(b) ?: 0)
+        LibrarySort.YEAR -> (publishedYear(a) ?: 0).compareTo(publishedYear(b) ?: 0)
         LibrarySort.GOODREADS_RATING -> (a.goodreadsRating ?: 0f).compareTo(b.goodreadsRating ?: 0f)
     }
 
@@ -931,10 +1054,97 @@ class HearthLibraryViewModel @Inject constructor(
         cleaned.substringBefore(',', "").trim().takeIf { it.isNotEmpty() && cleaned.contains(',') }?.let { return it }
         return cleaned.split(';', '&').first().trim().substringAfterLast(' ')
     }
-
-    private fun yearOf(b: Book): Int? =
-        b.publishedDate?.let { Regex("\\d{4}").find(it)?.value?.toIntOrNull() }
 }
+
+private val PublishedYearPattern = Regex("\\d{4}")
+
+internal fun publishedYear(book: Book): Int? =
+    book.publishedDate?.let { PublishedYearPattern.find(it)?.value?.toIntOrNull() }
+
+internal const val ALL_LIBRARY_SCOPE = "all"
+
+internal fun libraryScopeKey(source: BookSource?, libraryId: String?): String =
+    libraryId?.let { "library:$it" } ?: source?.let { "source:${it.name}" } ?: ALL_LIBRARY_SCOPE
+
+internal fun resolveLibraryMedia(
+    explicit: MediaFilter?,
+    books: List<Book>,
+    source: BookSource?,
+    libraryId: String?,
+): MediaFilter {
+    if (explicit != null) return explicit
+    if (source == null && libraryId == null) return MediaFilter.ALL
+    val scoped = books.asSequence().filter { (source == null || it.source == source) && (libraryId == null || it.libraryId == libraryId) }
+    return if (scoped.any() && scoped.all { it.isComic }) MediaFilter.COMICS else MediaFilter.ALL
+}
+
+@Serializable
+data class LibrarySelection(
+    val source: BookSource? = null,
+    val libraryId: String? = null,
+    val connectionId: String? = null,
+)
+
+private val LibrarySelectionJson = Json { ignoreUnknownKeys = true }
+
+internal fun encodeLibrarySelection(selection: LibrarySelection): String = LibrarySelectionJson.encodeToString(selection)
+
+internal fun decodeLibrarySelection(encoded: String): LibrarySelection =
+    runCatching { LibrarySelectionJson.decodeFromString<LibrarySelection>(encoded) }.getOrNull() ?: LibrarySelection()
+
+internal fun restorableLibrarySelection(
+    saved: LibrarySelection,
+    visibleSources: Collection<BookSource>,
+    libraries: List<Library>,
+    connections: List<ProviderConnection>,
+    excludedLibraryIds: Set<String>,
+): LibrarySelection {
+    val enabled = connections.filter(ProviderConnection::enabled)
+    val source = saved.source?.takeIf { it == BookSource.LOCAL || it in visibleSources || enabled.any { c -> c.source == it } }
+    val knownLibraries = if (saved.connectionId == null) libraries else libraries.filter { it.connectionId == saved.connectionId }
+    val libraryId = saved.libraryId?.takeIf { id ->
+        (saved.source == null || source != null) &&
+            id !in excludedLibraryIds &&
+            (knownLibraries.isEmpty() || knownLibraries.any { it.id == id }) &&
+            (saved.connectionId == null || enabled.any { it.id == saved.connectionId })
+    }
+    return LibrarySelection(source, libraryId, saved.connectionId.takeIf { libraryId != null })
+}
+
+internal fun librarySelectionFlow(
+    saved: Flow<String>,
+    requested: Flow<LibrarySelection?>,
+    visibleSources: Flow<Collection<BookSource>>,
+    libraries: Flow<List<Library>>,
+    connections: Flow<List<ProviderConnection>>,
+    excludedLibraryIds: Flow<Set<String>>,
+): Flow<LibrarySelection> = combine(
+    combine(saved.map(::decodeLibrarySelection), requested) { stored, edit -> edit ?: stored },
+    visibleSources,
+    libraries,
+    connections,
+    excludedLibraryIds,
+) { selection, sources, available, configured, excluded ->
+    restorableLibrarySelection(selection, sources, available, configured, excluded)
+}
+
+internal fun isReadInLibrary(book: Book): Boolean =
+    book.isFinished || book.readStatus == ReadStatus.COMPLETED ||
+        book.serverReadStatus?.uppercase() in setOf("READ", "COMPLETED", "FINISHED")
+
+internal fun effectiveLibraryMedia(selected: MediaFilter, readingEnabled: Boolean): MediaFilter =
+    if (!readingEnabled && selected in ReadingMediaFilters) MediaFilter.ALL else selected
+
+internal fun effectiveLibraryStatus(selected: StatusFilter, readingEnabled: Boolean): StatusFilter =
+    if (!readingEnabled && selected == StatusFilter.READING) StatusFilter.LISTENING else selected
+
+internal fun availableLibraryMedia(readingEnabled: Boolean): List<MediaFilter> =
+    MediaFilter.entries.filter { readingEnabled || it !in ReadingMediaFilters }
+
+internal fun availableLibraryStatuses(readingEnabled: Boolean): List<StatusFilter> =
+    StatusFilter.entries.filter { readingEnabled || it != StatusFilter.READING }
+
+private val ReadingMediaFilters = setOf(MediaFilter.EBOOKS, MediaFilter.COMICS)
 
 internal fun seriesPlaybackOrder(books: List<Book>): List<Book> = books.sortedWith(
     compareBy<Book> { seriesOrdinal(it.seriesNumber) == null }

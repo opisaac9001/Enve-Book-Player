@@ -170,9 +170,15 @@ class PlayerSessionService @Inject constructor(
         launchSession { flushActive() }
     }
 
-    suspend fun close(positionSec: Long, durationSec: Long, finished: Boolean = false) {
+    suspend fun close(
+        positionSec: Long,
+        durationSec: Long,
+        finished: Boolean = false,
+        sourceFilter: BookSource? = null,
+    ) {
         val session = mutex.withLock {
             val current = active ?: return@withLock null
+            if (sourceFilter != null && current.book.source != sourceFilter) return@withLock null
             current.lastPositionSec = positionSec.coerceAtLeast(0)
             current.durationSec = durationSec.coerceAtLeast(0)
             accumulateLocked()
@@ -205,6 +211,12 @@ class PlayerSessionService @Inject constructor(
         recordLocalSession(session)
         val snapshot = mutex.withLock { session.snapshot() }
         if (snapshot.isFeedOnly) saveFeedProgress(snapshot, finished = false)
+        if (snapshot.book.source == BookSource.SILO) {
+            withTimeoutOrNull(LOCAL_CLOSE_REMOTE_BUDGET_MS) {
+                withConnection(snapshot.book) { siloRepository.stopPlaybackSession(snapshot.book) }
+            }
+            return
+        }
         if (snapshot.book.source != BookSource.AUDIOBOOKSHELF) return
         if (snapshot.absSessionId != null) {
             withTimeoutOrNull(LOCAL_CLOSE_REMOTE_BUDGET_MS) {
@@ -295,6 +307,9 @@ class PlayerSessionService @Inject constructor(
         val endAtMs = System.currentTimeMillis()
         val historySession = recordLocalSession(session)
         if (!serverSync.accepts(session.startedAtMs)) {
+            if (session.book.source == BookSource.SILO) {
+                withConnection(session.book) { siloRepository.stopPlaybackSession(session.book) }
+            }
             if (session.isFeedOnly) saveFeedProgress(session.snapshot(), finished)
             return
         }
@@ -312,13 +327,13 @@ class PlayerSessionService @Inject constructor(
         }
 
         if (session.book.source == BookSource.SILO) {
-            progressWrites.push(session.book, session.lastPositionSec, progress(session.lastPositionSec, session.durationSec) ?: 0f,
-                canWrite = { serverSync.accepts(session.startedAtMs) }) { book, position, percentage ->
-                withConnection(book) {
-                    val result = siloRepository.syncAudiobookProgress(book, position, percentage)
-                    if (result.isSuccess && serverSync.accepts(session.startedAtMs)) siloRepository.stopPlaybackSession(book)
-                    result
+            try {
+                progressWrites.push(session.book, session.lastPositionSec, progress(session.lastPositionSec, session.durationSec) ?: 0f,
+                    canWrite = { serverSync.accepts(session.startedAtMs) }) { book, position, percentage ->
+                    withConnection(book) { siloRepository.syncAudiobookProgress(book, position, percentage) }
                 }
+            } finally {
+                withConnection(session.book) { siloRepository.stopPlaybackSession(session.book) }
             }
         }
 

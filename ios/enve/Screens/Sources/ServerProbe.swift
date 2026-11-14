@@ -131,22 +131,22 @@ struct ServerProbe {
         )
     }
 
-    private struct SiloHealth: Decodable {
-        let status: String?
-        let serverID: String?
+    private struct SiloSystemInfo: Decodable {
+        let apiMajor: Int
+        let links: [String: String]
 
         enum CodingKeys: String, CodingKey {
-            case status
-            case serverID = "server_id"
+            case apiMajor = "api_major"
+            case links
         }
     }
 
     private func fingerprintSilo(_ base: String) async -> DetectedServer? {
 
-        guard let (resp, data) = await get(base, "/api/v1/health"), resp.statusCode == 200,
-            let health = try? JSONDecoder().decode(SiloHealth.self, from: data),
-            health.status?.lowercased() == "ok",
-            health.serverID?.isEmpty == false
+        guard let (resp, data) = await get(base, "/api/v2/system/info"), resp.statusCode == 200,
+            let info = try? JSONDecoder().decode(SiloSystemInfo.self, from: data),
+            info.apiMajor == 2,
+            info.links["identity"] == "/api/v2/system/identity"
         else { return nil }
         return DetectedServer(
             providerType: .silo,

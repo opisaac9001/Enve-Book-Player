@@ -22,13 +22,16 @@ import com.enve.engine.library.AudiobookshelfHistoryCandidate
 import com.enve.engine.library.LibraryMetadataEdit
 import com.enve.engine.library.LibraryMetadataMatch
 import com.enve.engine.library.BookOrbitCollectionMembership
+import com.enve.engine.prefs.PreferencesFacade
 import com.enve.hearth.MarkUnreadAction
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -40,7 +43,10 @@ class HearthDetailViewModel @Inject constructor(
     private val bookOrbit: BookOrbitFacade,
     private val serverTools: ServerToolsFacade,
     private val markUnreadAction: MarkUnreadAction,
+    preferences: PreferencesFacade,
 ) : ViewModel() {
+    val readingEnabled: StateFlow<Boolean> =
+        preferences.readingEnabled.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
     val saved = savedBooks.saved
     val savedSyncErrors = savedBooks.syncErrors
 

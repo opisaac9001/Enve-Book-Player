@@ -58,6 +58,7 @@ data class Book(
     val episodeId: String? = null,
     val podcastLibraryItemId: String? = null,
     val podcastEnclosureUrl: String? = null,
+    val podcastShareUrl: String? = null,
 
     val isDownloaded: Boolean = false,
     val downloadProgress: Float? = null,
@@ -66,6 +67,8 @@ data class Book(
 
     val opdsAcquisitionUrl: String? = null,
     val opdsProgressionUrl: String? = null,
+
+    val comic: ComicMetadata? = null,
 ) {
 
     val uniqueKey: String

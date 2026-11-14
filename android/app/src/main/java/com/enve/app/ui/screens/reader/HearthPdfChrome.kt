@@ -1,10 +1,11 @@
 package com.enve.app.ui.screens.reader
 
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -15,7 +16,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.filled.ChevronLeft
@@ -39,8 +42,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -49,12 +50,14 @@ import com.enve.app.data.reader.ReaderTheme
 import com.enve.app.ui.screens.PdfReaderUiState
 import com.enve.app.ui.screens.pageLabel
 import com.enve.core.data.model.Book
+import com.enve.core.reader.PdfPageAdjust
 import com.enve.core.reader.PdfReadingLayout
 import com.enve.engine.prefs.ReadNextPosition
 import com.enve.engine.theme.HearthPaletteStyle
 import com.enve.hearth.design.EmberAccent
 import com.enve.hearth.design.EmberButton
 import com.enve.hearth.design.Hearth
+import com.enve.hearth.design.HearthChip
 import com.enve.hearth.design.HearthText
 import com.enve.hearth.design.LocalHearth
 import com.enve.hearth.design.LocalHearthEink
@@ -99,11 +102,12 @@ internal fun HearthPdfChrome(
                             textAlign = TextAlign.Center,
                             modifier = Modifier.padding(Hearth.Spacing.XXL),
                         )
-                        bitmap != null -> Image(
-                            bitmap = bitmap.asImageBitmap(),
+                        bitmap != null -> PdfPageViewport(
+                            bitmap = bitmap,
+                            spread = state.spread,
+                            pageAdjust = state.layout.pageAdjust,
                             contentDescription = "PDF ${pageLabel(state.spread.pages.toList(), state.pageCount).lowercase()}",
                             modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Fit,
                         )
                         else -> Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
@@ -234,7 +238,7 @@ private fun PdfBottomVeil(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 private fun PdfAppearanceSheet(
     layout: PdfReadingLayout,
@@ -254,12 +258,30 @@ private fun PdfAppearanceSheet(
                 .padding(horizontal = Hearth.Spacing.XL).padding(bottom = Hearth.Spacing.XXL),
             verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.M),
         ) {
-            Overline("Appearance")
-            PdfToggleRow("Two-page view", layout.twoPageView, enabled = true) {
-                onLayoutChange(layout.copy(twoPageView = it))
-            }
-            PdfToggleRow("Show cover separately", layout.showCoverSeparately, enabled = layout.twoPageView) {
-                onLayoutChange(layout.copy(showCoverSeparately = it))
+            Column(
+                Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.M),
+            ) {
+                Overline("Appearance")
+                PdfToggleRow("Two-page view", layout.twoPageView, enabled = true) {
+                    onLayoutChange(layout.copy(twoPageView = it))
+                }
+                PdfToggleRow("Show cover separately", layout.showCoverSeparately, enabled = layout.twoPageView) {
+                    onLayoutChange(layout.copy(showCoverSeparately = it))
+                }
+                Overline("Page Adjust")
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
+                    verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
+                ) {
+                    PdfPageAdjust.entries.forEach { adjust ->
+                        HearthChip(
+                            adjust.label,
+                            selected = layout.pageAdjust == adjust,
+                            onClick = { onLayoutChange(layout.copy(pageAdjust = adjust)) },
+                        )
+                    }
+                }
             }
             EmberButton("Done", onDismiss, Modifier.fillMaxWidth())
         }
@@ -275,7 +297,12 @@ private fun PdfToggleRow(label: String, checked: Boolean, enabled: Boolean, onCh
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        Text(label, style = HearthText.Body, color = if (enabled) palette.text else palette.textTertiary)
+        Text(
+            label,
+            style = HearthText.Body,
+            color = if (enabled) palette.text else palette.textTertiary,
+            modifier = Modifier.weight(1f).padding(end = Hearth.Spacing.M),
+        )
         Switch(
             checked = checked,
             onCheckedChange = null,

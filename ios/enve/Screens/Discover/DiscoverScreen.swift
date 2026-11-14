@@ -16,6 +16,10 @@ struct DiscoverScreen: View {
         !trending.isEmpty || !bestsellers.isEmpty || !newReleases.isEmpty
     }
 
+    private var catalogAllowed: Bool {
+        ExternalServicesStore.shared.isEnabled(.audible)
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 32) {
@@ -25,7 +29,9 @@ struct DiscoverScreen: View {
                     line: "What other readers are listening to."
                 )
 
-                if !loaded {
+                if !catalogAllowed {
+                    discoverTurnedOff
+                } else if !loaded {
                     DiscoverPlaceholderShelf(title: "Trending")
                     DiscoverPlaceholderShelf(title: "Bestsellers")
                     DiscoverPlaceholderShelf(title: "Fresh releases")
@@ -50,7 +56,7 @@ struct DiscoverScreen: View {
         .background(HearthBackground())
         .hearthBackBar()
         .toolbar(.hidden, for: .navigationBar)
-        .task { await discoverLoad() }
+        .task(id: catalogAllowed) { await discoverLoad() }
         .refreshable {
             DiscoverService.shared.clearCache()
             await discoverLoad()
@@ -118,7 +124,28 @@ struct DiscoverScreen: View {
         .padding(.horizontal, 32)
     }
 
+    private var discoverTurnedOff: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "hand.raised")
+                .font(.hearthUI(30))
+                .foregroundStyle(hearth.textTertiary)
+                .accessibilityHidden(true)
+            Text("Discover is turned off.")
+                .font(.hearthDisplay(18, weight: .semibold))
+                .foregroundStyle(hearth.text)
+            Text("These shelves come from the Audible catalog, which is off for this device in Settings › External services.")
+                .font(.hearthCaption)
+                .foregroundStyle(hearth.textSecondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 48)
+        .padding(.horizontal, 32)
+        .accessibilityElement(children: .combine)
+    }
+
     private func discoverLoad() async {
+        guard catalogAllowed else { return }
         loadError = nil
 
         async let trendingReq = try? DiscoverService.shared.fetchTrending()

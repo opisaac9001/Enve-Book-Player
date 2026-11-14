@@ -30,6 +30,17 @@ final class MatchesSearchModel {
             }
         }
 
+        var externalService: ExternalService? {
+            switch self {
+            case .iTunes: .appleCatalog
+            case .enveSearch: .audible
+            case .googleBooks: .googleBooks
+            case .openLibrary: .openLibrary
+            case .comicVine: .comicVine
+            case .audiobookshelf: nil
+            }
+        }
+
         static func available(for mode: Mode) -> [Source] {
             switch mode {
             case .audiobook: [.enveSearch, .iTunes, .audiobookshelf]
@@ -77,19 +88,30 @@ final class MatchesSearchModel {
     @ObservationIgnored private var previewRequestID = UUID()
     @ObservationIgnored private var audiobookshelfBackend: BackendConfig?
     private let matches: MatchesEngine
+    private let externalServices: ExternalServicesStore
 
-    init(fileMetadata: FileMetadataLayer, initialQuery: String, mediaType: AppMediaType, matches: MatchesEngine = EnveEngine.shared.matches)
-    {
+    init(
+        fileMetadata: FileMetadataLayer,
+        initialQuery: String,
+        mediaType: AppMediaType,
+        matches: MatchesEngine = EnveEngine.shared.matches,
+        externalServices: ExternalServicesStore = .shared
+    ) {
         mode = mediaType == .ebook ? .ebook : .audiobook
         self.fileMetadata = fileMetadata
         availableSources = Source.available(for: mode)
         selectedProvider = Source.preferred(for: mode)
         query = Self.matchesNormalizeQuery(initialQuery)
         self.matches = matches
+        self.externalServices = externalServices
     }
 
     var fileDuration: TimeInterval? { fileMetadata.duration }
     var supportsPreview: Bool { mode == .audiobook }
+
+    func disabledService(for source: Source) -> ExternalService? {
+        source.externalService.flatMap { externalServices.isEnabled($0) ? nil : $0 }
+    }
 
     func search(source: Source) async {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -188,6 +210,9 @@ final class MatchesSearchModel {
             if results.isEmpty, errorMessage == nil {
                 errorMessage = "Nothing found."
             }
+        } catch let error as ExternalServiceDisabledError {
+            results = []
+            errorMessage = error.localizedDescription
         } catch {
             errorMessage = error.localizedDescription
         }

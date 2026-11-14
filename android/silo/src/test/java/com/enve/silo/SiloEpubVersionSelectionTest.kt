@@ -4,7 +4,7 @@ import com.enve.core.reader.EpubBridgeCheckpoint
 import com.enve.core.reader.EpubBridgeCheckpointCodec
 import com.enve.core.reader.ReaderEngineKind
 import com.enve.core.reader.ReaderTextQuote
-import com.enve.silo.dto.SiloEbookProgressResponse
+import com.enve.silo.dto.SiloEbookProgressEnvelope
 import com.enve.silo.dto.SiloEbookProgressRequest
 import com.enve.silo.dto.SiloFileVersionDto
 import kotlinx.serialization.encodeToString
@@ -21,45 +21,45 @@ class SiloEpubVersionSelectionTest {
     @Test
     fun savedEpubVersionWinsOverTheDefaultEpub() {
         val versions = listOf(
-            version(fileId = 2, fileName = "book.epub"),
-            version(fileId = 17, fileName = "alternate.epub"),
-            version(fileId = 1, fileName = "book.pdf"),
+            version(fileId = "2", fileName = "book.epub"),
+            version(fileId = "17", fileName = "alternate.epub"),
+            version(fileId = "1", fileName = "book.pdf"),
         )
 
         val selected = preferredSiloEpubVersion(
             versions = versions,
-            savedProgressFileId = 17,
+            savedProgressFileId = "17",
         )
 
-        assertEquals(17, selected?.fileId)
+        assertEquals("17", selected?.fileId)
     }
 
     @Test
     fun firstEpubInApiOrderIsTheDeterministicDefault() {
         val versions = listOf(
-            version(fileId = 9, fileName = "late.EPUB"),
-            version(fileId = 1, fileName = "book.pdf"),
-            version(fileId = 6, fileName = "opaque", container = ".epub"),
-            version(fileId = 4, filePath = "/library/book.epub"),
+            version(fileId = "9", fileName = "late.EPUB"),
+            version(fileId = "1", fileName = "book.pdf"),
+            version(fileId = "6", fileName = "opaque", container = ".epub"),
+            version(fileId = "4", filePath = "/library/book.epub"),
         )
 
         val selected = preferredSiloEpubVersion(versions)
 
-        assertEquals(9, selected?.fileId)
+        assertEquals("9", selected?.fileId)
     }
 
     @Test
     fun nonEpubVersionsAreNeverUsedAsReaderFallback() {
         val versions = listOf(
-            version(fileId = 1, fileName = "book.pdf"),
-            version(fileId = 2, fileName = "book.mobi"),
-            version(fileId = 3, fileName = "comic.cbz", container = "zip"),
+            version(fileId = "1", fileName = "book.pdf"),
+            version(fileId = "2", fileName = "book.mobi"),
+            version(fileId = "3", fileName = "comic.cbz", container = "zip"),
         )
 
         assertNull(
             preferredSiloEpubVersion(
                 versions = versions,
-                savedProgressFileId = 1,
+                savedProgressFileId = "1",
             ),
         )
     }
@@ -108,7 +108,7 @@ class SiloEpubVersionSelectionTest {
     }
 
     @Test
-    fun activeCheckpointSuppliesTheFileIdUsedForProgressPush() {
+    fun activeCheckpointSuppliesTheOpaqueFileIdUsedForProgressPush() {
         val checkpoint = EpubBridgeCheckpoint(
             publicationSha256 = "sha",
             providerFileId = "17",
@@ -119,49 +119,39 @@ class SiloEpubVersionSelectionTest {
         )
 
         assertEquals(
-            17,
+            "17",
             siloActiveEpubFileId(EpubBridgeCheckpointCodec.encode(checkpoint)),
         )
         assertNull(siloActiveEpubFileId("""{"href":"Text/chapter.xhtml"}"""))
     }
 
     @Test
-    fun progressPayloadMatchesCurrentSiloContract() {
+    fun progressPayloadMatchesTheV2Contract() {
         val payload = Json.parseToJsonElement(
             Json.encodeToString(
                 SiloEbookProgressRequest(
-                    fileId = 51,
+                    fileId = "51",
                     location = "epubcfi(/6/4!/4/2:3)",
                     progress = 0.42,
+                    updatedAt = siloInstant(1_767_323_045_000L),
                 ),
             ),
         ).jsonObject
 
-        assertEquals(setOf("file_id", "location", "progress"), payload.keys)
+        assertEquals(setOf("file_id", "location", "progress", "updated_at"), payload.keys)
+        assertEquals("\"51\"", payload["file_id"].toString())
+        assertEquals("\"2026-01-02T03:04:05.000Z\"", payload["updated_at"].toString())
     }
 
     @Test
-    fun emptyProgressObjectIsNoneButAuthAndServerErrorsPropagate() {
-        val empty = requireNotNull(
-            siloEbookProgressBody(
-                Response.success(SiloEbookProgressResponse()),
-            ),
-        )
-        assertNull(empty.progress)
-        assertNull(
-            siloEbookProgressBody(
-                Response.error(404, ByteArray(0).toResponseBody()),
-            ),
-        )
+    fun absentProgressIsNoneButAuthAndServerErrorsPropagate() {
+        assertNull(siloEbookProgress(Response.success(SiloEbookProgressEnvelope())))
+        assertNull(siloEbookProgress(Response.error(404, ByteArray(0).toResponseBody())))
         assertThrows(IllegalStateException::class.java) {
-            siloEbookProgressBody(
-                Response.error(401, ByteArray(0).toResponseBody()),
-            )
+            siloEbookProgress(Response.error(401, ByteArray(0).toResponseBody()))
         }
         assertThrows(IllegalStateException::class.java) {
-            siloEbookProgressBody(
-                Response.error(500, ByteArray(0).toResponseBody()),
-            )
+            siloEbookProgress(Response.error(500, ByteArray(0).toResponseBody()))
         }
     }
 
@@ -182,7 +172,7 @@ class SiloEpubVersionSelectionTest {
     }
 
     private fun version(
-        fileId: Int,
+        fileId: String,
         fileName: String? = null,
         filePath: String? = null,
         container: String? = null,

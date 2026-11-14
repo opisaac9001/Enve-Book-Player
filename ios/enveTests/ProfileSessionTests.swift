@@ -7,6 +7,26 @@ import Testing
 
 @MainActor
 struct ProfileSessionTests {
+    @Test func siloLoginsAtTheSameServerKeepSeparateConnectionIdentities() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let session = try fixture.session(FamilyProfile(id: UUID().uuidString, name: "Silo isolation", role: .adult))
+        let first = ServerConnection(name: "PIN profile", url: "https://silo.example", type: .silo, userId: "first", authMode: .usernamePassword)
+        let second = ServerConnection(name: "SSO profile", url: "https://silo.example/", type: .silo, userId: "second", authMode: .sso)
+        session.providerConnections.connections = [first]
+        let saved = SourcesFinalizer.upsert(second, into: session.appState, profileSession: session)
+        #expect(saved.id == second.id)
+        #expect(session.providerConnections.connections.map(\.id) == [first.id, second.id])
+        #expect(session.providerConnections.connections.first?.authMode == .usernamePassword)
+        #expect(session.providerConnections.connections.last?.authMode == .sso)
+        var refreshed = second
+        refreshed.name = "Reauthenticated"
+        _ = SourcesFinalizer.upsert(refreshed, into: session.appState, profileSession: session)
+        #expect(session.providerConnections.connections.count == 2)
+        #expect(session.providerConnections.connections.last?.id == second.id)
+        await session.retire()
+    }
+
     @Test func downloadDetectionRejectsOtherProfilesAndSiblingDirectories() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -242,6 +262,75 @@ struct ProfileSessionTests {
         await coordinator.activeSession.retire()
     }
 
+    @Test(.enabled(if: ProfileSwitchCoordinator.supportsMultipleProfileStorage), .timeLimit(.minutes(1)))
+    func parentAuthorizationCannotUnlockRetiringSessionWhileReturningToOwner() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let catalog = try FamilyProfileStore(fileURL: fixture.root.appendingPathComponent("catalog.json"), pinStore: fixture.pin)
+        try fixture.pin.configure("291746")
+        let other = try catalog.addAdult(name: "Other adult")
+        _ = try catalog.addChild(name: "Child")
+        let initial = try fixture.session(other)
+        let provider = HeldCatalogProvider(connection: ServerConnection(name: "Held retirement", url: "https://held.invalid", type: .opds))
+        provider.holdsRetirement = true
+        initial.providerConnections[provider.connection.id] = provider
+        let defaults = try fixture.defaults("coordinator")
+        defaults.set(true, forKey: "familyProfiles.enabled")
+        let coordinator = try ProfileSwitchCoordinator(catalog: catalog, pinStore: fixture.pin,
+            defaults: defaults, initialSession: initial, sessionFactory: { try fixture.session($0, libraryDatabase: $1) })
+        #expect(coordinator.isLocked)
+        try coordinator.authorizeParent(pin: "291746")
+        #expect(!coordinator.isLocked)
+
+        // Releases a retirement the test never reaches, so a failure cannot hang the suite.
+        let watchdog = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2))
+            provider.isReleased = true
+        }
+        let returning = Task { try await coordinator.switchProfile(id: FamilyProfile.ownerID) }
+        while !provider.isRetiring && !provider.isReleased {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try #require(provider.isRetiring && !provider.isReleased, "Retirement never reached the held provider")
+        #expect(coordinator.isSwitching)
+        #expect(coordinator.activeSession === initial)
+        #expect(initial.isRetired)
+        coordinator.onBackground()
+        #expect(coordinator.isLocked)
+        do {
+            try coordinator.authorizeParent(pin: "291746")
+            Issue.record("Parent authorization unlocked a retiring session")
+        } catch ProfileAccessError.operationInProgress { }
+        #expect(coordinator.isLocked)
+        #expect(!coordinator.isParentAuthorized)
+        #expect(coordinator.activeSession === initial)
+
+        provider.isReleased = true
+        watchdog.cancel()
+        await watchdog.value
+        do {
+            try await returning.value
+            Issue.record("Owner opened after its authorization was revoked mid-switch")
+        } catch ProfileAccessError.parentAuthorizationRequired { }
+        #expect(coordinator.activeProfile.id == FamilyProfile.ownerID)
+        #expect(coordinator.isLocked)
+        #expect(!coordinator.isSwitching)
+        try coordinator.authorizeParent(pin: "291746")
+        let owner = coordinator.activeSession
+        #expect(!coordinator.isLocked)
+        #expect(!owner.isRetired)
+        owner.start()
+
+        try await coordinator.switchProfile(id: other.id)
+        #expect(owner.isRetired)
+        try coordinator.authorizeParent(pin: "291746")
+        try await coordinator.switchProfile(id: FamilyProfile.ownerID)
+        #expect(coordinator.activeProfile.id == FamilyProfile.ownerID)
+        #expect(!coordinator.isLocked)
+        #expect(!coordinator.activeSession.isRetired)
+        await coordinator.activeSession.retire()
+    }
+
     @Test(.enabled(if: ProfileSwitchCoordinator.supportsMultipleProfileStorage))
     func coordinatorReusesDatabasesAndReleasesRemovedProfiles() async throws {
         let fixture = try Fixture()
@@ -384,6 +473,50 @@ struct ProfileSessionTests {
         await reopened.retire()
     }
 
+    @Test(.timeLimit(.minutes(1)))
+    func retirementCancelsStartupCatalogWorkBeforeJoiningAppState() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let profile = FamilyProfile(id: UUID().uuidString, name: "Child", role: .child)
+        var session: ProfileSession? = try fixture.session(profile)
+        weak let retiredSession = session
+        let connection = ServerConnection(name: "Held catalog", url: "https://held.invalid", type: .opds)
+        let encoder = JSONEncoder()
+        encoder.userInfo[ServerConnection.keychainUserInfoKey] = session?.keychain
+        session?.defaults.set(try encoder.encode([connection]), forKey: "enve_server_connections")
+        session?.providerConnections.refresh()
+        let provider = HeldCatalogProvider(connection: connection)
+        session?.providerConnections[connection.id] = provider
+        session?.start()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while provider.fetchCount == 0 && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try #require(provider.fetchCount == 1, "Startup never requested the uncached catalog")
+        let book = Book(id: "pending-write", title: "Saved before switching", backendId: "local", source: .local)
+        session?.appState.libraryCache.persist([book])
+        // Releases the fetch if retirement waits on startup work instead of cancelling it.
+        let watchdog = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2))
+            provider.isReleased = true
+        }
+        await session?.retire()
+        watchdog.cancel()
+        await watchdog.value
+        #expect(provider.outcome == .cancelled)
+        #expect(!provider.isFetching)
+        session = nil
+        await Task.yield()
+        #expect(retiredSession == nil)
+        let reopened = try fixture.session(profile)
+        #expect(await reopened.bookStore.book(stableId: book.stableId)?.title == book.title)
+        let other = try fixture.session(FamilyProfile(id: UUID().uuidString, name: "Other", role: .child))
+        #expect(await other.bookStore.book(stableId: book.stableId) == nil)
+        #expect(other.providerConnections.connections.isEmpty)
+        await reopened.retire()
+        await other.retire()
+    }
+
     @Test func localLibraryScansOnlyCapturedEbookRoots() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -476,6 +609,68 @@ struct ProfileSessionTests {
             return nil
         }
         func push(_ update: ProgressUpdate) async throws { pushes += 1 }
+    }
+
+    @MainActor
+    private final class HeldCatalogProvider: @MainActor LibraryProvider {
+        enum Outcome { case cancelled, released }
+        var connection: ServerConnection
+        var capabilities: ProviderCapabilities = []
+        var isReleased = false
+        var holdsRetirement = false
+        private(set) var fetchCount = 0
+        private(set) var isFetching = false
+        private(set) var isRetiring = false
+        private(set) var outcome: Outcome?
+
+        init(connection: ServerConnection) {
+            self.connection = connection
+        }
+
+        func retire() async {
+            isRetiring = true
+            while holdsRetirement && !isReleased {
+                guard (try? await Task.sleep(for: .milliseconds(10))) != nil else { return }
+            }
+        }
+
+        func fetchLibraries() async throws -> [Library] {
+            fetchCount += 1
+            isFetching = true
+            defer { isFetching = false }
+            while !isReleased {
+                do {
+                    try await Task.sleep(for: .milliseconds(10))
+                } catch {
+                    outcome = .cancelled
+                    throw error
+                }
+            }
+            outcome = .released
+            return []
+        }
+
+        func validateConnection() async throws -> Bool { true }
+        func fetchBooks(libraryId: String) async throws -> [Book] { [] }
+        func fetchRecentBooks(libraryId: String, limit: Int) async throws -> [Book] { [] }
+        func fetchCollections(libraryId: String?) async throws -> [Collection] { [] }
+        func fetchSeries(libraryId: String) async throws -> [Series] { [] }
+        func fetchUserMediaProgress(libraryId: String) async throws -> [UserMediaProgress] { [] }
+        func fetchFullBookDetails(bookId: String, libraryId: String) async throws -> Book {
+            throw ProviderError.notImplemented
+        }
+        func getAudioURL(for book: Book) -> URL? { nil }
+        func getStreamingHeaders() -> [String: String] { [:] }
+        func startPlaybackSession(for book: Book) async throws -> PlaybackSessionInfo {
+            throw ProviderError.notImplemented
+        }
+        func updatePlaybackProgress(
+            book: Book,
+            sessionId: String?,
+            currentTime: TimeInterval,
+            isFinished: Bool,
+            timeListened: TimeInterval
+        ) async throws {}
     }
 
     private final class Fixture {

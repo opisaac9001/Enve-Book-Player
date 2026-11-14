@@ -51,13 +51,13 @@ class GrimmoryEbookSyncStrategy @Inject constructor(
             if (!snapshot.finished && !progressAdvanced) continue
 
             runSuspendCatching {
-                val nowMs = System.currentTimeMillis()
+                val readAt = snapshot.updatedAt ?: System.currentTimeMillis()
                 if (snapshot.finished) {
                     bookCacheDao.updateFinishedStatus(
                         bookId = book.id,
                         connectionId = book.connectionId,
                         finished = true,
-                        nowMs = nowMs,
+                        nowMs = readAt,
                     )
                 } else {
                     bookCacheDao.updateUnifiedProgress(
@@ -65,8 +65,8 @@ class GrimmoryEbookSyncStrategy @Inject constructor(
                         connectionId = book.connectionId,
                         progress = snapshot.percentage,
                         currentTimeSec = -1L,
-                        locatorJson = snapshot.locatorJson,
-                        nowMs = nowMs,
+                        locatorJson = snapshot.locatorJson ?: snapshot.epubCfi,
+                        nowMs = readAt,
                     )
                 }
                 pulled += 1

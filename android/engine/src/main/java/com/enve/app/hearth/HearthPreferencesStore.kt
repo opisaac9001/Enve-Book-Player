@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import com.enve.app.readium.narrator.NarratorPack
 import com.enve.core.data.local.ProfilePreferences
 import com.enve.engine.theme.HearthPaletteStyle
 import com.enve.engine.theme.HearthThemeMode
@@ -34,7 +35,15 @@ private val KEY_REST_REMINDER_INTRO_SHOWN = booleanPreferencesKey("hearth.reader
 private val KEY_LIBRARY_COLUMNS = intPreferencesKey("hearth.library.columns")
 private val KEY_LIBRARY_SORT_STACK = stringPreferencesKey("hearth.library.sortStack")
 private val KEY_LIBRARY_ADVANCED_FILTERS = stringPreferencesKey("hearth.library.advancedFilters")
+private val KEY_LIBRARY_MEDIA = stringPreferencesKey("hearth.library.media")
+private val KEY_LIBRARY_STATUS = stringPreferencesKey("hearth.library.status")
+private val KEY_READING_ENABLED = booleanPreferencesKey("hearth.library.readingEnabled")
+private val KEY_LIBRARY_SELECTION = stringPreferencesKey("hearth.library.selection")
+private fun scopedLibraryMediaKey(scope: String) = stringPreferencesKey("hearth.library.media.$scope")
+private fun comicBrowseKey(scope: String) = stringPreferencesKey("hearth.library.comics.$scope")
 private val KEY_READER_TTS_VOICE = stringPreferencesKey("hearth.reader.ttsVoice")
+private val KEY_READER_NARRATOR_PACK = stringPreferencesKey("hearth.reader.narratorPack")
+private fun readerNarratorVoiceKey(pack: NarratorPack) = stringPreferencesKey("hearth.reader.narratorVoice.${pack.name}")
 private val KEY_START_TAB = stringPreferencesKey("hearth.startTab")
 private val KEY_HOME_SECTION_ORDER = stringPreferencesKey("hearth.home.sectionOrder")
 private val KEY_HOME_HIDDEN_SECTIONS = stringPreferencesKey("hearth.home.hiddenSections")
@@ -82,8 +91,29 @@ class HearthPreferencesStore(
 
     val librarySortStack: Flow<String> = dataStore.data.map { it[KEY_LIBRARY_SORT_STACK] ?: "" }
     val readerTtsVoice: Flow<String?> = dataStore.data.map { it[KEY_READER_TTS_VOICE] }
+    val readerNarratorPack: Flow<NarratorPack?> = dataStore.data.map { prefs ->
+        prefs[KEY_READER_NARRATOR_PACK]?.let { runCatching { NarratorPack.valueOf(it) }.getOrNull() }
+    }
+    fun readerNarratorVoice(pack: NarratorPack): Flow<String?> = dataStore.data.map { prefs ->
+        prefs[readerNarratorVoiceKey(pack)]?.takeIf { it in pack.voices }
+    }
     val libraryAdvancedFilters: Flow<String> =
         dataStore.data.map { it[KEY_LIBRARY_ADVANCED_FILTERS] ?: "" }
+    val libraryMedia: Flow<String> = dataStore.data.map { it[KEY_LIBRARY_MEDIA] ?: "" }
+    val libraryStatus: Flow<String> = dataStore.data.map { it[KEY_LIBRARY_STATUS] ?: "" }
+    val readingEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_READING_ENABLED] ?: true }
+    val librarySelection: Flow<String> = dataStore.data.map { it[KEY_LIBRARY_SELECTION] ?: "" }
+
+    fun scopedLibraryMedia(scope: String): Flow<String> {
+        val key = scopedLibraryMediaKey(scope)
+        return dataStore.data.map { it[key] ?: "" }
+    }
+
+    fun comicBrowseState(scope: String): Flow<String> {
+        val key = comicBrowseKey(scope)
+        return dataStore.data.map { it[key] ?: "" }
+    }
+
     val preferredStartTab: Flow<HearthStartTab> = dataStore.data.map { prefs ->
         prefs[KEY_START_TAB]?.let { runCatching { HearthStartTab.valueOf(it) }.getOrNull() }
             ?: HearthStartTab.HEARTH
@@ -161,8 +191,46 @@ class HearthPreferencesStore(
         dataStore.edit { it[KEY_READER_TTS_VOICE] = name }
     }
 
+    suspend fun setReaderNarratorPack(pack: NarratorPack?) {
+        dataStore.edit {
+            if (pack == null) {
+                it.remove(KEY_READER_NARRATOR_PACK)
+            } else {
+                it[KEY_READER_NARRATOR_PACK] = pack.name
+            }
+        }
+    }
+
+    suspend fun setReaderNarratorVoice(pack: NarratorPack, voice: String) {
+        dataStore.edit { it[readerNarratorVoiceKey(pack)] = voice }
+    }
+
     suspend fun setLibraryAdvancedFilters(encoded: String) {
         dataStore.edit { it[KEY_LIBRARY_ADVANCED_FILTERS] = encoded }
+    }
+
+    suspend fun setLibraryMedia(encoded: String) {
+        dataStore.edit { it[KEY_LIBRARY_MEDIA] = encoded }
+    }
+
+    suspend fun setLibraryStatus(encoded: String) {
+        dataStore.edit { it[KEY_LIBRARY_STATUS] = encoded }
+    }
+
+    suspend fun setReadingEnabled(enabled: Boolean) {
+        dataStore.edit { it[KEY_READING_ENABLED] = enabled }
+    }
+
+    suspend fun setLibrarySelection(encoded: String) {
+        dataStore.edit { it[KEY_LIBRARY_SELECTION] = encoded }
+    }
+
+    suspend fun setScopedLibraryMedia(scope: String, encoded: String) {
+        dataStore.edit { it[scopedLibraryMediaKey(scope)] = encoded }
+    }
+
+    suspend fun setComicBrowseState(scope: String, encoded: String) {
+        dataStore.edit { it[comicBrowseKey(scope)] = encoded }
     }
 
     suspend fun setPreferredStartTab(tab: HearthStartTab) {

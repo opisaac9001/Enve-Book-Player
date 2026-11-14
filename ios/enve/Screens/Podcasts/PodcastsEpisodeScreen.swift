@@ -9,6 +9,9 @@ struct PodcastsEpisodeScreen: View {
 
     private let model = PodcastsModel.shared
     @State private var notesExpanded = false
+    #if os(iOS)
+    @State private var showingShare = false
+    #endif
     @State private var tint: Color = Hearth.accent
 
     private var isDownloaded: Bool {
@@ -43,6 +46,16 @@ struct PodcastsEpisodeScreen: View {
         .background(HearthBackground())
         .hearthBackBar()
         .toolbarBackground(.hidden, for: .navigationBar)
+        #if os(iOS)
+        .sheet(isPresented: $showingShare) {
+            if let url = episode.podcastShareURL {
+                PodcastEpisodeShareSheet(title: episode.title, url: url)
+                    .hearthPresentationBackground()
+                    .presentationDragIndicator(.visible)
+                    .enveEnvironment()
+            }
+        }
+        #endif
         .task {
             tint = await AmbientColorStore.shared.resolve(for: episode)
         }
@@ -104,6 +117,11 @@ struct PodcastsEpisodeScreen: View {
             ) {
                 engine.playback.play(episode)
             }
+            #if os(iOS)
+            if episode.podcastShareURL != nil {
+                GlyphButton(systemImage: "square.and.arrow.up", label: "Share episode") { showingShare = true }
+            }
+            #endif
             PodcastsDownloadControl(episode: episode, size: 48)
                 .background {
                     Circle()

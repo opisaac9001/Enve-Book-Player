@@ -534,7 +534,10 @@ struct BookDetailScreen: View {
     }
 
     private var actions: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        let actionRow = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(spacing: 10))
+            : AnyLayout(HStackLayout(alignment: .top, spacing: 10))
+        return VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
                 ForEach(primaryActions) { action in
                     EmberButton(title: action.title, systemImage: action.glyph, tint: tint, action: action.run)
@@ -550,29 +553,27 @@ struct BookDetailScreen: View {
             }
 
             if shown.mediaType == .audiobook || shown.mediaType == .ebook {
-                HStack(spacing: 10) {
-                    QuietButton(
+                actionRow {
+                    detailActionButton(
                         title: engine.library.isSaved(shown, in: .favorites) ? "Favorited" : "Favorite",
                         systemImage: engine.library.isSaved(shown, in: .favorites) ? "heart.fill" : "heart"
                     ) {
                         PlatformHaptics.impact(.light)
                         Task { await engine.library.toggleSaved(shown, in: .favorites) }
                     }
-                    .frame(maxWidth: .infinity)
                     .disabled(savedBooks.isUpdating(shown.uniqueId, in: .favorites))
-                    QuietButton(
+                    detailActionButton(
                         title: engine.library.isSaved(shown, in: .later) ? "Saved for later" : (isEbook ? "Read Later" : "Listen Later"),
                         systemImage: engine.library.isSaved(shown, in: .later) ? "bookmark.fill" : "bookmark"
                     ) {
                         PlatformHaptics.impact(.light)
                         Task { await engine.library.toggleSaved(shown, in: .later) }
                     }
-                    .frame(maxWidth: .infinity)
                     .disabled(savedBooks.isUpdating(shown.uniqueId, in: .later))
                 }
             }
 
-            HStack(spacing: 10) {
+            actionRow {
                 if showsDownload {
                     DetailDownloadButton(
                         book: shown,
@@ -581,14 +582,13 @@ struct BookDetailScreen: View {
                             ? (shown.mediaType == .ebook ? "ebook" : "audiobook") : nil
                     )
                 }
-                QuietButton(
+                detailActionButton(
                     title: shown.isFinished ? "Mark unfinished" : "Mark finished",
                     systemImage: shown.isFinished ? "checkmark.circle.fill" : "checkmark.circle"
                 ) {
                     toggleFinished()
                 }
             }
-            .frame(maxWidth: .infinity)
 
             if shown.source == .booklore,
                let counterpart,
@@ -601,6 +601,15 @@ struct BookDetailScreen: View {
                 )
             }
         }
+    }
+
+    private func detailActionButton(title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            DetailActionLabel(title: title, tint: hearth.bgElevated) {
+                Image(systemName: systemImage)
+            }
+        }
+        .buttonStyle(PressableStyle())
     }
 
     private struct DetailPrimaryAction: Identifiable {

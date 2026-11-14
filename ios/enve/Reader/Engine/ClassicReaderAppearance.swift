@@ -326,6 +326,8 @@ struct ClassicReaderAppearance: Codable, Equatable {
     var brightness: Double = 1.0
     var volumeButtonsTurnPages = false
     var tapEdgesTurnPages = true
+    var keyboardTurnsPages = true
+    var gameControllersTurnPages = true
     var showNextSeriesPrompt = true
     var nextSeriesPromptPlacement: ReaderNextSeriesPromptPlacement = .bottom
     var restReminderEnabled = true
@@ -376,6 +378,8 @@ struct ClassicReaderAppearance: Codable, Equatable {
         case brightness
         case volumeButtonsTurnPages
         case tapEdgesTurnPages
+        case keyboardTurnsPages
+        case gameControllersTurnPages
         case showNextSeriesPrompt
         case nextSeriesPromptPlacement
         case restReminderEnabled
@@ -479,6 +483,8 @@ struct ClassicReaderAppearance: Codable, Equatable {
         brightness = (try? c.decode(Double.self, forKey: .brightness)) ?? brightness
         volumeButtonsTurnPages = (try? c.decode(Bool.self, forKey: .volumeButtonsTurnPages)) ?? volumeButtonsTurnPages
         tapEdgesTurnPages = (try? c.decode(Bool.self, forKey: .tapEdgesTurnPages)) ?? tapEdgesTurnPages
+        keyboardTurnsPages = (try? c.decode(Bool.self, forKey: .keyboardTurnsPages)) ?? keyboardTurnsPages
+        gameControllersTurnPages = (try? c.decode(Bool.self, forKey: .gameControllersTurnPages)) ?? gameControllersTurnPages
         showNextSeriesPrompt = (try? c.decode(Bool.self, forKey: .showNextSeriesPrompt)) ?? showNextSeriesPrompt
         nextSeriesPromptPlacement =
             (try? c.decode(ReaderNextSeriesPromptPlacement.self, forKey: .nextSeriesPromptPlacement))

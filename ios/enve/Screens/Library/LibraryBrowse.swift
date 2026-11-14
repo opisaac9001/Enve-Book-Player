@@ -5,6 +5,7 @@ struct LibraryBookGrid: View {
     let books: [Book]
     let width: CGFloat
     var columns: Int = 3
+    var showsSeriesPosition = false
     var onBookAppear: ((Book) -> Void)? = nil
     var onHide: ((Book) -> Void)? = nil
     var workRefFor: ((Book) -> LibraryWorkRef?)? = nil
@@ -27,6 +28,7 @@ struct LibraryBookGrid: View {
                     book: book,
                     width: cellWidth,
                     cardStyle: cardStyle,
+                    showsSeriesPosition: showsSeriesPosition,
                     workRef: workRefFor?(book),
                     isDownloaded: isDownloaded?(book) ?? false,
                     isSelecting: isSelecting,
@@ -45,6 +47,7 @@ struct LibraryBookCell: View {
     let book: Book
     let width: CGFloat
     var cardStyle: BookCardStyle = .standard
+    var showsSeriesPosition = false
     var workRef: LibraryWorkRef? = nil
     var isDownloaded = false
     var isSelecting = false
@@ -97,6 +100,9 @@ struct LibraryBookCell: View {
     private var cover: some View {
         VStack(alignment: .center, spacing: 7) {
             coverFrame
+            if showsSeriesPosition {
+                SeriesBookCaption(book: book, showsTitle: cardStyle == .coverOnly)
+            }
             metadata
         }
         .frame(width: width, alignment: .top)
@@ -335,7 +341,7 @@ private struct ComicSeriesQuickReadButton: View {
 
     private func loadBook() async {
         guard let id = aggregate.resumeBookUniqueID, let next = await engine.library.book(uniqueId: id),
-            engine.library.matchesStatus(next, status: filter.status, downloadedIds: []),
+            engine.library.matchesStatus(next, status: filter.status),
             LibraryAdvancedFilterPolicy.matches(next, filters: filter.advancedFilters)
         else { book = nil; return }
         guard !Task.isCancelled else { return }
@@ -354,7 +360,7 @@ struct LibrarySeriesDestination: View {
         if aggregate.isComic {
             ComicSeriesScreen(aggregate: aggregate, mediaScope: mediaScope, filter: comicFilter, library: engine.library)
         } else {
-            LibraryFilteredGridScreen(overline: "Series", title: aggregate.name) {
+            LibraryFilteredGridScreen(overline: "Series", title: aggregate.name, showsSeriesPosition: true) {
                 await engine.library.books(forSeries: aggregate, mediaScope: mediaScope)
             }
         }
@@ -603,6 +609,7 @@ struct LibraryGenreRow: View {
 struct LibraryFilteredGridScreen: View {
     let overline: String
     let title: String
+    var showsSeriesPosition = false
     let fetch: @MainActor () async -> [Book]
 
     @Environment(EnveEngine.self) private var engine
@@ -631,6 +638,7 @@ struct LibraryFilteredGridScreen: View {
                     LibraryBookGrid(
                         books: books,
                         width: geo.size.width,
+                        showsSeriesPosition: showsSeriesPosition,
                         onHide: { book in
                             LibraryModel.markHidden(book)
                             books.removeAll { $0.uniqueId == book.uniqueId }

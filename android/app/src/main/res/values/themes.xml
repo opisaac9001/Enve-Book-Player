@@ -4,6 +4,11 @@
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
     </style>
+    <style name="Theme.Enve.Reader" parent="Theme.Enve">
+        <item name="android:colorAccent">@color/enve_ember</item>
+        <item name="android:colorControlActivated">@color/enve_ember</item>
+        <item name="android:textColorHighlight">#66F5921A</item>
+    </style>
     <style name="Theme.Enve.Splash" parent="Theme.Enve">
         <item name="android:windowBackground">@android:color/black</item>
     </style>

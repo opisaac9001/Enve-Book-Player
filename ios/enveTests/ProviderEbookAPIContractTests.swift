@@ -8,8 +8,7 @@ struct ProviderEbookAPIContractTests {
         let opds: any ProviderConnectionHandling = OPDSProvider(connection: connection(type: .opds))
         #expect(opds is any EbookDownloadProvider)
         #expect(opds is any PlaybackSessionProvider)
-        // Progress is real only for publications that advertise an OPDS Progression service; the provider
-        // answers nil and pushes nothing for the rest.
+        // Only publications advertising an OPDS Progression service support progress sync.
         #expect(opds is any EbookProgressProvider)
         #expect(opds is any AudiobookProgressProvider)
         #expect(opds.capabilities.contains(.ebookProgressPush))
@@ -132,19 +131,21 @@ struct ProviderEbookAPIContractTests {
 
     @Test func siloProgressPayloadUsesServerContract() throws {
         let request = SiloEbookProgressUpdateRequest(
-            fileID: 51,
+            fileID: "51",
             location: "epubcfi(/6/4!/4/2:3)",
-            progress: 0.42
+            progress: 0.42,
+            updatedAt: "2026-01-02T03:04:05.000Z"
         )
         let root = try #require(
             JSONSerialization.jsonObject(with: JSONEncoder().encode(request))
                 as? [String: Any]
         )
 
-        #expect(Set(root.keys) == ["file_id", "location", "progress"])
-        #expect(root["file_id"] as? Int == 51)
+        #expect(Set(root.keys) == ["file_id", "location", "progress", "updated_at"])
+        #expect(root["file_id"] as? String == "51")
         #expect(root["location"] as? String == "epubcfi(/6/4!/4/2:3)")
         #expect(root["progress"] as? Double == 0.42)
+        #expect(root["updated_at"] as? String == "2026-01-02T03:04:05.000Z")
     }
 
     @MainActor

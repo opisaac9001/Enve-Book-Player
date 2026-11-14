@@ -1,4 +1,5 @@
 import Combine
+import GameController
 import Logging
 import MediaPlayer
 import PDFKit
@@ -410,6 +411,8 @@ final class PDFReaderController: UIViewController {
     private var pendingInitialPageIndex: Int?
     private var scrollEnabled: Bool
     private var layout: PDFReadingLayout
+    private var fittedViewport = CGSize.zero
+    private var fittedSpread: ClosedRange<Int>?
 
     init(
         document: PDFKit.PDFDocument,
@@ -456,6 +459,7 @@ final class PDFReaderController: UIViewController {
             lastReportedIndex = index
             suppressNotifications = false
         }
+        fitPagesIfNeeded()
     }
 
     func goToPage(_ index: Int) {
@@ -467,6 +471,14 @@ final class PDFReaderController: UIViewController {
         pdfView.go(to: page)
         lastReportedIndex = bounded
         if viewIfLoaded?.window == nil { pendingInitialPageIndex = bounded }
+        fitPagesIfNeeded()
+    }
+
+    // Wide pages reserve horizontal swipes for panning.
+    var allowsSwipePageTurns: Bool {
+        let spread = spread(containing: lastReportedIndex)
+        let content = ReaderPagedPagePolicy.pdfSpreadSize(pageSizes: spread.map(displayedSize(ofPageAt:)))
+        return content.width * pdfView.scaleFactor <= pdfView.bounds.width + 1
     }
 
     // PDFKit may report the spread partner; keep the requested page as the selection.
@@ -479,6 +491,14 @@ final class PDFReaderController: UIViewController {
 
     func configure(scrollEnabled: Bool, layout: PDFReadingLayout) {
         guard scrollEnabled != self.scrollEnabled || layout != self.layout else { return }
+        var pairing = layout
+        pairing.pageAdjust = self.layout.pageAdjust
+        if scrollEnabled == self.scrollEnabled, pairing == self.layout {
+            self.layout = layout
+            fittedViewport = .zero
+            fitPagesIfNeeded()
+            return
+        }
         let currentIndex = currentPageIndex()
         self.scrollEnabled = scrollEnabled
         self.layout = layout
@@ -499,7 +519,7 @@ final class PDFReaderController: UIViewController {
 
     private func buildPDFView(navigateToIndex index: Int) {
         let pdf = PDFView()
-        pdf.autoScales = true
+        pdf.autoScales = false
         pdf.displaysPageBreaks = false
         // Paged turns are handled by the reader's drag gesture.
         pdf.usePageViewController(false)
@@ -532,6 +552,70 @@ final class PDFReaderController: UIViewController {
         )
 
         self.pdfView = pdf
+        fittedViewport = .zero
+        fittedSpread = nil
+    }
+
+    private func fitPagesIfNeeded() {
+        let viewport = pdfView.bounds.size
+        guard viewport.width > 0, viewport.height > 0 else { return }
+        // PDFKit updates `currentPage` lazily after `go(to:)`, so the fit follows the controller's own selection.
+        let index = pendingInitialPageIndex ?? lastReportedIndex
+        let spread = spread(containing: index)
+        // Scrolled flow keeps the reader's zoom while pages pass; only paged turns reset it.
+        guard viewport != fittedViewport || (!scrollEnabled && spread != fittedSpread) else { return }
+        let content = ReaderPagedPagePolicy.pdfSpreadSize(pageSizes: spread.map(displayedSize(ofPageAt:)))
+        guard let scale = layout.pageAdjust.scale(fitting: content, in: viewport) else { return }
+        fittedViewport = viewport
+        fittedSpread = spread
+
+        let wasSuppressing = suppressNotifications
+        suppressNotifications = true
+        defer { suppressNotifications = wasSuppressing }
+        // PDFKit resets zoom while settling navigation, so apply the scale after layout.
+        pdfView.layoutIfNeeded()
+        // Widen the range first because each bound clamps the current scale.
+        pdfView.minScaleFactor = min(pdfView.minScaleFactor, scale)
+        pdfView.maxScaleFactor = scale * PDFPageAdjust.maximumZoom
+        pdfView.minScaleFactor = scale
+        pdfView.scaleFactor = scale
+        pdfView.layoutIfNeeded()
+        centerOverflowingContent()
+    }
+
+    private func displayedSize(ofPageAt index: Int) -> CGSize {
+        guard let page = document.page(at: index) else { return .zero }
+        let bounds = page.bounds(for: pdfView.displayBox)
+        let quarterTurns = (page.rotation / 90) % 2
+        return quarterTurns == 0 ? bounds.size : CGSize(width: bounds.height, height: bounds.width)
+    }
+
+    // Cropped and filled pages open on their middle, matching the Android viewport.
+    private func centerOverflowingContent() {
+        guard let scrollView = pdfScrollView else { return }
+        let inset = scrollView.adjustedContentInset
+        let size = scrollView.bounds.size
+        var offset = scrollView.contentOffset
+        let overflowX = scrollView.contentSize.width + inset.left + inset.right - size.width
+        if overflowX > 1 {
+            offset.x = overflowX / 2 - inset.left
+        }
+        let overflowY = scrollView.contentSize.height + inset.top + inset.bottom - size.height
+        if !scrollEnabled, overflowY > 1 {
+            offset.y = overflowY / 2 - inset.top
+        }
+        scrollView.setContentOffset(offset, animated: false)
+    }
+
+    // PDFKit hosts its pages in a scroll view it does not expose.
+    private var pdfScrollView: UIScrollView? {
+        var queue = pdfView.subviews
+        while !queue.isEmpty {
+            let view = queue.removeFirst()
+            if let scrollView = view as? UIScrollView { return scrollView }
+            queue.append(contentsOf: view.subviews)
+        }
+        return nil
     }
 
     private func clampedIndex(_ index: Int) -> Int {
@@ -554,6 +638,7 @@ final class PDFReaderController: UIViewController {
         guard !spread(containing: index).contains(lastReportedIndex) else { return }
         lastReportedIndex = index
         onPageChange(index)
+        fitPagesIfNeeded()
     }
 
     deinit {
@@ -670,36 +755,209 @@ struct VolumeButtonNavigationCapture: UIViewRepresentable {
     }
 }
 
-struct ReaderKeyboardNavigationCapture: UIViewControllerRepresentable {
+enum ReaderHardwarePageTurn: Equatable {
+    case forward, backward
+    // Left and right follow the page progression; forward and backward never flip.
+    case left, right
+
+    func isForward(rightToLeft: Bool) -> Bool {
+        switch self {
+        case .forward: true
+        case .backward: false
+        case .left: rightToLeft
+        case .right: !rightToLeft
+        }
+    }
+}
+
+enum ReaderGamepadPageTurnButton: CaseIterable {
+    case leftShoulder, rightShoulder, leftTrigger, rightTrigger, dpadLeft, dpadRight
+
+    var turn: ReaderHardwarePageTurn {
+        switch self {
+        case .rightShoulder, .rightTrigger: .forward
+        case .leftShoulder, .leftTrigger: .backward
+        case .dpadLeft: .left
+        case .dpadRight: .right
+        }
+    }
+
+    func input(on gamepad: GCExtendedGamepad) -> GCControllerButtonInput {
+        switch self {
+        case .leftShoulder: gamepad.leftShoulder
+        case .rightShoulder: gamepad.rightShoulder
+        case .leftTrigger: gamepad.leftTrigger
+        case .rightTrigger: gamepad.rightTrigger
+        case .dpadLeft: gamepad.dpad.left
+        case .dpadRight: gamepad.dpad.right
+        }
+    }
+}
+
+enum ReaderHardwarePageTurnPolicy {
+    struct KeyBinding {
+        let input: String
+        let turn: ReaderHardwarePageTurn
+    }
+
+    // Page turners in keyboard mode send these keys; volume-mode turners stay with the volume buttons setting.
+    static let keyBindings = [
+        KeyBinding(input: UIKeyCommand.inputLeftArrow, turn: .left),
+        KeyBinding(input: UIKeyCommand.inputRightArrow, turn: .right),
+        KeyBinding(input: UIKeyCommand.inputUpArrow, turn: .backward),
+        KeyBinding(input: UIKeyCommand.inputDownArrow, turn: .forward),
+        KeyBinding(input: " ", turn: .forward),
+        KeyBinding(input: "\r", turn: .forward),
+        KeyBinding(input: UIKeyCommand.inputPageDown, turn: .forward),
+        KeyBinding(input: UIKeyCommand.inputPageUp, turn: .backward),
+        KeyBinding(input: UIKeyCommand.f1, turn: .backward),
+        KeyBinding(input: UIKeyCommand.f2, turn: .forward),
+    ]
+
+    static func turn(forKeyInput input: String?) -> ReaderHardwarePageTurn? {
+        keyBindings.first { $0.input == input }?.turn
+    }
+
+    // The same keys by HID usage, for presses UIKit hands on without matching a command.
+    static func turn(forKeyCode keyCode: UIKeyboardHIDUsage) -> ReaderHardwarePageTurn? {
+        switch keyCode {
+        case .keyboardLeftArrow: .left
+        case .keyboardRightArrow: .right
+        case .keyboardUpArrow, .keyboardPageUp, .keyboardF1: .backward
+        case .keyboardDownArrow, .keyboardPageDown, .keyboardF2, .keyboardSpacebar, .keyboardReturnOrEnter: .forward
+        default: nil
+        }
+    }
+
+    static func acceptsInput(isEnabled: Bool, isSceneActive: Bool, isCoveredByPresentation: Bool, isEditingText: Bool) -> Bool {
+        isEnabled && isSceneActive && !isCoveredByPresentation && !isEditingText
+    }
+
+    // A gamepad is not tied to a window, so the reader focused last takes its presses.
+    static func gamepadTarget(focusedAt focusDates: [Date?]) -> Int? {
+        focusDates.enumerated()
+            .compactMap { offset, date in date.map { (offset, $0) } }
+            .max { $0.1 < $1.1 }?
+            .0
+    }
+}
+
+// Controller handlers are app-wide; one relay prevents reader windows from overwriting each other.
+@MainActor
+final class ReaderGamepadPageTurnRelay {
+    static let shared = ReaderGamepadPageTurnRelay()
+
+    private let captures = NSHashTable<ReaderHardwareNavigationCapture.HardwareCaptureController>.weakObjects()
+    private var boundButtons: [GCControllerButtonInput] = []
+    private var connectionObservers: [NSObjectProtocol] = []
+
+    private init() {}
+
+    func register(_ capture: ReaderHardwareNavigationCapture.HardwareCaptureController) {
+        captures.add(capture)
+        if connectionObservers.isEmpty {
+            for name in [Notification.Name.GCControllerDidConnect, .GCControllerDidDisconnect] {
+                connectionObservers.append(
+                    NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
+                        MainActor.assumeIsolated { ReaderGamepadPageTurnRelay.shared.bindControllers() }
+                    }
+                )
+            }
+        }
+        bindControllers()
+    }
+
+    func unregister(_ capture: ReaderHardwareNavigationCapture.HardwareCaptureController) {
+        captures.remove(capture)
+        bindControllers()
+    }
+
+    private func bindControllers() {
+        for button in boundButtons {
+            button.pressedChangedHandler = nil
+        }
+        boundButtons = []
+        guard captures.count > 0 else {
+            for observer in connectionObservers {
+                NotificationCenter.default.removeObserver(observer)
+            }
+            connectionObservers = []
+            return
+        }
+        for controller in GCController.controllers() {
+            guard let gamepad = controller.extendedGamepad else { continue }
+            // The handlers assume the main queue; background events stay off, the framework default.
+            controller.handlerQueue = .main
+            for button in ReaderGamepadPageTurnButton.allCases {
+                let input = button.input(on: gamepad)
+                input.pressedChangedHandler = { @Sendable _, _, pressed in
+                    guard pressed else { return }
+                    MainActor.assumeIsolated { ReaderGamepadPageTurnRelay.shared.deliver(button) }
+                }
+                boundButtons.append(input)
+            }
+        }
+    }
+
+    private func deliver(_ button: ReaderGamepadPageTurnButton) {
+        let candidates = captures.allObjects
+        guard let target = ReaderHardwarePageTurnPolicy.gamepadTarget(
+            focusedAt: candidates.map { $0.acceptsGamepadInput ? $0.focusedAt : nil }
+        ) else { return }
+        candidates[target].turn(button.turn)
+    }
+}
+
+struct ReaderHardwareNavigationCapture: UIViewControllerRepresentable {
     let isRightToLeft: Bool
+    let keyboardEnabled: Bool
+    let gameControllersEnabled: Bool
     let onForward: () -> Void
     let onBackward: () -> Void
 
-    func makeUIViewController(context: Context) -> KeyboardCaptureController {
-        let controller = KeyboardCaptureController()
+    func makeUIViewController(context: Context) -> HardwareCaptureController {
+        let controller = HardwareCaptureController()
         apply(to: controller)
         return controller
     }
 
-    func updateUIViewController(_ controller: KeyboardCaptureController, context: Context) {
+    func updateUIViewController(_ controller: HardwareCaptureController, context: Context) {
         apply(to: controller)
     }
 
-    static func dismantleUIViewController(_ controller: KeyboardCaptureController, coordinator: ()) {
+    static func dismantleUIViewController(_ controller: HardwareCaptureController, coordinator: ()) {
         controller.tearDown()
     }
 
-    private func apply(to controller: KeyboardCaptureController) {
+    private func apply(to controller: HardwareCaptureController) {
         controller.isRightToLeft = isRightToLeft
+        controller.keyboardEnabled = keyboardEnabled
+        controller.gameControllersEnabled = gameControllersEnabled
         controller.onForward = onForward
         controller.onBackward = onBackward
+        controller.resumeNavigation()
     }
 
-    final class KeyboardCaptureController: UIViewController {
+    final class HardwareCaptureController: UIViewController {
         var isRightToLeft = false
+        var keyboardEnabled = true
+        var gameControllersEnabled = true
         var onForward: () -> Void = {}
         var onBackward: () -> Void = {}
-        private var editingObservers: [NSObjectProtocol] = []
+        private(set) var focusedAt: Date?
+        private var observers: [NSObjectProtocol] = []
+        private var lastKeyTurn: (source: KeySource, at: Date)?
+
+        private enum KeySource { case keyCommand, press }
+
+        // One stable list: UIKit may read `keyCommands` before this responder is first responder.
+        private static let pageKeyCommands = ReaderHardwarePageTurnPolicy.keyBindings.map { binding in
+            let command = UIKeyCommand(
+                input: binding.input, modifierFlags: [], action: #selector(HardwareCaptureController.handleKeyCommand(_:))
+            )
+            command.wantsPriorityOverSystemBehavior = true
+            return command
+        }
 
         override var canBecomeFirstResponder: Bool { true }
 
@@ -707,11 +965,19 @@ struct ReaderKeyboardNavigationCapture: UIViewControllerRepresentable {
             super.viewDidLoad()
             view.isUserInteractionEnabled = false
 
-            for name in [UITextField.textDidEndEditingNotification, UITextView.textDidEndEditingNotification] {
-                editingObservers.append(
-                    NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                        Task { @MainActor in
-                            self?.resumeNavigation()
+            let focusChanges: [(Notification.Name, ownSenderOnly: Bool)] = [
+                (UITextField.textDidEndEditingNotification, false),
+                (UITextView.textDidEndEditingNotification, false),
+                (UIScene.didActivateNotification, true),
+                (UIWindow.didBecomeKeyNotification, true),
+            ]
+            for (name, ownSenderOnly) in focusChanges {
+                observers.append(
+                    NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
+                        // Only the identity crosses into the actor; the sender itself is not Sendable.
+                        let sender = ownSenderOnly ? (notification.object as AnyObject?).map(ObjectIdentifier.init) : nil
+                        MainActor.assumeIsolated {
+                            self?.resumeNavigation(from: sender)
                         }
                     }
                 )
@@ -721,50 +987,129 @@ struct ReaderKeyboardNavigationCapture: UIViewControllerRepresentable {
         override func viewDidAppear(_ animated: Bool) {
             super.viewDidAppear(animated)
             resumeNavigation()
+            ReaderGamepadPageTurnRelay.shared.register(self)
         }
 
-        private func resumeNavigation() {
+        override func viewDidDisappear(_ animated: Bool) {
+            super.viewDidDisappear(animated)
+            ReaderGamepadPageTurnRelay.shared.unregister(self)
+        }
+
+        // PDFKit and WebKit can take focus on a tap without restoring the reader responder.
+        func resumeNavigation() {
+            resumeNavigation(from: nil)
+        }
+
+        private func resumeNavigation(from sender: ObjectIdentifier?) {
             guard let window = viewIfLoaded?.window else { return }
-            let windows = window.windowScene?.windows ?? [window]
+            // Another window's or scene's focus change is not ours to answer.
+            if let sender, sender != ObjectIdentifier(window), sender != window.windowScene.map(ObjectIdentifier.init) {
+                return
+            }
+            if isCoveredByPresentation {
+                // Sheet dismissal may not send an appearance callback to the presenting reader.
+                transitionCoordinator?.animate(alongsideTransition: nil) { [weak self] _ in
+                    self?.resumeNavigation()
+                }
+                return
+            }
             // Ending one field can mean another field is taking keyboard focus.
-            guard !windows.contains(where: { Self.hasFocusedTextInput(in: $0) }) else { return }
-            becomeFirstResponder()
+            guard !Self.isEditingText(in: window) else { return }
+            if (becomeFirstResponder() || isFirstResponder), window.isKeyWindow {
+                focusedAt = Date()
+            }
         }
 
+        private static func isEditingText(in window: UIWindow) -> Bool {
+            (window.windowScene?.windows ?? [window]).contains { hasFocusedTextInput(in: $0) }
+        }
+
+        // PDFKit selection adopts UITextInput without accepting typing.
         private static func hasFocusedTextInput(in view: UIView) -> Bool {
-            if view.isFirstResponder, view is any UITextInput { return true }
+            if view.isFirstResponder, view is any UITextInput {
+                if let textView = view as? UITextView { return textView.isEditable }
+                return !isInsidePDFView(view)
+            }
             return view.subviews.contains { hasFocusedTextInput(in: $0) }
         }
 
+        private static func isInsidePDFView(_ view: UIView) -> Bool {
+            sequence(first: view, next: \.superview).contains { $0 is PDFView }
+        }
+
+        private var isCoveredByPresentation: Bool {
+            var root: UIViewController = self
+            while let parent = root.parent { root = parent }
+            return root.presentedViewController != nil
+        }
+
+        private func acceptsInput(isEnabled: Bool) -> Bool {
+            guard let window = viewIfLoaded?.window else { return false }
+            return ReaderHardwarePageTurnPolicy.acceptsInput(
+                isEnabled: isEnabled,
+                isSceneActive: window.windowScene?.activationState == .foregroundActive,
+                isCoveredByPresentation: isCoveredByPresentation,
+                isEditingText: Self.isEditingText(in: window)
+            )
+        }
+
+        var acceptsGamepadInput: Bool {
+            acceptsInput(isEnabled: gameControllersEnabled)
+        }
+
+        var acceptsKeyboardInput: Bool {
+            acceptsInput(isEnabled: keyboardEnabled)
+        }
+
         func tearDown() {
-            for observer in editingObservers {
+            for observer in observers {
                 NotificationCenter.default.removeObserver(observer)
             }
-            editingObservers = []
+            observers = []
+            ReaderGamepadPageTurnRelay.shared.unregister(self)
         }
 
         override var keyCommands: [UIKeyCommand]? {
-            guard isFirstResponder else { return nil }
-            let commands = [
-                UIKeyCommand(input: UIKeyCommand.inputLeftArrow, modifierFlags: [], action: #selector(handleLeftArrow)),
-                UIKeyCommand(input: UIKeyCommand.inputRightArrow, modifierFlags: [], action: #selector(handleRightArrow)),
-                UIKeyCommand(input: UIKeyCommand.inputUpArrow, modifierFlags: [], action: #selector(handleBackwardKey)),
-                UIKeyCommand(input: UIKeyCommand.inputDownArrow, modifierFlags: [], action: #selector(handleForwardKey)),
-                UIKeyCommand(input: " ", modifierFlags: [], action: #selector(handleForwardKey)),
-                UIKeyCommand(input: "\r", modifierFlags: [], action: #selector(handleForwardKey)),
-                UIKeyCommand(input: UIKeyCommand.inputPageDown, modifierFlags: [], action: #selector(handleForwardKey)),
-                UIKeyCommand(input: UIKeyCommand.inputPageUp, modifierFlags: [], action: #selector(handleBackwardKey)),
-            ]
-            for command in commands {
-                command.wantsPriorityOverSystemBehavior = true
-            }
-            return commands
+            keyboardEnabled ? Self.pageKeyCommands : nil
         }
 
-        @objc private func handleLeftArrow() { isRightToLeft ? onForward() : onBackward() }
-        @objc private func handleRightArrow() { isRightToLeft ? onBackward() : onForward() }
-        @objc private func handleForwardKey() { onForward() }
-        @objc private func handleBackwardKey() { onBackward() }
+        override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+            if action == #selector(handleKeyCommand(_:)) { return acceptsKeyboardInput }
+            return super.canPerformAction(action, withSender: sender)
+        }
+
+        @objc private func handleKeyCommand(_ command: UIKeyCommand) {
+            guard acceptsKeyboardInput, let turn = ReaderHardwarePageTurnPolicy.turn(forKeyInput: command.input) else { return }
+            deliver(turn, from: .keyCommand)
+        }
+
+        override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+            var unhandled = Set<UIPress>()
+            for press in presses {
+                if acceptsKeyboardInput, let key = press.key,
+                    key.modifierFlags.intersection([.command, .control, .alternate]).isEmpty,
+                    let turn = ReaderHardwarePageTurnPolicy.turn(forKeyCode: key.keyCode)
+                {
+                    deliver(turn, from: .press)
+                } else {
+                    unhandled.insert(press)
+                }
+            }
+            if !unhandled.isEmpty {
+                super.pressesBegan(unhandled, with: event)
+            }
+        }
+
+        // Should a press ever reach both paths, the second arrival within a frame is the same key.
+        private func deliver(_ turn: ReaderHardwarePageTurn, from source: KeySource) {
+            if let last = lastKeyTurn, last.source != source, Date().timeIntervalSince(last.at) < 0.05 { return }
+            lastKeyTurn = (source, Date())
+            self.turn(turn)
+        }
+
+        func turn(_ turn: ReaderHardwarePageTurn) {
+            turn.isForward(rightToLeft: isRightToLeft) ? onForward() : onBackward()
+        }
     }
 }
 

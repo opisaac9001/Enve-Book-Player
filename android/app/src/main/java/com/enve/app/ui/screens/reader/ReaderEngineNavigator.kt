@@ -22,11 +22,14 @@ data class ReaderEngineLocation(
     val userInitiated: Boolean,
 )
 
+data class ReaderSelectionBounds(val top: Float, val bottom: Float)
+
 interface ReaderEngineNavigator {
     var onAnnotationResolution: ((Map<String, Boolean>) -> Unit)?
     val kind: ReaderEngineKind
     val currentLocator: Locator?
     val currentSelection: Locator?
+    val currentSelectionBounds: ReaderSelectionBounds?
 
     fun goForward()
     fun goBackward()
@@ -36,6 +39,7 @@ interface ReaderEngineNavigator {
     fun goToLocator(locator: Locator)
     fun applyPreferences(preferences: ReaderPreferences)
     fun applyAnnotations(annotations: List<ReaderAnnotation>)
+    fun applySpeechHighlight(locator: Locator?, colorHex: String)
     fun clearSelection()
     fun clearSearch()
     fun autoScrollStep(distance: Float)

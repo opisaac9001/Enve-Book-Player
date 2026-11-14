@@ -52,6 +52,7 @@ fun DownloadsHubScreen(
     onOpenBook: (Book) -> Unit = {},
     onRemoveItem: (String) -> Unit = {},
     onCancelDownload: (String) -> Unit = {},
+    onCancelComicDownload: (String) -> Unit = {},
     onRetryDownload: (String) -> Unit = {},
     autoDeleteFinishedBooks: Boolean = false,
     autoDeleteFailedDownloads: Boolean = true,
@@ -124,6 +125,38 @@ fun DownloadsHubScreen(
                 )
             }
 
+            if (state.activeDownloads.isNotEmpty() || state.activeComicDownloads.isNotEmpty()) {
+                item(key = "active-header") {
+                    Box(modifier = Modifier.padding(horizontal = hPad)) {
+                        SectionHeaderRow(
+                            icon = Icons.Default.Downloading,
+                            title = "Active Downloads",
+                            count = state.activeDownloads.size + state.activeComicDownloads.size,
+                        )
+                    }
+                }
+
+                items(state.activeDownloads, key = { "active-audio-${it.bookId}" }) { download ->
+                    ActiveDownloadCard(
+                        title = download.title,
+                        progress = download.progress,
+                        detail = "${download.completedTracks}/${download.totalTracks} tracks",
+                        onCancel = { onCancelDownload(download.bookId) },
+                        modifier = Modifier.padding(horizontal = hPad),
+                    )
+                }
+
+                items(state.activeComicDownloads, key = { "active-comic-${it.bookId}" }) { download ->
+                    ActiveDownloadCard(
+                        title = download.title,
+                        progress = download.progress,
+                        detail = null,
+                        onCancel = { onCancelComicDownload(download.bookId) },
+                        modifier = Modifier.padding(horizontal = hPad),
+                    )
+                }
+            }
+
             when {
                 state.isLoading -> {
                     items(4, key = { "skeleton-$it" }) {
@@ -131,7 +164,10 @@ fun DownloadsHubScreen(
                     }
                 }
 
-                state.downloadedBooks.isEmpty() && state.activeDownloads.isEmpty() && state.terminalDownloads.isEmpty() -> {
+                state.downloadedBooks.isEmpty() &&
+                    state.activeDownloads.isEmpty() &&
+                    state.activeComicDownloads.isEmpty() &&
+                    state.terminalDownloads.isEmpty() -> {
                     item(key = "empty") {
                         EmptyDownloadsState(
                             modifier = Modifier
@@ -142,26 +178,6 @@ fun DownloadsHubScreen(
                 }
 
                 else -> {
-                    if (state.activeDownloads.isNotEmpty()) {
-                        item(key = "active-header") {
-                            Box(modifier = Modifier.padding(horizontal = hPad)) {
-                                SectionHeaderRow(
-                                    icon = Icons.Default.Downloading,
-                                    title = "Active Downloads",
-                                    count = state.activeDownloads.size,
-                                )
-                            }
-                        }
-
-                        items(state.activeDownloads, key = { "active-${it.bookId}" }) { download ->
-                            ActiveDownloadCard(
-                                download = download,
-                                onCancel = { onCancelDownload(download.bookId) },
-                                modifier = Modifier.padding(horizontal = hPad),
-                            )
-                        }
-                    }
-
                     if (state.terminalDownloads.isNotEmpty()) {
                         item(key = "terminal-header") {
                             Box(modifier = Modifier.padding(horizontal = hPad)) {
@@ -503,14 +519,16 @@ private fun SectionHeaderRow(
 
 @Composable
 private fun ActiveDownloadCard(
-    download: OfflineDownloadProgress,
+    title: String,
+    progress: Float,
+    detail: String?,
     onCancel: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val colors = EnveTheme.colors
     val metrics = rememberAdaptiveMetrics()
     val animatedProgress by animateFloatAsState(
-        targetValue = download.progress.coerceIn(0f, 1f),
+        targetValue = progress.coerceIn(0f, 1f),
         animationSpec = tween(300),
         label = "download_progress",
     )
@@ -525,13 +543,13 @@ private fun ActiveDownloadCard(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        download.title,
+                        title,
                         color = colors.primaryText,
                         fontWeight = FontWeight.SemiBold,
                         fontSize = DS.FontSize.Subheadline.scaled(metrics),
                     )
                     Text(
-                        text = "${(animatedProgress * 100).toInt()}% • ${download.completedTracks}/${download.totalTracks} tracks",
+                        text = listOfNotNull("${(animatedProgress * 100).toInt()}%", detail).joinToString(" • "),
                         color = colors.secondaryText,
                         fontSize = DS.FontSize.Caption.scaled(metrics),
                     )

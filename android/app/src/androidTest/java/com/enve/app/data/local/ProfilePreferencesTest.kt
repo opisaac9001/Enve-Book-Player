@@ -91,6 +91,46 @@ class ProfilePreferencesTest {
         }
     }
 
+    @Test
+    fun audiobooksOnlyAndComicBrowsingStayWithinTheirProfile() = runBlocking {
+        val root = File(context.cacheDir, "profile-preferences-test-${UUID.randomUUID()}")
+        val job = SupervisorJob()
+        val restoredJob = SupervisorJob()
+        try {
+            val scope = CoroutineScope(job + Dispatchers.IO)
+            val first = HearthPreferencesStore(ProfilePreferences.open(context, locations(root, "first"), scope).hearth)
+            val second = HearthPreferencesStore(ProfilePreferences.open(context, locations(root, "second"), scope).hearth)
+
+            assertEquals(true, first.readingEnabled.first())
+            first.setLibraryMedia("COMICS")
+            first.setScopedLibraryMedia("library:conn::lib", "ALL")
+            first.setComicBrowseState("library:conn::lib", """{"facet":"BOOKS"}""")
+            first.setLibrarySelection("""{"libraryId":"conn::lib","connectionId":"conn"}""")
+            first.setReadingEnabled(false)
+
+            assertEquals(false, first.readingEnabled.first())
+            assertEquals(true, second.readingEnabled.first())
+            assertEquals("", second.comicBrowseState("library:conn::lib").first())
+            assertEquals("", second.scopedLibraryMedia("library:conn::lib").first())
+            assertEquals("", second.librarySelection.first())
+            assertEquals("", first.comicBrowseState("library:other").first())
+            job.cancelAndJoin()
+
+            val restored = HearthPreferencesStore(
+                ProfilePreferences.open(context, locations(root, "first"), CoroutineScope(restoredJob + Dispatchers.IO)).hearth,
+            )
+            assertEquals(false, restored.readingEnabled.first())
+            assertEquals("COMICS", restored.libraryMedia.first())
+            assertEquals("ALL", restored.scopedLibraryMedia("library:conn::lib").first())
+            assertEquals("""{"facet":"BOOKS"}""", restored.comicBrowseState("library:conn::lib").first())
+            assertEquals("""{"libraryId":"conn::lib","connectionId":"conn"}""", restored.librarySelection.first())
+        } finally {
+            job.cancelAndJoin()
+            restoredJob.cancelAndJoin()
+            root.deleteRecursively()
+        }
+    }
+
     private fun locations(root: File, profileId: String) = ProfileStorageLocations.forProfile(
         profileId = profileId,
         filesDirectory = File(root, "files"),

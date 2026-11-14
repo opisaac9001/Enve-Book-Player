@@ -47,9 +47,15 @@ struct iTunesSearchResponse: Codable {
 
 final class iTunesService {
     static let shared = iTunesService()
-    private init() {}
 
     private let baseURL = "https://itunes.apple.com/search"
+    private let session: URLSession
+    private let policy: ExternalServicesPolicy
+
+    init(session: URLSession = .shared, policy: ExternalServicesPolicy = .shared) {
+        self.session = session
+        self.policy = policy
+    }
 
     private func upgradeToHTTPS(_ urlString: String?) -> String? {
         guard let s = urlString, !s.isEmpty else { return urlString }
@@ -69,6 +75,7 @@ final class iTunesService {
     }
 
     func search(query: String, limit: Int = 20, country: String = "US") async throws -> [iTunesAudiobook] {
+        try policy.checkAllowed(.appleCatalog)
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
 
@@ -88,7 +95,7 @@ final class iTunesService {
 
         guard let url = components.url else { throw URLError(.badURL) }
 
-        let (data, response) = try await URLSession.shared.data(from: url)
+        let (data, response) = try await session.data(from: url)
 
         if let http = response as? HTTPURLResponse {
             if !(200...299).contains(http.statusCode) {
@@ -109,6 +116,7 @@ final class iTunesService {
     }
 
     func lookup(id: Int, country: String = "US") async throws -> iTunesAudiobook? {
+        try policy.checkAllowed(.appleCatalog)
         AppLogger.network.info("[Catalog-B] lookup: id=\(id)")
 
         guard var components = URLComponents(string: "https://itunes.apple.com/lookup") else {
@@ -123,7 +131,7 @@ final class iTunesService {
 
         guard let url = components.url else { throw URLError(.badURL) }
 
-        let (data, response) = try await URLSession.shared.data(from: url)
+        let (data, response) = try await session.data(from: url)
 
         if let http = response as? HTTPURLResponse {
             if !(200...299).contains(http.statusCode) {

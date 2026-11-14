@@ -112,12 +112,12 @@ struct SettingsScreen: View {
                 settingsNav(
                     settingsCategory(
                         title: "Imports & companion apps",
-                        subtitle: "Bring in OPDS catalogs and find the Enve video app"
+                        subtitle: "Bring in books and podcasts, or find a companion app"
                     ) { sourceUtilitiesGroup }
                 ) {
                     SettingsLinkRow(
                         title: "Imports & companion apps",
-                        subtitle: "OPDS catalogs and the Enve video app",
+                        subtitle: "Podcasts, OPDS catalogs, and the Enve video app",
                         systemImage: "square.and.arrow.down.on.square.fill"
                     )
                 }
@@ -195,6 +195,9 @@ struct SettingsScreen: View {
                         subtitle: "Version \(Self.versionString), news, and support",
                         systemImage: "info.circle.fill"
                     )
+                }
+                settingsNav(TipJarScreen()) {
+                    SettingsLinkRow(title: "Tip jar", subtitle: "Entirely optional", systemImage: "heart.circle.fill")
                 }
             }
         }
@@ -374,7 +377,9 @@ struct SettingsScreen: View {
         case .playback: PlaybackScreen(profileSession: session)
         case .appearance: AppearanceScreen(profileSession: session)
         case .accessibility: AccessibilityScreen(profileSession: session)
+        case .playbackHistory: PlaybackHistoryScreen(profileSession: session)
         case .downloads: DownloadsScreen()
+        case .narratorModels: NarratorModelsScreen()
         case .storage: SettingsParentGate { StorageScreen(profileSession: session) }
         case .dataManagement: SettingsParentGate { DataManagementScreen() }
         case .sync: SyncScreen()
@@ -384,6 +389,9 @@ struct SettingsScreen: View {
             SettingsParentGate {
                 settingsCategory(title: "Advanced", subtitle: "Server administration, API keys, and recovery tools") { adminGroup }
             }
+        case .podcastTransfer: SettingsParentGate { PodcastTransferScreen() }
+        case .podcastRoutines: PodcastRoutinesScreen()
+        case .externalServices: SettingsParentGate { ExternalServicesScreen() }
         case .metadataKeys:
             if session.isOwner { SettingsParentGate { MetadataKeysScreen() } }
         case .orphanedBooks: SettingsParentGate { OrphanedBookMatcherScreen() }
@@ -411,6 +419,20 @@ struct SettingsScreen: View {
 
     private var sourceUtilitiesGroup: some View {
         SourcesCard {
+            settingsNav(SettingsParentGate { PodcastTransferScreen() }) {
+                SettingsLinkRow(
+                    title: "Move your podcasts",
+                    subtitle: "Import and export subscriptions and listening history",
+                    systemImage: "arrow.left.arrow.right"
+                )
+            }
+            settingsNav(PodcastRoutinesScreen()) {
+                SettingsLinkRow(
+                    title: "Listening routines",
+                    subtitle: "Queues that pick fresh episodes from your shows",
+                    systemImage: "list.bullet.rectangle"
+                )
+            }
             settingsNav(SettingsParentGate { SourcesOPDSBrowseScreen() }) {
                 SettingsLinkRow(
                     title: "OPDS catalogue",
@@ -520,6 +542,13 @@ struct SettingsScreen: View {
             SourcesCard {
                 settingsNav(LibraryDisplayScreen(profileSession: session)) {
                     SettingsLinkRow(title: "Library display", subtitle: "Cards, titles, grouping", systemImage: "text.book.closed.fill")
+                }
+                settingsNav(SettingsParentGate { ExternalServicesScreen() }) {
+                    SettingsLinkRow(
+                        title: "External services",
+                        subtitle: "Choose which public catalogs Enve can contact",
+                        systemImage: "hand.raised.fill"
+                    )
                 }
                 settingsNav(MetadataBatchScreen()) {
                     SettingsLinkRow(
@@ -638,12 +667,26 @@ struct SettingsScreen: View {
                         systemImage: "heart.text.square.fill"
                     )
                 }
+                settingsNav(PlaybackHistoryScreen(profileSession: session)) {
+                    SettingsLinkRow(
+                        title: "Playback & sync history",
+                        subtitle: "Recent listening, sync results, and problems",
+                        systemImage: "clock.arrow.circlepath"
+                    )
+                }
                 settingsNav(DownloadsScreen()) {
                     SettingsLinkRow(
                         title: "Downloads",
                         subtitle: "Active, failed, and finished",
                         detail: activeDownloadDetail,
                         systemImage: "arrow.down.circle.fill"
+                    )
+                }
+                settingsNav(NarratorModelsScreen()) {
+                    SettingsLinkRow(
+                        title: "Narrator models",
+                        subtitle: "Offline voices, downloads, and storage",
+                        systemImage: "waveform"
                     )
                 }
                 settingsNav(SettingsParentGate { StorageScreen(profileSession: session) }) {
@@ -768,9 +811,6 @@ struct SettingsScreen: View {
                 settingsNav(NewsScreen()) {
                     SettingsLinkRow(title: "News", subtitle: "Notes from the developer", systemImage: "newspaper.fill")
                 }
-                settingsNav(TipJarScreen()) {
-                    SettingsLinkRow(title: "Tip jar", subtitle: "Entirely optional", systemImage: "heart.circle.fill")
-                }
                 settingsNav(ReportIssueScreen()) {
                     SettingsLinkRow(
                         title: "Report an issue",
@@ -863,8 +903,8 @@ private enum SettingsSearchDestination: String {
     case sources, opds, video, libraryDisplay, metadataMatching, pendingMatches, collections, duplicates
     case bookSync, storyAlign, koReader, hardcover, vocabulary, dictionaries, obsidian, dragAndDrop
     case hiddenBooks, recentlyDeleted, rejectedContent, home, comicReader, restReminder, playback, appearance, accessibility
-    case downloads, storage, dataManagement, sync, achievements, statsImport, advanced, metadataKeys
-    case orphanedBooks, news, tipJar, reportIssue, tour
+    case playbackHistory, downloads, narratorModels, storage, dataManagement, sync, achievements, statsImport, advanced, metadataKeys
+    case podcastTransfer, podcastRoutines, externalServices, orphanedBooks, news, tipJar, reportIssue, tour
 
     var isOwnerOnly: Bool {
         [.koReader, .hardcover, .obsidian, .sync, .metadataKeys].contains(self)
@@ -883,9 +923,12 @@ private struct SettingsSearchItem: Identifiable {
 
     static let all: [SettingsSearchItem] = [
         item(.sources, "Sources & servers", "Connections and server libraries", "server.rack", "add source smb plex jellyfin emby audiobookshelf komga kavita booklore silo bookorbit"),
+        item(.podcastTransfer, "Move your podcasts", "Subscriptions and listening history", "arrow.left.arrow.right", "podcast import export migration opml overcast pocket casts"),
+        item(.podcastRoutines, "Listening routines", "Episode queues from your shows", "list.bullet.rectangle", "podcasts newest next episodes unplayed playlist"),
         item(.opds, "OPDS catalogue", "Browse a feed, search it, and download", "tray.and.arrow.down.fill", "catalog feed opds search"),
         item(.video, "Video player", "The companion video app", "play.tv.fill", "plex movies television"),
         item(.libraryDisplay, "Library display", "Cards, titles, and grouping", "text.book.closed.fill", "covers shelves sort audiobooks only reading"),
+        item(.externalServices, "External services", "Catalog and metadata privacy", "hand.raised.fill", "privacy audible apple itunes google books open library comicvine network"),
         item(.metadataMatching, "Bulk metadata matching", "Match an entire library", "wand.and.stars", "google books comicvine isbn"),
         item(.pendingMatches, "Pending matches", "Review uncertain metadata", "checklist", "metadata review"),
         item(.collections, "Collections", "Smart and handmade shelves", "rectangle.stack.fill", "groups shelves"),
@@ -907,7 +950,9 @@ private struct SettingsSearchItem: Identifiable {
         item(.playback, "Playback", "Speed, skips, smart rewind, and sleep timer", "play.circle.fill", "audio shake snooze sleep health"),
         item(.appearance, "Appearance", "Theme, accent, and navigation", "paintbrush.fill", "dark light oled color"),
         item(.accessibility, "Accessibility", "Vision-impaired mode and VoiceOver", "accessibility", "text size reduce motion"),
+        item(.playbackHistory, "Playback & sync history", "Recent listening, sync results, and problems", "clock.arrow.circlepath", "activity log events errors conflicts progress resume failed"),
         item(.downloads, "Downloads", "Active, failed, and finished", "arrow.down.circle.fill", "offline queue"),
+        item(.narratorModels, "Narrator models", "Offline voices, downloads, and storage", "waveform", "tts kokoro supertonic pocket speech narration"),
         item(.storage, "Storage", "Files on this phone and cleanup rules", "internaldrive.fill", "disk cache space"),
         item(.dataManagement, "Data management", "Clear caches, metadata, or reset Enve", "trash.circle.fill", "erase reset cleanup"),
         item(.sync, "Sync", "iCloud across your devices", "icloud.and.arrow.up.fill", "cloud backup progress apple tv servers connections"),

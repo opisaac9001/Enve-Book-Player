@@ -4,9 +4,17 @@ data class PdfSpread(val first: Int, val last: Int) {
     val pages: IntRange get() = first..last
 }
 
+enum class PdfPageAdjust(val label: String) {
+    CROP("Crop"),
+    FIT("Fit"),
+    FILL_HEIGHT("Fill Height"),
+    FILL_WIDTH("Fill Width"),
+}
+
 data class PdfReadingLayout(
     val twoPageView: Boolean = false,
     val showCoverSeparately: Boolean = false,
+    val pageAdjust: PdfPageAdjust = PdfPageAdjust.FIT,
 ) {
     val coverStandsAlone: Boolean get() = twoPageView && showCoverSeparately
 

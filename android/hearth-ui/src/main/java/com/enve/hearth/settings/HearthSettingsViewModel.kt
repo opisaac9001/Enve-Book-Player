@@ -96,6 +96,11 @@ class HearthSettingsViewModel @Inject constructor(
         SharingStarted.WhileSubscribed(5000),
         EbookSyncInterval.AUTOMATIC,
     )
+    val readingEnabled = prefs.readingEnabled.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5000),
+        true,
+    )
 
     fun setThemeMode(m: HearthThemeMode) = launch { prefs.setThemeMode(m) }
     fun setOled(v: Boolean) = launch { prefs.setOledEnabled(v) }
@@ -108,6 +113,7 @@ class HearthSettingsViewModel @Inject constructor(
     fun setEinkBold(v: Boolean) = launch { eink.setBoldText(v) }
     fun syncNow() = launch { library.refresh() }
     fun setComicPageLoadingMode(mode: ComicPageLoadingMode) = launch { prefs.setComicPageLoadingMode(mode) }
+    fun setAudiobooksOnly(enabled: Boolean) = launch { prefs.setReadingEnabled(!enabled) }
     fun setReadNextEnabled(enabled: Boolean) = launch { prefs.setReadNextEnabled(enabled) }
     fun setReadNextPosition(position: ReadNextPosition) = launch { prefs.setReadNextPosition(position) }
     fun setRestReminderEnabled(enabled: Boolean) = launch { prefs.setRestReminderEnabled(enabled) }

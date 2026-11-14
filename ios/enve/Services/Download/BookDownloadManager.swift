@@ -106,6 +106,7 @@ final class BookDownloadManager: NSObject, ObservableObject {
                         task.state == .running || task.state == .suspended,
                         transferStore.transfer(taskDescription: task.taskDescription) != nil else { task.cancel(); continue }
                     nativeTasks[task.taskIdentifier] = download
+                    trackStalls(of: download)
                     if download.state == .suspended { download.resume() }
                 }
                 return transferStore.all
@@ -116,6 +117,7 @@ final class BookDownloadManager: NSObject, ObservableObject {
 
     private let storage: LocalStorageManager
     let activity: ProfileDownloadActivity
+    nonisolated let stallMonitor: DownloadStallMonitor
     private let clientCertificate: @Sendable (String) async -> URLCredential?
     private var isRetired = false
     private var runningJobs: [String: Task<Void, Never>] = [:]
@@ -126,18 +128,24 @@ final class BookDownloadManager: NSObject, ObservableObject {
     init(
         storage: LocalStorageManager,
         activity: ProfileDownloadActivity,
+        stallMonitor: DownloadStallMonitor = DownloadStallMonitor(),
         clientCertificate: @escaping @Sendable (String) async -> URLCredential?
     ) {
         self.storage = storage
         self.transferStore = BookHTTPTransferStore(storage: storage.profileStorageLocations, audioRoot: storage.audiobooksDirectory)
         self.activity = activity
+        self.stallMonitor = stallMonitor
         self.clientCertificate = clientCertificate
         super.init()
+        #if canImport(UIKit)
+        stallMonitor.observeApplicationState()
+        #endif
     }
 
     func retire() async {
         guard !isRetired else { return }
         isRetired = true
+        stallMonitor.retire()
         stateQueue.sync { retiredTransport = true }
         let jobs = Array(runningJobs.values)
         jobs.forEach { $0.cancel() }
@@ -237,6 +245,7 @@ final class BookDownloadManager: NSObject, ObservableObject {
                 return task
             }
             stateQueue.sync { for task in tasks { nativeTasks[task.taskIdentifier] = task } }
+            for task in tasks { trackStalls(of: task) }
             activeBookIds.insert(bookId)
             progressByBookId[bookId] = 0
             lastErrorByBookId.removeValue(forKey: bookId)
@@ -361,7 +370,10 @@ final class BookDownloadManager: NSObject, ObservableObject {
             let matches = nativeTasks.values.filter { transferStore.transfer(taskDescription: $0.taskDescription)?.0.bookID == bookId }
             do { try transferStore.cancel(bookID: bookId) }
             catch { AppLogger.network.error("Could not persist audiobook transfer cancellation") }
-            for task in matches { nativeTasks.removeValue(forKey: task.taskIdentifier) }
+            for task in matches {
+                nativeTasks.removeValue(forKey: task.taskIdentifier)
+                stallMonitor.stopTracking(task)
+            }
             return matches
         }
         tasks.forEach { $0.cancel() }
@@ -709,6 +721,7 @@ extension BookDownloadManager: URLSessionDownloadDelegate {
         _ session: URLSession, downloadTask: URLSessionDownloadTask,
         didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64
     ) {
+        stallMonitor.recordProgress(of: downloadTask, bytesWritten: bytesWritten, totalBytesWritten: totalBytesWritten)
         let context = stateQueue.sync { transferStore.transfer(taskDescription: downloadTask.taskDescription) }
         guard let (transfer, _) = context else { return }
         let fraction = totalBytesExpectedToWrite > 0 ? Double(totalBytesWritten) / Double(totalBytesExpectedToWrite) : 0
@@ -721,7 +734,14 @@ extension BookDownloadManager: URLSessionDownloadDelegate {
         }
     }
 
+    nonisolated func urlSession(
+        _ session: URLSession, downloadTask: URLSessionDownloadTask, didResumeAtOffset fileOffset: Int64, expectedTotalBytes: Int64
+    ) {
+        stallMonitor.recordResume(of: downloadTask, offset: fileOffset)
+    }
+
     nonisolated func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        stallMonitor.stopTracking(downloadTask)
         // URLSession removes this location when the delegate returns; publication stays inside the serial boundary.
         let outcome: BookHTTPTransferStore.Transfer? = stateQueue.sync {
             guard !retiredTransport, let (transfer, index) = transferStore.transfer(taskDescription: downloadTask.taskDescription),
@@ -781,11 +801,28 @@ extension BookDownloadManager: URLSessionDownloadDelegate {
         let matches = nativeTasks.filter { $0.value.taskDescription?.hasPrefix("enve-http.\(attemptID.uuidString).") == true }
         for (identifier, task) in matches {
             nativeTasks.removeValue(forKey: identifier)
+            stallMonitor.stopTracking(task)
             task.cancel()
         }
     }
 
+    nonisolated private func trackStalls(of task: URLSessionDownloadTask) {
+        stallMonitor.track(task) { [weak self] stall in self?.failStalledTransfer(task, stall: stall) }
+    }
+
+    nonisolated private func failStalledTransfer(_ task: URLSessionTask, stall: DownloadStall) {
+        let outcome: BookHTTPTransferStore.Transfer? = stateQueue.sync {
+            guard !retiredTransport, let (transfer, _) = transferStore.transfer(taskDescription: task.taskDescription) else { return nil }
+            AppLogger.network.warning("Audiobook transfer stalled reason=\(stall) diagnosticID=\(DiagnosticLogSanitizer.identifier(for: transfer.bookID))")
+            let failed = failTransfer(bookID: transfer.bookID, attemptID: transfer.attemptID, category: .stalled)
+            cancelNativeTasks(for: transfer.attemptID)
+            return failed
+        }
+        if let outcome { Task { @MainActor in publish(outcome) } }
+    }
+
     nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        stallMonitor.stopTracking(task)
         guard error != nil else { return }
         let outcome: BookHTTPTransferStore.Transfer? = stateQueue.sync {
             guard !retiredTransport, let (transfer, _) = transferStore.transfer(taskDescription: task.taskDescription) else { return nil }

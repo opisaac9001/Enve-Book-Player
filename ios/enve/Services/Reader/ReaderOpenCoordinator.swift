@@ -27,6 +27,7 @@ final class ReaderOpenCoordinator {
     @ObservationIgnored private let downloads: UnifiedDownloadService
     @ObservationIgnored private let linkedProgress: LinkedBookProgressCoordinator
     @ObservationIgnored private let present: (Book) -> Void
+    @ObservationIgnored private let pullRemoteProgress: (Book) async -> Void
     @ObservationIgnored private var requestTask: Task<Void, Never>?
     @ObservationIgnored private var requestedBookID: String?
     @ObservationIgnored private var preparedAsset: (bookID: String, owner: String)?
@@ -38,12 +39,19 @@ final class ReaderOpenCoordinator {
         downloads: UnifiedDownloadService = .shared,
         linkedProgress: LinkedBookProgressCoordinator = .shared,
         present: ((Book) -> Void)? = nil,
-        profileSession: ProfileSession = .owner
+        profileSession: ProfileSession = .owner,
+        pullRemoteProgress: ((Book) async -> Void)? = nil
     ) {
         self.profileSession = profileSession
         self.appState = appState
         self.downloads = downloads
         self.linkedProgress = linkedProgress
+        self.pullRemoteProgress = pullRemoteProgress ?? { [unowned profileSession] book in
+            guard profileSession.isOwner, profileSession.serverSyncEnabled, !profileSession.isRetired,
+                KOReaderSyncService.shared.config.autoSyncEnabled
+            else { return }
+            await KOReaderSyncService.shared.pullAndMerge(book: book)
+        }
         self.present =
             present ?? { [lastOpened = profileSession.lastOpened] book in
                 lastOpened.record(book)
@@ -242,6 +250,8 @@ final class ReaderOpenCoordinator {
             return requested
         }
 
+        await pullRemoteProgress(book)
+        guard !Task.isCancelled, !profileSession.isRetired else { return book }
         await linkedProgress.reconcilePair(for: book)
         if let current = appState.bookInMemory(uniqueId: book.uniqueId) {
             return current

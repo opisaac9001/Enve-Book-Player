@@ -191,9 +191,12 @@ class AuthInterceptor @Inject constructor(
             builder.header(key, value)
         }
 
-        if (source == BookSource.SILO && path.startsWith("/api/v1/") && connectionId != null) {
+        if (source == BookSource.SILO && path.contains("/api/v2/") && connectionId != null) {
             vault.get(siloProfileIdKey(connectionId))?.takeIf { it.isNotBlank() }?.let { profileId ->
                 builder.header("X-Profile-Id", profileId)
+                vault.get("silo_profile_token_$connectionId")?.takeIf { it.isNotBlank() }?.let { proof ->
+                    builder.header("X-Profile-Token", proof)
+                }
             }
         }
 

@@ -62,6 +62,7 @@ internal fun AnnotationsSection(
     tagsFor: (ReaderAnnotation) -> List<String>,
     onFilterChange: (AnnotationFilter) -> Unit,
     onQueryChange: (String) -> Unit,
+    canJump: (ReaderAnnotation) -> Boolean,
     onJump: (ReaderAnnotation) -> Unit,
     onEdit: (ReaderAnnotation) -> Unit,
 ) {
@@ -139,7 +140,7 @@ internal fun AnnotationsSection(
                     AnnotationRow(
                         annotation = annotation,
                         tags = tagsFor(annotation),
-                        onJump = { onJump(annotation) },
+                        onJump = { onJump(annotation) }.takeIf { canJump(annotation) },
                         onEdit = { onEdit(annotation) },
                     )
                 }
@@ -152,7 +153,7 @@ internal fun AnnotationsSection(
 private fun AnnotationRow(
     annotation: ReaderAnnotation,
     tags: List<String>,
-    onJump: () -> Unit,
+    onJump: (() -> Unit)?,
     onEdit: () -> Unit,
 ) {
     val palette = Hearth.palette
@@ -163,7 +164,7 @@ private fun AnnotationRow(
             .clip(shape)
             .background(palette.bgElevated)
             .border(1.dp, palette.hairline, shape)
-            .clickable(onClick = onJump)
+            .then(if (onJump != null) Modifier.clickable(onClick = onJump) else Modifier)
             .padding(Hearth.Spacing.M),
         verticalAlignment = Alignment.Top,
         horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.M),
@@ -212,7 +213,7 @@ internal fun AnnotationEditDialog(
     currentTags: List<String>,
     knownTags: List<String>,
     onDismiss: () -> Unit,
-    onJump: () -> Unit,
+    onJump: (() -> Unit)?,
     onSave: (AnnotationStyle?, String?, String, List<String>) -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -305,7 +306,7 @@ internal fun AnnotationEditDialog(
         dismissButton = {
             Row {
                 TextButton(onClick = onDelete) { Text("Delete") }
-                TextButton(onClick = onJump) { Text("Jump") }
+                onJump?.let { TextButton(onClick = it) { Text("Jump") } }
                 TextButton(onClick = onDismiss) { Text("Cancel") }
             }
         },

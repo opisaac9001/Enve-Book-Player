@@ -61,6 +61,7 @@ class AbsPodcastMappingTest {
                     enclosureUrl = "https://atp.fm/audio/svdeou1mmfjhwknm/atp709.mp3",
                     title = "709: Steel-Cable Insurance",
                     publishedAtMs = 1789680369000L,
+                    storedEpisodeId = episode.episodeId,
                 ),
             ),
             show.storedFeedKeys,

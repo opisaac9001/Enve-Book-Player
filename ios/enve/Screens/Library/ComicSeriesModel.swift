@@ -6,7 +6,7 @@ struct ComicSeriesFilter: Equatable {
     var advancedFilters: LibraryAdvancedFilters = .empty
 
     func includes(_ book: Book, library: LibraryEngine, offlineIDs: Set<String> = []) -> Bool {
-        (status == .downloaded ? offlineIDs.contains(book.uniqueId) : library.matchesStatus(book, status: status, downloadedIds: []))
+        (status == .downloaded ? offlineIDs.contains(book.uniqueId) : library.matchesStatus(book, status: status))
             && LibraryAdvancedFilterPolicy.matches(book, filters: advancedFilters)
     }
 }

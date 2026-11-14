@@ -13,7 +13,9 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.AddToDrive
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Folder
@@ -45,6 +47,9 @@ import androidx.compose.ui.unit.sp
 import com.enve.hearth.shell.profileViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.enve.app.R
+import com.enve.app.cloud.CloudImportActivity
+import com.enve.app.cloud.CloudStorageService
+import com.enve.app.cloud.WebStoryImportActivity
 import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.ProviderConnection
 import com.enve.app.ui.components.BookSourceIcon
@@ -61,12 +66,13 @@ import com.enve.app.ui.auth.AuthViewModel
 import com.enve.app.wear.WearProvisioningViewModel
 
 private data class ConnectionOption(
-    val source: BookSource,
+    val source: BookSource?,
     val title: String,
     val iconRes: Int? = null,
     val iconVector: ImageVector? = null,
     val tint: Color,
     val supported: Boolean = false,
+    val launch: (() -> Unit)? = null,
 )
 
 @Composable
@@ -134,10 +140,19 @@ fun LibraryConnectionsScreen(
         ConnectionOption(BookSource.PREMIUMIZE, "Premiumize", iconRes = R.drawable.ic_premiumize, tint = Color(0xFF2E7D32), supported = true),
         ConnectionOption(BookSource.REALDEBRID, "Real-Debrid", iconRes = R.drawable.ic_realdebrid, tint = Color(0xFF1976D2), supported = true),
         ConnectionOption(BookSource.SMB, "SMB share", iconVector = Icons.Default.Router, tint = Color(0xFFFF9500), supported = true),
+        ConnectionOption(null, "Google Drive", iconVector = Icons.Default.AddToDrive, tint = Color(0xFF34A853), supported = true) {
+            context.startActivity(CloudImportActivity.createIntent(context, CloudStorageService.GOOGLE_DRIVE))
+        },
+        ConnectionOption(null, "Dropbox", iconVector = Icons.Default.Cloud, tint = Color(0xFF0061FF), supported = true) {
+            context.startActivity(CloudImportActivity.createIntent(context, CloudStorageService.DROPBOX))
+        },
     )
 
     val importOptions = listOf(
         ConnectionOption(BookSource.LOCAL, "Local files", iconVector = Icons.Default.Folder, tint = Color(0xFF1E90FF), supported = true),
+        ConnectionOption(null, "Web story", iconVector = Icons.Default.Language, tint = Color(0xFFF5921A), supported = true) {
+            context.startActivity(WebStoryImportActivity.createIntent(context))
+        },
     )
 
     Box(
@@ -184,11 +199,14 @@ fun LibraryConnectionsScreen(
                 networkStorageOptions = networkStorageOptions,
                 importOptions = importOptions,
                 onOptionClick = { option ->
-                    if (!option.supported) {
-                        return@AddSourceSection
-                    } else {
-                        onSourceChange(option.source)
-                        onNavigateToServiceLogin(option.source, null)
+                    val source = option.source
+                    when {
+                        !option.supported -> Unit
+                        option.launch != null -> option.launch.invoke()
+                        source != null -> {
+                            onSourceChange(source)
+                            onNavigateToServiceLogin(source, null)
+                        }
                     }
                 },
                 modifier = Modifier.padding(horizontal = DS.Spacing.LG.scaled(metrics)),
@@ -846,7 +864,7 @@ private fun SourceTile(
                         tint = if (eink.monochrome) colors.primaryText else tint,
                         modifier = Modifier.size(24.dp.scaled(metrics)),
                     )
-                } else {
+                } else if (option.source != null) {
                     BookSourceIcon(
                         source = option.source,
                         tint = if (eink.monochrome) colors.primaryText else tint,

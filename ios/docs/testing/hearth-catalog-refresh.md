@@ -87,3 +87,7 @@ Reference comparison on 2026-10-20 used Silveran Reader `669a569` and Storytelle
 A diagnostic three-iteration run of the original tests also crashed the test host in `XCTWaiter`; the interrupted tests are not individual playback failures. Verification of the changes uses separate full-suite invocations.
 
 Two separate final `AllTests` invocations on iPhone Air passed: 1,563 passed, zero failed, and 33 skipped each. The build had zero compiler errors or warnings, and both results reported no runtime warnings.
+
+## Profile switching with a large library
+
+Start the fixture with `--initial-count 700` to reproduce a large Grimmory catalog. On a dedicated simulator with profiles disabled, run `HearthProfileLoadingUITests` from the `UISmokeTests` plan with `TEST_RUNNER_ENVE_PROFILE_UI=1` and `TEST_RUNNER_ENVE_HEARTH_FIXTURE_URL` pointing to the fixture. Set `TEST_RUNNER_ENVE_PROFILE_PIN_UI=1` to include a child profile, adult PIN entry, backgrounding and return to the owner. The test creates invented profiles and a fixture PIN, verifies cached Home content while library-name requests are held, then removes the profiles.

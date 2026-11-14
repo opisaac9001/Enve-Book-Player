@@ -99,6 +99,14 @@ enum ReaderPagedPagePolicy {
         return pdfSpread(containing: target, pageCount: pageCount, layout: layout).lowerBound
     }
 
+    // Two-up places a spread's pages side by side without page breaks.
+    static func pdfSpreadSize(pageSizes: [CGSize]) -> CGSize {
+        CGSize(
+            width: pageSizes.reduce(0) { $0 + $1.width },
+            height: pageSizes.map(\.height).max() ?? 0
+        )
+    }
+
     static func isComicFormat(_ format: String?) -> Bool {
         let normalized = format?.lowercased()
         return normalized == EbookFormat.cbz.rawValue || normalized == EbookFormat.cbr.rawValue

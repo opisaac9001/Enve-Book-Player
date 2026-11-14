@@ -792,7 +792,7 @@ final class LibraryEngine {
         return (field, descriptor.direction == .descending)
     }
 
-    func matchesStatus(_ book: Book, status: LibraryStatusFilter, downloadedIds: Set<String>) -> Bool {
+    func matchesStatus(_ book: Book, status: LibraryStatusFilter) -> Bool {
         switch status {
         case .all:
             return true
@@ -811,8 +811,7 @@ final class LibraryEngine {
             if book.mediaType == .ebook {
                 return (profileSession?.engine ?? EnveEngine.shared).downloads.hasPermanentEbookDownload(book)
             }
-            return downloadedIds.contains(book.stableId)
-                && (profileSession?.engine ?? EnveEngine.shared).downloads.isAudiobookDownloaded(book)
+            return (profileSession?.engine ?? EnveEngine.shared).downloads.isAudiobookDownloaded(book)
         }
     }
 
@@ -821,8 +820,8 @@ final class LibraryEngine {
         return status == "READING" || status == "RE_READING" || status == "IN_PROGRESS"
     }
 
-    func filterStatus(_ books: [Book], status: LibraryStatusFilter, downloadedIds: Set<String>) -> [Book] {
-        books.filter { matchesStatus($0, status: status, downloadedIds: downloadedIds) }
+    func filterStatus(_ books: [Book], status: LibraryStatusFilter) -> [Book] {
+        books.filter { matchesStatus($0, status: status) }
     }
 
     nonisolated func applySort(_ books: [Book], descriptors: [LibrarySortDescriptor]) -> [Book] {
@@ -1544,13 +1543,19 @@ final class LibraryEngine {
         NotificationCenter.default.post(name: .bookStoreDidChange, object: nil)
     }
 
-    func downloadedBooks(audioStableIds: Set<String>, ebookLimit: Int) async -> [Book] {
-        var list = Array((await appState.bookStore.booksByStableIds(audioStableIds)).values)
-        var seen = Set(list.map(\.stableId))
-        for book in await appState.bookStore.downloadedEbooks(limit: ebookLimit) where seen.insert(book.stableId).inserted {
-            list.append(book)
+    func downloadedAudiobooks(storageKeys: Set<String>) async -> [Book] {
+        let storage = profileSession?.localStorage ?? LocalStorageManager.shared
+        let downloads = (profileSession?.engine ?? EnveEngine.shared).downloads
+        let stored = await appState.bookStore.downloadedAudiobooks(storageKeys: storageKeys)
+        let storedIds = Set(stored.map(\.stableId))
+        let matchedKeys = Set(storedIds.map { LocalStorageManager.sanitizedId(for: $0) })
+        let legacyIds = storageKeys.subtracting(matchedKeys).compactMap {
+            (try? storage.loadMetadataOverride(OfflineBookMetadata.self, for: $0))?.stableId
         }
-        return list
+        let otherIds = downloads.completedDownloadBookIds.union(legacyIds).subtracting(storedIds)
+        let otherBooks = await appState.bookStore.booksByStableIds(otherIds)
+        return (stored + Array(otherBooks.values))
+            .filter { $0.mediaType != .ebook && downloads.isAudiobookDownloaded($0) }
     }
 
     func homeDownloadedBooks(limit: Int) async -> [Book] {

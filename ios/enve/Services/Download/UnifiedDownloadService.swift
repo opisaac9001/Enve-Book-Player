@@ -269,6 +269,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
     private var storytellerReadaloudCacheTasks: [String: (id: UUID, task: Task<URL, Error>)] = [:]
     private var expectedBytesByTaskId: [String: Int64] = [:]
     private var resumeData: [String: Data] = [:]
+    private var stalledResumeTasks: [String: Task<Data?, Never>] = [:]
     private var pendingPauses: [String: Task<Data?, Never>] = [:]
     private var lastProgressEmissionByTaskId: [String: (time: Date, progress: Double)] = [:]
     private let networkMonitor = NWPathMonitor()
@@ -281,6 +282,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
     private let preferences: LibraryDisplayPreferencesStore
     private let readerArtifacts: ReaderArtifactsStore
     private let downloadManager: BookDownloadManager
+    nonisolated private let stallMonitor: DownloadStallMonitor
     private let clientCertificate: @Sendable (String) async -> URLCredential?
     let imageCache: DiskImageCache
     let localMetadata = LocalLibraryService()
@@ -337,6 +339,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         self.preferences = preferences
         self.readerArtifacts = readerArtifacts
         self.downloadManager = downloadManager
+        stallMonitor = downloadManager.stallMonitor
         self.queueStore = queueStore
         self.clientCertificate = clientCertificate
         smbLibrary = storageLocations.profileID == FamilyProfile.ownerID ? .shared : nil
@@ -429,6 +432,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         for job in readerJobs { _ = try? await job.value }
         await maintenanceTask?.value
         activeURLTasks.removeAll()
+        stalledResumeTasks.removeAll()
         runningDownloads.removeAll()
         runningDownloadIDs.removeAll()
         readerAssetOperations.removeAll()
@@ -437,9 +441,11 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
     }
 
     private func setupNetworkMonitor() {
+        let stallMonitor = stallMonitor
         networkMonitor.pathUpdateHandler = { [weak self] path in
             let isAvailable = path.status == .satisfied
             let isExpensive = path.isExpensive
+            stallMonitor.setOnline(isAvailable)
             Task { @MainActor [weak self] in
                 guard let self, !self.isRetired else { return }
                 self.isNetworkAvailable = isAvailable
@@ -488,6 +494,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
             else { continue }
             activeURLTasks[owner.bookId] = downloadTask
             registerAttempt(owner.attempt, for: owner.bookId)
+            trackStalls(of: downloadTask, owner: owner)
         }
         markRestoredTransfersReconciled()
     }
@@ -809,7 +816,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
 
     func pause(taskId: String) {
         guard let task = tasks.first(where: { $0.id == taskId }),
-            task.status == .downloading
+            task.isActive
         else { return }
 
         let bookId = task.bookId
@@ -817,6 +824,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         runningDownloads[taskId]?.cancel()
         downloadManager.cancelDownload(bookId: bookId)
         if let urlTask = activeURLTasks[bookId] {
+            stallMonitor.stopTracking(urlTask)
             let produced = Task<Data?, Never> {
                 await withCheckedContinuation { continuation in
                     urlTask.cancel { continuation.resume(returning: $0) }
@@ -867,6 +875,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         runningDownloads[taskId]?.cancel()
 
         if let urlTask = activeURLTasks[task.bookId] {
+            stallMonitor.stopTracking(urlTask)
             urlTask.cancel()
             activeURLTasks.removeValue(forKey: task.bookId)
         }
@@ -874,6 +883,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         downloadManager.cancelDownload(bookId: task.bookId)
 
         resumeData.removeValue(forKey: task.bookId)
+        stalledResumeTasks.removeValue(forKey: task.bookId)
 
         updateTask(taskId) { $0.status = .cancelled }
 
@@ -921,8 +931,21 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         guard let task = tasks.first(where: { $0.id == taskId }),
             task.status == .failed
         else { return }
+        if let reason = downloadBlockedReason {
+            lastError = reason
+            return
+        }
 
-        resumeData.removeValue(forKey: task.bookId)
+        if let pending = stalledResumeTasks[task.bookId] {
+            let data = await pending.value
+            guard !isRetired, stalledResumeTasks[task.bookId] == pending,
+                tasks.contains(where: { $0.id == taskId && $0.status == .failed })
+            else { return }
+            stalledResumeTasks[task.bookId] = nil
+            if let data { resumeData[task.bookId] = data }
+        } else {
+            resumeData.removeValue(forKey: task.bookId)
+        }
 
         updateTask(taskId) {
             $0.status = .queued
@@ -2142,6 +2165,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         if let data = resumeData[bookId] {
             downloadTask = selectedSession.downloadTask(withResumeData: data)
             resumeData.removeValue(forKey: bookId)
+            stalledResumeTasks.removeValue(forKey: bookId)
         } else {
             downloadTask = selectedSession.downloadTask(with: request)
         }
@@ -2154,10 +2178,38 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         activeURLTasks[bookId] = downloadTask
         registerAttempt(attempt, for: bookId)
         downloadTask.taskDescription = "\(taskId)|\(bookId)|\(attempt)"
+        trackStalls(of: downloadTask, owner: CallbackOwner(taskId: taskId, bookId: bookId, attempt: attempt))
 
         downloadTask.resume()
 
         AppLogger.network.debug("Started URLSession download diagnosticID=\(diagnosticID(bookId))")
+    }
+
+    private func trackStalls(of downloadTask: URLSessionDownloadTask, owner: CallbackOwner) {
+        stallMonitor.track(downloadTask) { [weak self] stall in
+            guard let self else { return }
+            Task { @MainActor in self.failStalledDownload(downloadTask, owner: owner, stall: stall) }
+        }
+    }
+
+    /// Ends a stalled attempt as a failure that Retry can continue from its received bytes when the server allows it.
+    private func failStalledDownload(_ downloadTask: URLSessionDownloadTask, owner: CallbackOwner, stall: DownloadStall) {
+        guard !isRetired, ownsCallback(owner), activeURLTasks[owner.bookId] === downloadTask else { return }
+        let taskId = owner.taskId
+        let bookId = owner.bookId
+        AppLogger.network.warning("Download stalled reason=\(stall) diagnosticID=\(diagnosticID(bookId))")
+        activeURLTasks.removeValue(forKey: bookId)
+        expectedBytesByTaskId.removeValue(forKey: taskId)
+        updateTask(taskId) {
+            $0.status = .failed
+            $0.errorMessage = BookHTTPTransferStore.Failure.stalled.message
+        }
+        stalledResumeTasks[bookId] = Task {
+            await withCheckedContinuation { continuation in
+                downloadTask.cancel { continuation.resume(returning: $0) }
+            }
+        }
+        NotificationCenter.default.post(name: Self.downloadFailedNotification, object: bookId)
     }
 
     private func monitorExternalDownload(taskId: String, bookId: String) async {
@@ -2221,6 +2273,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         for book: Book,
         provider: any PlaybackSessionProvider
     ) async throws -> [(request: URLRequest, mimeType: String?)] {
+        if let silo = provider as? SiloProvider { return try await silo.audiobookDownloadRequests(for: book) }
         let session = try await provider.startPlaybackSession(for: book)
         // Starting the session can refresh the token, so headers are read afterwards.
         let headers = provider.getStreamingHeaders()
@@ -2340,6 +2393,7 @@ extension UnifiedDownloadService: URLSessionDownloadDelegate {
     }
 
     nonisolated func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        stallMonitor.stopTracking(downloadTask)
         guard let owner = Self.callbackOwner(of: downloadTask, in: session) else { return }
         let taskId = owner.taskId
         let bookId = owner.bookId
@@ -2529,6 +2583,7 @@ extension UnifiedDownloadService: URLSessionDownloadDelegate {
         totalBytesWritten: Int64,
         totalBytesExpectedToWrite: Int64
     ) {
+        stallMonitor.recordProgress(of: downloadTask, bytesWritten: bytesWritten, totalBytesWritten: totalBytesWritten)
         guard let owner = Self.callbackOwner(of: downloadTask, in: session) else { return }
         let taskId = owner.taskId
 
@@ -2553,7 +2608,14 @@ extension UnifiedDownloadService: URLSessionDownloadDelegate {
         }
     }
 
+    nonisolated func urlSession(
+        _ session: URLSession, downloadTask: URLSessionDownloadTask, didResumeAtOffset fileOffset: Int64, expectedTotalBytes: Int64
+    ) {
+        stallMonitor.recordResume(of: downloadTask, offset: fileOffset)
+    }
+
     nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        stallMonitor.stopTracking(task)
         guard let downloadTask = task as? URLSessionDownloadTask, let error = error,
             let owner = Self.callbackOwner(of: downloadTask, in: session)
         else { return }

@@ -157,6 +157,8 @@ final class ProfileSwitchCoordinator {
     }
 
     func authorizeParent(pin: String) throws {
+        // The active session may already be retiring; unlocking it would restart a retired graph.
+        guard !isSwitching else { throw ProfileAccessError.operationInProgress }
         try pinStore.verify(pin)
         authorizationTask?.cancel()
         authorizationDeadline = ContinuousClock.now.advanced(by: .seconds(300))

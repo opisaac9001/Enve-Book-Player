@@ -50,6 +50,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.lifecycleScope
 import com.enve.app.R
 import com.enve.core.data.model.*
+import com.enve.core.data.local.toBook
 import com.enve.core.listeningposition.SharedReadingLocation
 import com.enve.app.data.reader.*
 import com.enve.app.data.repository.CustomFontRepository
@@ -96,6 +97,7 @@ import com.enve.engine.prefs.ReadNextPosition
 import com.enve.engine.theme.HearthPaletteStyle
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.BufferOverflow
@@ -276,6 +278,7 @@ class EbookReaderActivity : FragmentActivity() {
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
     private var readiumReflowJob: Job? = null
+    private var readiumFirstFit = kotlinx.coroutines.CompletableDeferred<Unit>()
 
     private var ttsEngine: TextToSpeech? = null
 
@@ -554,6 +557,7 @@ class EbookReaderActivity : FragmentActivity() {
 
     private fun startReadiumReflowFit(nav: EpubNavigatorFragment) {
         readiumReflowJob?.cancel()
+        readiumFirstFit = kotlinx.coroutines.CompletableDeferred()
         readiumReflowJob = lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch {
@@ -571,7 +575,13 @@ class EbookReaderActivity : FragmentActivity() {
                 }
                 readiumReflowRequests
                     .debounce(WIDE_CONTENT_FIT_DEBOUNCE_MS)
-                    .collect { fitReadiumWideContent(nav) }
+                    .collect {
+                        try {
+                            fitReadiumWideContent(nav)
+                        } finally {
+                            readiumFirstFit.complete(Unit)
+                        }
+                    }
             }
         }
     }
@@ -736,6 +746,11 @@ class EbookReaderActivity : FragmentActivity() {
         private const val FOLIATE_RETRY_DELAY_MS = 500L
         private const val OPEN_WATCHDOG_MS = 300_000L
         private const val REMOTE_PROGRESS_TIMEOUT_MS = 15_000L
+        private const val OFFLINE_REMOTE_PROGRESS_TIMEOUT_MS = 4_000L
+        private const val LATE_RESTORE_SETTLE_MS = 10_000L
+        private const val READIUM_RESTORE_REVEAL_MS = 4_000L
+        private const val READIUM_POSITION_STEADY_MS = 350L
+        private const val READER_REVEAL_MS = 220L
         private const val AUDIO_SEEDED_PROGRESS_TOLERANCE = 0.005f
         private const val ZIP_END_RECORD_BYTES = 22L
         private const val MAX_ZIP_END_RECORD_SEARCH_BYTES = 65_557L
@@ -821,6 +836,8 @@ class EbookReaderActivity : FragmentActivity() {
         }
         bookTitle  = intent.getStringExtra(EXTRA_TITLE)       ?: ""
         bookAuthor = intent.getStringExtra(EXTRA_AUTHOR)      ?: ""
+        findViewById<TextView>(R.id.loading_title).text = bookTitle
+        showLoadingCover(bookId, connectionId)
         val bookFormat = intent.getStringExtra(EXTRA_BOOK_FORMAT)
         val locatorJson = intent.getStringExtra(EXTRA_EPUB_LOCATOR)
         val epubProgress = intent.getFloatExtra(EXTRA_EPUB_PROGRESS, 0f)
@@ -857,6 +874,12 @@ class EbookReaderActivity : FragmentActivity() {
             DisposableEffect(readerTheme, readerBackground) {
                 window.setBackgroundDrawable(ColorDrawable(readerBackground))
                 epubContainer.setBackgroundColor(readerBackground)
+                loadingRoot.setBackgroundColor(readerBackground)
+                val lightPage = readerTheme == ReaderTheme.LIGHT || readerTheme == ReaderTheme.SEPIA
+                findViewById<TextView>(R.id.loading_title).setTextColor(if (lightPage) 0xFF2B2118.toInt() else 0xFFF2E6D6.toInt())
+                val secondary = if (lightPage) 0xFF6E5F49.toInt() else 0xFFB8A894.toInt()
+                loadingText.setTextColor(secondary)
+                loadingPct.setTextColor(secondary)
                 val systemBarStyle = if (readerTheme == ReaderTheme.LIGHT || readerTheme == ReaderTheme.SEPIA) {
                     SystemBarStyle.light(readerBackground, readerBackground)
                 } else {
@@ -925,6 +948,7 @@ class EbookReaderActivity : FragmentActivity() {
                     paletteStyle = paletteStyle,
                     onBack = { finish() },
                     onAskLibrarian = onAskLibrarian,
+                    onMarkFinished = ::markBookFinished,
                     onVerticalMarginsChanged = { margin -> applyVerticalReadingPadding(margin) },
                     einkActive = themeState.einkProfile.active,
                     readNextEnabled = readNextEnabled,
@@ -1025,6 +1049,7 @@ class EbookReaderActivity : FragmentActivity() {
             hasOfflineSource = hasOfflineSource,
             networkAvailable = networkAvailable,
         )
+        val remoteProgressTimeoutMs = if (hasOfflineSource) OFFLINE_REMOTE_PROGRESS_TIMEOUT_MS else REMOTE_PROGRESS_TIMEOUT_MS
         val directAzw3 = sourceFormat == EbookSourceFormat.AZW3
         val remoteResource = if ((sourceFormat.isEpubPackage || directAzw3) && useReaderNetwork) {
             runCatching { vm.getEbookResource() }.getOrNull()
@@ -1110,14 +1135,15 @@ class EbookReaderActivity : FragmentActivity() {
             foliateArchive = epubFile.takeIf { !directAzw3 }
             val syncBook = currentSyncBook(locatorJson, epubProgress)
             syncCoordinator.registerBook(syncBook)
-            if (useReaderNetwork) lifecycleScope.launch {
+            if (networkAvailable) lifecycleScope.launch {
                 runCatching { syncCoordinator.pullAnnotations(syncBook) }
                 syncCoordinator.flushAnnotations(syncBook.id)
             }
             val openProgress = resolveOpenProgress(
                 locatorJson = locatorJson,
                 epubProgress = epubProgress,
-                networkAvailable = useReaderNetwork,
+                networkAvailable = networkAvailable,
+                remoteTimeoutMs = remoteProgressTimeoutMs,
                 pullAnnotations = false,
                 cached = vm.cachedReaderProgress(),
                 epubFile = epubFile,
@@ -1171,7 +1197,8 @@ class EbookReaderActivity : FragmentActivity() {
         val openProgress = resolveOpenProgress(
             locatorJson = locatorJson,
             epubProgress = epubProgress,
-            networkAvailable = useReaderNetwork,
+            networkAvailable = networkAvailable,
+            remoteTimeoutMs = remoteProgressTimeoutMs,
             pullAnnotations = true,
             cached = cachedReaderProgress,
             epubFile = epubFile,
@@ -1431,6 +1458,11 @@ class EbookReaderActivity : FragmentActivity() {
         }
 
         logPhase("readyToShowNavigator", openStartMs)
+        withTimeoutOrNull(READIUM_RESTORE_REVEAL_MS) {
+            while (!vm.openRestoreSettled) delay(32)
+            readiumFirstFit.await()
+            nav.currentLocator.debounce(READIUM_POSITION_STEADY_MS).first()
+        }
         showReaderSurface()
 
     }
@@ -1473,7 +1505,7 @@ class EbookReaderActivity : FragmentActivity() {
                 customFonts = customFonts,
                 initialCheckpoint = plan.initialCheckpoint,
                 identity = plan.identity,
-                initialPreferences = vm.state.value.prefs,
+                initialPreferences = vm.foliatePreferences(),
                 onReady = ready@ { toc, checkpoint, restoreMethod ->
                     if (!vm.onFoliateReady(toc, checkpoint, restoreMethod)) {
                         startCompatibilityFallback(
@@ -1543,11 +1575,50 @@ class EbookReaderActivity : FragmentActivity() {
         vm.attachEngineNavigator(engine, plan)
     }
 
+    private suspend fun markBookFinished(): Boolean {
+        val dao = profileBinding.runtime.component.bookCacheDao()
+        val cached = dao.getByIdAndConnection(bookId, bookConnectionId) ?: dao.getById(bookId) ?: return false
+        return runCatching { profileBinding.runtime.component.library().setFinished(cached.toBook(), true) }.getOrDefault(false)
+    }
+
+    private fun showLoadingCover(bookId: String, connectionId: String?) {
+        val cover = findViewById<android.widget.ImageView>(R.id.loading_cover)
+        cover.clipToOutline = true
+        cover.outlineProvider = object : android.view.ViewOutlineProvider() {
+            override fun getOutline(view: View, outline: android.graphics.Outline) {
+                outline.setRoundRect(0, 0, view.width, view.height, 10f * view.resources.displayMetrics.density)
+            }
+        }
+        lifecycleScope.launch {
+            val dao = profileBinding.runtime.component.bookCacheDao()
+            val url = (dao.getByIdAndConnection(bookId, connectionId) ?: dao.getById(bookId))?.coverUrl ?: return@launch
+            profileBinding.runtime.component.imageLoader().enqueue(
+                coil.request.ImageRequest.Builder(this@EbookReaderActivity)
+                    .data(url)
+                    .target(onSuccess = { drawable ->
+                        if (loadingRoot.visibility == View.VISIBLE) {
+                            cover.setImageDrawable(drawable)
+                            cover.visibility = View.VISIBLE
+                            cover.animate().alpha(1f).setDuration(READER_REVEAL_MS).start()
+                        }
+                    })
+                    .build(),
+            )
+        }
+    }
+
     private fun showReaderSurface() {
         if (isFinishing || isDestroyed) return
-        loadingRoot.visibility = View.GONE
+        findViewById<android.widget.ImageView>(R.id.loading_cover).takeIf { it.visibility == View.VISIBLE }
+            ?.animate()?.scaleX(1.12f)?.scaleY(1.12f)?.setDuration(READER_REVEAL_MS * 2)?.start()
         epubContainer.visibility = View.VISIBLE
         epubContainer.alpha = 1f
+        loadingRoot.animate().alpha(0f).setDuration(READER_REVEAL_MS * 2).withEndAction {
+            loadingRoot.visibility = View.GONE
+            loadingRoot.alpha = 1f
+            findViewById<android.widget.ImageView>(R.id.loading_cover).apply { scaleX = 1f; scaleY = 1f }
+            vm.revealChrome()
+        }.start()
         composeOverlay.visibility = View.VISIBLE
         composeOverlay.elevation = 16f
         composeOverlay.translationZ = 16f
@@ -1795,6 +1866,7 @@ class EbookReaderActivity : FragmentActivity() {
         locatorJson: String?,
         epubProgress: Float,
         networkAvailable: Boolean,
+        remoteTimeoutMs: Long,
         pullAnnotations: Boolean,
         cached: CachedReaderProgress?,
         epubFile: File,
@@ -1808,6 +1880,7 @@ class EbookReaderActivity : FragmentActivity() {
 
         val fallbackLocator = cached?.locator ?: locatorJson
         val fallbackProgress = cached?.progress?.takeIf { it > epubProgress } ?: epubProgress
+        val fallbackUpdatedAt = cached?.takeIf { it.progress > epubProgress }?.updatedAt ?: bookLastReadTime
         val localPlan = OpenProgressPlan(
             resolution = OpenProgressResolution(fallbackLocator, fallbackProgress, mayUseCachedAudioPosition = true),
             remote = OpenRemoteProgress(snapshot = null, authority = OpenProgressAuthority.AUTOMATIC),
@@ -1817,13 +1890,15 @@ class EbookReaderActivity : FragmentActivity() {
             localPlan
         } else {
             val startedAt = android.os.SystemClock.elapsedRealtime()
-            val outcome = withTimeoutOrNull(REMOTE_PROGRESS_TIMEOUT_MS) {
-                pullRemoteProgress(fallbackLocator, fallbackProgress, pullAnnotations, epubFile, publication)
-            } ?: run {
+            val pull = lifecycleScope.async {
+                pullRemoteProgress(fallbackLocator, fallbackProgress, fallbackUpdatedAt, pullAnnotations, epubFile, publication)
+            }
+            val outcome = withTimeoutOrNull(remoteTimeoutMs) { pull.await() } ?: run {
                 android.util.Log.w(
                     "EbookReader",
                     "pullRemoteProgress timed out after ${android.os.SystemClock.elapsedRealtime() - startedAt}ms; opening with local fallback (intentProgress=$epubProgress, cachedProgress=${cached?.progress}, cachedLocator=${cached?.locator != null})",
                 )
+                lifecycleScope.launch { applyLateRemoteProgress(pull, epubFile, publication) }
                 RemoteProgressOutcome.Resolved(localPlan)
             }
             when (outcome) {
@@ -1835,9 +1910,47 @@ class EbookReaderActivity : FragmentActivity() {
         return plan
     }
 
+    private suspend fun applyLateRemoteProgress(
+        pull: kotlinx.coroutines.Deferred<RemoteProgressOutcome>,
+        epubFile: File,
+        publication: org.readium.r2.shared.publication.Publication?,
+    ) {
+        val outcome = try {
+            pull.await()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            return
+        }
+        val remote = when (outcome) {
+            is RemoteProgressOutcome.Resolved -> outcome.plan.remote
+            is RemoteProgressOutcome.NeedsChoice ->
+                if (vm.readerMovedSinceOpen) return else awaitProgressChoice(outcome, epubFile, publication).remote
+        }
+        val snapshot = remote.snapshot?.takeIf { remote.authority == OpenProgressAuthority.REMOTE } ?: return
+        withTimeoutOrNull(LATE_RESTORE_SETTLE_MS) { while (!vm.openRestoreSettled) delay(100) } ?: return
+        if (vm.readerMovedSinceOpen) return
+        val checkpoint = vm.lateRemoteCheckpoint(snapshot) ?: return
+        val moved = if (publication == null) {
+            vm.goToLateFoliateCheckpoint(checkpoint)
+        } else {
+            val anchored = withContext(Dispatchers.IO) { EpubCfi.withReadiumAnchor(checkpoint, epubFile) }
+            val positions = withContext(Dispatchers.Default) { publication.positionsByReadingOrder().flatten() }
+            buildInitialLocator(
+                publication = publication,
+                positions = positions,
+                locatorJson = EpubBridgeCheckpointCodec.toReadiumLocatorJson(anchored),
+                progress = snapshot.percentage,
+                bookSource = bookSource,
+            )?.let(vm::goToLateReadiumLocator) == true
+        }
+        android.util.Log.i("EbookReader", "Applied late server position=${snapshot.percentage} moved=$moved")
+    }
+
     private suspend fun pullRemoteProgress(
         cachedLocatorJson: String?,
         cachedProgress: Float,
+        cachedUpdatedAt: Long,
         pullAnnotations: Boolean,
         epubFile: File,
         publication: org.readium.r2.shared.publication.Publication?,
@@ -1864,7 +1977,7 @@ class EbookReaderActivity : FragmentActivity() {
             book = book,
             snapshot = snapshot,
             localPercentage = localProgress,
-            localUpdatedAt = bookLastReadTime.takeIf { it > 0L },
+            localUpdatedAt = cachedUpdatedAt.takeIf { it > 0L },
             localLocatorJson = localLocatorJson,
         )
 

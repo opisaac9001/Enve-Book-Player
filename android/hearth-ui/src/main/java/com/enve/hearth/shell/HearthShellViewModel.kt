@@ -4,6 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.enve.core.data.local.LastOpenedBookStore
 import com.enve.core.data.model.Book
+import com.enve.engine.downloads.DownloadActivityFacade
+import com.enve.engine.downloads.DownloadTransfer
 import com.enve.engine.eink.EinkFacade
 import com.enve.engine.eink.EinkState
 import com.enve.engine.library.LibraryFacade
@@ -15,6 +17,7 @@ import com.enve.engine.prefs.PreferencesFacade
 import com.enve.engine.prefs.HearthStartTab
 import com.enve.engine.theme.HearthPaletteStyle
 import com.enve.engine.theme.HearthThemeMode
+import com.enve.hearth.includesLibraryBook
 import com.enve.hearth.observeLastOpenedBook
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -33,13 +36,20 @@ class HearthShellViewModel @Inject constructor(
     private val eink: EinkFacade,
     library: LibraryFacade,
     lastOpenedBookStore: LastOpenedBookStore,
+    downloadActivity: DownloadActivityFacade,
 ) : ViewModel() {
+
+    val activeDownloads: StateFlow<List<DownloadTransfer>> =
+        downloadActivity.activeTransfers.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val transport: StateFlow<PlaybackTransport> = playback.transport
     val nowPlaying: StateFlow<NowPlaying?> = playback.nowPlaying
+    val readingEnabled: StateFlow<Boolean> =
+        prefs.readingEnabled.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
     val lastOpenedBook: StateFlow<Book?> =
-        library.observeLastOpenedBook(lastOpenedBookStore)
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+        combine(library.observeLastOpenedBook(lastOpenedBookStore), prefs.readingEnabled) { book, reading ->
+            book?.takeIf { includesLibraryBook(it, reading) }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
     val einkState: StateFlow<EinkState> = eink.state
 
     val startingBook: StateFlow<Book?> = playback.starting

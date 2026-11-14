@@ -89,6 +89,106 @@ final class PDFReadingLayoutUITests: XCTestCase {
     }
 
     @MainActor
+    func testPageAdjustIsRememberedPerBookAndACroppedPagePansInsteadOfTurning() throws {
+        let fixtureName = "pdf-adjust-\(UUID().uuidString).pdf"
+        let pdf = Self.makeSixPagePDF()
+        XCUIDevice.shared.orientation = .portrait
+
+        var app = try launchPDFReader(fixtureName, pdf: pdf)
+        XCTAssertTrue(waitForStatus(app, "Page 1 of 6"))
+        openAppearance(app)
+        let fit = app.buttons["reader-pdf-page-adjust-fit"].firstMatch
+        let crop = app.buttons["reader-pdf-page-adjust-crop"].firstMatch
+        revealInAppearanceSheet(app, fit)
+        XCTAssertEqual(fit.value as? String, "Selected", "Fit is the default page adjust")
+        for adjust in ["crop", "fillHeight", "fillWidth"] {
+            let chip = app.buttons["reader-pdf-page-adjust-\(adjust)"].firstMatch
+            XCTAssertTrue(chip.isHittable, "\(adjust) must be on screen with the other page adjust options")
+            XCTAssertEqual(chip.value as? String, "Not selected")
+        }
+        attachScreenshot(app, name: "pdf-page-adjust-options")
+        crop.tap()
+        XCTAssertTrue(waitForValue(crop, "Selected"))
+        XCTAssertEqual(fit.value as? String, "Not selected")
+        dismissAppearance(app)
+        attachScreenshot(app, name: "pdf-crop")
+
+        // A portrait page cropped to a portrait screen is wider than it, so a swipe pans the page.
+        turnPage(app, forward: true)
+        XCTAssertTrue(waitForStatus(app, "Page 1 of 6"))
+        tapEdge(app, trailing: true)
+        XCTAssertTrue(waitForStatus(app, "Page 2 of 6"), "Edge taps still turn a cropped page")
+        app.terminate()
+
+        app = try launchPDFReader(fixtureName, pdf: pdf)
+        openAppearance(app)
+        revealInAppearanceSheet(app, crop)
+        XCTAssertEqual(crop.value as? String, "Selected", "The page adjust must survive reopening")
+        fit.tap()
+        XCTAssertTrue(waitForValue(fit, "Selected"))
+        dismissAppearance(app)
+        showChrome(app)
+        let pageStatus = app.staticTexts.matching(NSPredicate(format: "label MATCHES %@", "Page [1-6] of 6 .*")).firstMatch
+        XCTAssertTrue(pageStatus.waitForExistence(timeout: 5))
+        let currentPage = try XCTUnwrap(Int(pageStatus.label.split(separator: " ")[1]))
+        XCTAssertLessThan(currentPage, 6)
+        turnPage(app, forward: true)
+        XCTAssertTrue(waitForStatus(app, "Page \(currentPage + 1) of 6"), "A fitted page turns with a swipe again")
+        app.terminate()
+
+        app = try launchPDFReader("pdf-adjust-other-\(UUID().uuidString).pdf", pdf: pdf)
+        openAppearance(app)
+        revealInAppearanceSheet(app, fit)
+        XCTAssertEqual(fit.value as? String, "Selected", "Another PDF keeps the Fit default")
+        app.terminate()
+    }
+
+    @MainActor
+    func testKeyboardPageTurnerKeysTurnPagesUntilTheSettingIsOff() throws {
+        let pdf = Self.makeSixPagePDF()
+        XCUIDevice.shared.orientation = .portrait
+        let app = try launchPDFReader("pdf-keys-\(UUID().uuidString).pdf", pdf: pdf)
+        XCTAssertTrue(waitForStatus(app, "Page 1 of 6"))
+
+        app.typeKey(.rightArrow, modifierFlags: [])
+        XCTAssertTrue(waitForStatus(app, "Page 2 of 6"))
+        app.typeKey(.rightArrow, modifierFlags: [])
+        XCTAssertTrue(waitForStatus(app, "Page 3 of 6"))
+        app.typeKey(.rightArrow, modifierFlags: [])
+        XCTAssertTrue(waitForStatus(app, "Page 4 of 6"))
+        app.typeKey(.leftArrow, modifierFlags: [])
+        XCTAssertTrue(waitForStatus(app, "Page 3 of 6"))
+        app.typeKey(.leftArrow, modifierFlags: [])
+        XCTAssertTrue(waitForStatus(app, "Page 2 of 6"))
+
+        let keyboard = app.switches["reader-keyboard-page-turns"].firstMatch
+        let controllers = app.switches["reader-game-controller-page-turns"].firstMatch
+        openAppearance(app)
+        revealInAppearanceSheet(app, keyboard)
+        XCTAssertEqual(keyboard.value as? String, "1")
+        XCTAssertEqual(controllers.value as? String, "1")
+        // Keys typed while the sheet is up belong to the sheet.
+        app.typeKey(.rightArrow, modifierFlags: [])
+        keyboard.tap()
+        XCTAssertTrue(waitForValue(keyboard, "0"))
+        dismissAppearance(app)
+        XCTAssertTrue(waitForStatus(app, "Page 2 of 6"))
+
+        app.typeKey(.rightArrow, modifierFlags: [])
+        app.typeKey(.rightArrow, modifierFlags: [])
+        XCTAssertTrue(waitForStatus(app, "Page 2 of 6"), "Keys must not turn pages once the setting is off")
+
+        openAppearance(app)
+        revealInAppearanceSheet(app, keyboard)
+        keyboard.tap()
+        XCTAssertTrue(waitForValue(keyboard, "1"))
+        dismissAppearance(app)
+        app.typeKey(.rightArrow, modifierFlags: [])
+        XCTAssertTrue(waitForStatus(app, "Page 3 of 6"))
+        app.terminate()
+    }
+
+    @MainActor
     private func launchPDFReader(_ fixtureName: String, pdf: Data) throws -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["ENVE_READER_FIXTURE_BASE64"] = pdf.base64EncodedString()
@@ -148,6 +248,11 @@ final class PDFReadingLayoutUITests: XCTestCase {
         let start = window.coordinate(withNormalizedOffset: CGVector(dx: forward ? 0.75 : 0.25, dy: 0.5))
         let end = window.coordinate(withNormalizedOffset: CGVector(dx: forward ? 0.25 : 0.75, dy: 0.5))
         start.press(forDuration: 0.05, thenDragTo: end)
+    }
+
+    @MainActor
+    private func tapEdge(_ app: XCUIApplication, trailing: Bool) {
+        app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: trailing ? 0.95 : 0.05, dy: 0.5)).tap()
     }
 
     @MainActor

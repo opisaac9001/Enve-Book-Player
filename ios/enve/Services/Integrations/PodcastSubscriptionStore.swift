@@ -31,15 +31,30 @@ final class PodcastSubscriptionStore {
         }
     }
 
+    func contains(feedURL: String) -> Bool {
+        let key = PodcastFeedURL.key(feedURL)
+        return feeds.contains { PodcastFeedURL.key($0.feedURL) == key }
+    }
+
     func subscribe(_ sub: PodcastSubscription) {
-        guard !feeds.contains(where: { $0.feedURL == sub.feedURL }) else { return }
-        feeds.append(sub)
+        subscribe(contentsOf: [sub])
+    }
+
+    /// Persists once for the whole batch; returns how many feeds were new.
+    @discardableResult
+    func subscribe(contentsOf subscriptions: [PodcastSubscription]) -> Int {
+        var keys = Set(feeds.map { PodcastFeedURL.key($0.feedURL) })
+        let added = subscriptions.filter { keys.insert(PodcastFeedURL.key($0.feedURL)).inserted }
+        guard !added.isEmpty else { return 0 }
+        feeds.append(contentsOf: added)
         persist()
+        return added.count
     }
 
     func unsubscribe(feedURL: String) {
+        let key = PodcastFeedURL.key(feedURL)
         let before = feeds.count
-        feeds.removeAll { $0.feedURL == feedURL }
+        feeds.removeAll { PodcastFeedURL.key($0.feedURL) == key }
         if feeds.count != before {
             persist()
         }

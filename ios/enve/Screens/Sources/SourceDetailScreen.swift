@@ -236,6 +236,12 @@ struct SourceDetailScreen: View {
             }
             if let errorMessage { SourcesErrorText(message: errorMessage) }
 
+            if connection.type == .silo && connection.authMode != .sso {
+                QuietButton(title: isReauthenticating ? "Signing in…" : "Sign in again", systemImage: "person.crop.circle.badge.checkmark") {
+                    reauthenticateSSO(connection)
+                }
+                .disabled(isReauthenticating)
+            }
             HStack(spacing: 10) {
                 QuietButton(title: isVerifying ? "Checking…" : "Verify", systemImage: nil) { verify() }
                     .disabled(isVerifying)
@@ -813,11 +819,14 @@ struct SourceDetailScreen: View {
                     )
                     refreshKeyPrefix = "bookorbit_refresh_"
                 } else if connection.type == .silo {
-                    fresh = try await SiloLoginDelegate(appState: appState, profileSession: profileSession).authenticateWithOIDC(
-                        serverURL: connection.url,
-                        redirectURIOverride: nil,
-                        customHeaders: connection.customHeaders
-                    )
+                    let login = SiloLoginDelegate(appState: appState, profileSession: profileSession, reauthenticating: connection)
+                    if connection.authMode == .sso {
+                        fresh = try await login.authenticateWithOIDC(serverURL: connection.url, redirectURIOverride: nil, customHeaders: connection.customHeaders)
+                    } else if connection.authMode == .token {
+                        fresh = try await login.authenticateWithToken(serverURL: connection.url, token: secret, customHeaders: connection.customHeaders)
+                    } else {
+                        fresh = try await login.authenticate(serverURL: connection.url, username: username, password: secret, customHeaders: connection.customHeaders)
+                    }
                     refreshKeyPrefix = "silo_refresh_"
                 } else if connection.type == .komga {
                     fresh = try await KomgaLoginDelegate(appState: appState, profileSession: profileSession).authenticateWithOIDC(
@@ -854,7 +863,7 @@ struct SourceDetailScreen: View {
                 }
                 profileSession.authenticationFailures.clear(connectionId: connection.id)
                 appState.providerConnections.clearReauthentication(connectionId: connection.id)
-                secret = fresh.token ?? ""
+                secret = connection.type == .silo && fresh.authMode == .usernamePassword ? (fresh.password ?? "") : (fresh.token ?? "")
                 let detectedBrowserHeaders = CloudflareAccessHeaders.detectedBrowserHeaders(from: fresh.customHeaders)
                 cloudflareBrowserHeaders =
                     isKomgaSSO(fresh)

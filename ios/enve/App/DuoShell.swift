@@ -360,28 +360,37 @@ private struct FacingReadingRoom: View {
 
 struct NightstandDock: View {
     @Binding var tab: HearthTab
+    // Shared with the shell so the Hearth above doesn't repeat the docked book as its hero.
+    @Binding var book: Book?
     var style: UserPreferences.ShellNavigationStyle
     var bottomSafeArea: CGFloat
+    var foldInset: CGFloat
     var onSelect: (HearthTab) -> Void
 
     @Environment(AppState.self) private var appState
     @Environment(EnveEngine.self) private var engine
     @Environment(\.hearth) private var hearth
-    @State private var book: Book?
 
     var body: some View {
         VStack(spacing: 0) {
+            // The hinge's clearance pads the content only, so each ground runs up to the fold.
             Group {
                 if let book {
                     if MantelBar.opensReader(book) {
                         NightstandReadingRow(book: book)
+                            .padding(.top, foldInset)
                     } else {
-                        PlayerScreen(presentation: .dock)
+                        PlayerScreen(
+                            presentation: .dock,
+                            topInset: foldInset,
+                            onExpand: { appState.presentation.isPlayerPresented = true }
+                        )
                     }
                 } else {
                     Text("Nothing on the hearth yet.")
                         .font(.hearthBody)
                         .foregroundStyle(hearth.textSecondary)
+                        .padding(.top, foldInset)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -397,6 +406,13 @@ struct NightstandDock: View {
         .background {
             hearth.bgSunken.ignoresSafeArea(edges: [.horizontal, .bottom])
         }
+        // The dock's top edge is the fold; the spine softens the seam with the stacks above it.
+        .overlay(alignment: .top) {
+            HearthSpineShadow(axis: .horizontal, depth: 1)
+                .frame(height: 84)
+                .offset(y: -42)
+                .ignoresSafeArea(edges: .horizontal)
+        }
         .task(id: book?.stableId) {
             if let book, !MantelBar.opensReader(book), engine.playback.currentBook == nil {
                 appState.currentBook = book
@@ -404,6 +420,16 @@ struct NightstandDock: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("nightstand-dock")
+    }
+}
+
+struct NightstandFoldFade: View {
+    @Environment(\.hearth) private var hearth
+
+    var body: some View {
+        LinearGradient(colors: [hearth.bg.opacity(0), hearth.bg], startPoint: .top, endPoint: .bottom)
+            .frame(height: 36)
+            .allowsHitTesting(false)
     }
 }
 
@@ -416,34 +442,54 @@ private struct NightstandReadingRow: View {
     @State private var tint: Color = Hearth.accent
 
     var body: some View {
-        VStack(spacing: 18) {
-            HStack(spacing: 14) {
-                CoverTile(book: book, width: 64 / book.hearthCoverRatio, badges: false, corner: 8)
+        GeometryReader { geo in
+            let isWide = PlayerLayoutPolicy.nightstandFaceIsWide(width: geo.size.width)
+            let coverHeight = isWide ? max(64, min(geo.size.height - 32, 240)) : 64
+            VStack(spacing: 18) {
+                HStack(spacing: isWide ? 28 : 14) {
+                    CoverTile(
+                        book: book,
+                        width: coverHeight / book.hearthCoverRatio,
+                        badges: false,
+                        corner: isWide ? Hearth.radiusCover : 8
+                    )
                     .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(book.title)
-                        .font(.hearthDisplay(18, weight: .semibold))
-                        .foregroundStyle(hearth.text)
-                        .lineLimit(2)
-                    if let author = book.author {
-                        Text(author)
-                            .font(.hearthUI(13))
-                            .foregroundStyle(hearth.textSecondary)
-                            .lineLimit(1)
+                    VStack(alignment: .leading, spacing: isWide ? 8 : 4) {
+                        Text(book.title)
+                            .font(.hearthDisplay(isWide ? 28 : 18, weight: .semibold))
+                            .foregroundStyle(hearth.text)
+                            .lineLimit(2)
+                        if let author = book.author {
+                            Text(author)
+                                .font(.hearthUI(isWide ? 16 : 13))
+                                .foregroundStyle(hearth.textSecondary)
+                                .lineLimit(1)
+                        }
+                        Ribbon(progress: engine.playback.progressFraction(for: book), tint: tint, height: isWide ? 5 : 3)
+                            .padding(.top, 4)
+                        if isWide {
+                            continueButton
+                                .padding(.top, 12)
+                        }
                     }
-                    Ribbon(progress: engine.playback.progressFraction(for: book), tint: tint)
-                        .padding(.top, 4)
+                }
+                if !isWide {
+                    continueButton
                 }
             }
-            EmberButton(title: "Continue reading", systemImage: "book", tint: tint) {
-                PlatformHaptics.impact(.light)
-                engine.playback.openEbook(book)
-            }
+            .padding(.horizontal, isWide ? 36 : 28)
+            .frame(maxWidth: isWide ? .infinity : PlayerLayoutPolicy.stackedContentWidth)
+            .frame(width: geo.size.width, height: geo.size.height)
         }
-        .padding(.horizontal, 28)
-        .frame(maxWidth: PlayerLayoutPolicy.stackedContentWidth)
         .task(id: book.stableId) {
             tint = await (capturedSession ?? .owner).ambientColors.resolve(for: book)
+        }
+    }
+
+    private var continueButton: some View {
+        EmberButton(title: "Continue reading", systemImage: "book", tint: tint) {
+            PlatformHaptics.impact(.light)
+            engine.playback.openEbook(book)
         }
     }
 }

@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ViewList
@@ -63,6 +64,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.enve.hearth.shell.profileViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.BrowseGroup
@@ -75,6 +77,7 @@ import com.enve.hearth.design.LocalMantelInset
 import com.enve.hearth.design.Overline
 import com.enve.hearth.design.ScreenHeader
 import com.enve.hearth.design.hearthDisplay
+import com.enve.hearth.hasPlayableAudio
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import kotlin.math.roundToInt
@@ -85,6 +88,7 @@ fun HearthLibraryScreen(
     covered: Boolean,
     onSelectBook: (Book) -> Unit,
     onPlayBook: (Book) -> Unit = {},
+    onListenBook: (Book) -> Unit = onPlayBook,
     onPlaybackStarted: () -> Unit = {},
     onAddSource: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
@@ -102,11 +106,17 @@ fun HearthLibraryScreen(
     val vm: HearthLibraryViewModel = profileViewModel()
     val facet by vm.facet.collectAsStateWithLifecycle()
     val query by vm.query.collectAsStateWithLifecycle()
-    val status by vm.status.collectAsStateWithLifecycle()
+    val status by vm.effectiveStatus.collectAsStateWithLifecycle()
     val advancedFilters by vm.advancedFilters.collectAsStateWithLifecycle()
-    val mediaFilter by vm.media.collectAsStateWithLifecycle()
-    val sourceFilter by vm.sourceFilter.collectAsStateWithLifecycle()
-    val libraryFilter by vm.libraryFilter.collectAsStateWithLifecycle()
+    val mediaFilter by vm.effectiveMedia.collectAsStateWithLifecycle()
+    val readingEnabled by vm.readingEnabled.collectAsStateWithLifecycle()
+    val comicBrowse by vm.comicBrowse.collectAsStateWithLifecycle()
+    val comicSeries by vm.comicSeries.collectAsStateWithLifecycle()
+    val comicView by vm.comicSeriesView.collectAsStateWithLifecycle()
+    val play: (Book) -> Unit = { book ->
+        if (!readingEnabled && book.mediaType == AppMediaType.EBOOK) onListenBook(book) else onPlayBook(book)
+    }
+    val librarySelection by vm.librarySelection.collectAsStateWithLifecycle()
     var showFilterSort by remember { mutableStateOf(false) }
     val books by vm.books.collectAsStateWithLifecycle()
     val savedBooks by vm.savedBooks.collectAsStateWithLifecycle()
@@ -129,7 +139,7 @@ fun HearthLibraryScreen(
     LaunchedEffect(refreshing) {
         if (refreshing) dismissedRefreshError = null
     }
-    val columns by vm.columns.collectAsStateWithLifecycle()
+    val columns by vm.displayColumns.collectAsStateWithLifecycle()
     val cardStyle by vm.cardStyle.collectAsStateWithLifecycle()
     val selectionMode by vm.selectionMode.collectAsStateWithLifecycle()
     val selection by vm.selection.collectAsStateWithLifecycle()
@@ -142,12 +152,16 @@ fun HearthLibraryScreen(
     var batchCollectionCreateConnection by remember { mutableStateOf<LibraryConnectionOption?>(null) }
     var moreMenuOpen by remember { mutableStateOf(false) }
     val palette = Hearth.palette
-    BackHandler(enabled = !covered && (drill != null || savedList != null || selectionMode || searchExpanded)) {
+    val comicSeriesListState = rememberLazyGridState()
+    val comicMode = mediaFilter == MediaFilter.COMICS && facet != LibraryFacet.SHELVES && savedList == null
+    val openComic = comicView?.takeIf { comicMode && drill == null }
+    BackHandler(enabled = !covered && (drill != null || savedList != null || selectionMode || searchExpanded || openComic != null)) {
         when {
             searchExpanded -> { searchExpanded = false; vm.setQuery("") }
             selectionMode -> vm.endSelection()
             savedList != null -> savedList = null
-            else -> vm.clearDrill()
+            drill != null -> vm.clearDrill()
+            else -> vm.closeComicSeries()
         }
     }
     val keyboard = LocalSoftwareKeyboardController.current
@@ -156,13 +170,14 @@ fun HearthLibraryScreen(
     val activeFilterCount = remember(status, mediaFilter, advancedFilters) {
         libraryActiveFilterCount(status, mediaFilter, advancedFilters)
     }
+    val showsBookGrid = if (comicMode) openComic == null && comicBrowse.facet == LibraryFacet.BOOKS else facet == LibraryFacet.BOOKS
     val selectableBooks = savedList?.let { savedBooks[it].orEmpty() }
         ?: drill?.books
-        ?: if (facet == LibraryFacet.BOOKS) books else emptyList()
+        ?: if (showsBookGrid) books else emptyList()
     val resultCount = if (drill != null) {
         null
     } else {
-        savedList?.let { savedBooks[it].orEmpty().size } ?: books.size.takeIf { facet == LibraryFacet.BOOKS }
+        savedList?.let { savedBooks[it].orEmpty().size } ?: books.size.takeIf { showsBookGrid }
     }
     var headerOffsetPx by remember { mutableFloatStateOf(0f) }
     var headerHeightPx by remember { mutableFloatStateOf(0f) }
@@ -256,8 +271,8 @@ fun HearthLibraryScreen(
             sources = sources,
             libraries = libraries,
             libraryConnectionLabels = libraryConnectionLabels,
-            sourceFilter = sourceFilter,
-            libraryFilter = libraryFilter,
+            sourceFilter = librarySelection.source,
+            libraryFilter = librarySelection.libraryId,
             onSource = vm::setSourceFilter,
             onLibrary = vm::setLibraryFilter,
             modifier = Modifier.padding(horizontal = Hearth.Spacing.L),
@@ -315,7 +330,15 @@ fun HearthLibraryScreen(
             }
         }
         }
-        FacetRow(selected = facet.takeIf { savedList == null }) { selected -> savedList = null; vm.setFacet(selected) }
+        if (mediaFilter == MediaFilter.COMICS) {
+            ComicFacetRow(selected = comicBrowse.facet.takeIf { comicMode }) { selected ->
+                savedList = null
+                if (facet == LibraryFacet.SHELVES) vm.setFacet(LibraryFacet.BOOKS)
+                vm.setComicFacet(selected)
+            }
+        } else {
+            FacetRow(selected = facet.takeIf { savedList == null }) { selected -> savedList = null; vm.setFacet(selected) }
+        }
         Spacer(Modifier.size(Hearth.Spacing.XS))
 
         val drillNow = drill
@@ -329,7 +352,7 @@ fun HearthLibraryScreen(
                 }
                 val items = savedBooks[list].orEmpty()
                 if (items.isEmpty()) BrowseEmptyState("Nothing saved yet", "Save a book from its details to find it here.")
-                else BookGrid(items, columns, vm, selectionMode, selection, onSelectBook, onPlayBook, cardStyle = cardStyle)
+                else BookGrid(items, columns, vm, selectionMode, selection, onSelectBook, play, cardStyle = cardStyle)
             }
             drillNow != null -> Column(Modifier.fillMaxSize()) {
                 Row(
@@ -340,7 +363,7 @@ fun HearthLibraryScreen(
                     Spacer(Modifier.width(Hearth.Spacing.M))
                     Text(drillNow.title, style = hearthDisplay(20.sp, FontWeight.SemiBold), color = palette.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Spacer(Modifier.weight(1f))
-                    if (drillNow.kind != DrillKind.SHELF && drillNow.books.any(::isAudioPlayable)) {
+                    if (drillNow.kind != DrillKind.SHELF && drillNow.books.any { it.hasPlayableAudio }) {
                         TextButton(onClick = {
                             if (vm.playAllDrill()) onPlaybackStarted()
                         }) { Text("Play All", color = palette.ember) }
@@ -356,9 +379,9 @@ fun HearthLibraryScreen(
                     selectionMode,
                     selection,
                     onSelectBook,
-                    onPlayBook,
+                    play,
                     cardStyle = cardStyle,
-                    onRemove = if (drillNow.shelf?.isEditable == true) ({ pendingBookRemoval = it }) else null,
+                    onRemove =if (drillNow.shelf?.isEditable == true) ({ pendingBookRemoval = it }) else null,
                 )
                 if (drillNow.hasMore) {
                     TextButton(
@@ -371,12 +394,28 @@ fun HearthLibraryScreen(
 
             showRefreshNotice && total == 0 -> Box(Modifier.fillMaxSize())
 
-            facet == LibraryFacet.BOOKS -> BookGrid(
-                books, columns, vm, selectionMode, selection, onSelectBook, onPlayBook,
+            openComic != null -> ComicSeriesContent(
+                view = openComic,
+                columns = columns,
+                onBack = vm::closeComicSeries,
+                onSelectSection = vm::selectComicSection,
+                onToggleVolume = vm::toggleComicVolume,
+                onRead = play,
+                onDetails = onSelectBook,
+            )
+
+            showsBookGrid -> BookGrid(
+                books, columns, vm, selectionMode, selection, onSelectBook, play,
                 cardStyle = cardStyle,
                 hasLibraryBooks = total > 0,
                 onAddSource = onAddSource,
             )
+
+            comicMode && comicSeries.isEmpty() -> BrowseEmptyState(
+                "No comic series here",
+                if (total > 0) "A filter or search may be hiding them." else "Comics from your servers will be grouped by series here.",
+            )
+            comicMode -> ComicSeriesList(comicSeries, columns, comicSeriesListState, onOpen = vm::openComicSeries, onContinue = play)
 
             facet == LibraryFacet.SERIES && series.isEmpty() -> BrowseEmptyState(
                 "No series yet",

@@ -7,6 +7,7 @@ import com.enve.core.data.local.PreferencesManager
 import com.enve.core.data.model.BookSource
 import com.enve.silo.api.SiloApi
 import com.enve.silo.dto.SiloLoginRequest
+import com.enve.core.data.util.runSuspendCatching
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -18,7 +19,7 @@ class SiloPasswordLogin @Inject constructor(
 ) : PasswordLogin {
     override val source: BookSource = BookSource.SILO
 
-    override suspend fun login(serverUrl: String, username: String, password: String): Result<Unit> = runCatching {
+    override suspend fun login(serverUrl: String, username: String, password: String): Result<Unit> = runSuspendCatching {
         val response = api.login(SiloLoginRequest(username = username, password = password))
         if (!response.isSuccessful) {
             error("Silo login failed: HTTP ${response.code()} ${response.message()}".trim())

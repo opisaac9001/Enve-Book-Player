@@ -12,6 +12,7 @@ struct PodcastsHomeScreen: View {
     @Environment(PodcastsModel.self) private var model
     @State private var heroTint: Color = Hearth.accent
     @State private var browsePushed = false
+    @State private var transferPushed = false
     @State private var loaded = false
     @State private var includeAudiobookshelfPodcasts = false
 
@@ -26,6 +27,9 @@ struct PodcastsHomeScreen: View {
         .toolbarBackground(.hidden, for: .navigationBar)
         .navigationDestination(isPresented: $browsePushed) {
             PodcastBrowseScreen()
+        }
+        .navigationDestination(isPresented: $transferPushed) {
+            SettingsParentGate { PodcastTransferScreen() }
         }
         .refreshable { await model.load() }
         .task(id: isActive) {
@@ -53,6 +57,11 @@ struct PodcastsHomeScreen: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 32) {
                     header
+
+                    // Above the feed states so downloaded episodes stay reachable when feeds can't load offline.
+                    if engine.podcasts.hasSubscriptions && !engine.podcasts.routines.routines.isEmpty {
+                        routinesShelf
+                    }
 
                     if (model.isLoading || !loaded) && model.allShows.isEmpty {
                         loading
@@ -295,6 +304,51 @@ struct PodcastsHomeScreen: View {
         )
     }
 
+    private var routinesShelf: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            ShelfHeader(title: "Routines")
+                .accessibilityAddTraits(.isHeader)
+            ScrollView(.horizontal) {
+                HStack(spacing: 10) {
+                    ForEach(engine.podcasts.routines.routines) { routine in
+                        routineTile(routine)
+                    }
+                }
+                .padding(.horizontal, 24)
+            }
+            .scrollIndicators(.hidden)
+            .hearthHorizontalEdgeFade()
+            PodcastRoutineRunStatus()
+                .padding(.horizontal, 24)
+        }
+        .accessibilityIdentifier("podcasts-home-routines")
+    }
+
+    private func routineTile(_ routine: PodcastRoutine) -> some View {
+        HStack(spacing: 10) {
+            PodcastRoutinePlayButton(routine: routine)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(routine.name)
+                    .font(.hearthUI(14, weight: .semibold))
+                    .foregroundStyle(hearth.text)
+                    .lineLimit(1)
+                Text(PodcastRoutineFormat.summary(routine))
+                    .font(.hearthUI(11))
+                    .foregroundStyle(hearth.textTertiary)
+                    .lineLimit(1)
+            }
+            .accessibilityElement(children: .combine)
+        }
+        .padding(.leading, 6)
+        .padding(.trailing, 16)
+        .padding(.vertical, 6)
+        .background {
+            Capsule()
+                .fill(hearth.bgElevated)
+                .overlay { Capsule().strokeBorder(hearth.hairline, lineWidth: 1) }
+        }
+    }
+
     private var yourShows: some View {
         VStack(alignment: .leading, spacing: 14) {
             ShelfHeader(title: "Your shows")
@@ -350,6 +404,14 @@ struct PodcastsHomeScreen: View {
                 HearthDoorway(glyph: "chart.bar", title: "The record", line: "Hours, shows, and what you finished") {
                     PodcastStatsScreen()
                 }
+                HearthDoorway(glyph: "list.bullet.rectangle", title: "Routines", line: "Saved lineups that pick episodes when you press Play") {
+                    PodcastRoutinesScreen()
+                }
+                .accessibilityIdentifier("podcasts-home-routines-doorway")
+                HearthDoorway(glyph: "arrow.left.arrow.right", title: "Move your shows", line: "Import or export OPML with listening history") {
+                    SettingsParentGate { PodcastTransferScreen() }
+                }
+                .accessibilityIdentifier("podcasts-home-transfer-doorway")
             }
             .background {
                 RoundedRectangle(cornerRadius: Hearth.radiusCard, style: .continuous)
@@ -438,6 +500,10 @@ struct PodcastsHomeScreen: View {
                 EmberButton(title: "Browse podcasts", systemImage: "sparkle.magnifyingglass") {
                     browsePushed = true
                 }
+                QuietButton(title: "Import from another app", systemImage: "square.and.arrow.down") {
+                    transferPushed = true
+                }
+                .accessibilityIdentifier("podcasts-home-import")
             }
             .padding(.horizontal, 24)
 

@@ -1,0 +1,115 @@
+{
+  "revision": "c2e998e269e4d4b51f74061faddb8450cd8f9a9a",
+  "files": [
+    {
+      "path": "v2.1/english/cond_prefill.mlmodelc/analytics/coremldata.bin",
+      "size": 243,
+      "sha256": "324406d83f9685577c6665f231fdfa02518b8addceb54a780feaa968a04c33df"
+    },
+    {
+      "path": "v2.1/english/cond_prefill.mlmodelc/coremldata.bin",
+      "size": 1151,
+      "sha256": "12714da8d2ebae282e353e6785d4472ff5b87f656661d60eff769c584969f415"
+    },
+    {
+      "path": "v2.1/english/cond_prefill.mlmodelc/model.mil",
+      "size": 228662,
+      "sha256": "7a93a23c94ec90b583531b6f9edf32aa34edb1de7564bcbef9354b8069f2d140"
+    },
+    {
+      "path": "v2.1/english/cond_prefill.mlmodelc/weights/weight.bin",
+      "size": 133237248,
+      "sha256": "3a40a5ef3158ef91bfbf932be1c6ee44daca10a856fbb30b9a6720ad9424df8c"
+    },
+    {
+      "path": "v2.1/english/constants_bin/alba.safetensors",
+      "size": 6194424,
+      "sha256": "69c32db63ca56843d994f81f343f62e0bf2d73f7e4c9bc73e44bb1110b1d8845"
+    },
+    {
+      "path": "v2.1/english/constants_bin/bos_before_voice.bin",
+      "size": 4096,
+      "sha256": "6ac530a104e3f3d2b2ff15f3fad63540f2619b31db78b159c0595a108f142caf"
+    },
+    {
+      "path": "v2.1/english/constants_bin/bos_emb.bin",
+      "size": 128,
+      "sha256": "52f1a157fa35fc100213e6e0fafa74703be99db8faa42de3e99feda607ac7b63"
+    },
+    {
+      "path": "v2.1/english/constants_bin/text_embed_table.bin",
+      "size": 16388096,
+      "sha256": "2512f9edd82ab0c68bb42a5fcd329a371eaf63ee6fb5275dfb1bc9536592bb0e"
+    },
+    {
+      "path": "v2.1/english/constants_bin/tokenizer.model",
+      "size": 59339,
+      "sha256": "d461765ae179566678c93091c5fa6f2984c31bbe990bf1aa62d92c64d91bc3f6"
+    },
+    {
+      "path": "v2.1/english/flow_decoder_fused.mlmodelc/analytics/coremldata.bin",
+      "size": 243,
+      "sha256": "17cf344fd2be66e934982944a7a252da17087efbc9daac0d3dfb4e8e95797264"
+    },
+    {
+      "path": "v2.1/english/flow_decoder_fused.mlmodelc/coremldata.bin",
+      "size": 413,
+      "sha256": "69ff9affa07e38b1a511ac8d71c594eeeb236389ddbe74f4fabdfa45db4edf7a"
+    },
+    {
+      "path": "v2.1/english/flow_decoder_fused.mlmodelc/model.mil",
+      "size": 333331,
+      "sha256": "0257898b9a6ce06c961959aae993bb27c558f509fbea7407d094b879f872ec3f"
+    },
+    {
+      "path": "v2.1/english/flow_decoder_fused.mlmodelc/weights/weight.bin",
+      "size": 19012608,
+      "sha256": "f28a1bd0af940a195802e9d702c9e050f3e69d265e582f3d0fdf4001709eb30c"
+    },
+    {
+      "path": "v2.1/english/flowlm_step.mlmodelc/analytics/coremldata.bin",
+      "size": 243,
+      "sha256": "fcc771807d303b09425871201b9c20fd82b92bdb869ca567e9011402b6b844b3"
+    },
+    {
+      "path": "v2.1/english/flowlm_step.mlmodelc/coremldata.bin",
+      "size": 1191,
+      "sha256": "4cf9fcee17a690def93f29ebdffbe3fd4cbfda442666e282f2bc8673947c1707"
+    },
+    {
+      "path": "v2.1/english/flowlm_step.mlmodelc/model.mil",
+      "size": 236884,
+      "sha256": "9f3d6b3d0441d083f39e293d8878c58a53b8156e0d1e434c123d325dcc8c9030"
+    },
+    {
+      "path": "v2.1/english/flowlm_step.mlmodelc/weights/weight.bin",
+      "size": 152186240,
+      "sha256": "5f63c2466dd9c1a29b074c467cc32b1fe47d77afa745e86f03ae7e862ac05aa7"
+    },
+    {
+      "path": "v2.1/english/mimi_decoder.mlmodelc/analytics/coremldata.bin",
+      "size": 243,
+      "sha256": "be4199b44838e2fb199bb44b7649531d28fe847a1a6633fd9f8ca89576c5a7f8"
+    },
+    {
+      "path": "v2.1/english/mimi_decoder.mlmodelc/coremldata.bin",
+      "size": 1777,
+      "sha256": "9d8644e2caad1513153ac28f1ba8090fcd2facdbd5d2621bf8016186fa932bf8"
+    },
+    {
+      "path": "v2.1/english/mimi_decoder.mlmodelc/metadata.json",
+      "size": 16844,
+      "sha256": "aaca1b55b078095e72ee4826a94297fc070526d9f4cd3507464e7f2afaa73376"
+    },
+    {
+      "path": "v2.1/english/mimi_decoder.mlmodelc/model.mil",
+      "size": 107403,
+      "sha256": "f7176b3b3d800de308ac01cb83d1f3e9b555e70b44d299efd4a21c9c27eecc16"
+    },
+    {
+      "path": "v2.1/english/mimi_decoder.mlmodelc/weights/weight.bin",
+      "size": 41768256,
+      "sha256": "c93d182f9ad8c1042ec8302093aabb4e310d76616932dd12720e03b5d07f7c64"
+    }
+  ]
+}

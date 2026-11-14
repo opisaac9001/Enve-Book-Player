@@ -269,6 +269,7 @@ class ComicReaderViewModel @Inject constructor(
             return
         }
         if (bookSource != BookSource.KOMGA) return
+        if (bookCacheDao.getByIdAndConnection(bookId, bookConnectionId)?.comicSeriesId != null) return
         val seriesId = try {
             komgaRepository.getSeriesIdForBook(bookId)
         } catch (e: kotlinx.coroutines.CancellationException) {

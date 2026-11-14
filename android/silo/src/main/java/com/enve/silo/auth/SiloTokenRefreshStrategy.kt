@@ -45,7 +45,7 @@ class SiloTokenRefreshStrategy @Inject constructor(
     private fun refreshWithToken(context: TokenRefreshContext, refreshToken: String): String? = try {
         val body = json.encodeToString(SiloRefreshRequest(refreshToken))
         val request = Request.Builder()
-            .url("${context.serverUrl.trimEnd('/')}/api/v1/auth/refresh")
+            .url("${context.serverUrl.trimEnd('/')}/api/v2/auth/refresh")
             .post(body.toRequestBody("application/json".toMediaType()))
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
@@ -64,7 +64,7 @@ class SiloTokenRefreshStrategy @Inject constructor(
     private fun reLogin(context: TokenRefreshContext, username: String, password: String): String? = try {
         val body = json.encodeToString(SiloLoginRequest(username, password))
         val request = Request.Builder()
-            .url("${context.serverUrl.trimEnd('/')}/api/v1/auth/login")
+            .url("${context.serverUrl.trimEnd('/')}/api/v2/auth/login")
             .post(body.toRequestBody("application/json".toMediaType()))
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")

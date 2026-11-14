@@ -85,18 +85,8 @@ final class ProviderReaderNotebookSync: ReaderNotebookSyncing {
             bookOrbitQueue?.enqueueBookmarkUpsert(book: book, localId: bookmark.id)
             return await syncBookOrbit()
         case .silo:
-            guard let provider = siloProvider else { return .unchanged }
-            do {
-                let record = try await provider.createReaderBookmark(for: book, bookmark: bookmark)
-                siloIDMap.setBookmarkRemoteID(
-                    record.id,
-                    connectionID: provider.connection.id,
-                    bookID: book.stableId,
-                    localID: bookmark.id
-                )
-            } catch {
-                AppLogger.general.error("Failed to sync Silo bookmark bookDiagnosticID=\(bookDiagnosticID): \(error.localizedDescription)")
-            }
+            guard let silo = await siloContext() else { return .unchanged }
+            _ = await pushSiloBookmark(bookmark, provider: silo.provider, scope: silo.scope)
             return .unchanged
         default:
             return .unchanged
@@ -127,18 +117,8 @@ final class ProviderReaderNotebookSync: ReaderNotebookSyncing {
             bookOrbitQueue?.enqueueBookmarkUpsert(book: book, localId: bookmark.id)
             return await syncBookOrbit()
         case .silo:
-            guard let provider = siloProvider else { return .unchanged }
-            let connectionID = provider.connection.id
-            do {
-                if let remoteID = siloIDMap.bookmarkRemoteID(connectionID: connectionID, bookID: book.stableId, localID: bookmark.id) {
-                    try await provider.deleteReaderAnnotation(id: remoteID, for: book)
-                    siloIDMap.removeBookmarkRemoteID(connectionID: connectionID, bookID: book.stableId, localID: bookmark.id)
-                }
-                let record = try await provider.createReaderBookmark(for: book, bookmark: bookmark)
-                siloIDMap.setBookmarkRemoteID(record.id, connectionID: connectionID, bookID: book.stableId, localID: bookmark.id)
-            } catch {
-                AppLogger.general.error("Failed to update Silo bookmark bookDiagnosticID=\(bookDiagnosticID): \(error.localizedDescription)")
-            }
+            guard let silo = await siloContext() else { return .unchanged }
+            _ = await pushSiloBookmark(bookmark, provider: silo.provider, scope: silo.scope)
             return .unchanged
         default:
             return .unchanged
@@ -157,12 +137,8 @@ final class ProviderReaderNotebookSync: ReaderNotebookSyncing {
             bookOrbitQueue?.enqueueBookmarkDelete(book: book, remoteId: remoteID)
             return await syncBookOrbit()
         case .silo:
-            guard let provider = siloProvider else { return .unchanged }
-            let connectionID = provider.connection.id
-            guard let remoteID = siloIDMap.bookmarkRemoteID(connectionID: connectionID, bookID: book.stableId, localID: bookmark.id)
-            else { return .unchanged }
-            try? await provider.deleteReaderAnnotation(id: remoteID, for: book)
-            siloIDMap.removeBookmarkRemoteID(connectionID: connectionID, bookID: book.stableId, localID: bookmark.id)
+            guard let silo = await siloContext() else { return .unchanged }
+            await removeSiloArtifact(localID: bookmark.id, isBookmark: true, provider: silo.provider, scope: silo.scope)
             return .unchanged
         default:
             return .unchanged
@@ -211,20 +187,8 @@ final class ProviderReaderNotebookSync: ReaderNotebookSyncing {
             bookOrbitQueue?.enqueueAnnotationUpsert(book: book, localId: annotation.id)
             return await syncBookOrbit()
         case .silo:
-            guard let provider = siloProvider else { return .unchanged }
-            let connectionID = provider.connection.id
-            do {
-                let record: SiloReaderAnnotationRecord
-                if let remoteID = siloIDMap.annotationRemoteID(connectionID: connectionID, bookID: book.stableId, localID: annotation.id) {
-                    record = try await provider.updateReaderAnnotation(id: remoteID, for: book, annotation: annotation)
-                } else {
-                    record = try await provider.createReaderAnnotation(for: book, annotation: annotation)
-                }
-                siloIDMap.setAnnotationRemoteID(record.id, connectionID: connectionID, bookID: book.stableId, localID: annotation.id)
-            } catch ProviderError.noCFI {
-            } catch {
-                AppLogger.general.error("Failed to sync Silo annotation bookDiagnosticID=\(bookDiagnosticID): \(error.localizedDescription)")
-            }
+            guard let silo = await siloContext() else { return .unchanged }
+            _ = await pushSiloAnnotation(annotation, provider: silo.provider, scope: silo.scope)
             return .unchanged
         default:
             return .unchanged
@@ -250,12 +214,8 @@ final class ProviderReaderNotebookSync: ReaderNotebookSyncing {
             bookOrbitQueue?.enqueueAnnotationDelete(book: book, remoteId: remoteID)
             return await syncBookOrbit()
         case .silo:
-            guard let provider = siloProvider else { return .unchanged }
-            let connectionID = provider.connection.id
-            guard let remoteID = siloIDMap.annotationRemoteID(connectionID: connectionID, bookID: book.stableId, localID: annotation.id)
-            else { return .unchanged }
-            try? await provider.deleteReaderAnnotation(id: remoteID, for: book)
-            siloIDMap.removeAnnotationRemoteID(connectionID: connectionID, bookID: book.stableId, localID: annotation.id)
+            guard let silo = await siloContext() else { return .unchanged }
+            await removeSiloArtifact(localID: annotation.id, isBookmark: false, provider: silo.provider, scope: silo.scope)
             return .unchanged
         default:
             return .unchanged
@@ -390,20 +350,213 @@ final class ProviderReaderNotebookSync: ReaderNotebookSyncing {
     }
 
     private func pullSilo(mergingInto localArtifacts: () -> ReaderNotebookMerge.Snapshot) async -> ReaderNotebookSyncOutcome {
-        guard let provider = siloProvider else { return .unchanged }
+        guard let silo = await siloContext() else { return .unchanged }
+        let pullStartedAt = Date()
         do {
-            let records = try await provider.fetchReaderAnnotations(for: book)
+            let records = try await silo.provider.fetchReaderAnnotations(for: book)
+            let original = localArtifacts()
             let merged = ReaderNotebookMerge.applyingSiloRecords(
                 records,
-                to: localArtifacts(),
-                bookStableID: book.stableId,
-                connectionID: provider.connection.id,
+                to: original,
+                scope: silo.scope,
                 idMap: siloIDMap
             )
+            await flushSiloChanges(in: merged, createdBefore: pullStartedAt, provider: silo.provider, scope: silo.scope)
+            guard localArtifacts() == original else { return .unchanged }
             return .replace(bookmarks: merged.bookmarks, annotations: merged.annotations)
         } catch {
             AppLogger.general.error("Failed to fetch Silo annotations bookDiagnosticID=\(bookDiagnosticID): \(error.localizedDescription)")
             return .unchanged
+        }
+    }
+
+    private func siloContext() async -> (provider: SiloProvider, scope: SiloReaderArtifactScope)? {
+        guard let provider = siloProvider else { return nil }
+        do {
+            return (provider, try await provider.readerArtifactScope(for: book))
+        } catch {
+            AppLogger.general.error("Silo reader sync unavailable bookDiagnosticID=\(bookDiagnosticID): \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    private func pushSiloAnnotation(_ annotation: ReaderAnnotation, provider: SiloProvider, scope: SiloReaderArtifactScope) async -> Bool {
+        await pushSiloArtifact(
+            localID: annotation.id,
+            isBookmark: false,
+            scope: scope,
+            create: { try await provider.createReaderAnnotation(for: book, annotation: annotation) },
+            update: { try await provider.updateReaderAnnotation(id: $0, etag: $1, for: book, annotation: annotation) }
+        )
+    }
+
+    private func pushSiloBookmark(_ bookmark: Bookmark, provider: SiloProvider, scope: SiloReaderArtifactScope) async -> Bool {
+        await pushSiloArtifact(
+            localID: bookmark.id,
+            isBookmark: true,
+            scope: scope,
+            create: { try await provider.createReaderBookmark(for: book, bookmark: bookmark) },
+            update: { try await provider.updateReaderBookmark(id: $0, etag: $1, for: book, bookmark: bookmark) }
+        )
+    }
+
+    // A stale validator parks the local edit instead of overwriting a remote revision.
+    private func pushSiloArtifact(
+        localID: String,
+        isBookmark: Bool,
+        scope: SiloReaderArtifactScope,
+        create: () async throws -> SiloReaderAnnotationMutation,
+        update: (_ remoteID: String, _ etag: String) async throws -> SiloReaderAnnotationRecord
+    ) async -> Bool {
+        if let remoteID = siloRemoteID(localID: localID, isBookmark: isBookmark, scope: scope) {
+            let current = siloIDMap.artifactGuards(in: scope)[remoteID]
+            if current?.state == .conflict || current?.state == .pendingDelete { return true }
+            let recordedAt = Date()
+            guard let etag = current?.etag, !etag.isEmpty else {
+                siloIDMap.setArtifactGuard(SiloReaderArtifactGuard(etag: "", state: .pendingUpdate, recordedAt: recordedAt), remoteID: remoteID, in: scope)
+                return true
+            }
+            siloIDMap.setArtifactGuard(.init(etag: etag, state: .pendingUpdate, recordedAt: recordedAt), remoteID: remoteID, in: scope)
+            do {
+                let record = try await update(remoteID, etag)
+                acknowledgeSiloRecord(record, in: scope, startedAt: recordedAt)
+                return true
+            } catch SiloReaderAnnotationError.preconditionFailed {
+                if siloIDMap.artifactGuards(in: scope)[remoteID]?.recordedAt == recordedAt {
+                    siloIDMap.setArtifactGuard(.init(etag: etag, state: .conflict, recordedAt: recordedAt), remoteID: remoteID, in: scope)
+                }
+                AppLogger.general.info("Silo annotation changed on the server; keeping local copy bookDiagnosticID=\(bookDiagnosticID)")
+                return true
+            } catch SiloReaderAnnotationError.notFound {
+                if siloIDMap.artifactGuards(in: scope)[remoteID]?.recordedAt == recordedAt {
+                    siloIDMap.setArtifactGuard(.init(etag: etag, state: .conflict, recordedAt: recordedAt), remoteID: remoteID, in: scope)
+                }
+                return true
+            } catch ProviderError.noCFI {
+                return true
+            } catch {
+                AppLogger.general.error("Failed to update Silo annotation bookDiagnosticID=\(bookDiagnosticID): \(error.localizedDescription)")
+                return false
+            }
+        }
+
+        let createdAt = Date()
+        do {
+            let mutation = try await create()
+            let record = mutation.record
+            if siloIDMap.artifactGuards(in: scope)[record.id]?.state == .pendingDelete {
+                if mutation.created { acknowledgeSiloRecord(record, in: scope, startedAt: createdAt) }
+                return true
+            }
+            setSiloRemoteID(record.id, localID: localID, isBookmark: isBookmark, scope: scope)
+            if mutation.created {
+                acknowledgeSiloRecord(record, in: scope, startedAt: createdAt)
+                return true
+            }
+            siloIDMap.setArtifactGuard(.init(etag: record.etag, state: .conflict, recordedAt: createdAt), remoteID: record.id, in: scope)
+            return true
+        } catch ProviderError.noCFI {
+            return true
+        } catch {
+            AppLogger.general.error("Failed to create Silo annotation bookDiagnosticID=\(bookDiagnosticID): \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    private func acknowledgeSiloRecord(_ record: SiloReaderAnnotationRecord, in scope: SiloReaderArtifactScope, startedAt: Date) {
+        if var current = siloIDMap.artifactGuards(in: scope)[record.id],
+            current.state == .pendingDelete || current.state == .conflict || current.recordedAt > startedAt
+        {
+            current.etag = record.etag
+            siloIDMap.setArtifactGuard(current, remoteID: record.id, in: scope)
+        } else {
+            siloIDMap.setArtifactGuard(.init(etag: record.etag, state: .synced, recordedAt: startedAt), remoteID: record.id, in: scope)
+        }
+    }
+
+    // Unmapped artifacts use their stable create ID so a lost response cannot resurrect a deletion.
+    private func removeSiloArtifact(localID: String, isBookmark: Bool, provider: SiloProvider, scope: SiloReaderArtifactScope) async {
+        let mappedRemoteID = siloRemoteID(localID: localID, isBookmark: isBookmark, scope: scope)
+        let remoteID = mappedRemoteID ?? localID
+        if mappedRemoteID != nil {
+            setSiloRemoteID(nil, localID: localID, isBookmark: isBookmark, scope: scope)
+        }
+        let etag = siloIDMap.artifactGuards(in: scope)[remoteID]?.etag ?? ""
+        siloIDMap.setArtifactGuard(SiloReaderArtifactGuard(etag: etag, state: .pendingDelete, recordedAt: Date()), remoteID: remoteID, in: scope)
+        guard !etag.isEmpty else { return }
+        _ = await deleteSiloTombstone(remoteID: remoteID, etag: etag, provider: provider, scope: scope)
+    }
+
+    private func deleteSiloTombstone(remoteID: String, etag: String, provider: SiloProvider, scope: SiloReaderArtifactScope) async -> Bool {
+        do {
+            try await provider.deleteReaderAnnotation(id: remoteID, etag: etag, for: book)
+            siloIDMap.setArtifactGuard(nil, remoteID: remoteID, in: scope)
+            return true
+        } catch SiloReaderAnnotationError.preconditionFailed {
+            return false
+        } catch {
+            AppLogger.general.error("Failed to delete Silo annotation bookDiagnosticID=\(bookDiagnosticID): \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    // Retries deletions and edits that never reached the server, then uploads artifacts created before this pull.
+    private func flushSiloChanges(
+        in snapshot: ReaderNotebookMerge.Snapshot,
+        createdBefore cutoff: Date,
+        provider: SiloProvider,
+        scope: SiloReaderArtifactScope
+    ) async {
+        for (remoteID, artifactGuard) in siloIDMap.artifactGuards(in: scope) {
+            switch artifactGuard.state {
+            case .pendingDelete:
+                guard !artifactGuard.etag.isEmpty else { continue }
+                guard await deleteSiloTombstone(remoteID: remoteID, etag: artifactGuard.etag, provider: provider, scope: scope) else { return }
+            case .pendingUpdate where !artifactGuard.etag.isEmpty:
+                if let annotation = snapshot.annotations.first(where: { siloRemoteID(localID: $0.id, isBookmark: false, scope: scope) == remoteID }) {
+                    guard await pushSiloAnnotation(annotation, provider: provider, scope: scope) else { return }
+                } else if let bookmark = snapshot.bookmarks.first(where: { siloRemoteID(localID: $0.id, isBookmark: true, scope: scope) == remoteID }) {
+                    guard await pushSiloBookmark(bookmark, provider: provider, scope: scope) else { return }
+                }
+            case .pendingUpdate, .synced, .conflict:
+                continue
+            }
+        }
+
+        for annotation in snapshot.annotations
+        where annotation.createdAt < cutoff
+            && !annotation.isRemotePlaceholder
+            && EpubLocationBridge.epubCFI(from: annotation.locator) != nil
+            && siloRemoteID(localID: annotation.id, isBookmark: false, scope: scope) == nil
+        {
+            guard await pushSiloAnnotation(annotation, provider: provider, scope: scope) else { return }
+        }
+        for bookmark in snapshot.bookmarks
+        where bookmark.timestamp < cutoff
+            && bookmark.mediaType == .ebook
+            && !bookmark.isRemotePlaceholder
+            && siloRemoteID(localID: bookmark.id, isBookmark: true, scope: scope) == nil
+        {
+            guard await pushSiloBookmark(bookmark, provider: provider, scope: scope) else { return }
+        }
+    }
+
+    private func siloRemoteID(localID: String, isBookmark: Bool, scope: SiloReaderArtifactScope) -> String? {
+        isBookmark
+            ? siloIDMap.bookmarkRemoteID(connectionID: scope.connectionID, bookID: scope.bookID, localID: localID)
+            : siloIDMap.annotationRemoteID(connectionID: scope.connectionID, bookID: scope.bookID, localID: localID)
+    }
+
+    private func setSiloRemoteID(_ remoteID: String?, localID: String, isBookmark: Bool, scope: SiloReaderArtifactScope) {
+        switch (remoteID, isBookmark) {
+        case (let remoteID?, true):
+            siloIDMap.setBookmarkRemoteID(remoteID, connectionID: scope.connectionID, bookID: scope.bookID, localID: localID)
+        case (let remoteID?, false):
+            siloIDMap.setAnnotationRemoteID(remoteID, connectionID: scope.connectionID, bookID: scope.bookID, localID: localID)
+        case (nil, true):
+            siloIDMap.removeBookmarkRemoteID(connectionID: scope.connectionID, bookID: scope.bookID, localID: localID)
+        case (nil, false):
+            siloIDMap.removeAnnotationRemoteID(connectionID: scope.connectionID, bookID: scope.bookID, localID: localID)
         }
     }
 

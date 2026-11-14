@@ -286,7 +286,9 @@ final class CloudProgressService {
         let isCurrentlyPlaying = await MainActor.run { playerVM.isPlaying }
         guard !isCurrentlyPlaying else { return }
 
-        guard !book.isReadAloudBook else { return }
+        guard !book.isReadAloudBook,
+            profileSession?.pendingSync.entries[book.stableId]?.downloadedBaseline == nil
+        else { return }
 
         let isServerSource =
             book.source == .audiobookshelf
@@ -308,7 +310,10 @@ final class CloudProgressService {
                 )
             else { return }
 
-            guard profileSession?.serverSyncEnabled ?? true else { return }
+            guard profileSession?.serverSyncEnabled ?? true,
+                !playerVM.isPlaying, playerVM.currentBook?.stableId == book.stableId,
+                profileSession?.pendingSync.entries[book.stableId]?.downloadedBaseline == nil
+            else { return }
             let serverTime = serverProgress.currentTime ?? 0
             let serverDate = serverProgress.lastUpdate.flatMap { Date(timeIntervalSince1970: $0 / 1000) } ?? .distantPast
             let localTime = await MainActor.run { playerVM.progress }

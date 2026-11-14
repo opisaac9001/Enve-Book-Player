@@ -1,5 +1,23 @@
 # Kokoro on-device trial — 2026-10-22
 
+## iOS 26.4+ workaround — 2026-11-06
+
+The current implementation uses ONNX Runtime 1.24.2's CPU execution provider for Kokoro speech generation on iOS 26.4 and later. Earlier iOS versions retain the legacy Core ML speech chain. FluidAudio remains pinned at the revision below; its pronunciation frontend still uses the English lexicon and separate CPU Core ML G2P models for unknown words. The affected Kokoro speech graphs are not loaded on the ONNX path.
+
+This addresses the two reported speech-pipeline failure paths: GPU/MPSGraph aborts and intermittent CPU/BNNS segmentation faults. Changing the old speech chain to `.cpuOnly` was insufficient. See upstream [#817](https://github.com/FluidInference/FluidAudio/issues/817), [#844](https://github.com/FluidInference/FluidAudio/issues/844), and [#889](https://github.com/FluidInference/FluidAudio/issues/889). Newer Core ML v3 routing has also received [a recent fix](https://github.com/FluidInference/FluidAudio/pull/1104); that is a candidate for separate device validation, rather than evidence for re-enabling the old chain across 26.4+.
+
+The ONNX graph, tokenizer, and four voice packs are pinned to `onnx-community/Kokoro-82M-v1.0-ONNX` revision `1939ad2a8e416c0acfeecc08a694d14ef25f2231`, with size and SHA-256 checks before use. They occupy 94,453,573 bytes; the shared pronunciation assets add 42,146,732 bytes. Existing Core ML downloads do not mark the replacement package ready, and the saved Kokoro preference is retained while it needs downloading. Synthesized-audio cache keys include the new model revision.
+
+The opt-in `KokoroONNXIntegrationTests.testCPUVoicesPlaybackCacheAndRepeatedSynthesis` passed on iPhone Air Simulator, iOS 27.0, with `ENVE_KOKORO_ONNX=1`. It checked four distinct voice outputs, finite/nonsilent samples, faster output at 1.5×, twenty repeated uncached calls, a runtime cache hit, cancellation, model reload, and WAV playback startup. The test completed in 57.589 seconds including preparation. The shared sample produced 5.575 s (Heart), 5.875 s (Bella), 6.375 s (Michael), and 5.675 s (Puck) of audio. The accompanying targeted unit tests passed with no failures.
+
+The iOS simulator build completed with zero errors and warnings. `AllTests` passed 1,992 tests with zero failures and 37 skips. The app installed and launched, and the reader's voice picker showed Kokoro selected with its downloaded package ready. The tvOS Release simulator build also passed; its 78 warnings were confined to unchanged UnrarKit and libsmb2 sources. The provenance check and `git diff --check` passed. App and embedded-target marketing versions are 1.2.6.
+
+These are functional simulator results, not physical-iPhone throughput or crash-endurance measurements. Sustained narration, screen-locked playback, memory/thermal behavior, and pronunciation quality still need the user's iOS 26.4+ phone test. The historical device results below apply to the earlier Core ML backend.
+
+Read-aloud references were fetched and reviewed at Silveran Reader `669a56903316fa51bf9c2850bdc89d9bbcac37dc` and Storyteller `4a1ab1153c13970c11219af348ab987e137baa13` for this change.
+
+## Historical Core ML trial
+
 Kokoro's existing iOS backend is fast enough for local narration on the tested iPhone 16 Pro. The tested Android INT8 export runs locally and plays audio, but cannot maintain continuous real-time generation on the Pixel 7a with this runtime.
 
 ## Measured results

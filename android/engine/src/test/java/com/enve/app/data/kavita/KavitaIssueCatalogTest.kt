@@ -5,6 +5,7 @@ import com.enve.app.data.remote.dto.KavitaMangaFileDto
 import com.enve.app.data.remote.dto.KavitaMangaFormat
 import com.enve.app.data.remote.dto.KavitaSeriesDto
 import com.enve.app.data.remote.dto.KavitaVolumeDto
+import com.enve.core.data.model.ComicSection
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -37,7 +38,7 @@ class KavitaIssueCatalogTest {
 
     @Test
     fun liveSyntheticIssuesAreIndependentlyIdentified() {
-        val books = expandKavitaSeries(syntheticSeries, syntheticVolumes, legacyChapterId = 54, serverUrl = server, fallbackLibraryId = null)
+        val books = expandKavitaSeries(syntheticSeries, syntheticVolumes, legacyChapterId = 54, serverUrl = server, fallbackLibraryId = null, libraryType = null)
 
         assertEquals(listOf("28", "28:34:55"), books.map { it.id })
         assertEquals(listOf("Synthetic #3", "Synthetic #4"), books.map { it.title })
@@ -87,6 +88,7 @@ class KavitaIssueCatalogTest {
             legacyChapterId = 120,
             serverUrl = server,
             fallbackLibraryId = "lib",
+            libraryType = null,
         )
 
         assertEquals(listOf("7:10:100", "7:10:101", "7:11:110", "7:11:111", "7:14:140", "7"), books.map { it.id })
@@ -106,7 +108,7 @@ class KavitaIssueCatalogTest {
             KavitaVolumeDto(id = 2, minNumber = 2f, name = "2", chapters = listOf(chapter(id = 21, range = "-100000", minNumber = -100_000f))),
         )
 
-        val books = expandKavitaSeries(KavitaSeriesDto(id = 3, name = "Novel"), volumes, legacyChapterId = 11, serverUrl = server, fallbackLibraryId = null)
+        val books = expandKavitaSeries(KavitaSeriesDto(id = 3, name = "Novel"), volumes, legacyChapterId = 11, serverUrl = server, fallbackLibraryId = null, libraryType = null)
 
         assertEquals(listOf("3", "3:2:21"), books.map { it.id })
         assertEquals(listOf("Novel Vol. 1", "Novel Vol. 2"), books.map { it.title })
@@ -129,6 +131,7 @@ class KavitaIssueCatalogTest {
             legacyChapterId = 50,
             serverUrl = server,
             fallbackLibraryId = null,
+            libraryType = null,
         )
 
         assertEquals(listOf("EPUB", "PDF", "CBX"), books.map { it.primaryFileType })
@@ -144,7 +147,7 @@ class KavitaIssueCatalogTest {
             )),
         )
 
-        val book = expandKavitaSeries(series, volumes, legacyChapterId = 25, serverUrl = server, fallbackLibraryId = null).single()
+        val book = expandKavitaSeries(series, volumes, legacyChapterId = 25, serverUrl = server, fallbackLibraryId = null, libraryType = null).single()
 
         assertEquals("20", book.id)
         assertEquals("Two Centuries of Costume", book.title)
@@ -156,7 +159,7 @@ class KavitaIssueCatalogTest {
 
     @Test
     fun removedLegacyChapterLeavesNoBookOnTheNumericAlias() {
-        val books = expandKavitaSeries(syntheticSeries, syntheticVolumes, legacyChapterId = 53, serverUrl = server, fallbackLibraryId = null)
+        val books = expandKavitaSeries(syntheticSeries, syntheticVolumes, legacyChapterId = 53, serverUrl = server, fallbackLibraryId = null, libraryType = null)
 
         assertEquals(listOf("28:34:54", "28:34:55"), books.map { it.id })
     }
@@ -165,7 +168,63 @@ class KavitaIssueCatalogTest {
     fun seriesWithoutReadableChaptersExpandsToNothing() {
         val volumes = listOf(KavitaVolumeDto(id = 1), KavitaVolumeDto(id = 2, chapters = listOf(chapter(id = 3, range = "1", minNumber = 1f, pages = 0))))
 
-        assertTrue(expandKavitaSeries(syntheticSeries, volumes, legacyChapterId = 3, serverUrl = server, fallbackLibraryId = null).isEmpty())
+        assertTrue(expandKavitaSeries(syntheticSeries, volumes, legacyChapterId = 3, serverUrl = server, fallbackLibraryId = null, libraryType = null).isEmpty())
+    }
+
+    @Test
+    fun comicLibrariesCarryVolumesSpecialsAndIssues() {
+        val volumes = listOf(
+            KavitaVolumeDto(id = 12, minNumber = 100_000f, name = "100000", chapters = listOf(
+                chapter(id = 120, range = "Annual", minNumber = -100_000f, isSpecial = true, title = "Annual"),
+            )),
+            KavitaVolumeDto(id = 10, minNumber = 1f, name = "1", chapters = listOf(chapter(id = 100, range = "1", minNumber = 1f))),
+            KavitaVolumeDto(id = 14, minNumber = -100_000f, name = "-100000", chapters = listOf(chapter(id = 140, range = "5", minNumber = 5f))),
+        )
+        val series = KavitaSeriesDto(id = 7, name = "Saga", format = KavitaMangaFormat.ARCHIVE)
+
+        val books = expandKavitaSeries(series, volumes, legacyChapterId = 100, serverUrl = server, fallbackLibraryId = "lib", libraryType = 1)
+        val byId = books.associateBy { it.id }
+
+        assertEquals(setOf("7"), books.mapNotNull { it.comic?.seriesId }.toSet())
+        val volumeIssue = byId.getValue("7").comic!!
+        assertEquals(ComicSection.VOLUMES, volumeIssue.section)
+        assertEquals("10", volumeIssue.volumeId)
+        assertEquals("Volume 1", volumeIssue.volumeTitle)
+        assertEquals(1.0, volumeIssue.volumeOrder!!, 0.0)
+        assertEquals("#1", volumeIssue.issueLabel)
+        val loose = byId.getValue("7:14:140").comic!!
+        assertEquals(ComicSection.ISSUES, loose.section)
+        assertNull(loose.volumeId)
+        assertEquals(5.0, loose.issueOrder!!, 0.0)
+        val special = byId.getValue("7:12:120").comic!!
+        assertEquals(ComicSection.SPECIALS, special.section)
+        assertEquals("Annual", special.issueLabel)
+    }
+
+    @Test
+    fun comicVineLibrariesKeepIssuesFlat() {
+        val volumes = listOf(KavitaVolumeDto(id = 10, minNumber = 2011f, name = "2011", chapters = listOf(chapter(id = 100, range = "1", minNumber = 1f))))
+
+        val book = expandKavitaSeries(
+            KavitaSeriesDto(id = 7, name = "Saga", format = KavitaMangaFormat.ARCHIVE),
+            volumes, legacyChapterId = 100, serverUrl = server, fallbackLibraryId = null, libraryType = 5,
+        ).single()
+
+        assertEquals(ComicSection.ISSUES, book.comic?.section)
+        assertNull(book.comic?.volumeId)
+    }
+
+    @Test
+    fun bookLibrariesAndProseFormatsHaveNoComicHierarchy() {
+        val archive = KavitaSeriesDto(id = 7, name = "Saga", format = KavitaMangaFormat.ARCHIVE)
+        val epub = KavitaSeriesDto(id = 8, name = "Novel", format = KavitaMangaFormat.EPUB)
+        val volumes = listOf(KavitaVolumeDto(id = 10, minNumber = 1f, name = "1", chapters = listOf(chapter(id = 100, range = "1", minNumber = 1f))))
+
+        assertNull(expandKavitaSeries(archive, volumes, null, server, null, libraryType = 2).single().comic)
+        assertNull(expandKavitaSeries(archive, volumes, null, server, null, libraryType = null).single().comic)
+        assertNull(expandKavitaSeries(epub, volumes, null, server, null, libraryType = 1).single().comic)
+        assertEquals("7", kavitaSeriesComicMetadata(archive, libraryType = 0)?.seriesId)
+        assertNull(kavitaSeriesComicMetadata(epub, libraryType = 0))
     }
 
     @Test

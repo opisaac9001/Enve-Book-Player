@@ -33,6 +33,7 @@ interface ProfileRuntimeComponent {
     fun listeningPosition(): com.enve.engine.listeningposition.ListeningPositionFacade
     fun library(): com.enve.engine.library.LibraryFacade
     fun savedBooks(): com.enve.engine.library.SavedBooksFacade
+    fun downloadActivity(): com.enve.engine.downloads.DownloadActivityFacade
     fun playback(): com.enve.engine.playback.PlaybackFacade
     fun playerSession(): com.enve.engine.playback.PlayerSessionFacade
     fun preferencesFacade(): com.enve.engine.prefs.PreferencesFacade
@@ -148,6 +149,7 @@ interface ProfileRuntimeComponent {
     fun komgaOAuthFlow(): com.enve.komga.auth.KomgaOAuthFlow
     fun bookOrbitOidcFlow(): com.enve.bookorbit.auth.BookOrbitOidcFlow
     fun siloOidcFlow(): com.enve.silo.auth.SiloOidcFlow
+    fun siloProfileLogin(): com.enve.silo.auth.SiloProfileLogin
     fun passwordLogins(): Map<com.enve.core.data.model.BookSource, @JvmSuppressWildcards com.enve.core.data.auth.PasswordLogin>
 
     fun epdRefreshManager(): com.enve.app.eink.EpdRefreshManager

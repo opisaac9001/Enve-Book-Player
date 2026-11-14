@@ -1,10 +1,12 @@
 package com.enve.app.data.repository
 
+import androidx.room.withTransaction
 import com.enve.app.data.local.ReaderDatabase
 import com.enve.core.data.model.AnnotationKind
 import com.enve.core.data.model.AnnotationMedia
 import com.enve.core.data.model.AnnotationStyle
 import com.enve.core.data.model.ReaderAnnotation
+import com.enve.core.data.sync.AcceptedAnnotation
 import kotlinx.coroutines.flow.Flow
 import org.json.JSONArray
 import org.readium.r2.shared.publication.Locator
@@ -50,7 +52,7 @@ data class LocatorAnchors(
 
 @Singleton
 class AnnotationRepository @Inject constructor(
-    db: ReaderDatabase,
+    private val db: ReaderDatabase,
 ) {
     private val dao = db.annotationDao()
 
@@ -137,16 +139,18 @@ class AnnotationRepository @Inject constructor(
         tags: List<String>? = null,
     ): ReaderAnnotation {
         val now = System.currentTimeMillis()
-        val updated = existing.copy(
-            style = style?.name ?: existing.style,
-            colorHex = colorHex ?: existing.colorHex,
-            note = note ?: existing.note,
-            tagsJson = tags?.let(::tagsToJson) ?: existing.tagsJson,
-            updatedAt = now,
-            syncDirty = true,
-        )
-        dao.upsert(updated)
-        notifyChanged(existing.bookId)
+        val updated = db.withTransaction {
+            val current = dao.getById(existing.id) ?: existing
+            current.copy(
+                style = style?.name ?: current.style,
+                colorHex = colorHex ?: current.colorHex,
+                note = note ?: current.note,
+                tagsJson = tags?.let(::tagsToJson) ?: current.tagsJson,
+                updatedAt = now,
+                syncDirty = true,
+            ).also { dao.upsert(it) }
+        }
+        notifyChanged(updated.bookId)
         return updated
     }
 
@@ -170,18 +174,8 @@ class AnnotationRepository @Inject constructor(
 
     suspend fun applyRemote(remotes: List<ReaderAnnotation>) {
         if (remotes.isEmpty()) return
-        val reconciled = remotes.map { remote ->
-            val serverId = remote.serverId
-            if (serverId == null) {
-                remote
-            } else {
-                dao.getByServerId(serverId, remote.providerSource)?.let { local ->
-                    remote.copy(id = local.id)
-                } ?: remote
-            }
-        }
-        dao.upsertAll(reconciled)
-        reconciled.map { it.bookId }.distinct().forEach(::notifyChanged)
+        dao.reconcileRemote(remotes)
+        remotes.map { it.bookId }.distinct().forEach(::notifyChanged)
     }
 
     suspend fun applyAuthoritativeRemote(
@@ -189,28 +183,13 @@ class AnnotationRepository @Inject constructor(
         providerSource: String,
         remotes: List<ReaderAnnotation>,
     ) {
-        val reconciled = remotes.map { remote ->
-            val serverId = remote.serverId
-            if (serverId == null) {
-                remote
-            } else {
-                dao.getByServerId(serverId, providerSource)?.let { local ->
-                    remote.copy(id = local.id)
-                } ?: remote
-            }
-        }
-        if (reconciled.isNotEmpty()) dao.upsertAll(reconciled)
-        val serverIds = reconciled.mapNotNull(ReaderAnnotation::serverId).distinct()
-        if (serverIds.isEmpty()) {
-            dao.purgeCleanProviderRows(bookId, providerSource)
-        } else {
-            dao.purgeCleanProviderRowsMissing(bookId, providerSource, serverIds)
-        }
+        dao.reconcileAuthoritativeRemote(bookId, providerSource, remotes)
         notifyChanged(bookId)
     }
 
-    suspend fun markClean(id: String, etag: String?, serverId: String?) {
-        dao.markClean(id, etag, serverId)
+    suspend fun acknowledgePushed(sent: List<ReaderAnnotation>, accepted: List<AcceptedAnnotation>) {
+        if (accepted.isEmpty()) return
+        dao.acknowledgePushed(sent, accepted)
     }
 
     private fun tagsToJson(tags: List<String>): String {

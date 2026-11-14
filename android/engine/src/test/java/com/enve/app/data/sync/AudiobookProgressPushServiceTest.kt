@@ -116,6 +116,21 @@ class AudiobookProgressPushServiceTest {
     }
 
     @Test
+    fun replayKeepsTheCheckpointEventTimeAndPendingEntryUntilAcknowledged() = runBlocking {
+        val original = checkpoint(240, 2000)
+        rows[book.uniqueKey] = original
+        repeat(2) {
+            service.push(book, 120, 0.12f, acknowledgePending = false) { checkpoint, position, _ ->
+                assertEquals(2000L, checkpoint.lastReadTime)
+                assertEquals(240L, position)
+                Result.success(Unit)
+            }
+        }
+        assertEquals(original, rows[book.uniqueKey])
+        assertNotNull(pendingRows[book.uniqueKey])
+    }
+
+    @Test
     fun anotherConnectionCanPushWhileTheFirstIsWaiting() = runBlocking {
         val release = CompletableDeferred<Unit>()
         val first = async(start = CoroutineStart.UNDISPATCHED) {

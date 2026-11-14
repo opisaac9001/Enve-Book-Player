@@ -340,8 +340,9 @@ internal fun FacetRow(selected: LibraryFacet?, onSelect: (LibraryFacet) -> Unit)
 internal fun FilterSortSheet(vm: HearthLibraryViewModel, onDismiss: () -> Unit) {
     val palette = Hearth.palette
     val sortStack by vm.sortStack.collectAsStateWithLifecycle()
-    val status by vm.status.collectAsStateWithLifecycle()
-    val media by vm.media.collectAsStateWithLifecycle()
+    val status by vm.effectiveStatus.collectAsStateWithLifecycle()
+    val media by vm.effectiveMedia.collectAsStateWithLifecycle()
+    val readingEnabled by vm.readingEnabled.collectAsStateWithLifecycle()
     val advanced by vm.advancedFilters.collectAsStateWithLifecycle()
     val advancedOptions by vm.advancedFilterOptions.collectAsStateWithLifecycle()
     val sheetShape = if (Hearth.eink.sharpCorners) {
@@ -426,14 +427,17 @@ internal fun FilterSortSheet(vm: HearthLibraryViewModel, onDismiss: () -> Unit) 
                 horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
                 verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
             ) {
-                StatusFilter.entries.forEach { s ->
+                availableLibraryStatuses(readingEnabled).forEach { s ->
                     HearthChip(s.label, selected = s == status, onClick = { vm.setStatus(s) })
                 }
             }
 
             Overline("Media")
-            Row(horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S)) {
-                MediaFilter.entries.forEach { m ->
+            androidx.compose.foundation.layout.FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
+                verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
+            ) {
+                availableLibraryMedia(readingEnabled).forEach { m ->
                     HearthChip(m.label, selected = m == media, onClick = { vm.setMedia(m) })
                 }
             }

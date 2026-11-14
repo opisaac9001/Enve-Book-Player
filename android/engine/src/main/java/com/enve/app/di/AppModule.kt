@@ -32,6 +32,8 @@ import java.security.SecureRandom
 import java.util.concurrent.TimeUnit
 import javax.inject.Singleton
 import javax.net.ssl.KeyManager
+import java.io.IOException
+import kotlinx.coroutines.CancellationException
 import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManager
 
@@ -84,6 +86,7 @@ object AppModule {
                 HttpLoggingInterceptor.Level.BASIC
             }
             redactHeader("Authorization")
+            redactHeader("X-Profile-Token")
             redactHeader("Cookie")
             redactHeader("Set-Cookie")
             redactHeader("X-Plex-Token")
@@ -114,6 +117,14 @@ object AppModule {
             .sslSocketFactory(sslContext.socketFactory, trustManager)
             .hostnameVerifier(PrivateNetworkTrust.buildHostnameVerifier())
             .cache(responseCache)
+            .addInterceptor { chain ->
+                try {
+                    chain.proceed(chain.request())
+                } catch (error: CancellationException) {
+                    chain.call().cancel()
+                    throw IOException("Request cancelled with its profile", error)
+                }
+            }
             .addInterceptor(dynamicUrlInterceptor)
             .addInterceptor(authInterceptor)
             .addInterceptor(jsonSafetyInterceptor)

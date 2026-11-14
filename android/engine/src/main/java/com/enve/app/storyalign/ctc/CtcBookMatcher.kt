@@ -2,9 +2,13 @@ package com.enve.app.storyalign.ctc
 
 import com.enve.app.storyalign.align.WordNormalizer
 import com.enve.app.storyalign.epub.EpubManifestItem
+import java.text.BreakIterator
 import java.text.Normalizer
 import java.util.Locale
 import kotlinx.serialization.Serializable
+
+@Serializable
+data class CtcWordTiming(val location: Int, val length: Int, val start: Double, val end: Double)
 
 @Serializable
 data class CtcSentenceMatch(
@@ -13,11 +17,12 @@ data class CtcSentenceMatch(
     val end: Double,
     val score: Double,
     val audioIndex: Int,
+    val words: List<CtcWordTiming> = emptyList(),
 )
 
 internal data class CtcAnchor(val document: Int, val query: Int, val frame: Int)
 
-class CtcBookMatcher(chapters: List<EpubManifestItem>) {
+class CtcBookMatcher(chapters: List<EpubManifestItem>, private val wordTimings: Boolean = false) {
     data class Sentence(val chapter: Int, val id: Int, val text: String, val start: Int, val end: Int)
     private data class Decoding(val text: String, val frames: IntArray)
 
@@ -100,13 +105,53 @@ class CtcBookMatcher(chapters: List<EpubManifestItem>) {
             val windowEnd = windowStart + emissions.frames * emissions.secondsPerFrame
             if (windowEnd < duration - 0.1 && tokens.last().endFrame >= section.frames - 3) continue
             if (tokens.zipWithNext().any { (a, b) -> b.startFrame - a.endFrame > 150 }) continue
-            val start = maxOf(0.0, windowStart + (frameStart + tokens.first().startFrame) * emissions.secondsPerFrame - 0.28)
-            val end = minOf(duration, windowStart + (frameStart + tokens.last().endFrame) * emissions.secondsPerFrame - 0.12)
+            val offset = windowStart + frameStart * emissions.secondsPerFrame
+            val start = maxOf(0.0, offset + tokens.first().startFrame * emissions.secondsPerFrame - 0.28)
+            val end = minOf(duration, offset + tokens.last().endFrame * emissions.secondsPerFrame - EMISSION_LAG)
             val words = sentence.text.split(Regex("\\s+")).count { it.any(Char::isLetterOrDigit) }
             if (end <= start || end - start > maxOf(8.0, words * 2.0) || end - start < words * 0.06) continue
-            result.add(CtcSentenceMatch(globalId, start, end, score, audioIndex))
+            val timed = if (wordTimings) timeWords(sentence, tokens, offset, emissions.secondsPerFrame, start, end) else emptyList()
+            result.add(CtcSentenceMatch(globalId, start, end, score, audioIndex, timed))
         }
         return result
+    }
+
+    private fun timeWords(
+        sentence: Sentence,
+        tokens: List<CtcTokenTiming>,
+        offset: Double,
+        secondsPerFrame: Double,
+        start: Double,
+        end: Double,
+    ): List<CtcWordTiming> {
+        val normalizer = WordNormalizer()
+        val normalized = StringBuilder()
+        val spans = ArrayList<Pair<IntRange, IntRange>>()
+        fun append(segment: String) { if (segment.isNotEmpty()) normalized.append(normalize(normalizer.normalizeWordsInSentence(segment))) }
+        var cursor = 0
+        for (word in lexicalWords(sentence.text)) {
+            append(sentence.text.substring(cursor, word.first))
+            val from = normalized.length
+            append(sentence.text.substring(word.first, word.last + 1))
+            if (normalized.length > from) spans.add(word to (from until normalized.length))
+            cursor = word.last + 1
+        }
+        append(sentence.text.substring(cursor))
+        if (normalized.length != tokens.size || !text.regionMatches(sentence.start, normalized.toString(), 0, tokens.size)) return emptyList()
+        val timed = spans.map { (word, characters) ->
+            val run = tokens.subList(characters.first, characters.last + 1)
+            val from = maxOf(start, offset + run.first().startFrame * secondsPerFrame - EMISSION_LAG)
+            val until = minOf(end, offset + run.last().endFrame * secondsPerFrame - EMISSION_LAG)
+            val length = word.last + 1 - word.first
+            val confident = run.all { it.logProbability >= MIN_CHARACTER_LOG_PROBABILITY } &&
+                run.sumOf { it.logProbability } / run.size >= MIN_WORD_LOG_PROBABILITY
+            if (confident && until - from >= 0.04 && until - from <= maxOf(1.5, run.size * 0.25)) {
+                CtcWordTiming(word.first, length, from, until)
+            } else null
+        }
+        return timed.indices.mapNotNull { index ->
+            timed[index]?.takeIf { timed.getOrNull(index - 1) != null || timed.getOrNull(index + 1) != null }
+        }
     }
 
     private fun decode(emissions: CtcEmissions): Decoding {
@@ -130,6 +175,30 @@ class CtcBookMatcher(chapters: List<EpubManifestItem>) {
 
     companion object {
         private const val NGRAM = 12
+        private const val EMISSION_LAG = 0.12
+        private const val MIN_CHARACTER_LOG_PROBABILITY = -4.0
+        private const val MIN_WORD_LOG_PROBABILITY = -2.0
+        private val WORD_JOINERS = setOf("-", "‐", "‑", "'", "’")
+
+        fun lexicalWords(text: String): List<IntRange> {
+            val boundaries = BreakIterator.getWordInstance(Locale.ROOT).apply { setText(text) }
+            val words = ArrayList<IntRange>()
+            var start = boundaries.first()
+            var end = boundaries.next()
+            while (end != BreakIterator.DONE) {
+                if (text.substring(start, end).any(Char::isLetterOrDigit)) {
+                    val last = words.lastOrNull()
+                    if (last != null && text.substring(last.last + 1, start) in WORD_JOINERS) {
+                        words[words.lastIndex] = last.first until end
+                    } else {
+                        words.add(start until end)
+                    }
+                }
+                start = end
+                end = boundaries.next()
+            }
+            return words
+        }
 
         internal fun longestAnchorChain(anchors: List<CtcAnchor>): List<CtcAnchor> {
             if (anchors.isEmpty()) return emptyList()

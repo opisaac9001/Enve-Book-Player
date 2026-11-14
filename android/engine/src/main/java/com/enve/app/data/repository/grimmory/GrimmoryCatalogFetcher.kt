@@ -266,7 +266,7 @@ internal fun LegacyBookloreBookDto.toBookSummaryDto(fallbackLibraryId: String?):
     id = id, title = listOfNotNull(title, metadata?.title, name).firstOrNull { it.isNotBlank() } ?: "Untitled",
     authors = metadata?.authors, thumbnailUrl = metadata?.thumbnailUrl, readStatus = readStatus,
     seriesName = metadata?.seriesName, seriesNumber = metadata?.seriesNumber, libraryId = libraryId ?: fallbackLibraryId,
-    addedOn = addedOn, lastReadTime = lastReadTime, readProgress = readProgress,
+    addedOn = addedOn, lastReadTime = lastReadTime, readProgress = catalogReadProgress(),
     primaryFileType = primaryFile?.bookType, primaryFile = primaryFile, alternativeFormats = alternativeFormats,
     coverUpdatedOn = metadata?.coverUpdatedOn, audiobookCoverUpdatedOn = metadata?.audiobookCoverUpdatedOn,
 )

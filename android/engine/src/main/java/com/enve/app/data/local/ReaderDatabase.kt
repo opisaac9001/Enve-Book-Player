@@ -825,6 +825,18 @@ val MIGRATION_27_28 = object : Migration(27, 28) {
     }
 }
 
+val MIGRATION_28_29 = object : Migration(28, 29) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        if (!db.hasColumn("book_cache", "comicMetadataJson")) {
+            db.execSQL("ALTER TABLE book_cache ADD COLUMN comicMetadataJson TEXT")
+        }
+        if (!db.hasColumn("book_cache", "comicSeriesId")) {
+            db.execSQL("ALTER TABLE book_cache ADD COLUMN comicSeriesId TEXT")
+        }
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_book_cache_comicSeriesId` ON `book_cache` (`comicSeriesId`)")
+    }
+}
+
 @Database(
     entities = [
         ReaderAnnotation::class,
@@ -847,7 +859,7 @@ val MIGRATION_27_28 = object : Migration(27, 28) {
         com.enve.app.data.opds.OpdsProgressionStateEntity::class,
         com.enve.app.data.opds.OpdsAcquisitionEntity::class,
     ],
-    version  = 28,
+    version  = 29,
     exportSchema = false,
 )
 abstract class ReaderDatabase : RoomDatabase() {
@@ -904,6 +916,6 @@ abstract class ReaderDatabase : RoomDatabase() {
             ReaderDatabase::class.java,
             locations.readerDatabaseFile.absolutePath,
         )
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26, MIGRATION_26_27, MIGRATION_27_28)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26, MIGRATION_26_27, MIGRATION_27_28, MIGRATION_28_29)
     }
 }

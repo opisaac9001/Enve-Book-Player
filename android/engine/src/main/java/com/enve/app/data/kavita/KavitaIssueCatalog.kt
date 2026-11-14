@@ -7,6 +7,8 @@ import com.enve.app.data.repository.kavitaReaderFormat
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
+import com.enve.core.data.model.ComicMetadata
+import com.enve.core.data.model.ComicSection
 import com.enve.core.data.model.ReadStatus
 import java.time.Instant
 import java.time.LocalDateTime
@@ -15,6 +17,10 @@ import java.time.ZoneOffset
 
 private const val LOOSE_LEAF_NUMBER = -100_000f
 private const val SPECIAL_VOLUME_NUMBER = 100_000f
+private const val KAVITA_BOOK_LIBRARY = 2
+private const val KAVITA_LIGHT_NOVEL_LIBRARY = 4
+private const val KAVITA_COMIC_VINE_LIBRARY = 5
+private val kavitaComicFileTypes = setOf("CBZ", "CBX", "PDF")
 
 internal sealed interface KavitaBookRef {
     val seriesId: Int
@@ -69,6 +75,7 @@ internal fun expandKavitaSeries(
     legacyChapterId: Int?,
     serverUrl: String,
     fallbackLibraryId: String?,
+    libraryType: Int?,
 ): List<Book> {
     val issues = volumes
         .flatMap { volume -> volume.chapters.filter { it.pages > 0 }.map { KavitaIssue(series.id, volume, it) } }
@@ -86,6 +93,7 @@ internal fun expandKavitaSeries(
     val base = serverUrl.trimEnd('/')
     return issues.mapIndexed { index, issue ->
         val chapter = issue.chapter
+        val fileType = kavitaReaderFormat(kavitaIssueFormat(chapter, series.format))
         Book(
             id = if (chapter.id == legacyChapterId) series.id.toString() else kavitaIssueBookId(series.id, issue.volume.id, chapter.id),
             title = if (single) seriesName else issue.title(seriesName, index),
@@ -94,7 +102,8 @@ internal fun expandKavitaSeries(
             mediaType = AppMediaType.EBOOK,
             seriesName = seriesName.takeUnless { single || it.isBlank() },
             seriesNumber = sequence[index].takeUnless { single },
-            primaryFileType = kavitaReaderFormat(kavitaIssueFormat(chapter, series.format)),
+            primaryFileType = fileType,
+            comic = issue.comicMetadata(libraryType, fileType),
             libraryId = series.libraryId?.toString() ?: fallbackLibraryId,
             pageCount = chapter.pages,
             readProgress = (chapter.pagesRead.toFloat() / chapter.pages).coerceIn(0f, 1f),
@@ -134,6 +143,41 @@ private val KavitaIssue.numberedLabel: String?
             ?.let { "#${it.range?.takeIf(String::isNotBlank) ?: it.minNumber.display()}" }
         return listOfNotNull(volumePart, chapterPart).joinToString(" ").ifBlank { null }
     }
+
+internal fun kavitaSeriesComicMetadata(series: KavitaSeriesDto, libraryType: Int?): ComicMetadata? =
+    ComicMetadata(seriesId = series.id.toString())
+        .takeIf { libraryType.hasComicHierarchy() && kavitaReaderFormat(series.format) in kavitaComicFileTypes }
+
+private fun Int?.hasComicHierarchy(): Boolean =
+    this != null && this != KAVITA_BOOK_LIBRARY && this != KAVITA_LIGHT_NOVEL_LIBRARY
+
+private fun KavitaIssue.comicMetadata(libraryType: Int?, fileType: String?): ComicMetadata? {
+    if (!libraryType.hasComicHierarchy() || fileType !in kavitaComicFileTypes) return null
+    val issueOrder = chapter.sortOrder.takeUnless { it == LOOSE_LEAF_NUMBER }?.toDouble()
+    val chapterLabel = chapter.takeUnless { it.isDefault }
+        ?.let { "#${it.range?.takeIf(String::isNotBlank) ?: it.minNumber.display()}" }
+    if (isSpecial) {
+        val name = listOf(chapter.titleName, chapter.title).firstOrNull { !it.isNullOrBlank() }
+        return ComicMetadata(
+            seriesId = seriesId.toString(),
+            section = ComicSection.SPECIALS,
+            issueLabel = name ?: chapterLabel,
+            issueOrder = issueOrder,
+        )
+    }
+    if (libraryType == KAVITA_COMIC_VINE_LIBRARY || volume.isLooseLeaf || volume.minNumber <= 0f) {
+        return ComicMetadata(seriesId = seriesId.toString(), issueLabel = chapterLabel ?: numberedLabel, issueOrder = issueOrder)
+    }
+    return ComicMetadata(
+        seriesId = seriesId.toString(),
+        section = ComicSection.VOLUMES,
+        volumeId = volume.id.toString(),
+        volumeTitle = "Volume ${volume.name?.takeIf(String::isNotBlank) ?: volume.minNumber.display()}",
+        volumeOrder = volume.minNumber.toDouble(),
+        issueLabel = chapterLabel ?: numberedLabel,
+        issueOrder = issueOrder,
+    )
+}
 
 private fun KavitaIssue.title(seriesName: String, index: Int): String {
     val label = numberedLabel

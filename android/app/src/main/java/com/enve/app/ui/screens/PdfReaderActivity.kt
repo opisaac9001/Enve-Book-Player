@@ -294,8 +294,9 @@ class PdfReaderActivity : ComponentActivity() {
         if (layout == uiState.layout) return
         val pageCount = uiState.pageCount
         val spread = if (pageCount > 0) layout.spreadContaining(uiState.currentPage, pageCount) else uiState.spread
+        val spreadChanged = spread != uiState.spread
         uiState = uiState.copy(layout = layout, spread = spread)
-        if (pageCount > 0) renderSpread(spread)
+        if (spreadChanged) renderSpread(spread)
         profileBinding.runtime.component.resources().scope.launch { pdfReadingPreferences.save(bookKey, layout) }
     }
 

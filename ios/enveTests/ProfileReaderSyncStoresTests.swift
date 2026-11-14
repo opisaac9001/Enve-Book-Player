@@ -22,6 +22,23 @@ struct ProfileReaderSyncStoresTests {
         #expect(SiloReaderArtifactIDStore(defaults: domains.second).bookmarkRemoteID(connectionID: connection, bookID: "42", localID: "bookmark") == "second-bookmark")
     }
 
+    @Test func siloArtifactGuardsPersistPerAccountProfile() throws {
+        let domains = try Domains()
+        defer { domains.remove() }
+        let connection = UUID()
+        let main = SiloReaderArtifactScope(connectionID: connection, account: "7/p-main", bookID: "42")
+        let kid = SiloReaderArtifactScope(connectionID: connection, account: "7/p-kid", bookID: "42")
+        let tombstone = SiloReaderArtifactGuard(etag: "\"e1\"", state: .pendingDelete, recordedAt: Date(timeIntervalSince1970: 1_000))
+        SiloReaderArtifactIDStore(defaults: domains.first).setArtifactGuard(tombstone, remoteID: "srv-1", in: main)
+
+        let reloaded = SiloReaderArtifactIDStore(defaults: domains.first)
+        #expect(reloaded.artifactGuards(in: main) == ["srv-1": tombstone])
+        #expect(reloaded.artifactGuards(in: kid).isEmpty)
+        #expect(SiloReaderArtifactIDStore(defaults: domains.second).artifactGuards(in: main).isEmpty)
+        reloaded.setArtifactGuard(nil, remoteID: "srv-1", in: main)
+        #expect(SiloReaderArtifactIDStore(defaults: domains.first).artifactGuards(in: main).isEmpty)
+    }
+
     @Test func browseThresholdAndDeletedBooksRemainInTheirCapturedPreferences() async throws {
         let domains = try Domains()
         defer { domains.remove() }

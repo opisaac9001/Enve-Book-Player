@@ -652,8 +652,9 @@ internal fun CachedBook.preservingLocalProgress(
     }
     val trustedRemote = lastReadTime > existing.lastReadTime
     val mergedCurrentTime = if (trustedRemote || currentTime > 0L) currentTime else existing.currentTime
-    val mergedReadProgress = if (trustedRemote || readProgress > 0.001f) readProgress else existing.readProgress
-    val mergedEpubProgress = epubProgress?.takeIf { it > 0.001f } ?: existing.epubProgress
+    val remoteNotOlder = lastReadTime >= existing.lastReadTime
+    val mergedReadProgress = if (trustedRemote || (readProgress > 0.001f && remoteNotOlder)) readProgress else existing.readProgress
+    val mergedEpubProgress = epubProgress?.takeIf { it > 0.001f && remoteNotOlder } ?: existing.epubProgress
     val mergedServerReadStatus = serverReadStatus ?: existing.serverReadStatus
     val statusFinished = mergedServerReadStatus in setOf("READ", "COMPLETED", "FINISHED")
     val statusAllowsContinue = source != BookSource.GRIMMORY.name || mergedServerReadStatus == null ||

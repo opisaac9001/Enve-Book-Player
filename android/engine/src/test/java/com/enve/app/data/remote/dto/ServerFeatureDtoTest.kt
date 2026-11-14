@@ -64,6 +64,16 @@ class ServerFeatureDtoTest {
         )
 
         assertEquals(listOf("42", "43"), recommendations.mapNotNull { it.book?.id })
-        assertTrue(recommendations.first().similarityScore > recommendations.last().similarityScore)
+        assertTrue(recommendations.first().similarityScore!! > recommendations.last().similarityScore!!)
+    }
+
+    @Test
+    fun decodesPlainGrimmoryRecommendedBooks() {
+        val recommendations = json.decodeFromString<List<GrimmoryRecommendationDto>>(
+            """[{"id":42,"libraryId":3,"metadata":{"title":"Next","authors":["A"]},"shelves":[]},{"id":null},{"id":" "},{"id":"43"}]""",
+        )
+
+        assertEquals(listOf("42", null, null, "43"), recommendations.map { it.bookId })
+        assertTrue(recommendations.all { it.similarityScore == null })
     }
 }

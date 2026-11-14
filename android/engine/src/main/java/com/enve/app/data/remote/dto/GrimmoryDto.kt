@@ -235,6 +235,10 @@ data class LegacyBookloreBookDto(
     val metadata: LegacyBookloreMetadataDto? = null,
     val primaryFile: BookFileDto? = null,
     val alternativeFormats: List<BookFileDto>? = null,
+    val audiobookProgress: AudiobookProgressDto? = null,
+    val epubProgress: EbookProgressObjectDto? = null,
+    val pdfProgress: PageProgressDto? = null,
+    val cbxProgress: PageProgressDto? = null,
 )
 
 @Serializable
@@ -325,6 +329,7 @@ data class ShelfDto(
 data class GrimmoryAppBookProgressDto(
     val readProgress: Float? = null,
     val readStatus: String? = null,
+    val lastReadTime: String? = null,
     val epubProgress: EbookProgressObjectDto? = null,
     val pdfProgress: PageProgressDto? = null,
     val cbxProgress: PageProgressDto? = null,
@@ -830,8 +835,11 @@ data class ReadingSessionRequest(
 @Serializable
 data class GrimmoryRecommendationDto(
     val book: GrimmoryRecommendedBookDto? = null,
-    val similarityScore: Double = 0.0,
-)
+    val similarityScore: Double? = null,
+    @Serializable(with = FlexibleIdSerializer::class) val id: String? = null,
+) {
+    val bookId: String? get() = (book?.id ?: id)?.takeIf { it.isNotBlank() }
+}
 
 @Serializable
 data class GrimmoryRecommendedBookDto(

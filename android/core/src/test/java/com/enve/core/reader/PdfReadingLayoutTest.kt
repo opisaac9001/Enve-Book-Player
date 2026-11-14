@@ -12,10 +12,11 @@ class PdfReadingLayoutTest {
     private val coverApart = PdfReadingLayout(twoPageView = true, showCoverSeparately = true)
 
     @Test
-    fun bothOptionsDefaultOff() {
+    fun defaultsToSinglePageFit() {
         assertFalse(single.twoPageView)
         assertFalse(single.showCoverSeparately)
         assertFalse(single.coverStandsAlone)
+        assertEquals(PdfPageAdjust.FIT, single.pageAdjust)
     }
 
     @Test

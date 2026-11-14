@@ -15,17 +15,39 @@ class PodcastFeedMergeTest {
         .use(PodcastFeedParser::parse)
 
     @Test
+    fun matchesPublisherPagesToStoredEpisodesAndSkipsPrivateLinks() {
+        val publisher = "https://atp.fm/710"
+        val first = PodcastFeedEpisode("one", "First", null, null, 1, "https://atp.fm/audio.mp3", null, publisher)
+        val second = first.copy(
+            guid = "two",
+            title = "Second",
+            enclosureUrl = "https://atp.fm/audio.mp3?token=fixture",
+            episodeLink = "http://podcasts.local/episode",
+        )
+        val match = matchPodcastFeed(
+            listOf(
+                PodcastFeedKey("one", null, "First", null, "stored-one"),
+                PodcastFeedKey("two", null, "Second", null, "stored-two"),
+            ),
+            listOf(first, second),
+        )
+
+        assertEquals(mapOf("stored-one" to publisher), match.linksByStoredId)
+        assertEquals(emptyList<PodcastFeedEpisode>(), match.feedOnly)
+    }
+
+    @Test
     fun storedEpisodeMatchedByGuidIsDropped() {
         val stored = listOf(PodcastFeedKey("svdeou1mmfjhwknm", null, "Renamed on server", null))
 
-        assertEquals(listOf("710", "708", "706"), feedOnlyEpisodes(stored, feed).map { it.title.take(3) })
+        assertEquals(listOf("710", "708", "706"), matchPodcastFeed(stored, feed).feedOnly.map { it.title.take(3) })
     }
 
     @Test
     fun fallsBackToEnclosureIgnoringScheme() {
         val stored = listOf(PodcastFeedKey(null, "https://atp.fm/audio/708/atp708.mp3", "Something else", null))
 
-        assertEquals(listOf("710", "709", "706"), feedOnlyEpisodes(stored, feed).map { it.title.take(3) })
+        assertEquals(listOf("710", "709", "706"), matchPodcastFeed(stored, feed).feedOnly.map { it.title.take(3) })
     }
 
     @Test
@@ -34,9 +56,9 @@ class PodcastFeedMergeTest {
         val undated = listOf(PodcastFeedKey(null, null, "706: Élan Vital", null))
         val farAway = listOf(PodcastFeedKey(null, null, "706: Élan Vital", 1787855400000L + 3 * 86_400_000L))
 
-        assertEquals(3, feedOnlyEpisodes(nearby, feed).size)
-        assertEquals(3, feedOnlyEpisodes(undated, feed).size)
-        assertEquals(4, feedOnlyEpisodes(farAway, feed).size)
+        assertEquals(3, matchPodcastFeed(nearby, feed).feedOnly.size)
+        assertEquals(3, matchPodcastFeed(undated, feed).feedOnly.size)
+        assertEquals(4, matchPodcastFeed(farAway, feed).feedOnly.size)
     }
 
     @Test
@@ -47,7 +69,7 @@ class PodcastFeedMergeTest {
             PodcastFeedKey(null, "https://atp.fm/audio/mupxmwzqadfzlu12/atp710.mp3", "", null),
         )
 
-        assertEquals(listOf("709", "708", "706"), feedOnlyEpisodes(stored, duplicated).map { it.title.take(3) })
+        assertEquals(listOf("709", "708", "706"), matchPodcastFeed(stored, duplicated).feedOnly.map { it.title.take(3) })
     }
 
     @Test
@@ -72,6 +94,7 @@ class PodcastFeedMergeTest {
         assertNotEquals(book.id, feed[1].toFeedOnlyBook(show, showBook).id)
         assertEquals(false, book.id.contains('#'))
         assertEquals("https://atp.fm/audio/mupxmwzqadfzlu12/atp710.mp3", book.podcastEnclosureUrl)
+        assertEquals("https://atp.fm/710", book.podcastShareUrl)
         assertEquals("mupxmwzqadfzlu12", book.episodeId)
         assertEquals("show-1", book.podcastLibraryItemId)
         assertEquals(AppMediaType.PODCAST, book.mediaType)

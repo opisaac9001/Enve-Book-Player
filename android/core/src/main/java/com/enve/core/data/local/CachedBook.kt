@@ -4,6 +4,7 @@ import androidx.room.*
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
+import com.enve.core.data.model.ComicMetadata
 import com.enve.core.data.model.ReadStatus
 import com.enve.core.data.util.FINISHED_PROGRESS_THRESHOLD
 import kotlinx.coroutines.flow.Flow
@@ -19,6 +20,7 @@ import kotlinx.coroutines.flow.Flow
         Index("isFinished"),
         Index("readProgress"),
         Index("inProgress"),
+        Index("comicSeriesId"),
     ],
 )
 data class CachedBook(
@@ -68,6 +70,8 @@ data class CachedBook(
     val serverReadStatus: String? = null,
     val opdsAcquisitionUrl: String? = null,
     val opdsProgressionUrl: String? = null,
+    val comicMetadataJson: String? = null,
+    val comicSeriesId: String? = null,
 )
 
 @Dao
@@ -653,7 +657,7 @@ interface BookCacheDao {
                language, pageCount, isbn13, personalRating, goodreadsRating,
                primaryFileType, isDownloaded, hideFromContinue,
                readAlongAvailable, hasAudio, hasEbook, inProgress, serverReadStatus,
-               opdsAcquisitionUrl, opdsProgressionUrl
+               opdsAcquisitionUrl, opdsProgressionUrl, comicMetadataJson
         FROM book_cache
         ORDER BY addedOn DESC
     """)
@@ -667,7 +671,7 @@ interface BookCacheDao {
                language, pageCount, isbn13, personalRating, goodreadsRating,
                primaryFileType, isDownloaded, hideFromContinue,
                readAlongAvailable, hasAudio, hasEbook, inProgress, serverReadStatus,
-               opdsAcquisitionUrl, opdsProgressionUrl
+               opdsAcquisitionUrl, opdsProgressionUrl, comicMetadataJson
         FROM book_cache
         WHERE libraryId IS NULL OR libraryId NOT IN (:excludedLibraryIds)
         ORDER BY addedOn DESC
@@ -747,6 +751,21 @@ interface BookCacheDao {
         connectionId: String?,
         libraryId: String?,
         limit: Int = 1000,
+    ): List<CachedBook>
+
+    @Query("""
+        SELECT * FROM book_cache
+        WHERE comicSeriesId = :seriesId
+          AND source = :source
+          AND (connectionId = :connectionId OR (connectionId IS NULL AND :connectionId IS NULL))
+          AND (libraryId = :libraryId OR (libraryId IS NULL AND :libraryId IS NULL))
+        ORDER BY addedOn DESC, cacheKey ASC
+    """)
+    suspend fun comicsInSeries(
+        seriesId: String,
+        source: String,
+        connectionId: String?,
+        libraryId: String?,
     ): List<CachedBook>
 
     @Query("""
@@ -879,9 +898,13 @@ data class CachedBookListItem(
     val serverReadStatus: String?,
     val opdsAcquisitionUrl: String?,
     val opdsProgressionUrl: String?,
+    val comicMetadataJson: String?,
 )
 
 private val cacheJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+
+private fun decodeComicMetadata(json: String?): ComicMetadata? =
+    json?.let { runCatching { cacheJson.decodeFromString<ComicMetadata>(it) }.getOrNull() }
 
 fun CachedBook.toBook(): Book {
     val categories = runCatching {
@@ -936,6 +959,7 @@ fun CachedBook.toBook(): Book {
         isDownloaded = isDownloaded,
         opdsAcquisitionUrl = opdsAcquisitionUrl,
         opdsProgressionUrl = opdsProgressionUrl,
+        comic = decodeComicMetadata(comicMetadataJson),
     )
 }
 
@@ -989,6 +1013,7 @@ fun CachedBookListItem.toBook(): Book {
         isDownloaded = isDownloaded,
         opdsAcquisitionUrl = opdsAcquisitionUrl,
         opdsProgressionUrl = opdsProgressionUrl,
+        comic = decodeComicMetadata(comicMetadataJson),
     )
 }
 
@@ -1054,6 +1079,8 @@ fun Book.toCachedBook(nowMs: Long = System.currentTimeMillis()): CachedBook {
         serverReadStatus = normalizedStatus,
         opdsAcquisitionUrl = opdsAcquisitionUrl,
         opdsProgressionUrl = opdsProgressionUrl,
+        comicMetadataJson = comic?.let { cacheJson.encodeToString(ComicMetadata.serializer(), it) },
+        comicSeriesId = comic?.seriesId,
     )
 }
 

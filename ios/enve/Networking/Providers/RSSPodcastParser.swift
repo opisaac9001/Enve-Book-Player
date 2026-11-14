@@ -19,6 +19,11 @@ final class RSSPodcastParser: NSObject, XMLParserDelegate {
         var title: String = ""
         var description: String?
         var audioURL: URL?
+        var episodeLink: String?
+
+        var shareURL: URL? {
+            PodcastEpisodeShareLink.url(episodeLink) ?? PodcastEpisodeShareLink.url(audioURL?.absoluteString)
+        }
         var duration: TimeInterval = 0
         var publishedDate: Date?
         var season: String?
@@ -95,6 +100,7 @@ final class RSSPodcastParser: NSObject, XMLParserDelegate {
                 episodeId: episode.id,
                 podcastLibraryItemId: feedURL,
                 podcastName: feed.title,
+                podcastShareURL: episode.shareURL,
                 description: episode.description?.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression),
                 addedAt: episode.publishedDate,
                 currentTime: 0,
@@ -173,6 +179,8 @@ final class RSSPodcastParser: NSObject, XMLParserDelegate {
                 if !trimmed.isEmpty {
                     currentEpisode?.id = trimmed
                 }
+            case "link":
+                currentEpisode?.episodeLink = trimmed
             case "pubDate":
                 currentEpisode?.publishedDate = parseRSSDate(trimmed)
             case "itunes:duration":

@@ -48,6 +48,7 @@ struct AppRootView: View {
     @State private var tourPresented = false
     @State private var reauthConnection: ServerConnection?
     @State private var showOrphanedMatcher = false
+    @State private var downloadsPresented = false
     private struct SharedPositionLink: Identifiable {
         let id = UUID()
         let message: String
@@ -145,6 +146,10 @@ struct AppRootView: View {
             NavigationStack { OrphanedBookMatcherScreen() }
                 .enveEnvironment(session: profileSession)
         }
+        .sheet(isPresented: $downloadsPresented) {
+            NavigationStack { DownloadsScreen() }
+                .enveEnvironment(session: profileSession)
+        }
         .sheet(item: $sharedPositionLink) { link in
             ListeningPositionScanScreen(initialMessage: link.message)
                 .enveEnvironment(session: profileSession)
@@ -168,8 +173,7 @@ struct AppRootView: View {
             }
         }
         .onChange(of: duoLayout.isSpread) { _, spread in
-            // Opening the phone moves the player from the cover to the facing page; closing it keeps the
-            // player on the mantel pill rather than taking the outer display over.
+            // Folding preserves playback without reopening the player cover.
             if spread {
                 appState.presentation.isPlayerPresented = false
             }
@@ -214,8 +218,7 @@ struct AppRootView: View {
 
     private func openEnveBookLink(_ url: URL) {
         guard !profileSession.isRetired else { return }
-        // An OPDS implicit sign-in can come back by relaunching the app rather than through the in-app
-        // browser sheet, so the waiting flow gets first refusal on the callback.
+        // OPDS sign-in can return through an app relaunch; let the pending flow handle it first.
         if OPDSAuthenticationService.isCallback(url) {
             profileSession.opdsLogin.handleCallback(url)
             return
@@ -1715,9 +1718,7 @@ struct AppRootView: View {
         let column = layout.sideColumn
         // Tab navigation drops added safe-area padding; reserve its top clearance explicitly.
         let topClearance = column?.topClearance ?? 0
-        // The stacks keep one place in the tree across every layout, so opening or closing the phone never
-        // resets their navigation or scroll position. The outer stack keeps the safe area so the geometry it
-        // reports stays stable while the inner one reaches into the side column for the rail.
+        // Keep tab identity and outer safe-area geometry stable across fold changes.
         return ZStack {
             ZStack(alignment: .bottom) {
                 if spreadFold != nil {
@@ -1744,23 +1745,29 @@ struct AppRootView: View {
                                 JournalScreen(isActive: tab == .journal)
                             }
                         }
+                        .overlay(alignment: .bottom) {
+                            if nightstandFold != nil {
+                                NightstandFoldFade()
+                            }
+                        }
                         .padding(.bottom, nightstandFold?.inset ?? 0)
 
                         if let fold = nightstandFold {
                             NightstandDock(
                                 tab: $tab,
+                                book: $facingBook,
                                 style: prefs.shellNavigationStyle,
                                 bottomSafeArea: shellBottomSafeArea,
+                                foldInset: fold.inset,
                                 onSelect: selectTab
                             )
-                            .padding(.top, fold.inset)
                             .frame(height: max(0, shellSize.height - fold.center))
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                         }
                     }
                     .padding(.top, topClearance)
                     .padding(.trailing, spreadFold?.inset ?? 0)
-                    .environment(\.facingPageBookId, spreadFold == nil ? nil : facingBook?.stableId)
+                    .environment(\.facingPageBookId, spreadFold == nil && nightstandFold == nil ? nil : facingBook?.stableId)
                     .frame(width: spreadFold?.center)
 
                     if let fold = spreadFold {
@@ -1787,10 +1794,14 @@ struct AppRootView: View {
                 .environment(\.sharesShellBackdrop, spreadFold != nil)
 
                 if layout == .standard {
-                    MantelBar(tab: $tab, style: prefs.shellNavigationStyle, bottomSafeArea: shellBottomSafeArea, onSelect: selectTab)
-                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { mantelBarHeight = $0 }
-                        .ignoresSafeArea(.keyboard, edges: .bottom)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                    VStack(spacing: 8) {
+                        DownloadProgressPill(tasks: engine.downloads.activeTasks) { downloadsPresented = true }
+                        MantelBar(tab: $tab, style: prefs.shellNavigationStyle, bottomSafeArea: shellBottomSafeArea, onSelect: selectTab)
+                    }
+                    .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: engine.downloads.activeTasks.isEmpty)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { mantelBarHeight = $0 }
+                    .ignoresSafeArea(.keyboard, edges: .bottom)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
             .overlay {

@@ -5,6 +5,7 @@ import com.enve.audiobookshelf.dto.AbsMediaProgressDto
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
+import com.enve.core.data.model.PodcastEpisodeShareLink
 import com.enve.core.data.model.PodcastFeedKey
 import com.enve.core.data.model.PodcastShow
 
@@ -38,6 +39,7 @@ internal fun mapAbsPodcastShow(
             podcastName = title,
             episodeId = episode.id,
             podcastLibraryItemId = item.id,
+            podcastShareUrl = PodcastEpisodeShareLink.url(episode.enclosure?.url),
         )
         progressByEpisodeId[episode.id]?.let { applyAbsMediaProgress(base, it) } ?: base
     }
@@ -56,6 +58,7 @@ internal fun mapAbsPodcastShow(
                 enclosureUrl = episode.enclosure?.url?.trim()?.takeIf { it.isNotEmpty() },
                 title = episode.title.orEmpty(),
                 publishedAtMs = episode.publishedAt,
+                storedEpisodeId = episode.id,
             )
         },
     )

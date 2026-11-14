@@ -29,6 +29,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.outlined.RecordVoiceOver
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Close
@@ -36,6 +45,7 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -45,10 +55,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -69,17 +83,23 @@ import com.enve.app.data.reader.READER_FONT_SCALE_STEP
 import com.enve.app.data.reader.ReaderFont
 import com.enve.app.data.reader.ReaderProgressDisplay
 import com.enve.app.data.reader.ReaderTheme
+import androidx.compose.foundation.layout.widthIn
+import com.enve.app.data.reader.ReaderPreferences
+import com.enve.app.readium.narrator.NarratorPack
+import com.enve.app.viewmodel.ReaderNarratorPackState
 import com.enve.app.viewmodel.ReaderUiState
 import com.enve.app.viewmodel.ReaderViewModel
 import com.enve.core.data.model.AnnotationKind
 import com.enve.core.data.model.AnnotationStyle
 import com.enve.core.data.model.ReaderAnnotation
 import com.enve.hearth.design.EmberAccent
+import com.enve.hearth.design.EmberButton
 import com.enve.hearth.design.Hearth
 import com.enve.hearth.design.HearthChip
 import com.enve.hearth.design.HearthText
 import com.enve.hearth.design.HearthToggleRow
 import com.enve.hearth.design.Overline
+import com.enve.hearth.design.QuietButton
 import com.enve.hearth.design.hearthDisplay
 import com.enve.hearth.design.parseHexColor
 import kotlin.math.roundToInt
@@ -125,6 +145,11 @@ fun HearthReaderSheets(vm: ReaderViewModel, state: ReaderUiState) {
             ReaderTTSSheet(vm, state)
         }
     }
+    state.definition?.let { definition ->
+        ModalBottomSheet(onDismissRequest = vm::dismissDefinition, shape = sheetShape, containerColor = palette.bgElevated) {
+            ReaderDefineSheet(definition, onSaveWord = vm::saveDefinedWord)
+        }
+    }
     if (state.showAnnotationDialog) {
         ModalBottomSheet(
             onDismissRequest = { vm.showAnnotationDialog(false); vm.hideSelectionPopup() },
@@ -136,74 +161,381 @@ fun HearthReaderSheets(vm: ReaderViewModel, state: ReaderUiState) {
     }
 }
 
-@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun ReaderTTSSheet(vm: ReaderViewModel, state: ReaderUiState) {
+    var showingVoices by rememberSaveable { mutableStateOf(false) }
+    if (showingVoices) {
+        ReaderVoicePicker(vm, state, onBack = { showingVoices = false })
+    } else {
+        ReaderSpeechControls(vm, state, onVoices = { showingVoices = true })
+    }
+}
+
+@Composable
+private fun ReaderSpeechControls(vm: ReaderViewModel, state: ReaderUiState, onVoices: () -> Unit) {
     val palette = Hearth.palette
+    val playback = state.ttsPlayback
+    val cardShape = RoundedCornerShape(if (Hearth.eink.sharpCorners) 0.dp else Hearth.Radius.Card)
     Column(
         Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
-            .padding(horizontal = Hearth.Spacing.XL).padding(bottom = Hearth.Spacing.XXL),
-        verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.L),
+            .padding(horizontal = Hearth.Spacing.XL).padding(top = Hearth.Spacing.S, bottom = Hearth.Spacing.XXL),
+        verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.XL),
     ) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("Read back", style = HearthText.BookTitle, color = palette.text, modifier = Modifier.weight(1f))
-            androidx.compose.material3.TextButton(onClick = { vm.showTtsSheet(false) }) {
-                Text("Done", color = palette.ember)
-            }
-        }
-        if (state.ttsPlayback.active) {
+        Overline("Read to me")
+        if (playback.passage.isNotBlank()) {
             Text(
-                if (state.ttsPlayback.preparing) "Preparing speech…" else "Paragraph ${state.ttsPlayback.paragraph + 1}",
-                style = HearthText.Caption,
-                color = palette.textSecondary,
+                playback.passage,
+                style = hearthDisplay(16.sp, FontWeight.Normal),
+                color = palette.text,
+                maxLines = 5,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth().clip(cardShape).background(palette.bg)
+                    .border(1.dp, palette.hairline, cardShape).padding(Hearth.Spacing.L),
             )
-            ReaderSpeechTransport(
-                playing = state.ttsPlayback.playing,
-                preparing = state.ttsPlayback.preparing,
-                narrated = false,
-                onToggle = vm::toggleTtsPlayback,
-                onBack = vm::previousTtsParagraph,
-                onForward = vm::nextTtsParagraph,
-                onSettings = null,
-            )
-            androidx.compose.material3.TextButton(onClick = { vm.stopTts(); vm.showTtsSheet(false) }) {
-                Text("Stop read back", color = palette.ember)
-            }
-        } else {
-            HearthChip("Read from here", selected = false, onClick = vm::startTts)
         }
-        Overline("Speed")
-        androidx.compose.foundation.layout.FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
-            verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+            SpeechGlyph(Icons.Filled.SkipPrevious, "Previous paragraph", 48.dp, enabled = playback.active, onClick = vm::previousTtsParagraph)
+            Spacer(Modifier.width(Hearth.Spacing.XL))
+            SpeechGlyph(
+                if (playback.playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                if (playback.playing) "Pause" else "Read aloud",
+                68.dp,
+                prominent = true,
+                onClick = vm::toggleTtsPlayback,
+            )
+            Spacer(Modifier.width(Hearth.Spacing.XL))
+            SpeechGlyph(Icons.Filled.SkipNext, "Next paragraph", 48.dp, enabled = playback.active, onClick = vm::nextTtsParagraph)
+        }
+        if (playback.preparing && playback.playing) {
+            Text("Preparing speech…", style = HearthText.Caption, color = palette.textSecondary, modifier = Modifier.align(Alignment.CenterHorizontally))
+        }
+        var pace by remember(state.prefs.ttsSpeed) { mutableFloatStateOf(state.prefs.ttsSpeed) }
+        Column(verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.XS)) {
+            Row(Modifier.fillMaxWidth()) {
+                Text("Pace", style = HearthText.Label, color = palette.text, modifier = Modifier.weight(1f))
+                Text(formatPace(pace), style = HearthText.Label, color = palette.textSecondary)
+            }
+            androidx.compose.material3.Slider(
+                value = pace,
+                onValueChange = { pace = (it * 4).roundToInt() / 4f },
+                onValueChangeFinished = { vm.updatePreferences(state.prefs.copy(ttsSpeed = pace)) },
+                valueRange = MIN_SPEECH_PACE..MAX_SPEECH_PACE,
+                steps = ((MAX_SPEECH_PACE - MIN_SPEECH_PACE) / 0.25f).roundToInt() - 1,
+                colors = androidx.compose.material3.SliderDefaults.colors(
+                    thumbColor = palette.ember,
+                    activeTrackColor = palette.ember,
+                    inactiveTrackColor = palette.hairline,
+                    activeTickColor = Color.Transparent,
+                    inactiveTickColor = Color.Transparent,
+                ),
+                modifier = Modifier.semantics { contentDescription = "Pace" },
+            )
+        }
+        Row(
+            Modifier.fillMaxWidth().clip(cardShape).background(palette.bg).border(1.dp, palette.hairline, cardShape)
+                .clickable(role = Role.Button, onClickLabel = "Choose a voice", onClick = onVoices)
+                .padding(horizontal = Hearth.Spacing.L, vertical = Hearth.Spacing.M),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            listOf(0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f, 2.5f, 3f).forEach { speed ->
-                HearthChip(
-                    "$speed×",
-                    selected = kotlin.math.abs(state.prefs.ttsSpeed - speed) < 0.01f,
-                    onClick = { vm.updatePreferences(state.prefs.copy(ttsSpeed = speed)) },
+            Icon(Icons.Outlined.RecordVoiceOver, null, tint = palette.ember, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(Hearth.Spacing.M))
+            Column(Modifier.weight(1f)) {
+                Text(currentVoiceTitle(state), style = HearthText.Label, color = palette.text)
+                Text(currentVoiceDetail(state), style = HearthText.Caption, color = palette.textSecondary)
+            }
+            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = palette.textTertiary)
+        }
+        if (playback.active) {
+            QuietButton("Stop reading", onClick = { vm.stopTts(); vm.showTtsSheet(false) }, modifier = Modifier.fillMaxWidth())
+        }
+    }
+}
+
+@Composable
+private fun SpeechGlyph(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    size: androidx.compose.ui.unit.Dp,
+    enabled: Boolean = true,
+    prominent: Boolean = false,
+    onClick: () -> Unit,
+) {
+    val palette = Hearth.palette
+    val background = if (prominent) palette.ember else palette.bg
+    val tint = if (prominent) palette.readableOnEmber else palette.text
+    Box(
+        Modifier.size(size).clip(CircleShape).background(background)
+            .then(if (prominent) Modifier else Modifier.border(1.dp, palette.hairline, CircleShape))
+            .clickable(enabled = enabled, role = Role.Button, onClickLabel = label, onClick = onClick)
+            .semantics { contentDescription = label },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, null, tint = if (enabled) tint else tint.copy(alpha = 0.4f), modifier = Modifier.size(size * 0.42f))
+    }
+}
+
+@Composable
+private fun ReaderVoicePicker(vm: ReaderViewModel, state: ReaderUiState, onBack: () -> Unit) {
+    val palette = Hearth.palette
+    val narrator = state.ttsNarratorPack
+    val languages = remember(state.ttsVoices) {
+        state.ttsVoices.distinctBy { it.language }.sortedBy { it.languageName }
+    }
+    val selectedLanguage = state.ttsVoices.firstOrNull { it.name == state.ttsVoice }?.language
+        ?: java.util.Locale.getDefault().language
+    var language by rememberSaveable(selectedLanguage) { mutableStateOf(selectedLanguage) }
+    var confirming by remember { mutableStateOf<NarratorPack?>(null) }
+    val context = LocalContext.current
+    val size = { pack: NarratorPack -> android.text.format.Formatter.formatShortFileSize(context, pack.downloadBytes) }
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = Hearth.Spacing.M).padding(bottom = Hearth.Spacing.XS),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, "Back", tint = palette.text)
+            }
+            Overline("Voices")
+        }
+        LazyColumn(
+            Modifier.fillMaxWidth().heightIn(max = 560.dp),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                start = Hearth.Spacing.XL, end = Hearth.Spacing.XL, bottom = Hearth.Spacing.XXL,
+            ),
+        ) {
+            item { VoiceSectionHeader("Engine") }
+            item {
+                SpeechChoiceRow("Android voice", "Built into this device", selected = narrator == null) { vm.selectNarrator(null) }
+            }
+            items(NarratorPack.available, key = { it.name }) { pack ->
+                val status = state.ttsNarratorPacks[pack] ?: ReaderNarratorPackState.NotInstalled
+                SpeechChoiceRow(pack.title, narratorStatusLabel(status, size(pack)), selected = narrator == pack) {
+                    if (status == ReaderNarratorPackState.Installed) vm.selectNarrator(pack) else confirming = pack
+                }
+            }
+            item { VoiceSectionHeader("Downloads") }
+            items(NarratorPack.available, key = { "download-${it.name}" }) { pack ->
+                NarratorDownloadRow(
+                    vm = vm,
+                    pack = pack,
+                    status = state.ttsNarratorPacks[pack] ?: ReaderNarratorPackState.NotInstalled,
+                    size = size(pack),
+                    onDownload = { confirming = pack },
                 )
             }
-        }
-        Overline("Voice")
-        if (state.ttsVoices.isEmpty()) {
-            Text("Install a text-to-speech voice in Android settings.", style = HearthText.Body, color = palette.textSecondary)
-        } else {
-            LazyColumn(Modifier.heightIn(max = 360.dp)) {
-                items(state.ttsVoices, key = { it.name }) { voice ->
-                    Row(
-                        Modifier.fillMaxWidth().heightIn(min = 48.dp)
-                            .selectable(selected = state.ttsVoice == voice.name, role = Role.RadioButton, onClick = { vm.selectTtsVoice(voice.name) })
-                            .padding(vertical = Hearth.Spacing.S),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(voice.label, style = HearthText.Body, color = palette.text, modifier = Modifier.weight(1f))
-                        if (state.ttsVoice == voice.name) Icon(Icons.Outlined.Check, "Selected", tint = palette.ember)
+            if (narrator == null && languages.size > 1) {
+                item { VoiceSectionHeader("Language") }
+                items(languages, key = { "language-${it.language}" }) { voice ->
+                    SpeechChoiceRow(voice.languageName, null, selected = language == voice.language) { language = voice.language }
+                }
+            }
+            item { VoiceSectionHeader("Voice") }
+            if (narrator != null) {
+                items(narrator.voices, key = { "narrator-$it" }) { voice ->
+                    SpeechChoiceRow(
+                        narratorVoiceLabel(narrator, voice),
+                        narratorVoiceDetail(narrator, voice),
+                        selected = state.ttsNarratorVoice == voice,
+                    ) { vm.selectNarratorVoice(voice) }
+                }
+            } else {
+                val voices = state.ttsVoices.filter { it.language == language }
+                if (voices.isEmpty()) {
+                    item {
+                        Text(
+                            "Install a text-to-speech voice in Android settings.",
+                            style = HearthText.Body,
+                            color = palette.textSecondary,
+                            modifier = Modifier.padding(vertical = Hearth.Spacing.S),
+                        )
                     }
+                }
+                items(voices, key = { it.name }) { voice ->
+                    SpeechChoiceRow(voice.title, voice.detail, selected = state.ttsVoice == voice.name) { vm.selectTtsVoice(voice.name) }
                 }
             }
         }
     }
+    confirming?.let { pack ->
+        NarratorTermsDialog(
+            pack = pack,
+            size = size(pack),
+            onAgree = {
+                confirming = null
+                vm.downloadNarrator(pack)
+            },
+            onDismiss = { confirming = null },
+        )
+    }
+}
+
+@Composable
+private fun VoiceSectionHeader(title: String) {
+    Box(Modifier.padding(top = Hearth.Spacing.L, bottom = Hearth.Spacing.XS)) { Overline(title) }
+}
+
+@Composable
+private fun SpeechChoiceRow(label: String, detail: String?, selected: Boolean, onSelect: () -> Unit) {
+    val palette = Hearth.palette
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 52.dp)
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onSelect)
+            .padding(vertical = Hearth.Spacing.S),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(label, style = HearthText.Label, color = palette.text)
+            if (!detail.isNullOrBlank()) Text(detail, style = HearthText.Caption, color = palette.textSecondary)
+        }
+        if (selected) Icon(Icons.Outlined.Check, "Selected", tint = palette.ember)
+    }
+}
+
+@Composable
+private fun NarratorDownloadRow(
+    vm: ReaderViewModel,
+    pack: NarratorPack,
+    status: ReaderNarratorPackState,
+    size: String,
+    onDownload: () -> Unit,
+) {
+    val palette = Hearth.palette
+    val uriHandler = LocalUriHandler.current
+    Column(Modifier.fillMaxWidth().padding(vertical = Hearth.Spacing.S), verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.XS)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(pack.title, style = HearthText.Label, color = palette.text)
+                Text(
+                    "${pack.license} · ${narratorCredit(pack) ?: "Model terms"}",
+                    style = HearthText.Caption,
+                    color = palette.textSecondary,
+                    modifier = Modifier.clickable(role = Role.Button, onClickLabel = "Open ${pack.title} terms") {
+                        uriHandler.openUri(if (pack == NarratorPack.WOOF) "https://underdog.ai" else pack.termsUrl)
+                    },
+                )
+            }
+            when (status) {
+                ReaderNarratorPackState.NotInstalled, is ReaderNarratorPackState.Failed ->
+                    androidx.compose.material3.TextButton(onClick = onDownload) {
+                        Text(if (status is ReaderNarratorPackState.Failed) "Retry" else "Get · $size", color = palette.ember)
+                    }
+                ReaderNarratorPackState.Installed ->
+                    androidx.compose.material3.TextButton(onClick = { vm.removeNarrator(pack) }) {
+                        Text("Remove", color = palette.textSecondary)
+                    }
+                ReaderNarratorPackState.Removing ->
+                    Text("Removing…", style = HearthText.Caption, color = palette.textSecondary)
+                is ReaderNarratorPackState.Downloading ->
+                    Text("${(status.progress * 100).roundToInt()}%", style = HearthText.Caption, color = palette.textSecondary)
+            }
+        }
+        when (status) {
+            is ReaderNarratorPackState.Downloading -> LinearProgressIndicator(
+                progress = { status.progress },
+                color = palette.ember,
+                trackColor = palette.hairline,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            is ReaderNarratorPackState.Failed -> Text(status.message, style = HearthText.Caption, color = palette.statusError)
+            else -> Unit
+        }
+    }
+}
+
+@Composable
+internal fun WoofAttribution() {
+    val uriHandler = LocalUriHandler.current
+    androidx.compose.material3.TextButton(onClick = { uriHandler.openUri("https://underdog.ai") }) {
+        Text("Voice by Underdog Woof", style = HearthText.Caption, color = Hearth.palette.textSecondary)
+    }
+}
+
+private const val MIN_SPEECH_PACE = 0.5f
+private const val MAX_SPEECH_PACE = 3f
+
+private fun formatPace(pace: Float): String =
+    "${java.math.BigDecimal(pace.toDouble()).setScale(2, java.math.RoundingMode.HALF_UP).stripTrailingZeros().toPlainString()}×"
+
+private fun narratorCredit(pack: NarratorPack): String? = when (pack) {
+    NarratorPack.POCKET -> "Alba MacKenna’s voice, by Kyutai"
+    NarratorPack.WOOF -> "Voice by Underdog Woof"
+    else -> null
+}
+
+private fun narratorStatusLabel(status: ReaderNarratorPackState, size: String): String = when (status) {
+    ReaderNarratorPackState.Installed -> "Downloaded · reads offline"
+    ReaderNarratorPackState.NotInstalled -> "$size download"
+    is ReaderNarratorPackState.Downloading -> "Downloading ${(status.progress * 100).roundToInt()}%"
+    ReaderNarratorPackState.Removing -> "Removing…"
+    is ReaderNarratorPackState.Failed -> "Download failed"
+}
+
+private fun narratorVoiceLabel(pack: NarratorPack, voice: String): String = when (pack) {
+    NarratorPack.KOKORO -> voice.substringAfter('_').replaceFirstChar(Char::uppercase)
+    NarratorPack.SUPERTONIC -> "Voice $voice"
+    NarratorPack.POCKET, NarratorPack.PHONON, NarratorPack.WOOF -> voice.replaceFirstChar(Char::uppercase)
+}
+
+private fun narratorVoiceDetail(pack: NarratorPack, voice: String): String? = when (pack) {
+    NarratorPack.KOKORO -> {
+        val accent = when (voice.firstOrNull()) {
+            'a' -> "American"
+            'b' -> "British"
+            else -> null
+        }
+        val gender = when (voice.getOrNull(1)) {
+            'f' -> "female"
+            'm' -> "male"
+            else -> null
+        }
+        listOfNotNull(accent, gender).joinToString(" ").replaceFirstChar(Char::uppercase).ifBlank { null }
+    }
+    NarratorPack.SUPERTONIC -> when (voice.firstOrNull()) {
+        'F' -> "Female"
+        'M' -> "Male"
+        else -> null
+    }
+    else -> null
+}
+
+private fun currentVoiceTitle(state: ReaderUiState): String {
+    val pack = state.ttsNarratorPack ?: return state.ttsVoices.firstOrNull { it.name == state.ttsVoice }
+        ?.let { "${it.languageName} · ${it.title}" } ?: "Android voice"
+    val voice = state.ttsNarratorVoice ?: pack.voices.first()
+    return "${narratorVoiceLabel(pack, voice)} · ${pack.title}"
+}
+
+private fun currentVoiceDetail(state: ReaderUiState): String {
+    val pack = state.ttsNarratorPack ?: return state.ttsVoices.firstOrNull { it.name == state.ttsVoice }?.detail
+        ?.let { "Android voice · $it" } ?: "Built into this device"
+    return narratorVoiceDetail(pack, state.ttsNarratorVoice ?: pack.voices.first())
+        ?.let { "$it · on-device" } ?: "On-device narrator"
+}
+
+@Composable
+private fun NarratorTermsDialog(pack: NarratorPack, size: String, onAgree: () -> Unit, onDismiss: () -> Unit) {
+    val palette = Hearth.palette
+    val uriHandler = LocalUriHandler.current
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = { EmberButton("Agree and download", onClick = onAgree) },
+        dismissButton = { QuietButton("Cancel", onClick = onDismiss) },
+        title = { Text("${pack.title} terms", style = HearthText.BookTitle, color = palette.text) },
+        text = {
+            Column(
+                Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
+            ) {
+                Text(pack.terms, style = HearthText.Body, color = palette.text)
+                Text("Agreeing starts a $size download.", style = HearthText.Caption, color = palette.textSecondary)
+                androidx.compose.material3.TextButton(onClick = { uriHandler.openUri(pack.termsUrl) }) {
+                    Text("Read the ${pack.license} license", color = palette.ember)
+                }
+            }
+        },
+        shape = if (Hearth.eink.sharpCorners) androidx.compose.ui.graphics.RectangleShape else RoundedCornerShape(Hearth.Radius.Card),
+        containerColor = palette.bgElevated,
+    )
 }
 
 @Composable
@@ -373,120 +705,172 @@ private fun clipTime(ms: Long): String {
 private fun AppearanceSheet(vm: ReaderViewModel, state: ReaderUiState, customFonts: List<CustomFont>) {
     val palette = Hearth.palette
     val prefs = state.prefs
+    val haptics = rememberReaderHaptics()
+    val update: (ReaderPreferences) -> Unit = { next ->
+        if (next != prefs) haptics.tick()
+        vm.updatePreferences(next)
+    }
     Column(
         Modifier
             .fillMaxWidth()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = Hearth.Spacing.XL)
             .padding(bottom = Hearth.Spacing.XXL),
-        verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.L),
+        verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.M),
     ) {
         Overline("Theme")
         Row(horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.M)) {
-            ThemeCard("Paper", ReaderTheme.LIGHT, Color(0xFFFAF7F2), Color(0xFF231F1B), prefs.theme) { vm.updatePreferences(prefs.copy(theme = it)) }
-            ThemeCard("Sepia", ReaderTheme.SEPIA, Color(0xFFEDD9B4), Color(0xFF4A3F30), prefs.theme) { vm.updatePreferences(prefs.copy(theme = it)) }
-            ThemeCard("Ink", ReaderTheme.DARK, Color(0xFF191512), Color(0xFFF0E9DC), prefs.theme) { vm.updatePreferences(prefs.copy(theme = it)) }
-            ThemeCard("Black", ReaderTheme.OLED, Color.Black, Color(0xFFF0E9DC), prefs.theme) { vm.updatePreferences(prefs.copy(theme = it)) }
+            ThemeCard("Paper", ReaderTheme.LIGHT, Color(0xFFFAF7F2), Color(0xFF231F1B), prefs.theme) { update(prefs.copy(theme = it)) }
+            ThemeCard("Sepia", ReaderTheme.SEPIA, Color(0xFFEDD9B4), Color(0xFF4A3F30), prefs.theme) { update(prefs.copy(theme = it)) }
+            ThemeCard("Ink", ReaderTheme.DARK, Color(0xFF191512), Color(0xFFF0E9DC), prefs.theme) { update(prefs.copy(theme = it)) }
+            ThemeCard("Black", ReaderTheme.OLED, Color.Black, Color(0xFFF0E9DC), prefs.theme) { update(prefs.copy(theme = it)) }
         }
 
-        Overline("Reader dimmer")
+        AppearanceSection("Text")
+        Stepper("Text size", "${(prefs.fontSize * 100).roundToInt()}%",
+            { update(prefs.copy(fontSize = (prefs.fontSize - READER_FONT_SCALE_STEP).coerceIn(MIN_READER_FONT_SCALE, MAX_READER_FONT_SCALE))) },
+            { update(prefs.copy(fontSize = (prefs.fontSize + READER_FONT_SCALE_STEP).coerceIn(MIN_READER_FONT_SCALE, MAX_READER_FONT_SCALE))) })
+        Stepper("Line spacing", trimmedNumber(prefs.lineHeight, 2),
+            { update(prefs.copy(lineHeight = (prefs.lineHeight - 0.05f).coerceIn(1.0f, 2.5f))) },
+            { update(prefs.copy(lineHeight = (prefs.lineHeight + 0.05f).coerceIn(1.0f, 2.5f))) })
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S)) {
-            listOf(
-                "Off" to -1f,
-                "25%" to 0.75f,
-                "50%" to 0.50f,
-                "75%" to 0.25f,
-            ).forEach { (label, value) ->
-                val selected = if (value < 0f) prefs.screenBrightness < 0f
-                else kotlin.math.abs(prefs.screenBrightness - value) < 0.01f
-                HearthChip(label, selected = selected, onClick = { vm.updatePreferences(prefs.copy(screenBrightness = value)) })
+            ReaderFont.entries.forEach { font ->
+                TypefaceCard(
+                    font.displayName,
+                    readerFontFamily(font),
+                    selected = font == prefs.font && prefs.customFontName == null,
+                ) { update(prefs.copy(font = font, customFontName = null)) }
+            }
+            customFonts.forEach { font ->
+                TypefaceCard(font.displayName, null, selected = prefs.customFontName == font.displayName) {
+                    update(prefs.copy(customFontName = font.displayName))
+                }
             }
         }
 
-        Overline("Status strip")
-        HearthToggleRow("Show clock", prefs.showClock) { vm.updatePreferences(prefs.copy(showClock = it)) }
-        HearthToggleRow("Show battery", prefs.showBattery) { vm.updatePreferences(prefs.copy(showBattery = it)) }
-        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S)) {
-            ReaderProgressDisplay.entries.forEach { mode ->
-                HearthChip(mode.label, selected = prefs.progressDisplay == mode, onClick = { vm.updatePreferences(prefs.copy(progressDisplay = mode)) })
-            }
+        AppearanceSection("Layout")
+        Row(horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S)) {
+            HearthChip("Paged", selected = !prefs.scroll, onClick = { update(prefs.copy(scroll = false)) })
+            HearthChip("Scrolled", selected = prefs.scroll, onClick = { update(prefs.copy(scroll = true)) })
         }
+        Stepper("Side margins", spacingLabel(prefs.pageMargins, "×"),
+            { update(prefs.copy(pageMargins = (prefs.pageMargins - 0.1f).coerceIn(0f, 2.0f))) },
+            { update(prefs.copy(pageMargins = (prefs.pageMargins + 0.1f).coerceIn(0f, 2.0f))) })
+        Stepper("Top & bottom margins", spacingLabel(prefs.verticalMargins, "×"),
+            { update(prefs.copy(verticalMargins = (prefs.verticalMargins - 0.1f).coerceIn(0f, 2.0f))) },
+            { update(prefs.copy(verticalMargins = (prefs.verticalMargins + 0.1f).coerceIn(0f, 2.0f))) })
+        Stepper("Paragraph spacing", spacingLabel(prefs.paragraphSpacing, " em"),
+            { update(prefs.copy(paragraphSpacing = (prefs.paragraphSpacing - 0.25f).coerceIn(0f, 2f))) },
+            { update(prefs.copy(paragraphSpacing = (prefs.paragraphSpacing + 0.25f).coerceIn(0f, 2f))) })
+        Stepper("Paragraph indent", spacingLabel(prefs.paragraphIndent, " em"),
+            { update(prefs.copy(paragraphIndent = (prefs.paragraphIndent - 0.25f).coerceIn(0f, 3f))) },
+            { update(prefs.copy(paragraphIndent = (prefs.paragraphIndent + 0.25f).coerceIn(0f, 3f))) })
+        Stepper("Word spacing", spacingLabel(prefs.wordSpacing, " em"),
+            { update(prefs.copy(wordSpacing = (prefs.wordSpacing - 0.05f).coerceIn(0f, 0.5f))) },
+            { update(prefs.copy(wordSpacing = (prefs.wordSpacing + 0.05f).coerceIn(0f, 0.5f))) })
+        Stepper("Letter spacing", spacingLabel(prefs.letterSpacing, " em"),
+            { update(prefs.copy(letterSpacing = (prefs.letterSpacing - 0.01f).coerceIn(0f, 0.15f))) },
+            { update(prefs.copy(letterSpacing = (prefs.letterSpacing + 0.01f).coerceIn(0f, 0.15f))) })
 
-        HearthToggleRow("Volume-button page turning", prefs.volumeButtonNavigation) {
-            vm.updatePreferences(prefs.copy(volumeButtonNavigation = it))
-        }
+        AppearanceSection("Typesetting")
+        HearthToggleRow("Justified text", prefs.justified) { update(prefs.copy(justified = it)) }
+        HearthToggleRow("Hyphenation", prefs.hyphenate) { update(prefs.copy(hyphenate = it)) }
+        HearthToggleRow("Respect publisher styles", prefs.publisherStyles) { update(prefs.copy(publisherStyles = it)) }
+        HearthToggleRow("Bionic reading", prefs.bionicReading) { update(prefs.copy(bionicReading = it)) }
+        Text("Bolds the first letters of each word to anchor the eye.", style = HearthText.Caption, color = palette.textSecondary)
+
+        AppearanceSection("Page turns")
+        HearthToggleRow("Animate page turns", prefs.animatedPageTurns) { update(prefs.copy(animatedPageTurns = it)) }
+        HearthToggleRow("Volume buttons turn pages", prefs.volumeButtonNavigation) { update(prefs.copy(volumeButtonNavigation = it)) }
         Text(
             "Volume down: next page. Volume up: previous page. During audio playback, the buttons control volume.",
             style = HearthText.Caption,
             color = palette.textSecondary,
         )
-
-        Overline("Touch zones")
+        Text("Edge tap width", style = HearthText.Body, color = palette.text)
         Row(horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S)) {
-            listOf(0.15f, 0.20f, 0.30f).forEach { width ->
+            listOf("Narrow" to 0.13f, "Medium" to 0.20f, "Wide" to 0.30f).forEach { (label, width) ->
                 HearthChip(
-                    "${(width * 100).toInt()}%",
+                    label,
                     selected = kotlin.math.abs(prefs.tapZoneWidth - width) < 0.01f,
-                    onClick = { vm.updatePreferences(prefs.copy(tapZoneWidth = width)) },
+                    onClick = { update(prefs.copy(tapZoneWidth = width)) },
                 )
             }
         }
-        HearthToggleRow("Left-edge brightness swipe", prefs.edgeBrightnessSwipe) {
-            vm.updatePreferences(prefs.copy(edgeBrightnessSwipe = it))
-        }
+        HearthToggleRow("Swipe the left edge for brightness", prefs.edgeBrightnessSwipe) { update(prefs.copy(edgeBrightnessSwipe = it)) }
 
-        Stepper("Text size", "${(prefs.fontSize * 100).roundToInt()}%",
-            { vm.updatePreferences(prefs.copy(fontSize = (prefs.fontSize - READER_FONT_SCALE_STEP).coerceIn(MIN_READER_FONT_SCALE, MAX_READER_FONT_SCALE))) },
-            { vm.updatePreferences(prefs.copy(fontSize = (prefs.fontSize + READER_FONT_SCALE_STEP).coerceIn(MIN_READER_FONT_SCALE, MAX_READER_FONT_SCALE))) })
-        Stepper("Line height", "%.2f".format(prefs.lineHeight),
-            { vm.updatePreferences(prefs.copy(lineHeight = (prefs.lineHeight - 0.05f).coerceIn(1.0f, 2.5f))) },
-            { vm.updatePreferences(prefs.copy(lineHeight = (prefs.lineHeight + 0.05f).coerceIn(1.0f, 2.5f))) })
-        Stepper("Margins", "%.1f".format(prefs.pageMargins),
-            { vm.updatePreferences(prefs.copy(pageMargins = (prefs.pageMargins - 0.1f).coerceIn(0f, 2.0f))) },
-            { vm.updatePreferences(prefs.copy(pageMargins = (prefs.pageMargins + 0.1f).coerceIn(0f, 2.0f))) })
-        Stepper("Paragraph indent", "%.2f".format(prefs.paragraphIndent),
-            { vm.updatePreferences(prefs.copy(paragraphIndent = (prefs.paragraphIndent - 0.25f).coerceIn(0f, 3f))) },
-            { vm.updatePreferences(prefs.copy(paragraphIndent = (prefs.paragraphIndent + 0.25f).coerceIn(0f, 3f))) })
-
-        Overline("Typeface")
+        AppearanceSection("Reader dimmer")
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S)) {
-            ReaderFont.entries.forEach { f ->
-                HearthChip(
-                    f.displayName,
-                    selected = f == prefs.font && prefs.customFontName == null,
-                    onClick = { vm.updatePreferences(prefs.copy(font = f, customFontName = null)) },
-                )
-            }
-            customFonts.forEach { font ->
-                HearthChip(
-                    font.displayName,
-                    selected = prefs.customFontName == font.displayName,
-                    onClick = { vm.updatePreferences(prefs.copy(customFontName = font.displayName)) },
-                )
+            listOf("Off" to -1f, "25%" to 0.75f, "50%" to 0.50f, "75%" to 0.25f).forEach { (label, value) ->
+                val selected = if (value < 0f) prefs.screenBrightness < 0f
+                else kotlin.math.abs(prefs.screenBrightness - value) < 0.01f
+                HearthChip(label, selected = selected, onClick = { update(prefs.copy(screenBrightness = value)) })
             }
         }
 
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            HearthToggleRow("Bionic reading", prefs.bionicReading) {
-                vm.updatePreferences(prefs.copy(bionicReading = it))
+        AppearanceSection("While reading")
+        Text("Show at the top of the page", style = HearthText.Caption, color = palette.textSecondary)
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S)) {
+            ReaderProgressDisplay.entries.forEach { mode ->
+                HearthChip(mode.label, selected = prefs.progressDisplay == mode, onClick = { update(prefs.copy(progressDisplay = mode)) })
             }
-            Text(
-                "Bolds the first letters of each word to anchor the eye.",
-                style = HearthText.Caption,
-                color = palette.textSecondary,
-            )
         }
-
-        Overline("Page flow")
-        Row(horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S)) {
-            HearthChip("Paged", selected = !prefs.scroll, onClick = { vm.updatePreferences(prefs.copy(scroll = false)) })
-            HearthChip("Scrolled", selected = prefs.scroll, onClick = { vm.updatePreferences(prefs.copy(scroll = true)) })
-        }
-
-        HearthToggleRow("Justified text", prefs.justified) { vm.updatePreferences(prefs.copy(justified = it)) }
-        HearthToggleRow("Respect publisher styles", prefs.publisherStyles) { vm.updatePreferences(prefs.copy(publisherStyles = it)) }
+        HearthToggleRow("Clock", prefs.showClock) { update(prefs.copy(showClock = it)) }
+        HearthToggleRow("Battery", prefs.showBattery) { update(prefs.copy(showBattery = it)) }
     }
 }
+
+@Composable
+private fun AppearanceSection(title: String) {
+    Box(Modifier.padding(top = Hearth.Spacing.M)) { Overline(title) }
+}
+
+@Composable
+private fun TypefaceCard(
+    label: String,
+    family: androidx.compose.ui.text.font.FontFamily?,
+    selected: Boolean,
+    onSelect: () -> Unit,
+) {
+    val palette = Hearth.palette
+    val shape = RoundedCornerShape(if (Hearth.eink.sharpCorners) 0.dp else 12.dp)
+    Column(
+        Modifier.widthIn(min = 84.dp).clip(shape)
+            .background(if (selected) palette.ember.copy(alpha = 0.12f) else palette.bg)
+            .border(if (selected) 2.dp else 1.dp, if (selected) palette.ember else palette.hairline, shape)
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onSelect)
+            .padding(horizontal = Hearth.Spacing.M, vertical = Hearth.Spacing.S),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text("Aa", style = HearthText.Body.copy(fontFamily = family, fontSize = 22.sp), color = palette.text)
+        Text(label, style = HearthText.Caption.copy(fontFamily = family), color = if (selected) palette.ember else palette.textSecondary, maxLines = 1)
+    }
+}
+
+@Composable
+private fun readerFontFamily(font: ReaderFont): androidx.compose.ui.text.font.FontFamily? {
+    val assets = LocalContext.current.assets
+    return remember(font) {
+        fun asset(name: String) = runCatching {
+            androidx.compose.ui.text.font.FontFamily(androidx.compose.ui.text.font.Font("reader-fonts/$name", assets))
+        }.getOrNull()
+        when (font) {
+            ReaderFont.SERIF -> androidx.compose.ui.text.font.FontFamily.Serif
+            ReaderFont.SANS -> androidx.compose.ui.text.font.FontFamily.SansSerif
+            ReaderFont.MONO, ReaderFont.IA_WRITER -> androidx.compose.ui.text.font.FontFamily.Monospace
+            ReaderFont.LITERATA -> asset("Literata.ttf")
+            ReaderFont.ATKINSON -> asset("AtkinsonHyperlegible.ttf")
+            ReaderFont.LEXEND -> asset("Lexend.ttf")
+            ReaderFont.DYSLEXIC -> null
+        }
+    }
+}
+
+private fun trimmedNumber(value: Float, decimals: Int): String =
+    java.math.BigDecimal(value.toDouble()).setScale(decimals, java.math.RoundingMode.HALF_UP).stripTrailingZeros().toPlainString()
+
+private fun spacingLabel(value: Float, unit: String): String =
+    if (value < 0.005f) "None" else "${trimmedNumber(value, 2)}$unit"
 
 @Composable
 private fun ThemeCard(label: String, theme: ReaderTheme, bg: Color, fg: Color, current: ReaderTheme, onSelect: (ReaderTheme) -> Unit) {
@@ -685,6 +1069,13 @@ private fun SearchSheet(vm: ReaderViewModel, state: ReaderUiState) {
     val palette = Hearth.palette
     val shape = RoundedCornerShape(Hearth.Radius.Inner)
     val keyboard = LocalSoftwareKeyboardController.current
+    val focus = remember { androidx.compose.ui.focus.FocusRequester() }
+    LaunchedEffect(Unit) {
+        if (state.searchQuery.isEmpty()) {
+            focus.requestFocus()
+            keyboard?.show()
+        }
+    }
     Column(Modifier.fillMaxWidth().imePadding().padding(horizontal = Hearth.Spacing.XL).padding(bottom = Hearth.Spacing.XXL), verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.M)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Overline("Search book")
@@ -710,7 +1101,7 @@ private fun SearchSheet(vm: ReaderViewModel, state: ReaderUiState) {
                 cursorBrush = SolidColor(palette.ember),
                 keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { vm.runSearch(); keyboard?.hide() }),
                 keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
-                modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Search text" },
+                modifier = Modifier.fillMaxWidth().focusRequester(focus).semantics { contentDescription = "Search text" },
             )
         }
         if (state.searchOptionsAvailable) {

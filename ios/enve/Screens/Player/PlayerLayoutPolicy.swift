@@ -13,8 +13,19 @@ enum PlayerLayoutPolicy {
     static let sideBySideContentWidth: CGFloat = 1040
     static let sideBySideCoverFraction: CGFloat = 0.38
 
-    // Reserve space for the clock and title above the nightstand transport.
-    static let nightstandTitleAllowance: CGFloat = 210
+    static let nightstandWideFaceMinimumWidth: CGFloat = 560
+    static let nightstandChromeAllowance: CGFloat = 84
+    static let nightstandClockAllowance: CGFloat = 96
+    static let nightstandWideCoverFraction: CGFloat = 0.44
+    static let nightstandNarrowCoverFraction: CGFloat = 0.4
+
+    static func nightstandFaceIsWide(width: CGFloat) -> Bool {
+        width >= nightstandWideFaceMinimumWidth
+    }
+
+    static func nightstandCoverAllowance(width: CGFloat) -> CGFloat {
+        nightstandFaceIsWide(width: width) ? nightstandChromeAllowance : nightstandChromeAllowance + nightstandClockAllowance
+    }
 
     // Reserve chrome height before sizing the cover so short panes retain the transport.
     static let stackedChromeHeight: CGFloat = 470
@@ -49,7 +60,9 @@ enum PlayerLayoutPolicy {
         case .sideBySide:
             return min(size.width * sideBySideCoverFraction, (size.height * 0.56) / coverRatio)
         case .nightstand(let halves):
-            return max(96, min(size.width * 0.5, (halves.upperHeight - nightstandTitleAllowance) / coverRatio))
+            let fraction = nightstandFaceIsWide(width: size.width) ? nightstandWideCoverFraction : nightstandNarrowCoverFraction
+            let coverHeight = halves.upperHeight - nightstandCoverAllowance(width: size.width)
+            return max(96, min(size.width * fraction, coverHeight / coverRatio))
         }
     }
 }

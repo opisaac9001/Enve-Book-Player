@@ -6,6 +6,7 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.core.app.ActivityScenario
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -97,6 +98,14 @@ class PassageAlignmentLiveTest {
                 awaitReader("Narrated passage found") { it.liveReadAlongStatus == "Following audiobook" }
                 awaitReader("Reader reaches later passage") { it.progressPct > 0 }
                 assertTrue(model.state.value.liveReadAlongActive)
+                compose.waitForIdle()
+                val screenshots = File(context.getExternalFilesDir(null), "parity-verification").apply { mkdirs() }
+                InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot().let { bitmap ->
+                    File(screenshots, "linked-read-along.png").outputStream().use {
+                        bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)
+                    }
+                    bitmap.recycle()
+                }
                 withContext(Dispatchers.Main) { model.seekToProgress(0f) }
                 awaitReader("Browsing suspends following") { !it.liveReadAlongFollowing && it.progressPct == 0 }
                 withContext(Dispatchers.Main) { if (!model.state.value.showChrome) model.toggleChrome() }
@@ -109,6 +118,16 @@ class PassageAlignmentLiveTest {
                 compose.onNodeWithContentDescription("Pause audiobook").performClick()
                 awaitReader("Audiobook pauses") { !it.liveReadAlongPlaying }
                 assertTrue(model.state.value.liveReadAlongFollowing)
+                withContext(Dispatchers.Main) { model.seekToProgress(0f) }
+                awaitReader("First page is ready for handoff") { !it.liveReadAlongFollowing && it.progressPct == 0 }
+                withContext(Dispatchers.Main) { if (!model.state.value.showChrome) model.toggleChrome() }
+                compose.onNodeWithText("Listen from this page").performClick()
+                awaitReader("Reading position becomes the listening position") {
+                    it.liveReadAlongFollowing && it.liveReadAlongPlaying && component.audioPlayback().state.value.currentPositionMs < 12_000
+                }
+                withContext(Dispatchers.Main) { if (!model.state.value.showChrome) model.toggleChrome() }
+                compose.onNodeWithContentDescription("Pause audiobook").performClick()
+                awaitReader("Audiobook pauses after the handoff") { !it.liveReadAlongPlaying }
                 withContext(Dispatchers.Main) { if (!model.state.value.showChrome) model.toggleChrome() }
                 compose.onNodeWithContentDescription("Stop following audiobook").performClick()
                 awaitReader("Following stops") { !it.liveReadAlongActive }
@@ -168,6 +187,7 @@ class PassageAlignmentLiveTest {
                 }
                 assertTrue(firstWorker.isCancelled)
                 assertTrue(first.start <= 12 && first.end > 12)
+                assertTrue("Root-package chapter paths must stay relative to the EPUB", !first.href.startsWith("/"))
                 assertTrue(TEXT.contains(first.text))
                 assertTrue(restored.sentence == first.sentence)
                 assertTrue(restored.start == first.start && restored.end == first.end)

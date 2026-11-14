@@ -175,6 +175,8 @@ public class PlayerViewModel {
     @ObservationIgnored private let audiobookshelfService: AudiobookshelfService
     @ObservationIgnored private var restorationTask: Task<Void, Never>?
     @ObservationIgnored private var isRetired = false
+    @ObservationIgnored private var historyPlayingBookId: String?
+    @ObservationIgnored private var historyFailedBookId: String?
 
     init(
         playbackComposition: PlaybackComposition = ActivePlayback.composition,
@@ -219,6 +221,7 @@ public class PlayerViewModel {
         setupObservers()
         setupServiceObservers()
         observePreferencesChanges()
+        observePlaybackHistory(events: playbackComposition.eventPublisher)
 
         restorationTask = Task { [weak self] in
             guard let self, !self.isRetired else { return }
@@ -319,7 +322,55 @@ public class PlayerViewModel {
 
     }
 
+    // Lives on the profile's long-lived player model so history records while the player screen is closed.
+    private func observePlaybackHistory(events: any PlaybackEventPublishing) {
+        events.playbackEvents
+            .receive(on: RunLoop.main)
+            .sink { [weak self] event in
+                guard let self, !self.isRetired, case .failed(let book) = event else { return }
+                self.historyFailedBookId = book.stableId
+                self.profileSession.playbackHistory.record(.playbackFailed, book: book)
+            }
+            .store(in: &cancellables)
+
+        playbackController.snapshots
+            .receive(on: RunLoop.main)
+            .sink { [weak self] snapshot in
+                guard let self, !self.isRetired else { return }
+                let playingBookId = snapshot.isPlaying ? snapshot.currentBook?.stableId : nil
+                defer { self.historyPlayingBookId = playingBookId }
+                guard let book = snapshot.currentBook, let playingBookId, playingBookId != self.historyPlayingBookId else { return }
+                let recovered = self.historyFailedBookId == playingBookId
+                self.historyFailedBookId = nil
+                self.profileSession.playbackHistory.record(
+                    recovered ? .playbackRecovered : .playbackStarted,
+                    book: book,
+                    detail: .position(snapshot.position)
+                )
+            }
+            .store(in: &cancellables)
+
+        conflictResolver?.conflicts
+            .receive(on: RunLoop.main)
+            .sink { [weak self] conflict in
+                guard let self, !self.isRetired, let conflict, let book = self.currentBook, book.id == conflict.bookId else { return }
+                self.profileSession.playbackHistory.record(
+                    .conflictDetected,
+                    book: book,
+                    detail: .positions(local: conflict.local, server: conflict.server)
+                )
+            }
+            .store(in: &cancellables)
+    }
+
     func resolvePlaybackConflict(useServer: Bool) {
+        if let conflict = playbackConflict, let book = currentBook, book.id == conflict.bookId {
+            profileSession.playbackHistory.record(
+                useServer ? .usedServerPosition : .keptLocalPosition,
+                book: book,
+                detail: .position(useServer ? conflict.server : conflict.local)
+            )
+        }
         conflictResolver?.resolveConflict(useServer: useServer)
     }
 

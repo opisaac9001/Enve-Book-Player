@@ -13,7 +13,7 @@ This inventory describes the repository state audited on 2026-08-08. Versions ar
 | FluidAudio | revision `5390df9752c8fc583596018360c5fd70d6fa6c75` | Apache-2.0 | [FluidInference/FluidAudio](https://github.com/FluidInference/FluidAudio). Also contains the separately listed FastCluster, VBx, and NeMo text-processing components. |
 | Fuzi, Readium fork | 4.0.0 | MIT | [readium/Fuzi](https://github.com/readium/Fuzi) |
 | GCDWebServer, Readium fork | 4.0.1 | BSD-3-Clause | [readium/GCDWebServer](https://github.com/readium/GCDWebServer) |
-| ONNX Runtime Objective-C | 1.24.2 | MIT | [microsoft/onnxruntime](https://github.com/microsoft/onnxruntime/tree/v1.24.2). Used by the optional QuartzNet alignment engine. Retain the runtime's license and third-party notices in binary distributions. |
+| ONNX Runtime Objective-C | 1.24.2 | MIT | [microsoft/onnxruntime](https://github.com/microsoft/onnxruntime/tree/v1.24.2). Used by QuartzNet alignment and Kokoro CPU speech synthesis. Retain the runtime's license and third-party notices in binary distributions. |
 | Pulse | 5.2.3 | MIT | [kean/Pulse](https://github.com/kean/Pulse) |
 | PulseLogHandler | 5.1.0 | MIT | [kean/PulseLogHandler](https://github.com/kean/PulseLogHandler) |
 | Readium Swift Toolkit | 3.11.0 | BSD-3-Clause | [readium/swift-toolkit](https://github.com/readium/swift-toolkit) |
@@ -50,11 +50,20 @@ AMSMB2 declares Swift Atomics 1.2 or newer for its test target, and Readium decl
 
 FluidAudio contains a prebuilt `NemoTextProcessing.xcframework` from [FluidInference/text-processing-rs](https://github.com/FluidInference/text-processing-rs) v0.3.0. The binary and its bundled grammars include Apache-2.0, MIT, or dual MIT/Apache-2.0 components, including NVIDIA NeMo Text Processing, rustfst, flate2, and their Rust dependency graph. FluidAudio also includes FastCluster under BSD-2-Clause-style terms and VBx under Apache-2.0. The source package's `ThirdPartyLicenses/` directory is the authoritative inventory.
 
-Enve does not bundle the large TTS model weights in its source repository or application binary. Users may download these through FluidAudio at runtime:
+Enve does not bundle the large TTS model weights in its source repository or application binary. Users may download these at runtime:
 
 - [Kokoro 82M Core ML](https://huggingface.co/FluidInference/kokoro-82m-coreml), Apache-2.0.
+- [Kokoro 82M v1.0 ONNX](https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/tree/1939ad2a8e416c0acfeecc08a694d14ef25f2231), Apache-2.0. iOS 26.4 and later use the quantized CPU graph, its tokenizer and four English voice packs from this pinned revision. Model files are verified against their recorded SHA-256 digests before installation. The pronunciation frontend continues to use FluidAudio's English lexicon and separate G2P assets.
+- [Pocket TTS](https://huggingface.co/kyutai/pocket-tts) by Kyutai, [Core ML conversion](https://huggingface.co/FluidInference/pocket-tts-coreml/tree/c2e998e269e4d4b51f74061faddb8450cd8f9a9a/v2.1/english) by FluidInference, and [the voice of Alba MacKenna](https://huggingface.co/kyutai/tts-voices#alba-mackenna). The downloadable pack and voice are licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+- [Supertonic 3 Core ML](https://huggingface.co/FluidInference/supertonic-3-coreml/tree/2b5b939dfa1bca362c5212dcafeb8aadde90b1bc), derived from Supertone’s Supertonic 3. The downloadable models and voice styles are subject to the [OpenRAIL-M license and use restrictions](https://huggingface.co/Supertone/supertonic-3/blob/main/LICENSE).
 
 Downloading or redistributing a model creates obligations separate from distributing the Enve source. A binary release must show the applicable model license and use restrictions before or with the model download.
+
+## Gradium Phonon narration
+
+Enve bundles the single-threaded SIMD WebAssembly module and JavaScript bindings from [phonon-tts 0.7.0](https://www.npmjs.com/package/phonon-tts/v/0.7.0), built from [xn-ptts v0.7.0](https://github.com/gradium-ai/xn-ptts/tree/v0.7.0). Enve uses the Apache-2.0 option and retains the dependency notices in `enve/Resources/Phonon/`. The local adapter serves only the runtime and verified model files to WebKit.
+
+On iOS 18 and later, readers may download [Phonon 31m English](https://huggingface.co/gradium/phonon-31m-en/tree/92741c5b07d085ff840e26fea8ce43110b87852f) and the Hugh and Spencer embeddings from the [Gradium voice catalog](https://huggingface.co/gradium/phonon-voices/tree/da6c9ec0d47be8df5c87c730a3aa97187f3229c3), both Apache-2.0. Model weights are downloaded separately and verified against SHA-256 digests.
 
 ## QuartzNet alignment model
 

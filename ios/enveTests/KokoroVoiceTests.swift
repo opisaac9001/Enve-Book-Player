@@ -52,11 +52,11 @@ nonisolated struct KokoroVoiceTests {
 
     #if !targetEnvironment(macCatalyst)
     @Test(arguments: [
-        (17, 7, true), (26, 3, true), (26, 4, false), (26, 5, false), (26, 6, false), (27, 0, false), (27, 2, false),
+        (17, 7, false), (26, 3, false), (26, 4, true), (26, 5, true), (26, 6, true), (27, 0, true), (27, 2, true),
     ])
-    func kokoroIsOffWhereItsModelsCanCrash(major: Int, minor: Int, supported: Bool) {
+    func affectedSystemsUseTheCPUBackend(major: Int, minor: Int, supported: Bool) {
         let version = OperatingSystemVersion(majorVersion: major, minorVersion: minor, patchVersion: 0)
-        #expect(KokoroTTSRuntime.isSupported(on: version) == supported)
+        #expect(KokoroTTSRuntime.usesONNX(on: version) == supported)
     }
     #endif
 
@@ -78,10 +78,10 @@ nonisolated struct KokoroVoiceTests {
         for attempt in [{ service.setEngineChoice(.kokoro) }, { service.downloadModel(for: .kokoro) }] {
             attempt()
             #expect(service.engineChoice == .apple)
-            if service.kokoroDownloadState == .ready {
+            if service.downloadState(for: .kokoro) == .ready {
                 #expect(service.speechError == unavailable)
             } else {
-                #expect(service.kokoroDownloadState == .failed(unavailable))
+                #expect(service.downloadState(for: .kokoro) == .failed(unavailable))
             }
         }
         #expect(defaults.string(forKey: "ebookTTS.engine") == "kokoro")

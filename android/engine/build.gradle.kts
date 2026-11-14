@@ -1,3 +1,6 @@
+import java.security.MessageDigest
+import java.util.zip.ZipFile
+
 plugins {
     id("com.android.library")
     id("org.jetbrains.kotlin.android")
@@ -7,6 +10,56 @@ plugins {
     id("com.google.dagger.hilt.android")
 }
 
+val sherpaOnnx: Configuration by configurations.creating {
+    isCanBeConsumed = false
+    isTransitive = false
+}
+val sherpaOnnxSha256 = "07e042d97f3a6bd5b7fe74d4eef0513dc01a714b16c15a903250095aba43a575"
+val sherpaOnnxDir = layout.buildDirectory.dir("generated/sherpaOnnx")
+val extractSherpaOnnx = tasks.register("extractSherpaOnnx") {
+    inputs.files(sherpaOnnx)
+    inputs.property("sha256", sherpaOnnxSha256)
+    outputs.dir(sherpaOnnxDir)
+    doLast {
+        val archive = sherpaOnnx.singleFile
+        val digest = MessageDigest.getInstance("SHA-256")
+        archive.inputStream().buffered().use { input ->
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        val actual = digest.digest().joinToString("") { byte -> "%02x".format(byte) }
+        check(actual == sherpaOnnxSha256) { "sherpa-onnx AAR digest mismatch: $actual" }
+
+        ZipFile(archive).use { zip ->
+            for (name in listOf("classes.jar", "jni/arm64-v8a/libsherpa-onnx-jni.so")) {
+                val target = sherpaOnnxDir.get().file(name).asFile
+                target.parentFile.mkdirs()
+                zip.getInputStream(zip.getEntry(name)).use { input ->
+                    target.outputStream().use { output -> input.copyTo(output) }
+                }
+            }
+        }
+    }
+}
+
+val woofRuntime = rootProject.findProject(":woof-runtime")
+val phononLibrary = providers.gradleProperty("envePhononLibrary").map { path ->
+    file(path).also {
+        require(it.isFile && it.name == "libptts_ffi.so") {
+            "envePhononLibrary must point to the ARM64 libptts_ffi.so built by scripts/build-phonon-android"
+        }
+    }
+}
+val phononJni = layout.buildDirectory.dir("generated/phonon/jni")
+val stagePhonon = tasks.register<Sync>("stagePhonon") {
+    into(phononJni)
+    from(phononLibrary) { into("arm64-v8a") }
+}
+
 android {
     namespace = "com.enve.engine.impl"
     compileSdk { version = release(36) { minorApiLevel = 1 } }
@@ -14,10 +67,24 @@ android {
 
     defaultConfig {
         minSdk = 26
+        buildConfigField("boolean", "PHONON_AVAILABLE", phononLibrary.isPresent.toString())
+
+        consumerProguardFiles("consumer-rules.pro")
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
             abiFilters += "arm64-v8a"
         }
+    }
+
+    sourceSets.getByName("main").jniLibs.srcDir(
+        files(sherpaOnnxDir.map { it.dir("jni") }).builtBy(extractSherpaOnnx)
+    )
+
+    sourceSets.getByName("debug").java.srcDir(if (woofRuntime == null) "src/noWoof/java" else "src/woof/java")
+    sourceSets.getByName("release").java.srcDir("src/noWoof/java")
+    if (phononLibrary.isPresent) {
+        sourceSets.getByName("main").jniLibs.srcDir(files(phononJni).builtBy(stagePhonon))
     }
 
     compileOptions {
@@ -38,6 +105,12 @@ android {
     }
 }
 
+if (phononLibrary.isPresent) {
+    tasks.matching { it.name.startsWith("merge") && it.name.endsWith("JniLibFolders") }.configureEach {
+        dependsOn(stagePhonon)
+    }
+}
+
 kotlin {
     compilerOptions {
         jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
@@ -45,6 +118,7 @@ kotlin {
 }
 
 dependencies {
+    if (woofRuntime != null) debugImplementation(woofRuntime)
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
 
     api(project(":core"))
@@ -59,6 +133,8 @@ dependencies {
 
     implementation("org.nanohttpd:nanohttpd:2.3.1")
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.24.2")
+    sherpaOnnx("com.k2fsa.sherpa.onnx:sherpa-onnx-static-link-onnxruntime:2.0.1@aar")
+    implementation(files(sherpaOnnxDir.map { it.file("classes.jar") }).builtBy(extractSherpaOnnx))
 
     implementation("com.google.dagger:hilt-android:2.58")
     ksp("com.google.dagger:hilt-compiler:2.58")
@@ -113,4 +189,15 @@ dependencies {
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+    androidTestImplementation("androidx.test:runner:1.7.0")
+    androidTestImplementation("androidx.test.ext:junit:1.3.0")
+}
+
+tasks.configureEach {
+    if (
+        name.startsWith("merge") && name.endsWith("JniLibFolders")
+            || name.contains("lint", ignoreCase = true)
+    ) {
+        dependsOn(extractSherpaOnnx)
+    }
 }

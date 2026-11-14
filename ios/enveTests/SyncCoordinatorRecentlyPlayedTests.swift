@@ -196,14 +196,14 @@ struct SyncCoordinatorRecentlyPlayedTests {
         #expect(sink.pushCount == 1)
     }
 
-    @Test func flushesPendingQueueBeforeRunningWorker() async {
+    @Test func launchPullRunsBeforePendingUploads() async {
         let fixture = CoordinatorFixture()
         defer { fixture.tearDown() }
         fixture.enqueue("queued")
 
         let result = await fixture.coordinator.runRecentlyPlayedSync(trigger: .appLaunch)
 
-        #expect(fixture.log.events == ["flush:queued", "worker"])
+        #expect(fixture.log.events == ["worker", "flush:queued"])
         #expect(fixture.worker.triggers == [.appLaunch])
         #expect(result.wasCancelled == false)
     }
@@ -228,7 +228,7 @@ struct SyncCoordinatorRecentlyPlayedTests {
         #expect(rejected.attemptedBackendCount == 0)
         #expect(rejected.wasCancelled == false)
         #expect(fixture.worker.triggers == [.appLaunch])
-        #expect(fixture.log.events == ["flush:first", "worker"])
+        #expect(fixture.log.events == ["worker"])
         #expect(fixture.queue.entries["second"] != nil)
 
         fixture.worker.releaseOldest()

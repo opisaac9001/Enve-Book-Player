@@ -692,10 +692,7 @@ class AggregatorRepository @Inject constructor(
     }
 
     suspend fun startPlaybackSession(book: Book): Result<com.enve.core.data.provider.ProviderPlaybackSession> {
-        if (!serverSync.isEnabled) {
-            return getAudioTracks(book).map { tracks -> ProviderPlaybackSession(sessionId = "", audioTracks = tracks, chapters = book.chapters) }
-        }
-        return withBookConnection(book) { it.startPlaybackSession(book) }
+        return withBookConnection(book) { it.startPlaybackSession(book, persistProgress = serverSync.isEnabled) }
     }
 
     suspend fun fetchChapters(book: Book): Result<List<com.enve.core.data.model.Chapter>> {
@@ -760,6 +757,7 @@ class AggregatorRepository @Inject constructor(
         page: Int? = null,
         pageCount: Int? = null,
         connectionId: String? = null,
+        observedAt: Long = System.currentTimeMillis(),
     ): Result<Unit> {
         val connections = connectionRegistry.connections.first().filter { it.enabled }
         val connection = selectConnectionForSource(source, connectionId, connections)
@@ -771,7 +769,7 @@ class AggregatorRepository @Inject constructor(
                 progress = percentage.coerceIn(0f, 1f),
                 currentTimeSec = -1L,
                 locatorJson = locator,
-                nowMs = System.currentTimeMillis(),
+                nowMs = observedAt,
             )
         }
 
@@ -779,22 +777,24 @@ class AggregatorRepository @Inject constructor(
         val providerLocator = providerEbookLocator(locator)
         val result = if (connection != null) {
             withConnectionContext(connection) {
-                getAdapterForSource(connection.source).syncEbookProgress(
+                getAdapterForSource(connection.source).syncEbookProgressAt(
                     bookId = bookId,
                     percentage = percentage,
                     locator = providerLocator,
                     page = page,
                     pageCount = pageCount,
+                    observedAt = observedAt,
                 )
             }
         } else {
             val adapter = getAdapterForSource(source)
-            adapter.syncEbookProgress(
+            adapter.syncEbookProgressAt(
                 bookId = bookId,
                 percentage = percentage,
                 locator = providerLocator,
                 page = page,
                 pageCount = pageCount,
+                observedAt = observedAt,
             )
         }
         return result

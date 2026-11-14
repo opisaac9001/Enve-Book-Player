@@ -22,6 +22,60 @@ struct LibraryFilterStateTests {
         await fixture.close()
     }
 
+    @Test func audiobookFilterSurvivesReopeningEveryLibraryScope() async throws {
+        let fixture = try OfflineAvailabilityFixture()
+        let scopes: [LibrarySourceFilter] = [
+            .all, .device, .connection(fixture.providerID),
+            .library(providerId: fixture.providerID, libraryId: "books"),
+        ]
+        for scope in scopes {
+            let model = LibraryModel(profileSession: fixture.session)
+            model.select(scope)
+            model.select(LibraryMediaFilter.audiobooks)
+
+            let reopened = LibraryModel(profileSession: fixture.session)
+            #expect(reopened.sourceFilter == scope)
+            #expect(reopened.media == .audiobooks)
+        }
+        await fixture.close()
+    }
+
+    @Test func eachScopeRestoresItsOwnMediaFilterAfterReopening() async throws {
+        let fixture = try OfflineAvailabilityFixture()
+        let assignments: [(LibrarySourceFilter, LibraryMediaFilter)] = [
+            (.all, .audiobooks),
+            (.device, .podcasts),
+            (.connection(fixture.providerID), .all),
+            (.library(providerId: fixture.providerID, libraryId: "books"), .audiobooks),
+        ]
+        let model = LibraryModel(profileSession: fixture.session)
+        for (scope, media) in assignments {
+            model.select(scope)
+            model.select(media)
+        }
+
+        for (scope, media) in assignments.reversed() {
+            let reopened = LibraryModel(profileSession: fixture.session)
+            reopened.select(scope)
+            #expect(reopened.media == media)
+            let relaunched = LibraryModel(profileSession: fixture.session)
+            #expect(relaunched.sourceFilter == scope)
+            #expect(relaunched.media == media)
+        }
+        await fixture.close()
+    }
+
+    @Test func mediaFilterIsScopedToTheProfile() async throws {
+        let first = try OfflineAvailabilityFixture()
+        let second = try OfflineAvailabilityFixture()
+        LibraryModel(profileSession: first.session).select(LibraryMediaFilter.audiobooks)
+
+        #expect(LibraryModel(profileSession: first.session).media == .audiobooks)
+        #expect(LibraryModel(profileSession: second.session).media == .all)
+        await first.close()
+        await second.close()
+    }
+
     @Test func clearingContentFiltersPreservesTheLibraryAndStaysClearedAfterReopening() async throws {
         let fixture = try OfflineAvailabilityFixture()
         let scope = LibrarySourceFilter.library(providerId: fixture.providerID, libraryId: "books")

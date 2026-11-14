@@ -153,9 +153,14 @@ class GrimmoryToolsRepository @Inject constructor(
         val response = api.getBookRecommendations(bookId, limit.coerceIn(1, 25))
         if (response.code() == 404) return@runSuspendCatching null
         if (!response.isSuccessful) error("Grimmory recommendations failed: HTTP ${response.code()}")
-        response.body().orEmpty()
-            .sortedByDescending { it.similarityScore }
-            .mapNotNull { it.book?.id }
+        val recommendations = response.body().orEmpty()
+        val ordered = if (recommendations.all { it.similarityScore != null }) {
+            recommendations.sortedByDescending { it.similarityScore }
+        } else {
+            recommendations
+        }
+        ordered
+            .mapNotNull { it.bookId }
             .filterNot { it == bookId }
             .distinct()
     }

@@ -4,6 +4,14 @@ actor iTunesPodcastProvider {
 
     static let shared = iTunesPodcastProvider()
 
+    private let session: URLSession
+    private let policy: ExternalServicesPolicy
+
+    init(session: URLSession = .shared, policy: ExternalServicesPolicy = .shared) {
+        self.session = session
+        self.policy = policy
+    }
+
     private func makeDecoder() -> JSONDecoder {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
@@ -33,6 +41,7 @@ actor iTunesPodcastProvider {
     }
 
     func search(term: String, limit: Int = 25) async throws -> [iTunesPodcast] {
+        try policy.checkAllowed(.appleCatalog)
         guard !term.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
 
         var components = URLComponents(string: "https://itunes.apple.com/search")!
@@ -47,7 +56,7 @@ actor iTunesPodcastProvider {
             throw PodcastSearchError.invalidURL
         }
 
-        let (data, response) = try await URLSession.shared.data(from: url)
+        let (data, response) = try await session.data(from: url)
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             throw PodcastSearchError.searchFailed
         }
@@ -58,6 +67,7 @@ actor iTunesPodcastProvider {
     }
 
     func lookup(collectionId: String) async throws -> iTunesPodcast? {
+        try policy.checkAllowed(.appleCatalog)
         var components = URLComponents(string: "https://itunes.apple.com/lookup")!
         components.queryItems = [
             URLQueryItem(name: "id", value: collectionId),
@@ -66,7 +76,7 @@ actor iTunesPodcastProvider {
 
         guard let url = components.url else { return nil }
 
-        let (data, response) = try await URLSession.shared.data(from: url)
+        let (data, response) = try await session.data(from: url)
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else { return nil }
 
         let searchResponse = try makeDecoder().decode(iTunesSearchResponse.self, from: data)
@@ -75,12 +85,13 @@ actor iTunesPodcastProvider {
     }
 
     func topPodcasts(genreId: Int?, limit: Int = 40) async throws -> [iTunesPodcast] {
+        try policy.checkAllowed(.appleCatalog)
         let storefront = (Locale.current.region?.identifier ?? "US").lowercased()
         let genrePath = genreId.map { "/genre=\($0)" } ?? ""
         guard let chartURL = URL(string: "https://itunes.apple.com/\(storefront)/rss/toppodcasts/limit=\(limit)\(genrePath)/json") else {
             throw PodcastSearchError.invalidURL
         }
-        let (chartData, chartResponse) = try await URLSession.shared.data(from: chartURL)
+        let (chartData, chartResponse) = try await session.data(from: chartURL)
         guard (chartResponse as? HTTPURLResponse)?.statusCode == 200 else {
             throw PodcastSearchError.searchFailed
         }
@@ -94,7 +105,8 @@ actor iTunesPodcastProvider {
             URLQueryItem(name: "country", value: storefront),
         ]
         guard let lookupURL = components.url else { throw PodcastSearchError.invalidURL }
-        let (data, response) = try await URLSession.shared.data(from: lookupURL)
+        try policy.checkAllowed(.appleCatalog)
+        let (data, response) = try await session.data(from: lookupURL)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
             throw PodcastSearchError.searchFailed
         }

@@ -1,5 +1,9 @@
 import Foundation
 
+struct DownloadedProgressConflict: Error {
+    let serverPosition: TimeInterval
+}
+
 @MainActor
 final class ProviderSyncSink: SyncSink {
     static let identifier = "library.provider"
@@ -9,8 +13,11 @@ final class ProviderSyncSink: SyncSink {
 
     private let providerResolver: any LibraryProviderResolving
 
-    init(providerResolver: any LibraryProviderResolving) {
+    private let pendingSync: PendingSyncQueueStore?
+
+    init(providerResolver: any LibraryProviderResolving, pendingSync: PendingSyncQueueStore? = nil) {
         self.providerResolver = providerResolver
+        self.pendingSync = pendingSync
     }
 
     func isApplicable(to book: Book, domain: ProgressSyncDomain) -> Bool {
@@ -132,6 +139,27 @@ final class ProviderSyncSink: SyncSink {
             guard let progressProvider = provider as? any AudiobookProgressPushing else {
                 throw ProviderError.notImplemented
             }
+            let stableId = update.book.stableId
+            let pendingEntry = pendingSync?.entries[stableId]
+            let baseline = pendingEntry?.downloadedBaseline
+            let resolution = pendingSync?.downloadedProgressResolution(for: stableId)
+            if let baseline, let pulling = provider as? any AudiobookProgressPulling,
+                provider.syncCapability.contains(.pullProgress),
+                let remote = try await PlaybackStartupDeadline.run(seconds: 5, operation: {
+                    try await pulling.fetchAudiobookProgressState(for: update.book)
+                })
+            {
+                let serverPosition = remote.positionSeconds > 0
+                    ? remote.positionSeconds
+                    : remote.percentage * (update.book.duration ?? 0)
+                if baseline.conflicts(with: remote, position: serverPosition) {
+                    throw DownloadedProgressConflict(serverPosition: serverPosition)
+                }
+            }
+            if baseline != nil, pendingSync?.downloadedProgressResolution(for: stableId) != resolution {
+                throw CancellationError()
+            }
+            try Task.checkCancellation()
             try await progressProvider.updatePlaybackProgress(
                 book: update.book,
                 sessionId: update.sessionId,
@@ -139,6 +167,9 @@ final class ProviderSyncSink: SyncSink {
                 isFinished: update.isFinished,
                 timeListened: update.timeListened
             )
+            if let pendingEntry, baseline != nil {
+                pendingSync?.acknowledgeDownloadedProgress(pendingEntry)
+            }
         }
     }
 }

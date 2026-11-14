@@ -172,52 +172,89 @@ enum ReaderNotebookMerge {
         return Snapshot(bookmarks: mergedBookmarks, annotations: mergedAnnotations)
     }
 
+    // `records` must be the complete server listing: a mapped artifact missing from it was deleted remotely.
     @MainActor
     static func applyingSiloRecords(
         _ records: [SiloReaderAnnotationRecord],
         to snapshot: Snapshot,
-        bookStableID: String,
-        connectionID: UUID,
+        scope: SiloReaderArtifactScope,
         idMap: any SiloReaderArtifactIDMapping
     ) -> Snapshot {
         var mergedBookmarks = snapshot.bookmarks
         var mergedAnnotations = snapshot.annotations
         let remoteIDs = Set(records.map(\.id))
+        let guards = idMap.artifactGuards(in: scope)
 
-        for record in records {
+        for record in records where guards[record.id]?.state != .pendingDelete {
             if record.kind == "bookmark" {
-                mergeSiloBookmark(
-                    record,
-                    into: &mergedBookmarks,
-                    idMap: idMap,
-                    connectionID: connectionID,
-                    bookStableID: bookStableID
-                )
+                mergeSiloBookmark(record, with: guards[record.id], into: &mergedBookmarks, idMap: idMap, scope: scope)
             } else {
-                mergeSiloAnnotation(
-                    record,
-                    into: &mergedAnnotations,
-                    idMap: idMap,
-                    connectionID: connectionID,
-                    bookStableID: bookStableID
-                )
+                mergeSiloAnnotation(record, with: guards[record.id], into: &mergedAnnotations, idMap: idMap, scope: scope)
             }
         }
 
-        mergedAnnotations.removeAll { annotation in
-            guard let remoteID = idMap.annotationRemoteID(connectionID: connectionID, bookID: bookStableID, localID: annotation.id) else {
+        func discardsAfterRemoteDeletion(_ remoteID: String, localDate: Date) -> Bool {
+            if let current = guards[remoteID], current.state != .synced || localDate > current.recordedAt {
+                idMap.setArtifactGuard(.init(etag: current.etag, state: .conflict, recordedAt: current.recordedAt), remoteID: remoteID, in: scope)
                 return false
             }
-            return !remoteIDs.contains(remoteID)
+            idMap.setArtifactGuard(nil, remoteID: remoteID, in: scope)
+            return true
+        }
+        mergedAnnotations.removeAll { annotation in
+            guard let remoteID = idMap.annotationRemoteID(connectionID: scope.connectionID, bookID: scope.bookID, localID: annotation.id),
+                !remoteIDs.contains(remoteID), discardsAfterRemoteDeletion(remoteID, localDate: annotation.updatedAt)
+            else { return false }
+            idMap.removeAnnotationRemoteID(connectionID: scope.connectionID, bookID: scope.bookID, localID: annotation.id)
+            return true
         }
         mergedBookmarks.removeAll { bookmark in
-            guard let remoteID = idMap.bookmarkRemoteID(connectionID: connectionID, bookID: bookStableID, localID: bookmark.id) else {
-                return false
-            }
-            return !remoteIDs.contains(remoteID)
+            guard let remoteID = idMap.bookmarkRemoteID(connectionID: scope.connectionID, bookID: scope.bookID, localID: bookmark.id),
+                !remoteIDs.contains(remoteID), discardsAfterRemoteDeletion(remoteID, localDate: bookmark.timestamp)
+            else { return false }
+            idMap.removeBookmarkRemoteID(connectionID: scope.connectionID, bookID: scope.bookID, localID: bookmark.id)
+            return true
+        }
+        for (remoteID, artifactGuard) in guards where artifactGuard.state == .pendingDelete && !remoteIDs.contains(remoteID) {
+            idMap.setArtifactGuard(nil, remoteID: remoteID, in: scope)
         }
 
         return Snapshot(bookmarks: mergedBookmarks, annotations: mergedAnnotations)
+    }
+
+    @MainActor
+    private static func adoptsSiloRecord(
+        _ record: SiloReaderAnnotationRecord,
+        with artifactGuard: SiloReaderArtifactGuard?,
+        localDate: Date,
+        idMap: any SiloReaderArtifactIDMapping,
+        scope: SiloReaderArtifactScope
+    ) -> Bool {
+        let remoteDate = record.updatedAt ?? record.createdAt ?? .distantPast
+        guard let artifactGuard else {
+            idMap.setArtifactGuard(SiloReaderArtifactGuard(etag: record.etag, state: .synced, recordedAt: Date()), remoteID: record.id, in: scope)
+            return remoteDate > localDate
+        }
+        switch artifactGuard.state {
+        case .synced:
+            if localDate > artifactGuard.recordedAt {
+                idMap.setArtifactGuard(.init(etag: artifactGuard.etag, state: .pendingUpdate, recordedAt: localDate), remoteID: record.id, in: scope)
+                return false
+            }
+            guard artifactGuard.etag != record.etag else { return false }
+            idMap.setArtifactGuard(SiloReaderArtifactGuard(etag: record.etag, state: .synced, recordedAt: Date()), remoteID: record.id, in: scope)
+            return true
+        case .pendingUpdate where artifactGuard.etag.isEmpty:
+            let state: SiloReaderArtifactGuard.State = .conflict
+            idMap.setArtifactGuard(
+                SiloReaderArtifactGuard(etag: record.etag, state: state, recordedAt: artifactGuard.recordedAt),
+                remoteID: record.id,
+                in: scope
+            )
+            return false
+        case .pendingUpdate, .pendingDelete, .conflict:
+            return false
+        }
     }
 
     @MainActor
@@ -398,11 +435,13 @@ enum ReaderNotebookMerge {
     @MainActor
     private static func mergeSiloAnnotation(
         _ record: SiloReaderAnnotationRecord,
+        with artifactGuard: SiloReaderArtifactGuard?,
         into local: inout [ReaderAnnotation],
         idMap: any SiloReaderArtifactIDMapping,
-        connectionID: UUID,
-        bookStableID: String
+        scope: SiloReaderArtifactScope
     ) {
+        let connectionID = scope.connectionID
+        let bookStableID = scope.bookID
         let remoteDate = record.updatedAt ?? record.createdAt ?? Date()
         let mappedLocalID =
             idMap.localAnnotationID(connectionID: connectionID, bookID: bookStableID, remoteID: record.id)
@@ -410,11 +449,17 @@ enum ReaderNotebookMerge {
         let remoteCFI = siloCFI(record)
         let index =
             mappedLocalID.flatMap { localID in local.firstIndex(where: { $0.id == localID }) }
-            ?? remoteCFI.flatMap { cfi in local.firstIndex(where: { siloCFI(fromLocator: $0.locator) == cfi }) }
+            ?? remoteCFI.flatMap { cfi in
+                local.firstIndex(where: {
+                    idMap.annotationRemoteID(connectionID: connectionID, bookID: bookStableID, localID: $0.id) == nil
+                        && siloCFI(fromLocator: $0.locator) == cfi
+                })
+            }
 
         if let index {
             idMap.setAnnotationRemoteID(record.id, connectionID: connectionID, bookID: bookStableID, localID: local[index].id)
-            guard remoteDate > local[index].updatedAt else { return }
+            guard adoptsSiloRecord(record, with: artifactGuard, localDate: local[index].updatedAt, idMap: idMap, scope: scope)
+            else { return }
             local[index] = ReaderAnnotation(
                 id: local[index].id,
                 bookId: bookStableID,
@@ -435,6 +480,7 @@ enum ReaderNotebookMerge {
 
         let localID = mappedLocalID?.isEmpty == false ? mappedLocalID! : UUID().uuidString
         idMap.setAnnotationRemoteID(record.id, connectionID: connectionID, bookID: bookStableID, localID: localID)
+        idMap.setArtifactGuard(SiloReaderArtifactGuard(etag: record.etag, state: .synced, recordedAt: Date()), remoteID: record.id, in: scope)
         local.append(
             ReaderAnnotation(
                 id: localID,
@@ -456,11 +502,13 @@ enum ReaderNotebookMerge {
     @MainActor
     private static func mergeSiloBookmark(
         _ record: SiloReaderAnnotationRecord,
+        with artifactGuard: SiloReaderArtifactGuard?,
         into local: inout [Bookmark],
         idMap: any SiloReaderArtifactIDMapping,
-        connectionID: UUID,
-        bookStableID: String
+        scope: SiloReaderArtifactScope
     ) {
+        let connectionID = scope.connectionID
+        let bookStableID = scope.bookID
         let remoteDate = record.updatedAt ?? record.createdAt ?? Date()
         let mappedLocalID =
             idMap.localBookmarkID(connectionID: connectionID, bookID: bookStableID, remoteID: record.id)
@@ -470,7 +518,8 @@ enum ReaderNotebookMerge {
 
         if let index {
             idMap.setBookmarkRemoteID(record.id, connectionID: connectionID, bookID: bookStableID, localID: local[index].id)
-            guard remoteDate > local[index].timestamp else { return }
+            guard adoptsSiloRecord(record, with: artifactGuard, localDate: local[index].timestamp, idMap: idMap, scope: scope)
+            else { return }
             local[index] = Bookmark(
                 id: local[index].id,
                 bookId: bookStableID,
@@ -489,6 +538,7 @@ enum ReaderNotebookMerge {
 
         let localID = mappedLocalID?.isEmpty == false ? mappedLocalID! : UUID().uuidString
         idMap.setBookmarkRemoteID(record.id, connectionID: connectionID, bookID: bookStableID, localID: localID)
+        idMap.setArtifactGuard(SiloReaderArtifactGuard(etag: record.etag, state: .synced, recordedAt: Date()), remoteID: record.id, in: scope)
         local.append(
             Bookmark(
                 id: localID,

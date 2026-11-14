@@ -114,13 +114,29 @@ Use a synthetic local fixture for destructive catalog scenarios, never a custome
 - [ ] Pause/resume, previous/next paragraph, voice and speed changes work; changing voice or speed while paused leaves speech paused
 - [ ] During speech or recorded narration, the compact player's up arrow reopens the normal controls without stopping playback
 - [ ] Open Contents, Appearance and voice/speed settings while speaking; dismissing a sheet retains the current speech session
+- [ ] Download and retry for each optional narrator show its terms and size; Cancel does not download, and Agree and download starts progress
 - [ ] Backgrounding pauses native TTS; returning permits explicit resume at the last spoken word
 - [ ] Progress persists across close and reopen; pull-on-open resolves cross-device position
 - [ ] PDF and comic readers open and page correctly
+- [ ] PDF Appearance: Crop, Fit, Fill Height and Fill Width preserve page shape and persist per book after reopening
+- [ ] Pan cropped PDF pages to every printed edge; pinch and double-tap zoom, then double-tap again to reset without turning pages
+- [ ] PDF zoom resets after changing page, spread, sizing mode or orientation; two-page view still preserves the selected page and progress
+- [ ] At 320dp width and 200% text, all PDF sizing choices remain reachable by scrolling and Done stays visible
+- [ ] In e-ink mode, PDF pan and pinch settle when the fingers lift
 
-`NativeTtsSynthesisTest` verifies installed-engine discovery and non-silent synthesized PCM. `ReaderTtsPlaybackTest` exercises the real reader and native speech with Readium and Foliate. `LibraryControlsParityTest` checks sort persistence, scope-preserving reset, touch targets and adaptive layouts. Run these on the Pixel 7a; they use generated text fixtures rather than customer books. Android uses installed system TTS voices; Kokoro and Supertonic are not Android engines.
+`PdfPageAdjustVerificationTest` checks printed-edge recovery, zoom resets and sizing persistence. `PdfPageViewportVerificationTest` checks pinch input and deferred e-ink drawing. Run the sizing-choice test at 320dp width and 200% text as well as normal display settings. `PdfReadingLayoutVerificationTest` covers spread navigation and progress.
 
-Read-aloud transport references refreshed on 2026-10-24: Silveran Reader `669a56903316fa51bf9c2850bdc89d9bbcac37dc` and Storyteller `b821e0f4eb6c7c960386c90fa5cc1c7c84bfcd2d`. Both clean reference checkouts were fetched and already matched upstream `main`.
+`NativeTtsSynthesisTest` verifies installed-engine discovery and non-silent synthesized PCM. `ReaderTtsPlaybackTest` exercises the real reader and native speech with Readium and Foliate. `LibraryControlsParityTest` checks sort persistence, scope-preserving reset, touch targets and adaptive layouts. Run these on the Pixel 7a; they use generated text fixtures rather than customer books. The reader also offers local Kokoro, Supertonic 3 and Pocket TTS packs. Pass the instrument argument `readerNarrator` with `KOKORO`, `SUPERTONIC` or `POCKET` to exercise a download, local playback and pause/resume in `ReaderTtsPlaybackTest.downloadedNarratorReadsLocally`. After installing Kokoro, run `KokoroEnglishFrontendTest` to check that names, numbers and punctuation are spoken.
+
+Read-aloud transport references reviewed on 2026-11-10 after updating both clean checkouts from upstream `main`. Silveran Reader was at `669a56903316fa51bf9c2850bdc89d9bbcac37dc` and Storyteller was at `fefce4b929f5dc2bb0979e48d0e0c293dc3c882b`.
+
+### Phonon and Woof on ARM64
+
+Set `ANDROID_NDK_HOME` to NDK 27.2.12479018, install Rust, and run `./scripts/build-phonon-android /path/to/phonon-checkout`. Pass `-PenvePhononLibrary=/path/to/phonon-checkout/target/aarch64-linux-android/release/libptts_ffi.so` to Gradle to include the native Phonon runtime. The reader downloads the model and the Spencer and Hugh voices on first use.
+
+For private Woof evaluation, install Python 3.13 and put `python3.13` on `PATH`. Download the pinned [Woof snapshot](https://huggingface.co/ConwayResearch/Underdog-Woof/tree/be702960539777fc3f698e54335276a8391b00f9) and point `-PenveWoofSource` at the directory containing `underdog_woof`, `LICENSE`, and `NOTICE`. The opt-in dependency applies to the debug variant. The model downloads separately.
+
+Build `:app:assembleDebug :app:assembleDebugAndroidTest :engine:assembleDebugAndroidTest` with the selected arguments. Run `ReaderTtsPlaybackTest.downloadedNarratorReadsLocally` with `readerNarrator=PHONON` or `readerNarrator=WOOF`. Run `LocalNarratorRuntimeVerificationTest` with `enveNarratorPacks=PHONON,WOOF` to exercise each voice and verify offline synthesis on a longer passage.
 
 ## Settings
 

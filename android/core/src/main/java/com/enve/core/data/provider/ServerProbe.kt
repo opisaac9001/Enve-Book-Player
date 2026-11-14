@@ -161,10 +161,10 @@ object ServerProbe {
 
     private suspend fun fingerprintSilo(base: String): DetectedServer? {
 
-        val r = get(base, "/api/v1/health") ?: return null
+        val r = get(base, "/api/v2/system/info") ?: return null
         if (r.code != 200) return null
         val json = r.body.toJsonObjectOrNull() ?: return null
-        if (json.optString("status") != "ok" || json.optString("server_id").isBlank()) return null
+        if (json.optInt("api_major") != 2 || json.optJSONObject("links")?.optString("identity") != "/api/v2/system/identity") return null
         return DetectedServer(BookSource.SILO, "Silo", base, false, ConnectionAuthMode.USERNAME_PASSWORD)
     }
 

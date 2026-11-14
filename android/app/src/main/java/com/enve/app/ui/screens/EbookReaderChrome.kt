@@ -152,6 +152,7 @@ internal fun ReaderStatusStrip(
     lastPageLabel: String?,
     progressPct: Int,
     chapter: String,
+    minutesLeft: Int?,
     chromeVisible: Boolean,
     textColor: Color,
     modifier: Modifier = Modifier,
@@ -204,6 +205,7 @@ internal fun ReaderStatusStrip(
                 .takeIf { it.isNotEmpty() }
                 ?.let { "$it · $progressPct%" }
                 ?: "$progressPct%"
+        ReaderProgressDisplay.TIME_LEFT -> minutesLeft?.let(::readingTimeLeft) ?: "$progressPct%"
     }
 
     if (timeText == null && batteryPct == null && progressText == null) return

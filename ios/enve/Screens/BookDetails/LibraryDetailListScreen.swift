@@ -98,7 +98,13 @@ struct LibraryDetailListScreen: View {
                 NavigationLink {
                     BookDetailScreen(book: book)
                 } label: {
-                    ShelfCoverCell(book: book, width: cellWidth)
+                    VStack(spacing: 7) {
+                        ShelfCoverCell(book: book, width: cellWidth)
+                        if case .series = scope {
+                            SeriesBookCaption(book: book, showsTitle: true)
+                        }
+                    }
+                    .frame(width: cellWidth)
                 }
                 .buttonStyle(PressableStyle())
             }
@@ -113,5 +119,30 @@ struct LibraryDetailListScreen: View {
         case let .series(name):
             books = await engine.library.detailBooks(series: name)
         }
+    }
+}
+
+struct SeriesBookCaption: View {
+    let book: Book
+    let showsTitle: Bool
+
+    @Environment(\.hearth) private var hearth
+
+    var body: some View {
+        VStack(spacing: 3) {
+            if let sequence = book.seriesInfo?.sequence?.trimmingCharacters(in: .whitespacesAndNewlines),
+                !sequence.isEmpty {
+                Text("Book \(sequence)")
+                    .font(.hearthUI(12, weight: .semibold))
+                    .foregroundStyle(hearth.textSecondary)
+            }
+            if showsTitle {
+                Text(LibraryDisplayFormatter.displayTitle(book.title))
+                    .font(.hearthDisplay(13, weight: .semibold))
+                    .foregroundStyle(hearth.text)
+                    .lineLimit(2)
+            }
+        }
+        .multilineTextAlignment(.center)
     }
 }

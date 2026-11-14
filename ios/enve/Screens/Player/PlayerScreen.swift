@@ -10,6 +10,7 @@ struct PlayerScreen: View {
     var presentation: PlayerPresentation = .cover
     var topInset: CGFloat = 0
     var onShowDetails: ((Book) -> Void)? = nil
+    var onExpand: (() -> Void)? = nil
 
     @Environment(\.profileSession) private var capturedSession
     private var profileSession: ProfileSession { capturedSession ?? .owner }
@@ -139,6 +140,11 @@ struct PlayerScreen: View {
                         ContentUnavailableView("Link an ebook first", systemImage: "books.vertical", description: Text("Link this audiobook to its ebook from book details, then download both books to find matching passages on this device."))
                             .presentationDetents([.medium])
                     }
+                case .history:
+                    if let book = engine.playback.currentBook {
+                        PlaybackHistoryScreen(profileSession: profileSession, bookStableId: book.stableId, bookTitle: book.title)
+                            .presentationDetents([.medium, .large])
+                    }
                 }
             }
             .hearthPresentationBackground()
@@ -174,8 +180,6 @@ struct PlayerScreen: View {
         GeometryReader { geo in
             let usesAccessibilityType = dynamicTypeSize.isAccessibilitySize
             let pose = hinge.pose(for: geo.size)
-            // The cover is immersive: on a folding phone's outer display its buttons stand in the system's side
-            // column, like a toolbar would, and the artwork takes the rest.
             let column = presentation == .cover && hinge.isKnown && !usesAccessibilityType ? geo.hearthSideColumn() : nil
             let arrangement = PlayerLayoutPolicy.arrangement(
                 for: geo.size,
@@ -200,22 +204,26 @@ struct PlayerScreen: View {
                 } else {
                     switch arrangement {
                     case .nightstand(let halves):
-                        nightstandLayout(book: book, coverWidth: coverWidth, halves: halves, showsTopRow: showsTopRow)
+                        nightstandLayout(
+                            book: book,
+                            coverWidth: coverWidth,
+                            halves: halves,
+                            isWide: PlayerLayoutPolicy.nightstandFaceIsWide(width: geo.size.width),
+                            showsTopRow: showsTopRow
+                        )
                             .frame(width: geo.size.width, height: geo.size.height)
                     case .sideBySide:
                         sideBySideLayout(book: book, coverWidth: coverWidth, showsTopRow: showsTopRow)
                             .frame(maxWidth: PlayerLayoutPolicy.sideBySideContentWidth)
                             .frame(width: geo.size.width, height: geo.size.height)
                             .background {
-                                // Held open like a book, the cover and the transport sit on facing pages.
                                 if pose == .book {
                                     HearthSpineShadow(axis: .vertical, depth: 1)
                                         .ignoresSafeArea()
                                 }
                             }
                     case .stacked:
-                        // The column fills the canvas and spreads out as before when it fits; on a short canvas
-                        // such as a folding phone's facing page it scrolls instead of pushing the top row off screen.
+                        // Short panes must scroll to keep the top controls reachable.
                         ScrollView {
                             stackedLayout(book: book, coverWidth: coverWidth, showsTopRow: showsTopRow)
                                 .frame(maxWidth: PlayerLayoutPolicy.stackedContentWidth)
@@ -244,7 +252,6 @@ struct PlayerScreen: View {
         #endif
     }
 
-    // Close first, then the actions, stacked in the side column below the status bar.
     private func sideChrome(column: SideColumn) -> some View {
         VStack(spacing: 10) {
             closeOrDetailsButton
@@ -259,9 +266,13 @@ struct PlayerScreen: View {
         .accessibilityIdentifier("player-side-chrome")
     }
 
-    // Propped partly open on a nightstand: the cover and glow stand on the upright half, the transport lies
-    // on the flat half where a thumb can reach it, and the hinge's clearance between them is the spine.
-    private func nightstandLayout(book: Book, coverWidth: CGFloat, halves: FoldLine.Halves, showsTopRow: Bool) -> some View {
+    private func nightstandLayout(
+        book: Book,
+        coverWidth: CGFloat,
+        halves: FoldLine.Halves,
+        isWide: Bool,
+        showsTopRow: Bool
+    ) -> some View {
         VStack(spacing: 0) {
             VStack(spacing: 0) {
                 if showsTopRow {
@@ -269,35 +280,20 @@ struct PlayerScreen: View {
                         .padding(.horizontal, 20)
                         .padding(.top, 8)
                 }
-                GeometryReader { upper in
-                    ScrollView {
-                        VStack(spacing: 14) {
-                            nightstandClock
-                            artwork(book: book, coverWidth: coverWidth)
-                            titleBlock(book: book)
-                        }
-                        .frame(maxWidth: .infinity, minHeight: upper.size.height)
-                    }
-                    .scrollIndicators(.hidden)
-                    .scrollBounceBehavior(.basedOnSize)
-                }
+                nightstandFace(book: book, coverWidth: coverWidth, isWide: isWide)
+                    .padding(.horizontal, isWide ? 36 : 24)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .frame(height: halves.upperHeight)
             Spacer(minLength: 0)
-            VStack(spacing: 0) {
-                Spacer(minLength: 0)
-                ribbonSection
-                    .padding(.horizontal, 28)
-                Spacer(minLength: 18)
-                transportRow(book: book)
-                errorNotice(book: book)
-                Spacer(minLength: 18)
-                utilityRow(book: book)
-                    .padding(.horizontal, 20)
-                Spacer(minLength: 0)
+            // A short flat half gives up the scrub scope toggle before it crowds the transport.
+            ViewThatFits(in: .vertical) {
+                nightstandDeck(book: book, showsScrubScope: true)
+                nightstandDeck(book: book, showsScrubScope: false)
             }
+            .padding(.horizontal, 28)
             .padding(.bottom, 14)
-            .frame(maxWidth: PlayerLayoutPolicy.stackedContentWidth)
+            .frame(maxWidth: PlayerLayoutPolicy.sideBySideContentWidth)
             .frame(maxWidth: .infinity)
             .frame(height: halves.lowerHeight)
             .accessibilityElement(children: .contain)
@@ -311,47 +307,169 @@ struct PlayerScreen: View {
         }
     }
 
-    // Propped on a nightstand, the upright half doubles as a bedside clock with the sleep timer beside it.
-    private var nightstandClock: some View {
-        TimelineView(.everyMinute) { context in
-            VStack(spacing: 2) {
-                Text(context.date, format: .dateTime.hour().minute())
-                    .font(.hearthDisplay(34, weight: .medium))
-                    .foregroundStyle(hearth.text)
-                if playerVM.sleepTimer != nil {
-                    Overline("Sleep · \(sleepLabel)", color: ambient)
+    @ViewBuilder
+    private func nightstandFace(book: Book, coverWidth: CGFloat, isWide: Bool) -> some View {
+        if isWide {
+            HStack(spacing: 32) {
+                artwork(book: book, coverWidth: coverWidth)
+                VStack(alignment: .leading, spacing: 14) {
+                    nightstandClock(size: 96)
+                    nightstandTitle(book: book)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        } else {
+            VStack(spacing: 14) {
+                nightstandClock(size: 68)
+                HStack(spacing: 20) {
+                    artwork(book: book, coverWidth: coverWidth)
+                    nightstandTitle(book: book)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }
-        .accessibilityElement(children: .combine)
+    }
+
+    private func nightstandClock(size: CGFloat) -> some View {
+        TimelineView(.everyMinute) { context in
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(context.date, format: .dateTime.hour(.defaultDigits(amPM: .omitted)).minute())
+                    .font(.hearthDisplay(size, weight: .medium))
+                    .foregroundStyle(hearth.text)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.5)
+                if let period = Self.dayPeriod(for: context.date) {
+                    Text(period)
+                        .font(.hearthUI(size * 0.22, weight: .semibold))
+                        .foregroundStyle(hearth.text)
+                }
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(Text(context.date, format: .dateTime.hour().minute()))
+        }
         .accessibilityIdentifier("nightstand-clock")
     }
 
-    // The flat half of a phone propped open while the stacks stay on the upright half: only the transport,
-    // with enough of the book to know what it belongs to.
-    private func dockLayout(book: Book) -> some View {
-        // A short flat half gives up the scrub scope toggle before it pushes the tabs off the screen.
-        ViewThatFits(in: .vertical) {
-            dockColumn(book: book, showsScrubScope: true)
-            dockColumn(book: book, showsScrubScope: false)
+    private static func dayPeriod(for date: Date) -> String? {
+        let cycle = Locale.autoupdatingCurrent.hourCycle
+        guard cycle == .oneToTwelve || cycle == .zeroToEleven else { return nil }
+        let calendar = Calendar.autoupdatingCurrent
+        return calendar.component(.hour, from: date) < 12 ? calendar.amSymbol : calendar.pmSymbol
+    }
+
+    private func nightstandTitle(book: Book) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if playerVM.sleepTimer != nil {
+                Overline("Sleep · \(sleepLabel)", color: ambient)
+            }
+            if let overline = chapterOverline {
+                Overline(overline, color: hearth.text)
+                    .lineLimit(1)
+            }
+            Text(book.title)
+                .font(.hearthDisplay(28, weight: .semibold))
+                .foregroundStyle(hearth.text)
+                .lineLimit(2)
+                .minimumScaleFactor(0.8)
+            if let author = book.author {
+                Text(author)
+                    .font(.hearthUI(16))
+                    .foregroundStyle(hearth.text)
+                    .lineLimit(1)
+            }
         }
-        .padding(.horizontal, 24)
+    }
+
+    private func nightstandDeck(book: Book, showsScrubScope: Bool) -> some View {
+        VStack(spacing: 0) {
+            Spacer(minLength: 0)
+            scrubSection(showsScope: showsScrubScope)
+            Spacer(minLength: 16)
+            transportRow(book: book, playSize: 108, skipSize: 76, spacing: 44)
+            errorNotice(book: book)
+            Spacer(minLength: 16)
+            utilityRow(book: book, isNightstand: true)
+            Spacer(minLength: 0)
+        }
+    }
+
+    @ViewBuilder
+    private func scrubSection(showsScope: Bool) -> some View {
+        if showsScope {
+            ribbonSection
+        } else {
+            scrubber
+        }
+    }
+
+    private func dockLayout(book: Book) -> some View {
+        GeometryReader { geo in
+            if PlayerLayoutPolicy.nightstandFaceIsWide(width: geo.size.width) {
+                wideDock(book: book, size: geo.size)
+            } else {
+                // A short flat half gives up the scrub scope toggle before it pushes the tabs off the screen.
+                ViewThatFits(in: .vertical) {
+                    dockColumn(book: book, showsScrubScope: true)
+                    dockColumn(book: book, showsScrubScope: false)
+                }
+                .padding(.horizontal, 24)
+                .padding(.vertical, 12)
+                .frame(width: geo.size.width, height: geo.size.height)
+            }
+        }
+    }
+
+    private func wideDock(book: Book, size: CGSize) -> some View {
+        let columnWidth = min(size.width * 0.3, 220)
+        let coverHeight = max(72, min(size.height - 104, 220))
+        return HStack(spacing: 28) {
+            Button {
+                onExpand?()
+            } label: {
+                VStack(alignment: .leading, spacing: 10) {
+                    CoverTile(book: book, width: min(columnWidth, coverHeight / book.hearthCoverRatio), badges: false)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(book.title)
+                            .font(.hearthDisplay(20, weight: .semibold))
+                            .foregroundStyle(hearth.text)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                        if let author = book.author {
+                            Text(author)
+                                .font(.hearthUI(14))
+                                .foregroundStyle(hearth.textSecondary)
+                                .lineLimit(1)
+                        }
+                    }
+                }
+                .frame(width: columnWidth, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(PressableStyle())
+            .accessibilityLabel("Open player, \(book.title)")
+            VStack(spacing: 12) {
+                scrubber
+                transportRow(book: book, playSize: 88, skipSize: 64, spacing: 36)
+                errorNotice(book: book)
+                utilityRow(book: book)
+            }
+        }
+        .padding(.horizontal, 32)
         .padding(.vertical, 12)
-        .frame(maxWidth: PlayerLayoutPolicy.stackedContentWidth)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(width: size.width, height: size.height)
     }
 
     private func dockColumn(book: Book, showsScrubScope: Bool) -> some View {
         VStack(spacing: 12) {
-            dockHeader(book: book)
-            if showsScrubScope {
-                ribbonSection
-            } else {
-                VStack(spacing: 8) {
-                    chapterRibbon
-                    scrubLabels
-                }
+            Button {
+                onExpand?()
+            } label: {
+                dockHeader(book: book)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(PressableStyle())
+            .accessibilityLabel("Open player, \(book.title)")
+            scrubSection(showsScope: showsScrubScope)
             transportRow(book: book)
             errorNotice(book: book)
             utilityRow(book: book)
@@ -406,8 +524,6 @@ struct PlayerScreen: View {
         .padding(.bottom, 14)
     }
 
-    // Wide, short canvases (landscape phones, an unfolded phone or iPad held sideways) keep every
-    // control on screen by placing the transport beside the cover instead of under it.
     private func sideBySideLayout(book: Book, coverWidth: CGFloat, showsTopRow: Bool) -> some View {
         VStack(spacing: 0) {
             if showsTopRow {
@@ -586,8 +702,8 @@ struct PlayerScreen: View {
     }
 
     private var ribbonSection: some View {
-        VStack(spacing: 10) {
-            chapterRibbon
+        VStack(spacing: 6) {
+            scrubber
             PlayerScrubScopeToggle(
                 selection: Binding(
                     get: { activeScrubScope },
@@ -596,6 +712,12 @@ struct PlayerScreen: View {
                 chapterEnabled: chapterScrubbingAvailable,
                 tint: ambient
             )
+        }
+    }
+
+    private var scrubber: some View {
+        VStack(spacing: dynamicTypeSize.isAccessibilitySize ? 0 : -10) {
+            chapterRibbon
             scrubLabels
         }
     }
@@ -630,7 +752,7 @@ struct PlayerScreen: View {
                 Spacer()
             }
             Text(scrubRightLabel)
-                .frame(minWidth: 44, minHeight: 44, alignment: .trailing)
+                .frame(minWidth: 44, minHeight: 30, alignment: .trailing)
                 .contentShape(Rectangle())
                 .onTapGesture {
                     guard activeScrubScope == .book else { return }
@@ -640,30 +762,26 @@ struct PlayerScreen: View {
         }
         .font(.hearthUI(13, weight: .semibold).monospacedDigit())
         .foregroundStyle(hearth.text)
-        .padding(.horizontal, 12)
-        .background {
-            HearthChromeBackground(
-                shape: .capsule,
-                fill: hearth.bgElevated.opacity(0.94),
-                stroke: hearth.hairline,
-                tint: hearth.bgElevated
-            )
-        }
     }
 
-    private func transportRow(book: Book) -> some View {
-        HStack(spacing: 38) {
+    private func transportRow(
+        book: Book,
+        playSize: CGFloat = 76,
+        skipSize: CGFloat = 56,
+        spacing: CGFloat = 38
+    ) -> some View {
+        HStack(spacing: spacing) {
             GlyphButton(
                 systemImage: skipBackGlyph,
-                size: 56,
-                glyphSize: 22,
+                size: skipSize,
+                glyphSize: skipSize * 22 / 56,
                 label: "Skip back \(Int(playerVM.preferences.skipBackwardAmount)) seconds"
             ) {
                 PlatformHaptics.impact(.light)
                 playerVM.skipBackward()
             }
             .disabled(!playerVM.isPlaybackLoaded)
-            PlayerPlayCircle(isPlaying: playerVM.isPlaying, isLoading: playerVM.isLoading, tint: ambient) {
+            PlayerPlayCircle(isPlaying: playerVM.isPlaying, isLoading: playerVM.isLoading, tint: ambient, diameter: playSize) {
                 PlatformHaptics.impact(.medium)
                 if !playerVM.isPlaybackLoaded || playerVM.currentBook?.stableId != book.stableId {
                     engine.playback.play(book)
@@ -674,8 +792,8 @@ struct PlayerScreen: View {
             .disabled(playerVM.isLoading)
             GlyphButton(
                 systemImage: skipForwardGlyph,
-                size: 56,
-                glyphSize: 22,
+                size: skipSize,
+                glyphSize: skipSize * 22 / 56,
                 label: "Skip forward \(Int(playerVM.preferences.skipForwardAmount)) seconds"
             ) {
                 PlatformHaptics.impact(.light)
@@ -685,10 +803,20 @@ struct PlayerScreen: View {
         }
     }
 
-    private func utilityRow(book: Book) -> some View {
-        HStack(spacing: 8) {
-            PlayerUtilityPill(glyph: "gauge.with.needle", label: speedLabel) { activeSheet = .speed }
-            PlayerUtilityPill(glyph: "list.bullet", label: "Chapters", disabled: sortedChapters.isEmpty) {
+    private func utilityRow(book: Book, isNightstand: Bool = false) -> some View {
+        HStack(spacing: isNightstand ? 10 : 8) {
+            if isNightstand {
+                PlayerUtilityPill(
+                    glyph: "moon.zzz",
+                    label: sleepLabel,
+                    tint: playerVM.sleepTimer != nil ? ambient : nil,
+                    large: true
+                ) {
+                    activeSheet = .sleep
+                }
+            }
+            PlayerUtilityPill(glyph: "gauge.with.needle", label: speedLabel, large: isNightstand) { activeSheet = .speed }
+            PlayerUtilityPill(glyph: "list.bullet", label: "Chapters", disabled: sortedChapters.isEmpty, large: isNightstand) {
                 activeSheet = .chapters
             }
             if isReadAloudBook {
@@ -696,17 +824,20 @@ struct PlayerScreen: View {
                     glyph: nil,
                     usesReadAloudMark: true,
                     label: "Read",
-                    tint: readModeOn ? ambient : nil
+                    tint: readModeOn ? ambient : nil,
+                    large: isNightstand
                 ) {
                     readModeOn.toggle()
                 }
                 .accessibilityIdentifier("Player.ReadModeToggle")
             }
             Menu {
-                Button {
-                    activeSheet = .sleep
-                } label: {
-                    Label(playerVM.sleepTimer != nil ? "Sleep · \(sleepLabel)" : "Sleep", systemImage: "moon.zzz")
+                if !isNightstand {
+                    Button {
+                        activeSheet = .sleep
+                    } label: {
+                        Label(playerVM.sleepTimer != nil ? "Sleep · \(sleepLabel)" : "Sleep", systemImage: "moon.zzz")
+                    }
                 }
                 Button("Audio", systemImage: "waveform") { activeSheet = .audio }
                 Button {
@@ -725,6 +856,11 @@ struct PlayerScreen: View {
                 } label: {
                     Label("Ambient sound", systemImage: "water.waves")
                 }
+                Button {
+                    activeSheet = .history
+                } label: {
+                    Label("Playback & sync history", systemImage: "clock.arrow.circlepath")
+                }
                 if profileSession.isOwner && !profileSession.isRetired && BookIntelligenceSettingsStore.shared.showPlayerButton && !book.isPodcastEpisode {
                     Button {
                         activeSheet = .librarian
@@ -733,11 +869,16 @@ struct PlayerScreen: View {
                     }
                 }
             } label: {
-                PlayerUtilityPillLabel(glyph: "ellipsis", label: nil, tint: playerVM.sleepTimer != nil ? ambient : nil)
-                    .contentShape(Rectangle())
+                PlayerUtilityPillLabel(
+                    glyph: "ellipsis",
+                    label: nil,
+                    tint: playerVM.sleepTimer != nil && !isNightstand ? ambient : nil,
+                    large: isNightstand
+                )
+                .contentShape(Rectangle())
             }
             .accessibilityLabel("More player tools")
-            .accessibilityValue(playerVM.sleepTimer != nil ? "Sleep timer, \(sleepLabel)" : "")
+            .accessibilityValue(playerVM.sleepTimer != nil && !isNightstand ? "Sleep timer, \(sleepLabel)" : "")
         }
     }
 
@@ -902,7 +1043,7 @@ struct PlayerScreen: View {
 }
 
 private enum PlayerSheet: String, Identifiable {
-    case speed, sleep, chapters, bookmarks, audio, queue, ambient, librarian, passage
+    case speed, sleep, chapters, bookmarks, audio, queue, ambient, librarian, passage, history
     var id: String { rawValue }
 }
 
@@ -962,6 +1103,7 @@ private struct PlayerPlayCircle: View {
     let isPlaying: Bool
     let isLoading: Bool
     let tint: Color
+    var diameter: CGFloat = 76
     let action: () -> Void
 
     @Environment(\.hearth) private var hearth
@@ -980,12 +1122,12 @@ private struct PlayerPlayCircle: View {
                         .tint(glyphColor)
                 } else {
                     Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                        .font(.hearthUI(30, weight: .bold))
+                        .font(.hearthUI(diameter * 30 / 76, weight: .bold))
                         .foregroundStyle(glyphColor)
                         .offset(x: isPlaying ? 0 : 2)
                 }
             }
-            .frame(width: 76, height: 76)
+            .frame(width: diameter, height: diameter)
             .contentShape(Circle())
         }
         .buttonStyle(PressableStyle())
@@ -1003,6 +1145,7 @@ private struct PlayerUtilityPill: View {
     let label: String
     var tint: Color?
     var disabled = false
+    var large = false
     let action: () -> Void
 
     var body: some View {
@@ -1011,8 +1154,8 @@ private struct PlayerUtilityPill: View {
             action()
         } label: {
             ViewThatFits(in: .horizontal) {
-                PlayerUtilityPillLabel(glyph: glyph, usesReadAloudMark: usesReadAloudMark, label: label, tint: tint)
-                PlayerUtilityPillLabel(glyph: glyph, usesReadAloudMark: usesReadAloudMark, label: nil, tint: tint)
+                PlayerUtilityPillLabel(glyph: glyph, usesReadAloudMark: usesReadAloudMark, label: label, tint: tint, large: large)
+                PlayerUtilityPillLabel(glyph: glyph, usesReadAloudMark: usesReadAloudMark, label: nil, tint: tint, large: large)
             }
         }
         .buttonStyle(PressableStyle())
@@ -1026,29 +1169,31 @@ private struct PlayerUtilityPillLabel: View {
     var usesReadAloudMark = false
     let label: String?
     let tint: Color?
+    var large = false
 
     @Environment(\.hearth) private var hearth
 
     var body: some View {
+        let fontSize: CGFloat = large ? 16 : 13
         HStack(spacing: 6) {
             if usesReadAloudMark {
                 StorytellerReadAloudMark()
                     .frame(width: 13, height: 15)
             } else if let glyph {
                 Image(systemName: glyph)
-                    .font(.hearthUI(13, weight: .medium))
+                    .font(.hearthUI(fontSize, weight: .medium))
             }
             if let label {
                 Text(label)
-                    .font(.hearthUI(13, weight: .medium).monospacedDigit())
+                    .font(.hearthUI(fontSize, weight: .medium).monospacedDigit())
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
             }
         }
         .foregroundStyle(tint ?? hearth.text)
-        .padding(.vertical, 11)
+        .padding(.vertical, large ? 16 : 11)
         .padding(.horizontal, 6)
-        .frame(maxWidth: .infinity, minHeight: 44)
+        .frame(maxWidth: .infinity, minHeight: large ? 58 : 44)
         .background {
             HearthChromeBackground(
                 shape: .capsule,

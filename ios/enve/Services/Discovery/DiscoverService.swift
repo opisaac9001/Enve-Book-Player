@@ -10,9 +10,16 @@ class DiscoverService {
     private var cacheTimestamps: [String: Date] = [:]
     private let cacheExpiration: TimeInterval = 3600
 
-    private init() {}
+    private let audible: AudibleService
+    private let policy: ExternalServicesPolicy
+
+    init(audible: AudibleService = .shared, policy: ExternalServicesPolicy = .shared) {
+        self.audible = audible
+        self.policy = policy
+    }
 
     func fetchTrending() async throws -> [DiscoverBook] {
+        try policy.checkAllowed(.audible)
         if let cached = getCached(key: "trending") { return cached }
 
         let currentYear = Calendar.current.component(.year, from: Date())
@@ -24,6 +31,8 @@ class DiscoverService {
             do {
                 let audibleBooks = try await searchAudibleAudiobooks(term: query, limit: 12)
                 allBooks.append(contentsOf: audibleBooks)
+            } catch let error as ExternalServiceDisabledError {
+                throw error
             } catch {
                 lastError = error
                 AppLogger.network.error("Trending query '\(query)' failed: \(error.localizedDescription)")
@@ -42,6 +51,7 @@ class DiscoverService {
     }
 
     func fetchBestsellers() async throws -> [DiscoverBook] {
+        try policy.checkAllowed(.audible)
         if let cached = getCached(key: "bestsellers") { return cached }
 
         let queries = [
@@ -58,6 +68,8 @@ class DiscoverService {
             do {
                 let audibleBooks = try await searchAudibleAudiobooks(term: query, limit: 10)
                 allBooks.append(contentsOf: audibleBooks)
+            } catch let error as ExternalServiceDisabledError {
+                throw error
             } catch {
                 lastError = error
                 AppLogger.network.error("Bestseller query '\(query)' failed: \(error.localizedDescription)")
@@ -77,6 +89,7 @@ class DiscoverService {
     }
 
     func fetchNewReleases() async throws -> [DiscoverBook] {
+        try policy.checkAllowed(.audible)
         if let cached = getCached(key: "newReleases") { return cached }
 
         let currentYear = Calendar.current.component(.year, from: Date())
@@ -95,6 +108,8 @@ class DiscoverService {
             do {
                 let audibleBooks = try await searchAudibleAudiobooks(term: query, limit: 12)
                 allBooks.append(contentsOf: audibleBooks)
+            } catch let error as ExternalServiceDisabledError {
+                throw error
             } catch {
                 lastError = error
                 AppLogger.network.error("New releases query '\(query)' failed: \(error.localizedDescription)")
@@ -119,7 +134,7 @@ class DiscoverService {
     }
 
     private func searchAudibleAudiobooks(term: String, limit: Int) async throws -> [DiscoverBook] {
-        let results = try await AudibleService.shared.simpleSearch(
+        let results = try await audible.simpleSearch(
             query: term,
             numResults: min(50, max(1, limit)),
             countryCode: discoverRegion

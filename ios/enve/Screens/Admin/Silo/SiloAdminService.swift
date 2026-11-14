@@ -2,217 +2,174 @@ import Foundation
 
 @MainActor
 final class SiloAdminService {
-    private let profileSession: ProfileSession
-    private let connectionId: UUID
-    private let fallbackConnection: ServerConnection
-    private let session: URLSession
-    private let decoder: JSONDecoder
+    static let pageLimit = 1...200
+
+    private let resolveProvider: () -> SiloProvider?
 
     init(connection: ServerConnection, profileSession: ProfileSession = .owner) {
-        self.profileSession = profileSession
-        self.connectionId = connection.id
-        self.fallbackConnection = connection
-
-        self.session = profileSession.networkSession
-
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .custom(Self.decodeDate)
-        self.decoder = decoder
+        let connectionId = connection.id
+        resolveProvider = { profileSession.appState.getProvider(connectionId) as? SiloProvider }
     }
 
-    private var connection: ServerConnection {
-        profileSession.appState.providerConnections.connections.first { $0.id == connectionId } ?? fallbackConnection
+    init(provider: SiloProvider) {
+        resolveProvider = { provider }
     }
 
     func fetchAdminUsers() async throws -> [SiloAdminUser] {
-        try await get("/admin/users")
+        var users: [SiloAdminUser] = []
+        var cursor: String?
+        var seen = Set<String>()
+        repeat {
+            var query = [URLQueryItem(name: "limit", value: String(Self.pageLimit.upperBound))]
+            if let cursor { query.append(URLQueryItem(name: "cursor", value: cursor)) }
+            let page: SiloAdminUserPage = try await send("/admin/users", query: query)
+            users += page.items
+            cursor = try page.page?.continuation()
+            if let cursor, !seen.insert(cursor).inserted { throw SiloAdminError.invalidPage }
+        } while cursor != nil
+        return users
     }
 
     func fetchMe() async throws -> SiloMeUser {
-        try await get("/auth/me")
+        try await send("/account/me")
     }
 
     func fetchStats() async throws -> SiloAdminStats {
-        try await get("/admin/stats")
+        try await send("/admin/stats")
     }
 
     func fetchLibraries() async throws -> [SiloAdminLibrary] {
-        try await get("/libraries")
+        let response: SiloAdminLibraryCollection = try await send("/libraries")
+        return response.items
     }
 
     func fetchPlaybackHistory(limit: Int = 25) async throws -> [SiloPlaybackEntry] {
-        try await get("/admin/playback-history", query: [URLQueryItem(name: "limit", value: String(limit))])
+        let page: SiloPlaybackHistoryPage = try await send("/admin/playback-history", query: [Self.limitItem(limit)])
+        return page.items
     }
 
     func fetchRecentScans(limit: Int = 20) async throws -> [SiloScan] {
-        let response: SiloScansResponse = try await get(
-            "/admin/autoscan/scans",
-            query: [URLQueryItem(name: "limit", value: String(limit))]
-        )
-        return response.scans
+        let page: SiloScansPage = try await send("/admin/autoscan/scans", query: [Self.limitItem(limit)])
+        return page.items
     }
 
-    func catalogTotal(libraryId: Int, type: String) async throws -> Int {
-        let response: SiloCatalogCount = try await get(
+    func catalogTotal(libraryId: String, type: String) async throws -> Int {
+        let response: SiloCatalogCount = try await send(
             "/catalog",
             query: [
-                URLQueryItem(name: "library_id", value: String(libraryId)),
+                URLQueryItem(name: "library_id", value: libraryId),
                 URLQueryItem(name: "type", value: type),
-                URLQueryItem(name: "offset", value: "0"),
                 URLQueryItem(name: "limit", value: "1"),
-                URLQueryItem(name: "include_total", value: "true"),
             ]
         )
-        return response.total ?? 0
+        return response.total
     }
 
-    func scanLibrary(id: Int) async throws {
-        let body = try JSONSerialization.data(withJSONObject: ["library_id": id])
-        try await sendVoid("/scan", method: "POST", body: body)
+    func scanLibrary(id: String) async throws {
+        let _: SiloScanAccepted = try await send("/scan", method: "POST", body: ["library_id": id])
     }
 
-    private var baseURLString: String {
-        var value = connection.url.trimmingCharacters(in: .whitespacesAndNewlines)
-        while value.hasSuffix("/") { value.removeLast() }
-        return value
+    private static func limitItem(_ limit: Int) -> URLQueryItem {
+        URLQueryItem(name: "limit", value: String(min(max(limit, pageLimit.lowerBound), pageLimit.upperBound)))
     }
 
-    private var profileID: String? {
-        profileSession.defaults.string(forKey: "silo_profile_id_\(connectionId.uuidString)")
-    }
-
-    private func makeRequest(_ path: String, method: String, query: [URLQueryItem], body: Data?) throws -> URLRequest {
-        guard !profileSession.isRetired else { throw ProfileAccessError.profileUnavailable }
-        guard var components = URLComponents(string: "\(baseURLString)/api/v1\(path)") else {
-            throw SiloAdminError.invalidURL
-        }
-        if !query.isEmpty { components.queryItems = query }
-        guard let url = components.url else { throw SiloAdminError.invalidURL }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = method
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("Enve Book Player/1.0", forHTTPHeaderField: "User-Agent")
-        if body != nil {
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = body
-        }
-        let connection = self.connection
-        if let customHeaders = connection.customHeaders {
-            for (key, value) in customHeaders { request.setValue(value, forHTTPHeaderField: key) }
-        }
-        if let token = connection.token, !token.isEmpty {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
-        if let profileID, !profileID.isEmpty {
-            request.setValue(profileID, forHTTPHeaderField: "X-Profile-Id")
-        }
-        return request
-    }
-
-    private func get<T: Decodable>(_ path: String, query: [URLQueryItem] = []) async throws -> T {
-        let data = try await sendData(path, method: "GET", query: query, body: nil)
+    private func send<T: Decodable>(
+        _ path: String,
+        query: [URLQueryItem] = [],
+        method: String = "GET",
+        body: [String: String]? = nil
+    ) async throws -> T {
+        guard let provider = resolveProvider() else { throw SiloAdminError.providerUnavailable }
+        _ = try await provider.activityProfileID()
+        var request = try provider.makeRequest(path: path, query: query, method: method)
+        if let body { request.httpBody = try JSONEncoder().encode(body) }
         do {
-            return try decoder.decode(T.self, from: data)
-        } catch {
-            throw SiloAdminError.decoding
+            return try await provider.send(request, as: T.self)
+        } catch ProviderError.unauthorized {
+            throw SiloAdminError.unauthorized
         }
-    }
-
-    @discardableResult
-    private func sendData(_ path: String, method: String, query: [URLQueryItem], body: Data?) async throws -> Data {
-        let request = try makeRequest(path, method: method, query: query, body: body)
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw SiloAdminError.invalidResponse }
-        if http.statusCode == 401 || http.statusCode == 403 { throw SiloAdminError.unauthorized }
-        guard (200...299).contains(http.statusCode) else { throw SiloAdminError.server(http.statusCode) }
-        return data
-    }
-
-    private func sendVoid(_ path: String, method: String, body: Data?) async throws {
-        _ = try await sendData(path, method: method, query: [], body: body)
-    }
-
-    nonisolated private static func decodeDate(_ decoder: Decoder) throws -> Date {
-        let container = try decoder.singleValueContainer()
-        let raw = try container.decode(String.self)
-        if let date = ISO8601Timestamp.parse(raw) { return date }
-        throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid date: \(raw)")
     }
 }
 
 enum SiloAdminError: Error {
-    case invalidURL
-    case invalidResponse
     case unauthorized
-    case server(Int)
-    case decoding
+    case providerUnavailable
+    case invalidPage
 }
 
-struct SiloMeUser: Decodable {
-    let id: Int?
-    let username: String?
-    let email: String?
-    let role: String?
-    let permissions: [String]?
-    let enabled: Bool?
+struct SiloAdminPageInfo: Decodable {
+    let nextCursor: String?
+    let hasMore: Bool
 
-    var displayName: String { username ?? email ?? "Account" }
-    var isAdmin: Bool {
-        let role = role?.lowercased()
-        return role == "admin" || role == "owner" || role == "root"
-    }
-}
-
-struct SiloAdminUser: Decodable, Identifiable {
-    let id: Int
-    let username: String?
-    let email: String?
-    let role: String?
-    let permissions: [String]?
-    let enabled: Bool?
-    let libraryIDs: [Int]?
-    let maxPlaybackQuality: String?
-    let maxStreams: Int?
-    let maxTranscodes: Int?
-    let maxProfiles: Int?
-    let downloadAllowed: Bool?
-    let downloadTranscodeAllowed: Bool?
-    let createdAt: Date?
-    let updatedAt: Date?
-    let lastActiveAt: Date?
-
-    var displayName: String { username ?? email ?? "User #\(id)" }
-    var isAdmin: Bool {
-        let role = role?.lowercased()
-        return role == "admin" || role == "owner" || role == "root"
+    func continuation() throws -> String? {
+        guard hasMore else { return nil }
+        guard let nextCursor, !nextCursor.isEmpty else { throw SiloAdminError.invalidPage }
+        return nextCursor
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, username, email, role, permissions, enabled
-        case libraryIDs = "library_ids"
-        case maxPlaybackQuality = "max_playback_quality"
-        case maxStreams = "max_streams"
-        case maxTranscodes = "max_transcodes"
-        case maxProfiles = "max_profiles"
-        case downloadAllowed = "download_allowed"
-        case downloadTranscodeAllowed = "download_transcode_allowed"
-        case createdAt = "created_at"
-        case updatedAt = "updated_at"
-        case lastActiveAt = "last_active_at"
+        case nextCursor = "next_cursor"
+        case hasMore = "has_more"
     }
 }
 
+struct SiloMeUser: Decodable {
+    let id: String
+    let username: String
+    let email: String
+    let role: String
+
+    var displayName: String { [username, email].first { !$0.isEmpty } ?? "Account" }
+    var isAdmin: Bool { role == "admin" }
+}
+
+struct SiloAdminUserPage: Decodable {
+    let items: [SiloAdminUser]
+    let page: SiloAdminPageInfo?
+}
+
+struct SiloAdminUser: Decodable, Identifiable {
+    let id: String
+    let username: String
+    let email: String
+    let role: String
+    let enabled: Bool
+    let isOwner: Bool
+    let effectivePolicy: Policy
+
+    struct Policy: Decodable {
+        let libraryIDs: [String]?
+        let maxPlaybackQuality: String
+        let maxStreams: Int
+        let downloadAllowed: Bool
+
+        enum CodingKeys: String, CodingKey {
+            case libraryIDs = "library_ids"
+            case maxPlaybackQuality = "max_playback_quality"
+            case maxStreams = "max_streams"
+            case downloadAllowed = "download_allowed"
+        }
+    }
+
+    var displayName: String { [username, email].first { !$0.isEmpty } ?? "User \(id)" }
+    var isAdmin: Bool { role == "admin" || isOwner }
+
+    enum CodingKeys: String, CodingKey {
+        case id, username, email, role, enabled
+        case isOwner = "is_owner"
+        case effectivePolicy = "effective_policy"
+    }
+}
+
+struct SiloAdminLibraryCollection: Decodable {
+    let items: [SiloAdminLibrary]
+}
+
 struct SiloAdminLibrary: Decodable, Identifiable {
-    let id: Int
+    let id: String
     let name: String
     let type: String
-    let paths: [String]?
-    let enabled: Bool?
-    let metadataLanguage: String?
-    let sortOrder: Int?
-    let posterURL: String?
-    let lastScannedAt: Date?
+    let enabled: Bool
 
     var isReadingLibrary: Bool {
         let type = type.lowercased()
@@ -223,14 +180,6 @@ struct SiloAdminLibrary: Decodable, Identifiable {
     var countsEbooks: Bool {
         let type = type.lowercased()
         return type.contains("book") || type.contains("ebook") || type.contains("manga") || type.contains("comic")
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case id, name, type, paths, enabled
-        case metadataLanguage = "metadata_language"
-        case sortOrder = "sort_order"
-        case posterURL = "poster_url"
-        case lastScannedAt = "last_scanned_at"
     }
 }
 
@@ -258,8 +207,13 @@ struct SiloAdminStats: Decodable {
     }
 }
 
+struct SiloPlaybackHistoryPage: Decodable {
+    let items: [SiloPlaybackEntry]
+    let page: SiloAdminPageInfo?
+}
+
 struct SiloPlaybackEntry: Decodable {
-    let sessionID: String?
+    let sessionID: String
     let username: String?
     let profileName: String?
     let mediaTitle: String?
@@ -286,14 +240,15 @@ struct SiloPlaybackEntry: Decodable {
     }
 }
 
-struct SiloScansResponse: Decodable {
-    let scans: [SiloScan]
-    let total: Int?
+struct SiloScansPage: Decodable {
+    let items: [SiloScan]
+    let page: SiloAdminPageInfo?
+    let total: Int
 }
 
 struct SiloScan: Decodable {
-    let id: Int?
-    let libraryID: Int?
+    let id: String
+    let libraryID: String?
     let mode: String?
     let path: String?
     let trigger: String?
@@ -314,13 +269,15 @@ struct SiloScan: Decodable {
 }
 
 struct SiloCatalogCount: Decodable {
-    let total: Int?
-    let totalExact: Bool?
-    let hasMore: Bool?
+    let total: Int
+    let totalExact: Bool
 
     enum CodingKeys: String, CodingKey {
         case total
         case totalExact = "total_exact"
-        case hasMore = "has_more"
     }
+}
+
+private struct SiloScanAccepted: Decodable {
+    let status: String
 }

@@ -849,6 +849,8 @@ class PreferencesManager(
         val SCROLL       = booleanPreferencesKey("reader.scroll")
         val PUBLISHER_STYLES = booleanPreferencesKey("reader.publisherStyles")
         val JUSTIFIED    = booleanPreferencesKey("reader.justified")
+        val HYPHENATE    = booleanPreferencesKey("reader.hyphenate")
+        val ANIMATED_TURNS = booleanPreferencesKey("reader.animatedPageTurns")
         val COLUMN_COUNT = stringPreferencesKey("reader.columnCount")
         val FONT_WEIGHT  = floatPreferencesKey("reader.fontWeight")
         val PARAGRAPH_SPACING = floatPreferencesKey("reader.paragraphSpacing")
@@ -901,6 +903,8 @@ class PreferencesManager(
         dataStore.data.map { it[ReaderKeys.PUBLISHER_STYLES] ?: true },
     )
     val readerJustified: Flow<Boolean> = dataStore.data.map { it[ReaderKeys.JUSTIFIED] ?: true }
+    val readerHyphenate: Flow<Boolean> = dataStore.data.map { it[ReaderKeys.HYPHENATE] ?: true }
+    val readerAnimatedPageTurns: Flow<Boolean> = dataStore.data.map { it[ReaderKeys.ANIMATED_TURNS] ?: true }
     val readerColumnCount: Flow<String> = dataStore.data.map { it[ReaderKeys.COLUMN_COUNT] ?: "AUTO" }
     val readerFontWeight: Flow<Float>  = dataStore.data.map { it[ReaderKeys.FONT_WEIGHT] ?: 1.0f }
     val readerParagraphSpacing: Flow<Float> = dataStore.data.map { it[ReaderKeys.PARAGRAPH_SPACING] ?: 0f }
@@ -927,7 +931,7 @@ class PreferencesManager(
     val readerShowClock: Flow<Boolean> = dataStore.data.map { it[ReaderKeys.SHOW_CLOCK] ?: false }
     val readerShowBattery: Flow<Boolean> = dataStore.data.map { it[ReaderKeys.SHOW_BATTERY] ?: false }
     val readerProgressDisplay: Flow<String> = dataStore.data.map { it[ReaderKeys.PROGRESS_DISPLAY] ?: "NONE" }
-    val readerTapZoneWidth: Flow<Float> = dataStore.data.map { it[ReaderKeys.TAP_ZONE_WIDTH] ?: 0.20f }
+    val readerTapZoneWidth: Flow<Float> = dataStore.data.map { it[ReaderKeys.TAP_ZONE_WIDTH] ?: 0.13f }
     val readerEdgeBrightnessSwipe: Flow<Boolean> = dataStore.data.map { it[ReaderKeys.EDGE_BRIGHTNESS_SWIPE] ?: true }
     val readerBionicReading: Flow<Boolean> = dataStore.data.map { it[ReaderKeys.BIONIC_READING] ?: false }
     val comicReadingDirection: Flow<String> = dataStore.data.map { it[ReaderKeys.COMIC_READING_DIRECTION] ?: "LEFT_TO_RIGHT" }
@@ -970,6 +974,8 @@ class PreferencesManager(
         scroll: Boolean? = null,
         publisherStyles: Boolean? = null,
         justified: Boolean? = null,
+        hyphenate: Boolean? = null,
+        animatedPageTurns: Boolean? = null,
         columnCount: String? = null,
         fontWeight: Float? = null,
         paragraphSpacing: Float? = null,
@@ -1010,6 +1016,8 @@ class PreferencesManager(
                 scroll?.let { p[ReaderKeys.SCROLL] = it }
                 publisherStyles?.let { p[ReaderKeys.PUBLISHER_STYLES] = it }
                 justified?.let { p[ReaderKeys.JUSTIFIED] = it }
+                hyphenate?.let { p[ReaderKeys.HYPHENATE] = it }
+                animatedPageTurns?.let { p[ReaderKeys.ANIMATED_TURNS] = it }
                 columnCount?.let { p[ReaderKeys.COLUMN_COUNT] = it }
                 fontWeight?.let { p[ReaderKeys.FONT_WEIGHT] = it }
                 paragraphSpacing?.let { p[ReaderKeys.PARAGRAPH_SPACING] = it }

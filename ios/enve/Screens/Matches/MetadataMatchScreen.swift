@@ -110,7 +110,9 @@ struct MatchesSearchView: View {
                 }
             }
 
-            if model.selectedProvider == .comicVine && !ComicVineService.shared.hasApiKey {
+            if let service = model.disabledService(for: model.selectedProvider) {
+                externalServiceOff(service)
+            } else if model.selectedProvider == .comicVine && !ComicVineService.shared.hasApiKey {
                 comicVineSetup
             } else {
                 searchRow
@@ -362,6 +364,22 @@ struct MatchesSearchView: View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(dedupCardBackground(hearth))
+    }
+
+    private func externalServiceOff(_ service: ExternalService) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("\(service.displayName) is off", systemImage: "hand.raised.fill")
+                .font(.hearthUI(15, weight: .semibold))
+                .foregroundStyle(hearth.text)
+            Text("Turned off for this device in Settings › External services. Choose another source, or turn it back on there.")
+                .font(.hearthCaption)
+                .foregroundStyle(hearth.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(dedupCardBackground(hearth))
+        .accessibilityElement(children: .combine)
     }
 
     private func approve(_ result: MatchesSearchModel.Result) async {

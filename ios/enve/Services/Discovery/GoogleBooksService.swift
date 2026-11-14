@@ -48,10 +48,10 @@ private struct GoogleBooksIndustryIdentifier: Codable {
 
 final class GoogleBooksService: @unchecked Sendable {
     static let shared = GoogleBooksService()
-    private init() {}
 
     private let baseURL = URL(string: "https://www.googleapis.com/books/v1/volumes")!
-    private let session = URLSession.shared
+    private let session: URLSession
+    private let policy: ExternalServicesPolicy
     private let stateLock = NSLock()
     private var lastRequestAt: Date = .distantPast
     private var rateLimitedUntil: Date?
@@ -61,6 +61,11 @@ final class GoogleBooksService: @unchecked Sendable {
     private var volumeCache: [String: GoogleBooksMetadataLayer] = [:]
     private var inFlightSearches: [String: Task<[GoogleBooksMetadataLayer], Error>] = [:]
     private var inFlightVolumes: [String: Task<GoogleBooksMetadataLayer, Error>] = [:]
+
+    init(session: URLSession = .shared, policy: ExternalServicesPolicy = .shared) {
+        self.session = session
+        self.policy = policy
+    }
 
     enum SearchError: LocalizedError {
         case rateLimited
@@ -96,6 +101,7 @@ final class GoogleBooksService: @unchecked Sendable {
     }
 
     func search(query: String, author: String?, isbn: String?, limit: Int = 10) async throws -> [GoogleBooksMetadataLayer] {
+        try policy.checkAllowed(.googleBooks)
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedQuery.isEmpty || !(isbn?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) else {
             return []
@@ -197,6 +203,7 @@ final class GoogleBooksService: @unchecked Sendable {
 
     private func sendRequest(to url: URL) async throws -> (Data, URLResponse) {
         try await waitForPermit()
+        try policy.checkAllowed(.googleBooks)
         var request = URLRequest(url: url)
         request.timeoutInterval = 20
         if let apiKey = SettingsManager.shared.googleBooksApiKey?.trimmingCharacters(in: .whitespacesAndNewlines), !apiKey.isEmpty {

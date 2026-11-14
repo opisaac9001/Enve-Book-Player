@@ -28,21 +28,8 @@ struct DetailDownloadButton: View {
 
     var body: some View {
         Button(action: handleTap) {
-            HStack(spacing: 7) {
+            DetailActionLabel(title: label, tint: tint) {
                 glyph
-                Text(label)
-                    .font(.hearthUI(15, weight: .medium))
-            }
-            .foregroundStyle(hearth.text)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 12)
-            .background {
-                HearthChromeBackground(
-                    shape: .capsule,
-                    fill: hearth.bgElevated,
-                    stroke: hearth.hairline,
-                    tint: tint
-                )
             }
         }
         .buttonStyle(PressableStyle())
@@ -105,10 +92,10 @@ struct DetailDownloadButton: View {
 
     private var label: String {
         switch phase {
-        case .downloaded: formatName.map { "\($0.capitalized) available offline" } ?? "Available offline"
+        case .downloaded: formatName.map { "\($0.capitalized) saved" } ?? "Available offline"
         case .active(let progress, let queued): queued ? "Queued" : "\(Int((progress * 100).rounded()))%"
         case .failed: "Try again"
-        case .idle: formatName.map { "Download \($0)" } ?? "Download for offline"
+        case .idle: formatName.map { "Download \($0)" } ?? "Download"
         }
     }
 
@@ -131,7 +118,6 @@ struct DetailDownloadButton: View {
         switch phase {
         case .downloaded:
             Image(systemName: "checkmark.circle.fill")
-                .font(.hearthUI(14, weight: .medium))
                 .foregroundStyle(hearth.statusOK)
         case .active(let progress, _):
             ZStack {
@@ -146,10 +132,8 @@ struct DetailDownloadButton: View {
             .frame(width: 15, height: 15)
         case .failed:
             Image(systemName: "arrow.clockwise")
-                .font(.hearthUI(14, weight: .medium))
         case .idle:
             Image(systemName: "arrow.down.circle")
-                .font(.hearthUI(14, weight: .medium))
         }
     }
 
@@ -192,5 +176,33 @@ struct DetailDownloadButton: View {
                 removalError = engine.downloads.lastError ?? "The files couldn't be removed. Try again."
             }
         }
+    }
+}
+
+struct DetailActionLabel<Icon: View>: View {
+    let title: String
+    let tint: Color
+    @ViewBuilder let icon: () -> Icon
+
+    @Environment(\.hearth) private var hearth
+
+    var body: some View {
+        HStack(spacing: 7) {
+            icon()
+                .font(.hearthUI(14, weight: .medium))
+                .accessibilityHidden(true)
+            Text(title)
+                .font(.hearthUI(15, weight: .medium))
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .foregroundStyle(hearth.text)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, minHeight: 48)
+        .background {
+            HearthChromeBackground(shape: .capsule, fill: hearth.bgElevated, stroke: hearth.hairline, tint: tint)
+        }
+        .contentShape(Capsule())
     }
 }

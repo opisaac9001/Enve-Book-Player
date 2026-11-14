@@ -45,7 +45,14 @@ struct OpenLibraryMetadataLayer: Codable, Equatable, Sendable {
 
 final class OpenLibraryService {
     static let shared = OpenLibraryService()
-    private init() {}
+
+    private let session: URLSession
+    private let policy: ExternalServicesPolicy
+
+    init(session: URLSession = .shared, policy: ExternalServicesPolicy = .shared) {
+        self.session = session
+        self.policy = policy
+    }
 
     private static let _h = "openlibrary"
     private static let _d = "org"
@@ -56,6 +63,7 @@ final class OpenLibraryService {
     private var worksBaseURL: URL { URL(string: _base)! }
 
     func search(query: String, limit: Int = 20) async throws -> [OpenLibraryDoc] {
+        try policy.checkAllowed(.openLibrary)
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
 
@@ -74,7 +82,7 @@ final class OpenLibraryService {
         request.timeoutInterval = 20
         request.setValue("enve/1.0", forHTTPHeaderField: "User-Agent")
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             throw NSError(
                 domain: "CatalogService",
@@ -87,13 +95,14 @@ final class OpenLibraryService {
     }
 
     func getWorkDescription(workKey: String) async throws -> String? {
+        try policy.checkAllowed(.openLibrary)
         let normalized = workKey.hasPrefix("/") ? String(workKey.dropFirst()) : workKey
         let url = worksBaseURL.appending(path: "\(normalized).json")
         var request = URLRequest(url: url)
         request.timeoutInterval = 20
         request.setValue("enve/1.0", forHTTPHeaderField: "User-Agent")
 
-        let (data, _) = try await URLSession.shared.data(for: request)
+        let (data, _) = try await session.data(for: request)
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             if let desc = json["description"] as? String {
                 return desc

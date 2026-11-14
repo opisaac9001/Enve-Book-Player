@@ -1,5 +1,15 @@
 # Changelog
 
+## iOS 1.2.7 / Android 1.2 build 57 — 2026-11-13
+
+- Updated Silo to the new native API, including profiles, downloads, progress and annotations.
+- Fixed books opening at the beginning with BookBridge/KOReader, filters resetting while libraries load, and recommendations on newer Grimmory servers.
+- Added more offline narrators, voice previews and model download controls.
+- Improved PDF controls, comics, imports, podcasts and download recovery.
+- Cleaned up the reader and player layouts, plus a bunch of smaller fixes.
+
+Thanks to [DiegoBM](https://github.com/DiegoBM) for the Android PDF page-adjust controls and saved per-book setting in [#36](https://github.com/opisaac9001/Enve-Book-Player/pull/36).
+
 ## Android 1.2 build 56 / iOS 1.2.7 — 2026-10-29
 
 Release source for iOS 1.2.7 (build 2) and Android 1.2 build 56.

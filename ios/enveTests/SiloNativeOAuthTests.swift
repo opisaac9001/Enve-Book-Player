@@ -47,28 +47,37 @@ nonisolated private final class SiloOAuthFixture: URLProtocol, @unchecked Sendab
         var status = 200
         var payload: [String: Any] = [:]
         if path.hasSuffix("/api/v2/auth/oauth/capabilities") {
+            let common: [String: Any] = ["state": "available", "revision": "r1", "available": true, "linking": false,
+                                         "provider_logout": false, "select_account": false]
             switch host {
             case "legacy.invalid": status = 404
-            case "disabled.invalid": payload = ["native": false]
-            default: payload = ["native": true]
+            case "disabled.invalid": payload = common.merging(["native": false]) { $1 }
+            default: payload = common.merging(["native": true]) { $1 }
             }
         } else if path.hasSuffix("/api/v2/auth/providers") {
+            let local: [String: Any] = ["id": "local", "display_name": "Silo account", "mode": "credentials", "default": true]
             switch host {
             case "noproviders.invalid":
-                payload = ["items": [["mode": "password"], ["mode": "oauth"]]]
+                payload = ["items": [local, ["id": "plugin:3", "display_name": "Unserved", "mode": "oauth", "default": false, "installation_id": "3"]]]
             case "offsite.invalid":
-                payload = ["items": [["mode": "oauth", "native_start_path": "//attacker.invalid/start"]]]
+                payload = ["items": [["id": "plugin:3", "display_name": "Offsite", "mode": "oauth", "default": false,
+                                      "installation_id": "3", "native_start_path": "//attacker.invalid/start"]]]
             default:
                 payload = ["items": [
-                    ["mode": "password", "display_name": "Password"],
-                    ["mode": "oauth", "display_name": "Authentik", "native_start_path": "/api/v2/auth/oauth/authentik/native/start"],
-                    ["mode": "oauth", "display_name": "Missing path"],
+                    local,
+                    ["id": "plugin:3", "display_name": "Authentik", "mode": "oauth", "default": false,
+                     "installation_id": "3", "native_start_path": "/api/v2/auth/oauth/authentik/native/start"],
+                    ["id": "plugin:4", "display_name": "Missing path", "mode": "oauth", "default": false, "installation_id": "4"],
                 ]]
             }
         } else if path.hasSuffix("/api/v2/system/identity") {
             payload = ["server_id": "srv-1"]
         } else if path.hasSuffix("/api/v2/auth/oauth/complete") {
-            payload = ["access_token": "access-1", "refresh_token": "refresh-1", "user": ["id": "7", "username": "reader"]]
+            payload = [
+                "access_token": "access-1", "refresh_token": "refresh-1", "expires_in": 3600, "next": "/",
+                "user": ["id": "7", "username": "reader", "email": "", "role": "user", "permissions": [],
+                         "download_allowed": true, "password_change_required": false],
+            ]
         } else {
             status = 404
         }

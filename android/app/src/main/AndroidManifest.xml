@@ -84,7 +84,7 @@
             android:exported="false"
             android:configChanges="orientation|screenSize|screenLayout|uiMode|keyboard|keyboardHidden"
             android:windowSoftInputMode="adjustNothing"
-            android:theme="@style/Theme.Enve" />
+            android:theme="@style/Theme.Enve.Reader" />
 
         <activity
             android:name=".ui.screens.EbookLibrarianActivity"
@@ -121,6 +121,19 @@
         <activity
             android:name=".ui.auth.OpdsAuthBrowserActivity"
             android:exported="false"
+            android:theme="@style/Theme.Enve"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".cloud.CloudImportActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|uiMode|keyboard|keyboardHidden"
+            android:theme="@style/Theme.Enve" />
+
+        <activity
+            android:name=".cloud.WebStoryImportActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|uiMode|keyboard|keyboardHidden"
             android:theme="@style/Theme.Enve"
             android:windowSoftInputMode="adjustResize" />
 

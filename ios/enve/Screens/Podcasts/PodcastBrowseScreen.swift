@@ -18,6 +18,8 @@ struct PodcastBrowseScreen: View {
     @State private var preview: iTunesPodcastProvider.iTunesPodcast?
     @State private var addingFeed = false
 
+    private var catalogAllowed: Bool { ExternalServicesStore.shared.isEnabled(.appleCatalog) }
+
     private static let genreKey = "imagine.podcasts.browse.genre"
     private let columns = [
         GridItem(.flexible(), spacing: 14, alignment: .top),
@@ -28,13 +30,16 @@ struct PodcastBrowseScreen: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 header
-                searchField
-                genreChips
-
-                if query.isEmpty {
-                    genreSection
+                if !catalogAllowed {
+                    podcastsBrowseEmpty("Apple podcast discovery is turned off in Settings › External services. You can still add a feed by URL and listen to your subscribed shows.")
                 } else {
-                    searchSection
+                    searchField
+                    genreChips
+                    if query.isEmpty {
+                        genreSection
+                    } else {
+                        searchSection
+                    }
                 }
             }
             .padding(.top, 8)
@@ -55,7 +60,10 @@ struct PodcastBrowseScreen: View {
                 .presentationDragIndicator(.visible)
                 .enveEnvironment()
         }
-        .task { await applyPendingGenreIfNeeded() }
+        .task(id: catalogAllowed) {
+            guard catalogAllowed else { return }
+            await applyPendingGenreIfNeeded()
+        }
         .onChange(of: engine.podcasts.pendingBrowseGenreRawValue) {
             Task { await applyPendingGenreIfNeeded() }
         }

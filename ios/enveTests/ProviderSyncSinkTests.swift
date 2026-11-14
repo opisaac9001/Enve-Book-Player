@@ -211,6 +211,97 @@ struct ProviderSyncSinkTests {
         }
     }
 
+    @Test(arguments: [ProviderType.audiobookshelf, .plex, .jellyfin, .emby], [false, true])
+    func guardedDownloadWriteChecksTheServerBeforeSending(type: ProviderType, retry: Bool) async throws {
+        let suite = "guarded-download-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let pending = PendingSyncQueueStore(defaults: defaults)
+        let connection = ServerConnection(name: "Fixture", url: "https://fixture.invalid", type: type)
+        let provider = ProgressProviderStub(connection: connection)
+        let resolver = ProviderResolverStub()
+        resolver.providers[connection.id] = provider
+        let book = makeBook(providerId: connection.id)
+        let baselineDate = Date(timeIntervalSince1970: 100)
+        let entry = PendingServerSync(
+            stableId: book.stableId, sourceRaw: book.source.rawValue, backendId: nil, serverItemId: book.id,
+            position: 25, duration: 100, updatedAt: 300,
+            downloadedBaseline: DownloadedProgressBaseline(position: 20, updatedAt: baselineDate, isFinished: false)
+        )
+        pending.enqueue(entry)
+        let sink = ProviderSyncSink(providerResolver: resolver, pendingSync: pending)
+        let transport = ProviderPendingSyncTransport(
+            providerResolver: resolver, bookLookup: { _ in book }, pendingSync: pending,
+            serialQueue: PerBookSerialQueue()
+        )
+        let update = ProgressUpdate(
+            book: book, domain: .audiobook, positionSeconds: 25, progress: 0.25, locator: nil,
+            sourceEngine: nil, sessionId: nil, isFinished: false, timeListened: 0, playbackRate: 1
+        )
+
+        provider.audiobookProgress = ProviderAudiobookProgress(
+            positionSeconds: 10, percentage: 0.1, trackIndex: nil,
+            updatedAt: Date(timeIntervalSince1970: 200), readState: .reading
+        )
+        await #expect(throws: DownloadedProgressConflict.self) {
+            if retry { _ = try await transport.push(stableId: book.stableId, entry: entry) }
+            else { try await sink.push(update) }
+        }
+        #expect(provider.playbackUpdates.isEmpty)
+        #expect(pending.entries[book.stableId] == entry)
+
+        provider.pullError = URLError(.notConnectedToInternet)
+        await #expect(throws: URLError.self) {
+            if retry { _ = try await transport.push(stableId: book.stableId, entry: entry) }
+            else { try await sink.push(update) }
+        }
+        #expect(provider.playbackUpdates.isEmpty)
+        #expect(pending.entries[book.stableId] == entry)
+
+        provider.pullError = nil
+        provider.audiobookProgress = ProviderAudiobookProgress(
+            positionSeconds: 20, percentage: 0.2, trackIndex: nil,
+            updatedAt: baselineDate, readState: .reading
+        )
+        if retry { _ = try await transport.push(stableId: book.stableId, entry: entry) }
+        else { try await sink.push(update) }
+        #expect(provider.playbackUpdates.map(\.currentTime) == [25])
+        #expect(pending.entries[book.stableId] == nil)
+    }
+
+    @Test func aPreviouslyQueuedDownloadIsProtectedAfterRelaunch() async throws {
+        let suite = "legacy-download-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let connection = ServerConnection(name: "Fixture", url: "https://fixture.invalid", type: .plex)
+        let provider = ProgressProviderStub(connection: connection)
+        let resolver = ProviderResolverStub()
+        resolver.providers[connection.id] = provider
+        let book = makeBook(providerId: connection.id)
+        let entry = PendingServerSync(
+            stableId: book.stableId, sourceRaw: book.source.rawValue, backendId: nil, serverItemId: book.id,
+            position: 25, duration: 100, updatedAt: 100
+        )
+        PendingSyncQueueStore(defaults: defaults).enqueue(entry)
+        let pending = PendingSyncQueueStore(defaults: defaults)
+        let transport = ProviderPendingSyncTransport(
+            providerResolver: resolver, bookLookup: { _ in book }, pendingSync: pending,
+            serialQueue: PerBookSerialQueue(), isDownloaded: { _ in true }
+        )
+        provider.audiobookProgress = ProviderAudiobookProgress(
+            positionSeconds: 45, percentage: 0.45, trackIndex: nil,
+            updatedAt: Date(timeIntervalSince1970: 200), readState: .reading
+        )
+
+        await #expect(throws: DownloadedProgressConflict.self) {
+            _ = try await transport.push(stableId: book.stableId, entry: entry)
+        }
+
+        #expect(provider.playbackUpdates.isEmpty)
+        let reopened = PendingSyncQueueStore(defaults: defaults)
+        #expect(reopened.entries[book.stableId]?.downloadedBaseline?.updatedAt == Date(timeIntervalSince1970: 100))
+    }
+
     @Test func routesAudiobookPushThroughResolvedCapability() async throws {
         let providerId = UUID()
         let provider = ProgressProviderStub(

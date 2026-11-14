@@ -15,21 +15,41 @@ protocol PendingSyncTransporting: AnyObject {
 final class ProviderPendingSyncTransport: PendingSyncTransporting {
     private let providerResolver: any LibraryProviderResolving
     private let providerSink: ProviderSyncSink
+    private let pendingSync: PendingSyncQueueStore?
+    private let serialQueue: PerBookSerialQueue?
+    private let isDownloaded: (Book) -> Bool
     private let bookLookup: (String) async -> Book?
     private let serverSyncEnabled: () -> Bool
 
     init(
         providerResolver: any LibraryProviderResolving,
         bookLookup: @escaping (String) async -> Book?,
+        pendingSync: PendingSyncQueueStore? = nil,
+        serialQueue: PerBookSerialQueue? = nil,
+        isDownloaded: @escaping (Book) -> Bool = { _ in false },
         serverSyncEnabled: @escaping () -> Bool = { true }
     ) {
         self.providerResolver = providerResolver
-        providerSink = ProviderSyncSink(providerResolver: providerResolver)
+        providerSink = ProviderSyncSink(providerResolver: providerResolver, pendingSync: pendingSync)
+        self.pendingSync = pendingSync
+        self.serialQueue = serialQueue
+        self.isDownloaded = isDownloaded
         self.bookLookup = bookLookup
         self.serverSyncEnabled = serverSyncEnabled
     }
 
     func push(stableId: String, entry: PendingServerSync) async throws -> PendingSyncDisposition {
+        guard let serialQueue else { return try await send(stableId: stableId, entry: entry) }
+        var result: Result<PendingSyncDisposition, any Error> = .success(.retain)
+        await serialQueue.enqueue(bookId: stableId) {
+            guard self.pendingSync?.entries[stableId] == entry else { return }
+            do { result = .success(try await self.send(stableId: stableId, entry: entry)) }
+            catch { result = .failure(error) }
+        }
+        return try result.get()
+    }
+
+    private func send(stableId: String, entry: PendingServerSync) async throws -> PendingSyncDisposition {
         guard serverSyncEnabled() else { return .retain }
         guard var book = await bookLookup(stableId) else {
             return entry.source == .local || entry.source == .smb ? .remove : .retain
@@ -47,6 +67,16 @@ final class ProviderPendingSyncTransport: PendingSyncTransporting {
         book.isFinished = entry.isFinished ?? (entry.duration > 0 && entry.position >= entry.duration * Book.finishedProgressThreshold)
         book.lastUpdate = Date(timeIntervalSince1970: entry.updatedAt)
         guard serverSyncEnabled() else { return .retain }
+        if let pendingSync, pendingSync.entries[stableId] == entry,
+            entry.domain == .audiobook, entry.downloadedBaseline == nil, isDownloaded(book),
+            provider is any AudiobookProgressPulling, provider.syncCapability.contains(.pullProgress)
+        {
+            var guardedEntry = entry
+            guardedEntry.downloadedBaseline = DownloadedProgressBaseline(
+                position: entry.position, updatedAt: book.lastUpdate, isFinished: book.isFinished
+            )
+            pendingSync.enqueue(guardedEntry)
+        }
         try await providerSink.push(
             ProgressUpdate(
                 book: book,
@@ -68,6 +98,7 @@ final class ProviderPendingSyncTransport: PendingSyncTransporting {
 @MainActor
 final class PendingSyncQueueFlusher {
     var onValidationFailure: (@MainActor (String, String) -> Void)?
+    var onDownloadedConflict: (@MainActor (String, TimeInterval) -> Void)?
 
     private let store: PendingSyncQueueStore
     private let transport: any PendingSyncTransporting
@@ -132,6 +163,13 @@ final class PendingSyncQueueFlusher {
                 store.suspend(stableId: stableId, validationFailureMessage: message)
                 onValidationFailure?(stableId, message)
                 AppLogger.sync.error("[PendingSync] Validation failed for bookDiagnosticID=\(diagnosticID): \(message)")
+                return
+            }
+            if entry.downloadedBaseline != nil {
+                store.markRetry(stableId: stableId, at: now())
+                if let conflict = error as? DownloadedProgressConflict {
+                    onDownloadedConflict?(stableId, conflict.serverPosition)
+                }
                 return
             }
             let status = httpStatus(from: error)

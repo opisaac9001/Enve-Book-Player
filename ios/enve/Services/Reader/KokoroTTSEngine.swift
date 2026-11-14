@@ -1,4 +1,3 @@
-import CoreML
 import Foundation
 import Logging
 @preconcurrency import ReadiumNavigator
@@ -12,20 +11,25 @@ import FluidAudio
 actor KokoroTTSRuntime {
     static let shared = KokoroTTSRuntime()
 
-    nonisolated static var isSupportedOnCurrentOS: Bool {
-        isSupported(on: ProcessInfo.processInfo.operatingSystemVersion)
+    nonisolated static var isSupportedOnCurrentOS: Bool { true }
+
+    nonisolated static func usesONNX(on version: OperatingSystemVersion) -> Bool {
+        version.majorVersion > 26 || (version.majorVersion == 26 && version.minorVersion >= 4)
     }
 
-    // FluidAudio #889: both Kokoro CoreML routes can crash on affected iOS versions.
-    nonisolated static func isSupported(on version: OperatingSystemVersion) -> Bool {
-        version.majorVersion < 26 || (version.majorVersion == 26 && version.minorVersion < 4)
+    nonisolated static var hasDownloadedVoices: Bool {
+        usesONNX(on: ProcessInfo.processInfo.operatingSystemVersion)
+            ? KokoroONNXAssets.areDownloaded : KokoroTTSVoiceAssets.areDownloaded
     }
 
-    nonisolated static var hasDownloadedVoices: Bool { KokoroTTSVoiceAssets.areDownloaded }
+    private enum Backend: Sendable {
+        case coreML(KokoroAneManager)
+        case onnx(KokoroONNXModel)
+    }
 
     private let audioCache = NeuralTTSAudioCache(namespace: "Kokoro")
-    private var manager: KokoroAneManager?
-    private var preparationTask: Task<KokoroAneManager, Error>?
+    private var manager: Backend?
+    private var preparationTask: Task<Backend, Error>?
     private var preparationGeneration = 0
     private var inFlight: [String: Task<[Float], Error>] = [:]
 
@@ -37,11 +41,16 @@ actor KokoroTTSRuntime {
         }
 
         let generation = preparationGeneration
-        let task: Task<KokoroAneManager, Error>
+        let task: Task<Backend, Error>
         if let preparationTask {
             task = preparationTask
         } else {
             task = Task {
+                if Self.usesONNX(on: ProcessInfo.processInfo.operatingSystemVersion) {
+                    let model = try await KokoroONNXModel.prepare(progress: progress)
+                    NeuralTTSStorage.excludeModelsFromBackup()
+                    return .onnx(model)
+                }
                 let directory = try await KokoroAneResourceDownloader.ensureModels(
                     variant: .english,
                     progressHandler: { update in progress?(update.fractionCompleted * 0.9) }
@@ -55,7 +64,7 @@ actor KokoroTTSRuntime {
                 try Task.checkCancellation()
                 let manager = KokoroAneManager(variant: .english, computeUnits: .default)
                 try await manager.initialize(preloadVoices: Set(KokoroTTSVoice.allCases.map(\.rawValue)))
-                return manager
+                return .coreML(manager)
             }
             preparationTask = task
         }
@@ -75,8 +84,9 @@ actor KokoroTTSRuntime {
     }
 
     func synthesize(text: String, voice: KokoroTTSVoice, speed: Float) async throws -> [Float] {
+        try Task.checkCancellation()
         let cacheKey = audioCache.key(
-            "v2",
+            Self.usesONNX(on: ProcessInfo.processInfo.operatingSystemVersion) ? "onnx-cpu-\(KokoroONNXAssets.revision)" : "v2",
             voice.rawValue,
             String(format: "%.2f", speed),
             text
@@ -93,12 +103,14 @@ actor KokoroTTSRuntime {
 
         let task = Task { [audioCache] in
             let samples = try await Self.generateSamples(text: text, voice: voice, speed: speed, manager: manager)
+            try Task.checkCancellation()
             try audioCache.store(samples, key: cacheKey)
             return samples
         }
         inFlight[cacheKey] = task
         do {
             let samples = try await task.value
+            try Task.checkCancellation()
             inFlight[cacheKey] = nil
             return samples
         } catch {
@@ -111,7 +123,7 @@ actor KokoroTTSRuntime {
         text: String,
         voice: KokoroTTSVoice,
         speed: Float,
-        manager: KokoroAneManager
+        manager: Backend
     ) async throws -> [Float] {
         let chunks = Self.chunks(text)
         let silence = [Float](
@@ -121,30 +133,36 @@ actor KokoroTTSRuntime {
         var samples: [Float] = []
         for (index, chunk) in chunks.enumerated() {
             try Task.checkCancellation()
-            let result = try await manager.synthesizeDetailed(
-                text: chunk,
-                voice: voice.rawValue,
-                speed: speed
-            )
+            let generated: [Float]
+            switch manager {
+            case .coreML(let coreML):
+                generated = try await coreML.synthesizeDetailed(text: chunk, voice: voice.rawValue, speed: speed).samples
+            case .onnx(let onnx):
+                generated = try await onnx.synthesize(text: chunk, voice: voice, speed: speed)
+            }
             if index > 0 {
                 samples.append(contentsOf: silence)
             }
-            samples.append(contentsOf: result.samples)
+            samples.append(contentsOf: generated)
         }
 
         guard !samples.isEmpty else { throw NeuralTTSError.emptyAudio }
         return samples
     }
 
+    /// Everything removal deletes for both the Core ML and ONNX backends.
+    nonisolated static var modelDirectories: [URL] {
+        get throws {
+            let models = try TtsCacheDirectory.ensure().appendingPathComponent("Models", isDirectory: true)
+            let onnx = try KokoroONNXAssets.directory
+            return [Repo.kokoroAne, .kokoro].map { models.appendingPathComponent($0.folderName, isDirectory: true) } + [onnx]
+        }
+    }
+
     func removeModels() async throws {
         await unload()
-        let models = try TtsCacheDirectory.ensure()
-            .appendingPathComponent("Models", isDirectory: true)
-        for repo in [Repo.kokoroAne, .kokoro] {
-            let url = models.appendingPathComponent(repo.folderName, isDirectory: true)
-            if FileManager.default.fileExists(atPath: url.path) {
-                try FileManager.default.removeItem(at: url)
-            }
+        for url in try Self.modelDirectories where FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
         }
         try? audioCache.removeAll()
     }
@@ -155,8 +173,8 @@ actor KokoroTTSRuntime {
         self.preparationTask = nil
         preparationTask?.cancel()
         let preparingManager = try? await preparationTask?.value
-        if let preparingManager {
-            await preparingManager.cleanup()
+        if case .coreML(let coreML) = preparingManager {
+            await coreML.cleanup()
         }
         let tasks = Array(inFlight.values)
         tasks.forEach { $0.cancel() }
@@ -164,8 +182,8 @@ actor KokoroTTSRuntime {
         for task in tasks {
             _ = try? await task.value
         }
-        if let manager {
-            await manager.cleanup()
+        if case .coreML(let coreML) = manager {
+            await coreML.cleanup()
         }
         manager = nil
     }

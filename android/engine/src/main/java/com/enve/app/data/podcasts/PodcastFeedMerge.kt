@@ -4,6 +4,7 @@ import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.PodcastFeedEpisode
+import com.enve.core.data.model.PodcastEpisodeShareLink
 import com.enve.core.data.model.PodcastFeedKey
 import com.enve.core.data.model.PodcastShow
 import java.text.Normalizer
@@ -15,7 +16,12 @@ private const val TITLE_MATCH_WINDOW_MS = 86_400_000L
 private val diacritics = Regex("\\p{M}+")
 private val whitespace = Regex("\\s+")
 
-internal fun feedOnlyEpisodes(stored: List<PodcastFeedKey>, feed: List<PodcastFeedEpisode>): List<PodcastFeedEpisode> {
+internal data class PodcastFeedMatch(
+    val feedOnly: List<PodcastFeedEpisode>,
+    val linksByStoredId: Map<String, String>,
+)
+
+internal fun matchPodcastFeed(stored: List<PodcastFeedKey>, feed: List<PodcastFeedEpisode>): PodcastFeedMatch {
     val episodes = feed.distinctBy { it.guid }
     val indexByGuid = episodes.withIndex().associate { (index, episode) -> episode.guid to index }
     val indexByEnclosure = mutableMapOf<String, Int>()
@@ -26,6 +32,7 @@ internal fun feedOnlyEpisodes(stored: List<PodcastFeedKey>, feed: List<PodcastFe
     }
 
     val claimed = mutableSetOf<Int>()
+    val linksByStoredId = mutableMapOf<String, String>()
     for (key in stored) {
         val byGuid = key.guid?.let(indexByGuid::get)?.takeIf { it !in claimed }
         val byEnclosure = normalizedEnclosure(key.enclosureUrl)?.let(indexByEnclosure::get)?.takeIf { it !in claimed }
@@ -34,9 +41,13 @@ internal fun feedOnlyEpisodes(stored: List<PodcastFeedKey>, feed: List<PodcastFe
                 index !in claimed && publishedWithinWindow(key.publishedAtMs, episodes[index].publishedAtMs)
             }
         }
-        (byGuid ?: byEnclosure ?: byTitle)?.let(claimed::add)
+        val match = byGuid ?: byEnclosure ?: byTitle ?: continue
+        claimed.add(match)
+        key.storedEpisodeId?.let { id ->
+            episodes[match].shareUrl()?.let { linksByStoredId[id] = it }
+        }
     }
-    return episodes.filterIndexed { index, _ -> index !in claimed }
+    return PodcastFeedMatch(episodes.filterIndexed { index, _ -> index !in claimed }, linksByStoredId)
 }
 
 internal fun PodcastFeedEpisode.toFeedOnlyBook(show: PodcastShow, showBook: Book): Book = Book(
@@ -56,7 +67,11 @@ internal fun PodcastFeedEpisode.toFeedOnlyBook(show: PodcastShow, showBook: Book
     episodeId = guid,
     podcastLibraryItemId = show.id,
     podcastEnclosureUrl = enclosureUrl,
+    podcastShareUrl = shareUrl(),
 )
+
+private fun PodcastFeedEpisode.shareUrl(): String? =
+    PodcastEpisodeShareLink.url(episodeLink) ?: PodcastEpisodeShareLink.url(enclosureUrl)
 
 private fun publishedWithinWindow(storedMs: Long?, feedMs: Long?): Boolean =
     storedMs == null || feedMs == null || abs(storedMs - feedMs) <= TITLE_MATCH_WINDOW_MS

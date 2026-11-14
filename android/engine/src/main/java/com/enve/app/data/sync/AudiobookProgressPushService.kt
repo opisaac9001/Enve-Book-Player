@@ -41,6 +41,7 @@ class AudiobookProgressPushService @Inject constructor(
         val pendingRow = pending.get(book.id, book.source.name, book.connectionId.orEmpty())
         val cached = cachedRow?.toBook()?.forAudioPlayback()
         val checkpoint = (cached ?: book.forAudioPlayback()).copy(
+            lastReadTime = (cached ?: book).lastReadTime.takeIf { it > 0L } ?: pendingRow?.createdAt ?: 0L,
             episodeId = book.episodeId,
             podcastLibraryItemId = book.podcastLibraryItemId,
             podcastEnclosureUrl = book.podcastEnclosureUrl,
