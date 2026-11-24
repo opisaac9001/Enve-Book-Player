@@ -69,6 +69,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import com.enve.core.data.playback.CastBlockedSignal
@@ -230,7 +231,7 @@ class PlaybackService : MediaLibraryService() {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main).also { serviceScope = it }
         val sessionBuilder = MediaLibrarySession.Builder(this, NoSkipTrackPlayer(player), LibraryCallback(scope))
             .setId(id)
-            .setMediaButtonPreferences(autoMediaButtonPreferences())
+            .setMediaButtonPreferences(mediaButtonPreferences(forNotification = true))
         packageManager.getLaunchIntentForPackage(packageName)?.let { launchIntent ->
             launchIntent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             sessionBuilder.setSessionActivity(
@@ -349,7 +350,7 @@ class PlaybackService : MediaLibraryService() {
         checkNotNull(mediaSession).setPlayer(NoSkipTrackPlayer(initialPlayer))
         bootstrapPlayer?.release()
         bootstrapPlayer = null
-        mediaSession?.setMediaButtonPreferences(autoMediaButtonPreferences())
+        refreshMediaButtons()
         browserHelperReady.complete(autoBrowserHelper)
         mediaSession?.notifyChildrenChanged(AutoMediaBrowserHelper.ROOT_ID, 4, null)
 
@@ -400,7 +401,7 @@ class PlaybackService : MediaLibraryService() {
             }
 
             override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
-                mediaSession?.setMediaButtonPreferences(autoMediaButtonPreferences())
+                refreshMediaButtons()
             }
         })
 
@@ -1188,14 +1189,40 @@ class PlaybackService : MediaLibraryService() {
             }
 
             override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
-                mediaSession?.setMediaButtonPreferences(autoMediaButtonPreferences())
+                refreshMediaButtons()
             }
         }
 
-    private fun autoMediaButtonPreferences(speedOverride: Float? = null): ImmutableList<CommandButton> {
+    private fun refreshMediaButtons(speedOverride: Float? = null) {
+        val session = mediaSession ?: return
+        for (controller in session.connectedControllers) {
+            if (hasLibraryAccess(session, controller)) {
+                session.setMediaButtonPreferences(
+                    controller,
+                    mediaButtonPreferences(session.isMediaNotificationController(controller), speedOverride),
+                )
+            }
+        }
+    }
+
+    private fun mediaButtonPreferences(
+        forNotification: Boolean,
+        speedOverride: Float? = null,
+    ): ImmutableList<CommandButton> {
         val hasChapters = chapterStore?.snapshot?.value?.chapters?.isNotEmpty() == true
         val buttons = mutableListOf<CommandButton>()
-        if (hasChapters) {
+        if (forNotification) {
+            buttons += CommandButton.Builder(CommandButton.ICON_SKIP_BACK)
+                .setDisplayName(getString(R.string.media_skip_back_seconds, seekBackMs / 1000))
+                .setPlayerCommand(Player.COMMAND_SEEK_BACK)
+                .setSlots(CommandButton.SLOT_BACK)
+                .build()
+            buttons += CommandButton.Builder(CommandButton.ICON_SKIP_FORWARD)
+                .setDisplayName(getString(R.string.media_skip_forward_seconds, seekForwardMs / 1000))
+                .setPlayerCommand(Player.COMMAND_SEEK_FORWARD)
+                .setSlots(CommandButton.SLOT_FORWARD)
+                .build()
+        } else if (hasChapters) {
             buttons += CommandButton.Builder(CommandButton.ICON_PREVIOUS)
                 .setDisplayName(getString(R.string.android_auto_previous_chapter))
                 .setSessionCommand(PREVIOUS_CHAPTER_COMMAND)
@@ -1246,14 +1273,12 @@ class PlaybackService : MediaLibraryService() {
     private fun startWatchingSkipIntervals(preferences: PreferencesManager) {
         val scope = serviceScope ?: return
         scope.launch {
-            preferences.skipBackwardSeconds.collectLatest { seconds ->
-                seekBackMs = seconds.coerceIn(5, 120) * 1000L
-            }
-        }
-        scope.launch {
-            preferences.skipForwardSeconds.collectLatest { seconds ->
-                seekForwardMs = seconds.coerceIn(5, 120) * 1000L
-            }
+            combine(preferences.skipBackwardSeconds, preferences.skipForwardSeconds, ::Pair)
+                .collect { (back, forward) ->
+                    seekBackMs = back * 1000L
+                    seekForwardMs = forward * 1000L
+                    refreshMediaButtons()
+                }
         }
     }
 
@@ -1263,7 +1288,7 @@ class PlaybackService : MediaLibraryService() {
         chapterWatchJob?.cancel()
         chapterWatchJob = scope.launch {
             store.snapshot.collectLatest { snapshot ->
-                mediaSession?.setMediaButtonPreferences(autoMediaButtonPreferences())
+                refreshMediaButtons()
                 if (snapshot.chapters.isEmpty()) return@collectLatest
                 applyChapterMetadata(snapshot)
                 coroutineScope {
@@ -1589,7 +1614,11 @@ class PlaybackService : MediaLibraryService() {
             val resultBuilder = MediaSession.ConnectionResult.AcceptedResultBuilder(session)
                 .setAvailableSessionCommands(sessionCommands)
                 .setMediaButtonPreferences(
-                    if (libraryAccess) autoMediaButtonPreferences() else ImmutableList.of(),
+                    if (libraryAccess) {
+                        mediaButtonPreferences(session.isMediaNotificationController(controller))
+                    } else {
+                        ImmutableList.of()
+                    },
                 )
             val playerCommands = MediaSession.ConnectionResult.DEFAULT_PLAYER_COMMANDS.buildUpon()
             if (isCarController(session, controller)) {
@@ -1623,7 +1652,7 @@ class PlaybackService : MediaLibraryService() {
                 val speed = nextPlaybackSpeed(session.player.playbackParameters.speed)
                 session.player.setPlaybackSpeed(speed)
                 scope.launch { preferences?.setPlaybackSpeed(speed) }
-                session.setMediaButtonPreferences(autoMediaButtonPreferences(speed))
+                refreshMediaButtons(speed)
                 return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
             }
             if (customCommand == ADD_BOOKMARK_COMMAND) {
