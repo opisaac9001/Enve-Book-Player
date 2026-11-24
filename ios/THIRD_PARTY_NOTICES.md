@@ -24,7 +24,7 @@ This inventory describes the repository state audited on 2026-08-08. Versions ar
 | Zip | 2.1.2 | MIT, with zlib-licensed minizip files | [marmelroy/Zip](https://github.com/marmelroy/Zip). Minizip carries copyrights for Gilles Vollant, Even Rouault, Mathias Svensson, Nathan Moinvaziri, Terry Thorsen, and Info-ZIP in its source headers. |
 | ZIPFoundation, Readium fork | 3.0.1 | MIT | [readium/ZIPFoundation](https://github.com/readium/ZIPFoundation) |
 
-The local StoryAlign ONNX Runtime package contains the Objective-C inference bindings from upstream revision b7fb7f7dea8a2469e6335d95a61b8f36d0dc83b2. Its manifest retains the upstream 1.24.2 binary archive URL and SHA-256 checksum. The upstream MIT license is included alongside the bindings.
+The local StoryAlign ONNX Runtime package contains the Objective-C inference bindings from upstream revision b7fb7f7dea8a2469e6335d95a61b8f36d0dc83b2. The package includes the original 1.24.2 binary archive (SHA-256 `f7100a992d2a8135168c8afd831e6a58b465349101982aa58b3e11d36e600b54`), the MIT license and the runtime’s third-party notices.
 
 AMSMB2 declares Swift Atomics 1.2 or newer for its test target, and Readium declares the Swift-DocC plugin for package documentation. Neither is linked into the shipping Enve products or pinned in the application `Package.resolved` file.
 
